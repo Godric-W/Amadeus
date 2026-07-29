@@ -1,0 +1,48 @@
+# Amadeus example configuration.
+#
+# Copy this file to <amadeus-root>/config.yaml, or load it explicitly with:
+#   amadeus config check --config ./configs/amadeus.example.yaml
+#
+# Keep credentials out of this file. For the default Provider, set:
+#   export AMADEUS_API_KEY="..."
+#   export AMADEUS_MODEL="..."
+#
+# To select the compatible Provider through environment variables, also set:
+#   export AMADEUS_PROVIDER="compatible"
+
+version: 1
+default_provider: openai
+
+providers:
+  openai:
+    api: responses
+    api_key: ""
+    base_url: https://api.openai.com/v1
+    model: ""
+    timeout: 120s
+    max_retries: 2
+    temperature: 0.2
+    max_output_tokens: 8192
+
+  compatible:
+    api: chat_completions
+    api_key: ""
+    base_url: https://example.invalid/v1
+    model: ""
+    timeout: 120s
+    max_retries: 2
+    temperature: 0.2
+    max_output_tokens: 8192
+
+agent:
+  mode: react
+  max_steps: 30
+  max_parallel_tools: 4
+
+approval:
+  enabled: true
+  default: ask
+
+logging:
+  level: info
+  trace_llm: false
