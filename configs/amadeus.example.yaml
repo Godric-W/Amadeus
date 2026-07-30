@@ -9,6 +9,7 @@
 #
 # To select the compatible Provider through environment variables, also set:
 #   export AMADEUS_PROVIDER="compatible"
+#   export AMADEUS_DIALECT="standard"
 
 version: 1
 default_provider: openai
@@ -16,6 +17,7 @@ default_provider: openai
 providers:
   openai:
     api: responses
+    dialect: openai
     api_key: ""
     base_url: https://api.openai.com/v1
     model: ""
@@ -26,6 +28,7 @@ providers:
 
   compatible:
     api: chat_completions
+    dialect: standard
     api_key: ""
     base_url: https://example.invalid/v1
     model: ""

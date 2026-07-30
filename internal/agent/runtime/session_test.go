@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
@@ -94,10 +95,10 @@ func TestSessionRunsSingleStreamingTurn(t *testing.T) {
 	if !client.streamCalled || client.request.Model != "fake-model" || client.request.Temperature != 0.4 || client.request.MaxOutputTokens != 1024 {
 		t.Fatalf("unexpected LLM request: %#v", client.request)
 	}
-	if len(client.request.Messages) != 1 || client.request.Messages[0] != llm.UserMessage("hi") {
+	if len(client.request.Messages) != 1 || !reflect.DeepEqual(client.request.Messages[0], llm.UserMessage("hi")) {
 		t.Fatalf("unexpected request messages: %#v", client.request.Messages)
 	}
-	if response.ID != "response_1" || response.RequestID != "request_1" || response.Message != (llm.Message{Role: llm.RoleAssistant, Content: "hello", Reasoning: "think "}) {
+	if response.ID != "response_1" || response.RequestID != "request_1" || !reflect.DeepEqual(response.Message, llm.Message{Role: llm.RoleAssistant, Content: "hello", Reasoning: "think "}) {
 		t.Fatalf("unexpected aggregated response: %#v", response)
 	}
 	if response.FinishReason != llm.FinishReasonStop || response.ProviderFinishReason != "stop" || response.Usage != usage {
@@ -198,7 +199,7 @@ func TestSessionIncludesSuccessfulTurnsInConversationHistory(t *testing.T) {
 		t.Fatalf("unexpected second request history: %#v", client.requests[1].Messages)
 	}
 	for index, message := range expected {
-		if client.requests[1].Messages[index] != message {
+		if !reflect.DeepEqual(client.requests[1].Messages[index], message) {
 			t.Fatalf("unexpected history message %d: got %#v, want %#v", index, client.requests[1].Messages[index], message)
 		}
 	}

@@ -9,6 +9,16 @@ const (
 	APIChatCompletions APIMode = "chat_completions"
 )
 
+type ProviderDialect string
+
+const (
+	DialectStandard ProviderDialect = "standard"
+	DialectOpenAI   ProviderDialect = "openai"
+	DialectDeepSeek ProviderDialect = "deepseek"
+	DialectQwen     ProviderDialect = "qwen"
+	DialectGLM      ProviderDialect = "glm"
+)
+
 type AgentMode string
 
 const (
@@ -44,14 +54,15 @@ type Config struct {
 }
 
 type ProviderConfig struct {
-	API             APIMode       `yaml:"api"`
-	APIKey          string        `yaml:"api_key"`
-	BaseURL         string        `yaml:"base_url"`
-	Model           string        `yaml:"model"`
-	Timeout         time.Duration `yaml:"timeout"`
-	MaxRetries      int           `yaml:"max_retries"`
-	Temperature     float64       `yaml:"temperature"`
-	MaxOutputTokens int           `yaml:"max_output_tokens"`
+	API             APIMode         `yaml:"api"`
+	Dialect         ProviderDialect `yaml:"dialect"`
+	APIKey          string          `yaml:"api_key"`
+	BaseURL         string          `yaml:"base_url"`
+	Model           string          `yaml:"model"`
+	Timeout         time.Duration   `yaml:"timeout"`
+	MaxRetries      int             `yaml:"max_retries"`
+	Temperature     float64         `yaml:"temperature"`
+	MaxOutputTokens int             `yaml:"max_output_tokens"`
 }
 
 type AgentConfig struct {

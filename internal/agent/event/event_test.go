@@ -21,6 +21,11 @@ func TestEventTypeValidation(t *testing.T) {
 		TypeStatusChanged,
 		TypeDiagnosticPublished,
 		TypeErrorOccurred,
+		TypeEngineRunStarted,
+		TypeEngineStatusChanged,
+		TypeVerificationDone,
+		TypeReflectionDone,
+		TypeEngineRunCompleted,
 	}
 	for _, eventType := range validTypes {
 		if !eventType.Valid() {

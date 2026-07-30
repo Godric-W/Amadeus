@@ -31,7 +31,7 @@ func TestChatCompletionsRequestSerializesCompatibleTextFields(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_test","object":"chat.completion","created":0,"model":"test-model","choices":[]}`)),
 		}, nil
 	})}
-	client, err := newClient(provider, httpClient)
+	client, err := newSDKClient(provider, httpClient)
 	if err != nil {
 		t.Fatalf("create SDK client: %v", err)
 	}
@@ -95,6 +95,64 @@ func TestChatCompletionsRequestSerializesCompatibleTextFields(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsRequestSerializesStandardToolProtocol(t *testing.T) {
+	var requestBody map[string]any
+	provider := config.Default().Providers[config.DefaultProviderName]
+	provider.APIKey = "test-secret"
+	provider.BaseURL = "https://chat.example.invalid/v1"
+	provider.MaxRetries = 0
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(request.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode chat request body: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_tools","object":"chat.completion","created":0,"model":"test-model","choices":[]}`)),
+		}, nil
+	})}
+	client, err := newSDKClient(provider, httpClient)
+	if err != nil {
+		t.Fatalf("create SDK client: %v", err)
+	}
+
+	domainRequest := llm.Request{
+		Model: "test-model",
+		Messages: []llm.Message{
+			llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
+			llm.ToolResultMessage("call_1", "file contents"),
+		},
+		Tools: []llm.ToolDefinition{{
+			Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`), Strict: true,
+		}},
+		Temperature: 0.2, MaxOutputTokens: 100,
+	}
+	params, err := newChatCompletionsRequest(domainRequest)
+	if err != nil {
+		t.Fatalf("convert chat completions request: %v", err)
+	}
+	if _, err := client.Chat.Completions.New(context.Background(), params); err != nil {
+		t.Fatalf("send chat completions request: %v", err)
+	}
+
+	tools := requestBody["tools"].([]any)
+	function := tools[0].(map[string]any)["function"].(map[string]any)
+	if function["name"] != "read_file" || function["description"] != "Read a file" || function["strict"] != true {
+		t.Fatalf("unexpected Chat tool: %#v", tools[0])
+	}
+	messages := requestBody["messages"].([]any)
+	assistant := messages[0].(map[string]any)
+	call := assistant["tool_calls"].([]any)[0].(map[string]any)
+	callFunction := call["function"].(map[string]any)
+	if assistant["role"] != "assistant" || call["id"] != "call_1" || call["type"] != "function" || callFunction["name"] != "read_file" || callFunction["arguments"] != `{"path":"README.md"}` {
+		t.Fatalf("unexpected Chat tool call: %#v", assistant)
+	}
+	result := messages[1].(map[string]any)
+	if result["role"] != "tool" || result["tool_call_id"] != "call_1" || result["content"] != "file contents" {
+		t.Fatalf("unexpected Chat tool result: %#v", result)
+	}
+}
+
 func TestChatCompletionsRequestRejectsUnsupportedInput(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -106,7 +164,7 @@ func TestChatCompletionsRequestRejectsUnsupportedInput(t *testing.T) {
 		{name: "temperature below range", request: llm.Request{Model: "model", Messages: []llm.Message{llm.UserMessage("hello")}, Temperature: -0.1, MaxOutputTokens: 10}, errorMatch: "temperature"},
 		{name: "temperature above range", request: llm.Request{Model: "model", Messages: []llm.Message{llm.UserMessage("hello")}, Temperature: 2.1, MaxOutputTokens: 10}, errorMatch: "temperature"},
 		{name: "missing max tokens", request: llm.Request{Model: "model", Messages: []llm.Message{llm.UserMessage("hello")}, Temperature: 0.2}, errorMatch: "max output tokens"},
-		{name: "tool role", request: llm.Request{Model: "model", Messages: []llm.Message{{Role: llm.RoleTool, Content: "result"}}, Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "tool messages"},
+		{name: "tool role missing call ID", request: llm.Request{Model: "model", Messages: []llm.Message{{Role: llm.RoleTool, Content: "result"}}, Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "call ID"},
 		{name: "unknown role", request: llm.Request{Model: "model", Messages: []llm.Message{{Role: llm.Role("observer"), Content: "hello"}}, Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "unsupported role"},
 	}
 	tests[0].request.Model = ""

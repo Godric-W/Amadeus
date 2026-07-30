@@ -10,6 +10,7 @@ const (
 func Default() Config {
 	openAI := defaultProviderConfig()
 	openAI.API = APIResponses
+	openAI.Dialect = DialectOpenAI
 	openAI.BaseURL = "https://api.openai.com/v1"
 
 	return Config{
@@ -35,6 +36,7 @@ func Default() Config {
 
 func defaultProviderConfig() ProviderConfig {
 	return ProviderConfig{
+		Dialect:         DialectStandard,
 		Timeout:         2 * time.Minute,
 		MaxRetries:      2,
 		Temperature:     0.2,

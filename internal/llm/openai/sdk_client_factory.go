@@ -11,11 +11,7 @@ import (
 	"github.com/openai/openai-go/v3/option"
 )
 
-func NewClient(provider config.ProviderConfig) (openaisdk.Client, error) {
-	return newClient(provider, nil)
-}
-
-func newClient(provider config.ProviderConfig, httpClient option.HTTPClient) (openaisdk.Client, error) {
+func newSDKClient(provider config.ProviderConfig, httpClient option.HTTPClient) (openaisdk.Client, error) {
 	if err := validateClientConfig(provider); err != nil {
 		return openaisdk.Client{}, err
 	}

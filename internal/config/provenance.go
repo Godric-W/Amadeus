@@ -49,7 +49,7 @@ func SourcesFor(configured Config) Sources {
 	sort.Strings(providerNames)
 	for _, name := range providerNames {
 		prefix := "providers." + name + "."
-		for _, field := range []string{"api", "api_key", "base_url", "model", "timeout", "max_retries", "temperature", "max_output_tokens"} {
+		for _, field := range []string{"api", "dialect", "api_key", "base_url", "model", "timeout", "max_retries", "temperature", "max_output_tokens"} {
 			set(prefix + field)
 		}
 	}
@@ -112,6 +112,7 @@ func EnvironmentOverrideSources(configured Config, lookup EnvLookup) Sources {
 
 	for variable, field := range map[string]string{
 		EnvAPI:     "api",
+		EnvDialect: "dialect",
 		EnvAPIKey:  "api_key",
 		EnvBaseURL: "base_url",
 		EnvModel:   "model",

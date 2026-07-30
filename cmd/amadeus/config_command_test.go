@@ -118,6 +118,7 @@ default_provider: compatible
 providers:
   compatible:
     api: chat_completions
+    dialect: deepseek
     api_key: ${FILE_API_KEY}
     base_url: https://file.example.invalid/v1
     model: file-model
@@ -140,6 +141,7 @@ providers:
 	command.SetErr(&output)
 	command.SetArgs([]string{
 		"config", "explain",
+		"--dialect", string(config.DialectQwen),
 		"--base-url", "https://cli.example.invalid/v1",
 	})
 
@@ -150,6 +152,7 @@ providers:
 	explanation := output.String()
 	expected := []string{
 		"default_provider: compatible [source: file: " + path + "]",
+		"providers.compatible.dialect: qwen [source: cli: --dialect]",
 		"providers.compatible.api_key: " + config.RedactedSecret + " [source: environment: FILE_API_KEY via " + path + "]",
 		"providers.compatible.base_url: https://cli.example.invalid/v1 [source: cli: --base-url]",
 		"providers.compatible.model: environment-model [source: environment: " + config.EnvModel + "]",

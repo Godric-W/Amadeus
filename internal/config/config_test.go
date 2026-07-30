@@ -12,6 +12,7 @@ func TestConfigCanBeConstructed(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"compatible": {
 				API:             APIChatCompletions,
+				Dialect:         DialectDeepSeek,
 				APIKey:          "test-key",
 				BaseURL:         "https://example.invalid/v1",
 				Model:           "test-model",
@@ -40,6 +41,9 @@ func TestConfigCanBeConstructed(t *testing.T) {
 	if provider.API != APIChatCompletions {
 		t.Fatalf("unexpected API mode: got %q", provider.API)
 	}
+	if provider.Dialect != DialectDeepSeek {
+		t.Fatalf("unexpected provider dialect: got %q", provider.Dialect)
+	}
 	if configured.Agent.Mode != AgentModePlan {
 		t.Fatalf("unexpected agent mode: got %q", configured.Agent.Mode)
 	}
@@ -60,6 +64,9 @@ func TestDefault(t *testing.T) {
 	}
 	if provider.API != APIResponses {
 		t.Fatalf("unexpected default API mode: got %q, want %q", provider.API, APIResponses)
+	}
+	if provider.Dialect != DialectOpenAI {
+		t.Fatalf("unexpected default dialect: got %q, want %q", provider.Dialect, DialectOpenAI)
 	}
 	if provider.Timeout != 2*time.Minute {
 		t.Fatalf("unexpected default timeout: got %s", provider.Timeout)

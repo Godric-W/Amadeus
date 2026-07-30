@@ -85,6 +85,72 @@ func TestChatCompletionsStreamReturnsFinishWithoutUsage(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsStreamAggregatesToolCallFragments(t *testing.T) {
+	fixture := strings.Join([]string{
+		`data: {"id":"chatcmpl_tools","object":"chat.completion.chunk","created":0,"model":"test-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_","type":"function","function":{"name":"read_","arguments":"{\"path\":\""}}]},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl_tools","object":"chat.completion.chunk","created":0,"model":"test-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"1","function":{"name":"file","arguments":"README.md\"}"}}]},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl_tools","object":"chat.completion.chunk","created":0,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		``,
+		`data: {"id":"chatcmpl_tools","object":"chat.completion.chunk","created":0,"model":"test-model","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":2,"total_tokens":4}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	stream, err := openChatCompletionsStream(context.Background(), chatCompletionsFixtureClient(t, fixture), validChatCompletionsDomainRequest())
+	if err != nil {
+		t.Fatalf("open chat stream: %v", err)
+	}
+	defer stream.Close()
+
+	completed, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("receive tool completion: %v", err)
+	}
+	if completed.FinishReason != llm.FinishReasonToolCalls || len(completed.ToolCalls) != 1 {
+		t.Fatalf("unexpected tool completion: %#v", completed)
+	}
+	call := completed.ToolCalls[0]
+	if call.ID != "call_1" || call.Name != "read_file" || string(call.Arguments) != `{"path":"README.md"}` {
+		t.Fatalf("unexpected aggregated tool call: %#v", call)
+	}
+}
+
+func TestChatCompletionsStreamRejectsInvalidToolArguments(t *testing.T) {
+	fixture := "data: {\"id\":\"chatcmpl_bad\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\"}}]},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"chatcmpl_bad\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
+	stream, err := openChatCompletionsStream(context.Background(), chatCompletionsFixtureClient(t, fixture), validChatCompletionsDomainRequest())
+	if err != nil {
+		t.Fatalf("open chat stream: %v", err)
+	}
+	defer stream.Close()
+
+	_, err = stream.Recv()
+	var providerError *llm.ProviderError
+	if !errors.As(err, &providerError) || providerError.Kind != llm.ProviderErrorProtocol || !strings.Contains(providerError.Message, "invalid JSON") {
+		t.Fatalf("unexpected malformed tool call error: %v", err)
+	}
+}
+
+func TestChatCompletionsDialectNormalizesReasoningContent(t *testing.T) {
+	fixture := "data: {\"id\":\"chatcmpl_reasoning\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"think\"},\"finish_reason\":null}]}\n\n"
+	for _, name := range []config.ProviderDialect{config.DialectDeepSeek, config.DialectQwen, config.DialectGLM} {
+		t.Run(string(name), func(t *testing.T) {
+			dialect := mustResolveDialect(t, name)
+			stream, err := openChatCompletionsStreamForDialect(context.Background(), chatCompletionsFixtureClient(t, fixture), validChatCompletionsDomainRequest(), dialect)
+			if err != nil {
+				t.Fatalf("open chat stream: %v", err)
+			}
+			defer stream.Close()
+			chunk, err := stream.Recv()
+			if err != nil || chunk.ReasoningDelta != "think" {
+				t.Fatalf("unexpected reasoning chunk: %#v, err=%v", chunk, err)
+			}
+		})
+	}
+}
+
 func TestChatCompletionsFinishReasonNormalization(t *testing.T) {
 	tests := map[string]llm.FinishReason{
 		"stop":           llm.FinishReasonStop,
@@ -143,7 +209,7 @@ func chatCompletionsFixtureClient(t *testing.T, fixture string) openaisdk.Client
 			Body:       io.NopCloser(strings.NewReader(fixture)),
 		}, nil
 	})}
-	client, err := newClient(provider, httpClient)
+	client, err := newSDKClient(provider, httpClient)
 	if err != nil {
 		t.Fatalf("create fixture client: %v", err)
 	}

@@ -92,6 +92,19 @@ func validateProvider(name string, provider ProviderConfig, addIssue func(string
 		addIssue(path+".api", fmt.Sprintf("must be %q or %q", APIResponses, APIChatCompletions))
 	}
 
+	switch provider.Dialect {
+	case DialectStandard, DialectOpenAI, DialectDeepSeek, DialectQwen, DialectGLM:
+	default:
+		addIssue(path+".dialect", fmt.Sprintf(
+			"must be %q, %q, %q, %q, or %q",
+			DialectStandard,
+			DialectOpenAI,
+			DialectDeepSeek,
+			DialectQwen,
+			DialectGLM,
+		))
+	}
+
 	validateBaseURL(path+".base_url", provider.BaseURL, addIssue)
 
 	if provider.Timeout <= 0 || provider.Timeout > maxProviderTimeout {

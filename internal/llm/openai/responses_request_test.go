@@ -31,7 +31,7 @@ func TestResponsesRequestSerializesDomainTextFields(t *testing.T) {
 	provider.APIKey = "test-secret"
 	provider.BaseURL = server.URL + "/v1"
 	provider.MaxRetries = 0
-	client, err := NewClient(provider)
+	client, err := newSDKClient(provider, nil)
 	if err != nil {
 		t.Fatalf("create SDK client: %v", err)
 	}
@@ -92,6 +92,61 @@ func TestResponsesRequestSerializesDomainTextFields(t *testing.T) {
 	}
 }
 
+func TestResponsesRequestSerializesStandardToolProtocol(t *testing.T) {
+	var requestBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&requestBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"id":"resp_tools"}`)
+	}))
+	defer server.Close()
+
+	provider := config.Default().Providers[config.DefaultProviderName]
+	provider.APIKey = "test-secret"
+	provider.BaseURL = server.URL + "/v1"
+	provider.MaxRetries = 0
+	client, err := newSDKClient(provider, nil)
+	if err != nil {
+		t.Fatalf("create SDK client: %v", err)
+	}
+
+	domainRequest := llm.Request{
+		Model: "test-model",
+		Messages: []llm.Message{
+			llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
+			llm.ToolResultMessage("call_1", "file contents"),
+		},
+		Tools: []llm.ToolDefinition{{
+			Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`), Strict: true,
+		}},
+		Temperature: 0.2, MaxOutputTokens: 100,
+	}
+	params, err := newResponsesRequest(domainRequest)
+	if err != nil {
+		t.Fatalf("convert responses request: %v", err)
+	}
+	if _, err := client.Responses.New(context.Background(), params); err != nil {
+		t.Fatalf("send responses request: %v", err)
+	}
+
+	tools := requestBody["tools"].([]any)
+	tool := tools[0].(map[string]any)
+	if tool["type"] != "function" || tool["name"] != "read_file" || tool["description"] != "Read a file" || tool["strict"] != true {
+		t.Fatalf("unexpected Responses tool: %#v", tool)
+	}
+	input := requestBody["input"].([]any)
+	call := input[0].(map[string]any)
+	result := input[1].(map[string]any)
+	if call["type"] != "function_call" || call["call_id"] != "call_1" || call["name"] != "read_file" || call["arguments"] != `{"path":"README.md"}` {
+		t.Fatalf("unexpected Responses tool call: %#v", call)
+	}
+	if result["type"] != "function_call_output" || result["call_id"] != "call_1" || result["output"] != "file contents" {
+		t.Fatalf("unexpected Responses tool result: %#v", result)
+	}
+}
+
 func TestResponsesRequestRejectsUnsupportedInput(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -103,7 +158,7 @@ func TestResponsesRequestRejectsUnsupportedInput(t *testing.T) {
 		{name: "temperature below range", request: llm.Request{Model: "model", Messages: []llm.Message{llm.UserMessage("hello")}, Temperature: -0.1, MaxOutputTokens: 10}, errorMatch: "temperature"},
 		{name: "temperature above range", request: llm.Request{Model: "model", Messages: []llm.Message{llm.UserMessage("hello")}, Temperature: 2.1, MaxOutputTokens: 10}, errorMatch: "temperature"},
 		{name: "missing max tokens", request: llm.Request{Model: "model", Messages: []llm.Message{llm.UserMessage("hello")}, Temperature: 0.2}, errorMatch: "max output tokens"},
-		{name: "tool role", request: llm.Request{Model: "model", Messages: []llm.Message{{Role: llm.RoleTool, Content: "result"}}, Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "tool messages"},
+		{name: "tool role missing call ID", request: llm.Request{Model: "model", Messages: []llm.Message{{Role: llm.RoleTool, Content: "result"}}, Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "call ID"},
 		{name: "unknown role", request: llm.Request{Model: "model", Messages: []llm.Message{{Role: llm.Role("observer"), Content: "hello"}}, Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "unsupported role"},
 	}
 	tests[0].request.Model = ""

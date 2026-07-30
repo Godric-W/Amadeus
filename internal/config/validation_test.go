@@ -30,6 +30,7 @@ func TestValidateReportsStableFieldPaths(t *testing.T) {
 	configured.DefaultProvider = "missing"
 	configured.Providers["broken"] = ProviderConfig{
 		API:             "invalid",
+		Dialect:         "invalid",
 		BaseURL:         "ftp://example.invalid/v1",
 		MaxRetries:      -1,
 		Temperature:     3,
@@ -53,6 +54,7 @@ func TestValidateReportsStableFieldPaths(t *testing.T) {
 		"version",
 		"default_provider",
 		"providers.broken.api",
+		"providers.broken.dialect",
 		"providers.broken.base_url",
 		"providers.broken.timeout",
 		"providers.broken.max_retries",
@@ -109,6 +111,9 @@ func TestCustomProvidersReceiveOperationalDefaults(t *testing.T) {
 	})
 
 	provider := configured.Providers[providerName]
+	if provider.Dialect != DialectStandard {
+		t.Fatalf("custom provider did not receive the standard dialect: %#v", provider)
+	}
 	if provider.Timeout <= 0 || provider.MaxOutputTokens <= 0 {
 		t.Fatalf("custom provider did not receive operational defaults: %#v", provider)
 	}

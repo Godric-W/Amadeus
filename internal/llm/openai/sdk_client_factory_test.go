@@ -17,7 +17,7 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 	return function(request)
 }
 
-func TestNewClientAppliesProviderConfiguration(t *testing.T) {
+func TestNewSDKClientAppliesProviderConfiguration(t *testing.T) {
 	provider := configuredProvider()
 	var captured *http.Request
 	var timeoutRemaining time.Duration
@@ -29,7 +29,7 @@ func TestNewClientAppliesProviderConfiguration(t *testing.T) {
 		return jsonResponse(http.StatusOK, `{"object":"list","data":[]}`), nil
 	})}
 
-	client, err := newClient(provider, httpClient)
+	client, err := newSDKClient(provider, httpClient)
 	if err != nil {
 		t.Fatalf("create SDK client: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestNewClientAppliesProviderConfiguration(t *testing.T) {
 	}
 }
 
-func TestNewClientAppliesMaxRetries(t *testing.T) {
+func TestNewSDKClientAppliesMaxRetries(t *testing.T) {
 	provider := configuredProvider()
 	provider.MaxRetries = 2
 	attempts := 0
@@ -65,7 +65,7 @@ func TestNewClientAppliesMaxRetries(t *testing.T) {
 		return jsonResponse(http.StatusOK, `{"object":"list","data":[]}`), nil
 	})}
 
-	client, err := newClient(provider, httpClient)
+	client, err := newSDKClient(provider, httpClient)
 	if err != nil {
 		t.Fatalf("create SDK client: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestNewClientAppliesMaxRetries(t *testing.T) {
 	}
 }
 
-func TestNewClientRejectsInvalidRuntimeConfiguration(t *testing.T) {
+func TestNewSDKClientRejectsInvalidRuntimeConfiguration(t *testing.T) {
 	tests := []struct {
 		name       string
 		configure  func(*config.ProviderConfig)
@@ -96,7 +96,7 @@ func TestNewClientRejectsInvalidRuntimeConfiguration(t *testing.T) {
 			provider := configuredProvider()
 			test.configure(&provider)
 
-			_, err := NewClient(provider)
+			_, err := newSDKClient(provider, nil)
 			if err == nil {
 				t.Fatal("expected client factory error")
 			}

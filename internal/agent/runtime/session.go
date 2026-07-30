@@ -140,6 +140,9 @@ func (session *Session) consumeStream(ctx context.Context, turnID string, stream
 				return response, fmt.Errorf("publish text delta: %w", err)
 			}
 		}
+		if len(chunk.ToolCalls) != 0 {
+			response.Message.ToolCalls = append(response.Message.ToolCalls, chunk.ToolCalls...)
+		}
 		if chunk.Usage != nil {
 			response.Usage = *chunk.Usage
 			if err := session.events.Publish(ctx, event.UsageUpdated{

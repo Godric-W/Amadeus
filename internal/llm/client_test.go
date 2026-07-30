@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"testing"
 )
 
@@ -79,7 +80,7 @@ func TestFakeClientImplementsCompleteContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("complete request: %v", err)
 	}
-	if response != expected {
+	if !reflect.DeepEqual(response, expected) {
 		t.Fatalf("unexpected response: got %#v, want %#v", response, expected)
 	}
 	if client.request.Model != "fake-model" || client.request.Messages[0].Content != "hello" {

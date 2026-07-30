@@ -3,6 +3,7 @@ package config
 const (
 	EnvProvider = "AMADEUS_PROVIDER"
 	EnvAPI      = "AMADEUS_API"
+	EnvDialect  = "AMADEUS_DIALECT"
 	EnvAPIKey   = "AMADEUS_API_KEY"
 	EnvBaseURL  = "AMADEUS_BASE_URL"
 	EnvModel    = "AMADEUS_MODEL"
@@ -11,6 +12,7 @@ const (
 type Overrides struct {
 	Provider *string
 	API      *APIMode
+	Dialect  *ProviderDialect
 	APIKey   *string
 	BaseURL  *string
 	Model    *string
@@ -24,6 +26,10 @@ func applyEnvironmentOverrides(configured Config, lookup EnvLookup) Config {
 	if value, ok := lookup(EnvAPI); ok {
 		api := APIMode(value)
 		overrides.API = &api
+	}
+	if value, ok := lookup(EnvDialect); ok {
+		dialect := ProviderDialect(value)
+		overrides.Dialect = &dialect
 	}
 	if value, ok := lookup(EnvAPIKey); ok {
 		overrides.APIKey = &value
@@ -51,6 +57,10 @@ func ApplyOverrides(configured Config, overrides Overrides) Config {
 	changed := overrides.Provider != nil
 	if overrides.API != nil {
 		provider.API = *overrides.API
+		changed = true
+	}
+	if overrides.Dialect != nil {
+		provider.Dialect = *overrides.Dialect
 		changed = true
 	}
 	if overrides.APIKey != nil {

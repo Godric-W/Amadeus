@@ -40,6 +40,7 @@ func newRootCommandWithRuntime(flags *configFlags, runtime commandRuntime) *cobr
 	flags.bind(command)
 	command.AddCommand(newChatCommand(flags, runtime))
 	command.AddCommand(newConfigCommand(flags, runtime))
+	command.AddCommand(newToolsCommand())
 	command.AddCommand(newVersionCommand(buildinfo.Current()))
 
 	return command

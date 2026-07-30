@@ -20,6 +20,7 @@ type responseEventStream interface {
 type responsesStream struct {
 	stream     responseEventStream
 	responseID string
+	toolCalls  toolCallAggregator
 }
 
 func openResponsesStream(ctx context.Context, client openaisdk.Client, request llm.Request) (llm.Stream, error) {
@@ -53,15 +54,42 @@ func (stream *responsesStream) Recv() (llm.StreamChunk, error) {
 				ID:             stream.responseID,
 				ReasoningDelta: event.AsResponseReasoningTextDelta().Delta,
 			}, nil
+		case "response.output_item.added":
+			added := event.AsResponseOutputItemAdded()
+			if added.Item.Type == "function_call" {
+				call := added.Item.AsFunctionCall()
+				if err := stream.toolCalls.add(added.Item.ID, added.OutputIndex, call.CallID, call.Name, call.Arguments); err != nil {
+					return llm.StreamChunk{}, err
+				}
+			}
+		case "response.function_call_arguments.delta":
+			delta := event.AsResponseFunctionCallArgumentsDelta()
+			if err := stream.toolCalls.add(delta.ItemID, delta.OutputIndex, "", "", delta.Delta); err != nil {
+				return llm.StreamChunk{}, err
+			}
+		case "response.function_call_arguments.done":
+			done := event.AsResponseFunctionCallArgumentsDone()
+			if err := stream.toolCalls.replaceArguments(done.ItemID, done.Name, done.Arguments); err != nil {
+				return llm.StreamChunk{}, err
+			}
 		case "response.completed":
 			response := event.AsResponseCompleted().Response
 			stream.responseID = response.ID
 			usage := responsesUsage(response.Usage)
+			toolCalls, err := stream.toolCalls.finalize()
+			if err != nil {
+				return llm.StreamChunk{}, err
+			}
+			finishReason := llm.FinishReasonStop
+			if len(toolCalls) != 0 {
+				finishReason = llm.FinishReasonToolCalls
+			}
 			return llm.StreamChunk{
 				ID:                   response.ID,
-				FinishReason:         llm.FinishReasonStop,
+				FinishReason:         finishReason,
 				ProviderFinishReason: string(response.Status),
 				Usage:                &usage,
+				ToolCalls:            toolCalls,
 			}, nil
 		case "response.incomplete":
 			response := event.AsResponseIncomplete().Response

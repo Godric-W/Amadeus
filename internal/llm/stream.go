@@ -13,6 +13,7 @@ type StreamChunk struct {
 	FinishReason         FinishReason
 	ProviderFinishReason string
 	Usage                *Usage
+	ToolCalls            []ToolCall
 }
 
 func (chunk StreamChunk) Completed() bool {

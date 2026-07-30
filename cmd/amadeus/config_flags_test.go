@@ -16,6 +16,7 @@ func TestConfigFlagsOverrideEnvironmentConfiguration(t *testing.T) {
 		"version",
 		"--provider", "cli",
 		"--api", string(config.APIChatCompletions),
+		"--dialect", string(config.DialectGLM),
 		"--base-url", "https://cli.example.invalid/v1",
 		"--model", "cli-model",
 	})
@@ -26,11 +27,13 @@ func TestConfigFlagsOverrideEnvironmentConfiguration(t *testing.T) {
 
 	environmentProvider := "environment"
 	environmentAPI := config.APIResponses
+	environmentDialect := config.DialectOpenAI
 	environmentBaseURL := "https://environment.example.invalid/v1"
 	environmentModel := "environment-model"
 	configured := config.ApplyOverrides(config.Default(), config.Overrides{
 		Provider: &environmentProvider,
 		API:      &environmentAPI,
+		Dialect:  &environmentDialect,
 		BaseURL:  &environmentBaseURL,
 		Model:    &environmentModel,
 	})
@@ -42,6 +45,9 @@ func TestConfigFlagsOverrideEnvironmentConfiguration(t *testing.T) {
 	provider := configured.Providers["cli"]
 	if provider.API != config.APIChatCompletions {
 		t.Fatalf("CLI API mode did not win: got %q", provider.API)
+	}
+	if provider.Dialect != config.DialectGLM {
+		t.Fatalf("CLI dialect did not win: got %q", provider.Dialect)
 	}
 	if provider.BaseURL != "https://cli.example.invalid/v1" {
 		t.Fatalf("CLI base URL did not win: got %q", provider.BaseURL)

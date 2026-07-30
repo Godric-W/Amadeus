@@ -132,6 +132,7 @@ func writeConfigExplanation(writer io.Writer, path string, configured config.Con
 		provider := configured.Providers[name]
 		prefix := "providers." + name + "."
 		writeExplainedValue(writer, prefix+"api", provider.API, sources)
+		writeExplainedValue(writer, prefix+"dialect", provider.Dialect, sources)
 		writeExplainedValue(writer, prefix+"api_key", provider.APIKey, sources)
 		writeExplainedValue(writer, prefix+"base_url", provider.BaseURL, sources)
 		writeExplainedValue(writer, prefix+"model", provider.Model, sources)

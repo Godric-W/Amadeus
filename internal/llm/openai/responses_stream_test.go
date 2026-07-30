@@ -12,6 +12,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	openaisdk "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/responses"
 )
 
 func TestResponsesStreamNormalizesTextReasoningCompletionAndUsage(t *testing.T) {
@@ -96,6 +97,101 @@ func TestResponsesStreamNormalizesIncompleteReason(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamAggregatesFunctionCallArguments(t *testing.T) {
+	fixture := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_tools","status":"in_progress"}}`,
+		``,
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"item_1","type":"function_call","call_id":"call_1","name":"read_file","arguments":"","status":"in_progress"}}`,
+		``,
+		`event: response.function_call_arguments.delta`,
+		`data: {"type":"response.function_call_arguments.delta","sequence_number":2,"item_id":"item_1","output_index":0,"delta":"{\"path\":\""}`,
+		``,
+		`event: response.function_call_arguments.delta`,
+		`data: {"type":"response.function_call_arguments.delta","sequence_number":3,"item_id":"item_1","output_index":0,"delta":"README.md\"}"}`,
+		``,
+		`event: response.function_call_arguments.done`,
+		`data: {"type":"response.function_call_arguments.done","sequence_number":4,"item_id":"item_1","output_index":0,"name":"read_file","arguments":"{\"path\":\"README.md\"}"}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","sequence_number":5,"response":{"id":"resp_tools","status":"completed","usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}}}`,
+		``,
+	}, "\n")
+	stream := responsesEventFixtureStream(t, fixture)
+	defer stream.Close()
+
+	completed, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("receive tool completion: %v", err)
+	}
+	if completed.FinishReason != llm.FinishReasonToolCalls || len(completed.ToolCalls) != 1 {
+		t.Fatalf("unexpected tool completion: %#v", completed)
+	}
+	call := completed.ToolCalls[0]
+	if call.ID != "call_1" || call.Name != "read_file" || string(call.Arguments) != `{"path":"README.md"}` {
+		t.Fatalf("unexpected aggregated tool call: %#v", call)
+	}
+}
+
+func TestResponsesStreamRejectsInvalidFunctionCallArguments(t *testing.T) {
+	fixture := strings.Join([]string{
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"item_1","type":"function_call","call_id":"call_1","name":"read_file","arguments":"","status":"in_progress"}}`,
+		``,
+		`event: response.function_call_arguments.done`,
+		`data: {"type":"response.function_call_arguments.done","sequence_number":2,"item_id":"item_1","output_index":0,"name":"read_file","arguments":"{"}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","sequence_number":3,"response":{"id":"resp_bad","status":"completed","usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}}}`,
+		``,
+	}, "\n")
+	stream := responsesEventFixtureStream(t, fixture)
+	defer stream.Close()
+
+	_, err := stream.Recv()
+	var providerError *llm.ProviderError
+	if !errors.As(err, &providerError) || providerError.Kind != llm.ProviderErrorProtocol || !strings.Contains(providerError.Message, "invalid JSON") {
+		t.Fatalf("unexpected malformed tool call error: %v", err)
+	}
+}
+
+type responseEventSliceStream struct {
+	events []responses.ResponseStreamEventUnion
+	index  int
+}
+
+func (stream *responseEventSliceStream) Next() bool {
+	if stream.index >= len(stream.events) {
+		return false
+	}
+	stream.index++
+	return true
+}
+
+func (stream *responseEventSliceStream) Current() responses.ResponseStreamEventUnion {
+	return stream.events[stream.index-1]
+}
+
+func (*responseEventSliceStream) Err() error   { return nil }
+func (*responseEventSliceStream) Close() error { return nil }
+
+func responsesEventFixtureStream(t *testing.T, fixture string) *responsesStream {
+	t.Helper()
+	events := make([]responses.ResponseStreamEventUnion, 0)
+	for _, line := range strings.Split(fixture, "\n") {
+		if !strings.HasPrefix(line, "data: ") || line == "data: [DONE]" {
+			continue
+		}
+		var event responses.ResponseStreamEventUnion
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+			t.Fatalf("decode Responses event fixture: %v\n%s", err, line)
+		}
+		events = append(events, event)
+	}
+	return &responsesStream{stream: &responseEventSliceStream{events: events}}
+}
+
 func TestResponsesStreamReturnsProviderErrorEvent(t *testing.T) {
 	fixture := "event: error\n" +
 		"data: {\"type\":\"error\",\"sequence_number\":1,\"code\":\"server_error\",\"message\":\"temporary failure\",\"param\":\"model\"}\n\n"
@@ -174,7 +270,7 @@ func responsesFixtureClient(t *testing.T, fixture string) openaisdk.Client {
 			Body:       io.NopCloser(strings.NewReader(fixture)),
 		}, nil
 	})}
-	client, err := newClient(provider, httpClient)
+	client, err := newSDKClient(provider, httpClient)
 	if err != nil {
 		t.Fatalf("create fixture client: %v", err)
 	}

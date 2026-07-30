@@ -22,6 +22,11 @@ const (
 	TypeStatusChanged       Type = "status.changed"
 	TypeDiagnosticPublished Type = "diagnostic.published"
 	TypeErrorOccurred       Type = "error.occurred"
+	TypeEngineRunStarted    Type = "engine.run.started"
+	TypeEngineStatusChanged Type = "engine.status.changed"
+	TypeVerificationDone    Type = "engine.verification.completed"
+	TypeReflectionDone      Type = "engine.reflection.completed"
+	TypeEngineRunCompleted  Type = "engine.run.completed"
 )
 
 type Event interface {
@@ -118,6 +123,60 @@ type ErrorOccurred struct {
 	Error  ErrorInfo
 }
 
+type EngineRunStarted struct {
+	RunID  string
+	TaskID string
+}
+
+func (EngineRunStarted) Type() Type {
+	return TypeEngineRunStarted
+}
+
+type EngineStatusChanged struct {
+	RunID    string
+	Entity   string
+	EntityID string
+	From     string
+	To       string
+}
+
+func (EngineStatusChanged) Type() Type {
+	return TypeEngineStatusChanged
+}
+
+type VerificationCompleted struct {
+	RunID        string
+	TaskID       string
+	Passed       bool
+	EvidenceGaps []string
+}
+
+func (VerificationCompleted) Type() Type {
+	return TypeVerificationDone
+}
+
+type ReflectionCompleted struct {
+	RunID   string
+	TaskID  string
+	Scope   string
+	Verdict string
+}
+
+func (ReflectionCompleted) Type() Type {
+	return TypeReflectionDone
+}
+
+type EngineRunCompleted struct {
+	RunID      string
+	Status     string
+	StopReason string
+	Reason     string
+}
+
+func (EngineRunCompleted) Type() Type {
+	return TypeEngineRunCompleted
+}
+
 func (ErrorOccurred) Type() Type {
 	return TypeErrorOccurred
 }
@@ -135,7 +194,12 @@ func (eventType Type) Valid() bool {
 		TypeUsageUpdated,
 		TypeStatusChanged,
 		TypeDiagnosticPublished,
-		TypeErrorOccurred:
+		TypeErrorOccurred,
+		TypeEngineRunStarted,
+		TypeEngineStatusChanged,
+		TypeVerificationDone,
+		TypeReflectionDone,
+		TypeEngineRunCompleted:
 		return true
 	default:
 		return false

@@ -11,13 +11,14 @@ import (
 	openaisdk "github.com/openai/openai-go/v3"
 )
 
-type Client struct {
+type Adapter struct {
 	sdk          openaisdk.Client
 	providerName string
 	provider     config.ProviderConfig
+	dialect      Dialect
 }
 
-func NewAdapter(providerName string, provider config.ProviderConfig) (*Client, error) {
+func NewAdapter(providerName string, provider config.ProviderConfig) (*Adapter, error) {
 	if strings.TrimSpace(providerName) == "" {
 		return nil, errors.New("provider name is empty")
 	}
@@ -29,16 +30,27 @@ func NewAdapter(providerName string, provider config.ProviderConfig) (*Client, e
 	default:
 		return nil, errors.New("provider API mode is unsupported")
 	}
-
-	sdk, err := NewClient(provider)
+	dialect, err := resolveDialect(provider.Dialect)
 	if err != nil {
 		return nil, err
 	}
-	return &Client{sdk: sdk, providerName: providerName, provider: provider}, nil
+	if !dialect.SupportsAPI(provider.API) {
+		return nil, &DialectError{
+			Dialect: provider.Dialect,
+			API:     provider.API,
+			Reason:  "select chat_completions or choose a compatible dialect",
+		}
+	}
+
+	sdk, err := newSDKClient(provider, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &Adapter{sdk: sdk, providerName: providerName, provider: provider, dialect: dialect}, nil
 }
 
-func (client *Client) Complete(ctx context.Context, request llm.Request) (llm.Response, error) {
-	stream, err := client.Stream(ctx, request)
+func (adapter *Adapter) Complete(ctx context.Context, request llm.Request) (llm.Response, error) {
+	stream, err := adapter.Stream(ctx, request)
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -50,12 +62,12 @@ func (client *Client) Complete(ctx context.Context, request llm.Request) (llm.Re
 	return response, nil
 }
 
-func (client *Client) Stream(ctx context.Context, request llm.Request) (llm.Stream, error) {
-	switch client.provider.API {
+func (adapter *Adapter) Stream(ctx context.Context, request llm.Request) (llm.Stream, error) {
+	switch adapter.provider.API {
 	case config.APIResponses:
-		return openResponsesStream(ctx, client.sdk, request)
+		return openResponsesStream(ctx, adapter.sdk, request)
 	case config.APIChatCompletions:
-		return openChatCompletionsStream(ctx, client.sdk, request)
+		return openChatCompletionsStreamForDialect(ctx, adapter.sdk, request, adapter.dialect)
 	default:
 		return nil, &llm.ProviderError{
 			Kind:    llm.ProviderErrorInvalidRequest,
@@ -64,24 +76,19 @@ func (client *Client) Stream(ctx context.Context, request llm.Request) (llm.Stre
 	}
 }
 
-func (client *Client) Model() llm.ModelInfo {
+func (adapter *Adapter) Model() llm.ModelInfo {
 	return llm.ModelInfo{
-		Provider: client.providerName,
-		Name:     client.provider.Model,
+		Provider: adapter.providerName,
+		Name:     adapter.provider.Model,
 	}
 }
 
-func (client *Client) Capabilities() llm.Capabilities {
-	capabilities := llm.Capabilities{
-		SupportsStreaming: true,
-	}
-	if client.provider.API == config.APIResponses {
-		capabilities.SupportsDeveloperRole = true
-		capabilities.SupportsReasoning = true
-		capabilities.SupportsStreamUsage = true
-		capabilities.SupportsPromptCacheUsage = true
-	}
-	return capabilities
+func (adapter *Adapter) Capabilities() llm.Capabilities {
+	return adapter.dialect.Capabilities(adapter.provider.API)
+}
+
+func (adapter *Adapter) Dialect() config.ProviderDialect {
+	return adapter.dialect.Name()
 }
 
 func collectStream(stream llm.Stream) (llm.Response, error) {
@@ -105,6 +112,9 @@ func collectStream(stream llm.Stream) (llm.Response, error) {
 		}
 		response.Message.Content += chunk.ContentDelta
 		response.Message.Reasoning += chunk.ReasoningDelta
+		if len(chunk.ToolCalls) != 0 {
+			response.Message.ToolCalls = append(response.Message.ToolCalls, chunk.ToolCalls...)
+		}
 		if chunk.Usage != nil {
 			response.Usage = *chunk.Usage
 		}
@@ -116,4 +126,4 @@ func collectStream(stream llm.Stream) (llm.Response, error) {
 	}
 }
 
-var _ llm.Client = (*Client)(nil)
+var _ llm.Client = (*Adapter)(nil)

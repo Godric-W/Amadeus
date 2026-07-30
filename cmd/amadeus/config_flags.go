@@ -10,6 +10,7 @@ const (
 	flagConfig   = "config"
 	flagProvider = "provider"
 	flagAPI      = "api"
+	flagDialect  = "dialect"
 	flagBaseURL  = "base-url"
 	flagModel    = "model"
 )
@@ -18,6 +19,7 @@ type configFlags struct {
 	configPath string
 	provider   string
 	api        string
+	dialect    string
 	baseURL    string
 	model      string
 }
@@ -27,6 +29,7 @@ func (flags *configFlags) bind(command *cobra.Command) {
 	persistent.StringVar(&flags.configPath, flagConfig, "", "use an explicit configuration file")
 	persistent.StringVar(&flags.provider, flagProvider, "", "override the default provider for this process")
 	persistent.StringVar(&flags.api, flagAPI, "", "override the API mode for this process")
+	persistent.StringVar(&flags.dialect, flagDialect, "", "override the provider dialect for this process")
 	persistent.StringVar(&flags.baseURL, flagBaseURL, "", "override the provider base URL for this process")
 	persistent.StringVar(&flags.model, flagModel, "", "override the provider model for this process")
 }
@@ -47,6 +50,10 @@ func (flags *configFlags) apply(command *cobra.Command, configured config.Config
 		api := config.APIMode(flags.api)
 		overrides.API = &api
 	}
+	if flagSet.Changed(flagDialect) {
+		dialect := config.ProviderDialect(flags.dialect)
+		overrides.Dialect = &dialect
+	}
 
 	return config.ApplyOverrides(configured, overrides)
 }
@@ -61,6 +68,7 @@ func (flags *configFlags) sources(command *cobra.Command, configured config.Conf
 	}
 	for name, field := range map[string]string{
 		flagAPI:     "api",
+		flagDialect: "dialect",
 		flagBaseURL: "base_url",
 		flagModel:   "model",
 	} {

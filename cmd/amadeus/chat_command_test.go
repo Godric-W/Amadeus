@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -148,7 +149,7 @@ providers:
 		t.Fatalf("unexpected request count: %#v", client.requests)
 	}
 	firstRequest := client.requests[0]
-	if firstRequest.Model != "cli-model" || len(firstRequest.Messages) != 1 || firstRequest.Messages[0] != llm.UserMessage("hello") {
+	if firstRequest.Model != "cli-model" || len(firstRequest.Messages) != 1 || !reflect.DeepEqual(firstRequest.Messages[0], llm.UserMessage("hello")) {
 		t.Fatalf("unexpected first chat request: %#v", firstRequest)
 	}
 	expectedHistory := []llm.Message{llm.UserMessage("hello"), llm.AssistantMessage("answer"), llm.UserMessage("again")}
@@ -156,7 +157,7 @@ providers:
 		t.Fatalf("unexpected second chat history: %#v", client.requests[1].Messages)
 	}
 	for index, message := range expectedHistory {
-		if client.requests[1].Messages[index] != message {
+		if !reflect.DeepEqual(client.requests[1].Messages[index], message) {
 			t.Fatalf("unexpected second chat message %d: got %#v, want %#v", index, client.requests[1].Messages[index], message)
 		}
 	}
@@ -248,7 +249,7 @@ providers:
 	if len(client.requests) != 2 {
 		t.Fatalf("chat command did not continue: %#v", client.requests)
 	}
-	if len(client.requests[1].Messages) != 1 || client.requests[1].Messages[0] != llm.UserMessage("second") {
+	if len(client.requests[1].Messages) != 1 || !reflect.DeepEqual(client.requests[1].Messages[0], llm.UserMessage("second")) {
 		t.Fatalf("cancelled turn polluted history: %#v", client.requests[1].Messages)
 	}
 	if stdout.String() != "answer\n" {

@@ -251,6 +251,7 @@ func TestLoadAppliesDirectEnvironmentOverridesToSelectedProvider(t *testing.T) {
 	loader := NewLoader(amadeusRoot).WithEnvLookup(mapEnvLookup(map[string]string{
 		EnvProvider: "runtime",
 		EnvAPI:      string(APIChatCompletions),
+		EnvDialect:  string(DialectQwen),
 		EnvAPIKey:   "runtime-secret",
 		EnvBaseURL:  "https://runtime.example.invalid/v1",
 		EnvModel:    "runtime-model",
@@ -276,6 +277,9 @@ providers:
 	provider := configured.Providers["runtime"]
 	if provider.API != APIChatCompletions {
 		t.Fatalf("unexpected environment API mode: got %q", provider.API)
+	}
+	if provider.Dialect != DialectQwen {
+		t.Fatalf("unexpected environment dialect: got %q", provider.Dialect)
 	}
 	if provider.APIKey != "runtime-secret" {
 		t.Fatalf("unexpected environment API key: got %q", provider.APIKey)

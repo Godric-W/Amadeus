@@ -12,14 +12,15 @@ type configPatch struct {
 }
 
 type providerPatch struct {
-	API             *APIMode       `yaml:"api"`
-	APIKey          *string        `yaml:"api_key"`
-	BaseURL         *string        `yaml:"base_url"`
-	Model           *string        `yaml:"model"`
-	Timeout         *time.Duration `yaml:"timeout"`
-	MaxRetries      *int           `yaml:"max_retries"`
-	Temperature     *float64       `yaml:"temperature"`
-	MaxOutputTokens *int           `yaml:"max_output_tokens"`
+	API             *APIMode         `yaml:"api"`
+	Dialect         *ProviderDialect `yaml:"dialect"`
+	APIKey          *string          `yaml:"api_key"`
+	BaseURL         *string          `yaml:"base_url"`
+	Model           *string          `yaml:"model"`
+	Timeout         *time.Duration   `yaml:"timeout"`
+	MaxRetries      *int             `yaml:"max_retries"`
+	Temperature     *float64         `yaml:"temperature"`
+	MaxOutputTokens *int             `yaml:"max_output_tokens"`
 }
 
 type agentPatch struct {
@@ -68,6 +69,7 @@ func (patch configPatch) apply(base Config) Config {
 
 func (patch providerPatch) apply(provider *ProviderConfig) {
 	assign(&provider.API, patch.API)
+	assign(&provider.Dialect, patch.Dialect)
 	assign(&provider.APIKey, patch.APIKey)
 	assign(&provider.BaseURL, patch.BaseURL)
 	assign(&provider.Model, patch.Model)
