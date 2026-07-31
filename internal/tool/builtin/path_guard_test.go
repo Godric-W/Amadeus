@@ -33,7 +33,7 @@ func TestMVPToolsRejectSymlinkEscapes(t *testing.T) {
 		input string
 	}{
 		{name: "read_file", tool: mustReadFile(t, root, options.ReadFile), input: `{"path":"escape/secret.txt"}`},
-		{name: "write_file", tool: mustWriteFile(t, root, options.WriteFile), input: `{"path":"escape/new.txt","content":"blocked"}`},
+		{name: "write_file", tool: mustWriteFile(t, root, options.WriteFile), input: `{"path":"escape/new.txt","content":"blocked","mode":"create"}`},
 		{name: "list_dir", tool: mustListDir(t, root, options.ListDir), input: `{"path":"escape"}`},
 		{name: "glob_files", tool: mustGlobFiles(t, root, options.GlobFiles), input: `{"pattern":"**"}`},
 		{name: "grep_code", tool: mustGrepCode(t, root, options.GrepCode), input: `{"query":"secret","path":"escape"}`},
@@ -70,7 +70,7 @@ func TestMVPFileToolsAllowInternalDirectorySymlink(t *testing.T) {
 	if err != nil || readResult.Text != "inside" {
 		t.Fatalf("unexpected internal symlink read: result=%#v err=%v", readResult, err)
 	}
-	if _, err := mustWriteFile(t, root, options.WriteFile).Execute(context.Background(), json.RawMessage(`{"path":"alias/new.txt","content":"new"}`)); err != nil {
+	if _, err := mustWriteFile(t, root, options.WriteFile).Execute(context.Background(), json.RawMessage(`{"path":"alias/new.txt","content":"new","mode":"create"}`)); err != nil {
 		t.Fatalf("write through internal directory symlink: %v", err)
 	}
 	content, err := os.ReadFile(filepath.Join(realDirectory, "new.txt"))

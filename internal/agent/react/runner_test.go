@@ -149,6 +149,40 @@ func TestRunnerReplaysToolFailureBeforeCandidate(t *testing.T) {
 	if !strings.Contains(toolMessage.Content, `"ok":false`) || !strings.Contains(toolMessage.Content, "file not found") {
 		t.Fatalf("tool failure was not replayed: %#v", toolMessage)
 	}
+	if len(outcome.Evidence) != 1 || outcome.Evidence[0].Verified || len(outcome.Candidate.Result.EvidenceIDs) != 0 {
+		t.Fatalf("failed evidence should remain in the run but not support the candidate: %#v", outcome)
+	}
+}
+
+func TestRunnerCandidateReferencesOnlyVerifiedEvidenceAfterRecovery(t *testing.T) {
+	failedCall := tool.NewCall("failed", "apply_patch", json.RawMessage(`{"patch":"conflict"}`))
+	passedCall := tool.NewCall("passed", "execute_command", json.RawMessage(`{"command":"go test ./..."}`))
+	iterator := &scriptedIterator{results: []IterationResult{
+		{Kind: IterationToolCalls, Response: llm.Response{Message: llm.AssistantToolCallMessage("", llm.ToolCall{ID: failedCall.ID, Name: failedCall.Name, Arguments: failedCall.Arguments}), FinishReason: llm.FinishReasonToolCalls}, ToolCalls: []tool.Call{failedCall}},
+		{Kind: IterationToolCalls, Response: llm.Response{Message: llm.AssistantToolCallMessage("", llm.ToolCall{ID: passedCall.ID, Name: passedCall.Name, Arguments: passedCall.Arguments}), FinishReason: llm.FinishReasonToolCalls}, ToolCalls: []tool.Call{passedCall}},
+		{Kind: IterationCandidate, Response: llm.Response{Message: llm.AssistantMessage("recovered and verified"), FinishReason: llm.FinishReasonStop}, Candidate: &engine.TaskResult{Summary: "recovered and verified"}},
+	}}
+	failed := replayExecution("failed", "apply_patch", tool.Result{}, "patch conflict")
+	passed := replayExecution("passed", "execute_command", tool.Result{Text: "tests passed"}, "")
+	passed.Evidence.Verified = true
+	executor := &scriptedCallExecutor{
+		executions: map[string]ToolExecution{"failed": failed, "passed": passed},
+		errors:     map[string]error{"failed": errors.New("patch conflict")},
+	}
+	runner := newTestRunner(t, iterator, executor, &scriptedProgress{})
+	input := validRunnerInput()
+	input.AvailableTools = []tool.Spec{
+		{Name: "apply_patch", SideEffect: tool.SideEffectWrite, ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeExclusive}},
+		{Name: "execute_command", SideEffect: tool.SideEffectExecute, ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeExclusive}},
+	}
+
+	outcome, err := runner.Run(context.Background(), input)
+	if err != nil {
+		t.Fatalf("run recovered workflow: %v", err)
+	}
+	if len(outcome.Evidence) != 2 || len(outcome.Candidate.Result.EvidenceIDs) != 1 || outcome.Candidate.Result.EvidenceIDs[0] != passed.Evidence.ID {
+		t.Fatalf("candidate evidence did not exclude recovered failure: %#v", outcome)
+	}
 }
 
 func TestRunnerReturnsNeedsPlanFromProgressSignal(t *testing.T) {

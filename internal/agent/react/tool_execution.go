@@ -153,10 +153,20 @@ func (executor *ToolExecutor) failure(call tool.Call, result tool.Result, execut
 			ID:       toolEvidenceID(call.ID),
 			Kind:     engine.EvidenceTool,
 			Source:   call.Name,
-			Summary:  "tool failed: " + message,
+			Summary:  failedToolResultSummary(result, message),
 			Verified: false,
 		},
 	}
+}
+
+func failedToolResultSummary(result tool.Result, message string) string {
+	if result.Partial {
+		if summary := strings.TrimSpace(result.Text); summary != "" {
+			return "tool partially applied: " + summary + ": " + message
+		}
+		return "tool partially applied before failure: " + message
+	}
+	return "tool failed: " + message
 }
 
 func (executor *ToolExecutor) durationSince(startedAt time.Time) time.Duration {

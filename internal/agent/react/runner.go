@@ -340,9 +340,11 @@ func iterationID(input engine.TaskRunInput, index int) string {
 }
 
 func evidenceIDs(evidence []engine.Evidence) []engine.EvidenceID {
-	ids := make([]engine.EvidenceID, len(evidence))
-	for index, item := range evidence {
-		ids[index] = item.ID
+	ids := make([]engine.EvidenceID, 0, len(evidence))
+	for _, item := range evidence {
+		if item.Verified {
+			ids = append(ids, item.ID)
+		}
 	}
 	return ids
 }

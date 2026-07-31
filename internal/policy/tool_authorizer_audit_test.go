@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,36 @@ import (
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
+
+func TestToolAuthorizerAuditsApplyPatchByArgumentHashOnly(t *testing.T) {
+	root := newPolicyProjectRoot(t)
+	sink := audit.NewMemorySink()
+	handler := &recordingApprovalHandler{decisions: []ApprovalDecision{allowOnceDecision()}}
+	authorizer, err := NewToolAuthorizerWithOptions(root, handler, ToolAuthorizerOptions{Audit: sink})
+	if err != nil {
+		t.Fatalf("create audited authorizer: %v", err)
+	}
+	secret := "sensitive replacement body"
+	arguments := patchPolicyArguments(t, "*** Begin Patch v1\n*** Add File: result.txt\n+"+secret+"\n*** End Patch\n")
+	if err := authorizer.Authorize(context.Background(), applyPatchToolSpec(), tool.NewCall("patch-audit", "apply_patch", arguments)); err != nil {
+		t.Fatalf("authorize audited patch: %v", err)
+	}
+	records := sink.Snapshot()
+	canonical, err := canonicalArguments(arguments)
+	if err != nil {
+		t.Fatalf("canonicalize patch arguments: %v", err)
+	}
+	if len(records) != 1 || records[0].ArgumentsSHA256 != approvalHash(canonical) || records[0].Outcome != audit.OutcomeAllow || records[0].Risk != string(CommandRiskHigh) {
+		t.Fatalf("unexpected patch audit record: %#v", records)
+	}
+	encoded, err := json.Marshal(records[0])
+	if err != nil {
+		t.Fatalf("encode patch audit record: %v", err)
+	}
+	if strings.Contains(string(encoded), secret) || strings.Contains(string(encoded), "Begin Patch") {
+		t.Fatalf("patch content leaked into audit record: %s", encoded)
+	}
+}
 
 func TestToolAuthorizerAuditsAllowDenyAndError(t *testing.T) {
 	root := newPolicyProjectRoot(t)

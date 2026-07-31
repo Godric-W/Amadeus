@@ -64,6 +64,31 @@ func TestToolAuthorizerRunsPathPreflightBeforeApproval(t *testing.T) {
 	}
 }
 
+func TestToolAuthorizerPreflightsApplyPatchAndRequiresHighRiskApproval(t *testing.T) {
+	root := newPolicyProjectRoot(t)
+	handler := &recordingApprovalHandler{decisions: []ApprovalDecision{allowOnceDecision()}}
+	authorizer := newTestToolAuthorizer(t, root, handler, nil)
+	validArguments := patchPolicyArguments(t, "*** Begin Patch v1\n*** Add File: added.txt\n+content\n*** End Patch\n")
+	if err := authorizer.Authorize(context.Background(), applyPatchToolSpec(), tool.NewCall("patch-allow", "apply_patch", validArguments)); err != nil {
+		t.Fatalf("authorize apply_patch: %v", err)
+	}
+	if handler.count() != 1 || handler.requests[0].Risk != CommandRiskHigh || handler.requests[0].Reason != "tool writes project files" {
+		t.Fatalf("unexpected apply_patch approval request: %#v", handler.requests)
+	}
+
+	escapeArguments := patchPolicyArguments(t, "*** Begin Patch v1\n*** Add File: ../outside.txt\n+blocked\n*** End Patch\n")
+	err := authorizer.Authorize(context.Background(), applyPatchToolSpec(), tool.NewCall("patch-escape", "apply_patch", escapeArguments))
+	if err == nil || !strings.Contains(err.Error(), "preflight patch path") || handler.count() != 1 {
+		t.Fatalf("patch escape reached approval: err=%v calls=%d", err, handler.count())
+	}
+
+	malformedArguments := patchPolicyArguments(t, "not a patch")
+	err = authorizer.Authorize(context.Background(), applyPatchToolSpec(), tool.NewCall("patch-malformed", "apply_patch", malformedArguments))
+	if err == nil || !strings.Contains(err.Error(), "parse patch document for policy") || handler.count() != 1 {
+		t.Fatalf("malformed patch reached approval: err=%v calls=%d", err, handler.count())
+	}
+}
+
 func TestToolAuthorizerBlocksDangerousCommandBeforeApproval(t *testing.T) {
 	root := newPolicyProjectRoot(t)
 	handler := &recordingApprovalHandler{decisions: []ApprovalDecision{allowOnceDecision()}}
@@ -178,6 +203,19 @@ func writeToolSpec() tool.Spec {
 
 func executeToolSpec() tool.Spec {
 	return tool.Spec{Name: "execute_command", SideEffect: tool.SideEffectExecute}
+}
+
+func applyPatchToolSpec() tool.Spec {
+	return tool.Spec{Name: "apply_patch", SideEffect: tool.SideEffectWrite}
+}
+
+func patchPolicyArguments(t *testing.T, patch string) json.RawMessage {
+	t.Helper()
+	arguments, err := json.Marshal(map[string]string{"patch": patch})
+	if err != nil {
+		t.Fatalf("encode patch arguments: %v", err)
+	}
+	return arguments
 }
 
 func allowOnceDecision() ApprovalDecision {

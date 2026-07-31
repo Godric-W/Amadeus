@@ -33,7 +33,7 @@ func (client *codingWorkflowClient) Stream(_ context.Context, request llm.Reques
 	case 1:
 		call = llm.ToolCall{ID: "read-calc", Name: "read_file", Arguments: json.RawMessage(`{"path":"calc.go"}`)}
 	case 2:
-		call = llm.ToolCall{ID: "write-calc", Name: "write_file", Arguments: json.RawMessage(`{"path":"calc.go","content":"package calc\n\nfunc Add(left, right int) int { return left + right }\n"}`)}
+		call = llm.ToolCall{ID: "write-calc", Name: "write_file", Arguments: json.RawMessage(`{"path":"calc.go","content":"package calc\n\nfunc Add(left, right int) int { return left + right }\n","mode":"replace"}`)}
 	case 3:
 		call = llm.ToolCall{ID: "test-project", Name: "execute_command", Arguments: json.RawMessage(`{"command":"go test ./...","timeout_ms":30000}`)}
 	default:

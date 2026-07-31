@@ -2,13 +2,14 @@ package builtin
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
-func TestMVPRegistryContainsSixStableTools(t *testing.T) {
+func TestMVPRegistryContainsSevenStableTools(t *testing.T) {
 	root, err := project.NewRoot(t.TempDir())
 	if err != nil {
 		t.Fatalf("create project root: %v", err)
@@ -22,11 +23,11 @@ func TestMVPRegistryContainsSixStableTools(t *testing.T) {
 	for index, entry := range entries {
 		names[index] = entry.Spec.Name
 	}
-	want := []string{"execute_command", "glob_files", "grep_code", "list_dir", "read_file", "write_file"}
+	want := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "write_file"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("unexpected MVP tools: got %v, want %v", names, want)
 	}
-	if entries[0].Spec.SideEffect != tool.SideEffectExecute || entries[0].Spec.ParallelSafe || entries[4].Spec.SideEffect != tool.SideEffectRead || !entries[4].Spec.ParallelSafe {
+	if entries[0].Spec.SideEffect != tool.SideEffectWrite || entries[0].Spec.ParallelSafe || entries[0].Spec.Idempotent || entries[0].Spec.ResourceStrategy.Mode != tool.ResourceModeExclusive || entries[1].Spec.SideEffect != tool.SideEffectExecute || entries[5].Spec.SideEffect != tool.SideEffectRead || !entries[5].Spec.ParallelSafe {
 		t.Fatalf("unexpected MVP metadata: %#v", entries)
 	}
 }
@@ -38,8 +39,31 @@ func TestMVPSpecsReturnIndependentCopies(t *testing.T) {
 	if string(second[0].InputSchema[:1]) != "{" {
 		t.Fatal("MVP specs share input schema storage")
 	}
-	first[1].ResourceStrategy.ArgumentPaths[0] = "changed"
-	if second[1].ResourceStrategy.ArgumentPaths[0] == "changed" {
+	first[2].ResourceStrategy.ArgumentPaths[0] = "changed"
+	if second[2].ResourceStrategy.ArgumentPaths[0] == "changed" {
 		t.Fatal("MVP specs share resource strategy storage")
+	}
+}
+
+func TestMVPDescriptionsEnforceToolSelectionBoundaries(t *testing.T) {
+	descriptions := make(map[string]string)
+	for _, spec := range MVPSpecs() {
+		descriptions[spec.Name] = spec.Description
+	}
+	checks := map[string][]string{
+		"read_file":       {"Preferred over shell"},
+		"list_dir":        {"Preferred over shell"},
+		"glob_files":      {"Preferred over shell"},
+		"grep_code":       {"Preferred over shell"},
+		"apply_patch":     {"Preferred tool", "editing existing files"},
+		"write_file":      {"create a new", "explicitly replace", "use apply_patch"},
+		"execute_command": {"builds, tests, Git", "never use it to bypass"},
+	}
+	for name, fragments := range checks {
+		for _, fragment := range fragments {
+			if !strings.Contains(descriptions[name], fragment) {
+				t.Fatalf("tool %q description omitted %q: %q", name, fragment, descriptions[name])
+			}
+		}
 	}
 }

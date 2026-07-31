@@ -1033,7 +1033,11 @@ M4-01 将 Patch Document v1 固定为 UTF-8 行协议。规范头为 `*** Begin 
 
 M4-02 的文件执行器采用“全 Patch 预检、逐 operation 提交”的边界：先验证 Document、解析并守卫全部路径、检查目标类型与大小、在内存中完成所有 hunk 的唯一匹配和新内容计算，再为 Add/Update 在目标同目录创建临时文件。首次修改前会重新校验全部目标，随后按文档顺序提交；Add/Update 通过临时文件 `Sync` 后原子 rename，Update 保留原权限和既有 CRLF/末尾换行风格，Delete 仅删除 regular file。预检冲突不会产生任何文件变化；若跨文件提交中途失败，则结果明确携带已应用 operation 和 `partial=true`，供 Tool Result、Evidence 与后续 Replan 使用。
 
+M4-03 将 `apply_patch` 作为第七个核心工具接入 Registry。Tool Spec 使用单一必填 `patch` 字符串、`SideEffectWrite`、`ParallelSafe=false`、`Idempotent=false` 和 `ResourceModeExclusive`：Patch 内嵌多条路径，在引入可靠的 operation-level resource extraction 前必须作为全局串行屏障。Policy 在请求高风险审批前再次解析 Patch 并对全部 operation 执行 PathGuard 预检；Approval 和 Audit 沿用规范化完整参数的 SHA-256，只展示/持久化哈希而不记录 Patch 正文。成功或失败结果都返回 operation metadata；中途失败保留 `partial=true` 和已应用 operation，Observation 标记失败，Evidence 明确为未验证且指出部分副作用，取消沿 ToolExecutor 传播且提交前取消不产生写入。
+
 `write_file` 保留，但职责收窄为创建新文件或用户/模型明确要求的整文件替换，不再作为修改已有文件的首选。参数必须显式区分 `create` 与 `replace`，默认拒绝隐式覆盖；replace 继续使用原子临时文件写入并保留权限。Prompt 和 Tool description 必须引导已有文件优先使用 `apply_patch`。
+
+M4-04 将 `write_file` 的 `mode` 固定为必填枚举 `create|replace`。`create` 只允许目标不存在，必要时创建父目录，并通过同目录 staged file + hard link 以 no-replace 语义原子发布；并发出现同名目标时确定性失败，不覆盖任何内容。`replace` 只允许目标已经是 regular file，不创建缺失目标或父目录，使用同目录 staged file + atomic rename，并继承原文件权限。旧的无 `mode` 参数在 Tool Schema 和直接执行层都明确失败；非法 mode、create-existing、replace-missing、路径逃逸、超限和提交前取消均为零内容副作用。
 
 首版不单独增加 `edit_file`、`create_project`、`git_status`、`git_diff`、`run_tests` 或 `format_code`：Patch 已覆盖结构化编辑，Git/测试/格式化和项目脚本继续由 `execute_command` 处理。只有后续实际使用证明需要独立权限、结构化结果或可移植行为时再拆分。
 
@@ -1047,6 +1051,8 @@ M4-02 的文件执行器采用“全 Patch 预检、逐 operation 提交”的�
 4. 专用工具无法表达需求时允许 Shell fallback，但仍经过 CommandGuard、Approval、Audit、timeout、进程组取消和输出预算。
 
 Shell 中的 `cat`、`sed`、`grep`、Python/Node 文件访问不会绕过 Project Root 和安全模型。CommandGuard 能确定性识别的只读命令可以使用只读策略；无法可靠判定的动态命令按更高风险处理，而不是假设无副作用。专用工具失败时，模型可以根据错误选择修正参数或使用 Shell，但不得为了绕过策略拒绝而改写成等价 Shell 命令。
+
+M4-05 新增独立 `Tool Selection` Agent Prompt 层，并将相同边界写入七个 Tool Spec description：常规读取、目录、发现和搜索优先结构化工具；已有文件普通编辑使用 `apply_patch`，冲突后重新读取并构造新 Patch；`write_file` 只接受显式 `mode=create|replace` 的整文件操作；构建、测试、Git、格式化、生成器和项目脚本使用 `execute_command`。Shell 只在专用工具无法表达时 fallback，且不得通过重定向、脚本或等价命令绕过 Tool contract、PathGuard、策略拒绝或审批。失败工具调用本身是未完成 Evidence，模型必须修正或选择合法替代，不能静默宣称成功。
 
 ### 14.6 执行流水线
 
@@ -1093,6 +1099,10 @@ M2-31 已提供 `builtin.DefaultMVPOptions`、`RegisterMVP/NewMVPRegistry` 和�
 M2-32 已把资源感知的有界并发执行器接入 ReActRunner。只有 SideEffect 为 none/read、声明 ParallelSafe 且非 exclusive 的连续调用组可以并行；argument resource strategy 从规范化 JSON pointer 提取资源键，同键调用串行，write/execute/network/unknown/exclusive 调用作为前后屏障。Worker 数受 MaxParallelTools 限制，取消后不启动剩余调用，Observation/Evidence 和 ToolResult 始终恢复为原始 model call 顺序。
 
 M2-33 已增加临时 Go 项目的 Direct Engine 端到端测试。测试使用真实 `project.Root`、MVP Registry、ArgumentValidator、ToolExecutor、ReActRunner、DeterministicVerifier、Reflector 和 Engine Event Sink，按模型脚本实际执行 `read_file → write_file → execute_command(go test ./...) → Candidate`。测试命令成功 Evidence 显式关联 required criterion，Verifier passed、Reflector accept 后 Task/Run 才 completed，并断言文件真实修改、Steps/Evidence/iterations 完整及 terminal event 存在。至此 M2 的单 root Agent Engine 出口已实现。
+
+M4-06 将命令级 Provider E2E 扩展为 Responses 与 Chat Completions 双协议的完整核心工具工作流：`read_file → grep_code → 冲突 apply_patch → 重新读取 → 成功 apply_patch(update+delete) → write_file(create) → blocked execute_command → go test → Candidate → Reflection`。测试使用生产 OpenAI Adapter、本地 SSE Provider、真实 Registry/Policy/Audit 和隔离临时 Go 项目，证明 Patch 冲突不修改文件、合法 Patch 可继续、整文件创建遵守 mode、危险 Shell fallback 被 CommandGuard 拒绝、测试命令仍可审批执行、工具结果按两种协议回放且凭证不泄露。
+
+该 E2E 同时固定 Candidate Evidence 的恢复语义：Run/Step 保留全部成功与失败 Evidence，用于审计、Checkpoint、Reflection 和 Replan；Candidate 的 `evidence_ids` 只引用 `verified=true` 的 Evidence。已被后续操作修复的 Patch 冲突或已被策略安全阻断的命令仍保留为历史，但不再作为 Candidate 支持证据送入确定性 Verifier，从而允许“失败可见、恢复后可完成”，又不会把失败伪装成通过。
 
 ### 15.2 命令策略
 
@@ -1237,6 +1247,8 @@ M3-05 只定义 `Resolver` 接口和领域不变量；M3-06 已实现用户级�
 
 首版保持一个 Turn 对应一个主 Run。用户中断后输入“请继续”会产生新的 Turn 和新的 Run，旧 Run 永久保持 `cancelled`，不得重新变回 `running`。`internal/agent/runtime.Session` 是 M1 纯聊天的进程内执行器，后续应重命名为 `ChatSession`，不得与持久化 Conversation Session 共用含糊的 `Session` 类型名。
 
+M4-07 已在 `internal/session` 固定首版持久化 Domain：强类型 `ProjectID/ConversationSessionID/TurnID/RunID`，`Project`、`ConversationSession`、`Turn` 和 `Run` 记录，以及各自状态、序号和 UTC 时间约束。Conversation Session 只在 `active/archived` 间显式切换并从 1 分配 Turn sequence；Turn/Run 均从 `running` 单向进入 `completed/cancelled/failed/partial/needs_plan/awaiting_user` 之一，终态不可再次转换。Run 可记录 `context_from_run_id`、Provider 元数据、Budget/Usage JSON 和最新 Checkpoint sequence，但禁止自引用、非法 JSON、负序号和时间倒流。M1 的进程内类型已实际重命名为 `runtime.ChatSession/ChatSessionOptions/NewChatSession`，不再暴露另一个含糊的 runtime `Session`。
+
 Conversation 只保存正式可见的 `user`/`assistant` 消息。真实用户输入在 Run 开始前写入；只有成功形成正式最终回答时才写入 assistant 消息。取消或失败的 Turn 保留用户消息、Turn/Run 状态和 Checkpoint，但不把流式增量、未完成回答、system/developer/tool 消息或隐藏 reasoning 提升为正式 Conversation。
 
 ### 16.6 Conversation 与 ContextView
@@ -1254,6 +1266,8 @@ type ContextBuilder interface {
 ```
 
 ConversationStore 保存完整、按序、用户可见的消息记录。ContextBuilder 根据当前 Goal/Task、最近 Conversation、Conversation Summary、适用的 InstructionDocument、Run Evidence、最近中断 Run 摘要、内置 Prompt 和工具定义构造 ContextView；裁剪和压缩只改变 View，不修改原始消息、Checkpoint 或指令文件。
+
+M4-08 在 `internal/session` 定义 `SessionStore`、`ConversationStore`、`RunStore` 和 `CheckpointStore` 四类 Port，并由组合 `Store` 暴露统一能力。事务输入固定为 `BeginFirstTurn`、`BeginTurn` 和 `FinishTurn`：首轮由 Store 在一个边界内创建或复用 Project、创建 Conversation Session、原子分配 Turn/Message sequence、写 user Message 并创建 running Run；后续 Turn 同样由 Store 分配序号；终态同时转换 Turn/Run，只有 `completed` 可追加正式 assistant Message，取消、失败、partial、needs_plan 和 awaiting_user 都禁止写未完成回答。`MemoryStore` 是并发安全的可执行 fake，支持当前 Project 的 Session 排序/最近活跃查询、正式消息列表、Run 查询、最近 cancelled Run 和不可变 Checkpoint sequence，为 SQLite 实现提供行为基线。
 
 ContextBuilder 注入的数据必须保留类别和来源，使模型能区分当前用户任务、用户级指令、不同目录作用域的项目指令、历史对话、Run Evidence 和此前中断工作。Conversation Summary、Pending Interrupted Work、MCP resources、Skill 与 Web 内容不得伪装为 system、`AGENTS.md` 或本轮用户指令。
 
@@ -1382,6 +1396,8 @@ M1-15 于 2026-07-29 使用项目根目录真实配置完成 Chat Completions co
 
 SQLite 初始化使用 `foreign_keys=ON`、WAL、`busy_timeout=5000` 和 `synchronous=NORMAL`。同一数据库允许在单个事务内原子完成 Session/Turn/Run 状态与正式消息写入；Store Port 仍保持 Conversation 与 Checkpoint 的领域边界，不能因为物理共库而合并职责。
 
+M4-09 在 `internal/session/sqlite` 实现固定 bootstrap。调用方必须显式提供 clean absolute Amadeus Root；空值、相对路径、缺失 Root 都直接失败，不查询或回退当前工作目录。数据库路径唯一为 `<amadeus-root>/data/amadeus.db`，`data` 不存在时以 `0700` 创建，已存在时收紧权限；data 目录或数据库文件为 symlink/非预期类型时拒绝打开；连接成功后数据库权限收紧为 `0600`。实现使用 `database/sql` 与无 CGO SQLite Driver，并通过 DSN 为每个连接设置 `foreign_keys=ON`、`journal_mode=WAL`、`busy_timeout=5000`、`synchronous=NORMAL`，bootstrap 会实际查询四项 PRAGMA，不满足即关闭并失败。
+
 ### 20.1 SQLite 表
 
 首版固定九张表：
@@ -1409,6 +1425,8 @@ checkpoint_instructions
 | `applied_at` | not null | UTC 应用时间 |
 
 迁移必须事务化、可重复检测且禁止跳过未知版本。
+
+M4-10 已实现 migration runner 与 `initial_session_schema` v1。`Open` 在 PRAGMA 验证后自动进入单事务迁移：先确保 `schema_migrations`，校验本地 migration 定义从 1 连续递增，再核对数据库历史版本和名称；未知更高版本、缺口或同版本名称漂移都 fail closed。每个 migration 的全部 DDL 与历史写入同事务提交，任一 statement 失败时 schema 和 history 一起回滚。v1 创建本节固定的九表、外键、状态/JSON/序号 CHECK、每 Session 唯一 Turn/Message sequence、每 Turn 唯一 Run、每 Run 唯一 Checkpoint sequence 和查询索引；新库、重复打开、未知版本、历史漂移和注入失败回滚均由真实 SQLite 测试固定。
 
 ### 20.3 `projects`
 
@@ -1535,6 +1553,8 @@ payload 至少覆盖 objective、status、stop reason、completed steps、Eviden
 - Run 成功：原子写 assistant message、完成 Run/Turn，并更新 Session。
 - Run 取消或失败：原子追加终态 Checkpoint、完成 Run/Turn；保留 user message，不写未完成 assistant message。
 - Checkpoint 过程追加使用独立短事务；任何旧副作用在新 Run 中仍需重新发现、验证和审批。
+
+M4-11 已实现 `internal/session/sqlite.Store`。Project 通过规范化路径唯一 upsert；首轮创建与后续 Turn 均在 SQLite 写事务中分配 Turn/Message sequence，并保证 user message 在执行前持久化。成功终态在同一事务内完成 Run/Turn、追加正式 assistant message 并更新 Session；取消等非成功终态保留 user message 但不写未完成 assistant。`UPDATE ... RETURNING` 固定并发序号分配，任何消息插入或状态更新失败都会回滚整笔终态事务。Store 支持按当前 Project 查询最近活跃 Session、查询正式 Conversation、读取 Run 与最近中断 Run，并通过关闭重开、并发分配和注入失败测试验证持久性与原子性。
 
 ## 21. 错误处理与可观测性
 

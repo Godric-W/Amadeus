@@ -45,7 +45,7 @@ func newChatCommand(flags *configFlags, commandRuntime commandRuntime) *cobra.Co
 			if err != nil {
 				return err
 			}
-			session, err := agentruntime.NewSession(client, renderer, agentruntime.SessionOptions{
+			session, err := agentruntime.NewChatSession(client, renderer, agentruntime.ChatSessionOptions{
 				Temperature:     provider.Temperature,
 				MaxOutputTokens: provider.MaxOutputTokens,
 			})

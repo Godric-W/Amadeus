@@ -42,7 +42,7 @@
 | M1 | OpenAI SDK 与纯文本会话 | DONE | 100% |
 | M2 | 统一 Agent Engine、ReAct 与核心工具 | DONE | 100% |
 | M3 | 首个可用 Coding Agent CLI | DONE | 100% |
-| M4 | 核心工具增强、长上下文与会话持久化 | DOING | 12% |
+| M4 | 核心工具增强、长上下文与会话持久化 | DOING | 46% |
 | M5 | Adaptive Planning 与 Replan | TODO | 0% |
 | M6 | Coding Workflow 扩展 | TODO | 0% |
 | M7 | Multi-Agent 与高级入口 | TODO | 0% |
@@ -51,9 +51,9 @@
 ## 3. 当前焦点
 
 - 当前阶段：`M4`，核心工具增强、Session 持久化与中断后 Replan。
-- 下一任务：`M4-03`，将 `apply_patch` 接入 Registry、安全、审批、审计和资源冲突。
+- 下一任务：`M4-12`，实现 Draft Session 与首次真实任务延迟持久化。
 - 当前阻塞：无。
-- 最近完成：`M4-02`，完成全 Patch 预检、唯一 hunk 匹配、原子文件提交和 partial 结果。
+- 最近完成：`M4-11`，完成 Project/Session/Turn/Message SQLite Store 与事务一致性测试。
 
 ### 3.1 交付优先级
 
@@ -230,15 +230,15 @@ M4 先补齐 Coding Agent 的核心修改能力：结构化读取/搜索继续�
 | M4-00 | DONE | M3 audit | 固定核心工具、Session/Turn/Run/Checkpoint 与中断语义 | `design.md` 明确工具分层、Patch/Write/Shell 边界、Session 命令、SQLite 九表和重新规划边界 |
 | M4-01 | DONE | M4-00,M2-03 | 定义并解析版本化 `apply_patch` Patch Document | create/update/delete、hunk/context、UTF-8、大小预算、重复/非法 operation 和错误位置测试通过 |
 | M4-02 | DONE | M4-01,M3-09,M2-23 | 实现 `apply_patch` 文件执行器 | 全 Patch 预检、PathGuard、唯一上下文匹配、原子 create/update、受控 delete、冲突与 partial metadata 测试通过 |
-| M4-03 | TODO | M4-02,M3-10..M3-14 | 将 `apply_patch` 接入 Registry、安全、审批、审计和资源冲突 | ToolSpec/Schema、high-impact policy、参数 hash、结果 Evidence、串行屏障与取消测试通过 |
-| M4-04 | TODO | M4-03,M2-23 | 收窄 `write_file` 为显式 create/replace | 默认拒绝隐式覆盖；create 已存在和 replace 不存在均失败；权限、原子写和兼容错误测试通过 |
-| M4-05 | TODO | M4-03,M4-04,M3-01 | 固定工具选择 Prompt 与描述 | 读搜优先专用工具、已有文件优先 Patch、Shell 负责构建/测试/Git且不得绕过策略 |
-| M4-06 | TODO | M4-05,M3-23..M3-24 | 增加核心工具 Coding Agent E2E | Responses/Chat 均可 read/grep/patch/create/delete/test；Patch 冲突不破坏文件，Shell fallback 仍受安全约束 |
-| M4-07 | TODO | M4-00 | 定义 Project、ConversationSession、Turn 与持久化 Run 领域模型 | 状态、ID、序号、时间和非法跳转单元测试通过；M1 runtime Session 重命名边界明确 |
-| M4-08 | TODO | M4-07 | 定义 Session/Conversation/Run/Checkpoint Store Ports 与事务输入 | 内存 fake 可验证首 Turn、完成、取消、最近 Session 和最近中断查询 |
-| M4-09 | TODO | M4-08,M0-07 | 实现 `<amadeus-root>/data/amadeus.db` 路径与 SQLite bootstrap | 不回退 cwd；目录 0700、DB 0600；foreign key/WAL/busy timeout 生效 |
-| M4-10 | TODO | M4-09 | 实现 schema migration 框架与首版九表迁移 | 新库、重复打开、未知版本和事务回滚测试通过 |
-| M4-11 | TODO | M4-08,M4-10 | 实现 Project/Session/Turn/Message SQLite Store | project path 唯一、序号原子、user 先写、成功 assistant 提交、取消不写未完成回答 |
+| M4-03 | DONE | M4-02,M3-10..M3-14 | 将 `apply_patch` 接入 Registry、安全、审批、审计和资源冲突 | ToolSpec/Schema、high-impact policy、参数 hash、结果 Evidence、串行屏障与取消测试通过 |
+| M4-04 | DONE | M4-03,M2-23 | 收窄 `write_file` 为显式 create/replace | 默认拒绝隐式覆盖；create 已存在和 replace 不存在均失败；权限、原子写和兼容错误测试通过 |
+| M4-05 | DONE | M4-03,M4-04,M3-01 | 固定工具选择 Prompt 与描述 | 读搜优先专用工具、已有文件优先 Patch、Shell 负责构建/测试/Git且不得绕过策略 |
+| M4-06 | DONE | M4-05,M3-23..M3-24 | 增加核心工具 Coding Agent E2E | Responses/Chat 均可 read/grep/patch/create/delete/test；Patch 冲突不破坏文件，Shell fallback 仍受安全约束 |
+| M4-07 | DONE | M4-00 | 定义 Project、ConversationSession、Turn 与持久化 Run 领域模型 | 状态、ID、序号、时间和非法跳转单元测试通过；M1 runtime Session 重命名边界明确 |
+| M4-08 | DONE | M4-07 | 定义 Session/Conversation/Run/Checkpoint Store Ports 与事务输入 | 内存 fake 可验证首 Turn、完成、取消、最近 Session 和最近中断查询 |
+| M4-09 | DONE | M4-08,M0-07 | 实现 `<amadeus-root>/data/amadeus.db` 路径与 SQLite bootstrap | 不回退 cwd；目录 0700、DB 0600；foreign key/WAL/busy timeout 生效 |
+| M4-10 | DONE | M4-09 | 实现 schema migration 框架与首版九表迁移 | 新库、重复打开、未知版本和事务回滚测试通过 |
+| M4-11 | DONE | M4-08,M4-10 | 实现 Project/Session/Turn/Message SQLite Store | project path 唯一、序号原子、user 先写、成功 assistant 提交、取消不写未完成回答 |
 | M4-12 | TODO | M4-11,M3-21 | 实现 Draft Session 与首次真实任务延迟持久化 | 启动后 `/help`、`/resume`、`/exit`、EOF 不产生空 Session；首任务原子创建完整记录 |
 | M4-13 | TODO | M4-11 | 实现 `amadeus sessions list` | 仅列当前项目，稳定显示 ID/title/status/更新时间；首版无 `--all` |
 | M4-14 | TODO | M4-11,M4-12 | 实现 `amadeus --continue` | 恢复当前项目最近活跃 Session；无历史时进入不落库 Draft Session 并明确提示 |
@@ -556,3 +556,12 @@ YYYY-MM-DD | TASK-ID | DONE/BLOCKED | 变更文件 | 测试命令与结果 | 备
 | 2026-07-31 | Multi-Agent MVP 重设计 | DONE | 将 M7 收敛为主 Agent + 最多两个只读 SubAgent，补充 Task/Result、Placement、失败/取消和延后能力边界 | `/team` 只请求 `prefer_subagents`；不实现并行写、Reviewer Agent、Worktree、递归委派或 Agent 群聊 |
 | 2026-07-31 | M4-01 | DONE | 新增 `internal/tool/patch` Document/Operation/Hunk/Line Domain 与 Patch v1 解析器 | legacy/v1 header、Add/Update/Delete、上下文/变更约束、UTF-8、预算、重复路径、line/column 错误、专项 race 与 `make check` 通过；下一任务为 M4-02 |
 | 2026-07-31 | M4-02 | DONE | 新增 `apply_patch` 文件执行器，完成全 Patch 预检、PathGuard、hunk 唯一匹配、同目录临时文件和顺序提交 | 原子 Add/Update、权限与换行保留、受控 Delete、冲突零副作用、跨文件 partial metadata、取消、专项 race 与 `make check` 通过；下一任务为 M4-03 |
+| 2026-07-31 | M4-03 | DONE | 将 `apply_patch` 作为第七个核心工具接入 Registry、Policy、Approval、Audit、Tool Result/Evidence 和资源调度 | high-impact 审批、全路径预检、参数 hash 不泄露正文、exclusive 串行屏障、partial Evidence、取消零写入、专项 race 与 `make check` 通过；下一任务为 M4-04 |
+| 2026-07-31 | M4-04 | DONE | 将 `write_file` 收窄为必填 `mode=create|replace`，create 使用 atomic no-replace 发布，replace 只覆盖既有 regular file | create-existing、replace-missing、旧参数/非法 mode、权限继承、父目录边界、临时文件清理、取消、专项 race 与 `make check` 通过；下一任务为 M4-05 |
+| 2026-07-31 | M4-05 | DONE | 新增独立 Tool Selection Prompt 层，统一结构化探索、Patch、显式整文件写和 Shell 的职责边界，并更新七工具 description 与 README | Prompt catalog/order、关键路由规则、描述防漂移、专项 race 与 `make check` 通过；下一任务为 M4-06 |
+| 2026-07-31 | M4-06 | DONE | 新增 Responses/Chat 双协议核心工具 Provider E2E，覆盖 read/grep、冲突与成功 Patch、create/delete、blocked Shell、go test 和 Reflection | 修复 Candidate 错引未验证 Evidence 导致恢复后无法完成；双 API E2E race、冲突零破坏、Audit hash/deny 与 `make check` 通过；下一任务为 M4-07 |
+| 2026-07-31 | M4-07 | DONE | 新增 `internal/session` Project/ConversationSession/Turn/Run Domain、强类型 ID、状态机、序号与时间约束；M1 runtime Session 重命名为 ChatSession | 全终态、非法跳转、自引用、JSON/时间/序号边界、runtime/CLI 兼容、专项 race 与 `make check` 通过；下一任务为 M4-08 |
+| 2026-07-31 | M4-08 | DONE | 定义 Session/Conversation/Run/Checkpoint Store Ports、首轮/后续/终态事务输入和并发安全 MemoryStore | 首 Turn 原子创建、序号、成功 assistant、取消无 assistant、最近 Session/中断 Run、Checkpoint 不可变追加、专项 race 与 `make check` 通过；下一任务为 M4-09 |
+| 2026-07-31 | M4-09 | DONE | 新增 `<amadeus-root>/data/amadeus.db` 固定路径与 SQLite bootstrap，采用无 CGO driver 和每连接 PRAGMA | 无 cwd 回退、Root/data/database 类型与 symlink 防护、0700/0600、foreign_keys/WAL/busy_timeout/synchronous、重开、专项 race 与 `make check` 通过；下一任务为 M4-10 |
+| 2026-07-31 | M4-10 | DONE | 新增连续版本 migration runner 与 `initial_session_schema` v1，创建固定九表、约束和索引，并由 Open 自动迁移 | 新库、重复打开、unknown version、name drift、定义缺口、DDL/history 同事务回滚、专项 race 与 `make check` 通过；下一任务为 M4-11 |
+| 2026-07-31 | M4-11 | DONE | 实现 Project/Session/Turn/Message SQLite Store，覆盖首轮/后续 Turn、终态提交、查询与持久化重开 | canonical project 唯一、Turn/Message sequence 原子分配、user 先写、成功 assistant 同事务提交、取消不写 assistant、失败回滚、并发 race 与 `make check` 通过；下一任务为 M4-12 |

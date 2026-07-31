@@ -125,6 +125,37 @@ func TestResourceExecutorTreatsWritesAndExclusiveCallsAsBarriers(t *testing.T) {
 	}
 }
 
+func TestResourceExecutorTreatsApplyPatchAsExclusiveSerialBarrier(t *testing.T) {
+	controlled := &controlledExecutor{entered: make(chan string, 3), release: make(chan struct{}, 3)}
+	executor, err := newResourceExecutor(controlled, 3)
+	if err != nil {
+		t.Fatalf("create resource executor: %v", err)
+	}
+	calls := []tool.Call{
+		tool.NewCall("read_before", "read_file", json.RawMessage(`{"path":"a"}`)),
+		tool.NewCall("patch", "apply_patch", json.RawMessage(`{"patch":"document"}`)),
+		tool.NewCall("read_after", "read_file", json.RawMessage(`{"path":"b"}`)),
+	}
+	done := make(chan struct{})
+	go func() {
+		_, _ = executor.Execute(context.Background(), calls, []tool.Spec{parallelReadSpec(), {
+			Name: "apply_patch", SideEffect: tool.SideEffectWrite, ParallelSafe: false,
+			ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeExclusive},
+		}})
+		close(done)
+	}()
+	for _, expected := range []string{"read_before", "patch", "read_after"} {
+		if entered := waitEntered(t, controlled.entered); entered != expected {
+			t.Fatalf("apply_patch barrier order changed: got %q, want %q", entered, expected)
+		}
+		controlled.release <- struct{}{}
+	}
+	<-done
+	if controlled.maximum != 1 {
+		t.Fatalf("apply_patch barrier overlapped calls: max=%d", controlled.maximum)
+	}
+}
+
 func TestResourceExecutorHonorsMaximumParallelism(t *testing.T) {
 	controlled := &controlledExecutor{entered: make(chan string, 4), release: make(chan struct{})}
 	executor, err := newResourceExecutor(controlled, 2)

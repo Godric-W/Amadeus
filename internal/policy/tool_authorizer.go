@@ -12,6 +12,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/tool"
+	patchtool "github.com/Godric-W/Amadeus/internal/tool/patch"
 )
 
 var ErrToolDenied = errors.New("tool execution denied")
@@ -187,6 +188,21 @@ func (authorizer *ToolAuthorizer) assess(spec tool.Spec, arguments json.RawMessa
 
 func (authorizer *ToolAuthorizer) preflightPaths(toolName string, arguments json.RawMessage) error {
 	switch toolName {
+	case "apply_patch":
+		content, err := requiredStringArgument(arguments, "patch")
+		if err != nil {
+			return err
+		}
+		document, err := patchtool.Parse([]byte(content), patchtool.ParseOptions{})
+		if err != nil {
+			return fmt.Errorf("parse patch document for policy: %w", err)
+		}
+		for _, operation := range document.Operations {
+			if _, err := authorizer.pathGuard.ResolveForWrite(operation.Path); err != nil {
+				return fmt.Errorf("preflight patch path %q: %w", operation.Path, err)
+			}
+		}
+		return nil
 	case "read_file":
 		path, err := requiredStringArgument(arguments, "path")
 		if err != nil {

@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/tool"
+	"github.com/Godric-W/Amadeus/internal/tool/builtin"
 )
 
 type fakeTool struct {
@@ -183,8 +187,38 @@ func TestToolExecutorPreservesFailedResultAsObservation(t *testing.T) {
 	if execution.Observation.Result.Text != "partial output" || !execution.Observation.Result.Partial || execution.Observation.Error != expectedErr.Error() {
 		t.Fatalf("failed result was not preserved: %#v", execution.Observation)
 	}
-	if execution.Evidence.Verified || execution.Evidence.Summary != "tool failed: permission denied" {
+	if execution.Evidence.Verified || execution.Evidence.Summary != "tool partially applied: partial output: permission denied" {
 		t.Fatalf("unexpected failed evidence: %#v", execution.Evidence)
+	}
+}
+
+func TestToolExecutorPreservesApplyPatchCancellationWithoutWrites(t *testing.T) {
+	rootPath := t.TempDir()
+	root, err := project.NewRoot(rootPath)
+	if err != nil {
+		t.Fatalf("create project root: %v", err)
+	}
+	registry, err := builtin.NewMVPRegistry(root, builtin.DefaultMVPOptions())
+	if err != nil {
+		t.Fatalf("create MVP registry: %v", err)
+	}
+	executor, err := NewToolExecutor(registry, tool.NewArgumentValidator())
+	if err != nil {
+		t.Fatalf("create tool executor: %v", err)
+	}
+	patch := "*** Begin Patch v1\n*** Add File: cancelled.txt\n+must not exist\n*** End Patch\n"
+	arguments, err := json.Marshal(map[string]string{"patch": patch})
+	if err != nil {
+		t.Fatalf("encode patch arguments: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	execution, err := executor.Execute(ctx, tool.NewCall("patch-cancelled", "apply_patch", arguments))
+	if !errors.Is(err, context.Canceled) || execution.Observation.Error != context.Canceled.Error() || execution.Evidence.Verified {
+		t.Fatalf("unexpected cancelled patch execution: execution=%#v err=%v", execution, err)
+	}
+	if _, statErr := os.Stat(filepath.Join(rootPath, "cancelled.txt")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("cancelled patch changed project: %v", statErr)
 	}
 }
 

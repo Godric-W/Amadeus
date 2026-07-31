@@ -14,6 +14,7 @@ const (
 	Base              ID = "base.md"
 	EngineProtocol    ID = "engine_protocol.md"
 	Approval          ID = "approval.md"
+	Tools             ID = "tools.md"
 	RuntimeContext    ID = "runtime_context.md"
 	Instructions      ID = "instructions.md"
 	Skills            ID = "skills.md"
@@ -27,6 +28,7 @@ var agentLayers = []ID{
 	Base,
 	EngineProtocol,
 	Approval,
+	Tools,
 	RuntimeContext,
 	Instructions,
 	Skills,
@@ -38,6 +40,7 @@ var all = []ID{
 	Base,
 	EngineProtocol,
 	Approval,
+	Tools,
 	RuntimeContext,
 	Instructions,
 	Skills,

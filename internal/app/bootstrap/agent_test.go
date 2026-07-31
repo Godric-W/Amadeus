@@ -67,10 +67,10 @@ func TestNewAgentBuildsDefaultComposition(t *testing.T) {
 	if agent.Client.Model().Provider != configured.DefaultProvider || agent.Client.Model().Name != "test-model" {
 		t.Fatalf("unexpected composed client model: %#v", agent.Client.Model())
 	}
-	if agent.Registry.Len() != 6 {
-		t.Fatalf("unexpected MVP registry size: got %d, want 6", agent.Registry.Len())
+	if agent.Registry.Len() != 7 {
+		t.Fatalf("unexpected MVP registry size: got %d, want 7", agent.Registry.Len())
 	}
-	wantTools := []string{"execute_command", "glob_files", "grep_code", "list_dir", "read_file", "write_file"}
+	wantTools := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "write_file"}
 	if got := toolNames(agent.AvailableTools()); !reflect.DeepEqual(got, wantTools) {
 		t.Fatalf("unexpected available tools: got %v, want %v", got, wantTools)
 	}
@@ -114,7 +114,7 @@ func TestAgentCompositionDeniesToolBeforeSideEffect(t *testing.T) {
 		t.Fatalf("build secured Agent composition: %v", err)
 	}
 	execution, err := agent.ToolExecutor.Execute(context.Background(), tool.NewCall(
-		"write-denied", "write_file", json.RawMessage(`{"path":"denied.txt","content":"must not exist"}`),
+		"write-denied", "write_file", json.RawMessage(`{"path":"denied.txt","content":"must not exist","mode":"create"}`),
 	))
 	if !errors.Is(err, policy.ErrToolDenied) || execution.Evidence.Verified {
 		t.Fatalf("unexpected denied write result: execution=%#v err=%v", execution, err)
@@ -149,7 +149,7 @@ func TestAgentCompositionFailsClosedBeforeWriteWhenAuditFails(t *testing.T) {
 		t.Fatalf("build audited Agent composition: %v", err)
 	}
 	_, err = agent.ToolExecutor.Execute(context.Background(), tool.NewCall(
-		"write-audit-failed", "write_file", json.RawMessage(`{"path":"unaudited.txt","content":"must not exist"}`),
+		"write-audit-failed", "write_file", json.RawMessage(`{"path":"unaudited.txt","content":"must not exist","mode":"create"}`),
 	))
 	if !errors.Is(err, expected) {
 		t.Fatalf("unexpected audit write failure: %v", err)

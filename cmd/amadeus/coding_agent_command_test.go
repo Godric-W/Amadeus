@@ -142,7 +142,7 @@ func TestRootCommandRunsRealDirectEngineComposition(t *testing.T) {
 		t.Fatalf("unexpected Provider request counts: stream=%d complete=%d", len(client.streamRequests), len(client.completeRequests))
 	}
 	first := client.streamRequests[0]
-	if len(first.Messages) != 3 || first.Messages[0].Role != llm.RoleSystem || first.Messages[1].Role != llm.RoleDeveloper || first.Messages[2].Content != "Inspect README and finish" || len(first.Tools) != 6 {
+	if len(first.Messages) != 3 || first.Messages[0].Role != llm.RoleSystem || first.Messages[1].Role != llm.RoleDeveloper || first.Messages[2].Content != "Inspect README and finish" || len(first.Tools) != 7 {
 		t.Fatalf("unexpected first Agent request: %#v", first)
 	}
 	if !strings.Contains(first.Messages[1].Content, "user instruction") || !strings.Contains(first.Messages[1].Content, "project instruction") {

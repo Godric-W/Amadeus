@@ -72,7 +72,7 @@ func TestDirectEngineReadsWritesTestsVerifiesAndReflects(t *testing.T) {
 	}
 
 	readCall := tool.NewCall("read_calc", "read_file", json.RawMessage(`{"path":"calc.go"}`))
-	writeCall := tool.NewCall("write_calc", "write_file", json.RawMessage(`{"path":"calc.go","content":"package calc\n\nfunc Add(left, right int) int { return left + right }\n"}`))
+	writeCall := tool.NewCall("write_calc", "write_file", json.RawMessage(`{"path":"calc.go","content":"package calc\n\nfunc Add(left, right int) int { return left + right }\n","mode":"replace"}`))
 	testCall := tool.NewCall("run_tests", "execute_command", json.RawMessage(`{"command":"GOCACHE=\"$PWD/.gocache\" GOMODCACHE=\"$PWD/.gomodcache\" go test ./...","timeout_ms":30000}`))
 	iterator := &e2eIterator{results: []react.IterationResult{
 		toolIteration(readCall),

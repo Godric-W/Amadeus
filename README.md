@@ -7,12 +7,14 @@ Amadeus 是一个使用 Go 实现的终端 Coding Agent。当前首个可用版�
 - 根命令直接启动 Coding Agent：`amadeus` 或 `amadeus "<task>"`。
 - 支持 OpenAI Responses 与 OpenAI-compatible Chat Completions。
 - 支持 OpenAI、standard、DeepSeek、Qwen 和 GLM Provider 方言。
-- 内置 `read_file`、`write_file`、`list_dir`、`glob_files`、`grep_code` 和 `execute_command`。
+- 内置 `read_file`、`list_dir`、`glob_files`、`grep_code`、`apply_patch`、`write_file` 和 `execute_command`。
 - 加载用户级、项目级和目录级 `AGENTS.md`。
 - 写文件和执行命令经过 PathGuard、CommandGuard、审批和 JSONL 审计。
 - 支持流式输出、交互式连续任务和 Ctrl+C 取消当前 Run。
 
 当前版本使用 Direct 单 root Task 和统一 ReActRunner。Plan-on-Demand、会话恢复和 Multi-Agent 属于后续里程碑；当前不内置 RAG，也不自动推断长期用户记忆。
+
+工具选择遵循固定边界：常规读取、目录浏览、文件发现和文本搜索优先使用结构化工具；修改已有文件优先使用 `apply_patch`；`write_file` 只用于 `mode=create` 新建整文件或 `mode=replace` 显式整文件替换；构建、测试、Git、格式化和项目脚本使用 `execute_command`。Shell fallback 仍受项目围栏、策略、审批和审计约束，不能用于绕过被拒绝的专用工具操作。
 
 ## 构建
 

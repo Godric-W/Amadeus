@@ -70,7 +70,7 @@ func (stream *fakeStream) Close() error {
 	return stream.closeErr
 }
 
-func TestSessionRunsSingleStreamingTurn(t *testing.T) {
+func TestChatSessionRunsSingleStreamingTurn(t *testing.T) {
 	usage := llm.Usage{InputTokens: 3, CachedInputTokens: 1, OutputTokens: 4, ReasoningTokens: 2, TotalTokens: 7}
 	stream := &fakeStream{chunks: []llm.StreamChunk{
 		{ID: "response_1", ReasoningDelta: "think "},
@@ -83,7 +83,7 @@ func TestSessionRunsSingleStreamingTurn(t *testing.T) {
 		stream: stream,
 	}
 	sink := event.NewMemorySink()
-	session, err := NewSession(client, sink, SessionOptions{Temperature: 0.4, MaxOutputTokens: 1024})
+	session, err := NewChatSession(client, sink, ChatSessionOptions{Temperature: 0.4, MaxOutputTokens: 1024})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestSessionRunsSingleStreamingTurn(t *testing.T) {
 	}
 }
 
-func TestSessionPublishesProviderError(t *testing.T) {
+func TestChatSessionPublishesProviderError(t *testing.T) {
 	providerError := &llm.ProviderError{
 		Kind:       llm.ProviderErrorRateLimit,
 		StatusCode: 429,
@@ -144,7 +144,7 @@ func TestSessionPublishesProviderError(t *testing.T) {
 		streamError: providerError,
 	}
 	sink := event.NewMemorySink()
-	session, err := NewSession(client, sink, SessionOptions{MaxOutputTokens: 128})
+	session, err := NewChatSession(client, sink, ChatSessionOptions{MaxOutputTokens: 128})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestSessionPublishesProviderError(t *testing.T) {
 	}
 }
 
-func TestSessionIncludesSuccessfulTurnsInConversationHistory(t *testing.T) {
+func TestChatSessionIncludesSuccessfulTurnsInConversationHistory(t *testing.T) {
 	client := &fakeClient{
 		model: llm.ModelInfo{Provider: "fake", Name: "fake-model"},
 		streams: []llm.Stream{
@@ -177,7 +177,7 @@ func TestSessionIncludesSuccessfulTurnsInConversationHistory(t *testing.T) {
 			}},
 		},
 	}
-	session, err := NewSession(client, event.NewMemorySink(), SessionOptions{MaxOutputTokens: 128})
+	session, err := NewChatSession(client, event.NewMemorySink(), ChatSessionOptions{MaxOutputTokens: 128})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -205,14 +205,14 @@ func TestSessionIncludesSuccessfulTurnsInConversationHistory(t *testing.T) {
 	}
 }
 
-func TestSessionTreatsEOFBeforeCompletionAsProtocolError(t *testing.T) {
+func TestChatSessionTreatsEOFBeforeCompletionAsProtocolError(t *testing.T) {
 	stream := &fakeStream{chunks: []llm.StreamChunk{{ID: "response_2", ContentDelta: "partial"}}}
 	client := &fakeClient{
 		model:  llm.ModelInfo{Provider: "fake", Name: "fake-model"},
 		stream: stream,
 	}
 	sink := event.NewMemorySink()
-	session, err := NewSession(client, sink, SessionOptions{MaxOutputTokens: 128})
+	session, err := NewChatSession(client, sink, ChatSessionOptions{MaxOutputTokens: 128})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -231,30 +231,30 @@ func TestSessionTreatsEOFBeforeCompletionAsProtocolError(t *testing.T) {
 	}
 }
 
-func TestSessionValidatesConfigurationAndInput(t *testing.T) {
+func TestChatSessionValidatesConfigurationAndInput(t *testing.T) {
 	client := &fakeClient{model: llm.ModelInfo{Provider: "fake", Name: "fake-model"}}
 	sink := event.NewMemorySink()
 	tests := []struct {
 		name    string
 		client  llm.Client
 		sink    event.Sink
-		options SessionOptions
+		options ChatSessionOptions
 	}{
-		{name: "nil client", sink: sink, options: SessionOptions{MaxOutputTokens: 1}},
-		{name: "nil sink", client: client, options: SessionOptions{MaxOutputTokens: 1}},
-		{name: "empty model", client: &fakeClient{}, sink: sink, options: SessionOptions{MaxOutputTokens: 1}},
-		{name: "invalid temperature", client: client, sink: sink, options: SessionOptions{Temperature: 2.1, MaxOutputTokens: 1}},
+		{name: "nil client", sink: sink, options: ChatSessionOptions{MaxOutputTokens: 1}},
+		{name: "nil sink", client: client, options: ChatSessionOptions{MaxOutputTokens: 1}},
+		{name: "empty model", client: &fakeClient{}, sink: sink, options: ChatSessionOptions{MaxOutputTokens: 1}},
+		{name: "invalid temperature", client: client, sink: sink, options: ChatSessionOptions{Temperature: 2.1, MaxOutputTokens: 1}},
 		{name: "invalid max tokens", client: client, sink: sink},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := NewSession(test.client, test.sink, test.options); err == nil {
+			if _, err := NewChatSession(test.client, test.sink, test.options); err == nil {
 				t.Fatal("expected session configuration error")
 			}
 		})
 	}
 
-	session, err := NewSession(client, sink, SessionOptions{MaxOutputTokens: 1})
+	session, err := NewChatSession(client, sink, ChatSessionOptions{MaxOutputTokens: 1})
 	if err != nil {
 		t.Fatalf("create valid session: %v", err)
 	}

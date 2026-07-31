@@ -12,7 +12,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
-type SessionOptions struct {
+type ChatSessionOptions struct {
 	Temperature     float64
 	MaxOutputTokens int
 }
@@ -22,15 +22,15 @@ type TurnInput struct {
 	Content string
 }
 
-type Session struct {
+type ChatSession struct {
 	client  llm.Client
 	events  event.Sink
-	options SessionOptions
+	options ChatSessionOptions
 	mutex   sync.Mutex
 	history []llm.Message
 }
 
-func NewSession(client llm.Client, events event.Sink, options SessionOptions) (*Session, error) {
+func NewChatSession(client llm.Client, events event.Sink, options ChatSessionOptions) (*ChatSession, error) {
 	if client == nil {
 		return nil, errors.New("session LLM client is nil")
 	}
@@ -46,10 +46,10 @@ func NewSession(client llm.Client, events event.Sink, options SessionOptions) (*
 	if options.MaxOutputTokens <= 0 {
 		return nil, errors.New("session max output tokens must be greater than zero")
 	}
-	return &Session{client: client, events: events, options: options}, nil
+	return &ChatSession{client: client, events: events, options: options}, nil
 }
 
-func (session *Session) RunTurn(ctx context.Context, input TurnInput) (llm.Response, error) {
+func (session *ChatSession) RunTurn(ctx context.Context, input TurnInput) (llm.Response, error) {
 	if strings.TrimSpace(input.ID) == "" {
 		return llm.Response{}, errors.New("turn ID is empty")
 	}
@@ -100,7 +100,7 @@ func (session *Session) RunTurn(ctx context.Context, input TurnInput) (llm.Respo
 	return response, nil
 }
 
-func (session *Session) consumeStream(ctx context.Context, turnID string, stream llm.Stream) (llm.Response, error) {
+func (session *ChatSession) consumeStream(ctx context.Context, turnID string, stream llm.Stream) (llm.Response, error) {
 	response := llm.Response{Message: llm.AssistantMessage("")}
 	for {
 		chunk, err := stream.Recv()
@@ -161,7 +161,7 @@ func (session *Session) consumeStream(ctx context.Context, turnID string, stream
 	}
 }
 
-func (session *Session) failTurn(ctx context.Context, turnID string, turnErr error) error {
+func (session *ChatSession) failTurn(ctx context.Context, turnID string, turnErr error) error {
 	if turnErr == nil {
 		return nil
 	}

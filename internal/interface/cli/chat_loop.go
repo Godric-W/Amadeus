@@ -104,4 +104,4 @@ func trimLineEnding(line string) string {
 	return strings.TrimSuffix(line, "\r")
 }
 
-var _ TurnRunner = (*agentruntime.Session)(nil)
+var _ TurnRunner = (*agentruntime.ChatSession)(nil)
