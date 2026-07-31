@@ -157,11 +157,20 @@ providers:
 		"providers.compatible.base_url: https://cli.example.invalid/v1 [source: cli: --base-url]",
 		"providers.compatible.model: environment-model [source: environment: " + config.EnvModel + "]",
 		"providers.compatible.timeout: 2m0s [source: default]",
+		"agent.max_steps: 30 [source: default]",
+		"agent.max_tool_calls: 120 [source: default]",
+		"agent.max_input_tokens: 1000000 [source: default]",
+		"agent.max_output_tokens: 245760 [source: default]",
+		"agent.max_duration: 30m0s [source: default]",
+		"agent.max_parallel_tools: 4 [source: default]",
 	}
 	for _, value := range expected {
 		if !strings.Contains(explanation, value) {
 			t.Fatalf("explanation does not contain %q:\n%s", value, explanation)
 		}
+	}
+	if strings.Contains(explanation, "agent.mode") {
+		t.Fatalf("config explanation contains removed agent mode:\n%s", explanation)
 	}
 	if strings.Contains(explanation, secret) {
 		t.Fatalf("config explanation leaked API key: %s", explanation)

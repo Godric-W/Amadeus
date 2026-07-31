@@ -142,8 +142,11 @@ func writeConfigExplanation(writer io.Writer, path string, configured config.Con
 		writeExplainedValue(writer, prefix+"max_output_tokens", provider.MaxOutputTokens, sources)
 	}
 
-	writeExplainedValue(writer, "agent.mode", configured.Agent.Mode, sources)
 	writeExplainedValue(writer, "agent.max_steps", configured.Agent.MaxSteps, sources)
+	writeExplainedValue(writer, "agent.max_tool_calls", configured.Agent.MaxToolCalls, sources)
+	writeExplainedValue(writer, "agent.max_input_tokens", configured.Agent.MaxInputTokens, sources)
+	writeExplainedValue(writer, "agent.max_output_tokens", configured.Agent.MaxOutputTokens, sources)
+	writeExplainedValue(writer, "agent.max_duration", configured.Agent.MaxDuration, sources)
 	writeExplainedValue(writer, "agent.max_parallel_tools", configured.Agent.MaxParallelTools, sources)
 	writeExplainedValue(writer, "approval.enabled", configured.Approval.Enabled, sources)
 	writeExplainedValue(writer, "approval.default", configured.Approval.Default, sources)

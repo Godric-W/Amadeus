@@ -10,10 +10,12 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
+	"github.com/Godric-W/Amadeus/prompts"
 )
 
 type DirectEngineOptions struct {
 	MaxAttempts int
+	RetryPrompt string
 }
 
 type DirectRunInput struct {
@@ -54,6 +56,10 @@ func NewDirectEngine(runner TaskRunner, verifier Verifier, reflector Reflector, 
 	}
 	if options.MaxAttempts <= 0 {
 		return nil, errors.New("direct engine max attempts must be greater than zero")
+	}
+	options.RetryPrompt = strings.TrimSpace(options.RetryPrompt)
+	if options.RetryPrompt == "" {
+		options.RetryPrompt = prompts.RetryProtocol()
 	}
 	return &DirectEngine{runner: runner, verifier: verifier, reflector: reflector, events: events, options: options}, nil
 }
@@ -242,7 +248,7 @@ func (engine *DirectEngine) Run(ctx context.Context, input DirectRunInput) (resu
 				if err := engine.transitionRun(ctx, &state, RunStatusTaskRunning); err != nil {
 					return DirectRunResult{}, err
 				}
-				messages = appendRetryFeedback(messages, *outcome.Candidate, verification, reflection)
+				messages = appendRetryFeedback(messages, *outcome.Candidate, verification, reflection, engine.options.RetryPrompt)
 			case ReflectionReplan:
 				if err := engine.transitionTask(ctx, state.ID, task, TaskStatusBlocked); err != nil {
 					return DirectRunResult{}, err
@@ -358,13 +364,13 @@ func (engine *DirectEngine) transitionTask(ctx context.Context, runID RunID, tas
 	return nil
 }
 
-func appendRetryFeedback(messages []llm.Message, candidate CandidateTaskResult, verification Verification, reflection Reflection) []llm.Message {
+func appendRetryFeedback(messages []llm.Message, candidate CandidateTaskResult, verification Verification, reflection Reflection, retryPrompt string) []llm.Message {
 	payload, _ := json.Marshal(struct {
 		Verification Verification `json:"verification"`
 		Reflection   Reflection   `json:"reflection"`
 	}{Verification: verification, Reflection: reflection})
 	result := cloneLLMMessages(messages)
-	result = append(result, candidate.FinalMessage, llm.UserMessage("Retry the same task using this verification feedback: "+string(payload)))
+	result = append(result, candidate.FinalMessage, llm.UserMessage(retryPrompt+"\n\nFeedback:\n"+string(payload)))
 	return result
 }
 

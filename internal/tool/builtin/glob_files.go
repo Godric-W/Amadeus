@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -21,6 +22,7 @@ type GlobFilesOptions struct {
 
 type GlobFiles struct {
 	root    project.Root
+	guard   *project.PathGuard
 	options GlobFilesOptions
 }
 
@@ -41,7 +43,11 @@ func NewGlobFiles(root project.Root, options GlobFilesOptions) (*GlobFiles, erro
 	if options.MaxResults <= 0 {
 		return nil, errors.New("glob_files max results must be greater than zero")
 	}
-	return &GlobFiles{root: root, options: options}, nil
+	guard, err := project.NewPathGuard(root)
+	if err != nil {
+		return nil, err
+	}
+	return &GlobFiles{root: root, guard: guard, options: options}, nil
 }
 
 func (globFiles *GlobFiles) Spec() tool.Spec {
@@ -78,6 +84,11 @@ func (globFiles *GlobFiles) Execute(ctx context.Context, input json.RawMessage) 
 		relative, err := globFiles.root.Relative(filePath)
 		if err != nil {
 			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			if _, err := globFiles.guard.ResolveExisting(filepath.FromSlash(relative), project.PathAny); err != nil {
+				return err
+			}
 		}
 		if entry.IsDir() {
 			if _, ignored := ignoredGlobDirectories[entry.Name()]; ignored {

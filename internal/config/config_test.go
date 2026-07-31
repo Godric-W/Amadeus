@@ -23,8 +23,11 @@ func TestConfigCanBeConstructed(t *testing.T) {
 			},
 		},
 		Agent: AgentConfig{
-			Mode:             AgentModePlan,
 			MaxSteps:         10,
+			MaxToolCalls:     20,
+			MaxInputTokens:   30_000,
+			MaxOutputTokens:  4_000,
+			MaxDuration:      5 * time.Minute,
 			MaxParallelTools: 2,
 		},
 		Approval: ApprovalConfig{
@@ -44,8 +47,8 @@ func TestConfigCanBeConstructed(t *testing.T) {
 	if provider.Dialect != DialectDeepSeek {
 		t.Fatalf("unexpected provider dialect: got %q", provider.Dialect)
 	}
-	if configured.Agent.Mode != AgentModePlan {
-		t.Fatalf("unexpected agent mode: got %q", configured.Agent.Mode)
+	if configured.Agent.MaxSteps != 10 || configured.Agent.MaxToolCalls != 20 || configured.Agent.MaxInputTokens != 30_000 || configured.Agent.MaxOutputTokens != 4_000 || configured.Agent.MaxDuration != 5*time.Minute || configured.Agent.MaxParallelTools != 2 {
+		t.Fatalf("unexpected agent config: %#v", configured.Agent)
 	}
 }
 
@@ -71,8 +74,8 @@ func TestDefault(t *testing.T) {
 	if provider.Timeout != 2*time.Minute {
 		t.Fatalf("unexpected default timeout: got %s", provider.Timeout)
 	}
-	if configured.Agent.Mode != AgentModeReact {
-		t.Fatalf("unexpected default agent mode: got %q, want %q", configured.Agent.Mode, AgentModeReact)
+	if configured.Agent.MaxSteps != 30 || configured.Agent.MaxToolCalls != 120 || configured.Agent.MaxInputTokens != 1_000_000 || configured.Agent.MaxOutputTokens != 245_760 || configured.Agent.MaxDuration != 30*time.Minute || configured.Agent.MaxParallelTools != 4 {
+		t.Fatalf("unexpected default agent config: %#v", configured.Agent)
 	}
 	if configured.Approval.Default != ApprovalAsk {
 		t.Fatalf("unexpected approval default: got %q, want %q", configured.Approval.Default, ApprovalAsk)

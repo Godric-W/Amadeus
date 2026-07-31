@@ -19,14 +19,6 @@ const (
 	DialectGLM      ProviderDialect = "glm"
 )
 
-type AgentMode string
-
-const (
-	AgentModeReact AgentMode = "react"
-	AgentModePlan  AgentMode = "plan"
-	AgentModeTeam  AgentMode = "team"
-)
-
 type ApprovalDefault string
 
 const (
@@ -66,9 +58,12 @@ type ProviderConfig struct {
 }
 
 type AgentConfig struct {
-	Mode             AgentMode `yaml:"mode"`
-	MaxSteps         int       `yaml:"max_steps"`
-	MaxParallelTools int       `yaml:"max_parallel_tools"`
+	MaxSteps         int           `yaml:"max_steps"`
+	MaxToolCalls     int           `yaml:"max_tool_calls"`
+	MaxInputTokens   int64         `yaml:"max_input_tokens"`
+	MaxOutputTokens  int64         `yaml:"max_output_tokens"`
+	MaxDuration      time.Duration `yaml:"max_duration"`
+	MaxParallelTools int           `yaml:"max_parallel_tools"`
 }
 
 type ApprovalConfig struct {

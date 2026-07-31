@@ -11,6 +11,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
+	"github.com/Godric-W/Amadeus/prompts"
 )
 
 type fakeClient struct {
@@ -81,8 +82,44 @@ func TestIteratorProducesCandidateAndStableEvents(t *testing.T) {
 	if !stream.closed || client.request.Model != "fake-model" || len(client.request.Tools) != 1 || client.request.Tools[0].Name != "read_file" {
 		t.Fatalf("unexpected model request or stream state: request=%#v closed=%v", client.request, stream.closed)
 	}
+	if len(client.request.Messages) != 2 || !reflect.DeepEqual(client.request.Messages[0], llm.SystemMessage(prompts.AgentSystem())) || client.request.Messages[1].Content != "inspect repository" {
+		t.Fatalf("model request omitted stable Agent protocol: %#v", client.request.Messages)
+	}
 	expectedTypes := []event.Type{event.TypeTurnStarted, event.TypeReasoningDelta, event.TypeTextDelta, event.TypeTextDelta, event.TypeUsageUpdated, event.TypeTurnCompleted}
 	assertEventTypes(t, sink.Snapshot(), expectedTypes)
+}
+
+func TestIteratorPreservesAssembledSystemPrompt(t *testing.T) {
+	stream := &fakeStream{chunks: []llm.StreamChunk{{ContentDelta: "done", FinishReason: llm.FinishReasonStop}}}
+	client := &fakeClient{model: llm.ModelInfo{Provider: "fake", Name: "fake-model"}, stream: stream}
+	iterator, err := NewIterator(client, event.NewMemorySink())
+	if err != nil {
+		t.Fatalf("create iterator: %v", err)
+	}
+	input := validIterationInput()
+	input.Messages = []llm.Message{llm.SystemMessage("assembled context"), llm.UserMessage("inspect repository")}
+
+	if _, err := iterator.Run(context.Background(), input); err != nil {
+		t.Fatalf("run iteration: %v", err)
+	}
+	if !reflect.DeepEqual(client.request.Messages, input.Messages) {
+		t.Fatalf("iterator replaced assembled system prompt: got %#v, want %#v", client.request.Messages, input.Messages)
+	}
+}
+
+func TestIteratorUsesConfiguredSystemPrompt(t *testing.T) {
+	stream := &fakeStream{chunks: []llm.StreamChunk{{ContentDelta: "done", FinishReason: llm.FinishReasonStop}}}
+	client := &fakeClient{model: llm.ModelInfo{Provider: "fake", Name: "fake-model"}, stream: stream}
+	iterator, err := NewIteratorWithOptions(client, event.NewMemorySink(), IteratorOptions{SystemPrompt: " assembled protocol "})
+	if err != nil {
+		t.Fatalf("create configured iterator: %v", err)
+	}
+	if _, err := iterator.Run(context.Background(), validIterationInput()); err != nil {
+		t.Fatalf("run configured iterator: %v", err)
+	}
+	if len(client.request.Messages) != 2 || client.request.Messages[0].Content != "assembled protocol" {
+		t.Fatalf("iterator omitted configured system prompt: %#v", client.request.Messages)
+	}
 }
 
 func TestIteratorProducesNormalizedToolCalls(t *testing.T) {

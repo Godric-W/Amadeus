@@ -8,6 +8,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/prompts"
 )
 
 type scriptedTaskRunner struct {
@@ -104,6 +105,9 @@ func TestDirectEngineRetriesSameTaskWithFeedback(t *testing.T) {
 	if len(runner.inputs[1].Messages) != 3 || !strings.Contains(runner.inputs[1].Messages[2].Content, "tests must pass") {
 		t.Fatalf("retry feedback was not passed to runner: %#v", runner.inputs[1].Messages)
 	}
+	if !strings.HasPrefix(runner.inputs[1].Messages[2].Content, prompts.RetryProtocol()) {
+		t.Fatalf("retry feedback omitted the embedded DirectEngine protocol: %q", runner.inputs[1].Messages[2].Content)
+	}
 }
 
 func TestDirectEnginePausesForPlanning(t *testing.T) {
@@ -116,6 +120,31 @@ func TestDirectEnginePausesForPlanning(t *testing.T) {
 	}
 	if result.State.Status != RunStatusPlanning || result.State.Graph.Tasks[0].Status != TaskStatusBlocked || result.Reason != "multiple dependent modules" {
 		t.Fatalf("unexpected needs-plan state: %#v", result)
+	}
+}
+
+func TestDirectEngineUsesConfiguredRetryPrompt(t *testing.T) {
+	runner := &scriptedTaskRunner{outcomes: []TaskOutcome{
+		{Kind: TaskOutcomeCandidateComplete, Candidate: candidate("first")},
+		{Kind: TaskOutcomeCandidateComplete, Candidate: candidate("second")},
+	}}
+	verifier := &scriptedVerifier{results: []Verification{
+		{Status: VerificationFailed, EvidenceGaps: []string{"tests"}},
+		{Status: VerificationPassed},
+	}}
+	reflector := &scriptedReflector{results: []Reflection{
+		{Scope: ReflectionScopeTask, Verdict: ReflectionRetry, EvidenceGaps: []string{"tests"}},
+		{Scope: ReflectionScopeTask, Verdict: ReflectionAccept},
+	}}
+	direct, err := NewDirectEngine(runner, verifier, reflector, event.NewMemorySink(), DirectEngineOptions{MaxAttempts: 2, RetryPrompt: " assembled retry "})
+	if err != nil {
+		t.Fatalf("create configured DirectEngine: %v", err)
+	}
+	if _, err := direct.Run(context.Background(), validDirectInput()); err != nil {
+		t.Fatalf("run configured retry flow: %v", err)
+	}
+	if len(runner.inputs) != 2 || len(runner.inputs[1].Messages) != 3 || !strings.HasPrefix(runner.inputs[1].Messages[2].Content, "assembled retry\n\nFeedback:") {
+		t.Fatalf("DirectEngine omitted configured retry Prompt: %#v", runner.inputs)
 	}
 }
 

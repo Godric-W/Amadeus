@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
+	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -17,19 +18,40 @@ type ToolExecution struct {
 }
 
 type ToolExecutor struct {
-	registry  *tool.Registry
-	validator *tool.ArgumentValidator
-	now       func() time.Time
+	registry   *tool.Registry
+	validator  *tool.ArgumentValidator
+	authorizer tool.Authorizer
+	events     event.Sink
+	now        func() time.Time
 }
 
-func NewToolExecutor(registry *tool.Registry, validator *tool.ArgumentValidator) (*ToolExecutor, error) {
+func NewToolExecutor(registry *tool.Registry, validator *tool.ArgumentValidator, authorizers ...tool.Authorizer) (*ToolExecutor, error) {
+	options := ToolExecutorOptions{}
+	if len(authorizers) > 0 {
+		if authorizers[0] == nil {
+			return nil, errors.New("tool executor authorizer is nil")
+		}
+		options.Authorizer = authorizers[0]
+	}
+	if len(authorizers) > 1 {
+		return nil, errors.New("tool executor accepts at most one authorizer")
+	}
+	return NewToolExecutorWithOptions(registry, validator, options)
+}
+
+type ToolExecutorOptions struct {
+	Authorizer tool.Authorizer
+	Events     event.Sink
+}
+
+func NewToolExecutorWithOptions(registry *tool.Registry, validator *tool.ArgumentValidator, options ToolExecutorOptions) (*ToolExecutor, error) {
 	if registry == nil {
 		return nil, errors.New("tool executor registry is nil")
 	}
 	if validator == nil {
 		return nil, errors.New("tool executor argument validator is nil")
 	}
-	return &ToolExecutor{registry: registry, validator: validator, now: time.Now}, nil
+	return &ToolExecutor{registry: registry, validator: validator, authorizer: options.Authorizer, events: options.Events, now: time.Now}, nil
 }
 
 func (executor *ToolExecutor) Execute(ctx context.Context, call tool.Call) (ToolExecution, error) {
@@ -53,14 +75,43 @@ func (executor *ToolExecutor) Execute(ctx context.Context, call tool.Call) (Tool
 	if err != nil {
 		return executor.failure(call, tool.Result{}, err, startedAt), err
 	}
+	normalizedCall := tool.NewCall(call.ID, call.Name, normalized)
+	if executor.events != nil {
+		if err := executor.events.Publish(ctx, event.ToolCallStarted{CallID: call.ID, ToolName: call.Name}); err != nil {
+			return executor.failure(call, tool.Result{}, err, startedAt), fmt.Errorf("publish tool call started: %w", err)
+		}
+	}
+	if executor.authorizer != nil {
+		if err := executor.authorizer.Authorize(ctx, spec, normalizedCall); err != nil {
+			execution := executor.failure(call, tool.Result{}, err, startedAt)
+			return execution, errors.Join(err, executor.publishCompleted(ctx, execution))
+		}
+	}
 
 	result, executeErr := registered.Execute(ctx, normalized)
 	result.CallID = call.ID
 	result.ToolName = call.Name
 	if executeErr != nil {
-		return executor.failure(call, result, executeErr, startedAt), executeErr
+		execution := executor.failure(call, result, executeErr, startedAt)
+		return execution, errors.Join(executeErr, executor.publishCompleted(ctx, execution))
 	}
-	return executor.success(call, result, startedAt), nil
+	execution := executor.success(call, result, startedAt)
+	return execution, executor.publishCompleted(ctx, execution)
+}
+
+func (executor *ToolExecutor) publishCompleted(ctx context.Context, execution ToolExecution) error {
+	if executor.events == nil {
+		return nil
+	}
+	completed := event.ToolCallCompleted{
+		CallID: execution.Observation.CallID, ToolName: execution.Observation.ToolName,
+		Success: execution.Observation.Error == "", Partial: execution.Observation.Result.Partial,
+		Summary: execution.Evidence.Summary, Duration: execution.Observation.Duration,
+	}
+	if err := executor.events.Publish(ctx, completed); err != nil {
+		return fmt.Errorf("publish tool call completed: %w", err)
+	}
+	return nil
 }
 
 func (executor *ToolExecutor) success(call tool.Call, result tool.Result, startedAt time.Time) ToolExecution {

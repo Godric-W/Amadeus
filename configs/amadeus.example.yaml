@@ -10,6 +10,62 @@
 # To select the compatible Provider through environment variables, also set:
 #   export AMADEUS_PROVIDER="compatible"
 #   export AMADEUS_DIALECT="standard"
+#
+# Provider support in the current code:
+#
+#   1. OpenAI
+#      - api: responses or chat_completions
+#      - dialect: openai
+#      - Responses is the recommended default for OpenAI.
+#
+#   2. Generic OpenAI-compatible Provider
+#      - api: usually chat_completions; the standard dialect also has a
+#        Responses conversion path when the target Provider implements it.
+#      - dialect: standard
+#      - Use this for a Provider that follows the common OpenAI wire format
+#        and does not require one of the vendor-specific extensions below.
+#
+#   3. DeepSeek
+#      - api: chat_completions only
+#      - dialect: deepseek
+#      - Normalizes DeepSeek-compatible reasoning stream fields.
+#
+#   4. Qwen / Alibaba Cloud compatible endpoints
+#      - api: chat_completions only
+#      - dialect: qwen
+#      - Supports the Qwen `enable_thinking` request extension and reasoning
+#        stream normalization.
+#
+#   5. GLM / Zhipu compatible endpoints
+#      - api: chat_completions only
+#      - dialect: glm
+#      - Supports the GLM `thinking` request object and `reasoning_content`
+#        message/stream fields.
+#
+# `providers` keys such as `openai` and `compatible` are local aliases chosen
+# by the user. They do not automatically select a vendor or preset base_url.
+# `default_provider` selects one of these aliases; each provider must still
+# configure its own api_key, base_url and model.
+#
+# The `api` field selects the HTTP protocol and accepts:
+#   - responses: OpenAI Responses-style requests and SSE events
+#   - chat_completions: OpenAI Chat Completions-style messages and SSE chunks
+#
+# The `dialect` field selects Provider-specific capability and wire-format
+# adaptation on top of `api`. It does NOT select a URL, model or API key.
+# Allowed values:
+#   - standard: conservative common OpenAI-compatible behavior; unsupported
+#     developer messages are downgraded to system messages.
+#   - openai: native OpenAI behavior, including Responses developer messages,
+#     reasoning usage and prompt-cache usage normalization.
+#   - deepseek: DeepSeek Chat Completions reasoning conventions.
+#   - qwen: Qwen Chat Completions thinking extensions.
+#   - glm: GLM Chat Completions thinking and reasoning extensions.
+#
+# Invalid api/dialect combinations are rejected by `amadeus config check`.
+# When unsure about a third-party OpenAI-compatible endpoint, start with:
+#   api: chat_completions
+#   dialect: standard
 
 version: 1
 default_provider: openai
@@ -17,6 +73,7 @@ default_provider: openai
 providers:
   openai:
     api: responses
+    # Native OpenAI adapter behavior; does not provide the base URL itself.
     dialect: openai
     api_key: ""
     base_url: https://api.openai.com/v1
@@ -28,6 +85,7 @@ providers:
 
   compatible:
     api: chat_completions
+    # Conservative fallback for a generic OpenAI-compatible endpoint.
     dialect: standard
     api_key: ""
     base_url: https://example.invalid/v1
@@ -38,8 +96,11 @@ providers:
     max_output_tokens: 8192
 
 agent:
-  mode: react
   max_steps: 30
+  max_tool_calls: 120
+  max_input_tokens: 1000000
+  max_output_tokens: 245760
+  max_duration: 30m
   max_parallel_tools: 4
 
 approval:

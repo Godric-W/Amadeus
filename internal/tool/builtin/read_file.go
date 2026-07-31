@@ -20,6 +20,7 @@ type ReadFileOptions struct {
 
 type ReadFile struct {
 	root    project.Root
+	guard   *project.PathGuard
 	options ReadFileOptions
 }
 
@@ -36,7 +37,11 @@ func NewReadFile(root project.Root, options ReadFileOptions) (*ReadFile, error) 
 	if options.MaxBytes <= 0 {
 		return nil, errors.New("read_file max bytes must be greater than zero")
 	}
-	return &ReadFile{root: root, options: options}, nil
+	guard, err := project.NewPathGuard(root)
+	if err != nil {
+		return nil, err
+	}
+	return &ReadFile{root: root, guard: guard, options: options}, nil
 }
 
 func (readFile *ReadFile) Spec() tool.Spec {
@@ -57,7 +62,7 @@ func (readFile *ReadFile) Execute(ctx context.Context, input json.RawMessage) (t
 	if err := ctx.Err(); err != nil {
 		return tool.Result{}, err
 	}
-	path, err := readFile.root.Resolve(arguments.Path)
+	path, err := readFile.guard.ResolveExisting(arguments.Path, project.PathFile)
 	if err != nil {
 		return tool.Result{}, err
 	}

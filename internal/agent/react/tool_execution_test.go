@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
+	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -18,6 +19,16 @@ type fakeTool struct {
 	err       error
 	executed  int
 	arguments json.RawMessage
+}
+
+type fakeAuthorizer struct {
+	calls []tool.Call
+	err   error
+}
+
+func (authorizer *fakeAuthorizer) Authorize(_ context.Context, _ tool.Spec, call tool.Call) error {
+	authorizer.calls = append(authorizer.calls, call.Clone())
+	return authorizer.err
 }
 
 func (candidate *fakeTool) Spec() tool.Spec { return candidate.spec.Clone() }
@@ -66,6 +77,93 @@ func TestToolExecutorDoesNotExecuteInvalidArguments(t *testing.T) {
 	}
 	if execution.Observation.Error == "" || execution.Evidence.Verified || execution.Evidence.Summary == "" {
 		t.Fatalf("invalid arguments did not form failure observation/evidence: %#v", execution)
+	}
+}
+
+func TestToolExecutorAuthorizesNormalizedArgumentsBeforeExecution(t *testing.T) {
+	expectedErr := errors.New("approval denied")
+	authorizer := &fakeAuthorizer{err: expectedErr}
+	candidate := &fakeTool{spec: executionSpec()}
+	registry := tool.NewRegistry()
+	if err := registry.Register(candidate); err != nil {
+		t.Fatalf("register fake tool: %v", err)
+	}
+	executor, err := NewToolExecutor(registry, tool.NewArgumentValidator(), authorizer)
+	if err != nil {
+		t.Fatalf("create authorized tool executor: %v", err)
+	}
+
+	execution, err := executor.Execute(context.Background(), tool.NewCall("call_auth", "read_file", json.RawMessage(`{"path":"README.md"`)))
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("unexpected authorization error: %v", err)
+	}
+	if candidate.executed != 0 {
+		t.Fatalf("denied tool executed %d time(s)", candidate.executed)
+	}
+	if len(authorizer.calls) != 1 || string(authorizer.calls[0].Arguments) != `{"path":"README.md"}` {
+		t.Fatalf("authorizer did not receive normalized call: %#v", authorizer.calls)
+	}
+	if execution.Observation.Error != expectedErr.Error() || execution.Evidence.Verified {
+		t.Fatalf("authorization denial did not produce failure evidence: %#v", execution)
+	}
+}
+
+func TestToolExecutorPublishesStartedAndCompletedEvents(t *testing.T) {
+	candidate := &fakeTool{spec: executionSpec(), result: tool.Result{Text: "file contents", Partial: true}}
+	registry := tool.NewRegistry()
+	if err := registry.Register(candidate); err != nil {
+		t.Fatalf("register fake tool: %v", err)
+	}
+	sink := event.NewMemorySink()
+	executor, err := NewToolExecutorWithOptions(registry, tool.NewArgumentValidator(), ToolExecutorOptions{Events: sink})
+	if err != nil {
+		t.Fatalf("create eventful tool executor: %v", err)
+	}
+	executor.now = fixedClock(time.Unix(0, 0), time.Unix(0, int64(25*time.Millisecond)))
+	if _, err := executor.Execute(context.Background(), tool.NewCall("call_events", "read_file", json.RawMessage(`{"path":"README.md"}`))); err != nil {
+		t.Fatalf("execute eventful tool: %v", err)
+	}
+	events := sink.Snapshot()
+	if len(events) != 2 {
+		t.Fatalf("unexpected tool event count: %#v", events)
+	}
+	started, ok := events[0].(event.ToolCallStarted)
+	if !ok || started.CallID != "call_events" || started.ToolName != "read_file" {
+		t.Fatalf("unexpected tool started event: %#v", events[0])
+	}
+	completed, ok := events[1].(event.ToolCallCompleted)
+	if !ok || !completed.Success || !completed.Partial || completed.Summary != "file contents" || completed.Duration != 25*time.Millisecond {
+		t.Fatalf("unexpected tool completed event: %#v", events[1])
+	}
+}
+
+func TestToolExecutorEventFailurePreventsExecutionBeforeStart(t *testing.T) {
+	expected := errors.New("event output failed")
+	candidate := &fakeTool{spec: executionSpec()}
+	registry := tool.NewRegistry()
+	if err := registry.Register(candidate); err != nil {
+		t.Fatalf("register fake tool: %v", err)
+	}
+	executor, err := NewToolExecutorWithOptions(registry, tool.NewArgumentValidator(), ToolExecutorOptions{Events: failingEventSink{err: expected}})
+	if err != nil {
+		t.Fatalf("create failing-event executor: %v", err)
+	}
+	if _, err := executor.Execute(context.Background(), tool.NewCall("call_event_error", "read_file", json.RawMessage(`{"path":"README.md"}`))); !errors.Is(err, expected) {
+		t.Fatalf("unexpected event failure: %v", err)
+	}
+	if candidate.executed != 0 {
+		t.Fatalf("tool executed after start event failure: %d", candidate.executed)
+	}
+}
+
+func TestNewToolExecutorValidatesAuthorizerOptions(t *testing.T) {
+	registry := tool.NewRegistry()
+	validator := tool.NewArgumentValidator()
+	if executor, err := NewToolExecutor(registry, validator, nil); err == nil || executor != nil {
+		t.Fatalf("unexpected nil authorizer result: executor=%#v err=%v", executor, err)
+	}
+	if executor, err := NewToolExecutor(registry, validator, &fakeAuthorizer{}, &fakeAuthorizer{}); err == nil || executor != nil {
+		t.Fatalf("unexpected multiple authorizer result: executor=%#v err=%v", executor, err)
 	}
 }
 
@@ -143,6 +241,10 @@ func fixedClock(values ...time.Time) func() time.Time {
 		return value
 	}
 }
+
+type failingEventSink struct{ err error }
+
+func (sink failingEventSink) Publish(context.Context, event.Event) error { return sink.err }
 
 func TestToolExecutionResultDoesNotShareMetadata(t *testing.T) {
 	candidate := &fakeTool{spec: executionSpec(), result: tool.Result{Metadata: map[string]any{"key": "value"}}}

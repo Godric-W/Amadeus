@@ -13,6 +13,9 @@ const (
 	maxProviderRetries = 10
 	maxOutputTokens    = 1_000_000
 	maxAgentSteps      = 1_000
+	maxAgentToolCalls  = 10_000
+	maxAgentTokens     = int64(100_000_000)
+	maxAgentDuration   = 24 * time.Hour
 	maxParallelTools   = 64
 )
 
@@ -144,13 +147,20 @@ func validateBaseURL(path, value string, addIssue func(string, string)) {
 }
 
 func validateAgent(agent AgentConfig, addIssue func(string, string)) {
-	switch agent.Mode {
-	case AgentModeReact, AgentModePlan, AgentModeTeam:
-	default:
-		addIssue("agent.mode", fmt.Sprintf("must be %q, %q, or %q", AgentModeReact, AgentModePlan, AgentModeTeam))
-	}
 	if agent.MaxSteps <= 0 || agent.MaxSteps > maxAgentSteps {
 		addIssue("agent.max_steps", fmt.Sprintf("must be greater than 0 and at most %d", maxAgentSteps))
+	}
+	if agent.MaxToolCalls <= 0 || agent.MaxToolCalls > maxAgentToolCalls {
+		addIssue("agent.max_tool_calls", fmt.Sprintf("must be greater than 0 and at most %d", maxAgentToolCalls))
+	}
+	if agent.MaxInputTokens <= 0 || agent.MaxInputTokens > maxAgentTokens {
+		addIssue("agent.max_input_tokens", fmt.Sprintf("must be greater than 0 and at most %d", maxAgentTokens))
+	}
+	if agent.MaxOutputTokens <= 0 || agent.MaxOutputTokens > maxAgentTokens {
+		addIssue("agent.max_output_tokens", fmt.Sprintf("must be greater than 0 and at most %d", maxAgentTokens))
+	}
+	if agent.MaxDuration <= 0 || agent.MaxDuration > maxAgentDuration {
+		addIssue("agent.max_duration", fmt.Sprintf("must be greater than 0 and at most %s", maxAgentDuration))
 	}
 	if agent.MaxParallelTools <= 0 || agent.MaxParallelTools > maxParallelTools {
 		addIssue("agent.max_parallel_tools", fmt.Sprintf("must be greater than 0 and at most %d", maxParallelTools))

@@ -11,6 +11,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
+	"github.com/Godric-W/Amadeus/prompts"
 )
 
 type IterationKind string
@@ -56,12 +57,21 @@ type ModelIterator interface {
 	Run(context.Context, IterationInput) (IterationResult, error)
 }
 
+type IteratorOptions struct {
+	SystemPrompt string
+}
+
 type Iterator struct {
-	client llm.Client
-	events event.Sink
+	client       llm.Client
+	events       event.Sink
+	systemPrompt string
 }
 
 func NewIterator(client llm.Client, events event.Sink) (*Iterator, error) {
+	return NewIteratorWithOptions(client, events, IteratorOptions{})
+}
+
+func NewIteratorWithOptions(client llm.Client, events event.Sink, options IteratorOptions) (*Iterator, error) {
 	if client == nil {
 		return nil, errors.New("model iterator LLM client is nil")
 	}
@@ -71,7 +81,11 @@ func NewIterator(client llm.Client, events event.Sink) (*Iterator, error) {
 	if strings.TrimSpace(client.Model().Name) == "" {
 		return nil, errors.New("model iterator model is empty")
 	}
-	return &Iterator{client: client, events: events}, nil
+	systemPrompt := strings.TrimSpace(options.SystemPrompt)
+	if systemPrompt == "" {
+		systemPrompt = prompts.AgentSystem()
+	}
+	return &Iterator{client: client, events: events, systemPrompt: systemPrompt}, nil
 }
 
 func (iterator *Iterator) Run(ctx context.Context, input IterationInput) (IterationResult, error) {
@@ -84,7 +98,7 @@ func (iterator *Iterator) Run(ctx context.Context, input IterationInput) (Iterat
 
 	request := llm.Request{
 		Model:           iterator.client.Model().Name,
-		Messages:        append([]llm.Message(nil), input.Messages...),
+		Messages:        withAgentSystemPrompt(input.Messages, iterator.systemPrompt),
 		Temperature:     input.Temperature,
 		MaxOutputTokens: input.MaxOutputTokens,
 		Tools:           toolDefinitions(input.AvailableTools),
@@ -116,6 +130,14 @@ func (iterator *Iterator) Run(ctx context.Context, input IterationInput) (Iterat
 		return result, fmt.Errorf("publish model iteration completed: %w", err)
 	}
 	return result, nil
+}
+
+func withAgentSystemPrompt(messages []llm.Message, systemPrompt string) []llm.Message {
+	result := append([]llm.Message(nil), messages...)
+	if len(result) != 0 && result[0].Role == llm.RoleSystem {
+		return result
+	}
+	return append([]llm.Message{llm.SystemMessage(systemPrompt)}, result...)
 }
 
 func (iterator *Iterator) consume(ctx context.Context, iterationID string, stream llm.Stream) (llm.Response, error) {

@@ -24,9 +24,12 @@ type providerPatch struct {
 }
 
 type agentPatch struct {
-	Mode             *AgentMode `yaml:"mode"`
-	MaxSteps         *int       `yaml:"max_steps"`
-	MaxParallelTools *int       `yaml:"max_parallel_tools"`
+	MaxSteps         *int           `yaml:"max_steps"`
+	MaxToolCalls     *int           `yaml:"max_tool_calls"`
+	MaxInputTokens   *int64         `yaml:"max_input_tokens"`
+	MaxOutputTokens  *int64         `yaml:"max_output_tokens"`
+	MaxDuration      *time.Duration `yaml:"max_duration"`
+	MaxParallelTools *int           `yaml:"max_parallel_tools"`
 }
 
 type approvalPatch struct {
@@ -80,8 +83,11 @@ func (patch providerPatch) apply(provider *ProviderConfig) {
 }
 
 func (patch agentPatch) apply(agent *AgentConfig) {
-	assign(&agent.Mode, patch.Mode)
 	assign(&agent.MaxSteps, patch.MaxSteps)
+	assign(&agent.MaxToolCalls, patch.MaxToolCalls)
+	assign(&agent.MaxInputTokens, patch.MaxInputTokens)
+	assign(&agent.MaxOutputTokens, patch.MaxOutputTokens)
+	assign(&agent.MaxDuration, patch.MaxDuration)
 	assign(&agent.MaxParallelTools, patch.MaxParallelTools)
 }
 

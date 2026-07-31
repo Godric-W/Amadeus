@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestExampleConfigLoadsAndValidatesWithoutEnvironment(t *testing.T) {
@@ -33,6 +34,9 @@ func TestExampleConfigLoadsAndValidatesWithoutEnvironment(t *testing.T) {
 	}
 	if configured.Providers["compatible"].API != APIChatCompletions {
 		t.Fatalf("unexpected compatible API mode: got %q", configured.Providers["compatible"].API)
+	}
+	if configured.Agent.MaxSteps != 30 || configured.Agent.MaxToolCalls != 120 || configured.Agent.MaxInputTokens != 1_000_000 || configured.Agent.MaxOutputTokens != 245_760 || configured.Agent.MaxDuration != 30*time.Minute || configured.Agent.MaxParallelTools != 4 {
+		t.Fatalf("unexpected example Agent budget: %#v", configured.Agent)
 	}
 	for name, provider := range configured.Providers {
 		if provider.APIKey != "" {

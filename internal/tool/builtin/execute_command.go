@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -37,6 +36,7 @@ type ExecuteCommandOptions struct {
 
 type ExecuteCommand struct {
 	root    project.Root
+	guard   *project.PathGuard
 	options ExecuteCommandOptions
 }
 
@@ -59,7 +59,11 @@ func NewExecuteCommand(root project.Root, options ExecuteCommandOptions) (*Execu
 	if options.MaxOutputBytes <= 0 || options.MaxOutputLines <= 0 {
 		return nil, errors.New("execute_command output limits must be greater than zero")
 	}
-	return &ExecuteCommand{root: root, options: options}, nil
+	guard, err := project.NewPathGuard(root)
+	if err != nil {
+		return nil, err
+	}
+	return &ExecuteCommand{root: root, guard: guard, options: options}, nil
 }
 
 func (executeCommand *ExecuteCommand) Spec() tool.Spec {
@@ -81,16 +85,9 @@ func (executeCommand *ExecuteCommand) Execute(ctx context.Context, input json.Ra
 	if strings.TrimSpace(relativeCWD) == "" {
 		relativeCWD = "."
 	}
-	workingDirectory, err := executeCommand.root.Resolve(relativeCWD)
+	workingDirectory, err := executeCommand.guard.ResolveExisting(relativeCWD, project.PathDirectory)
 	if err != nil {
 		return tool.Result{}, err
-	}
-	info, err := os.Stat(workingDirectory)
-	if err != nil {
-		return tool.Result{}, fmt.Errorf("stat execute_command cwd %q: %w", relativeCWD, err)
-	}
-	if !info.IsDir() {
-		return tool.Result{}, fmt.Errorf("execute_command cwd is not a directory: %q", relativeCWD)
 	}
 	timeout := executeCommand.options.DefaultTimeout
 	if arguments.TimeoutMS > 0 {

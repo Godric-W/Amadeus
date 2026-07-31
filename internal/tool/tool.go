@@ -13,3 +13,7 @@ type Tool interface {
 type Executor interface {
 	Execute(ctx context.Context, call Call) (Result, error)
 }
+
+type Authorizer interface {
+	Authorize(ctx context.Context, spec Spec, call Call) error
+}

@@ -16,7 +16,7 @@ Amadeus 的目标是实现面向真实软件工程任务的通用 Agent CLI。`.
 1. 保留 PaiCLI 已有的核心能力和交互语义。
 2. 不要求 Java 类与 Go 文件一一对应。
 3. 优先建立可测试的稳定边界，再逐阶段迁移功能。
-4. 对确认有价值的逻辑进行 Go 化重构，并在 `docs/migration-progress.md` 的优化记录中追踪。
+4. 对确认有价值的逻辑进行 Go 化重构，并在 `docs/development-progress.md` 的优化记录中追踪。
 
 ## 2. 原项目结论
 
@@ -117,7 +117,7 @@ Application Service
 - `cmd/amadeus`：命令行入口；根命令直接启动 Coding Agent，不设置独立 `run` 子命令。
 - `internal/interface/cli`：交互循环、slash command、补全和 history。
 - `internal/interface/tui`：可选全屏 TUI。
-- `internal/interface/httpapi`：线程、回合和事件流 API。
+- `internal/interface/httpapi`：Conversation Session、Turn 和事件流 API。
 - `internal/render`：plain、inline、TUI/API event renderer。
 
 根命令语义固定为：
@@ -128,9 +128,39 @@ Application Service
 | `amadeus "<task>"` | 在当前工作目录执行一次性 Coding Agent 任务，完成后退出 |
 | `amadeus --project <path>` | 以显式项目目录进入交互模式 |
 | `amadeus --project <path> "<task>"` | 在显式项目目录执行一次性任务 |
+| `amadeus --continue` | 恢复当前项目最近活跃的 Conversation Session |
+| `amadeus --resume` | 打开当前项目 Session 选择器；取消选择则返回当前对话或 Draft Session |
+| `amadeus --resume <session-id>` | 直接恢复当前项目内指定的 Conversation Session |
+| `amadeus sessions list` | 列出当前项目的 Conversation Session；首版不提供 `--all` |
 | `printf '%s\n' '<task>' \| amadeus` | 非 TTY 时从 stdin 读取一次性任务 |
 
 `--help` 和已注册子命令继续按 CLI 语义处理；`version`、`config`、`tools`、`chat` 等管理/诊断入口不进入 Coding Agent。`amadeus chat` 保留为不装配工具和 Agent Engine 的纯聊天命令。无位置参数、stdin 非 TTY 且读取不到有效任务时返回明确错误。`AMADEUS_HOME` 只解析配置与用户级 `AGENTS.md`，目标项目默认来自启动工作目录，也可由 `--project` 覆盖。
+
+交互模式使用 `/resume` 打开同一个当前项目 Session 选择器；用户按 `Esc` 时不切换 Session 并回到当前对话，因此首版不增加重复的 `/sessions` 命令。`--resume` 只表示恢复 Conversation Session，不接受 Run ID；内部 Run Checkpoint 不占用用户级 resume 语义。`amadeus` 启动时只建立内存 Draft Session，`/help`、`/resume`、`/exit`、EOF 或未提交任何真实任务的进程不会写入空 Session；第一次真实用户任务到达时才持久化 Project、Conversation Session、Turn、用户消息和 Run。
+
+M3-17 将上述语义落实为根级 `AgentCommand` Port 和 `AgentInvocation`。位置参数存在时优先作为一次性任务且不读取 stdin；无位置参数时，通过可注入 TTY detector 区分 interactive 与 pipe，非 TTY 最多读取 1 MiB、trim 后形成一次性任务，空输入、读取失败和超预算均在调用 Agent 前返回。Invocation 保留 project.Root、stdin/stdout/stderr 与 once/interactive mode，任务解析和项目解析完成后才进入 Application 层。
+
+根命令 Use 固定为 `amadeus [task]`，最多接受一个位置任务；`--project` 继续相对进程启动 cwd 解析，并与 `AMADEUS_HOME` 独立。Cobra 的 help 和已注册管理子命令完全旁路 AgentCommand，命令树不创建 `run` 子命令。M3-17 只完成入口语义和可测试 dispatch；默认 composition 在 M3-18 注入真实 DirectEngine command，interactive mode 的连续任务读取由 M3-21 实现。
+
+M3-18 实现默认 `codingAgentCommand` composition。一次性 Invocation 依次执行配置主链与校验、AgentRenderer、TerminalApprovalHandler、JSONL Audit Sink、bootstrap Agent、用户/项目 Instruction Resolver、根 command-cwd Context Envelope、Direct RunState 和 DirectEngine.Run。生产 ClientFactory 默认为 OpenAI Adapter；bootstrap 同时开放显式 ClientFactory 注入，使测试可以替换 Provider transport，但 MVP Registry、ToolExecutor、安全策略、ReActRunner、Verifier、Reflector、事件和 Context 主链保持真实。
+
+首版审计默认写入 `$XDG_STATE_HOME/amadeus/audit/audit.jsonl`，未设置 XDG 时使用 `~/.local/state/amadeus/audit/audit.jsonl`；关闭错误与 Run 错误合并返回。Run ID 使用 UTC 纳秒与进程内序列生成；初始 Goal 为用户任务，首轮指令 target 为项目根 command cwd，Envelope 的 messages/tools 直接进入 DirectEngine。M3-18 集成测试从独立 Amadeus home 与目标项目加载 user/project `AGENTS.md`，脚本 Provider 发起真实 `read_file`，验证 ToolResult 回灌、policy audit、最终流式文本、Verification、Reflection 和 completed 事件。正式预算字段与退出状态分别由 M3-19/M3-20 收敛，interactive 循环由 M3-21 接入。
+
+M3-19 将 Agent 整次 Run 预算收敛到 `AgentConfig`：`max_steps`、`max_tool_calls`、`max_input_tokens`、`max_output_tokens` 和 `max_duration` 一一映射到 `engine.Budget`，`max_parallel_tools` 映射到 ReAct 资源执行器并发度。所有字段经过默认值、YAML patch、结构校验、来源追踪、`config explain` 和示例配置主链；Provider 的 `max_output_tokens` 继续只限制单次模型调用，不再被根命令乘以 step 数推导 Run 预算。
+
+M3-20 在 CLI Application 边界将 DirectEngine 的终态归一为五种用户可见 outcome：`completed` 对应退出码 0，`failed` 对应 1，`partial`（当前为 suspended/user-input-required）对应 2，`needs_plan` 对应 3，`cancelled` 对应 130。每次正常返回的 Engine 结果都会向 stderr 输出单行、有界的 `result:` 总结；非成功 outcome 返回带稳定 code 且标记“已报告”的命令错误，`main` 不重复打印，普通基础设施错误仍使用退出码 1 并输出原错误。Engine 保持领域状态与 StopReason，不依赖 Cobra 或进程退出语义。
+
+M3-21 将无位置 task 且 stdin 为 TTY 的 Invocation 接入连续交互循环。CLI 在 stderr 输出 `amadeus> ` 提示符，空行跳过，`/exit` 与 EOF 正常关闭 session；每个非空任务都转为独立 one-shot Invocation，重新创建 Context Envelope、RunState、预算和 Engine 主链，因此前一次失败、Evidence 或消息不会隐式污染下一次 Run。循环复用同一个 buffered input reader，使工具审批可以安全消费后续终端输入；已报告的非成功 Run 不重复打印，普通错误显示后允许用户继续输入。当前中断语义由 M3-22 进一步收敛。
+
+M3-22 为每个 one-shot Run 创建独立的 `signal.NotifyContext(parent, os.Interrupt)`，并在 Run 返回后立即停止监听。one-shot 中断沿 Provider、ReActRunner、ToolExecutor 和工具 context 传播，最终归一为 `cancelled` 与退出码 130；交互模式只取消当前 Run，父 session context 保持有效并重新显示提示符。`execute_command` 已由 M2-29 使用独立 Unix 进程组终止子进程树，并返回带 `partial/cancelled` metadata 的 Result；M2-20 的 Engine 测试证明取消前已合并的 Step、Observation 与 Evidence 保留。M3-22 命令测试进一步覆盖模型调用期间取消、终端 cancelled 总结以及下一任务继续完成。
+
+M3 的 Direct 基线不启用 `EscalateHighImpact`：写文件和执行命令仍必须经过 PathGuard、CommandGuard、Approval 与 Audit，但不会在 Planner 尚未交付时仅因副作用工具而返回 `needs_plan`。高影响信号继续由 ProgressMonitor 产生并可观测，待 M5 Plan-on-Demand/Planner 可实际承接后再作为动态升级条件启用。否则首个可用 Coding Agent 将无法完成最基本的“改代码并测试”闭环。
+
+M3-23 的命令级 E2E 从根命令进入完整 composition，在临时 Go 项目依次执行 `read_file`、`write_file` 与 `execute_command: go test ./...`，验证真实文件修复、三条审计记录、测试输出 Evidence、Verification、Reflection 和 completed 总结。M3-24 在同一根命令主链中改用本地 HTTP mock 与生产 OpenAI Adapter，分别覆盖 Responses `/responses` 和 Chat Completions `/chat/completions`：首轮流式工具调用读取 README，第二轮请求必须携带工具结果，随后流式最终回答并通过第三次 Reflection 请求；两种模式均校验凭证不进入 CLI 输出。
+
+M3-25 使用真实 Provider 在隔离 `/tmp` Go 项目执行 smoke：模型发现错误的减法实现，读取源码与测试，经 terminal approval 写入最小修复，再经第二次 approval 执行 `go test ./...`，最终 Verification、Reflection 与 Run 均 completed。测试过程中不打印配置或凭证，临时兼容配置副本和项目在完成后删除。该 smoke 同时暴露并修复 Chat-compatible Provider 不接受 `developer` role 的问题：Chat request converter 现在依据 Dialect capabilities 将不支持的 developer message 降级为 system；Responses/OpenAI 能力允许时仍保留原角色。
+
+M3-26 在仓库根 `README.md` 提供首个可用版本操作手册：构建与检查、`AMADEUS_HOME`、配置优先级、Responses/Chat Provider、Agent 预算、分层 `AGENTS.md`、当前/显式项目、one-shot/pipe/interactive 调用、审批选择、路径与命令围栏、审计位置、stdout/stderr 分工、稳定退出码、诊断命令和当前 Direct-only 能力边界均给出可复制示例。
 
 ### 6.2 Application 层
 
@@ -151,7 +181,7 @@ Application Service
 - `internal/agent/react`：执行单个 Task 的通用 ReActRunner，不拥有独立 Agent 模式。
 - `internal/agent/plan`：ExecutionGraph、Planner、Scheduler、计划审阅和 Replan。
 - `internal/agent/reflect`：Verifier 结果上的结构化 Reflection 决策。
-- `internal/agent/team`：把 Task 委派给 SubAgent；SubAgent 仍复用同一个 ReActRunner。
+- `internal/agent/team`：把独立只读 Task 委派给最多两个临时 SubAgent；SubAgent 仍复用同一个 ReActRunner。
 - `internal/conversation`：消息、内容块和上下文压缩。
 - `internal/context`：为单次 LLM 请求构建受预算约束的 ContextView。
 - `internal/instruction`：用户级、项目级和目录级 `AGENTS.md` 的发现、作用域、优先级与来源追踪。
@@ -179,7 +209,7 @@ amadeus/
 ├── docs/
 │   ├── thought.md
 │   ├── design.md
-│   └── migration-progress.md
+│   └── development-progress.md
 ├── internal/
 │   ├── app/
 │   │   ├── bootstrap/
@@ -624,12 +654,83 @@ WeKnora 使用 MIT License。若未来复制实质性代码片段必须保留相
 
 ### 10.2 Multi-Agent
 
-- Multi-Agent 不是新的执行循环，而是 Scheduler 的 Task placement 能力。
-- Orchestrator 负责角色选择、任务拆分、上下文裁剪和预算分配。
-- SubAgent 共享工具定义，但拥有独立会话视图和最小必要上下文。
-- SubAgent 接收结构化 Task/Handoff，仍调用相同的 ReActRunner、Verifier 和 Reflector。
-- Handoff 使用结构化消息，不依赖拼接自然语言约定。
-- 全局限制总并发、总 token、总工具次数和递归委派深度。
+Multi-Agent 第一版只解决一个明确问题：当 ExecutionGraph 同时存在多个互不依赖的只读调查 Task 时，主 Agent 最多并行派出两个临时 SubAgent 收集代码库信息；SubAgent 返回 Summary/Evidence 后，由主 Agent继续修改、测试、Verification、Reflection 和最终回复。
+
+```text
+Main Agent / Supervisor
+├── SubAgent 1: read-only investigation
+└── SubAgent 2: read-only investigation
+        ↓
+structured Summary + Evidence
+        ↓
+Main Agent continues normal Engine execution
+```
+
+Multi-Agent 不是新的 Agent Engine，也不创建 PaiCLI 式固定 Planner/Worker/Reviewer 主链。主 Agent 是唯一 RunState/ExecutionGraph 所有者；SubAgent 只是同一 Scheduler 可选择的 Task placement，复用现有 `ReActRunner`、`llm.Client`、Budget、Event 和只读 Tool Pipeline。Planner 仍属于 M5 的结构化 Planning Port，Verifier/Triggered Reflection 继续承担质量门，第一版不创建独立 Reviewer Agent。
+
+#### 10.2.1 MVP 边界
+
+- 同一 Run 最多两个 SubAgent，固定 `max_delegation_depth = 1`；SubAgent 不能继续创建 SubAgent。
+- SubAgent 初期使用与主 Agent 相同的 Provider/model，不实现角色级模型选择。
+- SubAgent 只注册 `read_file`、`list_dir`、`glob_files`、`grep_code`，不注册 `apply_patch`、`write_file` 或 `execute_command`。
+- 所有文件修改、命令执行、审批、最终 Verification 和用户回答仍由主 Agent 完成。
+- SubAgent 彼此不能直接发消息，不存在 Agent Team 群聊、共享 scratchpad 或长期子会话。
+- SubAgent 内部消息不写正式 Conversation，只把 Task 状态、Summary、Evidence、Usage 和 stop reason 写回 RunState/Checkpoint。
+- 第一版不实现 Git Worktree、并行写文件、Patch 合并、跨进程 Worker、后台 Agent 或精确恢复被中断的 SubAgent。
+
+#### 10.2.2 Task 与结果
+
+Planner/Scheduler 只把明确标记为 `read_only` 的 ready Task 委派给 SubAgent；`mutable` 或无法确定副作用的 Task 始终由主 Agent 执行：
+
+```go
+type ExecutionKind string
+
+const (
+    ExecutionReadOnly ExecutionKind = "read_only"
+    ExecutionMutable  ExecutionKind = "mutable"
+)
+
+type SubAgentTask struct {
+    ID        TaskID
+    Objective string
+    Context   string
+    Budget    Budget
+}
+
+type SubAgentResult struct {
+    TaskID   TaskID
+    Status   TaskStatus
+    Summary  string
+    Evidence []Evidence
+    Usage    Usage
+}
+```
+
+ContextBuilder 为 SubAgent 构造独立、最小必要 ContextView：内置 Prompt、当前 Task、适用 `AGENTS.md`、必要依赖 Evidence、Project Root 和只读工具定义。不得复制主 Agent 的完整临时 ReAct 消息链，也不得把其他无关 Task 或完整 Conversation 无预算注入。
+
+#### 10.2.3 Placement 规则
+
+第一版不增加 Router LLM，只使用确定性条件：
+
+```text
+至少两个 ready Task
+AND Task 之间没有依赖
+AND Task.execution == read_only
+AND 当前 SubAgent 数量 < 2
+AND 剩余 Run/Task Budget 足够
+```
+
+满足条件时使用固定大小为 2 的 bounded executor 并行执行；否则由主 Agent 串行处理。初期只通过 `/team` 为本次 Run 设置 `prefer_subagents` PlacementPolicy，普通 Run 不自动创建 SubAgent；即使用户使用 `/team`，若没有值得并行的只读 Task，也安全退化为主 Agent 单独执行，而不是为了展示 Team 强行拆分。
+
+#### 10.2.4 返回、失败与取消
+
+SubAgent Result 以 Task ID 稳定写回 ExecutionGraph，并将 Evidence 提供给依赖 Task 和主 Agent。SubAgent 不决定整个 Run 完成，也不直接生成正式 assistant message。一个 SubAgent 失败不会自动创建替代 Agent；主 Agent可以自行完成该 Task、触发 Replan、忽略非关键结果或请求用户输入。
+
+主 Run 取消时取消所有子 Context，等待有界退出并保留已经完成的 Summary/Evidence；旧 SubAgent 不恢复。用户之后输入“请继续”时仍创建新 Run，根据上一 Run 的中断摘要重新规划是否需要再次委派。
+
+#### 10.2.5 延后能力
+
+只有只读 SubAgent 的效果、成本和调度稳定后，才重新评估自动 placement、资源声明、隔离 Worktree、并行写任务、Reviewer SubAgent、不同模型和 Agent 间消息。这些都不属于第一版 Multi-Agent 的验收范围。
 
 ## 11. OpenAI SDK 适配设计
 
@@ -749,6 +850,10 @@ providers:
 
 agent:
   max_steps: 30
+  max_tool_calls: 120
+  max_input_tokens: 1000000
+  max_output_tokens: 245760
+  max_duration: 30m
   max_parallel_tools: 4
 
 approval:
@@ -763,6 +868,8 @@ logging:
 `api_key` 等 YAML 字符串值支持 `${ENV_VAR}` 引用和字面值。变量在字段级 YAML 解码前展开；变量未设置时，错误包含字段路径与变量名。若使用字面 API key，配置加载器应检查文件权限并给出安全警告；打印有效配置时统一掩码。
 
 `agent` 不提供 `mode`。ReAct 是所有 Task 共用的执行机制，Plan 是统一 Engine 按需生成的 ExecutionGraph，Team 是 Task placement；三者都不是可切换的 Agent 实现。默认由 Plan-on-Demand 规则选择 Direct/Planned，并允许执行中动态升级；`/plan` 只覆盖本次 Run 的 PlanningPolicy，强制展示和审核完整计划。
+
+`providers.<name>.max_output_tokens` 限制单次模型请求可生成的 token；`agent.max_input_tokens` 与 `agent.max_output_tokens` 分别限制整次 Run 的累计输入和输出 token。`agent.max_steps`、`agent.max_tool_calls`、`agent.max_duration` 控制总执行预算，`agent.max_parallel_tools` 只控制同一批可并行工具的并发度，不会扩大工具调用总额度。首版默认值保持保守且显式：30 steps、120 tool calls、1,000,000 input tokens、245,760 output tokens、30 分钟和 4 个并行工具。
 
 仓库提供可直接通过结构校验的 `configs/amadeus.example.yaml`。该文件可复制为 `<amadeus-root>/config.yaml`，默认不包含凭证或固定模型；实际运行时优先通过 `AMADEUS_API_KEY` 和 `AMADEUS_MODEL` 注入，避免把密钥提交到版本控制。
 
@@ -828,32 +935,115 @@ base → engine_protocol → approval → runtime_context
      → instructions → skills → context_management → handoff
 ```
 
-用户和项目通过 `AGENTS.md` 提供明确、可编辑、可审查的持久指令，不开放任意内置 Prompt 覆盖。Assembler 负责变量校验、指令来源清单、作用域解析和最终 hash，便于 trace 与测试。具体发现与优先级规则见 16.3、16.4。
+首版内置资源固定在 `prompts/`，并由同目录的 Go catalog 嵌入二进制：
+
+```text
+prompts/
+├── builtin.go
+├── base.md
+├── engine_protocol.md
+├── approval.md
+├── runtime_context.md
+├── instructions.md
+├── skills.md
+├── context_management.md
+├── handoff.md
+├── engine/retry.md
+└── reflect/task.md
+```
+
+八个 Agent 层按上述固定顺序形成 ReAct 的默认 system protocol；`engine/retry.md` 定义 DirectEngine 的结构化重试要求；`reflect/task.md` 定义 Reflector 的严格 JSON verdict 协议。确定性 Verifier 不调用 LLM，其 evidence 与 acceptance-criteria 契约由 `engine_protocol.md` 告知执行模型，并继续由 Go Domain 校验强制执行。若上层已经提供组装完成的 system message，ReAct 不重复注入默认协议，为后续 Context Envelope 保留边界。
+
+M3-03 只提供不可变资产、稳定 ID、固定层顺序和嵌入完整性；M3-04 再由 `internal/prompt` 实现 Repository、Assembler、变量校验、来源清单和最终 hash，避免把资源 catalog 与运行期组装职责混在一起。
+
+`internal/prompt.Repository` 从只读 `fs.FS` 加载单个 Prompt 文档，统一执行路径合法性、空内容和受限变量语法检查。变量只接受 `{{variable_name}}`，名称必须为小写 snake case；不支持条件、循环、函数、文件包含或任意 Go template 执行，避免 Prompt 资产演变为隐式脚本系统。
+
+`internal/prompt.Assembler` 接收显式有序层和变量 map，并遵循以下确定性契约：
+
+1. 保持调用方给出的层顺序，拒绝空层和重复层。
+2. 一次性报告全部缺失层，而不是只暴露第一个文件错误。
+3. 汇总所有必需变量，同时拒绝缺失变量和未被任何层声明的未知变量。
+4. 使用两个换行连接渲染后的层，不递归解释变量值中的 `{{...}}`。
+5. 为每个来源记录 `kind/path/raw SHA-256/variables`，并对最终渲染内容计算独立 SHA-256。
+
+最终 hash 会随层顺序或渲染值变化；来源 hash 只描述规范化后的原始 Prompt 文档。bootstrap 使用同一个 built-in Repository/Assembler 分别生成 Agent system、DirectEngine retry 和 task reflection 三个 Bundle，再显式注入对应组件。Repository/Assembler 不负责发现 `AGENTS.md`、拼接用户任务、保存 Conversation 或裁剪 Context，这些职责继续留给后续 Instruction Resolver 和 Context Envelope。
+
+用户和项目通过 `AGENTS.md` 提供明确、可编辑、可审查的持久指令，不开放任意内置 Prompt 覆盖。Instruction Resolver 负责指令发现、来源清单和作用域优先级；Context Envelope 再按稳定顺序组合 Prompt Bundle、适用指令和运行期内容。具体发现与优先级规则见 16.3、16.4。
 
 ## 14. 工具体系
 
-### 14.1 MVP 内置工具
+### 14.1 设计原则
 
-1. `read_file`
-2. `write_file`
-3. `list_dir`
-4. `glob_files`
-5. `grep_code`
-6. `execute_command`
+Amadeus 采用“结构化高频工具 + 通用 Shell fallback”，不因为 Shell 可以运行 `cat`、`find`、`grep` 或重定向写文件，就删除专用文件工具：
 
-随后迁移：`create_project`、`search_code`、`web_search`、`web_fetch`、`revert_turn`、Browser、Memory、Skill 和 MCP 动态工具。
+- 结构化工具是模型读取、搜索和修改项目的主路径，提供严格 schema、Project Root/PathGuard、稳定输出、预算元数据、Evidence 和跨平台语义。
+- `execute_command` 是构建、测试、Git、格式化、代码生成、项目脚本和未被专用工具覆盖操作的通用逃生舱，不作为绕过文件工具、安全策略或审批的捷径。
+- 工具数量保持克制；只有高频操作确实需要更稳定输出、更细权限或更强领域语义时，才从 Shell 提升为专用工具。
+- Tool 名称表达能力而非具体命令行程序；内部可以使用 ripgrep 或平台能力加速，但 fallback 必须保持同一领域结果。
+- 结构化 Tool Result 必须显式报告来源、截断、partial、资源使用和副作用，不能把普通 stdout 当作完整事实。
 
-### 14.2 执行流水线
+### 14.2 内置工具分层
+
+首个稳定工具面分为三组：
+
+```text
+Exploration
+├── read_file
+├── list_dir
+├── glob_files
+└── grep_code
+
+Mutation
+├── apply_patch
+└── write_file
+
+Execution
+└── execute_command
+```
+
+交互和策略能力不强制伪装成 Provider Tool：`ask_user` 可继续表示 Engine 的 `awaiting_user/partial` outcome，`request_approval` 由 Tool Pipeline 在副作用前调用 Approval Port。未来的 LSP、Web、MCP、Snapshot/Revert、Browser 和 SubAgent 作为扩展能力加入；不恢复自动长期 Memory/remember/recall 工具。
+
+### 14.3 探索工具
+
+- `read_file`：读取 Project Root 内 UTF-8 regular file，支持 offset/limit、总行数、字节数、partial 和稳定路径元数据；读取正文优先于 Shell `cat/head/sed`。
+- `list_dir`：稳定列出目录项，提供类型、隐藏项和 entry budget 语义；优先于仅为查看目录而调用 `ls`。
+- `glob_files`：按稳定 project-relative 路径发现文件，统一 ignore、symlink 和结果预算；优先于 `find` 或 Shell glob。
+- `grep_code`：按文件/行号返回有界文本匹配，统一 literal/regex/case/context 和 engine 元数据；优先于直接运行 `grep/rg`。
+
+这些工具与 Shell 有意重叠。区别不在“是否能完成”，而在专用工具可以严格限制读取范围、避免启动子进程、提供可验证 metadata，并直接进入 Context Budget、Evidence、Checkpoint 和中断后 Replan。
+
+### 14.4 修改工具
+
+`apply_patch` 是修改已有文件的默认工具，并支持受控的 create/update/delete operation。输入采用可版本化、确定性解析的 Patch Document；每个 update hunk 必须携带足够上下文并在当前文件唯一匹配，旧内容不匹配时返回冲突，不进行猜测式替换。执行前解析并预检整个 Patch，所有路径都必须通过 PathGuard；每个 create/update 使用同目录临时文件、同步必要内容并原子 rename，delete 只允许 regular file。跨文件中途失败必须返回明确 partial/已应用 operation，不得伪装成原子成功，后续 Snapshot 能力再提供 Turn 级回滚。
+
+`write_file` 保留，但职责收窄为创建新文件或用户/模型明确要求的整文件替换，不再作为修改已有文件的首选。参数必须显式区分 `create` 与 `replace`，默认拒绝隐式覆盖；replace 继续使用原子临时文件写入并保留权限。Prompt 和 Tool description 必须引导已有文件优先使用 `apply_patch`。
+
+首版不单独增加 `edit_file`、`create_project`、`git_status`、`git_diff`、`run_tests` 或 `format_code`：Patch 已覆盖结构化编辑，Git/测试/格式化和项目脚本继续由 `execute_command` 处理。只有后续实际使用证明需要独立权限、结构化结果或可移植行为时再拆分。
+
+### 14.5 Shell 使用策略
+
+模型选择顺序固定为：
+
+1. 读取、目录浏览、文件发现和代码搜索优先使用 Exploration Tool。
+2. 修改已有文件优先使用 `apply_patch`；创建或明确整文件替换才使用 `write_file`。
+3. 构建、测试、Git、格式化、生成器和项目自定义 CLI 使用 `execute_command`。
+4. 专用工具无法表达需求时允许 Shell fallback，但仍经过 CommandGuard、Approval、Audit、timeout、进程组取消和输出预算。
+
+Shell 中的 `cat`、`sed`、`grep`、Python/Node 文件访问不会绕过 Project Root 和安全模型。CommandGuard 能确定性识别的只读命令可以使用只读策略；无法可靠判定的动态命令按更高风险处理，而不是假设无副作用。专用工具失败时，模型可以根据错误选择修正参数或使用 Shell，但不得为了绕过策略拒绝而改写成等价 Shell 命令。
+
+### 14.6 执行流水线
 
 ```text
 lookup → schema validation → policy precheck → approval
        → snapshot hook → execute → post-edit hook → audit → result normalization
 ```
 
-### 14.3 并发规则
+所有内置和动态工具共享该流水线。文件读取/搜索通常标记为只读且 `ParallelSafe`；Patch、整文件写入和 Shell 根据资源与副作用分类进入串行屏障。Audit 记录工具名、参数摘要/hash、目标资源、策略结论、审批结果、耗时、partial 和 outcome，不记录凭证或无限正文。
+
+### 14.7 并发规则
 
 - 默认只并行执行模型在同一响应中发起、且工具声明为 `ParallelSafe` 的调用。
-- `write_file`、`execute_command`、`revert_turn` 默认不与其他有副作用工具并行。
+- `apply_patch`、`write_file`、`execute_command`、`revert_turn` 默认不与其他有副作用工具并行。
 - 使用固定大小 worker pool，不为每次调用创建无界 goroutine。
 - 一个调用失败不自动取消独立调用；上下文取消或策略拒绝除外。
 - 结果按原始 tool call 顺序回灌，保证行为可复现。
@@ -870,6 +1060,10 @@ Amadeus 的本地安全模型是策略与人工审批，不宣称进程隔离。
 - 写入前后都验证目标，降低竞态窗口。
 
 M2-21 已新增不可变 `project.Root`：构造时把传入目录转为绝对路径、解析根目录本身的符号链接并确认其为目录；之后所有相对路径均基于该固定根解析，不受进程后续 `chdir` 影响。Root 现阶段拒绝绝对路径和词法 `..` 外逃，并提供稳定的 project-relative 表示；针对路径内部 symlink 的真实路径围栏仍由 M3 PathGuard 完成。
+
+M3-09 已在 `internal/project` 增加统一 `PathGuard`，补足 Root 的真实路径边界。`ResolveExisting` 解析完整软链接链、验证真实路径仍在项目根，并可要求 regular file、directory 或任意现有对象；`ResolveForWrite` 逐段检查所有已存在祖先，拒绝外逃软链接、非目录祖先和最终 symlink 写目标，新路径只允许从最后一个已验证的项目内祖先继续创建。
+
+M2 已实现的六个 MVP 工具共享该 Guard：read/list/execute cwd 使用现有路径解析，write 使用 write-target 解析，grep 校验入口、ripgrep 候选和 Go walk 软链接，glob 在返回软链接条目前验证真实目标。M4 新增的 `apply_patch` 必须复用同一 PathGuard，并在解析完整 Patch 后、任何写入前完成所有目标路径预检。项目内部目录软链接仍可正常读写；绝对路径、`..` 以及文件或目录软链接逃逸会在读取正文、启动命令或写入副作用之前失败。该实现降低但不宣称完全消除检查与系统调用之间的 TOCTOU 竞态，未来可按平台增加 descriptor-relative/openat 强化。
 
 M2-22～M2-25 已在 `internal/tool/builtin` 实现首批固定 Root 文件工具。`read_file` 只读取大小预算内的 UTF-8 regular file，支持零基 line offset/limit，并明确报告 partial/总行数；`write_file` 自动创建父目录，在目标同目录写临时文件并原子 rename，限制输入大小且保留已有权限；`list_dir` 按名称稳定排序，默认隐藏 dot entry，并受 entry budget 限制；`glob_files` 支持 slash glob 和 `**`，默认忽略 VCS、vendor、node_modules 和常见 build tree，输出稳定 project-relative 路径并标注截断。所有工具均使用严格 JSON 参数且不读取当前工作目录。
 
@@ -890,12 +1084,32 @@ M2-33 已增加临时 Go 项目的 Direct Engine 端到端测试。测试使用�
 - 其他有副作用命令进入审批。
 - `exec.CommandContext` 负责取消，输出按字节和行数限制。
 
+M3-10 在 `internal/policy` 增加 CommandGuard。Guard 使用受限 shell tokenizer 识别引号、转义、环境变量前缀、管道、条件连接、重定向和多命令边界，再按每个实际 program 聚合风险，而不是对原始字符串做单一关键词包含判断。风险分为 low、moderate、high、blocked，对应 allow、require_approval、deny；未知命令保守归为 high。
+
+只读检查命令可归为 low；构建和测试因可执行项目代码归为 moderate；文件修改、依赖安装、网络和嵌套 shell 归为 high。`sudo`/关机/磁盘工具、广泛 `rm -rf`、丢弃工作区的 git reset/clean/checkout/restore，以及 curl/wget 管道到 shell 会直接 blocked。命令替换、畸形引号、空 segment 和 NUL 均被显式识别。M3-10 只产出稳定 Assessment；M3-13 再保证 Guard 在 approval 和实际执行之前运行。
+
 ### 15.3 审批与审计
 
 - Approval Request 包含工具、规范化参数、风险级别和原因。
 - CLI/TUI/API 提供不同 Handler，Runtime 只依赖接口。
 - 审计为 JSONL，记录时间、会话、工具、结果、审批来源和耗时。
 - API key、Authorization header、图片二进制和完整敏感正文必须脱敏或省略。
+
+M3-11 在 `internal/policy` 固定审批 Domain：ApprovalRequest 包含稳定 request ID、tool name、规范化 JSON object 参数、参数 SHA-256、风险和原因。参数使用 `UseNumber` 解码并重新编码为 canonical JSON，拒绝数组、null、多 JSON value、尾随正文和 hash 不一致，后续 Handler、grant cache 与 Audit 可以使用同一身份而不依赖原始字段顺序。
+
+ApprovalDecision 将结果与生命周期拆开：Outcome 为 allow/deny，Scope 为 once/session/always，Source 为 user/default/policy/grant，并要求明确 reason。ApprovalHandler 只暴露 `Decide(context.Context, ApprovalRequest)` Port，不依赖终端、TUI、HTTP 或 Store。M3-12 提供 terminal 实现，M3-13 负责 session/always grant 的应用和安全流水线顺序，M3-14 记录脱敏审计。
+
+M3-12 在 `internal/interface/cli` 实现首个 `TerminalApprovalHandler`。Handler 串行化同一终端上的审批交互；TTY 提供 allow once、allow session、allow always 和 deny once 四种明确选择，非法输入会重试，EOF 安全降级为 deny once。提示只显示经过控制字符清理和长度限制的 request ID、tool、risk、reason 与参数 hash，不直接回显完整参数正文，避免命令参数、写入内容或未来凭证字段被终端日志意外记录。
+
+非 TTY 永不读取输入或输出提示：`approval.default=allow|deny` 产生对应的 once/default 决策，`ask` 因无法交互而 fail closed 为 deny；`approval.enabled=false` 显式允许请求但仍不影响 CommandGuard 的 blocked 决策。默认 TTY 探测可由入口替换，测试使用注入探测器覆盖交互和非交互路径。M3-13 再消费 Scope 建立 session/always grant，并保证 blocked policy、PathGuard 与 CommandGuard 均先于 Handler。
+
+M3-13 通过 `tool.Authorizer` 把安全门闩接到参数校验与真实 `Tool.Execute` 之间。MVP 文件工具按自身参数先执行统一 PathGuard preflight；`execute_command` 先验证 cwd，再运行 CommandGuard。路径外逃、软链接外逃、blocked 命令或策略解析失败均不会调用 ApprovalHandler；审批拒绝、Handler 错误或非法 Decision 同样不会进入工具实现。文件工具和命令工具内部仍保留第二次 PathGuard，形成“审批前预检 + 副作用前复检”，降低等待用户期间路径状态变化带来的 TOCTOU 风险。
+
+低风险只读操作直接通过；write/network/未知 execute 与 CommandGuard 的 moderate/high 进入 ApprovalHandler。GrantCache 以 tool name、规范化参数 SHA-256 和 risk 作为精确身份，once 不缓存，session 可由 session 边界清除，always 在同一 cache 生命周期内跨 session 保留；命中后 Decision source 改为 grant。首版不把 always 写入磁盘，避免在 M3 缺少安全 Store、撤销和迁移协议时制造不可审计的永久授权。Agent bootstrap 现在强制注入 ApprovalHandler 并装配 ToolAuthorizer，不再默认构造可绕过审批的真实 MVP 执行链。
+
+M3-14 在 `internal/audit` 固定结构化 Record 与 Sink Port，并提供并发安全的 JSONL writer、内存测试 Sink 和 append-only 文件入口。记录包含 timestamp、可选 session ID、request/tool、规范化参数 hash、risk、allow/deny/error、scope、source、reason 与 duration；类型中不存在原始 arguments、header、工具正文或图片 payload 字段，因此这些大正文不会进入审计序列化面。文本字段在落盘前清理控制字符、限制为 512 runes，并对 Authorization/Bearer、API key、token、password、secret 和 cookie 形式再次脱敏。
+
+`OpenJSONLFile` 自动建立 0700 父目录、以 append 模式打开 0600 regular file，并拒绝最终 symlink；每条记录先独立编码，再在锁内单次写入，保证并发调用仍是一行一个合法 JSON object。ToolAuthorizer 对 policy allow、policy deny、用户/default/grant 决策和 preflight/handler error 统一记录耗时；配置了 Audit Sink 时，写入失败会在 `Tool.Execute` 前 fail closed，并与原始拒绝或策略错误保留完整 error chain。Agent bootstrap 同时强制注入 ApprovalHandler 与 Audit Sink，避免真实 MVP 链静默绕过审批或审计。
 
 ## 16. 上下文与显式指令
 
@@ -944,6 +1158,33 @@ Amadeus 使用明确、可编辑、可版本控制的 `AGENTS.md` 代替模型�
 
 每个 `AGENTS.md` 作为完整 InstructionDocument 读取，至少记录 `source/path/scope/hash/content`。文件必须是受大小预算约束的 UTF-8 文本；项目指令路径必须位于 `project.Root` 内，符号链接不得绕过路径围栏。指令中的命令示例只是上下文，不会自动执行，也不能绕过 Tool Policy、Approval 或审计。
 
+M3-05 在 `internal/instruction` 固定首版 Domain 契约：
+
+```go
+type InstructionDocument struct {
+    Source  Source
+    Path    string
+    Scope   Scope
+    SHA256  string
+    Content string
+}
+
+type Scope struct {
+    Kind ScopeKind
+    Path string
+}
+```
+
+`Source` 只表达文档来自用户级还是项目级指令链，不表示 UI、Store 或 LLM message role。文档 `Path` 是规范化绝对来源路径；`Scope.Path` 使用可移植的项目相对正斜杠路径：用户级为空、项目根级为 `.`、目录级为 `pkg/subdir`。文档构造时验证 UTF-8、非空正文、source/scope 一致性，并以正文原始字节生成 SHA-256；后续反序列化或恢复时再次校验 hash，避免内容和 provenance 静默分离。
+
+M3-06 的 `UserLoader` 在构造时解析并规范化 Amadeus home，固定读取 `<amadeus-home>/AGENTS.md`。默认文件预算为 64 KiB，可由显式 options 收紧；读取使用 `limit + 1` 的有界 Reader，精确区分边界内文件和超预算文件。文件不存在返回 `nil` 且不报错，表示没有用户级指令；文件一旦存在，则目录、空正文、非法 UTF-8、读取失败和超预算都属于配置错误，不允许静默降级。用户可以显式使用 `AGENTS.md` 软链接，Document provenance 记录解析后的真实来源路径；用户级文件不套用项目围栏，项目 symlink 防护由 M3-07/M3-09 负责。
+
+M3-07 的 `ProjectLoader` 绑定单个 `project.Root`，接收规范化前的“目标目录”并生成 `.`、`pkg`、`pkg/service` 这类从根到目标的稳定目录链。每一级只查找该目录直属的 `AGENTS.md`，结果始终按项目根到最深目录排列；兄弟目录规则不会进入当前链。中间目录尚不存在时停止向下发现，但保留此前已经加载的上层指令，支持新文件所在父目录尚未完全创建的场景。
+
+目标目录语义保持显式：M3-08 通过 `TargetKind=file|directory|command_cwd` 区分目标，文件操作使用父目录，目录操作和命令使用目标目录或 cwd，避免发现器根据文件是否存在猜测 file/dir 类型。项目指令默认同样使用每文件 64 KiB 上限；缺失文件正常跳过，已存在的空文件、非法 UTF-8、非普通文件和超预算文件明确失败。
+
+发现器在读取前解析每一级目录和 `AGENTS.md` 的真实路径并验证仍位于 `project.Root`。指向项目外部的目录或文件软链接立即拒绝；指向项目内部的软链接允许读取，但 Document 保留项目内看到的逻辑路径和对应逻辑 Scope，使目录优先级、Resolution 校验和用户诊断保持稳定。M3-09 会把同类围栏规则扩展到所有项目文件和工具操作。
+
 ### 16.4 发现、作用域与优先级
 
 Instruction Resolver 先读取可选的 `$AMADEUS_HOME/AGENTS.md`，再从 `project.Root` 沿目标路径逐层发现 `AGENTS.md`。目录级文件的作用域是其所在目录树；操作某个文件或目录前，必须使用覆盖该目标的完整指令链，不能只加载启动目录后忽略更深层规则。对项目根执行的命令至少应用用户级与项目根级指令；若命令 cwd 位于子目录，则继续应用从项目根到该 cwd 的目录级指令。
@@ -957,14 +1198,37 @@ Instruction Resolver 先读取可选的 `$AMADEUS_HOME/AGENTS.md`，再从 `proj
 5. `$AMADEUS_HOME/AGENTS.md`。
 6. Amadeus 默认行为。
 
+Resolver Port 使用 `ResolveRequest{Project, TargetPath, TargetKind}`，其中目标路径必须是规范化、不可逃逸的项目相对路径，`.` 表示项目根。`TargetKind` 只接受 `file`、`directory` 和 `command_cwd`；Resolution 必须回显相同 target path/kind。`Resolution.Documents` 按“用户级 → 项目根 → 逐层目录级”从宽到窄排列；空列表是合法结果，表示当前目标没有持久指令。Resolution 校验每个 Scope 确实覆盖目标对应的有效目录、来源路径不重复、同一作用域不重复、顺序不倒置，并要求项目来源文档位于 `project.Root` 内且文件所在目录与 Scope 匹配。
+
+M3-08 的 `LayeredResolver` 组合一个 UserLoader 和与请求同根的 ProjectLoader：先读取用户级文档，再发现项目链，最终保持 user → project root → deeper directory 的稳定顺序，因此越靠后的项目文档具有越高普通指令优先级。若 `AMADEUS_HOME` 与目标项目根恰好相同，同一路径不会作为 user/project 两份文档重复注入，而只保留更具体的项目来源。任一加载、围栏或 Domain 校验错误都会终止解析，不返回部分 Resolution。
+
+M3-05 只定义 `Resolver` 接口和领域不变量；M3-06 已实现用户级加载，M3-07 已实现项目根与目录发现，M3-08 已完成优先级与目标感知组合。整个 `internal/instruction` 仍不依赖 CLI/TUI、Provider/LLM、Conversation 或 Store。
+
 项目级指令因此高于用户级指令，更深目录高于更浅目录；当前用户请求可以覆盖普通工程约定，但不能绕过安全和审批。Assembler 不把多层文件静默拼成无来源文本，而是使用独立结构化包络注入，并保留稳定顺序、路径、scope 和 hash，便于诊断、缓存和审计。无法确定冲突含义时应向用户提问，而不是让模型猜测。
 
-### 16.5 Conversation 与 ContextView
+### 16.5 Session、Turn 与 Run
+
+持久化会话必须区分五个概念，避免把终端进程、用户对话和 Agent 执行混为一体：
+
+| 概念 | 语义 | 生命周期 |
+|---|---|---|
+| Conversation Session | 用户可查看、切换和跨进程恢复的项目会话 | SQLite 持久化 |
+| Terminal Session | 一次 `amadeus` 进程从启动到退出的交互生命周期 | 仅内存 |
+| Turn | 一次真实用户输入及其处理结果 | SQLite 持久化 |
+| Run | Engine 对一个 Turn 的一次执行 | SQLite 持久化 |
+| Checkpoint | Run 执行期间追加的不可变状态快照 | SQLite 持久化 |
+
+首版保持一个 Turn 对应一个主 Run。用户中断后输入“请继续”会产生新的 Turn 和新的 Run，旧 Run 永久保持 `cancelled`，不得重新变回 `running`。`internal/agent/runtime.Session` 是 M1 纯聊天的进程内执行器，后续应重命名为 `ChatSession`，不得与持久化 Conversation Session 共用含糊的 `Session` 类型名。
+
+Conversation 只保存正式可见的 `user`/`assistant` 消息。真实用户输入在 Run 开始前写入；只有成功形成正式最终回答时才写入 assistant 消息。取消或失败的 Turn 保留用户消息、Turn/Run 状态和 Checkpoint，但不把流式增量、未完成回答、system/developer/tool 消息或隐藏 reasoning 提升为正式 Conversation。
+
+### 16.6 Conversation 与 ContextView
 
 ```go
 type ConversationStore interface {
-    Append(ctx context.Context, message MessageRecord) error
-    List(ctx context.Context, threadID ThreadID) ([]MessageRecord, error)
+    AppendTurn(ctx context.Context, input AppendTurnInput) (TurnRecord, error)
+    CompleteTurn(ctx context.Context, input CompleteTurnInput) error
+    ListMessages(ctx context.Context, sessionID ConversationSessionID) ([]MessageRecord, error)
 }
 
 type ContextBuilder interface {
@@ -972,21 +1236,50 @@ type ContextBuilder interface {
 }
 ```
 
-ConversationStore 保存完整、按序、用户可见的消息记录。ContextBuilder 根据当前 Goal/Task、最近 Conversation、Conversation Summary、适用的 InstructionDocument、Run Evidence、内置 Prompt 和工具定义构造 ContextView；裁剪、压缩和检索只改变 View，不修改原始消息或指令文件。
+ConversationStore 保存完整、按序、用户可见的消息记录。ContextBuilder 根据当前 Goal/Task、最近 Conversation、Conversation Summary、适用的 InstructionDocument、Run Evidence、最近中断 Run 摘要、内置 Prompt 和工具定义构造 ContextView；裁剪和压缩只改变 View，不修改原始消息、Checkpoint 或指令文件。
 
-ContextBuilder 注入的数据必须保留类别和来源，使模型能区分当前用户任务、用户级指令、不同目录作用域的项目指令、历史对话、Run Evidence 和外部资源内容。Conversation Summary、MCP resources、Skill 与 Web 内容不得伪装为 system、`AGENTS.md` 或本轮用户指令。
+ContextBuilder 注入的数据必须保留类别和来源，使模型能区分当前用户任务、用户级指令、不同目录作用域的项目指令、历史对话、Run Evidence 和此前中断工作。Conversation Summary、Pending Interrupted Work、MCP resources、Skill 与 Web 内容不得伪装为 system、`AGENTS.md` 或本轮用户指令。
 
-### 16.6 Reflection 与 Checkpoint
+M3-15 在 `internal/context` 实现首版 Agent Context Envelope。Builder 接收已组装 Prompt Bundle、经过目标感知校验的 Instruction Resolution、当前用户任务和 Tool Specs，固定生成三类消息：system 为内置 Agent Prompt，developer 为 `amadeus.instructions.v1` JSON 包络，user 为本轮任务。M4 在此基础上加入正式 Conversation 和结构化 `amadeus.interrupted_work.v1` 包络，而不是把旧 Run 的完整临时消息链原样回放。
 
-Reflection 只产生当前 Run 所需的结构化 verdict、issues、evidence gaps、next action 和简短说明，用于 accept/retry/replan/ask_user/abort。它可以随 RunState 写入 Checkpoint 以支持恢复，但第一版不自动提炼、检索或跨 Run 注入 Lesson，也不保存 chain-of-thought。
+工具在进入 Envelope 前按 name 稳定排序、拒绝重复/非法 Spec，并规范化 JSON Schema；Envelope Sources 始终按 Prompt bundle → Prompt layers → user/project/deeper Instructions → Conversation summary/history → interrupted work → current task → sorted tools 排列。每个来源都有稳定 ID 和 SHA-256，最终 Envelope hash 覆盖 messages、tool specs 与完整来源清单。ReActRunner/DirectEngine 只消费已经构造好的 ContextView，不直接扫描 Session、SQLite 或 `AGENTS.md`。
 
-Checkpoint Store 保存 Graph、Task、Step、Evidence、Budget、pending action 和恢复所需的 Conversation 引用。恢复时重新解析当前有效 `AGENTS.md`，并比较保存的 instruction hash；规则发生变化时应记录差异并重新验证待执行动作，不能把旧指令快照静默当作当前规则。
+### 16.7 中断后的重新规划
 
-### 16.7 实施时机
+MVP 不实现“精确恢复中断 Run”，而采用“保存中断摘要、重新读取现场、创建新 Run、重新规划”的安全模型：
 
-M3 按顺序实现内置 Prompt、InstructionDocument/Resolver、用户级与目录级 `AGENTS.md`、ConversationStore、ContextBuilder/Compactor 和 Checkpoint。ReActRunner 只消费已经构造好的 ContextView，不直接扫描指令文件、保存 Conversation 或执行压缩，确保执行循环不依赖文件发现和持久化细节。
+```text
+old Run cancelled
+  -> append interruption checkpoint
+  -> keep Terminal/Conversation Session alive
+  -> receive next real user message
+  -> create new Turn and new Run
+  -> inject previous interruption summary
+  -> reload workspace and AGENTS.md
+  -> call the normal LLM path and replan
+```
 
-Durable Memory、自动偏好提取、Memory SQLite、MemoryRetriever、remember/recall 工具和跨 Run Reflexion Lesson 不进入当前路线图。只有真实使用证明 `AGENTS.md`、Conversation 和 Checkpoint 无法满足明确需求时，才以可选 ADR 重新评估；任何未来方案都必须默认显式写入、可查看、可删除、可追踪来源，并且不能自动把模型推测提升为用户指令。
+旧 Run 不恢复 Go 调用栈、流式响应位置、工具调用栈、旧审批结果或原计划执行指针，也不直接重放最后一次工具调用。工具可能已经产生部分副作用，因此新 Run 必须重新检查文件、diff、测试状态和外部命令结果，并重新经过 PathGuard、CommandGuard、Approval 与 Audit。
+
+只要当前 Conversation Session 存在最近中断 Run，下一次真实用户输入就自动获得 `Pending Interrupted Work`：原始 objective、stop reason、已完成 Step、关键 Evidence/工具结果摘要、相关路径、最后已知剩余工作和预算使用情况。Prompt 明确要求模型不要假设旧计划有效；如果用户表达继续，则基于当前现场重新规划旧目标，如果用户提出新任务，则优先处理最新请求。`继续`、`请继续`、`请你继续` 等自然语言不经过额外 Router、复杂正则或第二次模型分类，正常 Run 的第一次 LLM 调用同时完成理解和 Replan。
+
+MVP 的关联字段只需要 `runs.context_from_run_id`，表示新 Run 构建上下文时使用了哪个中断 Run；不实现需要语义分类的 `continuation_of_run_id`。最近中断上下文遵循简单生命周期：中断后的下一 Run 自动携带；若新 Run 再次中断，则它成为新的最近中断 Run；若新 Run 成功完成，则清除自动 Pending Interrupted Work。旧 Run 和 Checkpoint 仍保留用于审计和历史查看。
+
+这里的 Replan 是统一 Engine 内部重新生成 Micro Plan 或重新评估 root Task，不等同于 `/plan`。只有 `/plan` 或 PlanningPolicy 要求审核时才向用户展示完整 ExecutionGraph；普通“请继续”无需额外审核计划，但新的高风险副作用仍必须重新审批。
+
+### 16.8 Reflection 与 Checkpoint
+
+Reflection 只产生当前 Run 所需的结构化 verdict、issues、evidence gaps、next action 和简短说明，用于 accept/retry/replan/ask_user/abort。它可以随 RunState 写入 Checkpoint，但第一版不自动提炼、检索或跨 Run 注入 Lesson，也不保存 chain-of-thought。
+
+MVP Checkpoint 是“可供新 Run 重新规划的执行证据”，不是恢复旧调用栈的序列化镜像。至少保存 schema version、objective、Run status、stop reason、completed Step、Evidence、工具结果摘要、相关路径、最后已知 pending work、Budget/Usage 和 Conversation 引用；可按 run started、tool completed、step completed、user cancelled、run completed/failed 等原因追加。Checkpoint 不保存 API key、Authorization header、隐藏 reasoning 或可绕过重新审批的授权状态。
+
+恢复 Conversation Session 或构建 Pending Interrupted Work 时重新解析当前有效 `AGENTS.md`，并比较 Checkpoint 保存的 path/scope/order/hash。规则发生变化时记录差异并以当前指令为准；Checkpoint 中的旧指令内容不能静默覆盖当前文件。
+
+### 16.9 实施时机
+
+M3 已实现内置 Prompt、InstructionDocument/Resolver、用户级与目录级 `AGENTS.md` 和首版 Context Envelope。M4 实现 Conversation Session/Turn/Run Store、SQLite、延迟创建、Session 命令、Context Budget/Compactor、简化 Checkpoint 和中断后 Replan。ReActRunner 继续只消费 ContextView，不直接发现文件、管理 Session 或执行数据库事务。
+
+Durable Memory、自动偏好提取、Memory SQLite、MemoryRetriever、remember/recall 工具、跨 Run Reflexion Lesson 和精确 Run 恢复不进入当前路线图。只有真实使用证明 `AGENTS.md`、Conversation 和简化 Checkpoint 无法满足明确需求时，才以可选 ADR 重新评估。
 
 ## 17. MCP、Skill 与扩展
 
@@ -1036,6 +1329,10 @@ M1-11 在 `internal/render` 实现 `PlainRenderer`，它直接实现 `event.Sink
 
 `ErrorOccurred` 以单行 `error: <message>` 写入 stderr，并折叠 Provider message 中的换行等空白，避免破坏终端输出结构。若错误前 stdout 已有部分文本，Renderer 先结束当前 stdout 行，再写 stderr。stdout/stderr Writer 错误和取消 context 都向调用方返回；Renderer 使用互斥锁避免并发事件写入时交错。
 
+M3-16 补齐 ToolCallStarted/Completed、ApprovalRequested/Resolved、StatusChanged 和 DiagnosticPublished 的稳定 payload，并在 `internal/render` 增加 AgentRenderer。模型正文仍按 TextDelta 原样流式写 stdout；工具开始/结果、审批、usage、状态、诊断、Verification、Reflection、Run 开始/终止、取消和错误以单行状态写 stderr。ReasoningDelta 默认隐藏，不向用户展示内部 reasoning；任一状态事件到达时先结束尚未换行的 stdout 文本，避免流式正文与状态行交错。
+
+Renderer 对状态文本剥离 ANSI CSI、折叠控制字符与多行空白，并限制为 240 runes；互斥锁保证并发事件一行一个，stdout/stderr 与取消错误完整返回。ToolExecutor 在参数校验后、授权前发布 started，在授权拒绝、工具失败或成功后发布 completed；ToolAuthorizer 对真实用户决策和 grant 命中都发布 requested/resolved，且事件 Sink 在 started/approval 阶段失败时会在工具副作用前终止。Agent bootstrap 将同一 Event Sink 注入 Iterator、ToolExecutor、ToolAuthorizer 和 DirectEngine，为 M3-18 根命令提供完整可观测主链。
+
 M1-12 在 `internal/interface/cli` 实现基础 `ChatLoop`，使用逐行 Reader 接收输入，忽略空行，以 `/exit` 正常退出，并在 Ctrl+D/管道 EOF 时返回成功；EOF 前没有换行的最后一条输入仍会执行。Loop 生成进程内递增 turn ID，并调用同一个 Runtime Session，因此成功轮次会形成最小多轮历史。Provider 错误已由事件/Renderer 输出，Loop 保持可继续读取下一条输入；Reader、Renderer 或其他基础设施错误则终止命令。
 
 `amadeus chat` 执行完整配置主链和校验，选择 default Provider，创建 OpenAI Adapter、Plain Renderer、Runtime Session 与 ChatLoop。基础 plain 模式不打印 banner 或输入提示符，保持终端和管道输出一致；更丰富的交互提示、history 和补全留在 M7。
@@ -1059,15 +1356,168 @@ M1-15 于 2026-07-29 使用项目根目录真实配置完成 Chat Completions co
 | Amadeus 主配置 | YAML | `<amadeus-root>/config.yaml` |
 | 用户级指令 | Markdown | `<amadeus-root>/AGENTS.md` |
 | 项目/目录级指令 | Markdown | `<project-root>/**/AGENTS.md` |
-| CLI history | 文本或 SQLite | `~/.local/share/amadeus/history` |
 | 审计 | JSONL | `~/.local/state/amadeus/audit/` |
-| Conversation | SQLite 或可替换 Store | OS-aware data directory |
-| Run Checkpoint | SQLite 或可替换 Store | OS-aware state directory |
-| 后台任务 | SQLite | `~/.local/share/amadeus/tasks.db` |
+| Conversation/Turn/Run/Checkpoint | SQLite | `<amadeus-root>/data/amadeus.db` |
 | 用户 Skill/MCP | 文件 | `<amadeus-root>/` 下的对应目录 |
 | 项目 Skill/MCP | 文件 | `<project>/.amadeus/` |
 
-路径通过 OS-aware directory resolver 生成；测试中注入临时目录。
+`AMADEUS_HOME` 是 Amadeus 的用户级配置、指令和运行数据根，不是目标项目根。SQLite 固定放在 `<amadeus-root>/data/amadeus.db`，由 `projects.canonical_path` 区分不同目标项目；不得在目标项目内生成数据库，也不得回退当前工作目录。`data` 目录权限为 `0700`，数据库文件权限为 `0600`。审计继续使用独立 JSONL，避免把 append-only 安全记录和可迁移的业务状态耦合。
+
+SQLite 初始化使用 `foreign_keys=ON`、WAL、`busy_timeout=5000` 和 `synchronous=NORMAL`。同一数据库允许在单个事务内原子完成 Session/Turn/Run 状态与正式消息写入；Store Port 仍保持 Conversation 与 Checkpoint 的领域边界，不能因为物理共库而合并职责。
+
+### 20.1 SQLite 表
+
+首版固定九张表：
+
+```text
+schema_migrations
+projects
+conversation_sessions
+session_turns
+conversation_messages
+conversation_summaries
+runs
+run_checkpoints
+checkpoint_instructions
+```
+
+明确不创建 `memories`、`user_preferences`、`embeddings`、`reflection_lessons`、`context_views`、`prompt_documents`、`persistent_grants` 或 `audit_records`。ContextView/Prompt 动态重建，审批重新验证，审计写独立 JSONL。
+
+### 20.2 `schema_migrations`
+
+| 字段 | 约束 | 语义 |
+|---|---|---|
+| `version` | PK integer | 单调迁移版本 |
+| `name` | not null | 迁移名称 |
+| `applied_at` | not null | UTC 应用时间 |
+
+迁移必须事务化、可重复检测且禁止跳过未知版本。
+
+### 20.3 `projects`
+
+| 字段 | 约束 | 语义 |
+|---|---|---|
+| `id` | PK text | Project ID |
+| `canonical_path` | unique, not null | 规范化目标项目根路径 |
+| `display_name` | not null | 展示名称 |
+| `created_at` | not null | 创建时间 |
+| `updated_at` | not null | 元数据更新时间 |
+| `last_opened_at` | not null | 最近打开时间 |
+
+首版以规范化真实路径作为项目身份。`--resume`、`--continue` 和 `sessions list` 默认只查询当前 Project，不能静默跨项目恢复。
+
+### 20.4 `conversation_sessions`
+
+| 字段 | 约束 | 语义 |
+|---|---|---|
+| `id` | PK text | Conversation Session ID |
+| `project_id` | FK, not null | 所属 Project |
+| `title` | not null | 首条任务截断生成的标题 |
+| `status` | not null | `active` 或 `archived` |
+| `next_turn_sequence` | not null | 下一个 Turn 序号 |
+| `created_at` | not null | 创建时间 |
+| `updated_at` | not null | 更新时间 |
+| `last_active_at` | indexed, not null | 当前项目最近 Session 查询依据 |
+
+`amadeus` 启动得到 Draft Session，但数据库不保存 draft 状态；第一次真实任务才创建本表记录。Session 没有 `completed`，因为历史对话可以再次恢复。
+
+### 20.5 `session_turns`
+
+| 字段 | 约束 | 语义 |
+|---|---|---|
+| `id` | PK text | Turn ID |
+| `session_id` | FK, not null | 所属 Conversation Session |
+| `sequence` | unique per session | 用户输入顺序 |
+| `status` | not null | `running/completed/cancelled/failed/partial/needs_plan/awaiting_user` |
+| `created_at` | not null | 用户提交时间 |
+| `completed_at` | nullable | 终态时间 |
+
+一个真实用户输入创建一个 Turn。`/help`、`/resume`、`/exit` 和选择器取消不是 Turn。
+
+### 20.6 `conversation_messages`
+
+| 字段 | 约束 | 语义 |
+|---|---|---|
+| `id` | PK text | Message ID |
+| `session_id` | FK, not null | 所属 Session |
+| `turn_id` | FK, not null | 所属 Turn |
+| `sequence` | unique per session | 正式消息顺序 |
+| `role` | not null | 首版仅 `user`/`assistant` |
+| `content` | not null | 用户可见正文 |
+| `created_at` | not null | 创建时间 |
+
+每个 Turn 最多一条 user 和一条 assistant 正式消息。用户消息在真实任务开始时持久化；assistant 只在正式成功完成时写入。system/developer/tool、流式增量、未完成回答和 reasoning 不进入本表。
+
+### 20.7 `conversation_summaries`
+
+| 字段 | 约束 | 语义 |
+|---|---|---|
+| `id` | PK text | Summary ID |
+| `session_id` | FK, not null | 所属 Session |
+| `from_message_sequence` | not null | 覆盖起始序号 |
+| `to_message_sequence` | not null | 覆盖结束序号 |
+| `content` | not null | 摘要正文 |
+| `source_hash` | not null | 原消息范围哈希 |
+| `summary_hash` | not null | 摘要哈希 |
+| `provider`/`model` | nullable | 生成来源 |
+| `created_at` | not null | 创建时间 |
+
+摘要是可重建派生数据，不删除或替换原始 Conversation Message，也不承担长期记忆职责。
+
+### 20.8 `runs`
+
+| 字段 | 约束 | 语义 |
+|---|---|---|
+| `id` | PK text | Run ID |
+| `session_id` | FK, not null | 所属 Session |
+| `turn_id` | FK, unique, not null | 首版一个 Turn 一个主 Run |
+| `context_from_run_id` | self FK, nullable | 本 Run 注入的最近中断 Run |
+| `objective` | not null | 本轮目标/用户任务 |
+| `status` | not null | Engine outcome 状态 |
+| `stop_reason` | nullable | 中断、失败或暂停原因 |
+| `provider`/`model`/`api_mode`/`dialect` | nullable | 实际模型主链 |
+| `budget_json` | nullable | Run 预算快照 |
+| `usage_json` | nullable | Run 实际使用量 |
+| `latest_checkpoint_seq` | not null | 最新 Checkpoint 序号 |
+| `started_at` | not null | 开始时间 |
+| `finished_at` | nullable | 终态时间 |
+
+MVP 不实现 `continuation_of_run_id`。`context_from_run_id` 只陈述新 Run 使用过哪个中断上下文，不要求系统分类用户是否在语义上继续旧任务。
+
+### 20.9 `run_checkpoints`
+
+| 字段 | 约束 | 语义 |
+|---|---|---|
+| `id` | PK text | Checkpoint ID |
+| `run_id` | FK, not null | 所属 Run |
+| `sequence` | unique per run | 不可变追加序号 |
+| `schema_version` | not null | payload 版本 |
+| `reason` | not null | `run_started/tool_completed/step_completed/user_cancelled/run_completed/run_failed` 等 |
+| `payload_json` | not null | 重新规划所需的有界聚合状态 |
+| `payload_hash` | not null | payload 完整性哈希 |
+| `created_at` | not null | 创建时间 |
+
+payload 至少覆盖 objective、status、stop reason、completed steps、Evidence、工具结果摘要、相关路径、last known pending work、Budget/Usage 和 Conversation 引用。旧 Checkpoint 永不更新；追加成功后再推进 `runs.latest_checkpoint_seq`。Checkpoint 可能含源码和工具输出，必须有尺寸预算、文件权限和统一脱敏，不保存凭证或隐藏思维链。
+
+### 20.10 `checkpoint_instructions`
+
+| 字段 | 约束 | 语义 |
+|---|---|---|
+| `checkpoint_id` | FK, composite PK | 所属 Checkpoint |
+| `precedence` | composite PK | 指令稳定顺序 |
+| `path` | not null | 指令来源路径 |
+| `scope_path` | not null | 生效作用域 |
+| `content_hash` | not null | 当时内容 SHA-256 |
+
+恢复 Session 或构建中断摘要时重新读取当前 `AGENTS.md` 并比较哈希。表中不保存一份可覆盖当前文件的旧指令正文。
+
+### 20.11 事务边界
+
+- 首个真实任务：原子创建 Project（若不存在）、Conversation Session、Turn、user message 和 Run。
+- 后续 Turn：原子分配 sequence、创建 Turn/user message/Run，并更新 Session 活跃时间。
+- Run 成功：原子写 assistant message、完成 Run/Turn，并更新 Session。
+- Run 取消或失败：原子追加终态 Checkpoint、完成 Run/Turn；保留 user message，不写未完成 assistant message。
+- Checkpoint 过程追加使用独立短事务；任何旧副作用在新 Run 中仍需重新发现、验证和审批。
 
 ## 21. 错误处理与可观测性
 
@@ -1126,21 +1576,21 @@ M1-15 于 2026-07-29 使用项目根目录真实配置完成 Chat Completions co
 
 构建目标默认使用 `-buildvcs=false`，发布版本信息仍由 ADR-006 规定的 `-ldflags -X` 显式注入，避免构建结果依赖本地 VCS 元数据是否完整。
 
-## 23. 迁移阶段
+## 23. 开发阶段
 
 | 阶段 | 交付目标 | 可执行出口 |
 |---|---|---|
 | M0 | 工程骨架与配置 | `amadeus version/config check` 可运行 |
 | M1 | OpenAI SDK + 基础会话 | 可流式完成纯文本问答 |
 | M2 | 统一 Engine + ReAct + Verification/Reflection + 核心工具 | 单 root Task 可在临时项目中读、改、测并经质量闭环完成 |
-| M3 | 安全、Prompt、分层指令、上下文与恢复 | `AGENTS.md` 作用域生效，长运行受策略保护并可 checkpoint/resume |
-| M4 | Adaptive Planning + Replan + Multi-Agent placement | Direct 可动态升级，`/plan`、`/team` 共用同一 Engine |
-| M5 | MCP + Skill + Web | 外部工具和知识扩展可用 |
-| M6 | Snapshot/LSP/Image/Browser | 高级编码工作流可用 |
-| M7 | TUI + Runtime API + 后台任务 | 多入口共享 Runtime |
+| M3 | 首个可用 Coding Agent CLI | 根命令可在真实项目中安全读、改、测，分层 `AGENTS.md` 生效 |
+| M4 | 核心工具增强、长上下文与 Session 持久化 | `apply_patch` 成为默认编辑路径；可跨进程恢复会话，中断后新 Run 重新规划 |
+| M5 | Adaptive Planning 与 Replan | Direct 可动态升级，`/plan` 共用同一 Engine |
+| M6 | Coding Workflow 扩展 | Snapshot、LSP、Skill、MCP 与 Web 可选接入 |
+| M7 | Multi-Agent 与高级入口 | placement、TUI、Runtime API 和后台任务复用统一 Runtime |
 | M8 | 兼容回归与发布 | 形成可发布二进制和迁移说明 |
 
-每个阶段的最小任务、依赖与验收见 `docs/migration-progress.md`。
+每个阶段的最小任务、依赖与验收见 `docs/development-progress.md`。
 
 ## 24. 兼容性策略
 
@@ -1241,6 +1691,27 @@ M1-15 于 2026-07-29 使用项目根目录真实配置完成 Chat Completions co
 - 决策：ReAct 是 TaskRunner，Plan 是 ExecutionGraph，Team 是 Task placement；`/plan` 仅为本次 Run 设置强制展示和审核策略。
 - 原因：避免配置重新引入多套 Agent 的错误心智模型，并与 Plan-on-Demand、动态升级和统一状态机保持一致。
 
+### ADR-011：Session 恢复与中断后重新规划
+
+- 决策：用户级 `resume` 只恢复当前项目的 Conversation Session；`amadeus --continue` 恢复最近 Session，`amadeus --resume` 打开选择器，`amadeus --resume <session-id>` 直接恢复，交互 `/resume` 可切换并允许 `Esc` 取消。首版只实现 `amadeus sessions list`，不提供 `--session`、`/sessions` 或 `sessions list --all`。
+- 决策：`amadeus` 只创建内存 Draft Session，第一条真实任务才在 `<amadeus-root>/data/amadeus.db` 原子创建 Session、Turn、用户消息和 Run。
+- 决策：被取消的 Run 永久结束；下一次真实输入创建新 Turn/Run，注入最近中断摘要，重新读取工作区和 `AGENTS.md`，再由正常 LLM 主链重新规划。MVP 不恢复调用栈、不重放工具、不使用额外 Router，也不实现 `continuation_of_run_id`。
+- 原因：Session 恢复符合日常 CLI 习惯；重新规划比精确恢复未完成副作用更安全、更容易验证，并避免复杂自然语言继续意图识别。
+
+### ADR-012：结构化读搜、Patch 修改与 Shell 执行
+
+- 决策：保留 `read_file`、`list_dir`、`glob_files` 和 `grep_code` 作为高频结构化探索工具，即使 Shell 可以执行等价的 `cat/ls/find/grep`；专用工具负责 Project Root、稳定 schema、输出预算、Evidence 和跨平台语义。
+- 决策：新增 `apply_patch` 作为已有文件修改主路径，支持版本化 create/update/delete Patch Document、上下文冲突检测、全 Patch 预检和逐文件原子写；`write_file` 收窄为显式 create/replace，默认拒绝隐式覆盖。
+- 决策：`execute_command` 继续负责构建、测试、Git、格式化、生成器、项目脚本和专用工具无法表达的 fallback；Shell 不得绕过 PathGuard、CommandGuard、Approval、Audit 或输出预算。
+- 原因：完全 Shell 化会降低权限判定、结构化结果、可移植性和上下文预算质量；为每个命令建立专用工具又会扩大模型选择面和维护成本，混合方案在 Coding Agent 能力、安全和复杂度之间更平衡。
+
+### ADR-013：只读 SubAgent MVP
+
+- 决策：第一版 Multi-Agent 不实现独立 Team Engine，只在统一 ExecutionGraph 上增加 SubAgent placement；主 Agent 是唯一 RunState、Workspace 副作用、Verification 和最终回答所有者。
+- 决策：同一 Run 最多两个 SubAgent、委派深度固定为 1，并使用相同 Provider/model；只有互不依赖且显式 `read_only` 的 ready Task 可委派，SubAgent 只获得 read/list/glob/grep 工具。
+- 决策：SubAgent 通过结构化 `SubAgentTask/Result` 接收最小 ContextView 并返回 Summary/Evidence/Usage；不写正式 Conversation，不写文件、不执行命令、不互相通信、不创建子 Agent。初期仅 `/team` 为本次 Run 设置 `prefer_subagents`，不自动 Router。
+- 原因：只读并行已经能覆盖大型代码库调查的主要收益，同时规避共享工作区写冲突、Worktree、Patch 合并、Reviewer Agent、递归委派和多模型路由的实现风险；后续增强必须以真实收益为依据。
+
 ## 27. 已确认与待确认的实现决策
 
 已确认：
@@ -1252,6 +1723,11 @@ M1-15 于 2026-07-29 使用项目根目录真实配置完成 Chat Completions co
 5. Reflection 采用触发式检查，完成判断由 Verifier + Reflector 共同决定。
 6. 不实现自动长期记忆；用户级、项目级和目录级 `AGENTS.md` 是跨 Run 指令的唯一基线来源。
 7. `agent.mode` 不属于统一 Engine 配置，ReAct/Plan/Team 分别是 Task 执行、任务图和 placement 概念。
+8. Conversation Session、Terminal Session、Turn、Run 和 Checkpoint 使用独立语义；用户级 resume 不接受 Run ID。
+9. SQLite 固定在 `<amadeus-root>/data/amadeus.db`；目标项目只提供 Project 身份与工作区，不承载运行数据库。
+10. 中断后始终创建新 Run 并重新规划；只记录 `context_from_run_id`，不做精确 Run 恢复或继续意图分类。
+11. 内置工具采用结构化探索、`apply_patch` 修改和受约束 Shell 执行；`write_file` 只承担新建或显式整文件替换。
+12. Multi-Agent 第一版只有主 Agent 与最多两个只读 SubAgent；只通过 `/team` 请求并行调查，所有修改、命令、验证和最终回答仍由主 Agent 完成。
 
 仍需在对应任务开始时固定：
 

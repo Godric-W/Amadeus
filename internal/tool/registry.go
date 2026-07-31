@@ -96,6 +96,10 @@ func validateSpec(spec Spec) error {
 	return nil
 }
 
+func ValidateSpec(spec Spec) error {
+	return validateSpec(spec)
+}
+
 func isNilTool(candidate Tool) bool {
 	value := reflect.ValueOf(candidate)
 	switch value.Kind() {

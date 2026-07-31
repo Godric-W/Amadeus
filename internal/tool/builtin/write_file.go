@@ -20,6 +20,7 @@ type WriteFileOptions struct {
 
 type WriteFile struct {
 	root    project.Root
+	guard   *project.PathGuard
 	options WriteFileOptions
 }
 
@@ -38,7 +39,11 @@ func NewWriteFile(root project.Root, options WriteFileOptions) (*WriteFile, erro
 	if options.FileMode == 0 {
 		options.FileMode = 0o644
 	}
-	return &WriteFile{root: root, options: options}, nil
+	guard, err := project.NewPathGuard(root)
+	if err != nil {
+		return nil, err
+	}
+	return &WriteFile{root: root, guard: guard, options: options}, nil
 }
 
 func (writeFile *WriteFile) Spec() tool.Spec {
@@ -59,7 +64,7 @@ func (writeFile *WriteFile) Execute(ctx context.Context, input json.RawMessage) 
 	if err := ctx.Err(); err != nil {
 		return tool.Result{}, err
 	}
-	target, err := writeFile.root.Resolve(arguments.Path)
+	target, err := writeFile.guard.ResolveForWrite(arguments.Path)
 	if err != nil {
 		return tool.Result{}, err
 	}

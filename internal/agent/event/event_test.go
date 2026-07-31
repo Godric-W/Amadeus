@@ -59,3 +59,19 @@ func TestNewErrorInfoClassifiesGenericErrorAsUnknown(t *testing.T) {
 		t.Fatalf("unexpected generic error info: %#v", info)
 	}
 }
+
+func TestAgentEventPayloadsExposeStableTypes(t *testing.T) {
+	events := []Event{
+		ToolCallStarted{}, ToolCallCompleted{}, ApprovalRequested{}, ApprovalResolved{},
+		StatusChanged{}, DiagnosticPublished{},
+	}
+	want := []Type{
+		TypeToolCallStarted, TypeToolCallCompleted, TypeApprovalRequested, TypeApprovalResolved,
+		TypeStatusChanged, TypeDiagnosticPublished,
+	}
+	for index, runtimeEvent := range events {
+		if runtimeEvent.Type() != want[index] {
+			t.Fatalf("unexpected event type at %d: got %q want %q", index, runtimeEvent.Type(), want[index])
+		}
+	}
+}

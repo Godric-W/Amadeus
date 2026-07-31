@@ -35,11 +35,15 @@ func newChatCompletionsRequestForDialect(request llm.Request, dialect Dialect) (
 
 	messages := make([]openaisdk.ChatCompletionMessageParamUnion, 0, len(request.Messages))
 	for index, message := range request.Messages {
-		converted, err := chatCompletionMessage(message)
+		prepared := message
+		if prepared.Role == llm.RoleDeveloper && !dialect.Capabilities(config.APIChatCompletions).SupportsDeveloperRole {
+			prepared.Role = llm.RoleSystem
+		}
+		converted, err := chatCompletionMessage(prepared)
 		if err != nil {
 			return openaisdk.ChatCompletionNewParams{}, fmt.Errorf("chat completions request messages[%d]: %w", index, err)
 		}
-		if err := dialect.PrepareChatMessage(message, &converted); err != nil {
+		if err := dialect.PrepareChatMessage(prepared, &converted); err != nil {
 			return openaisdk.ChatCompletionNewParams{}, fmt.Errorf("chat completions request messages[%d]: %w", index, err)
 		}
 		messages = append(messages, converted)

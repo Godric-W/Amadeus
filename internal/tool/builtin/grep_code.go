@@ -30,6 +30,7 @@ type GrepCodeOptions struct {
 
 type GrepCode struct {
 	root    project.Root
+	guard   *project.PathGuard
 	options GrepCodeOptions
 	ripgrep string
 }
@@ -69,7 +70,11 @@ func NewGrepCode(root project.Root, options GrepCodeOptions) (*GrepCode, error) 
 			ripgrep = discovered
 		}
 	}
-	return &GrepCode{root: root, options: options, ripgrep: ripgrep}, nil
+	guard, err := project.NewPathGuard(root)
+	if err != nil {
+		return nil, err
+	}
+	return &GrepCode{root: root, guard: guard, options: options, ripgrep: ripgrep}, nil
 }
 
 func (grepCode *GrepCode) Spec() tool.Spec {
@@ -107,7 +112,7 @@ func (grepCode *GrepCode) Execute(ctx context.Context, input json.RawMessage) (t
 	if strings.TrimSpace(searchPath) == "" {
 		searchPath = "."
 	}
-	absoluteSearchPath, err := grepCode.root.Resolve(searchPath)
+	absoluteSearchPath, err := grepCode.guard.ResolveExisting(searchPath, project.PathAny)
 	if err != nil {
 		return tool.Result{}, err
 	}
@@ -218,7 +223,7 @@ func (grepCode *GrepCode) ripgrepFiles(ctx context.Context, searchPath, query st
 			continue
 		}
 		relative := filepath.ToSlash(string(part))
-		resolved, err := grepCode.root.Resolve(filepath.FromSlash(relative))
+		resolved, err := grepCode.guard.ResolveExisting(filepath.FromSlash(relative), project.PathFile)
 		if err != nil {
 			return nil, fmt.Errorf("validate ripgrep result %q: %w", relative, err)
 		}
@@ -303,6 +308,24 @@ func (grepCode *GrepCode) collectFiles(ctx context.Context, searchPath string) (
 		if entry.IsDir() {
 			if _, ignored := ignoredGlobDirectories[entry.Name()]; ignored || strings.HasPrefix(entry.Name(), ".") {
 				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			relative, err := grepCode.root.Relative(filePath)
+			if err != nil {
+				return err
+			}
+			resolved, err := grepCode.guard.ResolveExisting(filepath.FromSlash(relative), project.PathAny)
+			if err != nil {
+				return err
+			}
+			info, err := os.Stat(resolved)
+			if err != nil {
+				return err
+			}
+			if info.Mode().IsRegular() {
+				files = append(files, resolved)
 			}
 			return nil
 		}

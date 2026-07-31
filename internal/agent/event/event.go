@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/Godric-W/Amadeus/internal/llm"
 )
@@ -83,6 +84,63 @@ type TurnCompleted struct {
 	FinishReason         llm.FinishReason
 	ProviderFinishReason string
 }
+
+type ToolCallStarted struct {
+	RunID    string
+	CallID   string
+	ToolName string
+}
+
+func (ToolCallStarted) Type() Type { return TypeToolCallStarted }
+
+type ToolCallCompleted struct {
+	RunID    string
+	CallID   string
+	ToolName string
+	Success  bool
+	Partial  bool
+	Summary  string
+	Duration time.Duration
+}
+
+func (ToolCallCompleted) Type() Type { return TypeToolCallCompleted }
+
+type ApprovalRequested struct {
+	RequestID string
+	ToolName  string
+	Risk      string
+	Reason    string
+}
+
+func (ApprovalRequested) Type() Type { return TypeApprovalRequested }
+
+type ApprovalResolved struct {
+	RequestID string
+	ToolName  string
+	Outcome   string
+	Scope     string
+	Source    string
+	Reason    string
+}
+
+func (ApprovalResolved) Type() Type { return TypeApprovalResolved }
+
+type StatusChanged struct {
+	Entity   string
+	EntityID string
+	From     string
+	To       string
+}
+
+func (StatusChanged) Type() Type { return TypeStatusChanged }
+
+type DiagnosticPublished struct {
+	Severity string
+	Code     string
+	Message  string
+}
+
+func (DiagnosticPublished) Type() Type { return TypeDiagnosticPublished }
 
 func (TurnCompleted) Type() Type {
 	return TypeTurnCompleted

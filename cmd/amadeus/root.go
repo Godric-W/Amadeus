@@ -14,11 +14,19 @@ import (
 const envAmadeusHome = "AMADEUS_HOME"
 
 type commandRuntime struct {
-	amadeusRoot        string
-	rootErr            error
-	lookupEnv          config.EnvLookup
-	llmClientFactory   llmClientFactory
-	turnContextFactory chatTurnContextFactory
+	amadeusRoot         string
+	rootErr             error
+	workingDirectory    string
+	workingDirectoryErr error
+	lookupEnv           config.EnvLookup
+	llmClientFactory    llmClientFactory
+	turnContextFactory  chatTurnContextFactory
+	agentContextFactory chatTurnContextFactory
+	agentCommand        agentCommand
+	agentCommandFactory agentCommandFactory
+	terminalDetector    terminalDetector
+	auditSinkFactory    auditSinkFactory
+	runIDFactory        func() string
 }
 
 func newRootCommand() *cobra.Command {
@@ -30,16 +38,25 @@ func newRootCommandWithConfigFlags(flags *configFlags) *cobra.Command {
 }
 
 func newRootCommandWithRuntime(flags *configFlags, runtime commandRuntime) *cobra.Command {
+	return newRootCommandWithFlags(flags, &projectFlags{}, runtime)
+}
+
+func newRootCommandWithFlags(configFlags *configFlags, projectFlags *projectFlags, runtime commandRuntime) *cobra.Command {
 	command := &cobra.Command{
-		Use:           "amadeus",
+		Use:           "amadeus [task]",
 		Short:         "Amadeus agent CLI",
 		SilenceErrors: true,
 		SilenceUsage:  true,
+		Args:          cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, arguments []string) error {
+			return runRootAgent(command, arguments, configFlags, projectFlags, runtime)
+		},
 	}
 
-	flags.bind(command)
-	command.AddCommand(newChatCommand(flags, runtime))
-	command.AddCommand(newConfigCommand(flags, runtime))
+	configFlags.bind(command)
+	projectFlags.bind(command)
+	command.AddCommand(newChatCommand(configFlags, runtime))
+	command.AddCommand(newConfigCommand(configFlags, runtime))
 	command.AddCommand(newToolsCommand())
 	command.AddCommand(newVersionCommand(buildinfo.Current()))
 
@@ -49,10 +66,18 @@ func newRootCommandWithRuntime(flags *configFlags, runtime commandRuntime) *cobr
 func defaultCommandRuntime() commandRuntime {
 	lookupEnv := config.EnvLookup(os.LookupEnv)
 	amadeusRoot, err := resolveAmadeusRoot(lookupEnv, os.Executable, filepath.EvalSymlinks)
+	workingDirectory, workingDirectoryErr := os.Getwd()
 	return commandRuntime{
-		amadeusRoot: amadeusRoot,
-		rootErr:     err,
-		lookupEnv:   lookupEnv,
+		amadeusRoot:         amadeusRoot,
+		rootErr:             err,
+		workingDirectory:    workingDirectory,
+		workingDirectoryErr: workingDirectoryErr,
+		lookupEnv:           lookupEnv,
+		terminalDetector:    isTerminalInput,
+		agentContextFactory: interruptibleTurnContext,
+		agentCommandFactory: defaultAgentCommandFactory,
+		auditSinkFactory:    defaultAuditSinkFactory(lookupEnv, os.UserHomeDir),
+		runIDFactory:        nextAgentRunID,
 	}
 }
 

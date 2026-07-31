@@ -11,16 +11,19 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/prompts"
 )
 
 type Options struct {
 	Temperature     float64
 	MaxOutputTokens int
+	SystemPrompt    string
 }
 
 type Reflector struct {
-	client  llm.Client
-	options Options
+	client       llm.Client
+	options      Options
+	systemPrompt string
 }
 
 func New(client llm.Client, options Options) (*Reflector, error) {
@@ -36,7 +39,11 @@ func New(client llm.Client, options Options) (*Reflector, error) {
 	if options.MaxOutputTokens <= 0 {
 		return nil, errors.New("reflector max output tokens must be greater than zero")
 	}
-	return &Reflector{client: client, options: options}, nil
+	systemPrompt := strings.TrimSpace(options.SystemPrompt)
+	if systemPrompt == "" {
+		systemPrompt = prompts.ReflectionProtocol()
+	}
+	return &Reflector{client: client, options: options, systemPrompt: systemPrompt}, nil
 }
 
 func (reflector *Reflector) Reflect(ctx context.Context, input engine.ReflectionInput) (engine.Reflection, error) {
@@ -50,7 +57,7 @@ func (reflector *Reflector) Reflect(ctx context.Context, input engine.Reflection
 	response, err := reflector.client.Complete(ctx, llm.Request{
 		Model: reflector.client.Model().Name,
 		Messages: []llm.Message{
-			llm.SystemMessage(reflectionSystemPrompt),
+			llm.SystemMessage(reflector.systemPrompt),
 			llm.UserMessage(string(payload)),
 		},
 		Temperature:     reflector.options.Temperature,
@@ -88,10 +95,5 @@ func decodeReflection(content string) (engine.Reflection, error) {
 	}
 	return result, nil
 }
-
-const reflectionSystemPrompt = `You are the Amadeus quality reflector. Return exactly one JSON object and no markdown or prose.
-Allowed verdicts: accept, retry, replan, ask_user, abort.
-Schema: {"scope":"task|run","verdict":"...","issues":[{"code":"...","summary":"...","severity":"info|warning|critical"}],"evidence_gaps":["..."],"next_action_hint":"...","plan_changes":[{"task_id":"...","description":"..."}],"lesson":"..."}.
-Use accept only when deterministic verification passed. Do not include chain-of-thought; provide only concise issues, gaps, next action, optional plan changes, and a short lesson.`
 
 var _ engine.Reflector = (*Reflector)(nil)

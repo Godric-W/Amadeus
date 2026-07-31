@@ -36,7 +36,7 @@ func TestValidateReportsStableFieldPaths(t *testing.T) {
 		Temperature:     3,
 		MaxOutputTokens: 0,
 	}
-	configured.Agent = AgentConfig{Mode: "invalid"}
+	configured.Agent = AgentConfig{}
 	configured.Approval.Default = "invalid"
 	configured.Logging.Level = "invalid"
 
@@ -60,13 +60,41 @@ func TestValidateReportsStableFieldPaths(t *testing.T) {
 		"providers.broken.max_retries",
 		"providers.broken.temperature",
 		"providers.broken.max_output_tokens",
-		"agent.mode",
 		"agent.max_steps",
+		"agent.max_tool_calls",
+		"agent.max_input_tokens",
+		"agent.max_output_tokens",
+		"agent.max_duration",
 		"agent.max_parallel_tools",
 		"approval.default",
 		"logging.level",
 	}
 	for _, path := range expectedPaths {
+		if !strings.Contains(err.Error(), path+":") {
+			t.Fatalf("validation error does not contain %q: %v", path, err)
+		}
+	}
+}
+
+func TestValidateRejectsAgentBudgetAboveLimits(t *testing.T) {
+	configured := Default()
+	configured.Agent = AgentConfig{
+		MaxSteps:         maxAgentSteps + 1,
+		MaxToolCalls:     maxAgentToolCalls + 1,
+		MaxInputTokens:   maxAgentTokens + 1,
+		MaxOutputTokens:  maxAgentTokens + 1,
+		MaxDuration:      maxAgentDuration + 1,
+		MaxParallelTools: maxParallelTools + 1,
+	}
+
+	err := Validate(configured)
+	if err == nil {
+		t.Fatal("expected oversized Agent budget to fail")
+	}
+	for _, path := range []string{
+		"agent.max_steps", "agent.max_tool_calls", "agent.max_input_tokens",
+		"agent.max_output_tokens", "agent.max_duration", "agent.max_parallel_tools",
+	} {
 		if !strings.Contains(err.Error(), path+":") {
 			t.Fatalf("validation error does not contain %q: %v", path, err)
 		}

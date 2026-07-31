@@ -77,7 +77,7 @@ func TestChatCompletionsRequestSerializesCompatibleTextFields(t *testing.T) {
 		content string
 	}{
 		{role: "system", content: "system prompt"},
-		{role: "developer", content: "developer prompt"},
+		{role: "system", content: "developer prompt"},
 		{role: "user", content: "hello"},
 		{role: "assistant", content: "previous answer"},
 	}
@@ -91,6 +91,26 @@ func TestChatCompletionsRequestSerializesCompatibleTextFields(t *testing.T) {
 		}
 		if _, exists := message["reasoning_content"]; exists {
 			t.Fatalf("provider reasoning leaked into standard chat request: %#v", message)
+		}
+	}
+}
+
+func TestChatCompletionsRequestPreservesDeveloperRoleWhenDialectSupportsIt(t *testing.T) {
+	dialect, err := resolveDialect(config.DialectOpenAI)
+	if err != nil {
+		t.Fatalf("resolve OpenAI dialect: %v", err)
+	}
+	providerCapabilities := dialect.Capabilities(config.APIChatCompletions)
+	if providerCapabilities.SupportsDeveloperRole {
+		params, err := newChatCompletionsRequestForDialect(llm.Request{
+			Model: "test-model", Messages: []llm.Message{llm.DeveloperMessage("developer prompt")},
+			MaxOutputTokens: 128,
+		}, dialect)
+		if err != nil {
+			t.Fatalf("convert OpenAI chat request: %v", err)
+		}
+		if len(params.Messages) != 1 || params.Messages[0].OfDeveloper == nil {
+			t.Fatalf("developer role was not preserved: %#v", params.Messages)
 		}
 	}
 }

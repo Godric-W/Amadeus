@@ -3,11 +3,13 @@ package reflector
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/prompts"
 )
 
 type fakeClient struct {
@@ -50,6 +52,9 @@ func TestReflectorAcceptsStrictStructuredVerdict(t *testing.T) {
 	if !strings.Contains(client.request.Messages[0].Content, "chain-of-thought") {
 		t.Fatalf("system prompt omitted reasoning privacy rule: %q", client.request.Messages[0].Content)
 	}
+	if !reflect.DeepEqual(client.request.Messages[0], llm.SystemMessage(prompts.ReflectionProtocol())) {
+		t.Fatalf("reflector did not use the embedded task protocol: %q", client.request.Messages[0].Content)
+	}
 }
 
 func TestReflectorReturnsRetryWithEvidenceGap(t *testing.T) {
@@ -68,6 +73,23 @@ func TestReflectorReturnsRetryWithEvidenceGap(t *testing.T) {
 	result, err := reflector.Reflect(context.Background(), input)
 	if err != nil || result.Verdict != engine.ReflectionRetry || len(result.EvidenceGaps) != 1 {
 		t.Fatalf("unexpected retry reflection: result=%#v err=%v", result, err)
+	}
+}
+
+func TestReflectorUsesConfiguredSystemPrompt(t *testing.T) {
+	client := &fakeClient{response: llm.Response{
+		Message:      llm.AssistantMessage(`{"scope":"task","verdict":"accept"}`),
+		FinishReason: llm.FinishReasonStop,
+	}}
+	reflector, err := New(client, Options{Temperature: 0.1, MaxOutputTokens: 512, SystemPrompt: " assembled reflection "})
+	if err != nil {
+		t.Fatalf("create configured reflector: %v", err)
+	}
+	if _, err := reflector.Reflect(context.Background(), validReflectionInput()); err != nil {
+		t.Fatalf("run configured reflector: %v", err)
+	}
+	if client.request.Messages[0].Content != "assembled reflection" {
+		t.Fatalf("reflector omitted configured system prompt: %#v", client.request.Messages)
 	}
 }
 
