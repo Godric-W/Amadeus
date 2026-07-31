@@ -1,0 +1,447 @@
+package patch
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/Godric-W/Amadeus/internal/project"
+)
+
+type ExecutorOptions struct {
+	MaxFileBytes int64
+	FileMode     os.FileMode
+}
+
+type Executor struct {
+	guard     *project.PathGuard
+	options   ExecutorOptions
+	commitOps commitOperations
+}
+
+type ApplyResult struct {
+	Applied []OperationResult
+	Partial bool
+}
+
+type OperationResult struct {
+	Kind    OperationKind
+	Path    string
+	Bytes   int
+	Created bool
+	Deleted bool
+}
+
+type ConflictError struct {
+	Path    string
+	Line    int
+	Matches int
+	Reason  string
+}
+
+func (conflict *ConflictError) Error() string {
+	location := ""
+	if conflict.Line > 0 {
+		location = fmt.Sprintf(" at patch line %d", conflict.Line)
+	}
+	return fmt.Sprintf("patch conflict for %q%s: %s", conflict.Path, location, conflict.Reason)
+}
+
+type commitOperations interface {
+	Rename(oldPath, newPath string) error
+	Remove(path string) error
+}
+
+type osCommitOperations struct{}
+
+func (osCommitOperations) Rename(oldPath, newPath string) error { return os.Rename(oldPath, newPath) }
+func (osCommitOperations) Remove(path string) error             { return os.Remove(path) }
+
+type preparedOperation struct {
+	operation Operation
+	target    string
+	original  []byte
+	content   []byte
+	mode      os.FileMode
+	temporary string
+}
+
+func NewExecutor(root project.Root, options ExecutorOptions) (*Executor, error) {
+	return newExecutor(root, options, osCommitOperations{})
+}
+
+func newExecutor(root project.Root, options ExecutorOptions, commitOps commitOperations) (*Executor, error) {
+	if root.Path() == "" {
+		return nil, errors.New("apply_patch project root is empty")
+	}
+	if options.MaxFileBytes <= 0 {
+		return nil, errors.New("apply_patch max file bytes must be greater than zero")
+	}
+	if options.FileMode == 0 {
+		options.FileMode = 0o644
+	}
+	if commitOps == nil {
+		return nil, errors.New("apply_patch commit operations are nil")
+	}
+	guard, err := project.NewPathGuard(root)
+	if err != nil {
+		return nil, err
+	}
+	return &Executor{guard: guard, options: options, commitOps: commitOps}, nil
+}
+
+func (executor *Executor) Apply(ctx context.Context, document Document) (ApplyResult, error) {
+	if executor == nil || executor.guard == nil {
+		return ApplyResult{}, errors.New("apply_patch executor is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return ApplyResult{}, err
+	}
+	if err := validateDocument(document); err != nil {
+		return ApplyResult{}, err
+	}
+
+	prepared := make([]preparedOperation, 0, len(document.Operations))
+	for _, operation := range document.Operations {
+		candidate, err := executor.prepare(operation)
+		if err != nil {
+			return ApplyResult{}, err
+		}
+		prepared = append(prepared, candidate)
+	}
+	if err := ctx.Err(); err != nil {
+		return ApplyResult{}, err
+	}
+
+	if err := executor.stage(prepared); err != nil {
+		cleanupPrepared(prepared)
+		return ApplyResult{}, err
+	}
+	defer cleanupPrepared(prepared)
+
+	if err := executor.revalidate(prepared); err != nil {
+		return ApplyResult{}, err
+	}
+
+	result := ApplyResult{Applied: make([]OperationResult, 0, len(prepared))}
+	for index := range prepared {
+		if err := ctx.Err(); err != nil {
+			result.Partial = len(result.Applied) > 0
+			return result, err
+		}
+		operationResult, err := executor.commit(&prepared[index])
+		if err != nil {
+			result.Partial = len(result.Applied) > 0
+			return result, err
+		}
+		result.Applied = append(result.Applied, operationResult)
+	}
+	return result, nil
+}
+
+func validateDocument(document Document) error {
+	if document.Version != Version1 {
+		return fmt.Errorf("apply_patch document version %q is unsupported", document.Version)
+	}
+	if len(document.Operations) == 0 {
+		return errors.New("apply_patch document has no operations")
+	}
+	seen := make(map[string]struct{}, len(document.Operations))
+	for _, operation := range document.Operations {
+		if strings.TrimSpace(operation.Path) == "" {
+			return errors.New("apply_patch operation path is empty")
+		}
+		if strings.ContainsRune(operation.Path, '\x00') {
+			return fmt.Errorf("apply_patch operation path %q contains NUL", operation.Path)
+		}
+		if _, duplicate := seen[operation.Path]; duplicate {
+			return fmt.Errorf("apply_patch contains duplicate operation for path %q", operation.Path)
+		}
+		seen[operation.Path] = struct{}{}
+		switch operation.Kind {
+		case OperationAdd:
+			if len(operation.Hunks) != 0 {
+				return fmt.Errorf("apply_patch add operation %q cannot contain hunks", operation.Path)
+			}
+			for _, line := range operation.AddLines {
+				if strings.ContainsRune(line, '\x00') {
+					return fmt.Errorf("apply_patch add operation %q contains NUL", operation.Path)
+				}
+			}
+		case OperationUpdate:
+			if len(operation.Hunks) == 0 {
+				return fmt.Errorf("apply_patch update operation %q has no hunks", operation.Path)
+			}
+			for _, hunk := range operation.Hunks {
+				if err := validateHunk(operation.Path, hunk); err != nil {
+					return err
+				}
+			}
+		case OperationDelete:
+			if len(operation.AddLines) != 0 || len(operation.Hunks) != 0 {
+				return fmt.Errorf("apply_patch delete operation %q cannot contain content", operation.Path)
+			}
+		default:
+			return fmt.Errorf("apply_patch operation kind %q is invalid", operation.Kind)
+		}
+	}
+	return nil
+}
+
+func validateHunk(path string, hunk Hunk) error {
+	if len(hunk.Lines) == 0 {
+		return fmt.Errorf("apply_patch update operation %q contains empty hunk", path)
+	}
+	hasOldLine := false
+	hasChange := false
+	for _, line := range hunk.Lines {
+		if strings.ContainsRune(line.Content, '\x00') {
+			return fmt.Errorf("apply_patch update operation %q contains NUL", path)
+		}
+		switch line.Kind {
+		case LineContext:
+			hasOldLine = true
+		case LineAdd:
+			hasChange = true
+		case LineDelete:
+			hasOldLine = true
+			hasChange = true
+		default:
+			return fmt.Errorf("apply_patch update operation %q has invalid line kind %q", path, line.Kind)
+		}
+	}
+	if !hasOldLine {
+		return fmt.Errorf("apply_patch update operation %q hunk requires context or deleted lines", path)
+	}
+	if !hasChange {
+		return fmt.Errorf("apply_patch update operation %q hunk has no changes", path)
+	}
+	return nil
+}
+
+func (executor *Executor) prepare(operation Operation) (preparedOperation, error) {
+	target, err := executor.guard.ResolveForWrite(operation.Path)
+	if err != nil {
+		return preparedOperation{}, fmt.Errorf("prepare %s %q: %w", operation.Kind, operation.Path, err)
+	}
+	prepared := preparedOperation{operation: operation, target: target, mode: executor.options.FileMode}
+
+	switch operation.Kind {
+	case OperationAdd:
+		if _, err := os.Lstat(target); err == nil {
+			return preparedOperation{}, fmt.Errorf("apply_patch add target already exists: %q", operation.Path)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return preparedOperation{}, fmt.Errorf("inspect apply_patch add target %q: %w", operation.Path, err)
+		}
+		prepared.content = joinAddedLines(operation.AddLines)
+	case OperationUpdate, OperationDelete:
+		info, err := os.Lstat(target)
+		if err != nil {
+			return preparedOperation{}, fmt.Errorf("inspect apply_patch %s target %q: %w", operation.Kind, operation.Path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return preparedOperation{}, fmt.Errorf("apply_patch %s target is not a regular file: %q", operation.Kind, operation.Path)
+		}
+		if info.Size() > executor.options.MaxFileBytes {
+			return preparedOperation{}, fmt.Errorf("apply_patch target %q size %d exceeds limit %d",
+				operation.Path, info.Size(), executor.options.MaxFileBytes)
+		}
+		prepared.original, err = os.ReadFile(target)
+		if err != nil {
+			return preparedOperation{}, fmt.Errorf("read apply_patch target %q: %w", operation.Path, err)
+		}
+		prepared.mode = info.Mode().Perm()
+		if operation.Kind == OperationUpdate {
+			if !validText(prepared.original) {
+				return preparedOperation{}, fmt.Errorf("apply_patch target is binary or non-UTF-8: %q", operation.Path)
+			}
+			prepared.content, err = applyHunks(operation.Path, prepared.original, operation.Hunks)
+			if err != nil {
+				return preparedOperation{}, err
+			}
+		}
+	}
+
+	if int64(len(prepared.content)) > executor.options.MaxFileBytes {
+		return preparedOperation{}, fmt.Errorf("apply_patch result %q size %d exceeds limit %d",
+			operation.Path, len(prepared.content), executor.options.MaxFileBytes)
+	}
+	return prepared, nil
+}
+
+func (executor *Executor) stage(prepared []preparedOperation) error {
+	for index := range prepared {
+		candidate := &prepared[index]
+		if candidate.operation.Kind == OperationDelete {
+			continue
+		}
+		parent := filepath.Dir(candidate.target)
+		if err := os.MkdirAll(parent, 0o755); err != nil {
+			return fmt.Errorf("create apply_patch parent for %q: %w", candidate.operation.Path, err)
+		}
+		temporary, err := os.CreateTemp(parent, ".amadeus-patch-*")
+		if err != nil {
+			return fmt.Errorf("create apply_patch temporary file for %q: %w", candidate.operation.Path, err)
+		}
+		candidate.temporary = temporary.Name()
+		failed := func(err error) error {
+			_ = temporary.Close()
+			return err
+		}
+		if err := temporary.Chmod(candidate.mode); err != nil {
+			return failed(fmt.Errorf("set apply_patch temporary mode for %q: %w", candidate.operation.Path, err))
+		}
+		if _, err := temporary.Write(candidate.content); err != nil {
+			return failed(fmt.Errorf("write apply_patch temporary file for %q: %w", candidate.operation.Path, err))
+		}
+		if err := temporary.Sync(); err != nil {
+			return failed(fmt.Errorf("sync apply_patch temporary file for %q: %w", candidate.operation.Path, err))
+		}
+		if err := temporary.Close(); err != nil {
+			return fmt.Errorf("close apply_patch temporary file for %q: %w", candidate.operation.Path, err)
+		}
+	}
+	return nil
+}
+
+func (executor *Executor) revalidate(prepared []preparedOperation) error {
+	for _, candidate := range prepared {
+		switch candidate.operation.Kind {
+		case OperationAdd:
+			if _, err := os.Lstat(candidate.target); err == nil {
+				return &ConflictError{Path: candidate.operation.Path, Reason: "add target appeared after preflight"}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("revalidate apply_patch add target %q: %w", candidate.operation.Path, err)
+			}
+		case OperationUpdate, OperationDelete:
+			current, err := os.ReadFile(candidate.target)
+			if err != nil {
+				return &ConflictError{Path: candidate.operation.Path, Reason: "target changed or disappeared after preflight"}
+			}
+			if !bytes.Equal(current, candidate.original) {
+				return &ConflictError{Path: candidate.operation.Path, Reason: "target changed after preflight"}
+			}
+		}
+	}
+	return nil
+}
+
+func (executor *Executor) commit(candidate *preparedOperation) (OperationResult, error) {
+	operation := candidate.operation
+	result := OperationResult{Kind: operation.Kind, Path: operation.Path}
+	switch operation.Kind {
+	case OperationAdd, OperationUpdate:
+		if err := executor.commitOps.Rename(candidate.temporary, candidate.target); err != nil {
+			return OperationResult{}, fmt.Errorf("commit apply_patch %s %q: %w", operation.Kind, operation.Path, err)
+		}
+		candidate.temporary = ""
+		result.Bytes = len(candidate.content)
+		result.Created = operation.Kind == OperationAdd
+	case OperationDelete:
+		if err := executor.commitOps.Remove(candidate.target); err != nil {
+			return OperationResult{}, fmt.Errorf("commit apply_patch delete %q: %w", operation.Path, err)
+		}
+		result.Deleted = true
+	}
+	return result, nil
+}
+
+func cleanupPrepared(prepared []preparedOperation) {
+	for _, candidate := range prepared {
+		if candidate.temporary != "" {
+			_ = os.Remove(candidate.temporary)
+		}
+	}
+}
+
+func joinAddedLines(lines []string) []byte {
+	if len(lines) == 0 {
+		return nil
+	}
+	return []byte(strings.Join(lines, "\n") + "\n")
+}
+
+func validText(content []byte) bool {
+	return utf8.Valid(content) && !bytes.Contains(content, []byte{0})
+}
+
+func applyHunks(path string, original []byte, hunks []Hunk) ([]byte, error) {
+	newline := "\n"
+	normalized := string(original)
+	if strings.Contains(normalized, "\r\n") {
+		withoutCRLF := strings.ReplaceAll(normalized, "\r\n", "")
+		if !strings.Contains(withoutCRLF, "\n") {
+			newline = "\r\n"
+			normalized = strings.ReplaceAll(normalized, "\r\n", "\n")
+		}
+	}
+	hasFinalNewline := strings.HasSuffix(normalized, "\n")
+	lines := strings.Split(normalized, "\n")
+	if hasFinalNewline {
+		lines = lines[:len(lines)-1]
+	}
+
+	for _, hunk := range hunks {
+		oldLines, newLines := hunkSequences(hunk)
+		matches := findSequence(lines, oldLines)
+		if len(matches) == 0 {
+			return nil, &ConflictError{Path: path, Line: hunk.Line, Matches: 0,
+				Reason: "hunk context does not match current file"}
+		}
+		if len(matches) > 1 {
+			return nil, &ConflictError{Path: path, Line: hunk.Line, Matches: len(matches),
+				Reason: fmt.Sprintf("hunk context is ambiguous (%d matches)", len(matches))}
+		}
+		start := matches[0]
+		replaced := make([]string, 0, len(lines)-len(oldLines)+len(newLines))
+		replaced = append(replaced, lines[:start]...)
+		replaced = append(replaced, newLines...)
+		replaced = append(replaced, lines[start+len(oldLines):]...)
+		lines = replaced
+	}
+
+	result := strings.Join(lines, newline)
+	if hasFinalNewline {
+		result += newline
+	}
+	return []byte(result), nil
+}
+
+func hunkSequences(hunk Hunk) ([]string, []string) {
+	oldLines := make([]string, 0, len(hunk.Lines))
+	newLines := make([]string, 0, len(hunk.Lines))
+	for _, line := range hunk.Lines {
+		if line.Kind != LineAdd {
+			oldLines = append(oldLines, line.Content)
+		}
+		if line.Kind != LineDelete {
+			newLines = append(newLines, line.Content)
+		}
+	}
+	return oldLines, newLines
+}
+
+func findSequence(lines, sequence []string) []int {
+	if len(sequence) == 0 || len(sequence) > len(lines) {
+		return nil
+	}
+	matches := make([]int, 0, 1)
+	for start := 0; start+len(sequence) <= len(lines); start++ {
+		matched := true
+		for offset := range sequence {
+			if lines[start+offset] != sequence[offset] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			matches = append(matches, start)
+		}
+	}
+	return matches
+}

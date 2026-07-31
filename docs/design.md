@@ -1016,6 +1016,23 @@ Execution
 
 `apply_patch` 是修改已有文件的默认工具，并支持受控的 create/update/delete operation。输入采用可版本化、确定性解析的 Patch Document；每个 update hunk 必须携带足够上下文并在当前文件唯一匹配，旧内容不匹配时返回冲突，不进行猜测式替换。执行前解析并预检整个 Patch，所有路径都必须通过 PathGuard；每个 create/update 使用同目录临时文件、同步必要内容并原子 rename，delete 只允许 regular file。跨文件中途失败必须返回明确 partial/已应用 operation，不得伪装成原子成功，后续 Snapshot 能力再提供 Turn 级回滚。
 
+M4-01 将 Patch Document v1 固定为 UTF-8 行协议。规范头为 `*** Begin Patch v1`，同时接受 `*** Begin Patch` 作为 v1 兼容入口；未知版本明确拒绝。Add 正文行使用 `+`，Delete 不允许正文，Update 至少包含一个以 `@@` 开始的 hunk，hunk 行分别以空格、`+`、`-` 表示 context/add/delete，并且必须同时包含旧内容和真实变更。单文档禁止对同一路径声明多个 operation，解析错误稳定包含 line/column；默认限制 1 MiB、128 operations、1024 hunks 和 20000 行。
+
+```text
+*** Begin Patch v1
+*** Add File: docs/new.md
++new file content
+*** Update File: internal/example.go
+@@ target function
+ old line
+-old value
++new value
+*** Delete File: obsolete.txt
+*** End Patch
+```
+
+M4-02 的文件执行器采用“全 Patch 预检、逐 operation 提交”的边界：先验证 Document、解析并守卫全部路径、检查目标类型与大小、在内存中完成所有 hunk 的唯一匹配和新内容计算，再为 Add/Update 在目标同目录创建临时文件。首次修改前会重新校验全部目标，随后按文档顺序提交；Add/Update 通过临时文件 `Sync` 后原子 rename，Update 保留原权限和既有 CRLF/末尾换行风格，Delete 仅删除 regular file。预检冲突不会产生任何文件变化；若跨文件提交中途失败，则结果明确携带已应用 operation 和 `partial=true`，供 Tool Result、Evidence 与后续 Replan 使用。
+
 `write_file` 保留，但职责收窄为创建新文件或用户/模型明确要求的整文件替换，不再作为修改已有文件的首选。参数必须显式区分 `create` 与 `replace`，默认拒绝隐式覆盖；replace 继续使用原子临时文件写入并保留权限。Prompt 和 Tool description 必须引导已有文件优先使用 `apply_patch`。
 
 首版不单独增加 `edit_file`、`create_project`、`git_status`、`git_diff`、`run_tests` 或 `format_code`：Patch 已覆盖结构化编辑，Git/测试/格式化和项目脚本继续由 `execute_command` 处理。只有后续实际使用证明需要独立权限、结构化结果或可移植行为时再拆分。

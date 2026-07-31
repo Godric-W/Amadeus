@@ -42,7 +42,7 @@
 | M1 | OpenAI SDK 与纯文本会话 | DONE | 100% |
 | M2 | 统一 Agent Engine、ReAct 与核心工具 | DONE | 100% |
 | M3 | 首个可用 Coding Agent CLI | DONE | 100% |
-| M4 | 核心工具增强、长上下文与会话持久化 | DOING | 4% |
+| M4 | 核心工具增强、长上下文与会话持久化 | DOING | 12% |
 | M5 | Adaptive Planning 与 Replan | TODO | 0% |
 | M6 | Coding Workflow 扩展 | TODO | 0% |
 | M7 | Multi-Agent 与高级入口 | TODO | 0% |
@@ -51,9 +51,9 @@
 ## 3. 当前焦点
 
 - 当前阶段：`M4`，核心工具增强、Session 持久化与中断后 Replan。
-- 下一任务：`M4-01`，定义并解析版本化 `apply_patch` Patch Document。
+- 下一任务：`M4-03`，将 `apply_patch` 接入 Registry、安全、审批、审计和资源冲突。
 - 当前阻塞：无。
-- 最近完成：`M4-00`，固定内置工具分层、Session/SQLite 和中断后重新规划语义。
+- 最近完成：`M4-02`，完成全 Patch 预检、唯一 hunk 匹配、原子文件提交和 partial 结果。
 
 ### 3.1 交付优先级
 
@@ -228,8 +228,8 @@ M4 先补齐 Coding Agent 的核心修改能力：结构化读取/搜索继续�
 | ID | 状态 | 依赖 | 最小任务 | 验收标准 |
 |---|---|---|---|---|
 | M4-00 | DONE | M3 audit | 固定核心工具、Session/Turn/Run/Checkpoint 与中断语义 | `design.md` 明确工具分层、Patch/Write/Shell 边界、Session 命令、SQLite 九表和重新规划边界 |
-| M4-01 | TODO | M4-00,M2-03 | 定义并解析版本化 `apply_patch` Patch Document | create/update/delete、hunk/context、UTF-8、大小预算、重复/非法 operation 和错误位置测试通过 |
-| M4-02 | TODO | M4-01,M3-09,M2-23 | 实现 `apply_patch` 文件执行器 | 全 Patch 预检、PathGuard、唯一上下文匹配、原子 create/update、受控 delete、冲突与 partial metadata 测试通过 |
+| M4-01 | DONE | M4-00,M2-03 | 定义并解析版本化 `apply_patch` Patch Document | create/update/delete、hunk/context、UTF-8、大小预算、重复/非法 operation 和错误位置测试通过 |
+| M4-02 | DONE | M4-01,M3-09,M2-23 | 实现 `apply_patch` 文件执行器 | 全 Patch 预检、PathGuard、唯一上下文匹配、原子 create/update、受控 delete、冲突与 partial metadata 测试通过 |
 | M4-03 | TODO | M4-02,M3-10..M3-14 | 将 `apply_patch` 接入 Registry、安全、审批、审计和资源冲突 | ToolSpec/Schema、high-impact policy、参数 hash、结果 Evidence、串行屏障与取消测试通过 |
 | M4-04 | TODO | M4-03,M2-23 | 收窄 `write_file` 为显式 create/replace | 默认拒绝隐式覆盖；create 已存在和 replace 不存在均失败；权限、原子写和兼容错误测试通过 |
 | M4-05 | TODO | M4-03,M4-04,M3-01 | 固定工具选择 Prompt 与描述 | 读搜优先专用工具、已有文件优先 Patch、Shell 负责构建/测试/Git且不得绕过策略 |
@@ -554,3 +554,5 @@ YYYY-MM-DD | TASK-ID | DONE/BLOCKED | 变更文件 | 测试命令与结果 | 备
 | 2026-07-31 | M3 完成审计 | DONE | 按 M3-00～M3-26 逐项核对实现、测试、文档、真实 Provider 行为与命令出口 | M3 无 TODO；真实读/改/测 smoke、Responses/Chat mock E2E、`go test -race ./... -count=1`、`make check`、示例配置、help/no-run 与 `git diff --check` 全部通过；下一任务为 M4-01 |
 | 2026-07-31 | M4-00 | DONE | 重写核心工具、Session/Turn/Run/Checkpoint、SQLite 九表、命令 UX和中断后 Replan 设计；重排 M4-01～M4-25 | `apply_patch` 前置为下一任务；用户级 resume 不再表示 Run 恢复 |
 | 2026-07-31 | Multi-Agent MVP 重设计 | DONE | 将 M7 收敛为主 Agent + 最多两个只读 SubAgent，补充 Task/Result、Placement、失败/取消和延后能力边界 | `/team` 只请求 `prefer_subagents`；不实现并行写、Reviewer Agent、Worktree、递归委派或 Agent 群聊 |
+| 2026-07-31 | M4-01 | DONE | 新增 `internal/tool/patch` Document/Operation/Hunk/Line Domain 与 Patch v1 解析器 | legacy/v1 header、Add/Update/Delete、上下文/变更约束、UTF-8、预算、重复路径、line/column 错误、专项 race 与 `make check` 通过；下一任务为 M4-02 |
+| 2026-07-31 | M4-02 | DONE | 新增 `apply_patch` 文件执行器，完成全 Patch 预检、PathGuard、hunk 唯一匹配、同目录临时文件和顺序提交 | 原子 Add/Update、权限与换行保留、受控 Delete、冲突零副作用、跨文件 partial metadata、取消、专项 race 与 `make check` 通过；下一任务为 M4-03 |
