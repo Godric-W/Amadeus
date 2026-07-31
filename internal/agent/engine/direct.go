@@ -28,6 +28,7 @@ type DirectRunInput struct {
 type DirectRunResult struct {
 	State        RunState      `json:"state"`
 	Steps        []Step        `json:"steps,omitempty"`
+	FinalMessage *llm.Message  `json:"final_message,omitempty"`
 	Verification *Verification `json:"verification,omitempty"`
 	Reflection   *Reflection   `json:"reflection,omitempty"`
 	Reason       string        `json:"reason,omitempty"`
@@ -234,7 +235,8 @@ func (engine *DirectEngine) Run(ctx context.Context, input DirectRunInput) (resu
 				if err := engine.completeDirect(ctx, &state); err != nil {
 					return DirectRunResult{}, err
 				}
-				return DirectRunResult{State: state, Steps: steps, Verification: latestVerification, Reflection: latestReflection}, nil
+				finalMessage := outcome.Candidate.FinalMessage
+				return DirectRunResult{State: state, Steps: steps, FinalMessage: &finalMessage, Verification: latestVerification, Reflection: latestReflection}, nil
 			case ReflectionRetry:
 				if task.Attempts >= engine.options.MaxAttempts {
 					if err := engine.failDirect(ctx, &state, task, StopReasonVerificationFailed); err != nil {

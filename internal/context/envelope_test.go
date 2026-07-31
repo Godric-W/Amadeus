@@ -197,3 +197,60 @@ func contextToolSpec(name string, sideEffect tool.SideEffect) tool.Spec {
 		ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeArguments, ArgumentPaths: []string{"path"}},
 	}
 }
+
+func TestBuilderCompactsHistoryWithinBudgetAndPreservesSummarySource(t *testing.T) {
+	input := testBuildInput(t)
+	input.Conversation = []llm.Message{
+		llm.UserMessage("first request with enough historical detail to require compaction"),
+		llm.AssistantMessage("first answer with implementation details and test observations"),
+		llm.UserMessage("second request with more historical detail"),
+		llm.AssistantMessage("second answer with more implementation details"),
+		llm.UserMessage("latest request"),
+	}
+	input.Budget = Budget{System: 100, Instructions: 100, History: 30, Interrupted: 40, Tools: 100, Resources: 10, OutputReserve: 20}
+	envelope, err := NewBuilder().Build(context.Background(), input)
+	if err != nil {
+		t.Fatalf("build compacted context: %v", err)
+	}
+	if envelope.Compaction == nil || envelope.Compaction.CoveredMessages == 0 {
+		t.Fatalf("expected compaction: %#v", envelope.Compaction)
+	}
+	if len(envelope.Messages) >= len(input.Conversation)+3 {
+		t.Fatalf("history was not compacted: got %d messages", len(envelope.Messages))
+	}
+	foundSummary := false
+	for _, message := range envelope.Messages {
+		if strings.Contains(message.Content, "amadeus.conversation_summary.v1") {
+			foundSummary = true
+		}
+	}
+	if !foundSummary {
+		t.Fatal("compacted context did not include structured summary")
+	}
+	if envelope.BudgetUsage.History <= 0 || envelope.Sources == nil {
+		t.Fatalf("missing budget/source accounting: %#v", envelope)
+	}
+}
+
+func TestBuilderInjectsInterruptedWorkAsBoundedDeveloperEnvelope(t *testing.T) {
+	input := testBuildInput(t)
+	input.InterruptedWork = &InterruptedWork{RunID: "run-cancelled", Objective: "finish the migration", StopReason: "user cancelled", InstructionChanges: []string{"changed: /tmp/AGENTS.md"}, Workspace: WorkspaceRevalidation{TestsRequireRerun: true}}
+	envelope, err := NewBuilder().Build(context.Background(), input)
+	if err != nil {
+		t.Fatalf("build interrupted context: %v", err)
+	}
+	found := false
+	for _, message := range envelope.Messages {
+		if strings.Contains(message.Content, "amadeus.interrupted_work.v1") && strings.Contains(message.Content, "tests_require_rerun") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("interrupted work envelope missing")
+	}
+	for _, source := range envelope.Sources {
+		if source.Kind == SourceInterrupted && source.ID != "run-cancelled" {
+			t.Fatalf("unexpected interrupted source: %#v", source)
+		}
+	}
+}

@@ -329,6 +329,177 @@ func (store *Store) LatestInterruptedRun(ctx context.Context, sessionID sessiond
 	return scanRun(store.database.db.QueryRowContext(ctx, runSelect+` WHERE session_id = ? AND status = 'cancelled' ORDER BY finished_at DESC, id LIMIT 1`, sessionID))
 }
 
+func (store *Store) PendingInterruptedRun(ctx context.Context, sessionID sessiondomain.ConversationSessionID) (sessiondomain.Run, error) {
+	if err := store.validateContext(ctx); err != nil {
+		return sessiondomain.Run{}, err
+	}
+	return scanRun(store.database.db.QueryRowContext(ctx, runSelect+` WHERE session_id = ? AND status = 'cancelled'
+		AND finished_at > COALESCE((SELECT MAX(finished_at) FROM runs completed WHERE completed.session_id = runs.session_id AND completed.status = 'completed'), '')
+		ORDER BY finished_at DESC, id LIMIT 1`, sessionID))
+}
+
+func (store *Store) AppendCheckpoint(ctx context.Context, input sessiondomain.AppendCheckpointInput) (sessiondomain.Checkpoint, error) {
+	if err := store.validateContext(ctx); err != nil {
+		return sessiondomain.Checkpoint{}, err
+	}
+	if err := input.Checkpoint.VerifyPayload(); err != nil {
+		return sessiondomain.Checkpoint{}, err
+	}
+	seen := make(map[int]struct{}, len(input.Instructions))
+	for _, instruction := range input.Instructions {
+		if instruction.CheckpointID != input.Checkpoint.ID {
+			return sessiondomain.Checkpoint{}, errors.New("checkpoint instruction references a different checkpoint")
+		}
+		if err := instruction.Validate(); err != nil {
+			return sessiondomain.Checkpoint{}, err
+		}
+		if _, duplicate := seen[instruction.Precedence]; duplicate {
+			return sessiondomain.Checkpoint{}, fmt.Errorf("%w: checkpoint instruction precedence %d", sessiondomain.ErrConflict, instruction.Precedence)
+		}
+		seen[instruction.Precedence] = struct{}{}
+	}
+	tx, err := store.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return sessiondomain.Checkpoint{}, fmt.Errorf("begin checkpoint SQLite transaction: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx,
+		`UPDATE runs SET latest_checkpoint_seq = ? WHERE id = ? AND latest_checkpoint_seq = ?`,
+		input.Checkpoint.Sequence, input.Checkpoint.RunID, input.Checkpoint.Sequence-1,
+	)
+	if err != nil {
+		return sessiondomain.Checkpoint{}, sqliteStoreError("advance run checkpoint sequence", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return sessiondomain.Checkpoint{}, sqliteStoreError("read run checkpoint update", err)
+	}
+	if rows != 1 {
+		var exists int
+		if queryErr := tx.QueryRowContext(ctx, `SELECT 1 FROM runs WHERE id = ?`, input.Checkpoint.RunID).Scan(&exists); errors.Is(queryErr, sql.ErrNoRows) {
+			return sessiondomain.Checkpoint{}, fmt.Errorf("%w: run %q", sessiondomain.ErrNotFound, input.Checkpoint.RunID)
+		}
+		return sessiondomain.Checkpoint{}, fmt.Errorf("%w: checkpoint sequence %d is not next", sessiondomain.ErrConflict, input.Checkpoint.Sequence)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO run_checkpoints(id, run_id, sequence, schema_version, reason, payload_json, payload_hash, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, input.Checkpoint.ID, input.Checkpoint.RunID, input.Checkpoint.Sequence,
+		input.Checkpoint.SchemaVersion, input.Checkpoint.Reason, string(input.Checkpoint.PayloadJSON), input.Checkpoint.PayloadHash,
+		formatTime(input.Checkpoint.CreatedAt)); err != nil {
+		return sessiondomain.Checkpoint{}, sqliteStoreError("insert run checkpoint", err)
+	}
+	for _, instruction := range input.Instructions {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO checkpoint_instructions(checkpoint_id, precedence, path, scope_path, content_hash)
+			VALUES (?, ?, ?, ?, ?)`, instruction.CheckpointID, instruction.Precedence, instruction.Path, instruction.ScopePath, instruction.ContentHash); err != nil {
+			return sessiondomain.Checkpoint{}, sqliteStoreError("insert checkpoint instruction", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return sessiondomain.Checkpoint{}, fmt.Errorf("commit checkpoint SQLite transaction: %w", err)
+	}
+	return input.Checkpoint, nil
+}
+
+func (store *Store) ListCheckpoints(ctx context.Context, runID sessiondomain.RunID) ([]sessiondomain.Checkpoint, error) {
+	if err := store.validateContext(ctx); err != nil {
+		return nil, err
+	}
+	rows, err := store.database.db.QueryContext(ctx, `SELECT id, run_id, sequence, schema_version, reason, payload_json, payload_hash, created_at
+		FROM run_checkpoints WHERE run_id = ? ORDER BY sequence`, runID)
+	if err != nil {
+		return nil, sqliteStoreError("list run checkpoints", err)
+	}
+	defer rows.Close()
+	checkpoints := make([]sessiondomain.Checkpoint, 0)
+	for rows.Next() {
+		checkpoint, err := scanCheckpoint(rows)
+		if err != nil {
+			return nil, err
+		}
+		checkpoints = append(checkpoints, checkpoint)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, sqliteStoreError("iterate run checkpoints", err)
+	}
+	if len(checkpoints) == 0 {
+		var exists int
+		if err := store.database.db.QueryRowContext(ctx, `SELECT 1 FROM runs WHERE id = ?`, runID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: run %q", sessiondomain.ErrNotFound, runID)
+		} else if err != nil {
+			return nil, sqliteStoreError("check run for checkpoints", err)
+		}
+	}
+	return checkpoints, nil
+}
+
+func (store *Store) ListCheckpointInstructions(ctx context.Context, checkpointID sessiondomain.CheckpointID) ([]sessiondomain.CheckpointInstruction, error) {
+	if err := store.validateContext(ctx); err != nil {
+		return nil, err
+	}
+	rows, err := store.database.db.QueryContext(ctx, `SELECT checkpoint_id, precedence, path, scope_path, content_hash
+		FROM checkpoint_instructions WHERE checkpoint_id = ? ORDER BY precedence`, checkpointID)
+	if err != nil {
+		return nil, sqliteStoreError("list checkpoint instructions", err)
+	}
+	defer rows.Close()
+	result := make([]sessiondomain.CheckpointInstruction, 0)
+	for rows.Next() {
+		var instruction sessiondomain.CheckpointInstruction
+		if err := rows.Scan(&instruction.CheckpointID, &instruction.Precedence, &instruction.Path, &instruction.ScopePath, &instruction.ContentHash); err != nil {
+			return nil, sqliteStoreError("scan checkpoint instruction", err)
+		}
+		if err := instruction.Validate(); err != nil {
+			return nil, err
+		}
+		result = append(result, instruction)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, sqliteStoreError("iterate checkpoint instructions", err)
+	}
+	if len(result) == 0 {
+		var exists int
+		if err := store.database.db.QueryRowContext(ctx, `SELECT 1 FROM run_checkpoints WHERE id = ?`, checkpointID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: checkpoint %q", sessiondomain.ErrNotFound, checkpointID)
+		} else if err != nil {
+			return nil, sqliteStoreError("check checkpoint for instructions", err)
+		}
+	}
+	return result, nil
+}
+
+func (store *Store) AppendSummary(ctx context.Context, summary sessiondomain.ConversationSummary) (sessiondomain.ConversationSummary, error) {
+	if err := store.validateContext(ctx); err != nil {
+		return sessiondomain.ConversationSummary{}, err
+	}
+	if err := summary.Validate(); err != nil {
+		return sessiondomain.ConversationSummary{}, err
+	}
+	if existing, err := scanSummary(store.database.db.QueryRowContext(ctx, `SELECT id, session_id, from_message_sequence, to_message_sequence,
+		content, source_hash, summary_hash, provider, model, created_at FROM conversation_summaries
+		WHERE session_id = ? AND from_message_sequence = ? AND to_message_sequence = ? AND source_hash = ? LIMIT 1`,
+		summary.SessionID, summary.FromMessageSequence, summary.ToMessageSequence, summary.SourceHash)); err == nil {
+		return existing, nil
+	} else if !errors.Is(err, sessiondomain.ErrNotFound) {
+		return sessiondomain.ConversationSummary{}, err
+	}
+	_, err := store.database.db.ExecContext(ctx, `INSERT INTO conversation_summaries(id, session_id, from_message_sequence, to_message_sequence,
+		content, source_hash, summary_hash, provider, model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		summary.ID, summary.SessionID, summary.FromMessageSequence, summary.ToMessageSequence, summary.Content,
+		summary.SourceHash, summary.SummaryHash, nullableString(summary.Provider), nullableString(summary.Model), formatTime(summary.CreatedAt))
+	if err != nil {
+		return sessiondomain.ConversationSummary{}, sqliteStoreError("insert conversation summary", err)
+	}
+	return summary, nil
+}
+
+func (store *Store) LatestSummary(ctx context.Context, sessionID sessiondomain.ConversationSessionID) (sessiondomain.ConversationSummary, error) {
+	if err := store.validateContext(ctx); err != nil {
+		return sessiondomain.ConversationSummary{}, err
+	}
+	return scanSummary(store.database.db.QueryRowContext(ctx, `SELECT id, session_id, from_message_sequence, to_message_sequence,
+		content, source_hash, summary_hash, provider, model, created_at FROM conversation_summaries
+		WHERE session_id = ? ORDER BY to_message_sequence DESC, from_message_sequence DESC, created_at DESC LIMIT 1`, sessionID))
+}
+
 func (store *Store) validateContext(ctx context.Context) error {
 	if store == nil || store.database == nil || store.database.db == nil {
 		return errors.New("SQLite session store is nil")
@@ -350,6 +521,8 @@ type runInput struct {
 	BudgetJSON       json.RawMessage
 	StartedAt        time.Time
 }
+
+var _ sessiondomain.Store = (*Store)(nil)
 
 func firstRunInput(input sessiondomain.BeginFirstTurnInput) runInput {
 	return runInput{ID: input.RunID, Objective: input.Objective, ContextFromRunID: input.ContextFromRunID, Provider: input.Provider, Model: input.Model, APIMode: input.APIMode, Dialect: input.Dialect, BudgetJSON: input.BudgetJSON, StartedAt: input.StartedAt}

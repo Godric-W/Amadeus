@@ -1556,6 +1556,14 @@ payload 至少覆盖 objective、status、stop reason、completed steps、Eviden
 
 M4-11 已实现 `internal/session/sqlite.Store`。Project 通过规范化路径唯一 upsert；首轮创建与后续 Turn 均在 SQLite 写事务中分配 Turn/Message sequence，并保证 user message 在执行前持久化。成功终态在同一事务内完成 Run/Turn、追加正式 assistant message 并更新 Session；取消等非成功终态保留 user message 但不写未完成 assistant。`UPDATE ... RETURNING` 固定并发序号分配，任何消息插入或状态更新失败都会回滚整笔终态事务。Store 支持按当前 Project 查询最近活跃 Session、查询正式 Conversation、读取 Run 与最近中断 Run，并通过关闭重开、并发分配和注入失败测试验证持久性与原子性。
 
+M4-12～M4-17 在 CLI 增加 `internal/session.Coordinator`。启动交互入口只保留进程内 Draft；只有第一个真实任务才调用 `BeginFirstTurn`，在一个事务中创建 Project、Conversation Session、Turn、user Message 和 Run。`/help`、`/resume`（包括选择器取消）、`/exit`、EOF 和无历史的 `--continue` 都不会创建空 Session。`--continue` 与 `--resume <session-id>` 只改变当前 Session 指针，下一真实任务仍创建新 Turn/Run；选择器只查询当前 Project，跨 Project ID 被拒绝。`sessions list` 只展示当前 Project，首版不支持 `--all`。
+
+每个真实 CLI Run 都按 Begin → `run_started` Checkpoint → ContextBuilder/Engine → 终态 Checkpoint → Finish 的顺序执行。`DirectRunResult` 暴露经过 Reflection 接受的最终 assistant 文本；只有 `completed` 才写正式 assistant Message，failed/partial/needs_plan/cancelled 保留 user Message 但不写未完成回答。Checkpoint payload 固定为 `amadeus.run_checkpoint.v1`，包含 objective/status/stop/evidence/tool 摘要、相关路径、pending work、Budget/Usage，并由不可变 sequence、大小上限和 payload SHA-256 保护；旧 Checkpoint 不更新、不重放副作用。
+
+M4-20～M4-22 的 Pending 生命周期只把最近尚未被成功 Run 覆盖的 cancelled Run 作为自动中断上下文。下一真实 Run 将其 ID 写入 `runs.context_from_run_id`；再次取消时最新 cancelled Run 取代旧 Pending，成功 Run 后自动 Pending 消失。`ContextBuilder` 注入有界 `amadeus.interrupted_work.v1` developer envelope，不回放旧临时消息链；恢复前重新读取当前 `AGENTS.md` 并比较 path/scope/order/hash，同时对 Checkpoint 中的相关文件重新计算存在性、类型、大小和 SHA-256，读取 Git status/diff stat，并明确要求测试重新执行。任何写入、命令和审批都走当前 Run 的完整安全链。
+
+M4-23～M4-24 在 `internal/context` 实现分区 `Budget`、可替换 `Estimator` 和确定性 `Compactor`。预算分别记录 system、instructions、history、interrupted、tools、resources 与 output reserve；tokenizer 不可用时使用保守字节估算。历史超限时优先保留最近消息，较早消息生成明确标记为派生数据的摘要；单条超大消息按预算截断。摘要通过 `ConversationSummary`/`SummaryStore` 持久化覆盖的消息范围、source hash、摘要 hash、provider/model/time，原始消息永不删除，Context Envelope 的 hash 同时覆盖预算、使用量和压缩结果。
+
 ## 21. 错误处理与可观测性
 
 - 使用 `fmt.Errorf("...: %w", err)` 保留错误链。

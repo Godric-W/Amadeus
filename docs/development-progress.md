@@ -42,7 +42,7 @@
 | M1 | OpenAI SDK 与纯文本会话 | DONE | 100% |
 | M2 | 统一 Agent Engine、ReAct 与核心工具 | DONE | 100% |
 | M3 | 首个可用 Coding Agent CLI | DONE | 100% |
-| M4 | 核心工具增强、长上下文与会话持久化 | DOING | 46% |
+| M4 | 核心工具增强、长上下文与会话持久化 | DONE | 100% |
 | M5 | Adaptive Planning 与 Replan | TODO | 0% |
 | M6 | Coding Workflow 扩展 | TODO | 0% |
 | M7 | Multi-Agent 与高级入口 | TODO | 0% |
@@ -50,10 +50,10 @@
 
 ## 3. 当前焦点
 
-- 当前阶段：`M4`，核心工具增强、Session 持久化与中断后 Replan。
-- 下一任务：`M4-12`，实现 Draft Session 与首次真实任务延迟持久化。
+- 当前阶段：`M5`，Adaptive Planning 与 Replan。
+- 下一任务：`M5-01`，定义 PlanningPolicy/StrategyDecision。
 - 当前阻塞：无。
-- 最近完成：`M4-11`，完成 Project/Session/Turn/Message SQLite Store 与事务一致性测试。
+- 最近完成：`M4` 完成审计，核心工具、Session 持久化、Context Budget、Compactor 与中断后 Replan 均已通过全量检查。
 
 ### 3.1 交付优先级
 
@@ -239,20 +239,20 @@ M4 先补齐 Coding Agent 的核心修改能力：结构化读取/搜索继续�
 | M4-09 | DONE | M4-08,M0-07 | 实现 `<amadeus-root>/data/amadeus.db` 路径与 SQLite bootstrap | 不回退 cwd；目录 0700、DB 0600；foreign key/WAL/busy timeout 生效 |
 | M4-10 | DONE | M4-09 | 实现 schema migration 框架与首版九表迁移 | 新库、重复打开、未知版本和事务回滚测试通过 |
 | M4-11 | DONE | M4-08,M4-10 | 实现 Project/Session/Turn/Message SQLite Store | project path 唯一、序号原子、user 先写、成功 assistant 提交、取消不写未完成回答 |
-| M4-12 | TODO | M4-11,M3-21 | 实现 Draft Session 与首次真实任务延迟持久化 | 启动后 `/help`、`/resume`、`/exit`、EOF 不产生空 Session；首任务原子创建完整记录 |
-| M4-13 | TODO | M4-11 | 实现 `amadeus sessions list` | 仅列当前项目，稳定显示 ID/title/status/更新时间；首版无 `--all` |
-| M4-14 | TODO | M4-11,M4-12 | 实现 `amadeus --continue` | 恢复当前项目最近活跃 Session；无历史时进入不落库 Draft Session 并明确提示 |
-| M4-15 | TODO | M4-11,M4-12 | 实现 `amadeus --resume` 与 `--resume <session-id>` | 无参数打开当前项目选择器，`Esc` 取消；有 ID 直接恢复并拒绝跨项目 Session |
-| M4-16 | TODO | M4-15,M3-21 | 实现交互 `/resume` Session 切换 | 选择后重建当前会话上下文，`Esc` 返回原对话；不实现 `/sessions` |
-| M4-17 | TODO | M4-08,M4-11,M3-20 | 将 Run/Turn outcome 接入持久化事务 | completed/failed/partial/needs_plan/cancelled 状态一致，真实 user 保留，未完成 assistant 不提交 |
-| M4-18 | TODO | M4-10,M2-05 | 实现简化 Run Checkpoint Store | 不可变 sequence、schema/hash、尺寸预算、completed steps/Evidence/tool 摘要/usage 可追加读取 |
-| M4-19 | TODO | M4-17,M4-18,M3-22 | Ctrl+C 写入最终中断 Checkpoint | 当前 Run/Turn cancelled、Terminal Session 继续、部分副作用只记录不重放 |
-| M4-20 | TODO | M4-18,M4-19 | 实现最近中断 Run 与 Pending Work 生命周期 | 下一 Run 自动引用 `context_from_run_id`；再次中断替换；成功 Run 清除自动注入 |
-| M4-21 | TODO | M4-20,M3-15 | ContextBuilder 注入 `amadeus.interrupted_work.v1` | objective/stop/completed/evidence/paths/pending/usage 有界且带来源，不回放完整旧消息链 |
-| M4-22 | TODO | M4-21,M3-08 | 实现中断后工作区与指令重新验证 | 当前文件/diff/测试状态重新发现，`AGENTS.md` path/scope/order/hash 变化可见，副作用重新审批 |
-| M4-23 | TODO | M4-11,M3-15 | 定义 Context Budget/Estimator 并接入 ContextView | system/instructions/history/interrupted/tool/resources/output reserve 可独立预算 |
-| M4-24 | TODO | M4-23 | 实现 Conversation 裁剪与 Compactor | 摘要记录覆盖范围/source hash/model/time，原消息不删除，大工具结果优先裁剪 |
-| M4-25 | TODO | M4-06,M4-12..M4-24 | 增加核心工具/Session/长上下文/中断 Replan E2E | 跨进程恢复、选择/取消、Ctrl+C 后“请继续”、新任务覆盖、指令变化和压缩均通过 |
+| M4-12 | DONE | M4-11,M3-21 | 实现 Draft Session 与首次真实任务延迟持久化 | 启动后 `/help`、`/resume`、`/exit`、EOF 不产生空 Session；首任务原子创建完整记录 |
+| M4-13 | DONE | M4-11 | 实现 `amadeus sessions list` | 仅列当前项目，稳定显示 ID/title/status/更新时间；首版无 `--all` |
+| M4-14 | DONE | M4-11,M4-12 | 实现 `amadeus --continue` | 恢复当前项目最近活跃 Session；无历史时进入不落库 Draft Session 并明确提示 |
+| M4-15 | DONE | M4-11,M4-12 | 实现 `amadeus --resume` 与 `--resume <session-id>` | 无参数打开当前项目选择器，`Esc` 取消；有 ID 直接恢复并拒绝跨项目 Session |
+| M4-16 | DONE | M4-15,M3-21 | 实现交互 `/resume` Session 切换 | 选择后重建当前会话上下文，`Esc` 返回原对话；不实现 `/sessions` |
+| M4-17 | DONE | M4-08,M4-11,M3-20 | 将 Run/Turn outcome 接入持久化事务 | completed/failed/partial/needs_plan/cancelled 状态一致，真实 user 保留，未完成 assistant 不提交 |
+| M4-18 | DONE | M4-10,M2-05 | 实现简化 Run Checkpoint Store | 不可变 sequence、schema/hash、尺寸预算、completed steps/Evidence/tool 摘要/usage 可追加读取 |
+| M4-19 | DONE | M4-17,M4-18,M3-22 | Ctrl+C 写入最终中断 Checkpoint | 当前 Run/Turn cancelled、Terminal Session 继续、部分副作用只记录不重放 |
+| M4-20 | DONE | M4-18,M4-19 | 实现最近中断 Run 与 Pending Work 生命周期 | 下一 Run 自动引用 `context_from_run_id`；再次中断替换；成功 Run 清除自动注入 |
+| M4-21 | DONE | M4-20,M3-15 | ContextBuilder 注入 `amadeus.interrupted_work.v1` | objective/stop/completed/evidence/paths/pending/usage 有界且带来源，不回放完整旧消息链 |
+| M4-22 | DONE | M4-21,M3-08 | 实现中断后工作区与指令重新验证 | 当前文件/diff/测试状态重新发现，`AGENTS.md` path/scope/order/hash 变化可见，副作用重新审批 |
+| M4-23 | DONE | M4-11,M3-15 | 定义 Context Budget/Estimator 并接入 ContextView | system/instructions/history/interrupted/tool/resources/output reserve 可独立预算 |
+| M4-24 | DONE | M4-23 | 实现 Conversation 裁剪与 Compactor | 摘要记录覆盖范围/source hash/model/time，原消息不删除，大工具结果优先裁剪 |
+| M4-25 | DONE | M4-06,M4-12..M4-24 | 增加核心工具/Session/长上下文/中断 Replan E2E | 跨进程恢复、选择/取消、Ctrl+C 后“请继续”、新任务覆盖、指令变化和压缩均通过 |
 
 ### M4 出口
 
@@ -565,3 +565,7 @@ YYYY-MM-DD | TASK-ID | DONE/BLOCKED | 变更文件 | 测试命令与结果 | 备
 | 2026-07-31 | M4-09 | DONE | 新增 `<amadeus-root>/data/amadeus.db` 固定路径与 SQLite bootstrap，采用无 CGO driver 和每连接 PRAGMA | 无 cwd 回退、Root/data/database 类型与 symlink 防护、0700/0600、foreign_keys/WAL/busy_timeout/synchronous、重开、专项 race 与 `make check` 通过；下一任务为 M4-10 |
 | 2026-07-31 | M4-10 | DONE | 新增连续版本 migration runner 与 `initial_session_schema` v1，创建固定九表、约束和索引，并由 Open 自动迁移 | 新库、重复打开、unknown version、name drift、定义缺口、DDL/history 同事务回滚、专项 race 与 `make check` 通过；下一任务为 M4-11 |
 | 2026-07-31 | M4-11 | DONE | 实现 Project/Session/Turn/Message SQLite Store，覆盖首轮/后续 Turn、终态提交、查询与持久化重开 | canonical project 唯一、Turn/Message sequence 原子分配、user 先写、成功 assistant 同事务提交、取消不写 assistant、失败回滚、并发 race 与 `make check` 通过；下一任务为 M4-12 |
+| 2026-07-31 | M4-12～M4-16 | DONE | 接入 Draft Session、`sessions list`、`--continue`、`--resume` 和交互 `/resume`；选择器取消不会改变当前会话 | Memory/SQLite Store 注入测试、空 Draft、无历史 continue、当前项目过滤、跨命令恢复和全量 `make check` 通过 |
+| 2026-07-31 | M4-17～M4-20 | DONE | 将真实 Agent Run/Turn outcome、终态 Checkpoint 与 Pending Interrupted Work 生命周期接入 CLI；取消后新 Run 重新规划 | user 先写、成功 assistant 才写、取消不写 assistant、`context_from_run_id`、再次中断替换、成功清除 Pending、全仓库 race 通过 |
+| 2026-07-31 | M4-21～M4-24 | DONE | 增加结构化中断包络、工作区/`AGENTS.md` 重新验证、分区 Context Budget、保守估算、确定性历史压缩和 Summary Store | 来源 hash、文件 SHA-256、Git status/diff、测试重跑提示、摘要覆盖范围/source hash/provider/model/time、原消息保留测试通过 |
+| 2026-07-31 | M4-25 | DONE | 增加跨命令 Session、交互中断后“请继续”、核心工具上下文持久化与压缩相关 E2E，并完成 M4 审计 | `make check`、`go test -race ./... -count=1`、`git diff --check` 全部通过；下一任务为 M5-01 |

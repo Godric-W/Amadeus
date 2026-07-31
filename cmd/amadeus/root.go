@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Godric-W/Amadeus/internal/buildinfo"
 	"github.com/Godric-W/Amadeus/internal/config"
@@ -26,6 +27,9 @@ type commandRuntime struct {
 	agentCommandFactory agentCommandFactory
 	terminalDetector    terminalDetector
 	auditSinkFactory    auditSinkFactory
+	sessionStoreFactory sessionStoreFactory
+	persistentIDFactory func(string) string
+	now                 func() time.Time
 	runIDFactory        func() string
 }
 
@@ -42,6 +46,7 @@ func newRootCommandWithRuntime(flags *configFlags, runtime commandRuntime) *cobr
 }
 
 func newRootCommandWithFlags(configFlags *configFlags, projectFlags *projectFlags, runtime commandRuntime) *cobra.Command {
+	sessionFlags := &sessionFlags{}
 	command := &cobra.Command{
 		Use:           "amadeus [task]",
 		Short:         "Amadeus agent CLI",
@@ -49,15 +54,17 @@ func newRootCommandWithFlags(configFlags *configFlags, projectFlags *projectFlag
 		SilenceUsage:  true,
 		Args:          cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
-			return runRootAgent(command, arguments, configFlags, projectFlags, runtime)
+			return runRootAgent(command, arguments, configFlags, projectFlags, sessionFlags, runtime)
 		},
 	}
 
 	configFlags.bind(command)
 	projectFlags.bind(command)
+	sessionFlags.bind(command)
 	command.AddCommand(newChatCommand(configFlags, runtime))
 	command.AddCommand(newConfigCommand(configFlags, runtime))
 	command.AddCommand(newToolsCommand())
+	command.AddCommand(newSessionsCommand(projectFlags, runtime))
 	command.AddCommand(newVersionCommand(buildinfo.Current()))
 
 	return command
@@ -77,6 +84,9 @@ func defaultCommandRuntime() commandRuntime {
 		agentContextFactory: interruptibleTurnContext,
 		agentCommandFactory: defaultAgentCommandFactory,
 		auditSinkFactory:    defaultAuditSinkFactory(lookupEnv, os.UserHomeDir),
+		sessionStoreFactory: defaultSessionStoreFactory,
+		persistentIDFactory: nextPersistentID,
+		now:                 time.Now,
 		runIDFactory:        nextAgentRunID,
 	}
 }

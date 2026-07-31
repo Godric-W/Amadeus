@@ -131,6 +131,42 @@ func scanRun(source scanner) (sessiondomain.Run, error) {
 	return run, run.Validate()
 }
 
+func scanCheckpoint(source scanner) (sessiondomain.Checkpoint, error) {
+	var checkpoint sessiondomain.Checkpoint
+	var payloadJSON, createdAt string
+	if err := source.Scan(
+		&checkpoint.ID, &checkpoint.RunID, &checkpoint.Sequence, &checkpoint.SchemaVersion,
+		&checkpoint.Reason, &payloadJSON, &checkpoint.PayloadHash, &createdAt,
+	); err != nil {
+		return sessiondomain.Checkpoint{}, sqliteStoreError("scan run checkpoint", err)
+	}
+	checkpoint.PayloadJSON = json.RawMessage(payloadJSON)
+	var err error
+	if checkpoint.CreatedAt, err = parseTime("checkpoint created_at", createdAt); err != nil {
+		return sessiondomain.Checkpoint{}, err
+	}
+	return checkpoint, checkpoint.VerifyPayload()
+}
+
+func scanSummary(source scanner) (sessiondomain.ConversationSummary, error) {
+	var summary sessiondomain.ConversationSummary
+	var provider, model sql.NullString
+	var createdAt string
+	if err := source.Scan(
+		&summary.ID, &summary.SessionID, &summary.FromMessageSequence, &summary.ToMessageSequence,
+		&summary.Content, &summary.SourceHash, &summary.SummaryHash, &provider, &model, &createdAt,
+	); err != nil {
+		return sessiondomain.ConversationSummary{}, sqliteStoreError("scan conversation summary", err)
+	}
+	summary.Provider = provider.String
+	summary.Model = model.String
+	var err error
+	if summary.CreatedAt, err = parseTime("conversation summary created_at", createdAt); err != nil {
+		return sessiondomain.ConversationSummary{}, err
+	}
+	return summary, summary.Validate()
+}
+
 func parseTime(name, value string) (time.Time, error) {
 	parsed, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {

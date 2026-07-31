@@ -98,11 +98,18 @@ type ConversationStore interface {
 type RunStore interface {
 	GetRun(context.Context, RunID) (Run, error)
 	LatestInterruptedRun(context.Context, ConversationSessionID) (Run, error)
+	PendingInterruptedRun(context.Context, ConversationSessionID) (Run, error)
 }
 
 type CheckpointStore interface {
 	AppendCheckpoint(context.Context, AppendCheckpointInput) (Checkpoint, error)
 	ListCheckpoints(context.Context, RunID) ([]Checkpoint, error)
+	ListCheckpointInstructions(context.Context, CheckpointID) ([]CheckpointInstruction, error)
+}
+
+type SummaryStore interface {
+	AppendSummary(context.Context, ConversationSummary) (ConversationSummary, error)
+	LatestSummary(context.Context, ConversationSessionID) (ConversationSummary, error)
 }
 
 type Store interface {
@@ -110,4 +117,5 @@ type Store interface {
 	ConversationStore
 	RunStore
 	CheckpointStore
+	SummaryStore
 }

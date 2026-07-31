@@ -21,6 +21,8 @@ type MemoryStore struct {
 	checkpoints            map[RunID][]Checkpoint
 	checkpointIDs          map[CheckpointID]struct{}
 	checkpointInstructions map[CheckpointID][]CheckpointInstruction
+	summaries              map[ConversationSessionID][]ConversationSummary
+	summaryIDs             map[SummaryID]struct{}
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -30,6 +32,7 @@ func NewMemoryStore() *MemoryStore {
 		messages: make(map[ConversationSessionID][]Message), runs: make(map[RunID]Run),
 		checkpoints: make(map[RunID][]Checkpoint), checkpointIDs: make(map[CheckpointID]struct{}),
 		checkpointInstructions: make(map[CheckpointID][]CheckpointInstruction),
+		summaries:              make(map[ConversationSessionID][]ConversationSummary), summaryIDs: make(map[SummaryID]struct{}),
 	}
 }
 
@@ -326,11 +329,36 @@ func (store *MemoryStore) LatestInterruptedRun(ctx context.Context, sessionID Co
 	return cloneRun(latest), nil
 }
 
+func (store *MemoryStore) PendingInterruptedRun(ctx context.Context, sessionID ConversationSessionID) (Run, error) {
+	if err := validateStoreContext(ctx); err != nil {
+		return Run{}, err
+	}
+	store.mutex.RLock()
+	defer store.mutex.RUnlock()
+	var latestCancelled Run
+	var latestCompleted time.Time
+	for _, run := range store.runs {
+		if run.SessionID != sessionID || run.FinishedAt == nil {
+			continue
+		}
+		if run.Status == RunCompleted && run.FinishedAt.After(latestCompleted) {
+			latestCompleted = *run.FinishedAt
+		}
+		if run.Status == RunCancelled && (latestCancelled.FinishedAt == nil || run.FinishedAt.After(*latestCancelled.FinishedAt)) {
+			latestCancelled = run
+		}
+	}
+	if latestCancelled.FinishedAt == nil || !latestCancelled.FinishedAt.After(latestCompleted) {
+		return Run{}, fmt.Errorf("%w: pending interrupted run for conversation session %q", ErrNotFound, sessionID)
+	}
+	return cloneRun(latestCancelled), nil
+}
+
 func (store *MemoryStore) AppendCheckpoint(ctx context.Context, input AppendCheckpointInput) (Checkpoint, error) {
 	if err := validateStoreContext(ctx); err != nil {
 		return Checkpoint{}, err
 	}
-	if err := input.Checkpoint.Validate(); err != nil {
+	if err := input.Checkpoint.VerifyPayload(); err != nil {
 		return Checkpoint{}, err
 	}
 	store.mutex.Lock()
@@ -386,6 +414,62 @@ func (store *MemoryStore) ListCheckpoints(ctx context.Context, runID RunID) ([]C
 		result[index] = cloneCheckpoint(checkpoint)
 	}
 	return result, nil
+}
+
+func (store *MemoryStore) ListCheckpointInstructions(ctx context.Context, checkpointID CheckpointID) ([]CheckpointInstruction, error) {
+	if err := validateStoreContext(ctx); err != nil {
+		return nil, err
+	}
+	store.mutex.RLock()
+	defer store.mutex.RUnlock()
+	if _, ok := store.checkpointIDs[checkpointID]; !ok {
+		return nil, fmt.Errorf("%w: checkpoint %q", ErrNotFound, checkpointID)
+	}
+	return append([]CheckpointInstruction(nil), store.checkpointInstructions[checkpointID]...), nil
+}
+
+func (store *MemoryStore) AppendSummary(ctx context.Context, summary ConversationSummary) (ConversationSummary, error) {
+	if err := validateStoreContext(ctx); err != nil {
+		return ConversationSummary{}, err
+	}
+	if err := summary.Validate(); err != nil {
+		return ConversationSummary{}, err
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	if _, ok := store.sessions[summary.SessionID]; !ok {
+		return ConversationSummary{}, fmt.Errorf("%w: conversation session %q", ErrNotFound, summary.SessionID)
+	}
+	if _, duplicate := store.summaryIDs[summary.ID]; duplicate {
+		return ConversationSummary{}, fmt.Errorf("%w: conversation summary %q", ErrConflict, summary.ID)
+	}
+	for _, existing := range store.summaries[summary.SessionID] {
+		if existing.FromMessageSequence == summary.FromMessageSequence && existing.ToMessageSequence == summary.ToMessageSequence && existing.SourceHash == summary.SourceHash {
+			return existing, nil
+		}
+	}
+	store.summaries[summary.SessionID] = append(store.summaries[summary.SessionID], summary)
+	store.summaryIDs[summary.ID] = struct{}{}
+	return summary, nil
+}
+
+func (store *MemoryStore) LatestSummary(ctx context.Context, sessionID ConversationSessionID) (ConversationSummary, error) {
+	if err := validateStoreContext(ctx); err != nil {
+		return ConversationSummary{}, err
+	}
+	store.mutex.RLock()
+	defer store.mutex.RUnlock()
+	items := store.summaries[sessionID]
+	if len(items) == 0 {
+		return ConversationSummary{}, fmt.Errorf("%w: conversation summary for session %q", ErrNotFound, sessionID)
+	}
+	latest := items[0]
+	for _, item := range items[1:] {
+		if item.ToMessageSequence > latest.ToMessageSequence || (item.ToMessageSequence == latest.ToMessageSequence && item.CreatedAt.After(latest.CreatedAt)) {
+			latest = item
+		}
+	}
+	return latest, nil
 }
 
 func (store *MemoryStore) newRun(input runCreationInput, sessionID ConversationSessionID, turnID TurnID) (Run, error) {
@@ -478,7 +562,7 @@ func (store *MemoryStore) findMessage(id MessageID) (Message, bool) {
 }
 
 func (store *MemoryStore) ensureInitialized() error {
-	if store == nil || store.projects == nil || store.sessions == nil || store.turns == nil || store.messages == nil || store.runs == nil {
+	if store == nil || store.projects == nil || store.sessions == nil || store.turns == nil || store.messages == nil || store.runs == nil || store.summaries == nil || store.summaryIDs == nil {
 		return errors.New("session memory store is nil or uninitialized")
 	}
 	return nil

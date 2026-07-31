@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/project"
+	sessiondomain "github.com/Godric-W/Amadeus/internal/session"
 	"github.com/spf13/cobra"
 )
 
@@ -25,6 +26,8 @@ type agentInvocation struct {
 	Mode        agentInvocationMode
 	Project     project.Root
 	Task        string
+	SessionMode sessionStartMode
+	SessionID   sessiondomain.ConversationSessionID
 	Input       io.Reader
 	Output      io.Writer
 	ErrorOutput io.Writer
@@ -38,7 +41,7 @@ type agentCommandFactory func(*cobra.Command, *configFlags, commandRuntime) (age
 
 type terminalDetector func(io.Reader) bool
 
-func runRootAgent(command *cobra.Command, arguments []string, configFlags *configFlags, projectFlags *projectFlags, runtime commandRuntime) error {
+func runRootAgent(command *cobra.Command, arguments []string, configFlags *configFlags, projectFlags *projectFlags, sessionFlags *sessionFlags, runtime commandRuntime) error {
 	invocation, err := resolveAgentInvocation(command, arguments, runtime)
 	if err != nil {
 		return err
@@ -48,6 +51,10 @@ func runRootAgent(command *cobra.Command, arguments []string, configFlags *confi
 		return err
 	}
 	invocation.Project = root
+	invocation.SessionMode, invocation.SessionID, err = sessionFlags.resolve(command)
+	if err != nil {
+		return err
+	}
 	runner := runtime.agentCommand
 	if runner == nil && runtime.agentCommandFactory != nil {
 		runner, err = runtime.agentCommandFactory(command, configFlags, runtime)
