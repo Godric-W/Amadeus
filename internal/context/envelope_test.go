@@ -13,6 +13,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/prompt"
+	"github.com/Godric-W/Amadeus/internal/skill"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -89,6 +90,27 @@ func TestBuilderHashTracksSemanticInputs(t *testing.T) {
 	changedInstructions.Instructions.Documents[0].Content = "changed"
 	if _, err := builder.Build(context.Background(), changedInstructions); err == nil || !strings.Contains(err.Error(), "SHA-256") {
 		t.Fatalf("tampered instruction was accepted: %v", err)
+	}
+}
+
+func TestBuilderAddsSkillIndexWithoutSkillContent(t *testing.T) {
+	input := testBuildInput(t)
+	input.SkillIndex = []skill.IndexEntry{{Name: "review", Description: "Review changed code", Source: skill.SourceProject}}
+	envelope, err := NewBuilder().Build(context.Background(), input)
+	if err != nil {
+		t.Fatalf("build Skill index context: %v", err)
+	}
+	if len(envelope.Messages) != 4 || envelope.Messages[2].Role != llm.RoleDeveloper {
+		t.Fatalf("unexpected Skill index message placement: %#v", envelope.Messages)
+	}
+	if !strings.Contains(envelope.Messages[2].Content, `"type":"amadeus.skill_index.v1"`) || !strings.Contains(envelope.Messages[2].Content, `"name":"review"`) {
+		t.Fatalf("Skill index message is missing metadata: %s", envelope.Messages[2].Content)
+	}
+	if strings.Contains(envelope.Messages[2].Content, "Use concise findings") {
+		t.Fatalf("Skill index must not contain Skill body: %s", envelope.Messages[2].Content)
+	}
+	if envelope.Sources[len(envelope.Sources)-1].Kind != SourceSkill {
+		t.Fatalf("Skill index source was not recorded: %#v", envelope.Sources)
 	}
 }
 
@@ -234,7 +256,7 @@ func TestBuilderCompactsHistoryWithinBudgetAndPreservesSummarySource(t *testing.
 
 func TestBuilderInjectsInterruptedWorkAsBoundedDeveloperEnvelope(t *testing.T) {
 	input := testBuildInput(t)
-	input.InterruptedWork = &InterruptedWork{RunID: "run-cancelled", Objective: "finish the migration", StopReason: "user cancelled", InstructionChanges: []string{"changed: /tmp/AGENTS.md"}, Workspace: WorkspaceRevalidation{TestsRequireRerun: true}}
+	input.InterruptedWork = &InterruptedWork{RunID: "run-cancelled", Objective: "finish the migration", StopReason: "user cancelled", Workspace: WorkspaceRevalidation{TestsRequireRerun: true}}
 	envelope, err := NewBuilder().Build(context.Background(), input)
 	if err != nil {
 		t.Fatalf("build interrupted context: %v", err)

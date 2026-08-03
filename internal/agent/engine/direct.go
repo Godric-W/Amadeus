@@ -19,10 +19,11 @@ type DirectEngineOptions struct {
 }
 
 type DirectRunInput struct {
-	State          RunState      `json:"state"`
-	Messages       []llm.Message `json:"messages,omitempty"`
-	AvailableTools []tool.Spec   `json:"available_tools,omitempty"`
-	PriorSteps     []Step        `json:"prior_steps,omitempty"`
+	State             RunState                              `json:"state"`
+	WorkspaceSnapshot func(context.Context) (string, error) `json:"-"`
+	Messages          []llm.Message                         `json:"messages,omitempty"`
+	AvailableTools    []tool.Spec                           `json:"available_tools,omitempty"`
+	PriorSteps        []Step                                `json:"prior_steps,omitempty"`
 }
 
 type DirectRunResult struct {
@@ -425,6 +426,19 @@ func mergeBudget(existing, returned BudgetState) BudgetState {
 		returned.Budget = existing.Budget
 	}
 	return returned
+}
+
+func addBudgetStates(existing, returned BudgetState) BudgetState {
+	result := existing
+	if result.Budget == (Budget{}) {
+		result.Budget = returned.Budget
+	}
+	result.StepsUsed += returned.StepsUsed
+	result.ToolCallsUsed += returned.ToolCallsUsed
+	result.InputTokensUsed += returned.InputTokensUsed
+	result.OutputTokensUsed += returned.OutputTokensUsed
+	result.Elapsed += returned.Elapsed
+	return result
 }
 
 func cloneEvidence(evidence []Evidence) []Evidence {

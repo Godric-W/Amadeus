@@ -45,8 +45,12 @@ agent:
   max_output_tokens: 4000
   max_duration: 5m
   max_parallel_tools: 2
-approval:
-  enabled: false
+lsp:
+  enabled: true
+  command: gopls
+  args: [-remote=auto]
+  extensions: [.go]
+  timeout: 15s
 logging:
   level: debug
   trace_llm: true
@@ -70,8 +74,8 @@ logging:
 	if configured.Agent.MaxSteps != 12 || configured.Agent.MaxToolCalls != 24 || configured.Agent.MaxInputTokens != 30_000 || configured.Agent.MaxOutputTokens != 4_000 || configured.Agent.MaxDuration != 5*time.Minute || configured.Agent.MaxParallelTools != 2 {
 		t.Fatalf("unexpected agent config: %#v", configured.Agent)
 	}
-	if configured.Approval.Enabled {
-		t.Fatal("explicit false approval setting was not applied")
+	if !configured.LSP.Enabled || configured.LSP.Command != "gopls" || !reflect.DeepEqual(configured.LSP.Args, []string{"-remote=auto"}) || !reflect.DeepEqual(configured.LSP.Extensions, []string{".go"}) || configured.LSP.Timeout != 15*time.Second {
+		t.Fatalf("unexpected LSP config: %#v", configured.LSP)
 	}
 	if configured.Logging.Level != LogLevelDebug || !configured.Logging.TraceLLM {
 		t.Fatalf("unexpected logging config: %#v", configured.Logging)

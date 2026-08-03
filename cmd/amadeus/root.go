@@ -7,12 +7,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/react"
 	"github.com/Godric-W/Amadeus/internal/buildinfo"
 	"github.com/Godric-W/Amadeus/internal/config"
+	"github.com/Godric-W/Amadeus/internal/mcp"
+	"github.com/Godric-W/Amadeus/internal/web"
 	"github.com/spf13/cobra"
 )
 
 const envAmadeusHome = "AMADEUS_HOME"
+const flagPlain = "plain"
 
 type commandRuntime struct {
 	amadeusRoot         string
@@ -21,6 +25,10 @@ type commandRuntime struct {
 	workingDirectoryErr error
 	lookupEnv           config.EnvLookup
 	llmClientFactory    llmClientFactory
+	mcpClientFactory    mcp.ClientFactory
+	webFetcher          web.Fetcher
+	webSearch           web.SearchProvider
+	postWriteHooks      []react.PostExecutionHook
 	turnContextFactory  chatTurnContextFactory
 	agentContextFactory chatTurnContextFactory
 	agentCommand        agentCommand
@@ -47,6 +55,7 @@ func newRootCommandWithRuntime(flags *configFlags, runtime commandRuntime) *cobr
 
 func newRootCommandWithFlags(configFlags *configFlags, projectFlags *projectFlags, runtime commandRuntime) *cobra.Command {
 	sessionFlags := &sessionFlags{}
+	plain := false
 	command := &cobra.Command{
 		Use:           "amadeus [task]",
 		Short:         "Amadeus agent CLI",
@@ -54,13 +63,14 @@ func newRootCommandWithFlags(configFlags *configFlags, projectFlags *projectFlag
 		SilenceUsage:  true,
 		Args:          cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
-			return runRootAgent(command, arguments, configFlags, projectFlags, sessionFlags, runtime)
+			return runRootAgent(command, arguments, configFlags, projectFlags, sessionFlags, plain, runtime)
 		},
 	}
 
 	configFlags.bind(command)
 	projectFlags.bind(command)
 	sessionFlags.bind(command)
+	command.PersistentFlags().BoolVar(&plain, flagPlain, false, "use plain line-oriented terminal output")
 	command.AddCommand(newChatCommand(configFlags, runtime))
 	command.AddCommand(newConfigCommand(configFlags, runtime))
 	command.AddCommand(newToolsCommand())

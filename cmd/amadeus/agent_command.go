@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
 	sessiondomain "github.com/Godric-W/Amadeus/internal/session"
 	"github.com/spf13/cobra"
@@ -17,9 +19,13 @@ const maxRootTaskBytes = 1 << 20
 
 type agentInvocationMode string
 
+type agentExecutionMode string
+
 const (
 	agentInvocationOnce        agentInvocationMode = "once"
 	agentInvocationInteractive agentInvocationMode = "interactive"
+	agentExecutionReAct        agentExecutionMode  = "react"
+	agentExecutionPlanned      agentExecutionMode  = "planned"
 )
 
 type agentInvocation struct {
@@ -28,9 +34,31 @@ type agentInvocation struct {
 	Task        string
 	SessionMode sessionStartMode
 	SessionID   sessiondomain.ConversationSessionID
+	Interactive bool
+	Plain       bool
+	EventSink   event.Sink
+	Approvals   policy.ApprovalHandler
 	Input       io.Reader
 	Output      io.Writer
 	ErrorOutput io.Writer
+}
+
+func parseAgentTask(value string) (agentExecutionMode, string, error) {
+	task := strings.TrimSpace(value)
+	if task == "" {
+		return "", "", errors.New("Coding Agent task is empty")
+	}
+	if task == "/plan" {
+		return "", "", errors.New("usage: /plan <task>")
+	}
+	if strings.HasPrefix(task, "/plan ") || strings.HasPrefix(task, "/plan\t") || strings.HasPrefix(task, "/plan\n") {
+		objective := strings.TrimSpace(task[len("/plan"):])
+		if objective == "" {
+			return "", "", errors.New("usage: /plan <task>")
+		}
+		return agentExecutionPlanned, objective, nil
+	}
+	return agentExecutionReAct, task, nil
 }
 
 type agentCommand interface {
@@ -41,7 +69,7 @@ type agentCommandFactory func(*cobra.Command, *configFlags, commandRuntime) (age
 
 type terminalDetector func(io.Reader) bool
 
-func runRootAgent(command *cobra.Command, arguments []string, configFlags *configFlags, projectFlags *projectFlags, sessionFlags *sessionFlags, runtime commandRuntime) error {
+func runRootAgent(command *cobra.Command, arguments []string, configFlags *configFlags, projectFlags *projectFlags, sessionFlags *sessionFlags, plain bool, runtime commandRuntime) error {
 	invocation, err := resolveAgentInvocation(command, arguments, runtime)
 	if err != nil {
 		return err
@@ -51,6 +79,7 @@ func runRootAgent(command *cobra.Command, arguments []string, configFlags *confi
 		return err
 	}
 	invocation.Project = root
+	invocation.Plain = plain
 	invocation.SessionMode, invocation.SessionID, err = sessionFlags.resolve(command)
 	if err != nil {
 		return err
@@ -94,6 +123,7 @@ func resolveAgentInvocation(command *cobra.Command, arguments []string, runtime 
 	}
 	if detectTerminal(invocation.Input) {
 		invocation.Mode = agentInvocationInteractive
+		invocation.Interactive = true
 		return invocation, nil
 	}
 	task, err := readRootTask(invocation.Input)

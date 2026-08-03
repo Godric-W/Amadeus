@@ -23,6 +23,7 @@ func TestEventTypeValidation(t *testing.T) {
 		TypeErrorOccurred,
 		TypeEngineRunStarted,
 		TypeEngineStatusChanged,
+		TypePlanUpdated,
 		TypeVerificationDone,
 		TypeReflectionDone,
 		TypeEngineRunCompleted,
@@ -63,11 +64,11 @@ func TestNewErrorInfoClassifiesGenericErrorAsUnknown(t *testing.T) {
 func TestAgentEventPayloadsExposeStableTypes(t *testing.T) {
 	events := []Event{
 		ToolCallStarted{}, ToolCallCompleted{}, ApprovalRequested{}, ApprovalResolved{},
-		StatusChanged{}, DiagnosticPublished{},
+		StatusChanged{}, DiagnosticPublished{}, PlanUpdated{},
 	}
 	want := []Type{
 		TypeToolCallStarted, TypeToolCallCompleted, TypeApprovalRequested, TypeApprovalResolved,
-		TypeStatusChanged, TypeDiagnosticPublished,
+		TypeStatusChanged, TypeDiagnosticPublished, TypePlanUpdated,
 	}
 	for index, runtimeEvent := range events {
 		if runtimeEvent.Type() != want[index] {

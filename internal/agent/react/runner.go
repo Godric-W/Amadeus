@@ -24,6 +24,7 @@ type RunnerOptions struct {
 	MaxOutputTokens    int
 	MaxParallelTools   int
 	EscalateHighImpact bool
+	AdditionalMessages func() ([]llm.Message, error)
 }
 
 type Runner struct {
@@ -105,6 +106,13 @@ func (runner *Runner) Run(ctx context.Context, input engine.TaskRunInput) (engin
 		if outcome, ok := exhaustedBeforeModelCall(budget, steps, evidence); ok {
 			return finish(outcome), nil
 		}
+		if runner.options.AdditionalMessages != nil {
+			additional, err := runner.options.AdditionalMessages()
+			if err != nil {
+				return engine.TaskOutcome{}, fmt.Errorf("prepare additional model messages: %w", err)
+			}
+			messages = append(messages, additional...)
+		}
 		iteration, err := runner.iterator.Run(runCtx, IterationInput{
 			ID:              iterationID(input, iterationIndex),
 			Messages:        messages,
@@ -161,6 +169,7 @@ func (runner *Runner) Run(ctx context.Context, input engine.TaskRunInput) (engin
 				outcome.Evidence = evidence
 				return finish(outcome), nil
 			}
+			evidenceBefore := countVerified(evidence)
 			step, executions, attempted, err := runner.executeCalls(runCtx, len(input.PriorSteps)+len(steps), iteration, input.AvailableTools)
 			if err != nil {
 				return engine.TaskOutcome{}, err
@@ -173,10 +182,16 @@ func (runner *Runner) Run(ctx context.Context, input engine.TaskRunInput) (engin
 			if outcome, ok := contextOutcome(ctx, runCtx, budget, steps, evidence); ok {
 				return finish(outcome), nil
 			}
+			if observation, ok := firstBlockingObservation(step.Observations); ok {
+				return finish(engine.TaskOutcome{
+					Kind: engine.TaskOutcomeBlocked, Steps: steps, Evidence: evidence,
+					StopReason: engine.StopReasonToolError, Reason: observation.Error,
+				}), nil
+			}
 
 			signals, err := runner.progress.Observe(ProgressSample{
 				Calls: iteration.ToolCalls, Observations: step.Observations,
-				EvidenceBefore: countVerified(evidence) - countVerified(step.Evidence),
+				EvidenceBefore: evidenceBefore,
 				EvidenceAfter:  countVerified(evidence), Specs: input.AvailableTools,
 			})
 			if err != nil {
@@ -196,6 +211,15 @@ func (runner *Runner) Run(ctx context.Context, input engine.TaskRunInput) (engin
 	}
 }
 
+func firstBlockingObservation(observations []engine.Observation) (engine.Observation, bool) {
+	for _, observation := range observations {
+		if observation.Blocking {
+			return observation, true
+		}
+	}
+	return engine.Observation{}, false
+}
+
 func (runner *Runner) executeCalls(ctx context.Context, index int, iteration IterationResult, specs []tool.Spec) (engine.Step, []ToolExecution, int, error) {
 	startedAt := runner.now()
 	step := engine.Step{
@@ -212,6 +236,7 @@ func (runner *Runner) executeCalls(ctx context.Context, index int, iteration Ite
 		executions = append(executions, execution)
 		step.Observations = append(step.Observations, execution.Observation)
 		step.Evidence = append(step.Evidence, execution.Evidence)
+		step.Evidence = append(step.Evidence, execution.SupplementalEvidence...)
 	}
 	if ctx.Err() != nil {
 		step.Status = engine.StepStatusCancelled

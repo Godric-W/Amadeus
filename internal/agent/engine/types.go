@@ -76,14 +76,16 @@ func NewDirectGraph(goal Goal) ExecutionGraph {
 }
 
 type Task struct {
-	ID                 TaskID      `json:"id"`
-	Objective          string      `json:"objective"`
-	Dependencies       []TaskID    `json:"dependencies,omitempty"`
-	AcceptanceCriteria []Criterion `json:"acceptance_criteria,omitempty"`
-	Status             TaskStatus  `json:"status"`
-	Attempts           int         `json:"attempts"`
-	Budget             Budget      `json:"budget,omitempty"`
-	Result             *TaskResult `json:"result,omitempty"`
+	ID                 TaskID          `json:"id"`
+	Objective          string          `json:"objective"`
+	Dependencies       []TaskID        `json:"dependencies,omitempty"`
+	AcceptanceCriteria []Criterion     `json:"acceptance_criteria,omitempty"`
+	Status             TaskStatus      `json:"status"`
+	Attempts           int             `json:"attempts"`
+	Budget             Budget          `json:"budget,omitempty"`
+	SideEffect         tool.SideEffect `json:"side_effect,omitempty"`
+	Resources          []string        `json:"resources,omitempty"`
+	Result             *TaskResult     `json:"result,omitempty"`
 }
 
 type TaskResult struct {
@@ -122,6 +124,7 @@ type Observation struct {
 	ToolName string        `json:"tool_name"`
 	Result   tool.Result   `json:"result"`
 	Error    string        `json:"error,omitempty"`
+	Blocking bool          `json:"blocking,omitempty"`
 	Duration time.Duration `json:"duration,omitempty"`
 }
 

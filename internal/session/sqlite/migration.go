@@ -144,6 +144,97 @@ var schemaMigrations = []migration{{
             CHECK (length(trim(scope_path)) > 0)
         )`,
 	},
+}, {
+	version: 2,
+	name:    "collapse_session_run_schema",
+	statements: []string{
+		`CREATE TABLE runs_v2 (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES conversation_sessions(id) ON DELETE CASCADE,
+            sequence INTEGER NOT NULL CHECK (sequence >= 1),
+            context_from_run_id TEXT REFERENCES runs_v2(id) ON DELETE SET NULL,
+            objective TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'interrupted', 'failed')),
+            stop_reason TEXT,
+            provider TEXT,
+            model TEXT,
+            api_mode TEXT,
+            dialect TEXT,
+            usage_json TEXT,
+            interrupted_context_json TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            UNIQUE (session_id, sequence),
+            CHECK (length(trim(id)) > 0),
+            CHECK (length(trim(objective)) > 0),
+            CHECK (context_from_run_id IS NULL OR context_from_run_id <> id),
+            CHECK ((status = 'running' AND finished_at IS NULL) OR (status <> 'running' AND finished_at IS NOT NULL)),
+            CHECK (status IN ('running', 'completed') OR length(trim(stop_reason)) > 0),
+            CHECK (usage_json IS NULL OR json_valid(usage_json)),
+            CHECK (interrupted_context_json IS NULL OR json_valid(interrupted_context_json))
+        )`,
+		`INSERT INTO runs_v2 (
+            id, session_id, sequence, context_from_run_id, objective, status, stop_reason,
+            provider, model, api_mode, dialect, usage_json, interrupted_context_json, started_at, finished_at
+        )
+        SELECT r.id, r.session_id, t.sequence, r.context_from_run_id, r.objective,
+            CASE r.status
+                WHEN 'running' THEN 'running'
+                WHEN 'completed' THEN 'completed'
+                WHEN 'cancelled' THEN 'interrupted'
+                WHEN 'failed' THEN 'failed'
+                ELSE 'failed'
+            END,
+            CASE
+                WHEN r.status IN ('running', 'completed') THEN r.stop_reason
+                WHEN length(trim(COALESCE(r.stop_reason, ''))) > 0 THEN r.stop_reason
+                ELSE 'legacy run state: ' || r.status
+            END,
+            r.provider, r.model, r.api_mode, r.dialect, r.usage_json,
+            CASE WHEN r.status IN ('cancelled', 'failed', 'partial', 'needs_plan', 'awaiting_user') THEN (
+                SELECT c.payload_json FROM run_checkpoints c WHERE c.run_id = r.id ORDER BY c.sequence DESC LIMIT 1
+            ) ELSE NULL END,
+            r.started_at, r.finished_at
+        FROM runs r JOIN session_turns t ON t.id = r.turn_id`,
+		`CREATE TABLE conversation_messages_v2 (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES conversation_sessions(id) ON DELETE CASCADE,
+            run_id TEXT NOT NULL REFERENCES runs_v2(id) ON DELETE CASCADE,
+            sequence INTEGER NOT NULL CHECK (sequence >= 1),
+            role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (session_id, sequence),
+            UNIQUE (run_id, role),
+            CHECK (length(trim(id)) > 0),
+            CHECK (length(trim(content)) > 0)
+        )`,
+		`INSERT INTO conversation_messages_v2 (id, session_id, run_id, sequence, role, content, created_at)
+        SELECT m.id, m.session_id, r.id, m.sequence, m.role, m.content, m.created_at
+        FROM conversation_messages m JOIN runs r ON r.turn_id = m.turn_id`,
+		`DROP TABLE checkpoint_instructions`,
+		`DROP TABLE run_checkpoints`,
+		`DROP TABLE conversation_messages`,
+		`DROP TABLE runs`,
+		`DROP TABLE session_turns`,
+		`ALTER TABLE runs_v2 RENAME TO runs`,
+		`ALTER TABLE conversation_messages_v2 RENAME TO conversation_messages`,
+		`CREATE INDEX runs_session_status_finished_idx ON runs(session_id, status, finished_at DESC, id)`,
+		`CREATE INDEX runs_context_from_idx ON runs(context_from_run_id)`,
+		`CREATE INDEX conversation_messages_session_sequence_idx ON conversation_messages(session_id, sequence)`,
+	},
+}, {
+	version: 3,
+	name:    "rename_session_run_sequence",
+	statements: []string{
+		`ALTER TABLE conversation_sessions RENAME COLUMN next_turn_sequence TO next_run_sequence`,
+	},
+}, {
+	version: 4,
+	name:    "persist_run_execution_mode",
+	statements: []string{
+		`ALTER TABLE runs ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'react' CHECK (execution_mode IN ('react', 'planned'))`,
+	},
 }}
 
 func Migrate(ctx context.Context, database *Database) error {

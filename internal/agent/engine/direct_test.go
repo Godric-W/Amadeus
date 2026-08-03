@@ -157,6 +157,7 @@ func TestDirectEngineUsesReflectionReplanAndAskUser(t *testing.T) {
 	}{
 		{name: "replan", reflection: Reflection{Scope: ReflectionScopeTask, Verdict: ReflectionReplan, Issues: []Issue{{Code: "scope", Summary: "multiple tasks required", Severity: IssueSeverityWarning}}, NextActionHint: "create a graph"}, runStatus: RunStatusPlanning},
 		{name: "ask user", reflection: Reflection{Scope: ReflectionScopeTask, Verdict: ReflectionAskUser, NextActionHint: "choose target"}, runStatus: RunStatusSuspended, stopReason: StopReasonUserInputRequired},
+		{name: "abort", reflection: Reflection{Scope: ReflectionScopeTask, Verdict: ReflectionAbort, Issues: []Issue{{Code: "unsafe", Summary: "cannot complete safely", Severity: IssueSeverityCritical}}, NextActionHint: "stop"}, runStatus: RunStatusFailed, stopReason: StopReasonVerificationFailed},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -166,7 +167,11 @@ func TestDirectEngineUsesReflectionReplanAndAskUser(t *testing.T) {
 			direct := newTestDirectEngine(t, runner, verifier, reflector, 2)
 
 			result, err := direct.Run(context.Background(), validDirectInput())
-			if err != nil || result.State.Status != test.runStatus || result.State.StopReason != test.stopReason || result.State.Graph.Tasks[0].Status != TaskStatusBlocked {
+			expectedTaskStatus := TaskStatusBlocked
+			if test.reflection.Verdict == ReflectionAbort {
+				expectedTaskStatus = TaskStatusFailed
+			}
+			if err != nil || result.State.Status != test.runStatus || result.State.StopReason != test.stopReason || result.State.Graph.Tasks[0].Status != expectedTaskStatus {
 				t.Fatalf("unexpected pause result: result=%#v err=%v", result, err)
 			}
 		})

@@ -9,23 +9,29 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
+	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/react"
 	bootstrap "github.com/Godric-W/Amadeus/internal/app/bootstrap"
 	"github.com/Godric-W/Amadeus/internal/audit"
+	"github.com/Godric-W/Amadeus/internal/buildinfo"
 	"github.com/Godric-W/Amadeus/internal/config"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/instruction"
 	interfacecli "github.com/Godric-W/Amadeus/internal/interface/cli"
+	"github.com/Godric-W/Amadeus/internal/interface/tui"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/lsp"
+	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/render"
 	sessiondomain "github.com/Godric-W/Amadeus/internal/session"
+	"github.com/Godric-W/Amadeus/internal/tool/builtin"
 	"github.com/spf13/cobra"
 )
 
@@ -146,54 +152,183 @@ func (runner *codingAgentCommand) runInteractive(ctx context.Context, invocation
 		return errors.New("interactive Coding Agent streams are nil")
 	}
 	reader := bufio.NewReader(invocation.Input)
-	if err := runner.prepareSession(ctx, invocation, reader); err != nil {
-		return err
+	detectTerminal := runner.runtime.terminalDetector
+	if detectTerminal == nil {
+		detectTerminal = isTerminalInput
 	}
-	for {
-		if err := ctx.Err(); err != nil {
+	capabilities := tui.DetectTerminalCapabilitiesWithOptions(invocation.Input, invocation.Output, tui.TerminalCapabilityOptions{
+		IsTerminal: func(input io.Reader) bool { return detectTerminal(input) }, ForcePlain: invocation.Plain,
+	})
+	fullscreen := capabilities.TTY && !capabilities.Plain
+	if !(fullscreen && invocation.SessionMode == sessionStartSelect) {
+		if err := runner.prepareSession(ctx, invocation, reader); err != nil {
 			return err
 		}
-		fmt.Fprint(invocation.ErrorOutput, "amadeus> ")
-		line, err := reader.ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			return fmt.Errorf("read interactive task: %w", err)
-		}
-		if len(line) > maxRootTaskBytes {
-			fmt.Fprintf(invocation.ErrorOutput, "error: interactive task exceeds %d bytes\n", maxRootTaskBytes)
-		} else {
-			task := strings.TrimSpace(line)
-			switch task {
-			case "":
+	}
+	if fullscreen {
+		return runner.runFullscreenInteractive(ctx, invocation)
+	}
+	return runner.runPlainInteractive(ctx, invocation, reader, capabilities)
+}
+
+func (runner *codingAgentCommand) runPlainInteractive(ctx context.Context, invocation agentInvocation, reader *bufio.Reader, capabilities tui.TerminalCapabilities) error {
+	interactionInput := io.Reader(reader)
+	interactionReader := reader
+	controller, err := tui.NewTerminalInteractionController(interactionInput, invocation.Output, invocation.ErrorOutput,
+		func(commandCtx context.Context, command string) error {
+			switch command {
 			case "/help":
-				fmt.Fprintln(invocation.ErrorOutput, "commands: /help, /resume, /exit")
+				_, err := fmt.Fprintf(invocation.ErrorOutput, "commands: %s\n", strings.Join(tui.SlashCommands(), ", "))
+				return err
+			case "/clear":
+				_, err := fmt.Fprint(invocation.ErrorOutput, "\x1b[2J\x1b[H")
+				return err
 			case "/resume":
-				if err := runner.selectSession(ctx, invocation, reader); err != nil {
-					fmt.Fprintf(invocation.ErrorOutput, "error: %v\n", err)
+				selector := interactionReader
+				if selector == nil {
+					selector = bufio.NewReader(invocation.Input)
 				}
-			case "/exit":
-				fmt.Fprintln(invocation.ErrorOutput, "session: closed")
-				return nil
+				return runner.selectSession(commandCtx, invocation, selector)
+			case "/status":
+				return runner.writeInteractiveStatus(commandCtx, invocation)
+			case "/tools":
+				return writeInteractiveTools(invocation.ErrorOutput)
 			default:
-				runInvocation := invocation
-				runInvocation.Mode = agentInvocationOnce
-				runInvocation.Task = task
-				runInvocation.Input = reader
-				runCtx, cancel, contextErr := runner.newRunContext(ctx)
-				if contextErr != nil {
-					return contextErr
-				}
-				runErr := runner.runOnce(runCtx, runInvocation)
-				cancel()
-				if runErr != nil && !errorAlreadyReported(runErr) {
-					fmt.Fprintf(invocation.ErrorOutput, "error: %v\n", runErr)
-				}
+				return fmt.Errorf("unknown command %q", command)
 			}
-		}
-		if errors.Is(err, io.EOF) {
-			fmt.Fprintln(invocation.ErrorOutput, "session: closed")
-			return nil
+		},
+		func(runCtx context.Context, task string) error {
+			if len(task) > maxRootTaskBytes {
+				return fmt.Errorf("interactive task exceeds %d bytes", maxRootTaskBytes)
+			}
+			runInvocation := invocation
+			runInvocation.Mode = agentInvocationOnce
+			runInvocation.Task = task
+			runInvocation.Input = interactionInput
+			err := runner.runOnce(runCtx, runInvocation)
+			if errorAlreadyReported(err) {
+				return nil
+			}
+			return err
+		},
+	)
+	if err != nil {
+		return err
+	}
+	controller.WithTaskContextFactory(runner.newRunContext)
+	controller.WithCapabilities(capabilities)
+	err = controller.Run(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(invocation.ErrorOutput, "session: closed")
+	return err
+}
+
+func (runner *codingAgentCommand) runFullscreenInteractive(ctx context.Context, invocation agentInvocation) error {
+	configured, _, err := loadEffectiveConfig(runner.command, runner.flags, runner.runtime)
+	if err != nil {
+		return err
+	}
+	if err := config.Validate(configured); err != nil {
+		return err
+	}
+	provider := configured.Providers[configured.DefaultProvider]
+	coordinator, err := runner.ensureCoordinator(ctx, invocation)
+	if err != nil {
+		return err
+	}
+	sessionID := string(coordinator.CurrentSessionID())
+	if sessionID == "" {
+		sessionID = "draft"
+	}
+	var application *tui.FullscreenApplication
+	application, err = tui.NewFullscreenApplication(tui.FullscreenOptions{
+		Input: invocation.Input, Output: invocation.Output, OpenSessions: invocation.SessionMode == sessionStartSelect,
+		Startup: tui.FullscreenStartup{
+			Version: buildinfo.Current().Version, Provider: configured.DefaultProvider, Model: provider.Model,
+			Project: invocation.Project.Path(), Session: sessionID, MaxContext: configured.Agent.MaxInputTokens,
+		},
+		NewTask: runner.newRunContext,
+		Task: func(runCtx context.Context, task string) error {
+			if len(task) > maxRootTaskBytes {
+				return fmt.Errorf("interactive task exceeds %d bytes", maxRootTaskBytes)
+			}
+			runInvocation := invocation
+			runInvocation.Mode = agentInvocationOnce
+			runInvocation.Task = task
+			runInvocation.Input = strings.NewReader("")
+			runInvocation.Output = io.Discard
+			runInvocation.ErrorOutput = io.Discard
+			runInvocation.EventSink = application
+			runInvocation.Approvals = application
+			err := runner.runOnce(runCtx, runInvocation)
+			if errorAlreadyReported(err) {
+				return nil
+			}
+			return err
+		},
+		Command: func(commandCtx context.Context, command string) (string, error) {
+			var output strings.Builder
+			switch strings.Fields(command)[0] {
+			case "/status":
+				statusInvocation := invocation
+				statusInvocation.ErrorOutput = &output
+				err := runner.writeInteractiveStatus(commandCtx, statusInvocation)
+				return strings.TrimSpace(output.String()), err
+			case "/tools":
+				err := writeInteractiveTools(&output)
+				return strings.TrimSpace(output.String()), err
+			default:
+				return "", fmt.Errorf("unknown command %q", command)
+			}
+		},
+		Sessions: func(commandCtx context.Context) ([]tui.SessionOption, error) {
+			sessions, listErr := coordinator.ListSessions(commandCtx)
+			if listErr != nil {
+				return nil, listErr
+			}
+			options := make([]tui.SessionOption, 0, len(sessions))
+			for _, conversation := range sessions {
+				options = append(options, tui.SessionOption{ID: string(conversation.ID), Title: conversation.Title, Current: conversation.ID == coordinator.CurrentSessionID()})
+			}
+			return options, nil
+		},
+		Resume: func(commandCtx context.Context, id string) (string, error) {
+			conversation, resumeErr := coordinator.Resume(commandCtx, sessiondomain.ConversationSessionID(id))
+			if resumeErr != nil {
+				return "", resumeErr
+			}
+			return fmt.Sprintf("Session resumed: %s (%s)", conversation.ID, conversation.Title), nil
+		},
+		CurrentSession: func() string { return string(coordinator.CurrentSessionID()) },
+	})
+	if err != nil {
+		return err
+	}
+	return application.Run(ctx)
+}
+
+func (runner *codingAgentCommand) writeInteractiveStatus(ctx context.Context, invocation agentInvocation) error {
+	coordinator, err := runner.ensureCoordinator(ctx, invocation)
+	if err != nil {
+		return err
+	}
+	current := coordinator.CurrentSessionID()
+	if current == "" {
+		current = "draft"
+	}
+	_, err = fmt.Fprintf(invocation.ErrorOutput, "status: project=%s session=%s\n", invocation.Project.Path(), current)
+	return err
+}
+
+func writeInteractiveTools(writer io.Writer) error {
+	for _, spec := range builtin.MVPSpecs() {
+		if _, err := fmt.Fprintf(writer, "%s (%s)\n", spec.Name, spec.SideEffect); err != nil {
+			return err
 		}
 	}
+	return nil
 }
 
 func (runner *codingAgentCommand) prepareSession(ctx context.Context, invocation agentInvocation, reader *bufio.Reader) error {
@@ -298,10 +433,11 @@ func (runner *codingAgentCommand) newRunContext(parent context.Context) (context
 }
 
 func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentInvocation) (runErr error) {
-	if strings.TrimSpace(invocation.Task) == "" {
-		return errors.New("Coding Agent one-shot task is invalid")
+	executionMode, objective, err := parseAgentTask(invocation.Task)
+	if err != nil {
+		return err
 	}
-
+	invocation.Task = objective
 	configured, _, err := loadEffectiveConfig(runner.command, runner.flags, runner.runtime)
 	if err != nil {
 		return err
@@ -314,12 +450,9 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 		return err
 	}
 	provider := configured.Providers[configured.DefaultProvider]
-	budgetJSON, err := json.Marshal(configuredAgentBudget(configured.Agent))
-	if err != nil {
-		return fmt.Errorf("encode persistent Run budget: %w", err)
-	}
 	started, err := coordinator.BeginTask(context.WithoutCancel(ctx), invocation.Task, sessiondomain.RunMetadata{
-		Provider: configured.DefaultProvider, Model: provider.Model, APIMode: string(provider.API), Dialect: string(provider.Dialect), BudgetJSON: budgetJSON,
+		Provider: configured.DefaultProvider, Model: provider.Model, APIMode: string(provider.API), Dialect: string(provider.Dialect),
+		ExecutionMode: sessiondomain.ExecutionMode(executionMode),
 	})
 	if err != nil {
 		return err
@@ -332,29 +465,51 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 		status := sessiondomain.RunFailed
 		reason := "run setup or execution failed"
 		if errors.Is(ctx.Err(), context.Canceled) {
-			status = sessiondomain.RunCancelled
+			status = sessiondomain.RunInterrupted
 			reason = "user cancelled"
 		} else if runErr != nil {
 			reason = foldSummary(runErr.Error())
 		}
-		_, finishErr := coordinator.FinishTask(context.WithoutCancel(ctx), started, status, reason, "", nil)
+		fallbackContext, _ := sessiondomain.EncodeInterruptedContext(sessiondomain.InterruptedContextV1{Objective: invocation.Task, Status: string(status), StopReason: reason, LastError: reason, PendingWork: []string{"Re-plan from the current workspace state."}})
+		_, finishErr := coordinator.FinishTask(context.WithoutCancel(ctx), started, status, reason, "", nil, fallbackContext)
 		if finishErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("persist failed Run terminal state: %w", finishErr))
 		}
 	}()
 
-	renderer, err := render.NewAgentRenderer(invocation.Output, invocation.ErrorOutput)
-	if err != nil {
-		return err
-	}
 	detectTerminal := runner.runtime.terminalDetector
 	if detectTerminal == nil {
 		detectTerminal = isTerminalInput
 	}
-	approvals, err := interfacecli.NewTerminalApprovalHandler(interfacecli.TerminalApprovalOptions{
-		Input: invocation.Input, Output: invocation.ErrorOutput, Enabled: configured.Approval.Enabled, Default: configured.Approval.Default,
-		IsTerminal: func(input io.Reader) bool { return detectTerminal(input) },
-	})
+	var renderer event.Sink
+	inlineMode := false
+	if invocation.EventSink != nil || invocation.Approvals != nil {
+		if invocation.EventSink == nil || invocation.Approvals == nil {
+			return errors.New("Coding Agent external TUI requires both event sink and approval handler")
+		}
+		renderer = invocation.EventSink
+	} else {
+		capabilities := tui.DetectTerminalCapabilitiesWithOptions(invocation.Input, invocation.Output, tui.TerminalCapabilityOptions{
+			IsTerminal: func(input io.Reader) bool { return detectTerminal(input) }, ForcePlain: invocation.Plain,
+		})
+		if capabilities.TTY && !capabilities.Plain {
+			renderer, err = tui.NewInlineRenderer(invocation.Output, invocation.ErrorOutput)
+			inlineMode = true
+		} else {
+			renderer, err = render.NewAgentRenderer(invocation.Output, invocation.ErrorOutput)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	var approvals policy.ApprovalHandler
+	if invocation.Approvals != nil {
+		approvals = invocation.Approvals
+	} else if inlineMode {
+		approvals, err = tui.NewInlineApprovalPrompt(tui.InlineApprovalPromptOptions{Input: invocation.Input, Output: invocation.ErrorOutput, IsTerminal: func(input io.Reader) bool { return detectTerminal(input) }})
+	} else {
+		approvals, err = interfacecli.NewTerminalApprovalHandler(interfacecli.TerminalApprovalOptions{Input: invocation.Input, Output: invocation.ErrorOutput, IsTerminal: func(input io.Reader) bool { return detectTerminal(input) }})
+	}
 	if err != nil {
 		return err
 	}
@@ -376,8 +531,38 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 			}
 		}()
 	}
+	postWriteHooks := append([]react.PostExecutionHook(nil), runner.runtime.postWriteHooks...)
+	var lspClient lsp.Client
+	if configured.LSP.Enabled {
+		processClient, clientErr := lsp.NewProcessClient(lsp.ProcessOptions{
+			Command: configured.LSP.Command, Args: append([]string(nil), configured.LSP.Args...),
+			Root: invocation.Project, Timeout: configured.LSP.Timeout,
+		})
+		if clientErr != nil {
+			return clientErr
+		}
+		writeHook, hookErr := lsp.NewWriteHookWithOptions(processClient, invocation.Project, renderer, lsp.WriteHookOptions{Extensions: configured.LSP.Extensions})
+		if hookErr != nil {
+			return hookErr
+		}
+		lspClient = processClient
+		postWriteHooks = append(postWriteHooks, writeHook)
+		defer func() {
+			if closeErr := lspClient.Close(context.WithoutCancel(ctx)); closeErr != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("close LSP client: %w", closeErr))
+			}
+		}()
+	}
 
-	options := bootstrap.AgentOptions{}
+	options := bootstrap.AgentOptions{
+		SnapshotRunID:    string(started.Records.Run.ID),
+		UserSkillRoot:    runner.runtime.amadeusRoot,
+		UserMCPRoot:      runner.runtime.amadeusRoot,
+		MCPClientFactory: runner.runtime.mcpClientFactory,
+		WebFetcher:       runner.runtime.webFetcher,
+		WebSearch:        runner.runtime.webSearch,
+		PostWriteHooks:   postWriteHooks,
+	}
 	if runner.runtime.llmClientFactory != nil {
 		options.ClientFactory = func(providerName string, provider config.ProviderConfig) (client llm.Client, err error) {
 			return runner.runtime.llmClientFactory(providerName, provider)
@@ -387,6 +572,11 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if closeErr := agent.Close(); closeErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("close Coding Agent MCP clients: %w", closeErr))
+		}
+	}()
 	if runner.runtime.rootErr != nil {
 		return fmt.Errorf("resolve Amadeus root for user instructions: %w", runner.runtime.rootErr)
 	}
@@ -410,21 +600,6 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 	if err != nil {
 		return err
 	}
-	startCheckpoint, err := sessiondomain.NewCheckpoint(
-		sessiondomain.CheckpointID(runner.runtimeID("checkpoint")), started.Records.Run.ID, 1,
-		sessiondomain.CheckpointRunStarted,
-		sessiondomain.CheckpointPayloadV1{Objective: invocation.Task, Status: string(sessiondomain.RunRunning), PendingWork: []string{invocation.Task}},
-		runner.runtimeNow(),
-	)
-	if err != nil {
-		return err
-	}
-	if _, err := coordinator.AppendCheckpoint(context.WithoutCancel(ctx), sessiondomain.AppendCheckpointInput{
-		Checkpoint: startCheckpoint, Instructions: persistentInstructions(startCheckpoint.ID, resolved),
-	}); err != nil {
-		return err
-	}
-
 	conversationMessages := started.PriorMessages
 	var existingSummary *sessiondomain.ConversationSummary
 	if summary, summaryErr := coordinator.LatestSummary(ctx, started.Records.Session.ID); summaryErr == nil {
@@ -434,7 +609,7 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 		return summaryErr
 	}
 	conversation := persistentConversation(conversationMessages)
-	interrupted, err := runner.interruptedWork(ctx, coordinator, started, resolved, invocation.Project)
+	interrupted, err := runner.interruptedWork(ctx, started, invocation.Project)
 	if err != nil {
 		return err
 	}
@@ -442,7 +617,7 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 		Prompt: agent.AgentPrompt, InstructionRequest: request, Instructions: resolved,
 		Conversation: conversation, ConversationSummary: summaryContent(existingSummary), InterruptedWork: interrupted,
 		Budget: agentcontext.DefaultBudget(configured.Agent.MaxInputTokens, configured.Agent.MaxOutputTokens),
-		Task:   invocation.Task, Tools: agent.AvailableTools(),
+		Task:   invocation.Task, Tools: agent.AvailableTools(), SkillIndex: agent.SkillIndex(),
 	})
 	if err != nil {
 		return err
@@ -453,31 +628,42 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 
 	goal := engine.Goal{Objective: invocation.Task}
 	state := engine.NewRun(engine.RunID(started.Records.Run.ID), goal, engine.NewDirectGraph(goal), configuredAgentBudget(configured.Agent))
-	result, engineErr := agent.Engine.Run(ctx, engine.DirectRunInput{
-		State: state, Messages: envelope.Messages, AvailableTools: envelope.AvailableTools,
+	selectedEngine := agent.Engine
+	if executionMode == agentExecutionPlanned {
+		selectedEngine = agent.PlanEngine
+	}
+	if selectedEngine == nil {
+		return fmt.Errorf("Coding Agent %s engine is not configured", executionMode)
+	}
+	result, engineErr := selectedEngine.Run(ctx, engine.DirectRunInput{
+		State: state,
+		WorkspaceSnapshot: func(snapshotCtx context.Context) (string, error) {
+			workspace := revalidateInterruptedWorkspace(snapshotCtx, invocation.Project, nil)
+			encoded, encodeErr := json.Marshal(workspace)
+			if encodeErr != nil {
+				return "", fmt.Errorf("encode planning workspace: %w", encodeErr)
+			}
+			return string(encoded), nil
+		},
+		Messages: envelope.Messages, AvailableTools: envelope.AvailableTools,
 	})
+	if _, snapshotErr := agent.SnapshotRun.Complete(context.WithoutCancel(ctx)); snapshotErr != nil {
+		engineErr = errors.Join(engineErr, fmt.Errorf("capture Run snapshot after execution: %w", snapshotErr))
+	}
 	status, stopReason := persistentRunOutcome(result, engineErr, ctx.Err())
 	usageJSON, marshalErr := json.Marshal(result.State.Budget)
 	if marshalErr != nil {
 		return errors.Join(engineErr, fmt.Errorf("encode persistent Run usage: %w", marshalErr))
 	}
-	terminalCheckpoint, checkpointErr := checkpointFromResult(
-		sessiondomain.CheckpointID(runner.runtimeID("checkpoint")), started.Records.Run.ID, 2,
-		status, stopReason, invocation.Task, result, runner.runtimeNow(),
-	)
-	if checkpointErr != nil {
-		return errors.Join(engineErr, checkpointErr)
-	}
-	if _, checkpointErr = coordinator.AppendCheckpoint(context.WithoutCancel(ctx), sessiondomain.AppendCheckpointInput{
-		Checkpoint: terminalCheckpoint, Instructions: persistentInstructions(terminalCheckpoint.ID, resolved),
-	}); checkpointErr != nil {
-		return errors.Join(engineErr, checkpointErr)
+	interruptedContext, contextErr := interruptedContextFromResult(status, stopReason, invocation.Task, result)
+	if contextErr != nil {
+		return errors.Join(engineErr, contextErr)
 	}
 	assistantContent := ""
 	if status == sessiondomain.RunCompleted {
 		assistantContent = completedAssistantContent(result)
 	}
-	if _, finishErr := coordinator.FinishTask(context.WithoutCancel(ctx), started, status, stopReason, assistantContent, usageJSON); finishErr != nil {
+	if _, finishErr := coordinator.FinishTask(context.WithoutCancel(ctx), started, status, stopReason, assistantContent, usageJSON, interruptedContext); finishErr != nil {
 		return errors.Join(engineErr, finishErr)
 	}
 	finished = true
@@ -570,72 +756,28 @@ func (runner *codingAgentCommand) persistCompaction(ctx context.Context, coordin
 	return err
 }
 
-func persistentInstructions(checkpointID sessiondomain.CheckpointID, resolved instruction.Resolution) []sessiondomain.CheckpointInstruction {
-	result := make([]sessiondomain.CheckpointInstruction, len(resolved.Documents))
-	for index, document := range resolved.Documents {
-		result[index] = sessiondomain.CheckpointInstruction{
-			CheckpointID: checkpointID, Precedence: index, Path: document.Path,
-			ScopePath: string(document.Scope.Kind) + ":" + document.Scope.Path, ContentHash: document.SHA256,
-		}
-	}
-	return result
-}
-
-func (runner *codingAgentCommand) interruptedWork(ctx context.Context, coordinator *sessiondomain.Coordinator, started sessiondomain.StartedTurn, resolved instruction.Resolution, root project.Root) (*agentcontext.InterruptedWork, error) {
+func (runner *codingAgentCommand) interruptedWork(ctx context.Context, started sessiondomain.StartedTurn, root project.Root) (*agentcontext.InterruptedWork, error) {
 	if started.Interrupted == nil {
 		return nil, nil
 	}
-	checkpoint, savedInstructions, err := coordinator.LatestCheckpoint(ctx, started.Interrupted.ID)
+	payload, err := sessiondomain.DecodeInterruptedContext(started.Interrupted.InterruptedContextJSON)
 	if err != nil {
 		return nil, err
 	}
-	var payload sessiondomain.CheckpointPayloadV1
-	if err := json.Unmarshal(checkpoint.PayloadJSON, &payload); err != nil {
-		return nil, fmt.Errorf("decode interrupted Run checkpoint: %w", err)
-	}
-	changes := compareInstructions(savedInstructions, resolved)
 	work := &agentcontext.InterruptedWork{
 		RunID: string(started.Interrupted.ID), Objective: payload.Objective, StopReason: payload.StopReason,
 		RelevantPaths: append([]string(nil), payload.RelevantPaths...), PendingWork: append([]string(nil), payload.PendingWork...),
-		Usage: append(json.RawMessage(nil), payload.Usage...), InstructionChanges: changes,
+		Usage:     append(json.RawMessage(nil), payload.Usage...),
 		Workspace: revalidateInterruptedWorkspace(ctx, root, payload.RelevantPaths),
 	}
-	for _, step := range payload.CompletedSteps {
-		work.CompletedSteps = append(work.CompletedSteps, step.Summary)
-	}
-	for _, evidence := range payload.Evidence {
-		work.Evidence = append(work.Evidence, evidence.Summary)
-	}
+	work.CompletedSteps = append(work.CompletedSteps, payload.CompletedSteps...)
+	work.Evidence = append(work.Evidence, payload.Evidence...)
 	return work, nil
-}
-
-func compareInstructions(saved []sessiondomain.CheckpointInstruction, current instruction.Resolution) []string {
-	old := make(map[string]string, len(saved))
-	for _, item := range saved {
-		old[item.Path+"|"+item.ScopePath] = item.ContentHash
-	}
-	changes := make([]string, 0)
-	for _, document := range current.Documents {
-		key := document.Path + "|" + string(document.Scope.Kind) + ":" + document.Scope.Path
-		hash, ok := old[key]
-		switch {
-		case !ok:
-			changes = append(changes, "added: "+document.Path)
-		case hash != document.SHA256:
-			changes = append(changes, "changed: "+document.Path)
-		}
-		delete(old, key)
-	}
-	for key := range old {
-		changes = append(changes, "removed: "+strings.SplitN(key, "|", 2)[0])
-	}
-	sort.Strings(changes)
-	return changes
 }
 
 func persistentRunOutcome(result engine.DirectRunResult, runErr, contextErr error) (sessiondomain.RunStatus, string) {
 	if errors.Is(contextErr, context.Canceled) || result.State.Status == engine.RunStatusCancelled {
-		return sessiondomain.RunCancelled, "user cancelled"
+		return sessiondomain.RunInterrupted, "user cancelled"
 	}
 	if runErr != nil {
 		return sessiondomain.RunFailed, foldSummary(runErr.Error())
@@ -644,9 +786,9 @@ func persistentRunOutcome(result engine.DirectRunResult, runErr, contextErr erro
 	case engine.RunStatusCompleted:
 		return sessiondomain.RunCompleted, ""
 	case engine.RunStatusPlanning:
-		return sessiondomain.RunNeedsPlan, nonEmptyStopReason(result.Reason, "planning required")
+		return sessiondomain.RunInterrupted, nonEmptyStopReason(result.Reason, "planning required")
 	case engine.RunStatusSuspended:
-		return sessiondomain.RunPartial, nonEmptyStopReason(result.Reason, "user input required")
+		return sessiondomain.RunInterrupted, nonEmptyStopReason(result.Reason, "user input required")
 	case engine.RunStatusFailed:
 		return sessiondomain.RunFailed, nonEmptyStopReason(result.Reason, string(result.State.StopReason))
 	default:
@@ -673,40 +815,39 @@ func completedAssistantContent(result engine.DirectRunResult) string {
 	return "Task completed."
 }
 
-func checkpointFromResult(id sessiondomain.CheckpointID, runID sessiondomain.RunID, sequence int64, status sessiondomain.RunStatus, stopReason, objective string, result engine.DirectRunResult, at time.Time) (sessiondomain.Checkpoint, error) {
-	payload := sessiondomain.CheckpointPayloadV1{Objective: objective, Status: string(status), StopReason: stopReason}
+func interruptedContextFromResult(status sessiondomain.RunStatus, stopReason, objective string, result engine.DirectRunResult) (json.RawMessage, error) {
+	if status == sessiondomain.RunCompleted {
+		return nil, nil
+	}
+	payload := sessiondomain.InterruptedContextV1{
+		Objective: objective, Status: string(status), StopReason: stopReason,
+		LastError: nonEmptyStopReason(result.Reason, stopReason),
+	}
+	for _, task := range result.State.Graph.Tasks {
+		summary := nonEmptyStopReason(task.Objective, string(task.ID))
+		if task.Status == engine.TaskStatusCompleted {
+			payload.CompletedSteps = append(payload.CompletedSteps, "task "+string(task.ID)+": "+summary)
+			continue
+		}
+		payload.PendingWork = append(payload.PendingWork, "task "+string(task.ID)+": "+summary)
+	}
 	for _, step := range result.Steps {
 		if step.Status == engine.StepStatusCompleted {
-			payload.CompletedSteps = append(payload.CompletedSteps, sessiondomain.CheckpointStep{ID: fmt.Sprintf("step-%d", step.Index), Summary: nonEmptyStopReason(step.Decision.NextAction, step.Decision.Intent, "completed")})
-		}
-		for _, observation := range step.Observations {
-			statusText := "completed"
-			if observation.Error != "" {
-				statusText = "failed"
-			}
-			payload.ToolSummaries = append(payload.ToolSummaries, sessiondomain.CheckpointToolSummary{Name: observation.ToolName, Status: statusText, Summary: foldSummary(nonEmptyStopReason(observation.Result.Text, observation.Error, statusText))})
+			payload.CompletedSteps = append(payload.CompletedSteps, nonEmptyStopReason(step.Decision.NextAction, step.Decision.Intent, fmt.Sprintf("step-%d completed", step.Index)))
 		}
 	}
 	for _, evidence := range result.State.Evidence {
-		item := sessiondomain.CheckpointEvidence{Kind: string(evidence.Kind), Summary: foldSummary(evidence.Summary), Verified: evidence.Verified}
+		payload.Evidence = append(payload.Evidence, foldSummary(evidence.Summary))
 		if evidence.Artifact != nil && evidence.Artifact.Path != "" {
-			item.Paths = []string{evidence.Artifact.Path}
 			payload.RelevantPaths = append(payload.RelevantPaths, evidence.Artifact.Path)
 		}
-		payload.Evidence = append(payload.Evidence, item)
 	}
-	if status != sessiondomain.RunCompleted {
+	if len(payload.PendingWork) == 0 {
 		payload.PendingWork = []string{"Re-plan the interrupted objective from current workspace state."}
 	}
 	usage, _ := json.Marshal(result.State.Budget)
 	payload.Usage = usage
-	reason := sessiondomain.CheckpointRunFailed
-	if status == sessiondomain.RunCompleted {
-		reason = sessiondomain.CheckpointRunCompleted
-	} else if status == sessiondomain.RunCancelled {
-		reason = sessiondomain.CheckpointUserCancelled
-	}
-	return sessiondomain.NewCheckpoint(id, runID, sequence, reason, payload, at)
+	return sessiondomain.EncodeInterruptedContext(payload)
 }
 
 func configuredAgentBudget(agent config.AgentConfig) engine.Budget {

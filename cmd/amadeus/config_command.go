@@ -148,8 +148,11 @@ func writeConfigExplanation(writer io.Writer, path string, configured config.Con
 	writeExplainedValue(writer, "agent.max_output_tokens", configured.Agent.MaxOutputTokens, sources)
 	writeExplainedValue(writer, "agent.max_duration", configured.Agent.MaxDuration, sources)
 	writeExplainedValue(writer, "agent.max_parallel_tools", configured.Agent.MaxParallelTools, sources)
-	writeExplainedValue(writer, "approval.enabled", configured.Approval.Enabled, sources)
-	writeExplainedValue(writer, "approval.default", configured.Approval.Default, sources)
+	writeExplainedValue(writer, "lsp.enabled", configured.LSP.Enabled, sources)
+	writeExplainedValue(writer, "lsp.command", configured.LSP.Command, sources)
+	writeExplainedValue(writer, "lsp.args", configured.LSP.Args, sources)
+	writeExplainedValue(writer, "lsp.extensions", configured.LSP.Extensions, sources)
+	writeExplainedValue(writer, "lsp.timeout", configured.LSP.Timeout, sources)
 	writeExplainedValue(writer, "logging.level", configured.Logging.Level, sources)
 	writeExplainedValue(writer, "logging.trace_llm", configured.Logging.TraceLLM, sources)
 }

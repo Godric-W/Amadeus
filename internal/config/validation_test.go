@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateAcceptsDefaultConfig(t *testing.T) {
@@ -37,7 +38,6 @@ func TestValidateReportsStableFieldPaths(t *testing.T) {
 		MaxOutputTokens: 0,
 	}
 	configured.Agent = AgentConfig{}
-	configured.Approval.Default = "invalid"
 	configured.Logging.Level = "invalid"
 
 	err := Validate(configured)
@@ -66,7 +66,6 @@ func TestValidateReportsStableFieldPaths(t *testing.T) {
 		"agent.max_output_tokens",
 		"agent.max_duration",
 		"agent.max_parallel_tools",
-		"approval.default",
 		"logging.level",
 	}
 	for _, path := range expectedPaths {
@@ -98,6 +97,59 @@ func TestValidateRejectsAgentBudgetAboveLimits(t *testing.T) {
 		if !strings.Contains(err.Error(), path+":") {
 			t.Fatalf("validation error does not contain %q: %v", path, err)
 		}
+	}
+}
+
+func TestValidateRejectsInvalidLSPConfig(t *testing.T) {
+	tests := []struct {
+		name       string
+		configure  func(*Config)
+		expectPath string
+	}{
+		{
+			name: "enabled without command",
+			configure: func(configured *Config) {
+				configured.LSP.Enabled = true
+				configured.LSP.Command = ""
+			},
+			expectPath: "lsp.command",
+		},
+		{
+			name: "invalid extension",
+			configure: func(configured *Config) {
+				configured.LSP.Extensions = []string{"go"}
+			},
+			expectPath: "lsp.extensions[0]",
+		},
+		{
+			name: "duplicate extension",
+			configure: func(configured *Config) {
+				configured.LSP.Extensions = []string{".go", ".go"}
+			},
+			expectPath: "lsp.extensions[1]",
+		},
+		{
+			name: "invalid timeout",
+			configure: func(configured *Config) {
+				configured.LSP.Timeout = maxLSPTimeout + time.Second
+			},
+			expectPath: "lsp.timeout",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			configured := Default()
+			test.configure(&configured)
+
+			err := Validate(configured)
+			if err == nil {
+				t.Fatal("expected invalid LSP config to fail")
+			}
+			if !strings.Contains(err.Error(), test.expectPath+":") {
+				t.Fatalf("validation error does not contain %q: %v", test.expectPath, err)
+			}
+		})
 	}
 }
 

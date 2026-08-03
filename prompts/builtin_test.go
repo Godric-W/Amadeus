@@ -21,6 +21,8 @@ func TestBuiltinsMatchStableCatalog(t *testing.T) {
 		Handoff,
 		EngineRetry,
 		TaskReflection,
+		Planner,
+		Replanner,
 	}
 	if got := All(); !reflect.DeepEqual(got, expected) {
 		t.Fatalf("unexpected built-in prompt catalog: got %v, want %v", got, expected)
@@ -71,7 +73,7 @@ func TestAgentSystemUsesDocumentedLayerOrder(t *testing.T) {
 		}
 		position = next
 	}
-	if !strings.Contains(combined, "Deterministic verification") || !strings.Contains(combined, "Do not claim success") {
+	if !strings.Contains(combined, "outer Replanner decides") || !strings.Contains(combined, "Do not claim success") {
 		t.Fatalf("Agent protocol omitted verification or handoff contract: %q", combined)
 	}
 	for _, required := range []string{"structured exploration tools", "Use `apply_patch` for normal edits", "`mode=create`", "builds, tests, Git", "Do not use shell redirection"} {
@@ -94,5 +96,29 @@ func TestCatalogSnapshotsAndUnknownIDsAreSafe(t *testing.T) {
 	}
 	if _, err := Read("missing.md"); err == nil || !strings.Contains(err.Error(), "unknown built-in prompt") {
 		t.Fatalf("unexpected unknown prompt error: %v", err)
+	}
+}
+
+func TestPlannerPromptUsesTolerantLineProtocol(t *testing.T) {
+	content, err := Read(Planner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"PLAN", "Do not return JSON", "one task"} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("Planner Prompt omitted line protocol rule %q", required)
+		}
+	}
+}
+
+func TestReplannerPromptDocumentsTwoExitProtocol(t *testing.T) {
+	content, err := Read(Replanner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"COMPLETE", "REPLAN", "Do not return JSON"} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("Replanner Prompt omitted protocol rule %q", required)
+		}
 	}
 }

@@ -30,7 +30,7 @@ func (handler *recordingApprovalHandler) Decide(_ context.Context, request Appro
 	}
 	index := len(handler.requests) - 1
 	if index >= len(handler.decisions) {
-		return ApprovalDecision{Outcome: ApprovalDeny, Scope: ApprovalOnce, Source: ApprovalSourceDefault, Reason: "test default deny"}, nil
+		return ApprovalDecision{Outcome: ApprovalDeny, Scope: ApprovalOnce, Source: ApprovalSourcePolicy, Reason: "test default deny"}, nil
 	}
 	return handler.decisions[index], nil
 }
@@ -104,15 +104,51 @@ func TestToolAuthorizerBlocksDangerousCommandBeforeApproval(t *testing.T) {
 	}
 }
 
-func TestToolAuthorizerAllowsLowRiskCommandWithoutApproval(t *testing.T) {
+func TestToolAuthorizerRequiresApprovalForLowRiskCommand(t *testing.T) {
 	root := newPolicyProjectRoot(t)
-	handler := &recordingApprovalHandler{}
+	handler := &recordingApprovalHandler{decisions: []ApprovalDecision{allowOnceDecision()}}
 	authorizer := newTestToolAuthorizer(t, root, handler, nil)
 	if err := authorizer.Authorize(context.Background(), executeToolSpec(), tool.NewCall("exec-low", "execute_command", json.RawMessage(`{"command":"git status --short"}`))); err != nil {
 		t.Fatalf("authorize low-risk command: %v", err)
 	}
+	if handler.count() != 1 || handler.requests[0].Risk != CommandRiskModerate {
+		t.Fatalf("low-risk command approval mismatch: %#v", handler.requests)
+	}
+}
+
+func TestToolAuthorizerDeniesCommandPathEscapeBeforeApproval(t *testing.T) {
+	root := newPolicyProjectRoot(t)
+	handler := &recordingApprovalHandler{decisions: []ApprovalDecision{allowOnceDecision()}}
+	authorizer := newTestToolAuthorizer(t, root, handler, nil)
+	err := authorizer.Authorize(context.Background(), executeToolSpec(), tool.NewCall("exec-escape", "execute_command", json.RawMessage(`{"command":"cat ../docs/design.md"}`)))
+	if !errors.Is(err, ErrToolDenied) || handler.count() != 0 {
+		t.Fatalf("command path escape was not denied before approval: err=%v calls=%d", err, handler.count())
+	}
+}
+
+func TestToolAuthorizerClassifiesNoneReadAndNetworkTools(t *testing.T) {
+	root := newPolicyProjectRoot(t)
+	handler := &recordingApprovalHandler{decisions: []ApprovalDecision{allowOnceDecision()}}
+	authorizer := newTestToolAuthorizer(t, root, handler, nil)
+
+	for _, spec := range []tool.Spec{
+		{Name: "status", SideEffect: tool.SideEffectNone},
+		{Name: "read_context", SideEffect: tool.SideEffectRead},
+	} {
+		if err := authorizer.Authorize(context.Background(), spec, tool.NewCall(spec.Name+"-1", spec.Name, json.RawMessage(`{}`))); err != nil {
+			t.Fatalf("authorize %s tool: %v", spec.SideEffect, err)
+		}
+	}
 	if handler.count() != 0 {
-		t.Fatalf("low-risk command requested approval %d time(s)", handler.count())
+		t.Fatalf("none/read tools requested approval %d time(s)", handler.count())
+	}
+
+	network := tool.Spec{Name: "mcp_lookup", SideEffect: tool.SideEffectNetwork}
+	if err := authorizer.Authorize(context.Background(), network, tool.NewCall("network-1", network.Name, json.RawMessage(`{"query":"status"}`))); err != nil {
+		t.Fatalf("authorize network tool: %v", err)
+	}
+	if handler.count() != 1 || handler.requests[0].Risk != CommandRiskHigh || handler.requests[0].Reason != "tool accesses external systems" {
+		t.Fatalf("unexpected network approval request: %#v", handler.requests)
 	}
 }
 
@@ -135,9 +171,8 @@ func TestToolAuthorizerAppliesApprovalAndExactSessionGrant(t *testing.T) {
 	}
 
 	err := authorizer.Authorize(context.Background(), writeToolSpec(), tool.NewCall("write-3", "write_file", json.RawMessage(`{"path":"result.txt","content":"different"}`)))
-	var denied *ToolDeniedError
-	if !errors.As(err, &denied) || denied.Source != ApprovalSourceUser || handler.count() != 2 {
-		t.Fatalf("different operation reused grant: denied=%#v err=%v calls=%d", denied, err, handler.count())
+	if err != nil || handler.count() != 1 {
+		t.Fatalf("same tool did not reuse session grant: err=%v calls=%d", err, handler.count())
 	}
 }
 

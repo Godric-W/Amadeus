@@ -128,6 +128,65 @@ func TestRunnerCompletesOneToolThenReturnsCandidate(t *testing.T) {
 	}
 }
 
+func TestRunnerStopsImmediatelyForBlockingToolObservation(t *testing.T) {
+	call := tool.NewCall("blocked", "read_file", json.RawMessage(`{"path":"../docs"}`))
+	iterator := &scriptedIterator{results: []IterationResult{{
+		Kind: IterationToolCalls,
+		Response: llm.Response{
+			Message:      llm.AssistantToolCallMessage("", llm.ToolCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments}),
+			FinishReason: llm.FinishReasonToolCalls,
+		},
+		ToolCalls: []tool.Call{call},
+	}}}
+	execution := replayExecution(call.ID, call.Name, tool.Result{}, "path is outside project root")
+	execution.Observation.Blocking = true
+	executor := &scriptedCallExecutor{executions: map[string]ToolExecution{call.ID: execution}, errors: map[string]error{}}
+	progress := &scriptedProgress{}
+	runner := newTestRunner(t, iterator, executor, progress)
+
+	outcome, err := runner.Run(context.Background(), validRunnerInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Kind != engine.TaskOutcomeBlocked || outcome.Reason != "path is outside project root" {
+		t.Fatalf("unexpected blocking outcome: %#v", outcome)
+	}
+	if len(iterator.inputs) != 1 || len(executor.calls) != 1 || len(progress.samples) != 0 {
+		t.Fatalf("blocking failure was retried: inputs=%d calls=%d samples=%d", len(iterator.inputs), len(executor.calls), len(progress.samples))
+	}
+}
+
+func TestRunnerAddsBufferedDeveloperMessageOnlyToNextModelRequest(t *testing.T) {
+	call := tool.NewCall("call_1", "read_file", json.RawMessage(`{"path":"README.md"}`))
+	iterator := &scriptedIterator{results: []IterationResult{
+		{Kind: IterationToolCalls, Response: llm.Response{Message: llm.AssistantToolCallMessage("", llm.ToolCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments}), FinishReason: llm.FinishReasonToolCalls}, ToolCalls: []tool.Call{call}},
+		{Kind: IterationCandidate, Response: llm.Response{Message: llm.AssistantMessage("done"), FinishReason: llm.FinishReasonStop}, Candidate: &engine.TaskResult{Summary: "done"}},
+	}}
+	execution := replayExecution(call.ID, call.Name, tool.Result{Text: "ok"}, "")
+	runner, err := NewRunner(iterator, &scriptedCallExecutor{executions: map[string]ToolExecution{call.ID: execution}, errors: map[string]error{}}, &scriptedProgress{}, RunnerOptions{
+		Temperature: 0.2, MaxOutputTokens: 512,
+		AdditionalMessages: func() ([]llm.Message, error) {
+			if len(iterator.inputs) == 0 {
+				return nil, nil
+			}
+			return []llm.Message{llm.DeveloperMessage(`{"type":"amadeus.skill_context.v1","skills":[{"name":"review"}]}`)}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("create ReAct runner: %v", err)
+	}
+	if _, err := runner.Run(context.Background(), validRunnerInput()); err != nil {
+		t.Fatalf("run ReAct loop: %v", err)
+	}
+	if len(iterator.inputs) != 2 || len(iterator.inputs[0].Messages) != 1 {
+		t.Fatalf("Skill message appeared before load: %#v", iterator.inputs)
+	}
+	second := iterator.inputs[1].Messages
+	if len(second) != 4 || second[3].Role != llm.RoleDeveloper || !strings.Contains(second[3].Content, "skill_context") {
+		t.Fatalf("Skill message was not added to the next request: %#v", second)
+	}
+}
+
 func TestRunnerReplaysToolFailureBeforeCandidate(t *testing.T) {
 	call := tool.NewCall("call_failed", "read_file", json.RawMessage(`{"path":"missing"}`))
 	iterator := &scriptedIterator{results: []IterationResult{

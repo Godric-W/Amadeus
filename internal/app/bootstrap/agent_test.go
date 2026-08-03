@@ -10,12 +10,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/react"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
+	"github.com/Godric-W/Amadeus/internal/snapshot"
 	"github.com/Godric-W/Amadeus/internal/tool"
 	"github.com/Godric-W/Amadeus/prompts"
 )
@@ -55,25 +58,84 @@ func TestNewAgentBuildsDefaultComposition(t *testing.T) {
 	if agent.Project.Path() != root.Path() {
 		t.Fatalf("unexpected project root: got %q, want %q", agent.Project.Path(), root.Path())
 	}
-	if agent.Client == nil || agent.Events != sink || agent.Audit == nil || agent.ContextBuilder == nil || agent.PromptRepository == nil || agent.PromptAssembler == nil || agent.Registry == nil || agent.Validator == nil || agent.Grants == nil || agent.Authorizer == nil || agent.ToolExecutor == nil || agent.Iterator == nil || agent.Progress == nil || agent.Runner == nil || agent.Verifier == nil || agent.Reflector == nil || agent.Engine == nil {
+	if agent.Client == nil || agent.Events != sink || agent.Audit == nil || agent.ContextBuilder == nil || agent.PromptRepository == nil || agent.PromptAssembler == nil || agent.Registry == nil || agent.Validator == nil || agent.Grants == nil || agent.Authorizer == nil || agent.ToolExecutor == nil || agent.Iterator == nil || agent.PlanIterator == nil || agent.Progress == nil || agent.Runner == nil || agent.PlanRunner == nil || agent.Planner == nil || agent.Replanner == nil || agent.Snapshots == nil || agent.Engine == nil || agent.PlanEngine == nil {
 		t.Fatalf("Agent composition is incomplete: %#v", agent)
 	}
-	if agent.AgentPrompt.Content != prompts.AgentSystem() || agent.RetryPrompt.Content != prompts.RetryProtocol() || agent.ReflectPrompt.Content != prompts.ReflectionProtocol() {
-		t.Fatalf("Agent composition contains unexpected Prompt bundles: agent=%#v retry=%#v reflect=%#v", agent.AgentPrompt, agent.RetryPrompt, agent.ReflectPrompt)
+	if agent.AgentPrompt.Content != prompts.AgentSystem() {
+		t.Fatalf("Agent composition contains an unexpected Agent Prompt bundle: %#v", agent.AgentPrompt)
 	}
-	if len(agent.AgentPrompt.Sources) != len(prompts.AgentLayers()) || len(agent.AgentPrompt.SHA256) != 64 || len(agent.RetryPrompt.SHA256) != 64 || len(agent.ReflectPrompt.SHA256) != 64 {
-		t.Fatalf("Agent Prompt metadata is incomplete: agent=%#v retry=%#v reflect=%#v", agent.AgentPrompt, agent.RetryPrompt, agent.ReflectPrompt)
+	if len(agent.AgentPrompt.Sources) != len(prompts.AgentLayers()) || len(agent.AgentPrompt.SHA256) != 64 {
+		t.Fatalf("Agent Prompt metadata is incomplete: agent=%#v", agent.AgentPrompt)
+	}
+	if _, ok := agent.Engine.(*engine.ReActEngine); !ok {
+		t.Fatalf("Agent engine type = %T, want *engine.ReActEngine", agent.Engine)
+	}
+	if _, ok := agent.PlanEngine.(*engine.PlanExecuteEngine); !ok {
+		t.Fatalf("Agent plan engine type = %T, want *engine.PlanExecuteEngine", agent.PlanEngine)
 	}
 	if agent.Client.Model().Provider != configured.DefaultProvider || agent.Client.Model().Name != "test-model" {
 		t.Fatalf("unexpected composed client model: %#v", agent.Client.Model())
 	}
-	if agent.Registry.Len() != 7 {
-		t.Fatalf("unexpected MVP registry size: got %d, want 7", agent.Registry.Len())
+	if agent.Registry.Len() != 10 {
+		t.Fatalf("unexpected Agent registry size: got %d, want 10", agent.Registry.Len())
 	}
-	wantTools := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "write_file"}
+	wantTools := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "revert_turn", "web_fetch", "web_search", "write_file"}
 	if got := toolNames(agent.AvailableTools()); !reflect.DeepEqual(got, wantTools) {
 		t.Fatalf("unexpected available tools: got %v, want %v", got, wantTools)
 	}
+}
+
+func TestNewAgentWithOptionsUsesInjectedSnapshotService(t *testing.T) {
+	root := newBootstrapProjectRoot(t)
+	fake := &bootstrapSnapshotService{}
+	agent, err := NewAgentWithOptions(validBootstrapConfig(), root, event.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink(), AgentOptions{
+		ClientFactory:   successfulBootstrapFactory,
+		SnapshotFactory: func(project.Root) (snapshot.Service, error) { return fake, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.Snapshots != fake {
+		t.Fatalf("Agent did not retain injected snapshot service: %#v", agent.Snapshots)
+	}
+}
+
+func TestNewAgentWithOptionsAttachesPostWriteHook(t *testing.T) {
+	root := newBootstrapProjectRoot(t)
+	hook := &bootstrapPostWriteHook{}
+	agent, err := NewAgentWithOptions(validBootstrapConfig(), root, event.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink(), AgentOptions{
+		ClientFactory: successfulBootstrapFactory, PostWriteHooks: []react.PostExecutionHook{hook},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ToolExecutor.Execute(context.Background(), tool.NewCall("write-1", "write_file", json.RawMessage(`{"path":"hook.txt","content":"value","mode":"create"}`))); err != nil {
+		t.Fatal(err)
+	}
+	if hook.calls != 1 {
+		t.Fatalf("post-write hook calls = %d, want 1", hook.calls)
+	}
+}
+
+type bootstrapSnapshotService struct{}
+
+func (*bootstrapSnapshotService) Begin(context.Context, string) (snapshot.Snapshot, error) {
+	return snapshot.Snapshot{}, nil
+}
+
+func (*bootstrapSnapshotService) Complete(context.Context, string) (snapshot.Snapshot, error) {
+	return snapshot.Snapshot{}, nil
+}
+
+func (*bootstrapSnapshotService) Revert(context.Context, string) (snapshot.RevertResult, error) {
+	return snapshot.RevertResult{}, nil
+}
+
+type bootstrapPostWriteHook struct{ calls int }
+
+func (hook *bootstrapPostWriteHook) After(context.Context, tool.Spec, tool.Call, tool.Result) ([]engine.Evidence, error) {
+	hook.calls++
+	return nil, nil
 }
 
 func TestNewAgentUsesOneSelectedProviderClient(t *testing.T) {

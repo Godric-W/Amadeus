@@ -11,7 +11,6 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/policy"
 )
 
@@ -23,17 +22,13 @@ type TerminalApprovalOptions struct {
 	Input      io.Reader
 	Output     io.Writer
 	IsTerminal TerminalDetector
-	Enabled    bool
-	Default    config.ApprovalDefault
 }
 
 type TerminalApprovalHandler struct {
-	input       io.Reader
-	output      io.Writer
-	isTerminal  TerminalDetector
-	enabled     bool
-	defaultMode config.ApprovalDefault
-	mutex       sync.Mutex
+	input      io.Reader
+	output     io.Writer
+	isTerminal TerminalDetector
+	mutex      sync.Mutex
 }
 
 func NewTerminalApprovalHandler(options TerminalApprovalOptions) (*TerminalApprovalHandler, error) {
@@ -43,20 +38,13 @@ func NewTerminalApprovalHandler(options TerminalApprovalOptions) (*TerminalAppro
 	if options.Output == nil {
 		return nil, errors.New("terminal approval output is nil")
 	}
-	switch options.Default {
-	case config.ApprovalAsk, config.ApprovalAllow, config.ApprovalDeny:
-	default:
-		return nil, fmt.Errorf("terminal approval default %q is invalid", options.Default)
-	}
 	if options.IsTerminal == nil {
 		options.IsTerminal = isTerminalReader
 	}
 	return &TerminalApprovalHandler{
-		input:       options.Input,
-		output:      options.Output,
-		isTerminal:  options.IsTerminal,
-		enabled:     options.Enabled,
-		defaultMode: options.Default,
+		input:      options.Input,
+		output:     options.Output,
+		isTerminal: options.IsTerminal,
 	}, nil
 }
 
@@ -79,24 +67,10 @@ func (handler *TerminalApprovalHandler) Decide(ctx context.Context, request poli
 	if err := ctx.Err(); err != nil {
 		return policy.ApprovalDecision{}, err
 	}
-	if !handler.enabled {
-		return defaultApprovalDecision(policy.ApprovalAllow, "approval is disabled by configuration"), nil
-	}
 	if !handler.isTerminal(handler.input) {
-		return handler.nonInteractiveDecision(), nil
+		return policyApprovalDecision(policy.ApprovalDeny, "approval requires a TTY; non-interactive input was denied"), nil
 	}
 	return handler.interactiveDecision(ctx, request)
-}
-
-func (handler *TerminalApprovalHandler) nonInteractiveDecision() policy.ApprovalDecision {
-	switch handler.defaultMode {
-	case config.ApprovalAllow:
-		return defaultApprovalDecision(policy.ApprovalAllow, "non-interactive approval allowed by configuration")
-	case config.ApprovalDeny:
-		return defaultApprovalDecision(policy.ApprovalDeny, "non-interactive approval denied by configuration")
-	default:
-		return defaultApprovalDecision(policy.ApprovalDeny, "approval requires a TTY; non-interactive input was denied")
-	}
 }
 
 func (handler *TerminalApprovalHandler) interactiveDecision(ctx context.Context, request policy.ApprovalRequest) (policy.ApprovalDecision, error) {
@@ -110,14 +84,14 @@ func (handler *TerminalApprovalHandler) interactiveDecision(ctx context.Context,
 		line, err := readApprovalLine(handler.input)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return defaultApprovalDecision(policy.ApprovalDeny, "approval input closed; request denied"), nil
+				return policyApprovalDecision(policy.ApprovalDeny, "approval input closed; request denied"), nil
 			}
 			return policy.ApprovalDecision{}, fmt.Errorf("read terminal approval: %w", err)
 		}
 		if decision, ok := parseApprovalChoice(line); ok {
 			return decision, nil
 		}
-		if _, err := io.WriteString(handler.output, "Invalid choice. Enter y, s, a, or n: "); err != nil {
+		if _, err := io.WriteString(handler.output, "Invalid choice. Enter y, s, or n: "); err != nil {
 			return policy.ApprovalDecision{}, fmt.Errorf("write terminal approval retry prompt: %w", err)
 		}
 	}
@@ -125,7 +99,7 @@ func (handler *TerminalApprovalHandler) interactiveDecision(ctx context.Context,
 
 func writeApprovalPrompt(writer io.Writer, request policy.ApprovalRequest) error {
 	_, err := fmt.Fprintf(writer,
-		"Approval required\n  request: %s\n  tool: %s\n  risk: %s\n  reason: %s\n  arguments_sha256: %s\nAllow? [y] once / [s] session / [a] always / [n] deny: ",
+		"Approval required\n  request: %s\n  tool: %s\n  risk: %s\n  reason: %s\n  arguments_sha256: %s\nAllow? [y] once / [s] session / [n] deny: ",
 		sanitizeApprovalText(request.ID), sanitizeApprovalText(request.ToolName), request.Risk,
 		sanitizeApprovalText(request.Reason), request.ArgumentsSHA256,
 	)
@@ -141,8 +115,6 @@ func parseApprovalChoice(input string) (policy.ApprovalDecision, bool) {
 		return userApprovalDecision(policy.ApprovalAllow, policy.ApprovalOnce, "user approved once"), true
 	case "s", "session":
 		return userApprovalDecision(policy.ApprovalAllow, policy.ApprovalSession, "user approved for the session"), true
-	case "a", "always":
-		return userApprovalDecision(policy.ApprovalAllow, policy.ApprovalAlways, "user approved persistently"), true
 	case "n", "no", "deny":
 		return userApprovalDecision(policy.ApprovalDeny, policy.ApprovalOnce, "user denied the request"), true
 	default:
@@ -154,8 +126,8 @@ func userApprovalDecision(outcome policy.ApprovalOutcome, scope policy.ApprovalS
 	return policy.ApprovalDecision{Outcome: outcome, Scope: scope, Source: policy.ApprovalSourceUser, Reason: reason}
 }
 
-func defaultApprovalDecision(outcome policy.ApprovalOutcome, reason string) policy.ApprovalDecision {
-	return policy.ApprovalDecision{Outcome: outcome, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceDefault, Reason: reason}
+func policyApprovalDecision(outcome policy.ApprovalOutcome, reason string) policy.ApprovalDecision {
+	return policy.ApprovalDecision{Outcome: outcome, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourcePolicy, Reason: reason}
 }
 
 func readApprovalLine(reader io.Reader) (string, error) {

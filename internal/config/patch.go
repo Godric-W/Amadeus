@@ -7,8 +7,16 @@ type configPatch struct {
 	DefaultProvider *string                  `yaml:"default_provider"`
 	Providers       map[string]providerPatch `yaml:"providers"`
 	Agent           *agentPatch              `yaml:"agent"`
-	Approval        *approvalPatch           `yaml:"approval"`
+	LSP             *lspPatch                `yaml:"lsp"`
 	Logging         *loggingPatch            `yaml:"logging"`
+}
+
+type lspPatch struct {
+	Enabled    *bool          `yaml:"enabled"`
+	Command    *string        `yaml:"command"`
+	Args       *[]string      `yaml:"args"`
+	Extensions *[]string      `yaml:"extensions"`
+	Timeout    *time.Duration `yaml:"timeout"`
 }
 
 type providerPatch struct {
@@ -30,11 +38,6 @@ type agentPatch struct {
 	MaxOutputTokens  *int64         `yaml:"max_output_tokens"`
 	MaxDuration      *time.Duration `yaml:"max_duration"`
 	MaxParallelTools *int           `yaml:"max_parallel_tools"`
-}
-
-type approvalPatch struct {
-	Enabled *bool            `yaml:"enabled"`
-	Default *ApprovalDefault `yaml:"default"`
 }
 
 type loggingPatch struct {
@@ -60,14 +63,22 @@ func (patch configPatch) apply(base Config) Config {
 	if patch.Agent != nil {
 		patch.Agent.apply(&configured.Agent)
 	}
-	if patch.Approval != nil {
-		patch.Approval.apply(&configured.Approval)
+	if patch.LSP != nil {
+		patch.LSP.apply(&configured.LSP)
 	}
 	if patch.Logging != nil {
 		patch.Logging.apply(&configured.Logging)
 	}
 
 	return configured
+}
+
+func (patch lspPatch) apply(configured *LSPConfig) {
+	assign(&configured.Enabled, patch.Enabled)
+	assign(&configured.Command, patch.Command)
+	assign(&configured.Args, patch.Args)
+	assign(&configured.Extensions, patch.Extensions)
+	assign(&configured.Timeout, patch.Timeout)
 }
 
 func (patch providerPatch) apply(provider *ProviderConfig) {
@@ -91,11 +102,6 @@ func (patch agentPatch) apply(agent *AgentConfig) {
 	assign(&agent.MaxParallelTools, patch.MaxParallelTools)
 }
 
-func (patch approvalPatch) apply(approval *ApprovalConfig) {
-	assign(&approval.Enabled, patch.Enabled)
-	assign(&approval.Default, patch.Default)
-}
-
 func (patch loggingPatch) apply(logging *LoggingConfig) {
 	assign(&logging.Level, patch.Level)
 	assign(&logging.TraceLLM, patch.TraceLLM)
@@ -107,6 +113,8 @@ func clone(configured Config) Config {
 	for name, provider := range configured.Providers {
 		cloned.Providers[name] = provider
 	}
+	cloned.LSP.Args = append([]string(nil), configured.LSP.Args...)
+	cloned.LSP.Extensions = append([]string(nil), configured.LSP.Extensions...)
 
 	return cloned
 }

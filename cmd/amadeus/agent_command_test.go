@@ -84,6 +84,20 @@ func TestRootCommandEntersInteractiveModeForTTY(t *testing.T) {
 	}
 }
 
+func TestRootCommandPropagatesPlainFlag(t *testing.T) {
+	runner := &recordingAgentCommand{}
+	runtime := testAgentCommandRuntime(t.TempDir(), runner, true)
+	command := newRootCommandWithRuntime(&configFlags{}, runtime)
+	command.SetIn(&countingCommandReader{reader: strings.NewReader("unused")})
+	command.SetArgs([]string{"--plain"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("execute plain interactive Agent entry: %v", err)
+	}
+	if len(runner.invocations) != 1 || !runner.invocations[0].Plain || runner.invocations[0].Mode != agentInvocationInteractive {
+		t.Fatalf("plain flag was not propagated: %#v", runner.invocations)
+	}
+}
+
 func TestRootCommandUsesExplicitProjectForAgent(t *testing.T) {
 	startupDirectory := t.TempDir()
 	explicitDirectory := filepath.Join(startupDirectory, "workspace")
@@ -178,6 +192,20 @@ func TestRootManagementSubcommandsBypassAgentAndNoRunSubcommandExists(t *testing
 func TestReadRootTaskValidatesReader(t *testing.T) {
 	if task, err := readRootTask(nil); err == nil || task != "" {
 		t.Fatalf("unexpected nil reader result: task=%q err=%v", task, err)
+	}
+}
+
+func TestParseAgentTaskSelectsExecutionMode(t *testing.T) {
+	mode, task, err := parseAgentTask("你好")
+	if err != nil || mode != agentExecutionReAct || task != "你好" {
+		t.Fatalf("parse default ReAct task: mode=%q task=%q err=%v", mode, task, err)
+	}
+	mode, task, err = parseAgentTask("/plan  修改多个模块 ")
+	if err != nil || mode != agentExecutionPlanned || task != "修改多个模块" {
+		t.Fatalf("parse planned task: mode=%q task=%q err=%v", mode, task, err)
+	}
+	if _, _, err := parseAgentTask("/plan"); err == nil {
+		t.Fatal("empty plan task unexpectedly parsed")
 	}
 }
 

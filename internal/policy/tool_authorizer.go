@@ -169,6 +169,9 @@ func (authorizer *ToolAuthorizer) assess(spec tool.Spec, arguments json.RawMessa
 		if err != nil {
 			return "", "", "", fmt.Errorf("command policy assessment failed: %w", err)
 		}
+		if assessment.Disposition == CommandAllow {
+			return CommandRiskModerate, CommandRequireApproval, "tool executes command: " + assessment.Reason, nil
+		}
 		return assessment.Risk, assessment.Disposition, assessment.Reason, nil
 	}
 

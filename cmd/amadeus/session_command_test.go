@@ -38,7 +38,7 @@ func TestInteractiveDraftCommandsDoNotCreateSession(t *testing.T) {
 	command.SetIn(strings.NewReader("/help\n/resume\n/exit\n"))
 	command.SetOut(io.Discard)
 	command.SetErr(&stderr)
-	command.SetArgs(nil)
+	command.SetArgs([]string{"--plain"})
 	if err := command.Execute(); err != nil {
 		t.Fatalf("execute draft commands: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestContinueWithoutHistoryKeepsDraft(t *testing.T) {
 	command.SetIn(strings.NewReader("/exit\n"))
 	command.SetOut(io.Discard)
 	command.SetErr(&stderr)
-	command.SetArgs([]string{"--continue"})
+	command.SetArgs([]string{"--plain", "--continue"})
 	if err := command.Execute(); err != nil {
 		t.Fatalf("execute --continue without history: %v", err)
 	}
@@ -233,6 +233,7 @@ func TestInterruptedRunCreatesNewRunWithReplanEnvelope(t *testing.T) {
 	command.SetIn(strings.NewReader("first task\n请继续\n/exit\n"))
 	command.SetOut(io.Discard)
 	command.SetErr(&stderr)
+	command.SetArgs([]string{"--plain"})
 	if err := command.Execute(); err != nil {
 		t.Fatalf("execute interrupted continuation: %v\nstderr=%s", err, stderr.String())
 	}
@@ -265,6 +266,54 @@ func TestInterruptedRunCreatesNewRunWithReplanEnvelope(t *testing.T) {
 	}
 }
 
+func TestContinueRecoversAbandonedRunningRun(t *testing.T) {
+	amadeusHome := t.TempDir()
+	projectDirectory := t.TempDir()
+	writeCodingCommandConfig(t, amadeusHome)
+	if err := os.WriteFile(filepath.Join(projectDirectory, "README.md"), []byte("recovery readme\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := sessiondomain.NewMemoryStore()
+	now := time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
+	sequence := 0
+	coordinator, err := sessiondomain.NewCoordinator(store, projectDirectory, "project", sessiondomain.CoordinatorOptions{
+		Clock:     func() time.Time { now = now.Add(time.Second); return now },
+		IDFactory: func(kind string) string { sequence++; return fmt.Sprintf("legacy-%s-%d", kind, sequence) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	abandoned, err := coordinator.BeginTask(context.Background(), "unfinished task", sessiondomain.RunMetadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := commandRuntime{
+		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
+		terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
+		now:                 func() time.Time { now = now.Add(time.Second); return now },
+		sessionStoreFactory: func(context.Context, string) (sessiondomain.Store, io.Closer, error) { return store, nil, nil },
+		llmClientFactory:    func(string, config.ProviderConfig) (llm.Client, error) { return &codingCommandClient{}, nil },
+		auditSinkFactory:    func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
+	}
+	command := newRootCommandWithRuntime(&configFlags{}, runtime)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command.SetIn(strings.NewReader("finish safely\n/exit\n"))
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+	command.SetArgs([]string{"--plain", "--continue"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("continue abandoned Run: %v\nstderr=%s", err, stderr.String())
+	}
+	recovered, err := store.GetRun(context.Background(), abandoned.Records.Run.ID)
+	if err != nil || recovered.Status != sessiondomain.RunInterrupted || len(recovered.InterruptedContextJSON) == 0 {
+		t.Fatalf("abandoned Run was not recovered: %#v err=%v", recovered, err)
+	}
+	if !strings.Contains(stdout.String(), "Task completed successfully.") || !strings.Contains(stderr.String(), "result: completed") {
+		t.Fatalf("continuation did not complete: stdout=%q stderr=%s", stdout.String(), stderr.String())
+	}
+}
+
 func TestResumeSelectorEscReturnsToDraftConversation(t *testing.T) {
 	projectDirectory := t.TempDir()
 	store := sessiondomain.NewMemoryStore()
@@ -281,7 +330,7 @@ func TestResumeSelectorEscReturnsToDraftConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := coordinator.FinishTask(context.Background(), started, sessiondomain.RunCompleted, "", "done", nil); err != nil {
+	if _, err := coordinator.FinishTask(context.Background(), started, sessiondomain.RunCompleted, "", "done", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	runtime := commandRuntime{
@@ -294,7 +343,7 @@ func TestResumeSelectorEscReturnsToDraftConversation(t *testing.T) {
 	command.SetIn(strings.NewReader("\x1b\n/exit\n"))
 	command.SetOut(io.Discard)
 	command.SetErr(&stderr)
-	command.SetArgs([]string{"--resume"})
+	command.SetArgs([]string{"--plain", "--resume"})
 	if err := command.Execute(); err != nil {
 		t.Fatalf("execute resume selector: %v", err)
 	}

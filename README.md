@@ -88,10 +88,6 @@ agent:
   max_duration: 30m
   max_parallel_tools: 4
 
-approval:
-  enabled: true
-  default: ask
-
 logging:
   level: info
   trace_llm: false
@@ -113,7 +109,7 @@ providers:
 
 `providers.<name>.max_output_tokens` 是单次模型调用限制；`agent.max_input_tokens` 和 `agent.max_output_tokens` 是整次 Run 的累计限制。
 
-旧配置中的 `agent.mode` 已删除。ReAct、Plan 和 Team 不再是用户切换的 Agent 模式；如果旧配置仍有该字段，运行 `config check` 会报告未知字段，请将其删除。
+旧配置中的 `agent.mode` 已删除。普通任务默认使用 ReAct；需要显式拆分和循环 Replan 时使用 `/plan <task>`。该选择只影响当前 Run，不写入配置；如果旧配置仍有 `agent.mode`，运行 `config check` 会报告未知字段，请将其删除。
 
 ## AGENTS.md
 
@@ -141,10 +137,33 @@ Amadeus 使用显式指令文件代替自动长期记忆：
 amadeus "Inspect the failing tests, fix the root cause, and run the relevant tests."
 ```
 
+普通任务默认直接进入 ReAct，不调用 Planner。复杂任务可显式使用：
+
+```bash
+amadeus "/plan Inspect the architecture, implement the required changes, and verify all affected components."
+```
+
+直接执行 `amadeus` 且终端支持 TTY 时，默认启动基于 Bubble Tea 的 alternate-screen 全屏 TUI，提供像素品牌头部、多行 Unicode 输入、滚动 transcript、计划/工具/审批块、状态栏、输入历史、Slash 命令和 Session 选择器。Agent 执行期间输入框仍可编辑，按 Enter 会把下一条普通任务或 `/plan <task>` 加入串行队列。TUI 默认不启用终端鼠标捕获，因此可以直接拖拽选择文字；viewport 使用 PageUp/PageDown 滚动。中文输入与 Backspace 由 Bubbles textarea 按 rune 处理。普通 `amadeus` 启动为 Draft Session，不会自动读取旧会话；只有 `--continue`、`--resume` 或交互 `/resume` 才恢复历史 Session。
+
+需要简单逐行输出时显式使用：
+
+```bash
+amadeus --plain
+```
+
+非 TTY 管道和 `TERM=dumb` 也会自动降级为 Plain；Amadeus 不再读取 `AMADEUS_PLAIN` 环境变量。带任务参数的一次性命令继续使用可重定向的 transcript/Plain 输出，不进入全屏界面。
+
 指定目标项目：
 
 ```bash
 amadeus --project /path/to/project "Fix the Add implementation and run go test ./..."
+```
+
+如果从本仓库的 `bin/` 目录启动，默认项目根会是 `bin/`，因此无法访问其父目录的 `docs/`。请显式把仓库根设为项目根，并在任务中使用项目内相对路径：
+
+```bash
+cd /path/to/amadeus/bin
+./amadeus --project .. --config ../config.yaml "查看 docs 目录下的文件内容"
 ```
 
 从管道读取单次任务：
@@ -169,17 +188,10 @@ amadeus
 当工具需要写文件或执行命令时，TTY 会显示工具名、风险、原因和规范化参数哈希，不显示完整敏感参数。可选择：
 
 - `y`：只允许本次调用。
-- `s`：允许当前 session 中相同调用。
-- `a`：允许当前进程生命周期内相同调用。
+- `s`：允许当前 session 中同名工具的后续调用。
 - `n`：拒绝本次调用。
 
-非 TTY 行为由 `approval.default` 控制：
-
-- `ask`：无法交互时安全拒绝。
-- `allow`：按策略允许一次。
-- `deny`：拒绝。
-
-即使关闭审批，PathGuard 和 CommandGuard 的阻断决定仍然生效。工具只能访问目标项目 Root 内的路径，路径穿越和 symlink 外逃会被拒绝。
+非 TTY 环境固定拒绝需要审批的工具调用。只读工具无需审批；写入、命令、网络和 MCP 工具需要 TTY 用户确认。PathGuard 和 CommandGuard 的阻断决定始终生效，路径穿越、symlink 外逃和明确危险命令会在询问用户前直接拒绝。
 
 审计日志默认写入：
 

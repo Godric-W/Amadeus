@@ -103,9 +103,14 @@ agent:
   max_duration: 30m
   max_parallel_tools: 4
 
-approval:
-  enabled: true
-  default: ask
+# Optional write-after diagnostics. The process starts lazily after the first
+# successful write to a matching extension and is closed when the Run ends.
+lsp:
+  enabled: false
+  command: gopls
+  args: []
+  extensions: [.go]
+  timeout: 10s
 
 logging:
   level: info

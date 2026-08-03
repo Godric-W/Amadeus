@@ -12,13 +12,12 @@ var (
 	ErrConflict = errors.New("session record conflict")
 )
 
-type BeginFirstTurnInput struct {
+type BeginFirstRunInput struct {
 	ProjectID        ProjectID
 	CanonicalPath    string
 	ProjectName      string
 	SessionID        ConversationSessionID
 	SessionTitle     string
-	TurnID           TurnID
 	UserMessageID    MessageID
 	RunID            RunID
 	Objective        string
@@ -28,13 +27,12 @@ type BeginFirstTurnInput struct {
 	Model            string
 	APIMode          string
 	Dialect          string
-	BudgetJSON       json.RawMessage
+	ExecutionMode    ExecutionMode
 	StartedAt        time.Time
 }
 
-type BeginTurnInput struct {
+type BeginRunInput struct {
 	SessionID        ConversationSessionID
-	TurnID           TurnID
 	UserMessageID    MessageID
 	RunID            RunID
 	Objective        string
@@ -44,41 +42,33 @@ type BeginTurnInput struct {
 	Model            string
 	APIMode          string
 	Dialect          string
-	BudgetJSON       json.RawMessage
+	ExecutionMode    ExecutionMode
 	StartedAt        time.Time
 }
 
-type BeginTurnResult struct {
+type BeginRunResult struct {
 	Project Project
 	Session ConversationSession
-	Turn    Turn
 	Message Message
 	Run     Run
 }
 
-type FinishTurnInput struct {
+type FinishRunInput struct {
 	SessionID          ConversationSessionID
-	TurnID             TurnID
 	RunID              RunID
-	TurnStatus         TurnStatus
 	RunStatus          RunStatus
 	StopReason         string
 	AssistantMessageID MessageID
 	AssistantContent   string
 	UsageJSON          json.RawMessage
+	InterruptedContext json.RawMessage
 	FinishedAt         time.Time
 }
 
-type FinishTurnResult struct {
+type FinishRunResult struct {
 	Session          ConversationSession
-	Turn             Turn
 	Run              Run
 	AssistantMessage *Message
-}
-
-type AppendCheckpointInput struct {
-	Checkpoint   Checkpoint
-	Instructions []CheckpointInstruction
 }
 
 type SessionStore interface {
@@ -89,9 +79,9 @@ type SessionStore interface {
 }
 
 type ConversationStore interface {
-	BeginFirstTurn(context.Context, BeginFirstTurnInput) (BeginTurnResult, error)
-	BeginTurn(context.Context, BeginTurnInput) (BeginTurnResult, error)
-	FinishTurn(context.Context, FinishTurnInput) (FinishTurnResult, error)
+	BeginFirstRun(context.Context, BeginFirstRunInput) (BeginRunResult, error)
+	BeginRun(context.Context, BeginRunInput) (BeginRunResult, error)
+	FinishRun(context.Context, FinishRunInput) (FinishRunResult, error)
 	ListMessages(context.Context, ConversationSessionID) ([]Message, error)
 }
 
@@ -99,12 +89,7 @@ type RunStore interface {
 	GetRun(context.Context, RunID) (Run, error)
 	LatestInterruptedRun(context.Context, ConversationSessionID) (Run, error)
 	PendingInterruptedRun(context.Context, ConversationSessionID) (Run, error)
-}
-
-type CheckpointStore interface {
-	AppendCheckpoint(context.Context, AppendCheckpointInput) (Checkpoint, error)
-	ListCheckpoints(context.Context, RunID) ([]Checkpoint, error)
-	ListCheckpointInstructions(context.Context, CheckpointID) ([]CheckpointInstruction, error)
+	RecoverRunningRuns(context.Context, ConversationSessionID, time.Time) error
 }
 
 type SummaryStore interface {
@@ -116,6 +101,5 @@ type Store interface {
 	SessionStore
 	ConversationStore
 	RunStore
-	CheckpointStore
 	SummaryStore
 }

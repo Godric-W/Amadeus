@@ -102,3 +102,31 @@ func newFakeTool(name string) *fakeTool {
 		},
 	}}
 }
+
+func TestRegistryReplaceGroupIsAtomicAndLeavesOtherTools(t *testing.T) {
+	registry := NewRegistry()
+	if err := registry.Register(newFakeTool("read_file")); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.ReplaceGroup("mcp:demo", []Tool{newFakeTool("mcp__demo__one")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.ReplaceGroup("mcp:demo", []Tool{newFakeTool("mcp__demo__two")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := registry.Lookup("mcp__demo__one"); ok {
+		t.Fatal("stale dynamic tool remained registered")
+	}
+	if _, ok := registry.Lookup("mcp__demo__two"); !ok {
+		t.Fatal("replacement dynamic tool is missing")
+	}
+	if _, ok := registry.Lookup("read_file"); !ok {
+		t.Fatal("group replacement removed an unrelated tool")
+	}
+	if err := registry.ReplaceGroup("mcp:demo", []Tool{newFakeTool("read_file")}); !errors.Is(err, ErrDuplicateTool) {
+		t.Fatalf("group replacement accepted foreign name collision: %v", err)
+	}
+	if _, ok := registry.Lookup("mcp__demo__two"); !ok {
+		t.Fatal("failed replacement was not atomic")
+	}
+}

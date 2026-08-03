@@ -3,6 +3,7 @@ package policy
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"unicode"
 )
@@ -52,6 +53,12 @@ func (guard *CommandGuard) Assess(command string) (CommandAssessment, error) {
 	if err != nil {
 		return CommandAssessment{}, err
 	}
+	if escaped, value := commandBoundaryEscape(segments, operators); escaped {
+		return CommandAssessment{
+			Risk: CommandRiskBlocked, Disposition: CommandDeny,
+			Reason: "command path escapes the project root: " + value, Operators: operators,
+		}, nil
+	}
 	assessment := CommandAssessment{Risk: CommandRiskLow, Disposition: CommandAllow, Reason: "read-only command", Operators: operators}
 	for _, segment := range segments {
 		program, arguments := commandProgram(segment)
@@ -71,6 +78,58 @@ func (guard *CommandGuard) Assess(command string) (CommandAssessment, error) {
 	}
 	assessment.Disposition = dispositionForRisk(assessment.Risk)
 	return assessment, nil
+}
+
+func commandBoundaryEscape(segments [][]string, operators []string) (bool, string) {
+	for segmentIndex, segment := range segments {
+		programIndex := 0
+		for programIndex < len(segment) && strings.Contains(segment[programIndex], "=") && !strings.HasPrefix(segment[programIndex], "=") {
+			programIndex++
+		}
+		for tokenIndex, token := range segment {
+			if tokenIndex < programIndex {
+				continue
+			}
+			isProgram := tokenIndex == programIndex
+			if segmentIndex > 0 && segmentIndex-1 < len(operators) {
+				switch operators[segmentIndex-1] {
+				case ">", ">>", "<", "<<":
+					isProgram = false
+				}
+			}
+			if escaped, value := commandTokenBoundaryEscape(token, isProgram); escaped {
+				return true, value
+			}
+		}
+	}
+	return false, ""
+}
+
+func commandTokenBoundaryEscape(token string, program bool) (bool, string) {
+	for _, field := range strings.Fields(token) {
+		value := strings.Trim(field, "'\"()[]{};, ")
+		if value == "" || strings.Contains(value, "://") {
+			continue
+		}
+		if index := strings.IndexByte(value, '='); index >= 0 && index+1 < len(value) {
+			value = value[index+1:]
+		}
+		value = strings.Trim(value, "'\"()[]{};, ")
+		if value == "" {
+			continue
+		}
+		if strings.HasPrefix(value, "~/") || value == "~" || strings.HasPrefix(value, "$HOME") || strings.HasPrefix(value, "${HOME}") {
+			return true, value
+		}
+		cleaned := filepath.Clean(value)
+		if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) || strings.Contains(cleaned, string(filepath.Separator)+".."+string(filepath.Separator)) || strings.HasSuffix(cleaned, string(filepath.Separator)+"..") {
+			return true, value
+		}
+		if filepath.IsAbs(value) && !program {
+			return true, value
+		}
+	}
+	return false, ""
 }
 
 func tokenizeCommand(command string) ([]string, error) {
@@ -169,7 +228,7 @@ func commandProgram(segment []string) (string, []string) {
 	if index >= len(segment) {
 		return "environment", nil
 	}
-	return strings.ToLower(segment[index]), segment[index+1:]
+	return strings.ToLower(filepath.Base(segment[index])), segment[index+1:]
 }
 
 func classifyCommand(program string, args []string) (CommandRisk, string) {

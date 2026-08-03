@@ -27,10 +27,7 @@ func Default() Config {
 			MaxDuration:      30 * time.Minute,
 			MaxParallelTools: 4,
 		},
-		Approval: ApprovalConfig{
-			Enabled: true,
-			Default: ApprovalAsk,
-		},
+		LSP: LSPConfig{Timeout: 10 * time.Second},
 		Logging: LoggingConfig{
 			Level: LogLevelInfo,
 		},

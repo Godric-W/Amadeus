@@ -22,6 +22,8 @@ const (
 	Handoff           ID = "handoff.md"
 	EngineRetry       ID = "engine/retry.md"
 	TaskReflection    ID = "reflect/task.md"
+	Planner           ID = "planner.md"
+	Replanner         ID = "replanner.md"
 )
 
 var agentLayers = []ID{
@@ -48,6 +50,8 @@ var all = []ID{
 	Handoff,
 	EngineRetry,
 	TaskReflection,
+	Planner,
+	Replanner,
 }
 
 var known = func() map[ID]struct{} {

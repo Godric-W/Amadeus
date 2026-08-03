@@ -61,12 +61,19 @@ func SourcesFor(configured Config) Sources {
 		"agent.max_output_tokens",
 		"agent.max_duration",
 		"agent.max_parallel_tools",
-		"approval.enabled",
-		"approval.default",
+		"lsp.enabled",
+		"lsp.command",
+		"lsp.timeout",
 		"logging.level",
 		"logging.trace_llm",
 	} {
 		set(path)
+	}
+	for index := range configured.LSP.Args {
+		set(fmt.Sprintf("lsp.args[%d]", index))
+	}
+	for index := range configured.LSP.Extensions {
+		set(fmt.Sprintf("lsp.extensions[%d]", index))
 	}
 
 	return sources

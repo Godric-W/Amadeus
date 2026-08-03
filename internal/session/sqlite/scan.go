@@ -13,10 +13,10 @@ type scanner interface {
 	Scan(...any) error
 }
 
-const sessionSelect = `SELECT id, project_id, title, status, next_turn_sequence, created_at, updated_at, last_active_at FROM conversation_sessions`
+const sessionSelect = `SELECT id, project_id, title, status, next_run_sequence, created_at, updated_at, last_active_at FROM conversation_sessions`
 
-const runSelect = `SELECT id, session_id, turn_id, context_from_run_id, objective, status, stop_reason,
-    provider, model, api_mode, dialect, budget_json, usage_json, latest_checkpoint_seq, started_at, finished_at FROM runs`
+const runSelect = `SELECT id, session_id, sequence, context_from_run_id, objective, status, stop_reason,
+    provider, model, api_mode, dialect, execution_mode, usage_json, interrupted_context_json, started_at, finished_at FROM runs`
 
 func scanProject(source scanner) (sessiondomain.Project, error) {
 	var project sessiondomain.Project
@@ -42,7 +42,7 @@ func scanSession(source scanner) (sessiondomain.ConversationSession, error) {
 	var createdAt, updatedAt, lastActiveAt string
 	if err := source.Scan(
 		&conversation.ID, &conversation.ProjectID, &conversation.Title, &conversation.Status,
-		&conversation.NextTurnSequence, &createdAt, &updatedAt, &lastActiveAt,
+		&conversation.NextRunSequence, &createdAt, &updatedAt, &lastActiveAt,
 	); err != nil {
 		return sessiondomain.ConversationSession{}, sqliteStoreError("scan conversation session", err)
 	}
@@ -59,31 +59,10 @@ func scanSession(source scanner) (sessiondomain.ConversationSession, error) {
 	return conversation, conversation.Validate()
 }
 
-func scanTurn(source scanner) (sessiondomain.Turn, error) {
-	var turn sessiondomain.Turn
-	var createdAt string
-	var completedAt sql.NullString
-	if err := source.Scan(&turn.ID, &turn.SessionID, &turn.Sequence, &turn.Status, &createdAt, &completedAt); err != nil {
-		return sessiondomain.Turn{}, sqliteStoreError("scan turn", err)
-	}
-	var err error
-	if turn.CreatedAt, err = parseTime("turn created_at", createdAt); err != nil {
-		return sessiondomain.Turn{}, err
-	}
-	if completedAt.Valid {
-		value, err := parseTime("turn completed_at", completedAt.String)
-		if err != nil {
-			return sessiondomain.Turn{}, err
-		}
-		turn.CompletedAt = &value
-	}
-	return turn, turn.Validate()
-}
-
 func scanMessage(source scanner) (sessiondomain.Message, error) {
 	var message sessiondomain.Message
 	var createdAt string
-	if err := source.Scan(&message.ID, &message.SessionID, &message.TurnID, &message.Sequence, &message.Role, &message.Content, &createdAt); err != nil {
+	if err := source.Scan(&message.ID, &message.SessionID, &message.RunID, &message.Sequence, &message.Role, &message.Content, &createdAt); err != nil {
 		return sessiondomain.Message{}, sqliteStoreError("scan conversation message", err)
 	}
 	var err error
@@ -95,11 +74,11 @@ func scanMessage(source scanner) (sessiondomain.Message, error) {
 
 func scanRun(source scanner) (sessiondomain.Run, error) {
 	var run sessiondomain.Run
-	var contextRun, stopReason, provider, model, apiMode, dialect, budgetJSON, usageJSON, finishedAt sql.NullString
+	var contextRun, stopReason, provider, model, apiMode, dialect, executionMode, usageJSON, interruptedContext, finishedAt sql.NullString
 	var startedAt string
 	if err := source.Scan(
-		&run.ID, &run.SessionID, &run.TurnID, &contextRun, &run.Objective, &run.Status, &stopReason,
-		&provider, &model, &apiMode, &dialect, &budgetJSON, &usageJSON, &run.LatestCheckpointSequence, &startedAt, &finishedAt,
+		&run.ID, &run.SessionID, &run.Sequence, &contextRun, &run.Objective, &run.Status, &stopReason,
+		&provider, &model, &apiMode, &dialect, &executionMode, &usageJSON, &interruptedContext, &startedAt, &finishedAt,
 	); err != nil {
 		return sessiondomain.Run{}, sqliteStoreError("scan run", err)
 	}
@@ -111,11 +90,12 @@ func scanRun(source scanner) (sessiondomain.Run, error) {
 	run.Model = model.String
 	run.APIMode = apiMode.String
 	run.Dialect = dialect.String
-	if budgetJSON.Valid {
-		run.BudgetJSON = json.RawMessage(budgetJSON.String)
-	}
+	run.ExecutionMode = sessiondomain.ExecutionMode(executionMode.String)
 	if usageJSON.Valid {
 		run.UsageJSON = json.RawMessage(usageJSON.String)
+	}
+	if interruptedContext.Valid {
+		run.InterruptedContextJSON = json.RawMessage(interruptedContext.String)
 	}
 	var err error
 	if run.StartedAt, err = parseTime("run started_at", startedAt); err != nil {
@@ -129,23 +109,6 @@ func scanRun(source scanner) (sessiondomain.Run, error) {
 		run.FinishedAt = &value
 	}
 	return run, run.Validate()
-}
-
-func scanCheckpoint(source scanner) (sessiondomain.Checkpoint, error) {
-	var checkpoint sessiondomain.Checkpoint
-	var payloadJSON, createdAt string
-	if err := source.Scan(
-		&checkpoint.ID, &checkpoint.RunID, &checkpoint.Sequence, &checkpoint.SchemaVersion,
-		&checkpoint.Reason, &payloadJSON, &checkpoint.PayloadHash, &createdAt,
-	); err != nil {
-		return sessiondomain.Checkpoint{}, sqliteStoreError("scan run checkpoint", err)
-	}
-	checkpoint.PayloadJSON = json.RawMessage(payloadJSON)
-	var err error
-	if checkpoint.CreatedAt, err = parseTime("checkpoint created_at", createdAt); err != nil {
-		return sessiondomain.Checkpoint{}, err
-	}
-	return checkpoint, checkpoint.VerifyPayload()
 }
 
 func scanSummary(source scanner) (sessiondomain.ConversationSummary, error) {

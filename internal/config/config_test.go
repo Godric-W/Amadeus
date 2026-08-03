@@ -30,10 +30,6 @@ func TestConfigCanBeConstructed(t *testing.T) {
 			MaxDuration:      5 * time.Minute,
 			MaxParallelTools: 2,
 		},
-		Approval: ApprovalConfig{
-			Enabled: true,
-			Default: ApprovalDeny,
-		},
 		Logging: LoggingConfig{
 			Level:    LogLevelDebug,
 			TraceLLM: true,
@@ -76,9 +72,6 @@ func TestDefault(t *testing.T) {
 	}
 	if configured.Agent.MaxSteps != 30 || configured.Agent.MaxToolCalls != 120 || configured.Agent.MaxInputTokens != 1_000_000 || configured.Agent.MaxOutputTokens != 245_760 || configured.Agent.MaxDuration != 30*time.Minute || configured.Agent.MaxParallelTools != 4 {
 		t.Fatalf("unexpected default agent config: %#v", configured.Agent)
-	}
-	if configured.Approval.Default != ApprovalAsk {
-		t.Fatalf("unexpected approval default: got %q, want %q", configured.Approval.Default, ApprovalAsk)
 	}
 	if configured.Logging.Level != LogLevelInfo {
 		t.Fatalf("unexpected log level: got %q, want %q", configured.Logging.Level, LogLevelInfo)

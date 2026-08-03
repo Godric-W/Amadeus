@@ -21,12 +21,56 @@ type Entry struct {
 }
 
 type Registry struct {
-	mutex sync.RWMutex
-	tools map[string]Entry
+	mutex  sync.RWMutex
+	tools  map[string]Entry
+	groups map[string]map[string]struct{}
 }
 
 func NewRegistry() *Registry {
-	return &Registry{tools: make(map[string]Entry)}
+	return &Registry{tools: make(map[string]Entry), groups: make(map[string]map[string]struct{})}
+}
+
+func (registry *Registry) ReplaceGroup(group string, candidates []Tool) error {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		return errors.New("tool registry group is empty")
+	}
+	entries := make([]Entry, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == nil || isNilTool(candidate) {
+			return ErrNilTool
+		}
+		spec := candidate.Spec().Clone()
+		if err := validateSpec(spec); err != nil {
+			return err
+		}
+		if _, exists := seen[spec.Name]; exists {
+			return fmt.Errorf("%w: %s", ErrDuplicateTool, spec.Name)
+		}
+		seen[spec.Name] = struct{}{}
+		entries = append(entries, Entry{Spec: spec, Tool: candidate})
+	}
+
+	registry.mutex.Lock()
+	defer registry.mutex.Unlock()
+	for _, entry := range entries {
+		if _, exists := registry.tools[entry.Spec.Name]; exists {
+			if _, owned := registry.groups[group][entry.Spec.Name]; !owned {
+				return fmt.Errorf("%w: %s", ErrDuplicateTool, entry.Spec.Name)
+			}
+		}
+	}
+	for name := range registry.groups[group] {
+		delete(registry.tools, name)
+	}
+	owned := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		registry.tools[entry.Spec.Name] = entry
+		owned[entry.Spec.Name] = struct{}{}
+	}
+	registry.groups[group] = owned
+	return nil
 }
 
 func (registry *Registry) Register(candidate Tool) error {

@@ -67,7 +67,6 @@ func TestApprovalDecisionExpressesAllowDenyAndScopes(t *testing.T) {
 	for _, decision := range []ApprovalDecision{
 		{Outcome: ApprovalAllow, Scope: ApprovalOnce, Source: ApprovalSourceUser, Reason: "approved once"},
 		{Outcome: ApprovalAllow, Scope: ApprovalSession, Source: ApprovalSourceUser, Reason: "approved for session"},
-		{Outcome: ApprovalAllow, Scope: ApprovalAlways, Source: ApprovalSourceUser, Reason: "approved always"},
 		{Outcome: ApprovalDeny, Scope: ApprovalOnce, Source: ApprovalSourcePolicy, Reason: "blocked"},
 	} {
 		if err := decision.Validate(); err != nil {

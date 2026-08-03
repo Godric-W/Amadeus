@@ -25,6 +25,7 @@ const (
 	TypeErrorOccurred       Type = "error.occurred"
 	TypeEngineRunStarted    Type = "engine.run.started"
 	TypeEngineStatusChanged Type = "engine.status.changed"
+	TypePlanUpdated         Type = "engine.plan.updated"
 	TypeVerificationDone    Type = "engine.verification.completed"
 	TypeReflectionDone      Type = "engine.reflection.completed"
 	TypeEngineRunCompleted  Type = "engine.run.completed"
@@ -202,6 +203,20 @@ func (EngineStatusChanged) Type() Type {
 	return TypeEngineStatusChanged
 }
 
+type PlanTask struct {
+	ID        string
+	Objective string
+	Status    string
+}
+
+type PlanUpdated struct {
+	RunID string
+	Cycle int
+	Tasks []PlanTask
+}
+
+func (PlanUpdated) Type() Type { return TypePlanUpdated }
+
 type VerificationCompleted struct {
 	RunID        string
 	TaskID       string
@@ -255,6 +270,7 @@ func (eventType Type) Valid() bool {
 		TypeErrorOccurred,
 		TypeEngineRunStarted,
 		TypeEngineStatusChanged,
+		TypePlanUpdated,
 		TypeVerificationDone,
 		TypeReflectionDone,
 		TypeEngineRunCompleted:

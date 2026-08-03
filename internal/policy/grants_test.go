@@ -5,31 +5,24 @@ import (
 	"testing"
 )
 
-func TestGrantCacheSeparatesSessionAndPersistentDecisions(t *testing.T) {
+func TestGrantCacheReusesSessionDecisionByToolName(t *testing.T) {
 	cache := NewGrantCache()
 	sessionRequest := testGrantRequest(t, "session", `{"path":"session.txt"}`)
-	persistentRequest := testGrantRequest(t, "persistent", `{"path":"persistent.txt"}`)
+	otherArguments := testGrantRequest(t, "other", `{"path":"other.txt"}`)
 	sessionDecision := ApprovalDecision{Outcome: ApprovalAllow, Scope: ApprovalSession, Source: ApprovalSourceUser, Reason: "session allow"}
-	persistentDecision := ApprovalDecision{Outcome: ApprovalDeny, Scope: ApprovalAlways, Source: ApprovalSourceUser, Reason: "persistent deny"}
 	if err := cache.Remember(sessionRequest, sessionDecision); err != nil {
 		t.Fatalf("remember session decision: %v", err)
-	}
-	if err := cache.Remember(persistentRequest, persistentDecision); err != nil {
-		t.Fatalf("remember persistent decision: %v", err)
 	}
 	if decision, ok := cache.Lookup(sessionRequest); !ok || !decision.Allowed() || decision.Source != ApprovalSourceGrant {
 		t.Fatalf("unexpected session lookup: decision=%#v ok=%v", decision, ok)
 	}
-	if decision, ok := cache.Lookup(persistentRequest); !ok || decision.Allowed() || decision.Source != ApprovalSourceGrant {
-		t.Fatalf("unexpected persistent lookup: decision=%#v ok=%v", decision, ok)
+	if decision, ok := cache.Lookup(otherArguments); !ok || !decision.Allowed() || decision.Source != ApprovalSourceGrant {
+		t.Fatalf("session grant was not reused by tool name: decision=%#v ok=%v", decision, ok)
 	}
 
 	cache.ClearSession()
 	if _, ok := cache.Lookup(sessionRequest); ok {
 		t.Fatal("session decision survived ClearSession")
-	}
-	if decision, ok := cache.Lookup(persistentRequest); !ok || decision.Allowed() {
-		t.Fatalf("persistent decision did not survive ClearSession: decision=%#v ok=%v", decision, ok)
 	}
 }
 

@@ -19,15 +19,15 @@ type CoordinatorOptions struct {
 }
 
 type RunMetadata struct {
-	Provider   string
-	Model      string
-	APIMode    string
-	Dialect    string
-	BudgetJSON json.RawMessage
+	Provider      string
+	Model         string
+	APIMode       string
+	Dialect       string
+	ExecutionMode ExecutionMode
 }
 
 type StartedTurn struct {
-	Records       BeginTurnResult
+	Records       BeginRunResult
 	PriorMessages []Message
 	Interrupted   *Run
 }
@@ -112,16 +112,15 @@ func (coordinator *Coordinator) BeginTask(ctx context.Context, objective string,
 		return StartedTurn{}, errors.New("session task objective is empty")
 	}
 	now := coordinator.clock().UTC()
-	turnID := TurnID(coordinator.nextID("turn"))
 	messageID := MessageID(coordinator.nextID("msg"))
 	runID := RunID(coordinator.nextID("run"))
 	if coordinator.current == "" {
-		result, err := coordinator.store.BeginFirstTurn(ctx, BeginFirstTurnInput{
+		result, err := coordinator.store.BeginFirstRun(ctx, BeginFirstRunInput{
 			ProjectID: ProjectID(coordinator.nextID("project")), CanonicalPath: coordinator.canonicalPath, ProjectName: coordinator.projectName,
-			SessionID: ConversationSessionID(coordinator.nextID("session")), SessionTitle: sessionTitle(objective), TurnID: turnID,
+			SessionID: ConversationSessionID(coordinator.nextID("session")), SessionTitle: sessionTitle(objective),
 			UserMessageID: messageID, RunID: runID, Objective: objective, UserContent: objective,
-			Provider: metadata.Provider, Model: metadata.Model, APIMode: metadata.APIMode, Dialect: metadata.Dialect,
-			BudgetJSON: metadata.BudgetJSON, StartedAt: now,
+			Provider: metadata.Provider, Model: metadata.Model, APIMode: metadata.APIMode, Dialect: metadata.Dialect, ExecutionMode: metadata.ExecutionMode,
+			StartedAt: now,
 		})
 		if err != nil {
 			return StartedTurn{}, err
@@ -133,6 +132,9 @@ func (coordinator *Coordinator) BeginTask(ctx context.Context, objective string,
 	if err != nil {
 		return StartedTurn{}, err
 	}
+	if err := coordinator.store.RecoverRunningRuns(ctx, coordinator.current, now); err != nil {
+		return StartedTurn{}, err
+	}
 	var interrupted *Run
 	contextRun, err := coordinator.store.PendingInterruptedRun(ctx, coordinator.current)
 	if err == nil {
@@ -140,53 +142,32 @@ func (coordinator *Coordinator) BeginTask(ctx context.Context, objective string,
 	} else if !errors.Is(err, ErrNotFound) {
 		return StartedTurn{}, err
 	}
-	input := BeginTurnInput{
-		SessionID: coordinator.current, TurnID: turnID, UserMessageID: messageID, RunID: runID,
+	input := BeginRunInput{
+		SessionID: coordinator.current, UserMessageID: messageID, RunID: runID,
 		Objective: objective, UserContent: objective, Provider: metadata.Provider, Model: metadata.Model,
-		APIMode: metadata.APIMode, Dialect: metadata.Dialect, BudgetJSON: metadata.BudgetJSON, StartedAt: now,
+		APIMode: metadata.APIMode, Dialect: metadata.Dialect, ExecutionMode: metadata.ExecutionMode, StartedAt: now,
 	}
 	if interrupted != nil {
 		input.ContextFromRunID = interrupted.ID
 	}
-	result, err := coordinator.store.BeginTurn(ctx, input)
+	result, err := coordinator.store.BeginRun(ctx, input)
 	if err != nil {
 		return StartedTurn{}, err
 	}
 	return StartedTurn{Records: result, PriorMessages: prior, Interrupted: interrupted}, nil
 }
 
-func (coordinator *Coordinator) FinishTask(ctx context.Context, started StartedTurn, status RunStatus, stopReason, assistantContent string, usage json.RawMessage) (FinishTurnResult, error) {
-	turnStatus := TurnStatus(status)
+func (coordinator *Coordinator) FinishTask(ctx context.Context, started StartedTurn, status RunStatus, stopReason, assistantContent string, usage, interruptedContext json.RawMessage) (FinishRunResult, error) {
 	messageID := MessageID("")
 	if status == RunCompleted {
 		messageID = MessageID(coordinator.nextID("msg"))
 	}
-	return coordinator.store.FinishTurn(ctx, FinishTurnInput{
-		SessionID: started.Records.Session.ID, TurnID: started.Records.Turn.ID, RunID: started.Records.Run.ID,
-		TurnStatus: turnStatus, RunStatus: status, StopReason: strings.TrimSpace(stopReason),
-		AssistantMessageID: messageID, AssistantContent: strings.TrimSpace(assistantContent), UsageJSON: usage,
+	return coordinator.store.FinishRun(ctx, FinishRunInput{
+		SessionID: started.Records.Session.ID, RunID: started.Records.Run.ID,
+		RunStatus: status, StopReason: strings.TrimSpace(stopReason),
+		AssistantMessageID: messageID, AssistantContent: strings.TrimSpace(assistantContent), UsageJSON: usage, InterruptedContext: interruptedContext,
 		FinishedAt: coordinator.clock().UTC(),
 	})
-}
-
-func (coordinator *Coordinator) AppendCheckpoint(ctx context.Context, input AppendCheckpointInput) (Checkpoint, error) {
-	return coordinator.store.AppendCheckpoint(ctx, input)
-}
-
-func (coordinator *Coordinator) LatestCheckpoint(ctx context.Context, runID RunID) (Checkpoint, []CheckpointInstruction, error) {
-	checkpoints, err := coordinator.store.ListCheckpoints(ctx, runID)
-	if err != nil {
-		return Checkpoint{}, nil, err
-	}
-	if len(checkpoints) == 0 {
-		return Checkpoint{}, nil, fmt.Errorf("%w: checkpoint for run %q", ErrNotFound, runID)
-	}
-	checkpoint := checkpoints[len(checkpoints)-1]
-	instructions, err := coordinator.store.ListCheckpointInstructions(ctx, checkpoint.ID)
-	if err != nil {
-		return Checkpoint{}, nil, err
-	}
-	return checkpoint, instructions, nil
 }
 
 func (coordinator *Coordinator) LatestSummary(ctx context.Context, sessionID ConversationSessionID) (ConversationSummary, error) {

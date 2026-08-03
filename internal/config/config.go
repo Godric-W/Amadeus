@@ -19,14 +19,6 @@ const (
 	DialectGLM      ProviderDialect = "glm"
 )
 
-type ApprovalDefault string
-
-const (
-	ApprovalAsk   ApprovalDefault = "ask"
-	ApprovalAllow ApprovalDefault = "allow"
-	ApprovalDeny  ApprovalDefault = "deny"
-)
-
 type LogLevel string
 
 const (
@@ -41,8 +33,16 @@ type Config struct {
 	DefaultProvider string                    `yaml:"default_provider"`
 	Providers       map[string]ProviderConfig `yaml:"providers"`
 	Agent           AgentConfig               `yaml:"agent"`
-	Approval        ApprovalConfig            `yaml:"approval"`
+	LSP             LSPConfig                 `yaml:"lsp"`
 	Logging         LoggingConfig             `yaml:"logging"`
+}
+
+type LSPConfig struct {
+	Enabled    bool          `yaml:"enabled"`
+	Command    string        `yaml:"command"`
+	Args       []string      `yaml:"args"`
+	Extensions []string      `yaml:"extensions"`
+	Timeout    time.Duration `yaml:"timeout"`
 }
 
 type ProviderConfig struct {
@@ -64,11 +64,6 @@ type AgentConfig struct {
 	MaxOutputTokens  int64         `yaml:"max_output_tokens"`
 	MaxDuration      time.Duration `yaml:"max_duration"`
 	MaxParallelTools int           `yaml:"max_parallel_tools"`
-}
-
-type ApprovalConfig struct {
-	Enabled bool            `yaml:"enabled"`
-	Default ApprovalDefault `yaml:"default"`
 }
 
 type LoggingConfig struct {

@@ -9,12 +9,22 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type ToolExecution struct {
-	Observation engine.Observation
-	Evidence    engine.Evidence
+	Observation          engine.Observation
+	Evidence             engine.Evidence
+	SupplementalEvidence []engine.Evidence
+}
+
+type PostExecutionHook interface {
+	After(context.Context, tool.Spec, tool.Call, tool.Result) ([]engine.Evidence, error)
+}
+
+type PreExecutionHook interface {
+	Before(context.Context, tool.Spec, tool.Call) error
 }
 
 type ToolExecutor struct {
@@ -22,6 +32,8 @@ type ToolExecutor struct {
 	validator  *tool.ArgumentValidator
 	authorizer tool.Authorizer
 	events     event.Sink
+	preHooks   []PreExecutionHook
+	hooks      []PostExecutionHook
 	now        func() time.Time
 }
 
@@ -42,6 +54,8 @@ func NewToolExecutor(registry *tool.Registry, validator *tool.ArgumentValidator,
 type ToolExecutorOptions struct {
 	Authorizer tool.Authorizer
 	Events     event.Sink
+	PreHooks   []PreExecutionHook
+	Hooks      []PostExecutionHook
 }
 
 func NewToolExecutorWithOptions(registry *tool.Registry, validator *tool.ArgumentValidator, options ToolExecutorOptions) (*ToolExecutor, error) {
@@ -51,7 +65,19 @@ func NewToolExecutorWithOptions(registry *tool.Registry, validator *tool.Argumen
 	if validator == nil {
 		return nil, errors.New("tool executor argument validator is nil")
 	}
-	return &ToolExecutor{registry: registry, validator: validator, authorizer: options.Authorizer, events: options.Events, now: time.Now}, nil
+	preHooks := append([]PreExecutionHook(nil), options.PreHooks...)
+	for _, hook := range preHooks {
+		if hook == nil {
+			return nil, errors.New("tool executor pre-execution hook is nil")
+		}
+	}
+	hooks := append([]PostExecutionHook(nil), options.Hooks...)
+	for _, hook := range hooks {
+		if hook == nil {
+			return nil, errors.New("tool executor post-execution hook is nil")
+		}
+	}
+	return &ToolExecutor{registry: registry, validator: validator, authorizer: options.Authorizer, events: options.Events, preHooks: preHooks, hooks: hooks, now: time.Now}, nil
 }
 
 func (executor *ToolExecutor) Execute(ctx context.Context, call tool.Call) (ToolExecution, error) {
@@ -87,6 +113,12 @@ func (executor *ToolExecutor) Execute(ctx context.Context, call tool.Call) (Tool
 			return execution, errors.Join(err, executor.publishCompleted(ctx, execution))
 		}
 	}
+	for _, hook := range executor.preHooks {
+		if err := hook.Before(ctx, spec, normalizedCall); err != nil {
+			execution := executor.failure(call, tool.Result{}, err, startedAt)
+			return execution, errors.Join(err, executor.publishCompleted(ctx, execution))
+		}
+	}
 
 	result, executeErr := registered.Execute(ctx, normalized)
 	result.CallID = call.ID
@@ -96,6 +128,17 @@ func (executor *ToolExecutor) Execute(ctx context.Context, call tool.Call) (Tool
 		return execution, errors.Join(executeErr, executor.publishCompleted(ctx, execution))
 	}
 	execution := executor.success(call, result, startedAt)
+	for _, hook := range executor.hooks {
+		evidence, hookErr := hook.After(ctx, spec, normalizedCall, result.Clone())
+		if hookErr != nil {
+			execution.SupplementalEvidence = append(execution.SupplementalEvidence, engine.Evidence{
+				ID: engine.EvidenceID("hook/" + call.ID), Kind: engine.EvidenceDiagnostic, Source: "post_execution_hook",
+				Summary: hookErr.Error(), Verified: false,
+			})
+			continue
+		}
+		execution.SupplementalEvidence = append(execution.SupplementalEvidence, evidence...)
+	}
 	return execution, executor.publishCompleted(ctx, execution)
 }
 
@@ -147,6 +190,7 @@ func (executor *ToolExecutor) failure(call tool.Call, result tool.Result, execut
 			ToolName: call.Name,
 			Result:   result.Clone(),
 			Error:    message,
+			Blocking: errors.Is(executionErr, project.ErrPathOutsideRoot),
 			Duration: executor.durationSince(startedAt),
 		},
 		Evidence: engine.Evidence{

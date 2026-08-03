@@ -15,7 +15,7 @@ func TestConversationSummaryVerifiesContentAndSourceRange(t *testing.T) {
 	sessionID := ConversationSessionID("session-1")
 	messages := []Message{}
 	for index, role := range []MessageRole{MessageUser, MessageAssistant} {
-		message, err := NewMessage(MessageID("message-"+string(rune('1'+index))), sessionID, TurnID("turn-1"), int64(index+1), role, "content", now)
+		message, err := NewMessage(MessageID("message-"+string(rune('1'+index))), sessionID, RunID("run-1"), int64(index+1), role, "content", now)
 		if err != nil {
 			t.Fatal(err)
 		}

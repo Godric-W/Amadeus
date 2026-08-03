@@ -42,6 +42,7 @@ func TestCoreToolsProviderMockE2E(t *testing.T) {
 		t.Run(string(api), func(t *testing.T) {
 			var mutex sync.Mutex
 			var bodies []map[string]any
+			requestIndex := 0
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				var body map[string]any
 				if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
@@ -49,10 +50,18 @@ func TestCoreToolsProviderMockE2E(t *testing.T) {
 				}
 				mutex.Lock()
 				bodies = append(bodies, body)
-				requestIndex := len(bodies)
+				requestIndex++
+				currentRequest := requestIndex
 				mutex.Unlock()
 				writer.Header().Set("Content-Type", "text/event-stream")
-				fmt.Fprint(writer, coreToolsProviderFixture(api, requestIndex, steps))
+				switch currentRequest {
+				case 1:
+					fmt.Fprint(writer, providerTextFixture(api, "PLAN\n- Complete the requested code changes and verification"))
+				case len(steps) + 3:
+					fmt.Fprint(writer, providerTextFixture(api, "COMPLETE\ncore tools workflow complete"))
+				default:
+					fmt.Fprint(writer, coreToolsProviderFixture(api, currentRequest-1, steps))
+				}
 			}))
 			defer server.Close()
 
@@ -79,9 +88,6 @@ agent:
   max_output_tokens: 10000
   max_duration: 2m
   max_parallel_tools: 2
-approval:
-  enabled: true
-  default: allow
 `, api, dialect, server.URL))
 			writeE2EFile(t, filepath.Join(projectDirectory, "go.mod"), "module example.com/coretools\n\ngo 1.26.0\n")
 			writeE2EFile(t, filepath.Join(projectDirectory, "calc.go"), "package calc\n\nfunc Add(left, right int) int { return left - right }\n")
@@ -91,7 +97,7 @@ approval:
 			auditSink := audit.NewMemorySink()
 			runtime := commandRuntime{
 				amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
-				terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
+				terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
 				auditSinkFactory: func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil },
 				runIDFactory:     func() string { return "core-tools-" + string(api) },
 				agentContextFactory: func(parent context.Context) (context.Context, context.CancelFunc) {
@@ -101,10 +107,10 @@ approval:
 			command := newRootCommandWithRuntime(&configFlags{}, runtime)
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
-			command.SetIn(strings.NewReader(""))
+			command.SetIn(strings.NewReader("s\ns\ns\ns\n"))
 			command.SetOut(&stdout)
 			command.SetErr(&stderr)
-			command.SetArgs([]string{"Fix Add, clean obsolete files, create the requested artifact, and run tests"})
+			command.SetArgs([]string{"/plan Fix Add, clean obsolete files, create the requested artifact, and run tests"})
 			if err := command.Execute(); err != nil {
 				t.Fatalf("execute %s core tools Agent: %v\nstderr=%s", api, err, stderr.String())
 			}
@@ -112,7 +118,7 @@ approval:
 			mutex.Lock()
 			captured := append([]map[string]any(nil), bodies...)
 			mutex.Unlock()
-			if len(captured) != len(steps)+2 || stdout.String() != "core tools workflow complete\n" {
+			if len(captured) != len(steps)+3 || stdout.String() != "core tools workflow complete\n" {
 				t.Fatalf("unexpected %s core tools trace: requests=%d stdout=%q stderr=%q", api, len(captured), stdout.String(), stderr.String())
 			}
 			assertCoreToolsProviderRequests(t, api, captured)
@@ -120,6 +126,109 @@ approval:
 			assertCoreToolsAudit(t, auditSink.Snapshot())
 			if strings.Contains(stdout.String()+stderr.String(), "core-tools-secret") || !strings.Contains(stderr.String(), "result: completed") {
 				t.Fatalf("unsafe or incomplete %s core tools output: stdout=%q stderr=%q", api, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestCoreToolsProviderMockE2EDeniedWrite(t *testing.T) {
+	step := providerToolStep{
+		id: "denied-write", name: "write_file",
+		arguments: map[string]any{"path": "denied.txt", "content": "must not be written", "mode": "create"},
+	}
+	for _, api := range []config.APIMode{config.APIResponses, config.APIChatCompletions} {
+		t.Run(string(api), func(t *testing.T) {
+			var mutex sync.Mutex
+			var bodies []map[string]any
+			requestIndex := 0
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+					t.Errorf("decode denied-write Provider request: %v", err)
+				}
+				mutex.Lock()
+				bodies = append(bodies, body)
+				requestIndex++
+				currentRequest := requestIndex
+				mutex.Unlock()
+				writer.Header().Set("Content-Type", "text/event-stream")
+				switch currentRequest {
+				case 1:
+					fmt.Fprint(writer, providerTextFixture(api, "PLAN\n- Attempt the requested write"))
+				case 2:
+					fmt.Fprint(writer, providerToolCallFixture(api, 1, step))
+				case 3:
+					fmt.Fprint(writer, providerTextFixture(api, "write was denied; no changes were made"))
+				case 4:
+					fmt.Fprint(writer, providerTextFixture(api, "COMPLETE\nwrite denial handled"))
+				default:
+					t.Errorf("unexpected denied-write Provider request %d", currentRequest)
+				}
+			}))
+			defer server.Close()
+
+			amadeusHome := t.TempDir()
+			projectDirectory := t.TempDir()
+			dialect := config.DialectStandard
+			if api == config.APIResponses {
+				dialect = config.DialectOpenAI
+			}
+			writeCommandConfig(t, filepath.Join(amadeusHome, "config.yaml"), fmt.Sprintf(`
+default_provider: mock
+providers:
+  mock:
+    api: %s
+    dialect: %s
+    api_key: denied-write-secret
+    base_url: %s/v1
+    model: mock-model
+    max_retries: 0
+agent:
+  max_steps: 4
+  max_tool_calls: 2
+  max_input_tokens: 100000
+  max_output_tokens: 10000
+  max_duration: 2m
+  max_parallel_tools: 1
+`, api, dialect, server.URL))
+
+			auditSink := audit.NewMemorySink()
+			runtime := commandRuntime{
+				amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
+				terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
+				auditSinkFactory: func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil },
+				runIDFactory:     func() string { return "denied-write-" + string(api) },
+			}
+			command := newRootCommandWithRuntime(&configFlags{}, runtime)
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			command.SetIn(strings.NewReader("n\n"))
+			command.SetOut(&stdout)
+			command.SetErr(&stderr)
+			command.SetArgs([]string{"/plan Create denied.txt"})
+			if err := command.Execute(); err != nil {
+				t.Fatalf("execute %s denied-write Agent: %v\nstderr=%s", api, err, stderr.String())
+			}
+
+			if _, err := os.Stat(filepath.Join(projectDirectory, "denied.txt")); !os.IsNotExist(err) {
+				t.Fatalf("denied write changed the project: %v", err)
+			}
+			mutex.Lock()
+			captured := append([]map[string]any(nil), bodies...)
+			mutex.Unlock()
+			if len(captured) != 4 || stdout.String() != "write denial handled\n" {
+				t.Fatalf("unexpected %s denied-write trace: requests=%d stdout=%q stderr=%q", api, len(captured), stdout.String(), stderr.String())
+			}
+			followUp, _ := json.Marshal(captured[2])
+			if !bytes.Contains(followUp, []byte("tool execution denied")) {
+				t.Fatalf("%s follow-up omitted tool denial: %s", api, followUp)
+			}
+			records := auditSink.Snapshot()
+			if len(records) != 1 || records[0].Outcome != audit.OutcomeDeny || records[0].Source != "user" || records[0].ArgumentsSHA256 == "" {
+				t.Fatalf("unexpected denied-write audit: %#v", records)
+			}
+			if strings.Contains(stdout.String()+stderr.String(), "denied-write-secret") || strings.Contains(fmt.Sprintf("%#v", records), "must not be written") {
+				t.Fatalf("denied-write secret or arguments leaked: stdout=%q stderr=%q audit=%#v", stdout.String(), stderr.String(), records)
 			}
 		})
 	}
@@ -168,7 +277,7 @@ func chatTextFixture(id, text string) string {
 
 func assertCoreToolsProviderRequests(t *testing.T, api config.APIMode, captured []map[string]any) {
 	t.Helper()
-	first, _ := json.Marshal(captured[0])
+	first, _ := json.Marshal(captured[1])
 	for _, fragment := range []string{`"apply_patch"`, `"write_file"`, `"mode"`, `"create"`, `"replace"`} {
 		if !bytes.Contains(first, []byte(fragment)) {
 			t.Fatalf("%s first request omitted tool contract %s: %s", api, fragment, first)
@@ -178,14 +287,14 @@ func assertCoreToolsProviderRequests(t *testing.T, api config.APIMode, captured 
 		request  int
 		contains string
 	}{
-		{request: 2, contains: "return left - right"},
-		{request: 3, contains: "calc.go"},
-		{request: 4, contains: "patch conflict"},
-		{request: 5, contains: "return left - right"},
-		{request: 6, contains: "applied 2 patch operation"},
-		{request: 7, contains: "generated.txt"},
-		{request: 8, contains: "tool execution denied"},
-		{request: 9, contains: "example.com/coretools"},
+		{request: 3, contains: "return left - right"},
+		{request: 4, contains: "calc.go"},
+		{request: 5, contains: "patch conflict"},
+		{request: 6, contains: "return left - right"},
+		{request: 7, contains: "applied 2 patch operation"},
+		{request: 8, contains: "generated.txt"},
+		{request: 9, contains: "tool execution denied"},
+		{request: 10, contains: "example.com/coretools"},
 	}
 	for _, check := range checks {
 		encoded, _ := json.Marshal(captured[check.request-1])

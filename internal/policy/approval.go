@@ -24,16 +24,14 @@ type ApprovalScope string
 const (
 	ApprovalOnce    ApprovalScope = "once"
 	ApprovalSession ApprovalScope = "session"
-	ApprovalAlways  ApprovalScope = "always"
 )
 
 type ApprovalSource string
 
 const (
-	ApprovalSourceUser    ApprovalSource = "user"
-	ApprovalSourceDefault ApprovalSource = "default"
-	ApprovalSourcePolicy  ApprovalSource = "policy"
-	ApprovalSourceGrant   ApprovalSource = "grant"
+	ApprovalSourceUser   ApprovalSource = "user"
+	ApprovalSourcePolicy ApprovalSource = "policy"
+	ApprovalSourceGrant  ApprovalSource = "grant"
 )
 
 type ApprovalRequest struct {
@@ -102,11 +100,11 @@ func (decision ApprovalDecision) Validate() error {
 	if decision.Outcome != ApprovalAllow && decision.Outcome != ApprovalDeny {
 		return fmt.Errorf("approval outcome %q is invalid", decision.Outcome)
 	}
-	if decision.Scope != ApprovalOnce && decision.Scope != ApprovalSession && decision.Scope != ApprovalAlways {
+	if decision.Scope != ApprovalOnce && decision.Scope != ApprovalSession {
 		return fmt.Errorf("approval scope %q is invalid", decision.Scope)
 	}
 	switch decision.Source {
-	case ApprovalSourceUser, ApprovalSourceDefault, ApprovalSourcePolicy, ApprovalSourceGrant:
+	case ApprovalSourceUser, ApprovalSourcePolicy, ApprovalSourceGrant:
 	default:
 		return fmt.Errorf("approval source %q is invalid", decision.Source)
 	}

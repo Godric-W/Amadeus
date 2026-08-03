@@ -17,6 +17,7 @@ const (
 	maxAgentTokens     = int64(100_000_000)
 	maxAgentDuration   = 24 * time.Hour
 	maxParallelTools   = 64
+	maxLSPTimeout      = 2 * time.Minute
 )
 
 type ValidationIssue struct {
@@ -73,7 +74,7 @@ func Validate(configured Config) error {
 	}
 
 	validateAgent(configured.Agent, addIssue)
-	validateApproval(configured.Approval, addIssue)
+	validateLSP(configured.LSP, addIssue)
 	validateLogging(configured.Logging, addIssue)
 
 	if len(issues) == 0 {
@@ -81,6 +82,28 @@ func Validate(configured Config) error {
 	}
 
 	return &ValidationError{Issues: issues}
+}
+
+func validateLSP(configured LSPConfig, addIssue func(string, string)) {
+	if configured.Timeout <= 0 || configured.Timeout > maxLSPTimeout {
+		addIssue("lsp.timeout", fmt.Sprintf("must be greater than 0 and at most %s", maxLSPTimeout))
+	}
+	if configured.Enabled && strings.TrimSpace(configured.Command) == "" {
+		addIssue("lsp.command", "must not be empty when LSP is enabled")
+	}
+	seen := make(map[string]struct{}, len(configured.Extensions))
+	for index, extension := range configured.Extensions {
+		extension = strings.TrimSpace(extension)
+		path := fmt.Sprintf("lsp.extensions[%d]", index)
+		if len(extension) < 2 || extension[0] != '.' || strings.ContainsAny(extension, `/\\`) {
+			addIssue(path, "must be a file extension such as .go")
+			continue
+		}
+		if _, exists := seen[extension]; exists {
+			addIssue(path, "must not duplicate another extension")
+		}
+		seen[extension] = struct{}{}
+	}
 }
 
 func validateProvider(name string, provider ProviderConfig, addIssue func(string, string)) {
@@ -164,14 +187,6 @@ func validateAgent(agent AgentConfig, addIssue func(string, string)) {
 	}
 	if agent.MaxParallelTools <= 0 || agent.MaxParallelTools > maxParallelTools {
 		addIssue("agent.max_parallel_tools", fmt.Sprintf("must be greater than 0 and at most %d", maxParallelTools))
-	}
-}
-
-func validateApproval(approval ApprovalConfig, addIssue func(string, string)) {
-	switch approval.Default {
-	case ApprovalAsk, ApprovalAllow, ApprovalDeny:
-	default:
-		addIssue("approval.default", fmt.Sprintf("must be %q, %q, or %q", ApprovalAsk, ApprovalAllow, ApprovalDeny))
 	}
 }
 

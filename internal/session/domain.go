@@ -12,7 +12,6 @@ import (
 
 type ProjectID string
 type ConversationSessionID string
-type TurnID string
 type RunID string
 
 type ConversationSessionStatus string
@@ -26,46 +25,28 @@ func (status ConversationSessionStatus) Valid() bool {
 	return status == ConversationSessionActive || status == ConversationSessionArchived
 }
 
-type TurnStatus string
-
-const (
-	TurnRunning      TurnStatus = "running"
-	TurnCompleted    TurnStatus = "completed"
-	TurnCancelled    TurnStatus = "cancelled"
-	TurnFailed       TurnStatus = "failed"
-	TurnPartial      TurnStatus = "partial"
-	TurnNeedsPlan    TurnStatus = "needs_plan"
-	TurnAwaitingUser TurnStatus = "awaiting_user"
-)
-
-func (status TurnStatus) Valid() bool {
-	switch status {
-	case TurnRunning, TurnCompleted, TurnCancelled, TurnFailed, TurnPartial, TurnNeedsPlan, TurnAwaitingUser:
-		return true
-	default:
-		return false
-	}
-}
-
-func (status TurnStatus) Terminal() bool {
-	return status.Valid() && status != TurnRunning
-}
-
 type RunStatus string
+type ExecutionMode string
 
 const (
-	RunRunning      RunStatus = "running"
-	RunCompleted    RunStatus = "completed"
-	RunCancelled    RunStatus = "cancelled"
-	RunFailed       RunStatus = "failed"
-	RunPartial      RunStatus = "partial"
-	RunNeedsPlan    RunStatus = "needs_plan"
-	RunAwaitingUser RunStatus = "awaiting_user"
+	RunRunning     RunStatus = "running"
+	RunCompleted   RunStatus = "completed"
+	RunInterrupted RunStatus = "interrupted"
+	RunFailed      RunStatus = "failed"
 )
+
+const (
+	ExecutionModeReAct   ExecutionMode = "react"
+	ExecutionModePlanned ExecutionMode = "planned"
+)
+
+func (mode ExecutionMode) Valid() bool {
+	return mode == ExecutionModeReAct || mode == ExecutionModePlanned
+}
 
 func (status RunStatus) Valid() bool {
 	switch status {
-	case RunRunning, RunCompleted, RunCancelled, RunFailed, RunPartial, RunNeedsPlan, RunAwaitingUser:
+	case RunRunning, RunCompleted, RunInterrupted, RunFailed:
 		return true
 	default:
 		return false
@@ -111,21 +92,21 @@ func (project Project) Validate() error {
 }
 
 type ConversationSession struct {
-	ID               ConversationSessionID     `json:"id"`
-	ProjectID        ProjectID                 `json:"project_id"`
-	Title            string                    `json:"title"`
-	Status           ConversationSessionStatus `json:"status"`
-	NextTurnSequence int64                     `json:"next_turn_sequence"`
-	CreatedAt        time.Time                 `json:"created_at"`
-	UpdatedAt        time.Time                 `json:"updated_at"`
-	LastActiveAt     time.Time                 `json:"last_active_at"`
+	ID              ConversationSessionID     `json:"id"`
+	ProjectID       ProjectID                 `json:"project_id"`
+	Title           string                    `json:"title"`
+	Status          ConversationSessionStatus `json:"status"`
+	NextRunSequence int64                     `json:"next_run_sequence"`
+	CreatedAt       time.Time                 `json:"created_at"`
+	UpdatedAt       time.Time                 `json:"updated_at"`
+	LastActiveAt    time.Time                 `json:"last_active_at"`
 }
 
 func NewConversationSession(id ConversationSessionID, projectID ProjectID, title string, now time.Time) (ConversationSession, error) {
 	now = now.UTC()
 	session := ConversationSession{
 		ID: id, ProjectID: projectID, Title: strings.TrimSpace(title), Status: ConversationSessionActive,
-		NextTurnSequence: 1, CreatedAt: now, UpdatedAt: now, LastActiveAt: now,
+		NextRunSequence: 1, CreatedAt: now, UpdatedAt: now, LastActiveAt: now,
 	}
 	return session, session.Validate()
 }
@@ -143,8 +124,8 @@ func (session ConversationSession) Validate() error {
 	if !session.Status.Valid() {
 		return fmt.Errorf("conversation session status %q is invalid", session.Status)
 	}
-	if session.NextTurnSequence < 1 {
-		return errors.New("conversation session next turn sequence must be at least one")
+	if session.NextRunSequence < 1 {
+		return errors.New("conversation session next run sequence must be at least one")
 	}
 	if err := validateTimeline(session.CreatedAt, session.UpdatedAt, "conversation session updated_at"); err != nil {
 		return err
@@ -172,105 +153,51 @@ func (session *ConversationSession) Transition(status ConversationSessionStatus,
 	return session.Validate()
 }
 
-func (session *ConversationSession) AllocateTurnSequence(at time.Time) (int64, error) {
+func (session *ConversationSession) AllocateRunSequence(at time.Time) (int64, error) {
 	if session == nil {
 		return 0, errors.New("conversation session is nil")
 	}
-	if session.NextTurnSequence < 1 || session.NextTurnSequence == math.MaxInt64 {
-		return 0, errors.New("conversation session turn sequence is exhausted")
+	if session.NextRunSequence < 1 || session.NextRunSequence == math.MaxInt64 {
+		return 0, errors.New("conversation session run sequence is exhausted")
 	}
 	at = at.UTC()
 	if at.IsZero() || at.Before(session.UpdatedAt) || at.Before(session.LastActiveAt) {
 		return 0, errors.New("conversation session allocation time precedes current timestamps")
 	}
-	sequence := session.NextTurnSequence
-	session.NextTurnSequence++
+	sequence := session.NextRunSequence
+	session.NextRunSequence++
 	session.UpdatedAt = at
 	session.LastActiveAt = at
 	return sequence, session.Validate()
 }
 
-type Turn struct {
-	ID          TurnID                `json:"id"`
-	SessionID   ConversationSessionID `json:"session_id"`
-	Sequence    int64                 `json:"sequence"`
-	Status      TurnStatus            `json:"status"`
-	CreatedAt   time.Time             `json:"created_at"`
-	CompletedAt *time.Time            `json:"completed_at,omitempty"`
-}
-
-func NewTurn(id TurnID, sessionID ConversationSessionID, sequence int64, now time.Time) (Turn, error) {
-	turn := Turn{ID: id, SessionID: sessionID, Sequence: sequence, Status: TurnRunning, CreatedAt: now.UTC()}
-	return turn, turn.Validate()
-}
-
-func (turn Turn) Validate() error {
-	if err := validateID("turn", string(turn.ID)); err != nil {
-		return err
-	}
-	if err := validateID("turn session", string(turn.SessionID)); err != nil {
-		return err
-	}
-	if turn.Sequence < 1 {
-		return errors.New("turn sequence must be at least one")
-	}
-	if !turn.Status.Valid() {
-		return fmt.Errorf("turn status %q is invalid", turn.Status)
-	}
-	if turn.CreatedAt.IsZero() {
-		return errors.New("turn created_at is zero")
-	}
-	if turn.Status == TurnRunning {
-		if turn.CompletedAt != nil {
-			return errors.New("running turn cannot have completed_at")
-		}
-		return nil
-	}
-	if turn.CompletedAt == nil || turn.CompletedAt.IsZero() || turn.CompletedAt.Before(turn.CreatedAt) {
-		return errors.New("terminal turn requires completed_at at or after created_at")
-	}
-	return nil
-}
-
-func (turn *Turn) Complete(status TurnStatus, at time.Time) error {
-	if turn == nil {
-		return errors.New("turn is nil")
-	}
-	if !status.Terminal() || turn.Status != TurnRunning {
-		return &TransitionError{Entity: "turn", ID: string(turn.ID), From: string(turn.Status), To: string(status)}
-	}
-	at = at.UTC()
-	if at.IsZero() || at.Before(turn.CreatedAt) {
-		return errors.New("turn completion time precedes creation")
-	}
-	turn.Status = status
-	turn.CompletedAt = &at
-	return turn.Validate()
-}
-
 type Run struct {
-	ID                       RunID                 `json:"id"`
-	SessionID                ConversationSessionID `json:"session_id"`
-	TurnID                   TurnID                `json:"turn_id"`
-	ContextFromRunID         RunID                 `json:"context_from_run_id,omitempty"`
-	Objective                string                `json:"objective"`
-	Status                   RunStatus             `json:"status"`
-	StopReason               string                `json:"stop_reason,omitempty"`
-	Provider                 string                `json:"provider,omitempty"`
-	Model                    string                `json:"model,omitempty"`
-	APIMode                  string                `json:"api_mode,omitempty"`
-	Dialect                  string                `json:"dialect,omitempty"`
-	BudgetJSON               json.RawMessage       `json:"budget_json,omitempty"`
-	UsageJSON                json.RawMessage       `json:"usage_json,omitempty"`
-	LatestCheckpointSequence int64                 `json:"latest_checkpoint_sequence"`
-	StartedAt                time.Time             `json:"started_at"`
-	FinishedAt               *time.Time            `json:"finished_at,omitempty"`
+	ID                     RunID                 `json:"id"`
+	SessionID              ConversationSessionID `json:"session_id"`
+	Sequence               int64                 `json:"sequence"`
+	ContextFromRunID       RunID                 `json:"context_from_run_id,omitempty"`
+	Objective              string                `json:"objective"`
+	Status                 RunStatus             `json:"status"`
+	StopReason             string                `json:"stop_reason,omitempty"`
+	Provider               string                `json:"provider,omitempty"`
+	Model                  string                `json:"model,omitempty"`
+	APIMode                string                `json:"api_mode,omitempty"`
+	Dialect                string                `json:"dialect,omitempty"`
+	ExecutionMode          ExecutionMode         `json:"execution_mode"`
+	UsageJSON              json.RawMessage       `json:"usage_json,omitempty"`
+	InterruptedContextJSON json.RawMessage       `json:"interrupted_context_json,omitempty"`
+	StartedAt              time.Time             `json:"started_at"`
+	FinishedAt             *time.Time            `json:"finished_at,omitempty"`
 }
 
-func NewRun(id RunID, sessionID ConversationSessionID, turnID TurnID, objective string, now time.Time) (Run, error) {
+func NewRun(id RunID, sessionID ConversationSessionID, objective string, now time.Time) (Run, error) {
+	return NewSequencedRun(id, sessionID, 1, objective, now)
+}
+
+func NewSequencedRun(id RunID, sessionID ConversationSessionID, sequence int64, objective string, now time.Time) (Run, error) {
 	run := Run{
-		ID: id, SessionID: sessionID, TurnID: turnID, Objective: strings.TrimSpace(objective),
-		Status: RunRunning, StartedAt: now.UTC(),
+		ID: id, SessionID: sessionID, Sequence: sequence, Objective: strings.TrimSpace(objective),
+		Status: RunRunning, ExecutionMode: ExecutionModeReAct, StartedAt: now.UTC(),
 	}
 	return run, run.Validate()
 }
@@ -282,8 +209,8 @@ func (run Run) Validate() error {
 	if err := validateID("run session", string(run.SessionID)); err != nil {
 		return err
 	}
-	if err := validateID("run turn", string(run.TurnID)); err != nil {
-		return err
+	if run.Sequence < 1 {
+		return errors.New("run sequence must be at least one")
 	}
 	if run.ContextFromRunID != "" {
 		if err := validateID("run context", string(run.ContextFromRunID)); err != nil {
@@ -299,16 +226,16 @@ func (run Run) Validate() error {
 	if !run.Status.Valid() {
 		return fmt.Errorf("run status %q is invalid", run.Status)
 	}
-	if run.LatestCheckpointSequence < 0 {
-		return errors.New("run latest checkpoint sequence cannot be negative")
+	if !run.ExecutionMode.Valid() {
+		return fmt.Errorf("run execution mode %q is invalid", run.ExecutionMode)
 	}
 	if run.StartedAt.IsZero() {
 		return errors.New("run started_at is zero")
 	}
-	if err := validateOptionalJSON("run budget_json", run.BudgetJSON); err != nil {
+	if err := validateOptionalJSON("run usage_json", run.UsageJSON); err != nil {
 		return err
 	}
-	if err := validateOptionalJSON("run usage_json", run.UsageJSON); err != nil {
+	if err := validateOptionalJSON("run interrupted_context_json", run.InterruptedContextJSON); err != nil {
 		return err
 	}
 	if run.Status == RunRunning {

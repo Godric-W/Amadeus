@@ -1,6 +1,7 @@
 package project
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,7 +38,7 @@ func TestRootRejectsAbsoluteAndLexicalEscape(t *testing.T) {
 		t.Fatalf("create project root: %v", err)
 	}
 	for _, path := range []string{"../outside", filepath.Join("..", "outside", "file"), filepath.Join(string(filepath.Separator), "tmp", "outside")} {
-		if _, err := root.Resolve(path); err == nil {
+		if _, err := root.Resolve(path); err == nil || !errors.Is(err, ErrPathOutsideRoot) {
 			t.Fatalf("expected path rejection for %q", path)
 		}
 	}
@@ -73,7 +74,7 @@ func TestRootRelativeRejectsOutsidePaths(t *testing.T) {
 	if err != nil || relative != "a/b.go" {
 		t.Fatalf("unexpected relative path: %q, %v", relative, err)
 	}
-	if _, err := root.Relative(filepath.Dir(projectDir)); err == nil {
+	if _, err := root.Relative(filepath.Dir(projectDir)); err == nil || !errors.Is(err, ErrPathOutsideRoot) {
 		t.Fatal("expected outside path rejection")
 	}
 }
