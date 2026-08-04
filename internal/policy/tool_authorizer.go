@@ -84,8 +84,12 @@ func (authorizer *ToolAuthorizer) Authorize(ctx context.Context, spec tool.Spec,
 		return err
 	}
 	startedAt := authorizer.now()
+	sessionID := authorizer.sessionID
+	if sessionID == "" {
+		sessionID = event.MetadataFromContext(ctx).SessionID
+	}
 	record := audit.Record{
-		Timestamp: startedAt, SessionID: authorizer.sessionID, RequestID: call.ID, ToolName: call.Name,
+		Timestamp: startedAt, SessionID: sessionID, RequestID: call.ID, ToolName: call.Name,
 		Outcome: audit.OutcomeError, Source: string(ApprovalSourcePolicy), Reason: "tool authorization failed",
 	}
 	if canonical, err := canonicalArguments(call.Arguments); err == nil {

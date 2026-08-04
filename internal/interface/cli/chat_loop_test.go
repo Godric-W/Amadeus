@@ -12,13 +12,13 @@ import (
 	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
-type fakeTurnRunner struct {
+type fakeCallRunner struct {
 	mutex  sync.Mutex
-	inputs []agentruntime.TurnInput
+	inputs []agentruntime.CallInput
 	errors []error
 }
 
-func (runner *fakeTurnRunner) RunTurn(_ context.Context, input agentruntime.TurnInput) (llm.Response, error) {
+func (runner *fakeCallRunner) RunCall(_ context.Context, input agentruntime.CallInput) (llm.Response, error) {
 	runner.mutex.Lock()
 	defer runner.mutex.Unlock()
 	runner.inputs = append(runner.inputs, input)
@@ -29,18 +29,18 @@ func (runner *fakeTurnRunner) RunTurn(_ context.Context, input agentruntime.Turn
 	return llm.Response{Message: llm.AssistantMessage("answer")}, nil
 }
 
-func (runner *fakeTurnRunner) snapshotInputs() []agentruntime.TurnInput {
+func (runner *fakeCallRunner) snapshotInputs() []agentruntime.CallInput {
 	runner.mutex.Lock()
 	defer runner.mutex.Unlock()
-	return append([]agentruntime.TurnInput(nil), runner.inputs...)
+	return append([]agentruntime.CallInput(nil), runner.inputs...)
 }
 
-type cancellableTurnRunner struct {
+type cancellableCallRunner struct {
 	started chan struct{}
-	inputs  []agentruntime.TurnInput
+	inputs  []agentruntime.CallInput
 }
 
-func (runner *cancellableTurnRunner) RunTurn(ctx context.Context, input agentruntime.TurnInput) (llm.Response, error) {
+func (runner *cancellableCallRunner) RunCall(ctx context.Context, input agentruntime.CallInput) (llm.Response, error) {
 	runner.inputs = append(runner.inputs, input)
 	if len(runner.inputs) == 1 {
 		close(runner.started)
@@ -59,7 +59,7 @@ func (reader errorReader) Read([]byte) (int, error) {
 }
 
 func TestChatLoopProcessesInputUntilExit(t *testing.T) {
-	runner := &fakeTurnRunner{}
+	runner := &fakeCallRunner{}
 	loop, err := NewChatLoop(strings.NewReader("first\n\n second \n/exit\nignored\n"), runner)
 	if err != nil {
 		t.Fatalf("create chat loop: %v", err)
@@ -70,16 +70,16 @@ func TestChatLoopProcessesInputUntilExit(t *testing.T) {
 	if len(runner.inputs) != 2 {
 		t.Fatalf("unexpected turn count: %#v", runner.inputs)
 	}
-	if runner.inputs[0] != (agentruntime.TurnInput{ID: "turn-1", Content: "first"}) {
+	if runner.inputs[0] != (agentruntime.CallInput{ID: "turn-1", Content: "first"}) {
 		t.Fatalf("unexpected first turn: %#v", runner.inputs[0])
 	}
-	if runner.inputs[1] != (agentruntime.TurnInput{ID: "turn-2", Content: " second "}) {
+	if runner.inputs[1] != (agentruntime.CallInput{ID: "turn-2", Content: " second "}) {
 		t.Fatalf("unexpected second turn: %#v", runner.inputs[1])
 	}
 }
 
 func TestChatLoopProcessesFinalLineBeforeEOF(t *testing.T) {
-	runner := &fakeTurnRunner{}
+	runner := &fakeCallRunner{}
 	loop, err := NewChatLoop(strings.NewReader("final input"), runner)
 	if err != nil {
 		t.Fatalf("create chat loop: %v", err)
@@ -93,7 +93,7 @@ func TestChatLoopProcessesFinalLineBeforeEOF(t *testing.T) {
 }
 
 func TestChatLoopContinuesAfterProviderError(t *testing.T) {
-	runner := &fakeTurnRunner{errors: []error{
+	runner := &fakeCallRunner{errors: []error{
 		&llm.ProviderError{Kind: llm.ProviderErrorRateLimit, Message: "slow down"},
 		nil,
 	}}
@@ -110,7 +110,7 @@ func TestChatLoopContinuesAfterProviderError(t *testing.T) {
 }
 
 func TestChatLoopContinuesAfterCurrentTurnCancellation(t *testing.T) {
-	runner := &cancellableTurnRunner{started: make(chan struct{})}
+	runner := &cancellableCallRunner{started: make(chan struct{})}
 	var cancelCurrent context.CancelFunc
 	loop, err := NewChatLoop(strings.NewReader("first\nsecond\n/exit\n"), runner)
 	if err != nil {
@@ -136,7 +136,7 @@ func TestChatLoopContinuesAfterCurrentTurnCancellation(t *testing.T) {
 }
 
 func TestChatLoopStopsWhenParentContextIsCancelled(t *testing.T) {
-	runner := &cancellableTurnRunner{started: make(chan struct{})}
+	runner := &cancellableCallRunner{started: make(chan struct{})}
 	loop, err := NewChatLoop(strings.NewReader("first\nsecond\n"), runner)
 	if err != nil {
 		t.Fatalf("create chat loop: %v", err)
@@ -158,7 +158,7 @@ func TestChatLoopStopsWhenParentContextIsCancelled(t *testing.T) {
 
 func TestChatLoopReturnsNonProviderAndReaderErrors(t *testing.T) {
 	runErr := errors.New("runner failed")
-	runner := &fakeTurnRunner{errors: []error{runErr}}
+	runner := &fakeCallRunner{errors: []error{runErr}}
 	loop, err := NewChatLoop(strings.NewReader("input\n"), runner)
 	if err != nil {
 		t.Fatalf("create chat loop: %v", err)
@@ -168,7 +168,7 @@ func TestChatLoopReturnsNonProviderAndReaderErrors(t *testing.T) {
 	}
 
 	readErr := errors.New("read failed")
-	loop, err = NewChatLoop(errorReader{err: readErr}, &fakeTurnRunner{})
+	loop, err = NewChatLoop(errorReader{err: readErr}, &fakeCallRunner{})
 	if err != nil {
 		t.Fatalf("create reader error loop: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestChatLoopReturnsNonProviderAndReaderErrors(t *testing.T) {
 }
 
 func TestChatLoopHandlesImmediateEOFAndInvalidDependencies(t *testing.T) {
-	runner := &fakeTurnRunner{}
+	runner := &fakeCallRunner{}
 	loop, err := NewChatLoop(strings.NewReader(""), runner)
 	if err != nil {
 		t.Fatalf("create chat loop: %v", err)
@@ -197,5 +197,5 @@ func TestChatLoopHandlesImmediateEOFAndInvalidDependencies(t *testing.T) {
 	}
 }
 
-var _ TurnRunner = (*fakeTurnRunner)(nil)
+var _ TurnRunner = (*fakeCallRunner)(nil)
 var _ io.Reader = errorReader{}

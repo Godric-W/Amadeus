@@ -254,24 +254,42 @@ func TestBuilderCompactsHistoryWithinBudgetAndPreservesSummarySource(t *testing.
 	}
 }
 
-func TestBuilderInjectsInterruptedWorkAsBoundedDeveloperEnvelope(t *testing.T) {
+func TestBuilderInjectsPreviousWorkAsBoundedDeveloperEnvelope(t *testing.T) {
 	input := testBuildInput(t)
-	input.InterruptedWork = &InterruptedWork{RunID: "run-cancelled", Objective: "finish the migration", StopReason: "user cancelled", Workspace: WorkspaceRevalidation{TestsRequireRerun: true}}
+	input.Conversation = []llm.Message{llm.UserMessage("completed request"), llm.AssistantMessage("completed response")}
+	input.ConversationSummary = "older completed history"
+	input.PreviousWork = &PreviousWork{RunID: "run-cancelled", Objective: "finish the migration", StopReason: "user cancelled", Workspace: WorkspaceRevalidation{TestsRequireRerun: true}}
 	envelope, err := NewBuilder().Build(context.Background(), input)
 	if err != nil {
 		t.Fatalf("build interrupted context: %v", err)
 	}
 	found := false
 	for _, message := range envelope.Messages {
-		if strings.Contains(message.Content, "amadeus.interrupted_work.v1") && strings.Contains(message.Content, "tests_require_rerun") {
+		if strings.Contains(message.Content, "amadeus.previous_work.v1") && strings.Contains(message.Content, "tests_require_rerun") {
 			found = true
 		}
 	}
 	if !found {
 		t.Fatal("interrupted work envelope missing")
 	}
+	conversationIndex, summaryIndex, previousIndex, currentIndex := -1, -1, -1, -1
+	for index, message := range envelope.Messages {
+		switch {
+		case message.Content == "completed request":
+			conversationIndex = index
+		case strings.Contains(message.Content, "amadeus.conversation_summary.v1"):
+			summaryIndex = index
+		case strings.Contains(message.Content, "amadeus.previous_work.v1"):
+			previousIndex = index
+		case message.Content == strings.TrimSpace(input.Task):
+			currentIndex = index
+		}
+	}
+	if !(conversationIndex >= 0 && conversationIndex < summaryIndex && summaryIndex < previousIndex && previousIndex < currentIndex) {
+		t.Fatalf("unexpected context order: conversation=%d summary=%d previous=%d current=%d", conversationIndex, summaryIndex, previousIndex, currentIndex)
+	}
 	for _, source := range envelope.Sources {
-		if source.Kind == SourceInterrupted && source.ID != "run-cancelled" {
+		if source.Kind == SourcePreviousWork && source.ID != "run-cancelled" {
 			t.Fatalf("unexpected interrupted source: %#v", source)
 		}
 	}

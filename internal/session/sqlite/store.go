@@ -228,11 +228,13 @@ func (store *Store) LatestSession(ctx context.Context, projectID sessiondomain.P
 	return scanSession(store.database.db.QueryRowContext(ctx, sessionSelect+` WHERE project_id = ? AND status = 'active' ORDER BY last_active_at DESC, id LIMIT 1`, projectID))
 }
 
-func (store *Store) ListMessages(ctx context.Context, sessionID sessiondomain.ConversationSessionID) ([]sessiondomain.Message, error) {
+func (store *Store) ListCompletedMessages(ctx context.Context, sessionID sessiondomain.ConversationSessionID) ([]sessiondomain.Message, error) {
 	if err := store.validateContext(ctx); err != nil {
 		return nil, err
 	}
-	rows, err := store.database.db.QueryContext(ctx, `SELECT id, session_id, run_id, sequence, role, content, created_at FROM conversation_messages WHERE session_id = ? ORDER BY sequence`, sessionID)
+	rows, err := store.database.db.QueryContext(ctx, `SELECT m.id, m.session_id, m.run_id, m.sequence, m.role, m.content, m.created_at
+		FROM conversation_messages m JOIN runs r ON r.id = m.run_id
+		WHERE m.session_id = ? AND r.status = 'completed' ORDER BY m.sequence`, sessionID)
 	if err != nil {
 		return nil, sqliteStoreError("list conversation messages", err)
 	}
@@ -309,7 +311,7 @@ func (store *Store) RecoverRunningRuns(ctx context.Context, sessionID sessiondom
 		if finishedAt.Before(run.StartedAt) {
 			finishedAt = run.StartedAt
 		}
-		contextJSON, err := sessiondomain.EncodeInterruptedContext(sessiondomain.InterruptedContextV1{
+		contextJSON, err := sessiondomain.EncodePreviousWork(sessiondomain.PreviousWork{
 			Objective: run.Objective, Status: string(sessiondomain.RunInterrupted), StopReason: "previous process ended before run completion",
 			LastError: "previous process ended before run completion", PendingWork: []string{"Re-plan from the current workspace state."},
 		})

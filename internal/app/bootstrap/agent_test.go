@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/react"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
@@ -58,7 +58,7 @@ func TestNewAgentBuildsDefaultComposition(t *testing.T) {
 	if agent.Project.Path() != root.Path() {
 		t.Fatalf("unexpected project root: got %q, want %q", agent.Project.Path(), root.Path())
 	}
-	if agent.Client == nil || agent.Events != sink || agent.Audit == nil || agent.ContextBuilder == nil || agent.PromptRepository == nil || agent.PromptAssembler == nil || agent.Registry == nil || agent.Validator == nil || agent.Grants == nil || agent.Authorizer == nil || agent.ToolExecutor == nil || agent.Iterator == nil || agent.PlanIterator == nil || agent.Progress == nil || agent.Runner == nil || agent.PlanRunner == nil || agent.Planner == nil || agent.Replanner == nil || agent.Snapshots == nil || agent.Engine == nil || agent.PlanEngine == nil {
+	if agent.Client == nil || agent.Events != sink || agent.Audit == nil || agent.ContextBuilder == nil || agent.PromptRepository == nil || agent.PromptAssembler == nil || agent.Registry == nil || agent.Validator == nil || agent.Grants == nil || agent.Authorizer == nil || agent.ToolExecutor == nil || agent.Iterator == nil || agent.Progress == nil || agent.Runner == nil || agent.Planner == nil || agent.Replanner == nil || agent.Snapshots == nil || agent.PlanController == nil {
 		t.Fatalf("Agent composition is incomplete: %#v", agent)
 	}
 	if agent.AgentPrompt.Content != prompts.AgentSystem() {
@@ -67,11 +67,8 @@ func TestNewAgentBuildsDefaultComposition(t *testing.T) {
 	if len(agent.AgentPrompt.Sources) != len(prompts.AgentLayers()) || len(agent.AgentPrompt.SHA256) != 64 {
 		t.Fatalf("Agent Prompt metadata is incomplete: agent=%#v", agent.AgentPrompt)
 	}
-	if _, ok := agent.Engine.(*engine.ReActEngine); !ok {
-		t.Fatalf("Agent engine type = %T, want *engine.ReActEngine", agent.Engine)
-	}
-	if _, ok := agent.PlanEngine.(*engine.PlanExecuteEngine); !ok {
-		t.Fatalf("Agent plan engine type = %T, want *engine.PlanExecuteEngine", agent.PlanEngine)
+	if _, ok := agent.PlanController.(*plan.Controller); !ok {
+		t.Fatalf("Agent plan engine type = %T, want *plan.Controller", agent.PlanController)
 	}
 	if agent.Client.Model().Provider != configured.DefaultProvider || agent.Client.Model().Name != "test-model" {
 		t.Fatalf("unexpected composed client model: %#v", agent.Client.Model())
@@ -133,7 +130,7 @@ func (*bootstrapSnapshotService) Revert(context.Context, string) (snapshot.Rever
 
 type bootstrapPostWriteHook struct{ calls int }
 
-func (hook *bootstrapPostWriteHook) After(context.Context, tool.Spec, tool.Call, tool.Result) ([]engine.Evidence, error) {
+func (hook *bootstrapPostWriteHook) After(context.Context, tool.Spec, tool.Call, tool.Result) ([]react.Evidence, error) {
 	hook.calls++
 	return nil, nil
 }

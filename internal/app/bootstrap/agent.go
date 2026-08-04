@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/react"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
@@ -58,14 +58,11 @@ type Agent struct {
 	Authorizer       *policy.ToolAuthorizer
 	ToolExecutor     *react.ToolExecutor
 	Iterator         *react.Iterator
-	PlanIterator     *react.Iterator
 	Progress         *react.ProgressMonitor
 	Runner           *react.Runner
-	PlanRunner       *react.Runner
-	Engine           engine.RunEngine
-	PlanEngine       engine.RunEngine
-	Planner          engine.DraftPlanner
-	Replanner        engine.FixedReplanner
+	PlanController   plan.PlanController
+	Planner          plan.DraftPlanner
+	Replanner        plan.FixedReplanner
 	Snapshots        snapshot.Service
 	SnapshotRun      *snapshot.RunTracker
 	Skills           *skill.Catalog
@@ -271,13 +268,9 @@ func newAgentWithSnapshotFactory(configured config.Config, root project.Root, ev
 	if err != nil {
 		return nil, fmt.Errorf("create tool executor: %w", err)
 	}
-	iterator, err := react.NewIteratorWithOptions(client, events, react.IteratorOptions{SystemPrompt: agentPrompt.Content})
+	iterator, err := react.NewIteratorWithOptions(client, newTaskIterationEventSink(events), react.IteratorOptions{SystemPrompt: agentPrompt.Content})
 	if err != nil {
 		return nil, fmt.Errorf("create model iterator: %w", err)
-	}
-	planIterator, err := react.NewIteratorWithOptions(client, newTaskIterationEventSink(events), react.IteratorOptions{SystemPrompt: agentPrompt.Content})
-	if err != nil {
-		return nil, fmt.Errorf("create planned task model iterator: %w", err)
 	}
 	progress := react.DefaultProgressMonitor()
 	runner, err := react.NewRunner(iterator, toolExecutor, progress, react.RunnerOptions{
@@ -285,34 +278,28 @@ func newAgentWithSnapshotFactory(configured config.Config, root project.Root, ev
 		MaxOutputTokens:    provider.MaxOutputTokens,
 		MaxParallelTools:   configured.Agent.MaxParallelTools,
 		AdditionalMessages: skillContextMessages(skillBuffer),
+		ContextWindow:      agentcontext.NewContextWindowManager(nil),
+		ContextProfile:     agentcontext.DefaultContextProfile(provider.ContextWindow, provider.MaxOutputTokens),
+		Events:             events,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create ReAct runner: %w", err)
 	}
-	planRunner, err := react.NewRunner(planIterator, toolExecutor, progress, react.RunnerOptions{
-		Temperature:        provider.Temperature,
-		MaxOutputTokens:    provider.MaxOutputTokens,
-		MaxParallelTools:   configured.Agent.MaxParallelTools,
-		AdditionalMessages: skillContextMessages(skillBuffer),
-	})
+	reactTaskExecutor, err := plan.NewReActTaskExecutor(runner)
 	if err != nil {
-		return nil, fmt.Errorf("create planned task ReAct runner: %w", err)
+		return nil, fmt.Errorf("create default ReAct task executor: %w", err)
 	}
-	reactEngine, err := engine.NewReActEngine(runner, events)
-	if err != nil {
-		return nil, fmt.Errorf("create ReAct engine: %w", err)
-	}
-	planner, err := engine.NewLLMPlanDraftPlanner(client, engine.PlannerOptions{SystemPrompt: plannerPrompt.Content, MaxAttempts: 2, Temperature: 0, MaxOutputTokens: provider.MaxOutputTokens})
+	planner, err := plan.NewLLMPlanDraftPlanner(client, plan.PlannerOptions{SystemPrompt: plannerPrompt.Content, MaxAttempts: 2, Temperature: 0, MaxOutputTokens: provider.MaxOutputTokens, Events: events})
 	if err != nil {
 		return nil, fmt.Errorf("create Planner: %w", err)
 	}
-	replanner, err := engine.NewLLMReplanner(client, engine.PlannerOptions{SystemPrompt: replannerPrompt.Content, MaxAttempts: 2, Temperature: 0, MaxOutputTokens: provider.MaxOutputTokens})
+	replanner, err := plan.NewLLMReplanner(client, plan.PlannerOptions{SystemPrompt: replannerPrompt.Content, MaxAttempts: 2, Temperature: 0, MaxOutputTokens: provider.MaxOutputTokens, Events: events})
 	if err != nil {
 		return nil, fmt.Errorf("create Replanner: %w", err)
 	}
-	planExecuteEngine, err := engine.NewPlanExecuteEngine(planner, planRunner, replanner, engine.PlanExecuteEngineOptions{MaxPlanCycles: 8, Events: events})
+	planController, err := plan.NewController(planner, reactTaskExecutor, replanner, plan.ControllerOptions{MaxPlanCycles: 8, Events: events})
 	if err != nil {
-		return nil, fmt.Errorf("create PlanExecuteEngine: %w", err)
+		return nil, fmt.Errorf("create Controller: %w", err)
 	}
 
 	entries := registry.Snapshot()
@@ -337,12 +324,9 @@ func newAgentWithSnapshotFactory(configured config.Config, root project.Root, ev
 		Authorizer:       authorizer,
 		ToolExecutor:     toolExecutor,
 		Iterator:         iterator,
-		PlanIterator:     planIterator,
 		Progress:         progress,
 		Runner:           runner,
-		PlanRunner:       planRunner,
-		Engine:           reactEngine,
-		PlanEngine:       planExecuteEngine,
+		PlanController:   planController,
 		Planner:          planner,
 		Replanner:        replanner,
 		Snapshots:        snapshots,

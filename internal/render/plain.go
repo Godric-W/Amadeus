@@ -50,19 +50,19 @@ func (renderer *PlainRenderer) Publish(ctx context.Context, runtimeEvent event.E
 		}
 		written, err := io.WriteString(renderer.stdout, typedEvent.Delta)
 		if written > 0 {
-			renderer.openTurns[typedEvent.TurnID] = true
+			renderer.openTurns[typedEvent.LLMCallID] = true
 		}
 		if err != nil {
 			return fmt.Errorf("write plain text delta: %w", err)
 		}
-	case event.TurnCompleted:
-		if !renderer.openTurns[typedEvent.TurnID] {
+	case event.LLMCallCompleted:
+		if !renderer.openTurns[typedEvent.LLMCallID] {
 			return nil
 		}
 		if _, err := io.WriteString(renderer.stdout, "\n"); err != nil {
 			return fmt.Errorf("write plain completion newline: %w", err)
 		}
-		delete(renderer.openTurns, typedEvent.TurnID)
+		delete(renderer.openTurns, typedEvent.LLMCallID)
 	case event.ErrorOccurred:
 		return renderer.writeError(typedEvent)
 	}
@@ -71,11 +71,11 @@ func (renderer *PlainRenderer) Publish(ctx context.Context, runtimeEvent event.E
 
 func (renderer *PlainRenderer) writeError(errorEvent event.ErrorOccurred) error {
 	var outputErr error
-	if renderer.openTurns[errorEvent.TurnID] {
+	if renderer.openTurns[errorEvent.LLMCallID] {
 		if _, err := io.WriteString(renderer.stdout, "\n"); err != nil {
 			outputErr = fmt.Errorf("write plain error newline: %w", err)
 		}
-		delete(renderer.openTurns, errorEvent.TurnID)
+		delete(renderer.openTurns, errorEvent.LLMCallID)
 	}
 	message := strings.Join(strings.Fields(errorEvent.Error.Message), " ")
 	if message == "" {

@@ -76,7 +76,7 @@ func TestIteratorProducesCandidateAndStableEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run iteration: %v", err)
 	}
-	if result.Kind != IterationCandidate || result.Candidate == nil || result.Candidate.Summary != "hello" {
+	if result.Kind != IterationCandidate || result.Candidate == nil || result.Candidate.Content != "hello" {
 		t.Fatalf("unexpected candidate result: %#v", result)
 	}
 	if !stream.closed || client.request.Model != "fake-model" || len(client.request.Tools) != 1 || client.request.Tools[0].Name != "read_file" {
@@ -85,7 +85,7 @@ func TestIteratorProducesCandidateAndStableEvents(t *testing.T) {
 	if len(client.request.Messages) != 2 || !reflect.DeepEqual(client.request.Messages[0], llm.SystemMessage(prompts.AgentSystem())) || client.request.Messages[1].Content != "inspect repository" {
 		t.Fatalf("model request omitted stable Agent protocol: %#v", client.request.Messages)
 	}
-	expectedTypes := []event.Type{event.TypeTurnStarted, event.TypeReasoningDelta, event.TypeTextDelta, event.TypeTextDelta, event.TypeUsageUpdated, event.TypeTurnCompleted}
+	expectedTypes := []event.Type{event.TypeLLMCallStarted, event.TypeReasoningDelta, event.TypeTextDelta, event.TypeTextDelta, event.TypeUsageUpdated, event.TypeLLMCallCompleted}
 	assertEventTypes(t, sink.Snapshot(), expectedTypes)
 }
 
@@ -145,7 +145,7 @@ func TestIteratorProducesNormalizedToolCalls(t *testing.T) {
 	if !reflect.DeepEqual(result.ToolCalls[0], expected) {
 		t.Fatalf("unexpected normalized call: got %#v, want %#v", result.ToolCalls[0], expected)
 	}
-	assertEventTypes(t, sink.Snapshot(), []event.Type{event.TypeTurnStarted, event.TypeTurnCompleted})
+	assertEventTypes(t, sink.Snapshot(), []event.Type{event.TypeLLMCallStarted, event.TypeLLMCallCompleted})
 }
 
 func TestIteratorRejectsEmptyCandidateAndPublishesError(t *testing.T) {
@@ -162,7 +162,7 @@ func TestIteratorRejectsEmptyCandidateAndPublishesError(t *testing.T) {
 	if !errors.As(err, &providerError) || providerError.Kind != llm.ProviderErrorProtocol {
 		t.Fatalf("unexpected empty candidate error: %v", err)
 	}
-	assertEventTypes(t, sink.Snapshot(), []event.Type{event.TypeTurnStarted, event.TypeErrorOccurred})
+	assertEventTypes(t, sink.Snapshot(), []event.Type{event.TypeLLMCallStarted, event.TypeErrorOccurred})
 }
 
 func validIterationInput() IterationInput {

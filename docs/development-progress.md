@@ -3,7 +3,7 @@
 > 创建日期：2026-07-29
 > 对应架构：`docs/design.md`
 > 源项目：`../paicli-main`
-> 总体状态：旧 M5 Adaptive Engine 已被新设计取代，当前进行 M5R 可交付优先 Plan-and-Execute 重构；Session/Run 持久化同步收敛为六表
+> 总体状态：M6R 已完成；当前进入 M8T Rich Inline TUI 产品化，再执行 M8 首个版本发布准备；M7 Multi-Agent、文件树/高级 Diff、Runtime API 与后台任务不阻塞发布
 
 ## 1. 使用规则
 
@@ -41,31 +41,53 @@
 | D0 | 架构与开发计划 | DONE | 100% |
 | M0 | Go 工程与配置骨架 | DONE | 100% |
 | M1 | OpenAI SDK 与纯文本会话 | DONE | 100% |
-| M2 | 统一 Agent Engine、ReAct 与核心工具 | DONE | 100% |
+| M2 | Provider、首版 Agent Engine 与核心工具（历史基线） | DONE | 100% |
 | M3 | 首个可用 Coding Agent CLI | DONE | 100% |
 | M4 | 核心工具增强、长上下文与会话持久化 | DONE | 100% |
 | M5 | Adaptive Planning 与 Replan（旧实现） | SUPERSEDED | 100% |
-| M5R | 可交付优先 Plan-and-Execute 重构 | DOING | 10% |
-| M6 | Coding Workflow 扩展 | TODO | 0% |
-| M7 | Multi-Agent 与高级入口 | TODO | 0% |
+| M5R | 可交付优先 Plan-and-Execute 重构 | DONE | 100% |
+| M6 | Coding Workflow 扩展 | DONE | 100% |
+| M6R | 运行时语义、独立 Reactor 与 Typed EventHub 重构 | DONE | 100% |
+| M8T | Codex 风格 Rich Inline TUI 产品化 | DONE | 100% |
 | M8 | 兼容回归与发布 | TODO | 0% |
+| M7 | 可选 Multi-Agent 与高级入口 | TODO | 0% |
+
+当前首个发布关键路径为：
+
+```text
+M8T Rich Inline TUI 产品化
+  -> M8 兼容回归与首个发布
+```
+
+`M7` 是发布后或并行实验里程碑，不是 `M8` 的前置条件。
 
 ## 3. 当前焦点
 
-- 当前阶段：`M5R`，可交付优先 Plan-and-Execute 重构。
-- 下一任务：`M5R-01`，定义最小 PlanDraft 与宽容行协议解析器。
+- 当前阶段：`M8`，兼容回归与首个发布。
+- 下一任务：`M8-01`，建立发布行为基线 fixture。
 - 当前阻塞：无。
-- 最近完成：`M5R-00`，固定 `ContextBuilder → Plan → DAG → ReAct Execute → Replan` 主链并由 ADR-014 取代旧 Adaptive 设计。
-- 数据库决策：M5R 最终只保留 `schema_migrations`、`projects`、`conversation_sessions`、`runs`、`conversation_messages`、`conversation_summaries` 六表；Plan/Task/Tool/Evidence 等运行态留在内存，中断只保存有界摘要。
+- 最近完成：`M8T-00～15`；Rich Inline 已完成响应式 Logo、Codex 风格 Transcript/Tool Activity、Working、Context 状态、bounded Ctrl+T Viewer、Plain/TTY 降级和全仓 race 验收。
+- 数据库决策：只保留 `schema_migrations`、`projects`、`conversation_sessions`、`runs`、`conversation_messages`、`conversation_summaries` 六表；Conversation 只重建 completed Run 的完整 Message Pairs，interrupted/failed Run 只提供有界 Previous Work。
 
 ### 3.1 交付优先级
 
 1. **M3 可用基线**：真实 Provider + 根命令 `amadeus`/`amadeus "<task>"` + 项目工具 + 分层 `AGENTS.md` + 安全审批，可以在用户项目中完成读、改、测。
-2. **M4 单 Agent 可靠性**：补齐 `apply_patch` 并固定“结构化读搜 + Patch 修改 + Shell 执行”；随后持久化 Conversation Session、Turn/Run、长上下文和简化 Checkpoint，中断任务通过新 Run 重新规划。
-3. **当前可交付 Agent 主链**：普通输入默认 ReAct；`/plan <task>` 显式选择 Plan→串行 ReAct Execute→Replan；不使用自动 Router。
-4. **M6 Coding Workflow 扩展**：Snapshot、LSP、Skill、MCP 与 Web，必须等待 M5R 主链稳定。
-5. **M7 可选高级能力**：Multi-Agent、图片、Browser、TUI 多 Pane/高级 Diff、Runtime API 和后台任务，不阻塞单 Agent 发布；默认 Bubble Tea Rich Inline TUI 已提前交付。
-6. **M8 发布**：以稳定的固定 Plan-and-Execute 单 Agent 和 PaiCLI 风格最小 Approval 主链为发布基线；M6/M7 能力按成熟度选择性纳入。
+2. **M4 单 Agent 可靠性历史基线**：结构化读搜、Patch 修改、Shell 执行、Conversation Session、Run、长上下文和中断摘要已经交付；旧 Turn/Checkpoint 实现只保留在历史记录中。
+3. **已完成 M6R 核心重构**：Session/Run 语义、独立 Reactor、Plan Controller、Per-Think Context、Typed EventHub 与旧链删除已经完成并通过最终验收。
+4. **已完成 Coding Workflow**：Snapshot、LSP、Skill、MCP、Web、Session、Approval 和 Rich Inline TUI 继续复用，不因 Reactor 重构改变产品语义。
+5. **已完成 M8T TUI 产品化**：在不破坏 main-screen、原生 scrollback、中文输入和运行中排队的前提下，已交付品牌 Logo、Codex 风格 Tool Activity、Working 动画、Context 状态与临时详情查看器。
+6. **当前 M8 首个发布**：以稳定的默认 ReAct、显式 Plan-and-Execute、最小 Approval、Session 和完成产品化的 Rich Inline TUI 为发布基线，不等待 Multi-Agent。
+7. **M7 可选高级能力**：首个发布路径稳定后，再验证最多两个只读 SubAgent 的最小收益；图片、Browser、TUI 多 Pane、Runtime API 和后台任务分别立项。
+
+### 3.2 当前执行队列
+
+| 顺序 | 范围 | 目的 | 开始条件 |
+|---:|---|---|---|
+| 1 | M8-01～05 | 固化行为、迁移、安全与性能基线 | M8T-15 DONE；当前可开始 |
+| 2 | M8-06～11 | 构建发布产物、文档和版本候选 | M8-01～05 DONE |
+| 3 | M7-01～08 | 验证只读 Multi-Agent 的实际收益 | 不阻塞 M8；默认在首个发布后开始 |
+
+除非 M8T 或 M8 暴露阻断发布的问题，否则不在当前队列中插入新的 Agent 模式、长期记忆、RAG、Browser、图片、多 Pane TUI、Runtime API 或后台 Job。
 
 ## 4. D0：架构与计划
 
@@ -74,6 +96,9 @@
 | D0-01 | DONE | 阅读 `docs/thought.md` | 目标、约束和交付物已提炼 |
 | D0-02 | DONE | 梳理 `paicli-main` 架构 | 已识别入口、三条 Agent 路径、主要模块和风险 |
 | D0-03 | DONE | 编写架构与进度文档 | `docs/design.md` 与本文档存在且互相引用 |
+| D0-04 | DONE | 统一运行时核心语义与重构主线 | `docs/design.md` 已统一 Session/Message/Run、Reactor Iteration、Plan Task、LLM Call 与 Previous Work；M6R 给出对应代码迁移顺序 |
+
+> **历史台账说明**：M0～M6 记录各阶段当时实际交付的实现，因此可能出现 Turn、Step、Checkpoint、DirectEngine、root Task、Verifier/Reflector 等旧术语。这些记录不代表当前目标架构；自 M6R 起的任务、验收标准与 `docs/design.md` 才是后续实现依据。
 
 ## 5. M0：Go 工程与配置骨架
 
@@ -290,9 +315,9 @@ M5 曾实现 Plan-on-Demand、StrategySelector、严格 JSON Planner、Direct→
 
 旧实现曾通过引擎/CLI E2E 和全量检查，但不再作为产品验收基线。现有代码将在 M5R 中逐步替换，替换期间不得把旧 M5 的 DONE 状态理解为当前 Agent Engine 已可交付。
 
-## 10A. M5R：可交付优先 Plan-and-Execute 重构
+## 10A. M5R：可交付优先 Plan-and-Execute 重构（历史中间态）
 
-M5R 只实现一条固定主链：用户输入经过 ContextBuilder 后调用 Planner；Planner 输出最小任务列表，程序生成串行 DAG；每个 Task 使用 ReActRunner 执行；整张图结束或遇到失败/阻塞后调用 Replanner；Replanner 返回 COMPLETE 时直接回复，否则生成下一张 DAG 继续执行。模型不再负责输出 acceptance criteria、budget、side effect、resources、status 或完整 Domain JSON。
+M5R 曾把所有输入统一为固定 Plan→DAG→ReAct→Replan 主链，并完成宽容 Planning 协议、程序生成 DAG、最小 Approval、Session 六表收敛和首版 TUI。真实交互随后证明简单任务不应被强制规划，因此最终产品语义已由 M6R 调整为：普通输入直接执行独立 Reactor，只有显式 `/plan <task>` 才进入外层 Plan Controller。下表记录已交付基础能力，不再代表当前默认执行路径。
 
 | ID | 状态 | 依赖 | 最小任务 | 验收标准 |
 |---|---|---|---|---|
@@ -316,7 +341,7 @@ M5R 只实现一条固定主链：用户输入经过 ContextBuilder 后调用 Pl
 | M5R-17 | SUPERSEDED | M5R-16 | 实现 slash palette、输入历史和基础快捷键 | 旧 Linux 单字节 raw-mode Controller 保留给逐行 fallback；中文输入问题由 M6-24 的 Bubbles textarea 解决 |
 | M5R-18 | SUPERSEDED | M5R-16,M5R-12 | 将 Inline Approval 接入交互控制器 | 逐行 Approval 仍供 `--plain` 使用；默认交互审批由 FullscreenApplication response channel 接管 |
 | M5R-19 | SUPERSEDED | M5R-17,M5R-18,M4-25 | 增加 Inline TUI E2E 与终端降级测试 | 旧 Inline/Plain 回归继续保留；默认 TTY 验收迁移至 M6-24 |
-| M5R-20 | DONE | M5R-10,M4-25 | 收敛 Session/Run 持久化 Domain | 删除独立 Turn/Checkpoint/Instruction Snapshot 语义；Turn 保留为 Run + Message 的领域概念；Run 状态收敛为 `running/completed/interrupted/failed` |
+| M5R-20 | DONE | M5R-10,M4-25 | 收敛 Session/Run 持久化 Domain（历史版本） | 删除独立 Turn/Checkpoint/Instruction Snapshot 表；当时仍用 Turn 指代 Run + Message，最终术语已由 M6R-00～05 收敛为 Session/Message/Run |
 | M5R-21 | DONE | M5R-20 | 实现 SQLite v2/v3 六表迁移 | 保留可映射的 Project/Session/Message/Run/Summary 数据；事务删除 `session_turns`、`run_checkpoints`、`checkpoint_instructions`；无法恢复的旧 checkpoint 转为有界摘要，不能静默丢失正式消息 |
 | M5R-22 | DONE | M5R-21 | 重构 Session Store 与 Run Store | Run 使用 session sequence；Message 关联 `run_id`；删除 checkpoint store、turn store、`latest_checkpoint_seq`、`budget_json` 等旧字段 |
 | M5R-23 | DONE | M5R-22,M4-21 | 实现有界 `interrupted_context_json` | 中断/失败一次写入 objective、completed task、Evidence 摘要、paths、pending work、usage、last error；新 Run 重新发现工作区和 `AGENTS.md`，不恢复旧调用栈 |
@@ -360,60 +385,209 @@ M6 增加高价值编码辅助与外部扩展能力，但必须在 M5R 固定主
 | M6-26 | DONE | M6-25,M5R-10,M5R-24 | 收敛默认 ReAct、显式 `/plan` 与全链路契合 | bootstrap 默认装配 ReActEngine 并保留独立 PlanEngine；两条 Runner 分离正文事件；Plan final 统一走 TextDelta；运行中输入可排队；关闭鼠标捕获恢复文本选择；SQLite v4 持久化 execution_mode；Engine/Context/Session/SQLite/TUI/Policy/Tool 集成测试通过 |
 | M6-27 | DONE | M6-24,M6-26 | 将默认 TUI 收敛为 Codex 风格 Rich Inline 主屏交互 | 删除 alternate-screen 与 transcript viewport；完成 entry 通过 `tea.Println` 提交终端 scrollback；底部仅重绘流式草稿、审批、选择器、输入框和状态；终端原生滚轮与拖拽选择恢复；程序级测试禁止 alternate-screen 控制序列 |
 
-## 12. M7：Multi-Agent 与高级入口
+## 11A. M6R：运行时语义、独立 Reactor 与 Typed EventHub 重构
 
-M7 全部属于可选增强，不阻塞单 Agent 可用版本或首个发布候选。第一版 Multi-Agent 只允许显式规划路径中的主 Agent 将最多两个独立只读调查 Task 委派给临时 SubAgent；SubAgent 复用 ReActRunner 和同一模型，只持有独立 ContextView、子预算及 read/list/glob/grep 工具，返回 Summary/Evidence 后由主 Agent继续当前 Plan→Execute→Replan 循环。默认 ReAct 不自动创建 SubAgent。
+M6R 是首个发布前的最后一轮核心架构收敛，不增加新 Agent 模式。任务顺序固定为：**统一语义与持久化读取 → 独立 Reactor → Per-Think Context → 默认 CLI 切换 → `/plan` 复用 Reactor → Typed EventHub → 删除旧主链 → 全链路验收**。
 
-| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
-|---|---|---|---|---|
-| M7-01 | TODO | M5R-10 | 定义 `ExecutionKind`、`SubAgentTask/Result` 与 Runner Port | `read_only/mutable`、目标、最小上下文、子预算、Summary/Evidence/Usage 和错误状态可表达 |
-| M7-02 | TODO | M7-01,M3-18,M4-06 | 实现单只读 SubAgentRunner | 复用现有 ReActRunner/同一模型/独立 ContextView，仅暴露 read/list/glob/grep，禁止写入、命令和递归委派 |
-| M7-03 | TODO | M7-02,M5R-10 | 实现确定性 SubAgent PlacementPolicy | 只委派至少两个互不依赖的 ready read-only Task；不调用 Router，不满足条件时主 Agent执行 |
-| M7-04 | TODO | M7-03 | 实现最多两个 SubAgent 的 bounded executor | 固定并发上限、独立子预算、父取消传播、有界等待和无 goroutine 泄漏测试通过 |
-| M7-05 | TODO | M7-04 | 将 SubAgent Result 写回 Graph/RunState | 按 Task ID 稳定合并 Summary/Evidence/Usage；失败不自动生成替代 Agent，主 Agent可执行/replan/ask_user |
-| M7-06 | TODO | M7-05 | 实现 `/team` 的 `prefer_subagents` PlacementPolicy | 只影响本次 Run；没有合适只读并行 Task 时安全退化为单 Agent，不创建另一套 Engine |
-| M7-07 | TODO | M7-06,M4-19 | 增加只读 Multi-Agent E2E | 两个独立分析 Task 并行、主 Agent汇总后修改/测试、单子失败、取消、Evidence 和预算均通过 |
-| M7-08 | TODO | M1-01 | 实现 `@image:` 解析 | file URL、绝对、相对路径测试通过 |
-| M7-09 | TODO | M7-08 | 实现图片校验和处理 | 类型、大小、alpha 和缩放 fixture 通过 |
-| M7-10 | TODO | M7-09 | 实现 SDK 图片请求转换 | Responses/兼容格式 fixture 通过 |
-| M7-11 | TODO | M7-10 | 接入剪贴板图片输入 | 支持平台有明确范围，不支持时友好降级 |
-| M7-12 | TODO | M3-13 | 定义 Browser Connector/Session | fake session 可测试工具行为 |
-| M7-13 | TODO | M7-12 | 实现敏感页面策略 | 配置样例和拒绝规则测试通过 |
-| M7-14 | TODO | M7-13 | 实现 Browser 工具最小集 | 连接、页面信息和截图结果可回灌 |
-| M7-15 | TODO | M7-14 | 实现 Browser 会话复用 | 多次调用复用连接并正确关闭 |
-| M7-16 | DONE | M6-27 | 实现 Rich Inline 交互 TUI | 已由 M6-27 提前交付；默认保留终端 scrollback 和原生文本选择，`--plain` 继续作为逐行降级，核心 Agent 行为复用统一事件链 |
-| M7-17 | TODO | M7-16 | 增加文件树、上下文和详情 Pane | Pane 只读展示当前 project/session/run，不建立 TUI 专属状态源 |
-| M7-18 | TODO | M7-17 | 增加富 Markdown、代码高亮和 Diff 展示 | 长文本、代码块、Patch 和 Tool Result 可折叠/展开，Plain/Inline 不受影响 |
-| M7-19 | TODO | M7-16 | 增加终端 resize、鼠标和无障碍降级 | 窄终端、无色、键盘-only 和 resize 测试通过 |
-| M7-20 | TODO | M7-19 | 继续收敛 Terminal Interaction Controller | Fullscreen 已共享 Agent 事件与 Run 生命周期；后续统一 plain/one-shot/API 的交互抽象，不与 Conversation Session 混名 |
-| M7-21 | DONE | M6-24 | 完善交互 TUI Approval Handler | once/session/deny、Ctrl+C cancel、Esc deny、阻塞 Tool response channel 和恢复输入测试/真实 PTY 通过 |
-| M7-22 | TODO | M4-08,M3-16 | 定义 Runtime Session/Event Store | 复用 Conversation Session ID，内存事件实现通过并发测试 |
-| M7-23 | TODO | M7-22 | 实现 `POST /v1/sessions` | 鉴权、创建和错误响应测试通过 |
-| M7-24 | TODO | M7-23 | 实现 turns endpoint | 可启动回合并绑定取消 context |
-| M7-25 | TODO | M7-24 | 实现 events stream | 断线、重连和游标语义明确 |
-| M7-26 | TODO | M7-25 | 强制 Runtime API key | 未配置拒绝启动，错误不泄露密钥 |
-| M7-27 | TODO | M4-08,M4-18 | 定义 Durable Task/Store | 与 ConversationStore/CheckpointStore 边界明确，非法状态跳转被拒绝 |
-| M7-28 | TODO | M7-27 | 实现 SQLite Task Store | enqueue/claim/complete/fail/cancel 测试通过 |
-| M7-29 | TODO | M7-28 | 实现 worker pool | 并发数、关闭和崩溃恢复测试通过 |
-| M7-30 | TODO | M7-29 | 实现 `/task` CLI 闭环 | add/list/cancel/log 可用 |
+目标语义：
 
-## 13. M8：兼容回归与发布
+- Session：可恢复的长期项目对话；
+- Message：正式 user/assistant 对话记录；
+- Run：一条真实用户输入触发的一次 Agent 执行；
+- Iteration：Reactor 内部一次 Think→Analyze→Act→Observe；
+- Task：只属于显式 `/plan` DAG；
+- LLM Call：一次 Provider 请求；
+- Previous Work：interrupted/failed Run 留给新 Run 重新规划的有界摘要。
 
-M8 以 M5R 的稳定单 Agent + 固定 Plan-and-Execute + PaiCLI 风格最小 Approval 主链为发布基线，不要求 M6/M7 的可选增强全部完成。
+M6R 按以下五个批次执行。A～D 已完成，E 只剩最终验收：
+
+| 批次 | 范围 | 状态 | 目标 | 出口 |
+|---|---|---:|---|---|
+| M6R-A | M6R-00～07 | DONE | 统一领域语义、Conversation 读取与 Reactor Domain | Session/Run/Message/Previous Work 清晰；Reactor 不依赖 Engine；预算只使用 Iteration |
+| M6R-B | M6R-08～14 | DONE | 建立纯 ReAct 四阶段循环与每轮 Context 投影 | Think→Analyze→Act→Observe 可独立测试；每次 Think 使用唯一 RequestView |
+| M6R-C | M6R-15～17 | DONE | 切换默认 Reactor 与显式 Plan Controller | 默认路径无 root Task；`/plan` 通过适配器复用同一个 Reactor |
+| M6R-D | M6R-18～20 | DONE | 统一 Typed EventHub、Renderer 与 Audit | 所有消费者共享 Run/Task/Iteration/LLMCall 事件流，关键事件不丢失 |
+| M6R-E | M6R-21～22 | DONE | 删除旧主链并完成发布前全链路审计 | 无第二套生产 Agent 循环；全量 E2E、`make check` 与 race 通过 |
+
+### M6R-A：语义与持久化基线
 
 | ID | 状态 | 依赖 | 最小任务 | 验收标准 |
 |---|---|---|---|---|
-| M8-01 | TODO | M5R-10 | 建立 Java 行为基线 fixture | 覆盖配置、Prompt、工具顺序和策略 |
-| M8-02 | TODO | M8-01 | 建立 Go golden compatibility tests | 稳定行为差异均被解释或修复 |
-| M8-03 | TODO | M8-02 | 实现 PaiCLI 配置导入器 | dry-run、脱敏预览和备份可用 |
-| M8-04 | TODO | M8-02 | 完成 Linux amd64/arm64 构建 | 二进制可启动并通过 Coding Agent smoke test |
-| M8-05 | TODO | M8-04 | 完成 macOS amd64/arm64 构建 | 二进制可启动并通过 Coding Agent smoke test |
-| M8-06 | TODO | M8-05 | 评估 Windows 支持范围 | 支持则构建；不支持则记录命令/TTY 边界 |
-| M8-07 | TODO | M8-04 | 增加安装与升级文档 | 新用户可从零配置并完成首个编码任务 |
-| M8-08 | TODO | M8-07 | 增加迁移与差异文档 | PaiCLI 用户可理解配置和行为变化 |
-| M8-09 | TODO | M8-08,M3-14 | 执行安全回归 | 路径、命令、审批、审计和凭证脱敏用例全部通过 |
-| M8-10 | TODO | M8-09 | 执行性能基线 | 启动、长会话、工具并发、规划和恢复有记录 |
-| M8-11 | TODO | M8-10 | 生成首个版本候选 | 版本、校验和、变更日志和已知问题齐全 |
+| M6R-00 | DONE | M6-27,ADR-011,ADR-014,ADR-017,ADR-018,ADR-019 | 统一设计文档与开发主线 | `design.md` 不再混用 Turn/Run/Task/Step；明确 Iteration、Previous Work、完整 Message Pairs 和 LLMCallID |
+| M6R-01 | DONE | M6R-00 | 审计并统一运行时类型与命名 | `docs/architecture-audit.md` 已列出 Session/Run、Reactor、Plan、Event 和旧 Engine 的迁移目标、删除顺序与出口守卫 |
+| M6R-02 | DONE | M6R-01,M4-11 | 收敛 Session Coordinator 与 Store API | 对外使用 `StartedRun/BeginRun/FinishRun`；一个真实 user Message 原子创建一个 Run；生产代码不存在旧 Coordinator API |
+| M6R-03 | DONE | M6R-02 | 只重建 completed Run 的完整 Message Pairs | Memory/SQLite 只查询 completed Run 消息；interrupted/failed 孤立 user Message 排除，completed pair 与 continuation 测试通过 |
+| M6R-04 | DONE | M6R-03,M4-21 | 收敛 Previous Work Domain 与 Pending 生命周期 | `PreviousWork` 使用 `CompletedWork/Evidence/RelevantPaths/PendingWork/LastError/Usage`；兼容 v1 `CompletedSteps`，Pending 覆盖规则保持 |
+| M6R-05 | DONE | M6R-04 | 固定中断后新 Run Context 顺序 | completed history → Summary → Previous Work → current user Message 已测试；路径、Git status/diff 和测试重跑状态重新读取，不恢复执行位置 |
+| M6R-06 | DONE | M6R-01 | 定义独立 `react.Request/Result/Iteration/StopReason` | `internal/agent/react` 不再 import Engine；Result 表达 FinalMessage、Iterations、Evidence、Usage 和 `completed/stalled/blocked/failed/interrupted/budget_exhausted`，Engine 仅通过 `ReActTaskExecutor` 适配 |
+| M6R-07 | DONE | M6R-06 | 将 Run Budget 从 Step 收敛为 Iteration | 配置、Domain、统计和展示使用 `max_iterations/iterations_used`；旧 `max_steps` 作为未知 YAML 字段明确失败，不存在双字段 |
+
+### M6R-B：独立 Reactor 与 Per-Think Context
+
+这一批次只建设纯 ReAct 内核，不引入 Task、ExecutionGraph、Planner 或模式选择。ContextWindowManager 属于每次 Think 的请求投影，不承担 Run 持久化。
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M6R-08 | DONE | M6R-06 | 定义 Think/Analyze/Act/Observe Port 与 LoopState | 四阶段依赖单向、可独立 fake；Analyze 无副作用，Act 只接收 normalized Tool Calls，Observe 负责消息回灌和 Evidence |
+| M6R-09 | DONE | M6R-08,M1-09 | 提取 Think 阶段 | 复用 Provider stream；text/reasoning/usage/tool fragments 聚合、空响应有限重试、瞬时错误退避、LLMCallID 和取消测试通过 |
+| M6R-10 | DONE | M6R-09,M2-12 | 提取 Analyze 与 Tool Argument Normalizer | final/act/retry/fail 分类稳定；strict parse→保守 repair→strict parse→Schema；失败只生成 Tool Error Observation，不执行工具 |
+| M6R-11 | DONE | M6R-08,M6-23 | 提取 Act 阶段 | 保留 PathGuard、CommandGuard、Approval、Audit、Snapshot、timeout、MCP/Web/LSP 和资源感知有界并行；normalized arguments 全链一致 |
+| M6R-12 | DONE | M6R-10,M6R-11 | 提取 Observe 阶段 | Tool Result 转 Observation/Evidence 与标准 assistant/tool replay；partial/error/exit code/truncated metadata 不丢失，结果按原 Tool Call 顺序回灌 |
+| M6R-13 | DONE | M6R-09..M6R-12 | 实现独立 Reactor 主循环 | Think→Analyze→Act→Observe 控制流清晰；重复动作/错误、no progress、stalled、禁用工具最终总结、预算和取消闭环通过 |
+| M6R-14 | DONE | M6R-13,M4-23,ADR-019 | 接入 Per-Think ContextWindowManager | 每次 Think 前生成唯一 RequestView；完整 Message Pair 与 Tool Call/Result 原子压缩；Tool Result token-aware projection；Run Budget 不充当模型窗口 |
+
+### M6R-C：产品执行路径收敛
+
+默认路径和 `/plan` 只共享 Reactor、ToolExecutor、安全策略与事件协议，不共享 Plan Task 状态。`ReActTaskExecutor` 是 Plan Domain 调用 Reactor 的唯一边界。
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M6R-15 | DONE | M6R-05,M6R-14 | 默认 CLI/Session 直接接入 Reactor | 普通输入不创建 Graph/root Task；Session/Message/Run、Previous Work、execution_mode=react、TUI/Plain 和最终 assistant Message 行为保持一致 |
+| M6R-16 | DONE | M6R-13,M5R-03 | 实现 `ReActTaskExecutor` | Planned Task→react.Request、react.Result→TaskResult 映射稳定；TaskID 只作为 Plan execution metadata，Reactor 不 import Plan Domain |
+| M6R-17 | DONE | M6R-16,M5R-06 | Plan Controller 切换到单 Reactor | Planner→GraphBuilder→串行 Scheduler→ReActTaskExecutor→review E2E 通过；用户取消不 Replan；默认 Reactor 与 `/plan` 不存在双 Runner |
+
+### M6R-D：Typed EventHub 与交互消费者
+
+事件层只表达已发生的运行事实，不承担 Agent 决策。TUI、Plain、Audit 与未来 API 通过同一 EventHub 观察执行过程。
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M6R-18 | DONE | M6R-01,M6R-09 | 收敛 Typed Event Metadata 与事件名称 | 使用 SessionID/RunID/可选 TaskID/Iteration/LLMCallID；新增 Run、Iteration、LLM Call 生命周期事件；新代码不发布 Turn 事件 |
+| M6R-19 | DONE | M6R-18 | 实现 Fanout 与 Subscription Adapter | 多订阅者、filter、有界 buffer、关闭和慢消费者测试通过；Approval/Tool/Error/Run terminal 不丢失，关键 Sink 错误继续传播 |
+| M6R-20 | DONE | M6R-15,M6R-17,M6R-19 | TUI、Plain、Audit 接入统一事件流 | 默认/Plan 正文、工具块、Approval、Session selector、iteration/tool 计数和审计关联不回归；Plan Task 候选正文不泄露为最终回答 |
+
+### M6R-E：旧链删除与发布前验收
+
+这一批次不再增加新能力，只删除与最终设计冲突的生产路径、Prompt 和兼容类型，并证明所有已交付 Coding Workflow 仍可通过统一主链工作。
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M6R-21 | DONE | M6R-20 | 删除旧生产主链与兼容类型 | bootstrap 不再装配 synthetic root Task、旧 Direct/Adaptive/ReAct Engine、TaskOutcomeNeedsPlan、双 Runner、TurnID 事件；无生产引用和死 Prompt Bundle |
+| M6R-22 | DONE | M6R-21 | 完成架构审计、迁移 E2E 与 race | 问候、读改测、工具失败恢复、blocked/stalled、取消后“请继续”、新任务覆盖旧 Pending、`/plan` 多 cycle、resume、TUI/Plain、Responses/Chat mock、`make check` 与全仓 race 通过 |
+
+### M6R 出口
+
+- 默认 `amadeus` 是不依赖 Task/Graph 的独立 Reactor。
+- `/plan` 是唯一创建 ExecutionGraph/Task 的入口，并通过 `ReActTaskExecutor` 复用同一个 Reactor。
+- Conversation 只向模型提供 completed Run 的完整 Message Pairs；Previous Work 单独表达未完成历史。
+- 用户取消后旧 Run 永久结束；下一输入创建新 Run，从当前工作区重新规划，不精确恢复。
+- 事件、TUI、Audit 和未来 API 使用 Run/Task/Iteration/LLMCall 关联语义，不再使用 TurnID。
+- 全仓不存在第二套生产 Agent 循环。
+
+## 11B. M8T：Codex 风格 Rich Inline TUI 产品化
+
+M8T 是首个发布前的产品交互收敛，不改变 M6R 已稳定的 Agent 主链。目标参考 `docs/tui.md`，继续使用 Bubble Tea main-screen Rich Inline、`tea.Println` 和终端原生 scrollback；禁止为了视觉效果重新启用 alternate screen、mouse tracking 或永久 transcript viewport。
+
+目标语义：
+
+- 品牌：从 `docs/Amadeus_logo.webp` 生成静态宽版/紧凑字符 Logo；
+- Transcript：用户、assistant、Plan、Explored、Ran/Called、Error 使用稳定层级；
+- Tool Activity：只读操作按 Iteration 聚合为 `Explored`，写入/命令/网络使用 `Ran/Called`；
+- Working：底部动态显示 elapsed、phase 和 Esc/Ctrl+C 取消提示；
+- Context：展示最近 RequestView 百分比和 Provider context window，不混用 Run Budget；
+- Detail：默认输出有界摘要，`Ctrl+T` 打开临时 bounded Transcript Viewer；
+- 兼容：中文、运行中输入、Approval、`/resume`、原生滚轮/文本选择和 `--plain` 不回归。
+
+M8T 分四个批次执行：
+
+| 批次 | 范围 | 状态 | 目标 | 出口 |
+|---|---|---:|---|---|
+| M8T-A | M8T-00～04 | DONE | 完成视觉外壳、响应式 Banner 和 Working 动画 | 宽/窄终端、初始宽度、assistant Markdown、运行中输入与 Esc/Ctrl+C 验收通过 |
+| M8T-B | M8T-05～09 | DONE | 建立安全 Tool Activity Presenter 与 Iteration 聚合 | Explored/Ran/Called、并行顺序、脱敏、未知 Tool 和 terminal commit 验收通过 |
+| M8T-C | M8T-10～13 | DONE | 接入 Context 状态和 bounded Transcript Viewer | RequestView 百分比/window、双重内存预算、Ctrl+T/PgUp/PgDn/Esc 验收通过 |
+| M8T-D | M8T-14～15 | DONE | 完成响应式、兼容性和发布前验收 | Rich Inline/Plain、TTY/dumb、中文、Approval、Session、PTY、`make check` 和全仓 race 通过 |
+
+### M8T-A：视觉外壳与动态状态
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M8T-00 | DONE | M6R-22,ADR-020 | 固定目标 TUI 架构与实现计划 | `docs/design.md` 19.2 和 ADR-020 明确 main-screen、Logo、Activity、Context、Viewer、安全与降级边界；本文档给出完整依赖顺序 |
+| M8T-01 | DONE | M8T-00 | 生成并嵌入终端 Logo | 已提交静态 `wideLogo/compactLogo` 与响应式选择测试；无运行时图片协议依赖 |
+| M8T-02 | DONE | M8T-01 | 重做启动面板与 workspace metadata | 已接入 version/provider/model/project/session/context window 与有界 Git branch resolver；覆盖 branch、detached HEAD 和非仓库降级 |
+| M8T-03 | DONE | M8T-02 | 收敛 Transcript、输入框与状态栏视觉 | 用户 `›`、输入 `>`、assistant `•`、Plan 树与 40/60/100/160 列 Unicode/emoji 显示宽度测试通过 |
+| M8T-04 | DONE | M8T-02 | 实现 Working 动画与 Esc 取消 | `tea.Tick` 只重绘底部活动区；显示 elapsed；空输入 Run 中 Esc 与 Ctrl+C 均可取消，运行中 textarea 继续可编辑和排队 |
+
+### M8T-B：安全 Tool Activity Presenter
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M8T-05 | DONE | M8T-00,M6R-18 | 定义 TUI Activity Domain 与 Presenter | 已实现 `ActivityKind/ToolActivity/IterationActivity` 纯 UI 投影与专项测试；不依赖 Registry、文件、Provider reasoning 或 Conversation Store |
+| M8T-06 | DONE | M8T-05,M6R-10,M6R-11 | 实现安全 Tool Action Summary | 已在 normalized arguments 后按白名单生成 path/pattern/query/command/name 摘要，并统一执行长度、空白和凭证脱敏；未知/MCP 参数安全降级 |
+| M8T-07 | DONE | M8T-06,M6R-18 | 扩展 Tool 事件展示字段 | `ToolCallStarted` 已携带 SideEffect/ActionSummary/Detail，ToolExecutor 在 validation 后生成展示数据；专项 metadata 与 executor 测试通过 |
+| M8T-08 | DONE | M8T-05,M8T-07 | 实现 active Tool/Iteration 聚合 | started 只进入 active 状态，completed 按 CallID 更新，Iteration terminal 提交；并行完成保持模型原始调用顺序 |
+| M8T-09 | DONE | M8T-08,M8T-03 | 渲染 Explored、Ran/Called、Plan 与循环分隔线 | 读操作聚合、命令树形换行、Read/Search cyan 高亮、成功 Tool 绿色状态点、Iteration separator 与尾换行、Plan 树和截断提示测试通过 |
+
+### M8T-C：Context 状态与详情查看器
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M8T-10 | DONE | M6R-14,M6R-18 | 发布 `ContextWindowUpdated` | 每个 RequestView 发布 estimated/context/effective/projection/drop，并继承 Run/Task/Iteration/LLMCall metadata |
+| M8T-11 | DONE | M8T-02,M8T-10 | 接入 Context/branch 状态栏 | 使用 Provider `context_window` 与最近 RequestView estimate；model/project/branch/context/window 按宽度优先级降级 |
+| M8T-12 | DONE | M8T-09 | 实现 bounded Transcript Detail Store | 单项 32 KiB、单 Run 256 KiB、UTF-8 head/tail、line count、redaction 和 FIFO 淘汰测试通过；不写 SQLite |
+| M8T-13 | DONE | M8T-12,M8T-04 | 实现 Ctrl+T 临时 Transcript Viewer | 临时 Bubbles viewport 支持上下、PgUp/PgDn、Esc/Ctrl+T 返回；不启用 mouse tracking 或 alternate screen |
+
+### M8T-D：兼容与验收
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M8T-14 | DONE | M8T-04,M8T-09,M8T-11,M8T-13 | 补齐响应式与降级测试 | 40/60/100/160 列、初始宽度、中文/emoji、无颜色、非 TTY、`TERM=dumb`、`--plain`、主屏/鼠标启用序列、Approval、`/resume` 和排队通过 |
+| M8T-15 | DONE | M8T-14 | 完成 Rich Inline 产品化 E2E 与 race | 问候、读搜/命令 Activity、并行顺序、失败、Context 压缩字段、Ctrl+T、大输出、双取消、Session/Approval 回归；`make check`、全仓 race 和 40/100 列 PTY smoke 通过 |
+
+### M8T 出口
+
+- 默认 TTY 启动效果与 `docs/tui.md` 的信息层级一致，Logo 和面板在窄终端安全降级。
+- 已完成 transcript 继续进入终端原生 scrollback；滚轮和鼠标选择不依赖 Bubble Tea mouse tracking。
+- Tool 事件不泄露 raw arguments；只读活动聚合为 Explored，写入/命令/网络显示 Ran/Called。
+- Working 动画、Context 百分比和窗口只属于底部 UI 投影，不不断污染 scrollback。
+- `Ctrl+T` 只打开 bounded 临时 Viewer，不引入持久 Event Store 或第二 Conversation 历史。
+- `--plain`、非 TTY 和 dumb terminal 行为保持稳定。
+
+## 12. M8：兼容回归与首个发布
+
+M8 直接依赖 M8T-15，不依赖 M7。发布基线是：默认独立 ReAct、显式 `/plan`、完整 Session/Message/Run 语义、Previous Work、六表 SQLite、最小 Approval、核心工具和完成产品化的 Rich Inline TUI。
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M8-01 | TODO | M8T-15 | 建立发布行为基线 fixture | 覆盖配置、Provider 方言、默认 ReAct、`/plan`、工具顺序、Approval、Session resume、Previous Work 和 Rich Inline TUI 行为 |
+| M8-02 | TODO | M8-01 | 建立架构与术语守卫测试 | 禁止生产引用 TurnID、synthetic root Task、旧 Engine 和 `max_steps`；Task 只存在 Plan 路径，Iteration 只存在 Reactor |
+| M8-03 | TODO | M8-01 | 验证 SQLite 与配置兼容迁移 | 旧六表前版本、`interrupted_context.v1`、旧 `max_steps` 配置均有明确迁移或错误提示，不静默丢失 Message/Run |
+| M8-04 | TODO | M8-02,M8-03 | 执行安全回归 | PathGuard、CommandGuard、Approval、Audit、Snapshot、MCP/Web 边界和凭证脱敏全部通过 |
+| M8-05 | TODO | M8-04 | 执行可靠性与性能基线 | 启动、长 Session、Per-Think Context、工具并行、取消、Previous Work、`/plan` cycles 的耗时/token/内存有记录 |
+| M8-06 | TODO | M8-05 | 完成 Linux amd64/arm64 构建 | 二进制可启动并通过 Coding Agent smoke test |
+| M8-07 | TODO | M8-06 | 完成 macOS amd64/arm64 构建 | 二进制可启动并通过 Coding Agent smoke test |
+| M8-08 | TODO | M8-07 | 评估 Windows 支持范围 | 支持则构建；不支持则记录命令、进程组和 TTY 边界 |
+| M8-09 | TODO | M8-06 | 完成安装、配置、Session 与故障排查文档 | 新用户可从零配置并完成首个编码任务、中断、继续和 `/plan` 任务 |
+| M8-10 | TODO | M8-09 | 生成版本说明与迁移文档 | 明确 PaiCLI 差异、旧配置/数据库兼容、已知限制和可选 M7 能力状态 |
+| M8-11 | TODO | M8-10 | 生成首个版本候选 | version、commit、build time、checksums、变更日志、已知问题和完整 smoke 结果齐全 |
+
+## 13. M7：可选 Multi-Agent 与高级入口
+
+M7 不阻塞 M8 发布。只有 M6R-22 证明单 Agent 主链稳定后，才优先验证最小只读 Multi-Agent；它可以在 M8 之后实施，也可以在不影响发布关键路径的前提下独立实验。图片、Browser、文件树/多 Pane/高级 Diff、Runtime API 和后台 Job 均属于独立可选批次，不能同时开工。
+
+### 13.1 只读 Multi-Agent MVP
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M7-01 | TODO | M6R-22 | 定义 `SubAgentTask/Result` 与只读 Runner Port | Objective、最小 Context、子预算、Summary/Evidence/Usage/StopReason 可表达；不共享主 Reactor 临时消息链 |
+| M7-02 | TODO | M7-01 | 实现只读 SubAgent ContextBuilder | 只注入当前 Task、适用 `AGENTS.md`、依赖 Evidence、Project Root 和 read/list/glob/grep；无 Conversation 全量复制 |
+| M7-03 | TODO | M7-02 | 实现 bounded SubAgent Runner | 与主 Agent 同模型；最多两个、depth=1；不注册写入、命令、网络、MCP 或继续委派能力 |
+| M7-04 | TODO | M7-03 | 实现确定性 placement | 仅 `/team` + `/plan`、至少两个 independent ready read-only Tasks、预算足够时并行；否则安全退化单 Agent |
+| M7-05 | TODO | M7-04 | 合并 SubAgent Result | 按 TaskID 稳定合并 Summary/Evidence/Usage；SubAgent 不写正式 Message、不决定 Run 完成、不直接输出最终回答 |
+| M7-06 | TODO | M7-05 | 实现取消与失败边界 | 主 Run 取消传播全部子 Context；保留已完成 Summary/Evidence；失败由主 Agent执行、review 或解释，不自动创建替代 Agent |
+| M7-07 | TODO | M7-06 | 增加只读 Multi-Agent E2E | 两个调查 Task 并行、主 Agent汇总后修改/测试、单子失败、取消、预算和事件关联通过 |
+| M7-08 | TODO | M7-07 | 执行收益审计 | 记录延迟、token、完成质量和复杂度；收益不足则保持实验能力，不进入默认主链 |
+
+### 13.2 高级入口候选
+
+以下能力在 M7-08 后逐项立项，不预先展开为互相依赖的大型任务树：
+
+- TUI 文件树、Diff/Tool Result 折叠和无障碍增强；
+- 图片输入与 Provider 多模态转换；
+- Browser Connector；
+- Runtime API：使用 `/v1/sessions/{id}/runs` 和事件流，不设计 turns endpoint；
+- 后台 Job/Worker：使用独立 Job Domain，不复用 Conversation Run 或恢复 Checkpoint 语义。
+
+每项开始前必须新增独立设计小节、任务表和验收标准；未立项能力不计入当前里程碑完成度。
 
 ## 14. 参考项目到 Go 模块映射
 
@@ -422,21 +596,22 @@ M8 以 M5R 的稳定单 Agent + 固定 Plan-and-Execute + PaiCLI 风格最小 Ap
 | `cli/Main.java` | `cmd/amadeus` + `internal/app/*` + `internal/interface/cli` | M0-M3、M7 |
 | `config/PaiCliConfig.java` | `internal/config` | M0 |
 | `llm/*Client.java` | `internal/llm/openai` + capability config | M1 |
-| `agent/Agent.java` | 作为行为参考映射到 `internal/agent/engine` + `internal/agent/react` | M2-M3 |
-| `agent/PlanExecuteAgent.java` | 只迁移规划/审核/DAG 行为到统一 Engine 的 `internal/agent/plan`，不迁移独立 task loop | M5 |
-| `agent/AgentOrchestrator.java`、`SubAgent.java` | 迁移为统一 ExecutionGraph 上的 Task placement 与 `internal/agent/team` | M7 |
+| `agent/Agent.java` 与 WeKnora ReAct loop | 吸收行为后收敛到独立 `internal/agent/react`；默认 CLI 不经过 Plan Task 或 ExecutionGraph | M6R |
+| `agent/PlanExecuteAgent.java` | 仅迁移 Plan/DAG/Replan 编排到 `internal/agent/plan`；通过 `ReActTaskExecutor` 调用同一个 Reactor，不保留第二套执行循环 | M6R |
+| `agent/AgentOrchestrator.java`、`SubAgent.java` | 可选迁移为 `internal/agent/team` 的只读 Task placement；主 Agent 保持唯一写入者与最终回答者 | M7 |
 | `tool/ToolRegistry.java` | `internal/tool` + `internal/tool/builtin/*` | M2-M7 |
 | `policy/*`、`hitl/*` | `internal/policy` | M3 |
 | `prompt/*`、`resources/prompts/*` | `internal/prompt` + `prompts/*` | M3 |
-| `memory/*` | 仅迁移 Conversation 压缩与恢复行为到 `internal/conversation`、`internal/context` 和 Run 摘要；长期偏好改由 `internal/instruction` 加载 `AGENTS.md`，不实现 Durable Memory | M3-M4 |
+| `memory/*` | 仅迁移 completed Message Pair 查询、Summary、Previous Work 和 Context Window 行为到 `internal/session`、`internal/context`；长期规则由 `internal/instruction` 加载 `AGENTS.md`，不实现 Durable Memory/Checkpoint Store | M4、M6R |
+| Agent 生命周期与展示事件 | `internal/agent/event` 的 Typed EventHub；事件身份统一为 Session/Run/Task/Iteration/LLMCall，供 TUI、Plain、Audit 订阅 | M6R |
 | `mcp/*` | `internal/mcp` | M6 |
 | `skill/*` | `internal/skill` | M6 |
 | `snapshot/*` | `internal/snapshot` | M6 |
 | `lsp/*` | `internal/lsp` | M6 |
-| `image/*` | `internal/image` | M7 |
-| `browser/*` | `internal/browser` | M7 |
-| `render/*`、`tui/*` | `internal/render` + `internal/interface/tui` | M1、M3、M7 |
-| `runtime/api/*`、`runtime/task/*` | `internal/runtimeapi` + `internal/app/task` | M7 |
+| `image/*` | 候选 `internal/image`，须在 M7-08 收益审计后单独立项 | 候选 |
+| `browser/*` | 候选 `internal/browser`，须在 M7-08 收益审计后单独立项 | 候选 |
+| `render/*`、`tui/*` | `internal/render` + `internal/interface/tui`；M6R 迁移为 Typed EventHub subscriber，M8T 完成 Codex 风格 Rich Inline 产品化 | M1、M3、M6、M6R、M8T |
+| `runtime/api/*`、`runtime/task/*` | 候选 `internal/runtimeapi` 与独立 Job Domain；Conversation API 使用 `/v1/sessions/{id}/runs` | 候选 |
 
 ## 15. 优化记录
 
@@ -448,7 +623,7 @@ M8 以 M5R 的稳定单 Agent + 固定 Plan-and-Execute + PaiCLI 风格最小 Ap
 | OPT-002 | PROPOSED | `llm/AbstractOpenAiCompatibleClient.java` 与多个 Provider Client | 使用一个官方 SDK Adapter + Provider capability 配置 | 去除重复 HTTP/JSON/SSE 代码，便于升级 | Provider 特例改为配置或小 hook |
 | OPT-003 | PROPOSED | `cli/Main.java`：`main` 及交互循环 | 拆为 composition root、session controller、command handlers | 降低大入口耦合，可复用 Runtime API | CLI 文案可变化，命令语义保持 |
 | OPT-004 | PROPOSED | `tool/ToolRegistry.java`：`register*Tools`、`doExecuteTool`、`executeTools` | Registry、Executor、Policy pipeline、builtin tool 分包 | 单工具可测试，避免巨型类继续增长 | 工具名和 schema 保持兼容 |
-| OPT-005 | PROPOSED | `agent/Agent.java`：`run`；`PlanExecuteAgent.java` task loop；`SubAgent.java` run loop | 建立 Plan-on-Demand 统一 Engine；第一版 SubAgent 仅作为最多两个只读 Task placement，复用 ReActRunner 并返回 Summary/Evidence | 所有执行共享状态、Evidence、终止、取消、安全和恢复协议，同时规避并行写冲突 | 内部取消三套 Agent 模式；`/plan`、`/team` 只改变 Policy，不引入固定 Reviewer、Agent 群聊或递归委派 |
+| OPT-005 | PROPOSED | `agent/Agent.java`：`run`；`PlanExecuteAgent.java` task loop；`SubAgent.java` run loop | 建立独立 Reactor 与外层 Plan Controller；第一版 SubAgent 仅作为最多两个只读 Task placement，复用 Reactor 并返回 Summary/Evidence | 默认执行路径清晰，Plan/SubAgent 共享工具、安全、Evidence、终止和取消协议，同时规避并行写冲突 | 内部取消三套 Agent loop；`/plan` 选择外层编排，`/team` 只改变 placement，不引入固定 Reviewer、Agent 群聊或递归委派 |
 | OPT-006 | PROPOSED | `tool/ToolRegistry.java`：`executeTools` | 固定 worker pool + 工具副作用分类 + 顺序回灌 | 避免无界并发和非确定结果 | 可并发范围更保守、更安全 |
 | OPT-007 | PROPOSED | `tool/ToolRegistry.java`：`executeCommand`、`readProcessOutput` | `exec.CommandContext`、输出预算、平台化进程组取消 | 取消更可靠，避免超大输出占内存 | 超量输出会明确截断 |
 | OPT-008 | PROPOSED | `tool/ToolRegistry.java`：`write_file` 实现 | 原子临时文件写入、写前后路径复核、hook 分离 | 降低部分写入和路径竞态风险 | 文件权限继承策略需明确 |
@@ -459,9 +634,9 @@ M8 以 M5R 的稳定单 Agent + 固定 Plan-and-Execute + PaiCLI 风格最小 Ap
 | OPT-013 | PROPOSED | `policy/CommandGuard.java` 字符串规则区域 | 保守 tokenizer 与规则对象，保留 raw command 审计摘要 | 降低大小写/空白/转义绕过 | 可能新增拒绝，需兼容用例 |
 | OPT-014 | PROPOSED | `prompt/PromptAssembler.java` / `PromptRepository.java` | Prompt 层 schema 校验、最终 hash 和来源清单 | Prompt 漂移可追踪 | 配置错误更早暴露 |
 | OPT-015 | PROPOSED | `runtime/task/DurableTaskManager.java` | Store 与 worker 解耦，使用显式状态机事务 | 恢复和并发 claim 更可靠 | 非法状态跳转改为明确错误 |
-| OPT-016 | PROPOSED | WeKnora `internal/agent/engine.go`、`act.go`、`observe.go` | 吸收显式 State/Step、think-analyze-act-observe、空响应重试、卡死检测、partial step、tool timeout 和顺序回灌；按 Amadeus Domain 重写 | ReAct 工程边界和异常路径更完整 | 不引入其知识库耦合、Chat 协议类型、粗粒度并发或未完成 Reflection |
-| OPT-017 | PROPOSED | WeKnora `ToolCall.Reflection` 预留字段与 PaiCLI 缺少 Reflection 闭环 | 新增 Evidence-first Verifier + Triggered Reflector + bounded Replan | 降低模型误报完成，允许执行中纠错和升级计划 | 增加受控模型调用；只保存结构化 verdict/lesson |
-| OPT-018 | PROPOSED | PaiCLI `memory/MemoryManager.java` 同时管理 Conversation、Long-term Memory、Retriever、Compressor、TokenBudget、ContextProfile 和 project scope | 只迁移 ConversationStore、ContextBuilder/Compactor 和 CheckpointStore；用户/项目长期规则改为分层 `AGENTS.md`，不实现自动 MemoryManager | 消除隐藏压缩和偏好推断，指令可编辑、可审查、可版本控制 | 不提供自动 remember/recall；未来仅在真实需求验证后另立 ADR |
+| OPT-016 | PROPOSED | WeKnora `internal/agent/engine.go`、`act.go`、`observe.go` | 吸收 Think→Analyze→Act→Observe 分层、Reactor Iteration、空响应重试、卡死检测、partial result、tool timeout 和顺序回灌；按 Amadeus Domain 重写 | ReAct 工程边界和异常路径更完整 | Iteration 仅是 Reactor 内部循环记录；不引入知识库耦合、Chat 协议类型、粗粒度并发或未完成 Reflection |
+| OPT-017 | SUPERSEDED | WeKnora `ToolCall.Reflection` 预留字段与 PaiCLI 缺少 Reflection 闭环 | 旧方案拟增加独立 Verifier/Reflector；现改为 Reactor 根据 StopReason 返回结果，只有显式 `/plan` 的 Plan Controller 执行完成判断与 bounded replan | 避免默认 ReAct 被额外质量门和规划状态绑定 | 不再建设通用 Verifier/Reflector 链；后续若需要专项验证器，按工具或任务类型单独立项 |
+| OPT-018 | PROPOSED | PaiCLI `memory/MemoryManager.java` 同时管理 Conversation、Long-term Memory、Retriever、Compressor、TokenBudget、ContextProfile 和 project scope | 只迁移 completed Message Pair 查询、BaseContextBuilder、ContextWindowManager、Summary 与 Previous Work；用户/项目长期规则改为分层 `AGENTS.md`，不实现自动 MemoryManager 或 Checkpoint Store | 消除隐藏压缩和偏好推断，Conversation 与中断工作边界清楚，指令可编辑、可审查、可版本控制 | 不提供自动 remember/recall 或精确执行恢复；未来仅在真实需求验证后另立 ADR |
 
 ## 16. 决策与阻塞日志
 
@@ -470,19 +645,19 @@ M8 以 M5R 的稳定单 Agent + 固定 Plan-and-Execute + PaiCLI 风格最小 Ap
 | 2026-07-29 | 决策 | 采用行为迁移，不进行 Java 文件一一翻译 | 架构按 Runtime 和 Adapter 重组 |
 | 2026-07-29 | 决策 | OpenAI 官方 Go SDK 封装在基础设施层 | M1 固定具体版本并增加契约测试 |
 | 2026-07-29 | 决策 | Responses 优先，Chat Completions 作为兼容模式 | Provider 配置必须显式 `api` |
-| 2026-07-29 | 决策 | ReAct MVP 先于 Plan/Team/TUI | 2026-07-30 被统一 Engine 方案取代；仍保持 M2 先形成 Direct 可执行闭环，但 Domain 从一开始支持 ExecutionGraph/Reflection |
-| 2026-07-30 | 决策 | 采用 Plan-on-Demand 统一 Agent Engine | Direct 使用单 root Task；复杂任务直接 Planned；执行中可基于 Evidence 无损升级 |
-| 2026-07-30 | 决策 | ReAct 是 TaskRunner，不是独立 Agent 模式 | Plan task、SubAgent 和后台任务复用同一 ReActRunner、Verifier、Reflector 和工具链 |
-| 2026-07-30 | 决策 | Reflection 初期使用同一模型并按检查点触发 | 无 tool call 只产生 Candidate Result；Verifier + Reflector 接受后才能完成 |
+| 2026-07-29 | SUPERSEDED | ReAct MVP 先于 Plan/Team/TUI | M2 曾先形成 Direct 可执行闭环；其统一 Engine、ExecutionGraph/Reflection 前置设计已被 M6R 的独立 Reactor 与显式 `/plan` 取代 |
+| 2026-07-30 | SUPERSEDED | 采用 Plan-on-Demand 统一 Agent Engine | 旧方案使用单 root Task、自动复杂度判断和 Direct→Planned 升级；M6R 改为默认独立 ReAct，只有用户显式 `/plan` 才创建 Task/DAG |
+| 2026-07-30 | SUPERSEDED | ReAct 是 TaskRunner，不是独立 Agent 模式 | M6R 反转该关系：Reactor 是默认独立执行核心，Plan Controller 和可选 SubAgent 通过适配器复用它 |
+| 2026-07-30 | SUPERSEDED | Reflection 初期使用同一模型并按检查点触发 | 不再建设默认 Verifier/Reflector 检查点链；Reactor 返回 StopReason，显式 `/plan` 才由 Plan Controller 判断 completed 或 replan |
 | 2026-07-30 | SUPERSEDED | `/plan` 曾从 MVP 移除 | 该决策在 2026-08-03 被 M6-26 取代：默认 ReAct，`/plan <task>` 显式选择规划路径；工具副作用仍独立受 Approval 控制 |
 | 2026-07-30 | 决策 | Memory System 不采用全能 MemoryManager | 已被同日“显式 `AGENTS.md` 取代自动长期记忆”决策进一步收敛 |
 | 2026-07-30 | 决策 | 显式 `AGENTS.md` 取代自动长期记忆 | 用户级位于 `$AMADEUS_HOME/AGENTS.md`；项目根和目录级按作用域覆盖；M3 移除 Durable Memory/MemoryRetriever/Lesson 持久化 |
-| 2026-07-30 | 决策 | 删除 `agent.mode` 配置 | ReAct/Plan/Team 分别属于 TaskRunner、ExecutionGraph 和 placement；MVP 不暴露额外 Agent 模式 |
+| 2026-07-30 | 决策 | 删除 `agent.mode` 配置 | 默认入口固定为独立 ReAct；`/plan` 显式选择外层 Plan Controller；可选 `/team` 只影响 Plan Task placement，不增加持久化 Agent 模式 |
 | 2026-07-30 | 决策 | 首要目标调整为可用 Coding Agent | M3 直接交付真实 Provider + 根命令 Coding Agent + 工具 + `AGENTS.md` + 安全审批；不等待规划、恢复或扩展能力 |
 | 2026-07-30 | 决策 | 根命令直接启动 Coding Agent | `amadeus` 进入交互模式，`amadeus "<task>"` 执行一次性任务；不创建独立 `run` 子命令 |
 | 2026-07-30 | 决策 | Multi-Agent 后移为可选增强 | Adaptive Planning 与 Replan 先在单 Agent 上稳定；SubAgent placement 移至 M7，不阻塞首个可用版本或发布基线 |
 | 2026-07-31 | 决策 | 用户级 resume 只恢复 Conversation Session | 保留 `--continue`、`--resume [session-id]`、`sessions list` 和交互 `/resume`；不实现 `--session`、`/sessions` 或首版 `--all` |
-| 2026-07-31 | 决策 | SQLite 归档到 `$AMADEUS_HOME/data/amadeus.db` | Session、Turn、Message、Run、Checkpoint 共库事务；目标项目不生成运行数据库，审计继续独立 JSONL |
+| 2026-07-31 | SUPERSEDED | SQLite 归档到 `$AMADEUS_HOME/data/amadeus.db` | 数据库位置与独立 JSONL 审计继续有效；Session、Turn、Message、Run、Checkpoint 共库模型已被 2026-08-01 六表方案和 2026-08-03 Previous Work 语义取代 |
 | 2026-07-31 | 决策 | 中断 Run 不精确恢复而由新 Run 重新规划 | 下一真实输入自动获得最近中断摘要；重新加载工作区和 `AGENTS.md`，不重放工具/审批、不增加 Router，只记录 `context_from_run_id` |
 | 2026-07-31 | 决策 | 内置工具采用结构化读搜、Patch 修改和 Shell 执行 | 保留 read/list/glob/grep；新增 `apply_patch`；`write_file` 收窄为显式 create/replace；Shell 负责构建、测试、Git 和 fallback |
 | 2026-07-31 | 决策 | Multi-Agent 第一版收敛为最多两个只读 SubAgent | 仅 `/team` 请求 `prefer_subagents`；委派独立 ready read-only Task，SubAgent 不写文件/执行命令/递归/互聊，主 Agent统一修改、验证和回复 |
@@ -491,6 +666,24 @@ M8 以 M5R 的稳定单 Agent + 固定 Plan-and-Execute + PaiCLI 风格最小 Ap
 | 2026-08-01 | 决策 | Skill/MCP 采用 WeKnora 思路与 PaiCLI 范围收敛 | 用户级统一放 `$AMADEUS_HOME`；Skill 先做 SKILL.md/references/load_skill，不做 scripts/Sandbox；MCP 封装 mcp-go，仅交付 stdio/streamable HTTP + initialize/tools/list/tools/call |
 | 2026-08-01 | 决策 | Session/Run 持久化收敛为六表 | 删除独立 Turn、Checkpoint 和指令快照表；Run 保存有界 `interrupted_context_json`，中断后由新 Run 重新检查并规划；M5R-20～M5R-24 负责迁移和 E2E |
 | 2026-08-01 | M5R-20～M5R-24 | DONE | Session/Run 收敛为六表并完成旧库迁移、异常 Run 恢复和恢复链 E2E | `interrupted_context_json` 只保留有界工作摘要；下一 Run 重新发现工作区和 `AGENTS.md`，不恢复旧指令快照或调用栈 |
+| 2026-08-03 | 决策 | 采用 WeKnora 的 Think→Analyze→Act→Observe 语义分层，并保留 Amadeus Coding Agent 执行能力 | M6R 将默认路径解耦为独立 Reactor；Approval、PathGuard、CommandGuard、Snapshot、Evidence、预算和资源感知工具并行继续复用 |
+| 2026-08-03 | 决策 | 统一 Session/Message/Run、Iteration、Plan Task、LLM Call 与 Previous Work | Turn 不再是核心 Domain/数据库实体；Step 改为 Reactor 内部 Iteration；Task/ExecutionGraph 只属于 `/plan`；Provider 调用使用 LLMCallID；普通历史只含 completed Message Pairs，中断/失败 Run 通过有界 Previous Work 进入下一新 Run |
+| 2026-08-03 | M6R-00 | DONE | 固定默认纯 ReAct、显式 `/plan` 外层编排、运行时语义与 Typed EventHub 目标 | `design.md` 明确 Plan Controller 通过 `ReActTaskExecutor` 调用同一个 Reactor，并规定 Run/Task/Iteration/LLMCall metadata、fanout 与 channel subscriber adapter 的后续实现边界 |
+| 2026-08-04 | M6R-01～21 | DONE | 完成 Session/Run 语义、独立 Reactor、Per-Think Context、默认/Plan 主链、Typed EventHub 与旧 Engine 删除 | 当前只保留 M6R-22 发布前全链路验收；下一阶段固定为 M8，M7 不进入发布关键路径 |
+| 2026-08-04 | M6R-22 | DONE | 补齐问候、工具失败恢复、新任务覆盖旧 Pending 和成功 Run reason 回归；修正 `iterations_used` JSON；更新架构审计 | 生产架构守卫、`make check`、全仓 race 与 `git diff --check` 全部通过；M6R 完成 |
+| 2026-08-04 | M8T-00 | DONE | 根据 `docs/tui.md` 固定 Codex 风格 Rich Inline 目标，补充 Logo、Activity Presenter、Iteration 聚合、Working、Context 与 bounded Viewer 设计 | 发布关键路径调整为 M8T→M8；下一任务为 M8T-01，Multi-Agent 和多 Pane TUI 不阻塞发布 |
+| 2026-08-04 | M8T-01～09 | DOING | 已完成 Logo、workspace metadata、Working/Esc、安全 Action Summary、Typed Tool 展示字段和 Activity Domain；Transcript 与 Iteration 聚合进入收敛 | 当前先完成 M8T-03、M8T-08～09，再进入 Context 状态与 bounded Viewer；不扩大到 alternate screen、mouse tracking 或多 Pane |
+| 2026-08-04 | M8T-01～15 | DONE | 完成响应式终端 Logo、启动卡片、Transcript/Activity Presenter、ContextWindowUpdated、bounded Ctrl+T Viewer、无颜色/Plain 降级与终端兼容矩阵 | 40/100 列真实 PTY、`make check`、全仓 race 和 `git diff --check` 通过；下一阶段为 M8-01 |
+| 2026-08-04 | M8T 启动视觉修正 | DONE | 将宽版 Logo 断点从 100 列调整为 64 列，并删除启动时自动插入的 assistant 招呼语 | 80 列真实 PTY 显示完整字符图与启动卡片，随后直接进入输入框；64 列防溢出测试通过 |
+| 2026-08-04 | M8T 品牌与动态视觉重做 | DONE | 从 `docs/Amadeus_logo.webp` 生成宽/窄 Braille 黑白点阵，并以块字符绘制大型 `>_`；输入提示改用终端默认色，Working 改为单 `•` 与灰度柔光扫描，状态栏按 model/project/branch/context/window 语义使用低饱和自适应色 | 禁止文字 Logo 占位、青绿 Working 跳色和不兼容圆形 glyph；新增黑白样式、光束子帧、Context 阈值色与 40/60/100/160 列防溢出测试 |
+| 2026-08-04 | M8T 视觉节奏微调 | DONE | 将像素 `>_` 与 Amadeus 主体分离并保持 64/40 列断点；状态栏改用明亮 pastel 自适应色；Working Tick 提速至 60ms；输入区与内容区固定保留两行空白 | 新增 Logo 净间距、动画间隔、输入留白和状态栏宽度回归测试；保持 main-screen、原生 scrollback 与无鼠标追踪约束 |
+| 2026-08-04 | M8T Logo 拼接根因修复 | DONE | 将 Amadeus 主体和像素 `>_` 拆成独立画布，按主体最大终端显示宽度与固定 gap 水平合成，替代原先逐行尾部追加 | 防重叠测试验证所有 `█` 像素均位于 `brandWidth + gap` 之后；80 列真实 PTY 确认提示符完整位于 Logo 右侧 |
+| 2026-08-04 | M8T Working 与完成态微调 | DONE | 宽/紧凑 Logo gap 增至 8/5 列并动态计算宽版断点；Working Tick 提升至 32ms，和输出保留一行空白；成功 Run 提交 `─Worked for <duration>─` 持久分隔线 | 覆盖 40 列紧凑 Logo、固定边界、32ms 动画、40s 提示、一行/两行留白、小时分钟秒格式和完成分隔线宽度 |
+| 2026-08-04 | M8T Working 标记与耗时格式 | DONE | Working 状态点改为 `•/◦` 每 8 帧循环交替；完成耗时改为 `3h 4m 5s` 单位空格格式 | 保留 32ms 柔光动画，新增状态点循环与带空格小时分钟秒格式回归测试 |
+| 2026-08-04 | M8T 品牌笔触与 Activity 细节 | DONE | 将宽/紧凑 `>_` 从块字符重生成为与 Amadeus 主体一致的 Braille 点阵；Read/Search 使用 cyan 高亮；completed Activity 批次末尾建立稳定留白 | 覆盖独立画布边界、40 列紧凑降级、展示文本不变、cyan 自适应色和批次尾换行测试；separator 最终语义由下一条记录恢复并固定 |
+| 2026-08-04 | M8T Iteration 边界与成功状态 | DONE | 恢复每轮 Reactor Activity 后的横线 separator；成功 Tool 标题点改为 green；启动信息栏恢复 4 列右 margin；Think 和 Worked 前后补齐一行空白 | 覆盖 success/partial 判定、separator 尾换行、100 列 panel 盒模型、Think batch 换行及 Worked 单独/同批提交间距 |
+| 2026-08-04 | M8T Approval 选择器与完成行留白 | DONE | 默认 TUI Approval 改为三项 ↑/↓ 选择、Enter 确认和 Esc 拒绝；Worked 删除前置换行并建立下一批 user entry 间距规则 | 覆盖默认选项、方向键移动、session allow 决策、Think 尾换行、Worked 批次与下一批输出留白；最终输入区距离由下一条记录继续收敛 |
+| 2026-08-04 | M8T Worked 与 Resume 视觉收敛 | DONE | Worked 删除自身尾换行，由底部活动区保持两行输入距离；下一条 user entry 在前一条为 worked 时补一个换行；`/resume` 改为无边框列表并使用 amber 黄色高亮 | 覆盖 Worked 无前后换行、下一用户消息间隔、Resume 无方框、黄色自适应色、方向键移动和窄宽度截断 |
 
 ## 17. 每次更新模板
 

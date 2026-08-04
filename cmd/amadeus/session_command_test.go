@@ -150,7 +150,7 @@ func TestSessionPersistsAcrossRootCommandInstancesAndContinueReplaysHistory(t *t
 	if err != nil || len(sessions) != 1 {
 		t.Fatalf("unexpected durable sessions: %#v err=%v", sessions, err)
 	}
-	messages, err := store.ListMessages(context.Background(), sessions[0].ID)
+	messages, err := store.ListCompletedMessages(context.Background(), sessions[0].ID)
 	if err != nil || len(messages) != 4 {
 		t.Fatalf("unexpected durable messages: %#v err=%v", messages, err)
 	}
@@ -245,16 +245,16 @@ func TestInterruptedRunCreatesNewRunWithReplanEnvelope(t *testing.T) {
 	if err != nil || len(sessions) != 1 {
 		t.Fatalf("unexpected sessions after interruption: %#v err=%v", sessions, err)
 	}
-	messages, err := store.ListMessages(context.Background(), sessions[0].ID)
-	if err != nil || len(messages) != 3 {
-		t.Fatalf("cancelled user and completed continuation messages missing: %#v err=%v", messages, err)
+	messages, err := store.ListCompletedMessages(context.Background(), sessions[0].ID)
+	if err != nil || len(messages) != 2 {
+		t.Fatalf("completed continuation message pair missing: %#v err=%v", messages, err)
 	}
 	if len(first.requests) != 1 || len(second.streamRequests) == 0 {
 		t.Fatalf("unexpected provider requests: first=%d second=%d", len(first.requests), len(second.streamRequests))
 	}
 	foundInterrupted := false
 	for _, message := range second.streamRequests[0].Messages {
-		if strings.Contains(message.Content, "amadeus.interrupted_work.v1") {
+		if strings.Contains(message.Content, "amadeus.previous_work.v1") {
 			foundInterrupted = true
 		}
 	}
@@ -263,6 +263,64 @@ func TestInterruptedRunCreatesNewRunWithReplanEnvelope(t *testing.T) {
 	}
 	if _, err := store.PendingInterruptedRun(context.Background(), sessions[0].ID); !errors.Is(err, sessiondomain.ErrNotFound) {
 		t.Fatalf("successful continuation left pending interruption: %v", err)
+	}
+}
+
+func TestNewTaskAfterInterruptionKeepsPreviousWorkAsBackground(t *testing.T) {
+	amadeusHome := t.TempDir()
+	projectDirectory := t.TempDir()
+	writeCodingCommandConfig(t, amadeusHome)
+	if err := os.WriteFile(filepath.Join(projectDirectory, "README.md"), []byte("new objective readme\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := sessiondomain.NewMemoryStore()
+	first := &interruptThenCompleteClient{delegate: &codingCommandClient{}, first: true}
+	second := &codingCommandClient{}
+	clientIndex := 0
+	runtime := commandRuntime{
+		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
+		terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
+		sessionStoreFactory: func(context.Context, string) (sessiondomain.Store, io.Closer, error) { return store, nil, nil },
+		agentContextFactory: func(parent context.Context) (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(parent)
+			if clientIndex == 0 {
+				first.cancel = cancel
+			}
+			return ctx, cancel
+		},
+		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) {
+			if clientIndex == 0 {
+				clientIndex++
+				return first, nil
+			}
+			return second, nil
+		},
+		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
+	}
+	command := newRootCommandWithRuntime(&configFlags{}, runtime)
+	var stderr bytes.Buffer
+	command.SetIn(strings.NewReader("unfinished old task\nsummarize README instead\n/exit\n"))
+	command.SetOut(io.Discard)
+	command.SetErr(&stderr)
+	command.SetArgs([]string{"--plain"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("execute new task after interruption: %v\nstderr=%s", err, stderr.String())
+	}
+	if len(second.streamRequests) == 0 {
+		t.Fatal("new task did not call the provider")
+	}
+	messages := second.streamRequests[0].Messages
+	if len(messages) == 0 || messages[len(messages)-1].Role != llm.RoleUser || messages[len(messages)-1].Content != "summarize README instead" {
+		t.Fatalf("new objective is not the final current user message: %#v", messages)
+	}
+	foundPreviousWork := false
+	for _, message := range messages[:len(messages)-1] {
+		if strings.Contains(message.Content, "amadeus.previous_work.v1") && strings.Contains(message.Content, "unfinished old task") {
+			foundPreviousWork = true
+		}
+	}
+	if !foundPreviousWork {
+		t.Fatalf("interrupted work was not retained as bounded background: %#v", messages)
 	}
 }
 
@@ -283,7 +341,7 @@ func TestContinueRecoversAbandonedRunningRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	abandoned, err := coordinator.BeginTask(context.Background(), "unfinished task", sessiondomain.RunMetadata{})
+	abandoned, err := coordinator.BeginRun(context.Background(), "unfinished task", sessiondomain.RunMetadata{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,11 +384,11 @@ func TestResumeSelectorEscReturnsToDraftConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	started, err := coordinator.BeginTask(context.Background(), "stored task", sessiondomain.RunMetadata{})
+	started, err := coordinator.BeginRun(context.Background(), "stored task", sessiondomain.RunMetadata{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := coordinator.FinishTask(context.Background(), started, sessiondomain.RunCompleted, "", "done", nil, nil); err != nil {
+	if _, err := coordinator.FinishRun(context.Background(), started, sessiondomain.RunCompleted, "", "done", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	runtime := commandRuntime{

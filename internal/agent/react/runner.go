@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
+	"github.com/Godric-W/Amadeus/internal/agent/event"
+	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -23,34 +24,46 @@ type RunnerOptions struct {
 	Temperature        float64
 	MaxOutputTokens    int
 	MaxParallelTools   int
-	EscalateHighImpact bool
 	AdditionalMessages func() ([]llm.Message, error)
+	ContextWindow      agentcontext.ContextWindowManager
+	ContextProfile     agentcontext.ContextProfile
+	Events             event.Sink
 }
 
 type Runner struct {
-	iterator  ModelIterator
-	executor  CallExecutor
-	progress  ProgressObserver
-	resources *resourceExecutor
-	options   RunnerOptions
-	now       func() time.Time
+	think   ThinkPort
+	analyze AnalyzePort
+	act     ActPort
+	observe ObservePort
+	window  agentcontext.ContextWindowManager
+	profile agentcontext.ContextProfile
+	events  event.Sink
+	options RunnerOptions
+	now     func() time.Time
+}
+
+type RunnerPhases struct {
+	Think   ThinkPort
+	Analyze AnalyzePort
+	Act     ActPort
+	Observe ObservePort
 }
 
 func NewRunner(iterator ModelIterator, executor CallExecutor, progress ProgressObserver, options RunnerOptions) (*Runner, error) {
 	if iterator == nil {
-		return nil, errors.New("ReAct runner model iterator is nil")
+		return nil, errors.New("Reactor model iterator is nil")
 	}
 	if executor == nil {
-		return nil, errors.New("ReAct runner tool executor is nil")
+		return nil, errors.New("Reactor tool executor is nil")
 	}
 	if progress == nil {
-		return nil, errors.New("ReAct runner progress observer is nil")
+		return nil, errors.New("Reactor progress observer is nil")
 	}
 	if options.Temperature < 0 || options.Temperature > 2 {
-		return nil, errors.New("ReAct runner temperature must be between 0 and 2")
+		return nil, errors.New("Reactor temperature must be between 0 and 2")
 	}
 	if options.MaxOutputTokens <= 0 {
-		return nil, errors.New("ReAct runner max output tokens must be greater than zero")
+		return nil, errors.New("Reactor max output tokens must be greater than zero")
 	}
 	if options.MaxParallelTools <= 0 {
 		options.MaxParallelTools = 1
@@ -59,297 +72,324 @@ func NewRunner(iterator ModelIterator, executor CallExecutor, progress ProgressO
 	if err != nil {
 		return nil, err
 	}
-	return &Runner{iterator: iterator, executor: executor, progress: progress, resources: resources, options: options, now: time.Now}, nil
+	return NewRunnerWithPhases(RunnerPhases{
+		Think: newModelThinker(iterator), Analyze: newDefaultAnalyzer(),
+		Act: &defaultActor{resources: resources}, Observe: &defaultObserver{progress: progress, now: time.Now},
+	}, options)
 }
 
-func (runner *Runner) Run(ctx context.Context, input engine.TaskRunInput) (engine.TaskOutcome, error) {
-	if err := input.Validate(); err != nil {
-		return engine.TaskOutcome{}, err
+func NewRunnerWithPhases(phases RunnerPhases, options RunnerOptions) (*Runner, error) {
+	if phases.Think == nil || phases.Analyze == nil || phases.Act == nil || phases.Observe == nil {
+		return nil, errors.New("Reactor phases must all be configured")
 	}
-	budget := input.Budget
-	if budget.Budget == (engine.Budget{}) {
-		budget.Budget = input.Task.Budget
+	if options.Temperature < 0 || options.Temperature > 2 {
+		return nil, errors.New("Reactor temperature must be between 0 and 2")
 	}
-	startedAt := time.Now()
-	finish := func(outcome engine.TaskOutcome) engine.TaskOutcome {
-		budget.Elapsed += time.Since(startedAt)
-		if budget.Budget.MaxDuration > 0 && budget.Elapsed > budget.Budget.MaxDuration {
-			budget.Elapsed = budget.Budget.MaxDuration
+	if options.MaxOutputTokens <= 0 {
+		return nil, errors.New("Reactor max output tokens must be greater than zero")
+	}
+	if options.ContextWindow == nil {
+		options.ContextWindow = agentcontext.NewContextWindowManager(nil)
+	}
+	if options.ContextProfile.ContextWindow == 0 {
+		options.ContextProfile = agentcontext.DefaultContextProfile(128_000, options.MaxOutputTokens)
+	}
+	if err := options.ContextProfile.Validate(); err != nil {
+		return nil, fmt.Errorf("Reactor context profile: %w", err)
+	}
+	return &Runner{think: phases.Think, analyze: phases.Analyze, act: phases.Act, observe: phases.Observe, window: options.ContextWindow, profile: options.ContextProfile, events: options.Events, options: options, now: time.Now}, nil
+}
+
+func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) {
+	if err := request.Validate(); err != nil {
+		return Result{}, err
+	}
+	state := newLoopState(request)
+	startedAt := runner.now()
+	finish := func(result Result) (Result, error) {
+		state.Budget.Elapsed += runner.durationSince(startedAt)
+		if state.Budget.Budget.MaxDuration > 0 && state.Budget.Elapsed > state.Budget.Budget.MaxDuration {
+			state.Budget.Elapsed = state.Budget.Budget.MaxDuration
 		}
-		outcome.Budget = budget
-		return outcome
+		result.Budget = state.Budget
+		if result.StopReason != "" {
+			return result, result.Validate()
+		}
+		return result, nil
 	}
 
 	runCtx := ctx
 	cancel := func() {}
-	if budget.Budget.MaxDuration > 0 {
-		remaining := budget.Budget.MaxDuration - budget.Elapsed
+	if state.Budget.Budget.MaxDuration > 0 {
+		remaining := state.Budget.Budget.MaxDuration - state.Budget.Elapsed
 		if remaining <= 0 {
-			return finish(budgetFailure(budget, engine.BudgetLimitWallClock, int64(budget.Elapsed), int64(budget.Budget.MaxDuration))), nil
+			return finish(budgetResult(state.Budget, LimitWallClock, int64(state.Budget.Elapsed), int64(state.Budget.Budget.MaxDuration)))
 		}
 		runCtx, cancel = context.WithTimeout(ctx, remaining)
 	}
 	defer cancel()
 
-	messages := append([]llm.Message(nil), input.Messages...)
-	if len(messages) == 0 {
-		messages = append(messages, llm.UserMessage(input.Task.Objective))
+	baseMessages := append([]llm.Message(nil), request.Messages...)
+	if len(baseMessages) == 0 {
+		baseMessages = append(baseMessages, llm.UserMessage(request.Goal))
 	}
+	for iterationIndex := len(state.Iterations); ; iterationIndex++ {
+		if result, ok := contextResult(ctx, runCtx, state.Budget, state.Iterations, state.Evidence, state.Usage); ok {
+			return finish(result)
+		}
+		if result, ok := exhaustedBeforeThink(state.Budget, state.Iterations, state.Evidence, state.Usage); ok {
+			return finish(result)
+		}
+		llmCallID := iterationID(request, iterationIndex)
+		iterationCtx := event.WithMetadata(runCtx, event.Metadata{
+			RunID: request.RunID, TaskID: request.Metadata.TaskID,
+			Iteration: iterationIndex + 1, LLMCallID: llmCallID,
+		})
+		if err := runner.publish(iterationCtx, event.IterationStarted{}); err != nil {
+			return Result{}, fmt.Errorf("publish Reactor iteration started: %w", err)
+		}
+		completeIteration := func(status, reason string) error {
+			return runner.publish(context.WithoutCancel(iterationCtx), event.IterationCompleted{Status: status, Reason: reason})
+		}
 
-	steps := make([]engine.Step, 0)
-	evidence := append([]engine.Evidence(nil), input.Evidence...)
-	var usage llm.Usage
-	for iterationIndex := 0; ; iterationIndex++ {
-		if outcome, ok := contextOutcome(ctx, runCtx, budget, steps, evidence); ok {
-			return finish(outcome), nil
-		}
-		if outcome, ok := exhaustedBeforeModelCall(budget, steps, evidence); ok {
-			return finish(outcome), nil
-		}
+		additional := []llm.Message(nil)
+		var err error
 		if runner.options.AdditionalMessages != nil {
-			additional, err := runner.options.AdditionalMessages()
+			additional, err = runner.options.AdditionalMessages()
 			if err != nil {
-				return engine.TaskOutcome{}, fmt.Errorf("prepare additional model messages: %w", err)
+				return Result{}, fmt.Errorf("prepare additional Reactor messages: %w", err)
 			}
-			messages = append(messages, additional...)
 		}
-		iteration, err := runner.iterator.Run(runCtx, IterationInput{
-			ID:              iterationID(input, iterationIndex),
-			Messages:        messages,
-			AvailableTools:  input.AvailableTools,
-			Temperature:     runner.options.Temperature,
-			MaxOutputTokens: maxOutputTokens(runner.options.MaxOutputTokens, budget),
+		view, err := runner.window.Prepare(iterationCtx, agentcontext.WindowRequest{
+			Base:    agentcontext.BaseEnvelope{Messages: baseMessages, AvailableTools: request.AvailableTools},
+			Runtime: state.RuntimeMessages, Additional: additional, Profile: runner.profile,
+			PreviousUsage: state.PreviousUsage, LastSentCount: state.LastSentCount,
 		})
 		if err != nil {
-			if outcome, ok := contextOutcome(ctx, runCtx, budget, steps, evidence); ok {
-				return finish(outcome), nil
+			if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
+				err = errors.Join(err, publishErr)
 			}
-			return finish(engine.TaskOutcome{
-				Kind: engine.TaskOutcomeFailed, Steps: steps, Evidence: evidence,
-				StopReason: engine.StopReasonProviderError, Reason: err.Error(),
-			}), nil
+			return finish(Result{Iterations: state.Iterations, Evidence: state.Evidence, Usage: state.Usage, StopReason: StopFailed, Reason: err.Error()})
 		}
-		usage = addUsage(usage, iteration.Response.Usage)
-		budget.StepsUsed++
-		budget.InputTokensUsed += iteration.Response.Usage.InputTokens
-		budget.OutputTokensUsed += iteration.Response.Usage.OutputTokens
-		if outcome, ok := exceededAfterModelCall(budget, steps, evidence); ok {
-			return finish(outcome), nil
+		contextUpdate := event.ContextWindowUpdated{
+			EstimatedInputTokens: view.Usage.EstimatedInputTokens,
+			ContextWindow:        runner.profile.ContextWindow,
+			EffectiveInputLimit:  view.Usage.EffectiveInputLimit,
+		}
+		if view.Compaction != nil {
+			contextUpdate.ProjectedToolResults = view.Compaction.ProjectedToolResults
+			contextUpdate.DroppedMessagePairs = view.Compaction.DroppedMessagePairs
+		}
+		if err := runner.publish(iterationCtx, contextUpdate); err != nil {
+			if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
+				err = errors.Join(err, publishErr)
+			}
+			return Result{}, fmt.Errorf("publish Reactor context window update: %w", err)
 		}
 
-		switch iteration.Kind {
-		case IterationCandidate:
-			if iteration.Candidate == nil {
-				return engine.TaskOutcome{}, errors.New("candidate model iteration has no candidate result")
+		think, err := runner.think.Think(iterationCtx, ThinkInput{
+			LLMCallID:       llmCallID,
+			Messages:        view.Messages,
+			AvailableTools:  view.Tools,
+			Temperature:     runner.options.Temperature,
+			MaxOutputTokens: maxOutputTokens(runner.options.MaxOutputTokens, state.Budget),
+		})
+		if err != nil {
+			if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
+				err = errors.Join(err, publishErr)
 			}
-			step := runner.candidateStep(len(input.PriorSteps)+len(steps), iteration.Response)
-			steps = append(steps, step)
-			result := *iteration.Candidate
-			result.EvidenceIDs = evidenceIDs(evidence)
-			outcome := finish(engine.TaskOutcome{
-				Kind:      engine.TaskOutcomeCandidateComplete,
-				Candidate: &engine.CandidateTaskResult{Result: result, FinalMessage: iteration.Response.Message, Usage: usage},
-				Steps:     steps, Evidence: evidence,
-			})
-			return outcome, outcome.Validate()
-		case IterationToolCalls:
-			if len(iteration.ToolCalls) == 0 {
-				return engine.TaskOutcome{}, errors.New("tool_calls model iteration has no tool calls")
+			if result, ok := contextResult(ctx, runCtx, state.Budget, state.Iterations, state.Evidence, state.Usage); ok {
+				return finish(result)
 			}
-			if budget.Budget.MaxToolCalls > 0 && budget.ToolCallsUsed+len(iteration.ToolCalls) > budget.Budget.MaxToolCalls {
-				step := runner.rejectedToolStep(len(input.PriorSteps)+len(steps), iteration)
-				steps = append(steps, step)
-				outcome := budgetFailure(
-					budget,
-					engine.BudgetLimitToolCalls,
-					int64(budget.ToolCallsUsed+len(iteration.ToolCalls)),
-					int64(budget.Budget.MaxToolCalls),
-				)
-				outcome.Steps = steps
-				outcome.Evidence = evidence
-				return finish(outcome), nil
+			return finish(Result{Iterations: state.Iterations, Evidence: state.Evidence, Usage: state.Usage, StopReason: StopFailed, Reason: err.Error()})
+		}
+		state.Usage = addUsage(state.Usage, think.Response.Usage)
+		latestUsage := think.Response.Usage
+		state.PreviousUsage = &latestUsage
+		state.LastSentCount = len(view.Messages)
+		state.Budget.IterationsUsed++
+		state.Budget.InputTokensUsed += think.Response.Usage.InputTokens
+		state.Budget.OutputTokensUsed += think.Response.Usage.OutputTokens
+		if result, ok := exceededAfterThink(state.Budget, state.Iterations, state.Evidence, state.Usage); ok {
+			if err := completeIteration("budget_exhausted", result.Reason); err != nil {
+				return Result{}, err
 			}
-			evidenceBefore := countVerified(evidence)
-			step, executions, attempted, err := runner.executeCalls(runCtx, len(input.PriorSteps)+len(steps), iteration, input.AvailableTools)
+			return finish(result)
+		}
+
+		analysis, err := runner.analyze.Analyze(AnalyzeInput{Think: think, AvailableTools: request.AvailableTools})
+		if err != nil {
+			if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
+				err = errors.Join(err, publishErr)
+			}
+			return finish(Result{Iterations: state.Iterations, Evidence: state.Evidence, Usage: state.Usage, StopReason: StopFailed, Reason: err.Error()})
+		}
+		var act ActOutput
+		if analysis.Kind == AnalysisAct {
+			if state.Budget.Budget.MaxToolCalls > 0 && state.Budget.ToolCallsUsed+len(analysis.Calls) > state.Budget.Budget.MaxToolCalls {
+				state.Iterations = append(state.Iterations, runner.rejectedToolIteration(iterationIndex, analysis))
+				result := budgetResult(state.Budget, LimitToolCalls, int64(state.Budget.ToolCallsUsed+len(analysis.Calls)), int64(state.Budget.Budget.MaxToolCalls))
+				result.Iterations, result.Evidence, result.Usage = state.Iterations, state.Evidence, state.Usage
+				if err := completeIteration("budget_exhausted", result.Reason); err != nil {
+					return Result{}, err
+				}
+				return finish(result)
+			}
+			act, err = runner.act.Act(iterationCtx, ActInput{Calls: analysis.Calls, AvailableTools: request.AvailableTools})
 			if err != nil {
-				return engine.TaskOutcome{}, err
+				if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
+					err = errors.Join(err, publishErr)
+				}
+				return Result{}, err
 			}
-			budget.ToolCallsUsed += attempted
-			steps = append(steps, step)
-			for _, execution := range executions {
-				evidence = append(evidence, execution.Evidence)
+			state.Budget.ToolCallsUsed += act.Attempted
+		}
+		observed, err := runner.observe.Observe(ObserveInput{
+			Index: iterationIndex, Analysis: analysis, Act: act,
+			EvidenceBefore: countVerified(state.Evidence), AvailableTools: request.AvailableTools,
+		})
+		if err != nil {
+			if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
+				err = errors.Join(err, publishErr)
 			}
-			if outcome, ok := contextOutcome(ctx, runCtx, budget, steps, evidence); ok {
-				return finish(outcome), nil
+			return Result{}, err
+		}
+		iterationEventStatus := string(observed.Iteration.Status)
+		iterationEventReason := ""
+		if observed.BlockedReason != "" {
+			iterationEventStatus = "blocked"
+			iterationEventReason = observed.BlockedReason
+		} else if observed.StalledReason != "" {
+			iterationEventStatus = "stalled"
+			iterationEventReason = observed.StalledReason
+		}
+		if err := completeIteration(iterationEventStatus, iterationEventReason); err != nil {
+			return Result{}, err
+		}
+		state.Iterations = append(state.Iterations, observed.Iteration)
+		state.Evidence = append(state.Evidence, observed.Evidence...)
+		if result, ok := contextResult(ctx, runCtx, state.Budget, state.Iterations, state.Evidence, state.Usage); ok {
+			return finish(result)
+		}
+		if observed.BlockedReason != "" {
+			return finish(Result{Iterations: state.Iterations, Evidence: state.Evidence, Usage: state.Usage, StopReason: StopBlocked, Reason: observed.BlockedReason})
+		}
+		if observed.StalledReason != "" {
+			return finish(Result{Iterations: state.Iterations, Evidence: state.Evidence, Usage: state.Usage, StopReason: StopStalled, Reason: observed.StalledReason})
+		}
+		if analysis.Kind == AnalysisFinal {
+			if analysis.FinalMessage == nil {
+				return Result{}, errors.New("final analysis has no final message")
 			}
-			if observation, ok := firstBlockingObservation(step.Observations); ok {
-				return finish(engine.TaskOutcome{
-					Kind: engine.TaskOutcomeBlocked, Steps: steps, Evidence: evidence,
-					StopReason: engine.StopReasonToolError, Reason: observation.Error,
-				}), nil
-			}
+			message := *analysis.FinalMessage
+			return finish(Result{FinalMessage: &message, Iterations: state.Iterations, Evidence: state.Evidence, Usage: state.Usage, StopReason: StopCompleted})
+		}
+		state.RuntimeMessages = append(state.RuntimeMessages, observed.Replay...)
+	}
+}
 
-			signals, err := runner.progress.Observe(ProgressSample{
-				Calls: iteration.ToolCalls, Observations: step.Observations,
-				EvidenceBefore: evidenceBefore,
-				EvidenceAfter:  countVerified(evidence), Specs: input.AvailableTools,
-			})
-			if err != nil {
-				return engine.TaskOutcome{}, err
-			}
-			if signal, ok := needsPlanSignal(signals, runner.options.EscalateHighImpact); ok {
-				return finish(engine.TaskOutcome{Kind: engine.TaskOutcomeNeedsPlan, Steps: steps, Evidence: evidence, Reason: signal.Reason}), nil
-			}
-			replay, err := ReplayToolResults(iteration.Response.Message, executions)
-			if err != nil {
-				return engine.TaskOutcome{}, err
-			}
-			messages = append(messages, replay...)
-		default:
-			return engine.TaskOutcome{}, fmt.Errorf("unsupported model iteration kind %q", iteration.Kind)
+func (runner *Runner) publish(ctx context.Context, runtimeEvent event.Event) error {
+	if runner.events == nil {
+		return nil
+	}
+	return runner.events.Publish(ctx, runtimeEvent)
+}
+
+func argumentFailureExecution(call tool.Call, err error) ToolExecution {
+	result := tool.Result{CallID: call.ID, ToolName: call.Name}
+	return ToolExecution{
+		Observation: Observation{CallID: call.ID, ToolName: call.Name, Result: result, Error: err.Error()},
+		Evidence:    Evidence{ID: EvidenceID("tool:" + call.ID), Kind: EvidenceTool, Source: call.Name, Summary: "tool arguments rejected: " + err.Error(), Verified: false},
+	}
+}
+
+func normalizedMessageToolCalls(original []llm.ToolCall, calls []tool.Call) []llm.ToolCall {
+	byID := make(map[string]tool.Call, len(calls))
+	for _, call := range calls {
+		byID[call.ID] = call
+	}
+	result := make([]llm.ToolCall, len(original))
+	for index, call := range original {
+		result[index] = call
+		if normalized, ok := byID[call.ID]; ok {
+			result[index].Arguments = append([]byte(nil), normalized.Arguments...)
 		}
 	}
+	return result
 }
 
-func firstBlockingObservation(observations []engine.Observation) (engine.Observation, bool) {
-	for _, observation := range observations {
-		if observation.Blocking {
-			return observation, true
-		}
-	}
-	return engine.Observation{}, false
-}
-
-func (runner *Runner) executeCalls(ctx context.Context, index int, iteration IterationResult, specs []tool.Spec) (engine.Step, []ToolExecution, int, error) {
-	startedAt := runner.now()
-	step := engine.Step{
-		Index: index, Decision: engine.DecisionSummary{Intent: "tool_calls", NextAction: "execute requested tools"},
-		ToolCalls: append([]tool.Call(nil), iteration.ToolCalls...), Status: engine.StepStatusRunning, StartedAt: startedAt,
-	}
-	indexedExecutions, err := runner.resources.Execute(ctx, iteration.ToolCalls, specs)
-	if err != nil {
-		return engine.Step{}, nil, 0, err
-	}
-	executions := make([]ToolExecution, 0, len(indexedExecutions))
-	for _, indexed := range indexedExecutions {
-		execution := indexed.execution
-		executions = append(executions, execution)
-		step.Observations = append(step.Observations, execution.Observation)
-		step.Evidence = append(step.Evidence, execution.Evidence)
-		step.Evidence = append(step.Evidence, execution.SupplementalEvidence...)
-	}
-	if ctx.Err() != nil {
-		step.Status = engine.StepStatusCancelled
-		completedAt := runner.now()
-		step.CompletedAt = &completedAt
-		return step, executions, len(indexedExecutions), nil
-	}
-	step.Status = engine.StepStatusCompleted
-	completedAt := runner.now()
-	step.CompletedAt = &completedAt
-	return step, executions, len(indexedExecutions), nil
-}
-
-func (runner *Runner) rejectedToolStep(index int, iteration IterationResult) engine.Step {
+func (runner *Runner) rejectedToolIteration(index int, analysis AnalyzeOutput) Iteration {
 	startedAt := runner.now()
 	completedAt := runner.now()
-	return engine.Step{
-		Index:     index,
-		Decision:  engine.DecisionSummary{Intent: "tool_calls", NextAction: "stop before tool execution: budget exceeded"},
-		ToolCalls: append([]tool.Call(nil), iteration.ToolCalls...), Status: engine.StepStatusFailed,
-		StartedAt: startedAt, CompletedAt: &completedAt,
-	}
+	return Iteration{Index: index, LLMCallID: analysis.LLMCallID, Intent: "tool_calls_budget_rejected", ToolCalls: append([]tool.Call(nil), analysis.Calls...), Status: IterationFailed, StartedAt: startedAt, CompletedAt: &completedAt}
 }
 
-func (runner *Runner) candidateStep(index int, response llm.Response) engine.Step {
-	startedAt := runner.now()
-	completedAt := runner.now()
-	return engine.Step{
-		Index: index, Decision: engine.DecisionSummary{Intent: "candidate_complete", NextAction: "verify candidate result"},
-		Status: engine.StepStatusCompleted, StartedAt: startedAt, CompletedAt: &completedAt,
+func (runner *Runner) durationSince(startedAt time.Time) time.Duration {
+	finishedAt := runner.now()
+	if finishedAt.Before(startedAt) {
+		return 0
 	}
+	return finishedAt.Sub(startedAt)
 }
 
-func cancelled(steps []engine.Step, evidence []engine.Evidence, err error) engine.TaskOutcome {
-	return engine.TaskOutcome{
-		Kind: engine.TaskOutcomeCancelled, Steps: steps, Evidence: evidence,
-		StopReason: engine.StopReasonCancelled, Reason: err.Error(),
-	}
-}
-
-func contextOutcome(parent, runCtx context.Context, budget engine.BudgetState, steps []engine.Step, evidence []engine.Evidence) (engine.TaskOutcome, bool) {
+func contextResult(parent, runCtx context.Context, budget BudgetState, iterations []Iteration, evidence []Evidence, usage llm.Usage) (Result, bool) {
 	if err := parent.Err(); err != nil {
-		return cancelled(steps, evidence, err), true
+		return Result{Iterations: iterations, Evidence: evidence, Usage: usage, StopReason: StopInterrupted, Reason: err.Error()}, true
 	}
 	if budget.Budget.MaxDuration > 0 && runCtx.Err() != nil {
-		outcome := budgetFailure(budget, engine.BudgetLimitWallClock, int64(budget.Budget.MaxDuration), int64(budget.Budget.MaxDuration))
-		outcome.Steps = steps
-		outcome.Evidence = evidence
-		return outcome, true
+		result := budgetResult(budget, LimitWallClock, int64(budget.Budget.MaxDuration), int64(budget.Budget.MaxDuration))
+		result.Iterations, result.Evidence, result.Usage = iterations, evidence, usage
+		return result, true
 	}
-	return engine.TaskOutcome{}, false
+	return Result{}, false
 }
 
-func exhaustedBeforeModelCall(budget engine.BudgetState, steps []engine.Step, evidence []engine.Evidence) (engine.TaskOutcome, bool) {
+func exhaustedBeforeThink(budget BudgetState, iterations []Iteration, evidence []Evidence, usage llm.Usage) (Result, bool) {
 	checks := []struct {
 		reached bool
-		limit   engine.BudgetLimit
+		limit   LimitKind
 		used    int64
 		maximum int64
 	}{
-		{budget.Budget.MaxSteps > 0 && budget.StepsUsed >= budget.Budget.MaxSteps, engine.BudgetLimitSteps, int64(budget.StepsUsed), int64(budget.Budget.MaxSteps)},
-		{budget.Budget.MaxInputTokens > 0 && budget.InputTokensUsed >= budget.Budget.MaxInputTokens, engine.BudgetLimitInputTokens, budget.InputTokensUsed, budget.Budget.MaxInputTokens},
-		{budget.Budget.MaxOutputTokens > 0 && budget.OutputTokensUsed >= budget.Budget.MaxOutputTokens, engine.BudgetLimitOutputTokens, budget.OutputTokensUsed, budget.Budget.MaxOutputTokens},
+		{budget.Budget.MaxIterations > 0 && budget.IterationsUsed >= budget.Budget.MaxIterations, LimitIterations, int64(budget.IterationsUsed), int64(budget.Budget.MaxIterations)},
+		{budget.Budget.MaxInputTokens > 0 && budget.InputTokensUsed >= budget.Budget.MaxInputTokens, LimitInputTokens, budget.InputTokensUsed, budget.Budget.MaxInputTokens},
+		{budget.Budget.MaxOutputTokens > 0 && budget.OutputTokensUsed >= budget.Budget.MaxOutputTokens, LimitOutputTokens, budget.OutputTokensUsed, budget.Budget.MaxOutputTokens},
 	}
 	for _, check := range checks {
-		if !check.reached {
-			continue
+		if check.reached {
+			result := budgetResult(budget, check.limit, check.used, check.maximum)
+			result.Iterations, result.Evidence, result.Usage = iterations, evidence, usage
+			return result, true
 		}
-		outcome := budgetFailure(budget, check.limit, check.used, check.maximum)
-		outcome.Steps = steps
-		outcome.Evidence = evidence
-		return outcome, true
 	}
-	return engine.TaskOutcome{}, false
+	return Result{}, false
 }
 
-func exceededAfterModelCall(budget engine.BudgetState, steps []engine.Step, evidence []engine.Evidence) (engine.TaskOutcome, bool) {
+func exceededAfterThink(budget BudgetState, iterations []Iteration, evidence []Evidence, usage llm.Usage) (Result, bool) {
 	checks := []struct {
 		exceeded bool
-		limit    engine.BudgetLimit
+		limit    LimitKind
 		used     int64
 		maximum  int64
 	}{
-		{budget.Budget.MaxInputTokens > 0 && budget.InputTokensUsed > budget.Budget.MaxInputTokens, engine.BudgetLimitInputTokens, budget.InputTokensUsed, budget.Budget.MaxInputTokens},
-		{budget.Budget.MaxOutputTokens > 0 && budget.OutputTokensUsed > budget.Budget.MaxOutputTokens, engine.BudgetLimitOutputTokens, budget.OutputTokensUsed, budget.Budget.MaxOutputTokens},
+		{budget.Budget.MaxInputTokens > 0 && budget.InputTokensUsed > budget.Budget.MaxInputTokens, LimitInputTokens, budget.InputTokensUsed, budget.Budget.MaxInputTokens},
+		{budget.Budget.MaxOutputTokens > 0 && budget.OutputTokensUsed > budget.Budget.MaxOutputTokens, LimitOutputTokens, budget.OutputTokensUsed, budget.Budget.MaxOutputTokens},
 	}
 	for _, check := range checks {
-		if !check.exceeded {
-			continue
+		if check.exceeded {
+			result := budgetResult(budget, check.limit, check.used, check.maximum)
+			result.Iterations, result.Evidence, result.Usage = iterations, evidence, usage
+			return result, true
 		}
-		outcome := budgetFailure(budget, check.limit, check.used, check.maximum)
-		outcome.Steps = steps
-		outcome.Evidence = evidence
-		return outcome, true
 	}
-	return engine.TaskOutcome{}, false
+	return Result{}, false
 }
 
-func budgetFailure(budget engine.BudgetState, limit engine.BudgetLimit, used, maximum int64) engine.TaskOutcome {
-	stopReason := engine.StopReasonBudgetExceeded
-	if limit == engine.BudgetLimitSteps {
-		stopReason = engine.StopReasonMaxSteps
-	}
-	return engine.TaskOutcome{
-		Kind:       engine.TaskOutcomeFailed,
-		Budget:     budget,
-		StopReason: stopReason,
-		Limit:      &engine.LimitReached{Limit: limit, Used: used, Maximum: maximum},
-		Reason:     fmt.Sprintf("%s budget reached: used %d of %d", limit, used, maximum),
-	}
+func budgetResult(budget BudgetState, limit LimitKind, used, maximum int64) Result {
+	return Result{Budget: budget, StopReason: StopBudgetExhausted, Limit: &LimitReached{Limit: limit, Used: used, Maximum: maximum}, Reason: fmt.Sprintf("%s budget reached: used %d of %d", limit, used, maximum)}
 }
 
-func maxOutputTokens(configured int, budget engine.BudgetState) int {
+func maxOutputTokens(configured int, budget BudgetState) int {
 	if budget.Budget.MaxOutputTokens <= 0 {
 		return configured
 	}
@@ -360,21 +400,14 @@ func maxOutputTokens(configured int, budget engine.BudgetState) int {
 	return configured
 }
 
-func iterationID(input engine.TaskRunInput, index int) string {
-	return fmt.Sprintf("%s/%s/iteration-%d", input.RunID, input.Task.ID, index+1)
-}
-
-func evidenceIDs(evidence []engine.Evidence) []engine.EvidenceID {
-	ids := make([]engine.EvidenceID, 0, len(evidence))
-	for _, item := range evidence {
-		if item.Verified {
-			ids = append(ids, item.ID)
-		}
+func iterationID(request Request, index int) string {
+	if request.Metadata.TaskID != "" {
+		return fmt.Sprintf("%s/%s/llm-%d", request.RunID, request.Metadata.TaskID, index+1)
 	}
-	return ids
+	return fmt.Sprintf("%s/llm-%d", request.RunID, index+1)
 }
 
-func countVerified(evidence []engine.Evidence) int {
+func countVerified(evidence []Evidence) int {
 	count := 0
 	for _, item := range evidence {
 		if item.Verified {
@@ -393,17 +426,11 @@ func addUsage(total, next llm.Usage) llm.Usage {
 	return total
 }
 
-func needsPlanSignal(signals []ProgressSignal, escalateHighImpact bool) (ProgressSignal, bool) {
+func stalledSignal(signals []ProgressSignal) (ProgressSignal, bool) {
 	for _, signal := range signals {
-		if !signal.RecommendPlan {
-			continue
+		if signal.RecommendPlan && signal.Kind != ProgressHighImpact {
+			return signal, true
 		}
-		if signal.Kind == ProgressHighImpact && !escalateHighImpact {
-			continue
-		}
-		return signal, true
 	}
 	return ProgressSignal{}, false
 }
-
-var _ engine.ReActRunner = (*Runner)(nil)

@@ -12,7 +12,7 @@ type ID string
 
 const (
 	Base              ID = "base.md"
-	EngineProtocol    ID = "engine_protocol.md"
+	ExecutionProtocol ID = "execution_protocol.md"
 	Approval          ID = "approval.md"
 	Tools             ID = "tools.md"
 	RuntimeContext    ID = "runtime_context.md"
@@ -20,15 +20,13 @@ const (
 	Skills            ID = "skills.md"
 	ContextManagement ID = "context_management.md"
 	Handoff           ID = "handoff.md"
-	EngineRetry       ID = "engine/retry.md"
-	TaskReflection    ID = "reflect/task.md"
 	Planner           ID = "planner.md"
 	Replanner         ID = "replanner.md"
 )
 
 var agentLayers = []ID{
 	Base,
-	EngineProtocol,
+	ExecutionProtocol,
 	Approval,
 	Tools,
 	RuntimeContext,
@@ -40,7 +38,7 @@ var agentLayers = []ID{
 
 var all = []ID{
 	Base,
-	EngineProtocol,
+	ExecutionProtocol,
 	Approval,
 	Tools,
 	RuntimeContext,
@@ -48,8 +46,6 @@ var all = []ID{
 	Skills,
 	ContextManagement,
 	Handoff,
-	EngineRetry,
-	TaskReflection,
 	Planner,
 	Replanner,
 }
@@ -62,7 +58,7 @@ var known = func() map[ID]struct{} {
 	return result
 }()
 
-//go:embed *.md engine/*.md reflect/*.md
+//go:embed *.md
 var embedded embed.FS
 
 func AgentLayers() []ID {
@@ -94,14 +90,6 @@ func AgentSystem() string {
 		parts[index] = mustRead(id)
 	}
 	return strings.Join(parts, "\n\n")
-}
-
-func RetryProtocol() string {
-	return mustRead(EngineRetry)
-}
-
-func ReflectionProtocol() string {
-	return mustRead(TaskReflection)
 }
 
 func Embedded() fs.FS {

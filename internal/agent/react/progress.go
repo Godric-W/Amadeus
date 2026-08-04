@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -33,7 +32,7 @@ type ProgressSignal struct {
 
 type ProgressSample struct {
 	Calls          []tool.Call
-	Observations   []engine.Observation
+	Observations   []Observation
 	EvidenceBefore int
 	EvidenceAfter  int
 	Specs          []tool.Spec
@@ -178,7 +177,7 @@ func toolCallSignature(call tool.Call) (string, error) {
 	return strings.TrimSpace(call.Name) + ":" + string(canonical), nil
 }
 
-func normalizedErrorKey(observation engine.Observation) string {
+func normalizedErrorKey(observation Observation) string {
 	message := strings.ToLower(strings.Join(strings.Fields(observation.Error), " "))
 	return strings.TrimSpace(observation.ToolName) + ":" + message
 }

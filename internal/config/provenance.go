@@ -49,13 +49,13 @@ func SourcesFor(configured Config) Sources {
 	sort.Strings(providerNames)
 	for _, name := range providerNames {
 		prefix := "providers." + name + "."
-		for _, field := range []string{"api", "dialect", "api_key", "base_url", "model", "timeout", "max_retries", "temperature", "max_output_tokens"} {
+		for _, field := range []string{"api", "dialect", "api_key", "base_url", "model", "timeout", "max_retries", "temperature", "max_output_tokens", "context_window"} {
 			set(prefix + field)
 		}
 	}
 
 	for _, path := range []string{
-		"agent.max_steps",
+		"agent.max_iterations",
 		"agent.max_tool_calls",
 		"agent.max_input_tokens",
 		"agent.max_output_tokens",

@@ -21,23 +21,23 @@ func TestAgentRendererRendersCompleteAgentEventSequence(t *testing.T) {
 		t.Fatalf("create Agent renderer: %v", err)
 	}
 	events := []event.Event{
-		event.EngineRunStarted{RunID: "run-1", TaskID: "task-1"},
-		event.TurnStarted{TurnID: "turn-1"},
-		event.ReasoningDelta{TurnID: "turn-1", Delta: "hidden chain of thought"},
-		event.TextDelta{TurnID: "turn-1", Delta: "working"},
+		event.RunStarted{RunID: "run-1", TaskID: "task-1"},
+		event.LLMCallStarted{LLMCallID: "turn-1"},
+		event.ReasoningDelta{LLMCallID: "turn-1", Delta: "hidden chain of thought"},
+		event.TextDelta{LLMCallID: "turn-1", Delta: "working"},
 		event.ToolCallStarted{RunID: "run-1", CallID: "call-1", ToolName: "read_file"},
 		event.ApprovalRequested{RequestID: "call-2", ToolName: "write_file", Risk: "high", Reason: "tool writes files"},
 		event.ApprovalResolved{RequestID: "call-2", ToolName: "write_file", Outcome: "allow", Scope: "once", Source: "user", Reason: "approved once"},
 		event.ToolCallCompleted{RunID: "run-1", CallID: "call-1", ToolName: "read_file", Success: true, Duration: 12 * time.Millisecond, Summary: "read 10 lines"},
-		event.UsageUpdated{TurnID: "turn-1", Usage: llm.Usage{InputTokens: 10, CachedInputTokens: 2, OutputTokens: 4, ReasoningTokens: 1, TotalTokens: 14}},
+		event.UsageUpdated{LLMCallID: "turn-1", Usage: llm.Usage{InputTokens: 10, CachedInputTokens: 2, OutputTokens: 4, ReasoningTokens: 1, TotalTokens: 14}},
 		event.StatusChanged{Entity: "task", EntityID: "task-1", From: "ready", To: "running"},
-		event.EngineStatusChanged{Entity: "run", EntityID: "run-1", From: "running", To: "verifying"},
+		event.RunStatusChanged{Entity: "run", EntityID: "run-1", From: "running", To: "verifying"},
 		event.DiagnosticPublished{Severity: "warn", Code: "partial", Message: "output was truncated"},
 		event.VerificationCompleted{TaskID: "task-1", Passed: false, EvidenceGaps: []string{"tests missing", "diff unchecked"}},
 		event.ReflectionCompleted{TaskID: "task-1", Scope: "task", Verdict: "retry"},
-		event.ErrorOccurred{TurnID: "turn-1", Error: event.ErrorInfo{Message: "provider\nfailed"}},
-		event.EngineRunCompleted{RunID: "run-1", Status: "cancelled", StopReason: "context_cancelled", Reason: "user interrupted"},
-		event.TurnCompleted{TurnID: "turn-1"},
+		event.ErrorOccurred{LLMCallID: "turn-1", Error: event.ErrorInfo{Message: "provider\nfailed"}},
+		event.RunCompleted{RunID: "run-1", Status: "cancelled", StopReason: "context_cancelled", Reason: "user interrupted"},
+		event.LLMCallCompleted{LLMCallID: "turn-1"},
 	}
 	for _, runtimeEvent := range events {
 		if err := renderer.Publish(context.Background(), runtimeEvent); err != nil {
@@ -115,7 +115,7 @@ func TestAgentRendererPropagatesContextAndWriterErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create failing Agent renderer: %v", err)
 	}
-	if err := renderer.Publish(context.Background(), event.TextDelta{TurnID: "turn", Delta: "x"}); !errors.Is(err, expected) {
+	if err := renderer.Publish(context.Background(), event.TextDelta{LLMCallID: "turn", Delta: "x"}); !errors.Is(err, expected) {
 		t.Fatalf("unexpected text writer error: %v", err)
 	}
 	if err := renderer.Publish(context.Background(), event.ToolCallStarted{CallID: "call", ToolName: "tool"}); !errors.Is(err, expected) {
@@ -123,17 +123,17 @@ func TestAgentRendererPropagatesContextAndWriterErrors(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := renderer.Publish(ctx, event.TurnStarted{}); !errors.Is(err, context.Canceled) {
+	if err := renderer.Publish(ctx, event.LLMCallStarted{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("unexpected canceled render error: %v", err)
 	}
-	if err := renderer.Publish(nil, event.TurnStarted{}); err == nil {
+	if err := renderer.Publish(nil, event.LLMCallStarted{}); err == nil {
 		t.Fatal("nil context did not fail")
 	}
 	if err := renderer.Publish(context.Background(), nil); !errors.Is(err, event.ErrNilEvent) {
 		t.Fatalf("unexpected nil event error: %v", err)
 	}
 	var nilRenderer *AgentRenderer
-	if err := nilRenderer.Publish(context.Background(), event.TurnStarted{}); err == nil {
+	if err := nilRenderer.Publish(context.Background(), event.LLMCallStarted{}); err == nil {
 		t.Fatal("nil renderer did not fail")
 	}
 	if renderer, err := NewAgentRenderer(nil, &bytes.Buffer{}); err == nil || renderer != nil {

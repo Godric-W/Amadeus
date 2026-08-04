@@ -11,7 +11,7 @@ import (
 func TestBuiltinsMatchStableCatalog(t *testing.T) {
 	expected := []ID{
 		Base,
-		EngineProtocol,
+		ExecutionProtocol,
 		Approval,
 		Tools,
 		RuntimeContext,
@@ -19,8 +19,6 @@ func TestBuiltinsMatchStableCatalog(t *testing.T) {
 		Skills,
 		ContextManagement,
 		Handoff,
-		EngineRetry,
-		TaskReflection,
 		Planner,
 		Replanner,
 	}
@@ -55,7 +53,7 @@ func TestBuiltinsMatchStableCatalog(t *testing.T) {
 }
 
 func TestAgentSystemUsesDocumentedLayerOrder(t *testing.T) {
-	expectedLayers := []ID{Base, EngineProtocol, Approval, Tools, RuntimeContext, Instructions, Skills, ContextManagement, Handoff}
+	expectedLayers := []ID{Base, ExecutionProtocol, Approval, Tools, RuntimeContext, Instructions, Skills, ContextManagement, Handoff}
 	if got := AgentLayers(); !reflect.DeepEqual(got, expectedLayers) {
 		t.Fatalf("unexpected Agent prompt layers: got %v, want %v", got, expectedLayers)
 	}
@@ -73,7 +71,7 @@ func TestAgentSystemUsesDocumentedLayerOrder(t *testing.T) {
 		}
 		position = next
 	}
-	if !strings.Contains(combined, "outer Replanner decides") || !strings.Contains(combined, "Do not claim success") {
+	if !strings.Contains(combined, "outer Plan Controller reviews") || !strings.Contains(combined, "Do not claim success") {
 		t.Fatalf("Agent protocol omitted verification or handoff contract: %q", combined)
 	}
 	for _, required := range []string{"structured exploration tools", "Use `apply_patch` for normal edits", "`mode=create`", "builds, tests, Git", "Do not use shell redirection"} {
@@ -85,12 +83,12 @@ func TestAgentSystemUsesDocumentedLayerOrder(t *testing.T) {
 
 func TestCatalogSnapshotsAndUnknownIDsAreSafe(t *testing.T) {
 	layers := AgentLayers()
-	layers[0] = EngineRetry
+	layers[0] = Planner
 	if AgentLayers()[0] != Base {
 		t.Fatal("Agent layer snapshot shares mutable storage")
 	}
 	all := All()
-	all[0] = EngineRetry
+	all[0] = Planner
 	if All()[0] != Base {
 		t.Fatal("built-in prompt catalog snapshot shares mutable storage")
 	}

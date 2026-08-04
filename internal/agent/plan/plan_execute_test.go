@@ -1,13 +1,36 @@
-package engine
+package plan
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/llm"
 )
+
+type planClient struct {
+	responses []llm.Response
+	index     int
+}
+
+func (client *planClient) Complete(context.Context, llm.Request) (llm.Response, error) {
+	if client.index >= len(client.responses) {
+		return llm.Response{}, errors.New("unexpected Plan LLM call")
+	}
+	response := client.responses[client.index]
+	client.index++
+	return response, nil
+}
+
+func (*planClient) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, errors.New("stream is not supported")
+}
+
+func (*planClient) Model() llm.ModelInfo { return llm.ModelInfo{Provider: "test", Name: "test-model"} }
+
+func (*planClient) Capabilities() llm.Capabilities { return llm.Capabilities{} }
 
 func TestParsePlanDraftAcceptsCommonFormats(t *testing.T) {
 	for name, content := range map[string]string{
@@ -76,6 +99,53 @@ func TestParseReplanDecision(t *testing.T) {
 	}
 }
 
+func TestPlannerAndReplannerPublishLLMCallLifecycle(t *testing.T) {
+	events := event.NewMemorySink()
+	client := &planClient{responses: []llm.Response{
+		{ID: "response-plan", RequestID: "request-plan", Message: llm.AssistantMessage("PLAN\n- inspect"), FinishReason: llm.FinishReasonStop, Usage: llm.Usage{TotalTokens: 4}},
+		{ID: "response-review", RequestID: "request-review", Message: llm.AssistantMessage("COMPLETE\ndone"), FinishReason: llm.FinishReasonStop, Usage: llm.Usage{TotalTokens: 3}},
+	}}
+	options := PlannerOptions{MaxAttempts: 1, MaxOutputTokens: 128, Events: events}
+	planner, err := NewLLMPlanDraftPlanner(client, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replanner, err := NewLLMReplanner(client, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := event.WithMetadata(context.Background(), event.Metadata{SessionID: "session-1", RunID: "run-1"})
+	if _, err := planner.Draft(ctx, DraftPlanRequest{Goal: Goal{Objective: "inspect"}}); err != nil {
+		t.Fatal(err)
+	}
+	reviewCtx := event.WithMetadata(ctx, event.Metadata{Iteration: 2})
+	if _, err := replanner.Decide(reviewCtx, ReplanRequest{Goal: Goal{Objective: "inspect"}, Graph: ExecutionGraph{Kind: ExecutionPlanned, Version: 1, Tasks: []Task{{ID: "task-1", Objective: "inspect", Status: TaskStatusCompleted}}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var started []event.LLMCallStarted
+	var completed []event.LLMCallCompleted
+	for _, runtimeEvent := range events.Snapshot() {
+		switch typed := runtimeEvent.(type) {
+		case event.LLMCallStarted:
+			started = append(started, typed)
+		case event.LLMCallCompleted:
+			completed = append(completed, typed)
+		}
+	}
+	if len(started) != 2 || len(completed) != 2 {
+		t.Fatalf("unexpected Plan LLM lifecycle events: started=%#v completed=%#v", started, completed)
+	}
+	if started[0].LLMCallID != "run-1/plan/initial-attempt-1" || started[1].LLMCallID != "run-1/plan/review-cycle-2-attempt-1" {
+		t.Fatalf("unexpected Plan LLM call IDs: %#v", started)
+	}
+	for _, item := range append(started, event.LLMCallStarted{SessionID: completed[0].SessionID, RunID: completed[0].RunID, LLMCallID: completed[0].LLMCallID}) {
+		if item.SessionID != "session-1" || item.RunID != "run-1" || item.LLMCallID == "" {
+			t.Fatalf("missing Plan LLM metadata: %#v", item)
+		}
+	}
+}
+
 type fixedDraftPlanner struct {
 	drafts []PlanDraft
 	index  int
@@ -102,6 +172,19 @@ type fixedTaskRunner struct {
 	objectives []string
 }
 
+type cancelledTaskRunner struct{}
+
+func (cancelledTaskRunner) Run(context.Context, TaskRunInput) (TaskOutcome, error) {
+	return TaskOutcome{Kind: TaskOutcomeCancelled, StopReason: StopReasonCancelled, Reason: "user cancelled"}, nil
+}
+
+type rejectingReplanner struct{ called bool }
+
+func (replanner *rejectingReplanner) Decide(context.Context, ReplanRequest) (ReplanDecision, error) {
+	replanner.called = true
+	return ReplanDecision{}, errors.New("replanner must not be called after cancellation")
+}
+
 func (runner *fixedTaskRunner) Run(_ context.Context, input TaskRunInput) (TaskOutcome, error) {
 	runner.objectives = append(runner.objectives, input.Task.Objective)
 	return TaskOutcome{
@@ -114,19 +197,19 @@ func (runner *fixedTaskRunner) Run(_ context.Context, input TaskRunInput) (TaskO
 	}, nil
 }
 
-func TestPlanExecuteEngineRunsPlanThenReplans(t *testing.T) {
+func TestControllerRunsPlanThenReplans(t *testing.T) {
 	planner := &fixedDraftPlanner{drafts: []PlanDraft{{Tasks: []string{"inspect", "report"}}}}
 	runner := &fixedTaskRunner{}
 	replanner := &fixedReplanner{decisions: []ReplanDecision{
 		{Action: ReplanAgain, Plan: PlanDraft{Tasks: []string{"verify"}}},
 		{Action: ReplanComplete, FinalAnswer: "all done"},
 	}}
-	planEngine, err := NewPlanExecuteEngine(planner, runner, replanner, PlanExecuteEngineOptions{MaxPlanCycles: 3})
+	planEngine, err := NewController(planner, runner, replanner, ControllerOptions{MaxPlanCycles: 3})
 	if err != nil {
 		t.Fatalf("create engine: %v", err)
 	}
 	goal := Goal{Objective: "complete work"}
-	result, err := planEngine.Run(context.Background(), DirectRunInput{State: NewRun("run", goal, NewDirectGraph(goal), Budget{})})
+	result, err := planEngine.Run(context.Background(), PlanRunInput{State: NewRun("run", goal, NewPlanGraph(), Budget{})})
 	if err != nil {
 		t.Fatalf("run engine: %v", err)
 	}
@@ -144,27 +227,27 @@ func TestPlanExecuteEngineRunsPlanThenReplans(t *testing.T) {
 	}
 }
 
-func TestPlanExecuteEnginePublishesPlanAndTerminalTaskStatuses(t *testing.T) {
+func TestControllerPublishesPlanAndTerminalTaskStatuses(t *testing.T) {
 	planner := &fixedDraftPlanner{drafts: []PlanDraft{{Tasks: []string{"inspect"}}}}
 	runner := &fixedTaskRunner{}
 	replanner := &fixedReplanner{decisions: []ReplanDecision{{Action: ReplanComplete, FinalAnswer: "done"}}}
 	events := event.NewMemorySink()
-	planEngine, err := NewPlanExecuteEngine(planner, runner, replanner, PlanExecuteEngineOptions{Events: events})
+	planEngine, err := NewController(planner, runner, replanner, ControllerOptions{Events: events})
 	if err != nil {
 		t.Fatalf("create engine: %v", err)
 	}
 	goal := Goal{Objective: "inspect"}
-	if _, err := planEngine.Run(context.Background(), DirectRunInput{State: NewRun("run", goal, NewDirectGraph(goal), Budget{})}); err != nil {
+	if _, err := planEngine.Run(context.Background(), PlanRunInput{State: NewRun("run", goal, NewPlanGraph(), Budget{})}); err != nil {
 		t.Fatalf("run engine: %v", err)
 	}
 
 	var plan event.PlanUpdated
-	var statuses []event.EngineStatusChanged
+	var statuses []event.RunStatusChanged
 	for _, runtimeEvent := range events.Snapshot() {
 		switch typed := runtimeEvent.(type) {
 		case event.PlanUpdated:
 			plan = typed
-		case event.EngineStatusChanged:
+		case event.RunStatusChanged:
 			if typed.Entity == "task" {
 				statuses = append(statuses, typed)
 			}
@@ -173,12 +256,12 @@ func TestPlanExecuteEnginePublishesPlanAndTerminalTaskStatuses(t *testing.T) {
 	if plan.Cycle != 1 || len(plan.Tasks) != 1 || plan.Tasks[0].ID != "task-1" || plan.Tasks[0].Objective != "inspect" || plan.Tasks[0].Status != string(TaskStatusPending) {
 		t.Fatalf("unexpected published plan: %#v", plan)
 	}
-	if len(statuses) != 2 || statuses[0].From != string(TaskStatusPending) || statuses[0].To != string(TaskStatusRunning) || statuses[1].From != string(TaskStatusRunning) || statuses[1].To != string(TaskStatusCompleted) {
+	if len(statuses) != 2 || statuses[0].TaskID != "task-1" || statuses[0].From != string(TaskStatusPending) || statuses[0].To != string(TaskStatusRunning) || statuses[1].TaskID != "task-1" || statuses[1].From != string(TaskStatusRunning) || statuses[1].To != string(TaskStatusCompleted) {
 		t.Fatalf("unexpected task status events: %#v", statuses)
 	}
 }
 
-func TestPlanExecuteEnginePublishesEachReplanCycle(t *testing.T) {
+func TestControllerPublishesEachReplanCycle(t *testing.T) {
 	planner := &fixedDraftPlanner{drafts: []PlanDraft{{Tasks: []string{"first"}}}}
 	runner := &fixedTaskRunner{}
 	replanner := &fixedReplanner{decisions: []ReplanDecision{
@@ -186,12 +269,12 @@ func TestPlanExecuteEnginePublishesEachReplanCycle(t *testing.T) {
 		{Action: ReplanComplete, FinalAnswer: "done"},
 	}}
 	events := event.NewMemorySink()
-	planEngine, err := NewPlanExecuteEngine(planner, runner, replanner, PlanExecuteEngineOptions{Events: events})
+	planEngine, err := NewController(planner, runner, replanner, ControllerOptions{Events: events})
 	if err != nil {
 		t.Fatalf("create engine: %v", err)
 	}
 	goal := Goal{Objective: "work"}
-	if _, err := planEngine.Run(context.Background(), DirectRunInput{State: NewRun("run", goal, NewDirectGraph(goal), Budget{})}); err != nil {
+	if _, err := planEngine.Run(context.Background(), PlanRunInput{State: NewRun("run", goal, NewPlanGraph(), Budget{})}); err != nil {
 		t.Fatalf("run engine: %v", err)
 	}
 	var plans []event.PlanUpdated
@@ -202,5 +285,22 @@ func TestPlanExecuteEnginePublishesEachReplanCycle(t *testing.T) {
 	}
 	if len(plans) != 2 || plans[0].Cycle != 1 || plans[0].Tasks[0].Objective != "first" || plans[1].Cycle != 2 || plans[1].Tasks[0].Objective != "second" {
 		t.Fatalf("unexpected replan events: %#v", plans)
+	}
+}
+
+func TestControllerDoesNotReplanAfterCancellation(t *testing.T) {
+	planner := &fixedDraftPlanner{drafts: []PlanDraft{{Tasks: []string{"inspect"}}}}
+	replanner := &rejectingReplanner{}
+	controller, err := NewController(planner, cancelledTaskRunner{}, replanner, ControllerOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	goal := Goal{Objective: "inspect"}
+	result, err := controller.Run(context.Background(), PlanRunInput{State: NewRun("run", goal, NewPlanGraph(), Budget{})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replanner.called || result.State.Status != RunStatusCancelled || result.State.StopReason != StopReasonCancelled {
+		t.Fatalf("unexpected cancelled Plan result: called=%t result=%#v", replanner.called, result)
 	}
 }

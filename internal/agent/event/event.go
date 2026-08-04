@@ -11,102 +11,177 @@ import (
 type Type string
 
 const (
-	TypeTurnStarted         Type = "turn.started"
-	TypeTurnCompleted       Type = "turn.completed"
-	TypeTextDelta           Type = "text.delta"
-	TypeReasoningDelta      Type = "reasoning.delta"
-	TypeToolCallStarted     Type = "tool_call.started"
-	TypeToolCallCompleted   Type = "tool_call.completed"
-	TypeApprovalRequested   Type = "approval.requested"
-	TypeApprovalResolved    Type = "approval.resolved"
-	TypeUsageUpdated        Type = "usage.updated"
-	TypeStatusChanged       Type = "status.changed"
-	TypeDiagnosticPublished Type = "diagnostic.published"
-	TypeErrorOccurred       Type = "error.occurred"
-	TypeEngineRunStarted    Type = "engine.run.started"
-	TypeEngineStatusChanged Type = "engine.status.changed"
-	TypePlanUpdated         Type = "engine.plan.updated"
-	TypeVerificationDone    Type = "engine.verification.completed"
-	TypeReflectionDone      Type = "engine.reflection.completed"
-	TypeEngineRunCompleted  Type = "engine.run.completed"
+	TypeLLMCallStarted       Type = "llm_call.started"
+	TypeLLMCallCompleted     Type = "llm_call.completed"
+	TypeTextDelta            Type = "text.delta"
+	TypeReasoningDelta       Type = "reasoning.delta"
+	TypeToolCallStarted      Type = "tool_call.started"
+	TypeToolCallCompleted    Type = "tool_call.completed"
+	TypeApprovalRequested    Type = "approval.requested"
+	TypeApprovalResolved     Type = "approval.resolved"
+	TypeUsageUpdated         Type = "usage.updated"
+	TypeContextWindowUpdated Type = "context_window.updated"
+	TypeStatusChanged        Type = "status.changed"
+	TypeDiagnosticPublished  Type = "diagnostic.published"
+	TypeErrorOccurred        Type = "error.occurred"
+	TypeRunStarted           Type = "run.started"
+	TypeRunStatusChanged     Type = "run.status.changed"
+	TypePlanUpdated          Type = "plan.updated"
+	TypeVerificationDone     Type = "verification.completed"
+	TypeReflectionDone       Type = "reflection.completed"
+	TypeRunCompleted         Type = "run.completed"
+	TypeIterationStarted     Type = "iteration.started"
+	TypeIterationCompleted   Type = "iteration.completed"
 )
 
-type Event interface {
-	Type() Type
+type Metadata struct {
+	SessionID string `json:"session_id,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
+	TaskID    string `json:"task_id,omitempty"`
+	Iteration int    `json:"iteration,omitempty"`
+	LLMCallID string `json:"llm_call_id,omitempty"`
 }
 
+type Event interface{ Type() Type }
 type Sink interface {
 	Publish(context.Context, Event) error
 }
 
-type TurnStarted struct {
-	TurnID string
-	Model  llm.ModelInfo
+type LLMCallStarted struct {
+	SessionID string
+	RunID     string
+	TaskID    string
+	Iteration int
+	LLMCallID string
+	Model     llm.ModelInfo
 }
 
-func (TurnStarted) Type() Type {
-	return TypeTurnStarted
-}
+func (LLMCallStarted) Type() Type { return TypeLLMCallStarted }
 
 type TextDelta struct {
-	TurnID     string
+	SessionID  string
+	RunID      string
+	TaskID     string
+	Iteration  int
+	LLMCallID  string
 	ResponseID string
 	Delta      string
 }
 
-func (TextDelta) Type() Type {
-	return TypeTextDelta
-}
+func (TextDelta) Type() Type { return TypeTextDelta }
 
 type ReasoningDelta struct {
-	TurnID     string
+	SessionID  string
+	RunID      string
+	TaskID     string
+	Iteration  int
+	LLMCallID  string
 	ResponseID string
 	Delta      string
 }
 
-func (ReasoningDelta) Type() Type {
-	return TypeReasoningDelta
-}
+func (ReasoningDelta) Type() Type { return TypeReasoningDelta }
 
 type UsageUpdated struct {
-	TurnID     string
+	SessionID  string
+	RunID      string
+	TaskID     string
+	Iteration  int
+	LLMCallID  string
 	ResponseID string
 	Usage      llm.Usage
 }
 
-func (UsageUpdated) Type() Type {
-	return TypeUsageUpdated
+func (UsageUpdated) Type() Type { return TypeUsageUpdated }
+
+type ContextWindowUpdated struct {
+	SessionID            string
+	RunID                string
+	TaskID               string
+	Iteration            int
+	LLMCallID            string
+	EstimatedInputTokens int64
+	ContextWindow        int64
+	EffectiveInputLimit  int64
+	ProjectedToolResults int
+	DroppedMessagePairs  int
 }
 
-type TurnCompleted struct {
-	TurnID               string
+func (ContextWindowUpdated) Type() Type { return TypeContextWindowUpdated }
+
+type LLMCallCompleted struct {
+	SessionID            string
+	RunID                string
+	TaskID               string
+	Iteration            int
+	LLMCallID            string
 	ResponseID           string
 	RequestID            string
 	FinishReason         llm.FinishReason
 	ProviderFinishReason string
 }
 
+func (LLMCallCompleted) Type() Type { return TypeLLMCallCompleted }
+
+type IterationStarted struct {
+	SessionID string
+	RunID     string
+	TaskID    string
+	Iteration int
+	LLMCallID string
+}
+
+func (IterationStarted) Type() Type { return TypeIterationStarted }
+
+type IterationCompleted struct {
+	SessionID string
+	RunID     string
+	TaskID    string
+	Iteration int
+	LLMCallID string
+	Status    string
+	Reason    string
+}
+
+func (IterationCompleted) Type() Type { return TypeIterationCompleted }
+
 type ToolCallStarted struct {
-	RunID    string
-	CallID   string
-	ToolName string
+	SessionID     string
+	RunID         string
+	TaskID        string
+	Iteration     int
+	LLMCallID     string
+	CallID        string
+	ToolName      string
+	SideEffect    string
+	ActionSummary string
+	Detail        string
 }
 
 func (ToolCallStarted) Type() Type { return TypeToolCallStarted }
 
 type ToolCallCompleted struct {
-	RunID    string
-	CallID   string
-	ToolName string
-	Success  bool
-	Partial  bool
-	Summary  string
-	Duration time.Duration
+	SessionID string
+	RunID     string
+	TaskID    string
+	Iteration int
+	LLMCallID string
+	CallID    string
+	ToolName  string
+	Success   bool
+	Partial   bool
+	Summary   string
+	Duration  time.Duration
 }
 
 func (ToolCallCompleted) Type() Type { return TypeToolCallCompleted }
 
 type ApprovalRequested struct {
+	SessionID string
+	RunID     string
+	TaskID    string
+	Iteration int
+	LLMCallID string
 	RequestID string
 	ToolName  string
 	Risk      string
@@ -116,6 +191,11 @@ type ApprovalRequested struct {
 func (ApprovalRequested) Type() Type { return TypeApprovalRequested }
 
 type ApprovalResolved struct {
+	SessionID string
+	RunID     string
+	TaskID    string
+	Iteration int
+	LLMCallID string
 	RequestID string
 	ToolName  string
 	Outcome   string
@@ -127,25 +207,31 @@ type ApprovalResolved struct {
 func (ApprovalResolved) Type() Type { return TypeApprovalResolved }
 
 type StatusChanged struct {
-	Entity   string
-	EntityID string
-	From     string
-	To       string
+	SessionID string
+	RunID     string
+	TaskID    string
+	Iteration int
+	LLMCallID string
+	Entity    string
+	EntityID  string
+	From      string
+	To        string
 }
 
 func (StatusChanged) Type() Type { return TypeStatusChanged }
 
 type DiagnosticPublished struct {
-	Severity string
-	Code     string
-	Message  string
+	SessionID string
+	RunID     string
+	TaskID    string
+	Iteration int
+	LLMCallID string
+	Severity  string
+	Code      string
+	Message   string
 }
 
 func (DiagnosticPublished) Type() Type { return TypeDiagnosticPublished }
-
-func (TurnCompleted) Type() Type {
-	return TypeTurnCompleted
-}
 
 type ErrorInfo struct {
 	Kind       llm.ProviderErrorKind
@@ -162,118 +248,107 @@ func NewErrorInfo(err error) ErrorInfo {
 	}
 	var providerError *llm.ProviderError
 	if errors.As(err, &providerError) {
-		return ErrorInfo{
-			Kind:       providerError.Kind,
-			StatusCode: providerError.StatusCode,
-			Code:       providerError.Code,
-			Param:      providerError.Param,
-			RequestID:  providerError.RequestID,
-			Message:    providerError.Message,
-		}
+		return ErrorInfo{Kind: providerError.Kind, StatusCode: providerError.StatusCode, Code: providerError.Code, Param: providerError.Param, RequestID: providerError.RequestID, Message: providerError.Message}
 	}
-	return ErrorInfo{
-		Kind:    llm.ProviderErrorUnknown,
-		Message: err.Error(),
-	}
+	return ErrorInfo{Kind: llm.ProviderErrorUnknown, Message: err.Error()}
 }
 
 type ErrorOccurred struct {
-	TurnID string
-	Error  ErrorInfo
+	SessionID string
+	RunID     string
+	TaskID    string
+	Iteration int
+	LLMCallID string
+	Error     ErrorInfo
 }
 
-type EngineRunStarted struct {
-	RunID  string
-	TaskID string
+func (ErrorOccurred) Type() Type { return TypeErrorOccurred }
+
+type RunStarted struct {
+	SessionID string
+	RunID     string
+	TaskID    string
+	Iteration int
+	LLMCallID string
 }
 
-func (EngineRunStarted) Type() Type {
-	return TypeEngineRunStarted
+func (RunStarted) Type() Type { return TypeRunStarted }
+
+type RunStatusChanged struct {
+	SessionID string
+	RunID     string
+	TaskID    string
+	Iteration int
+	LLMCallID string
+	Entity    string
+	EntityID  string
+	From      string
+	To        string
 }
 
-type EngineStatusChanged struct {
-	RunID    string
-	Entity   string
-	EntityID string
-	From     string
-	To       string
-}
-
-func (EngineStatusChanged) Type() Type {
-	return TypeEngineStatusChanged
-}
+func (RunStatusChanged) Type() Type { return TypeRunStatusChanged }
 
 type PlanTask struct {
 	ID        string
 	Objective string
 	Status    string
 }
-
 type PlanUpdated struct {
-	RunID string
-	Cycle int
-	Tasks []PlanTask
+	SessionID string
+	RunID     string
+	TaskID    string
+	Iteration int
+	LLMCallID string
+	Cycle     int
+	Tasks     []PlanTask
 }
 
 func (PlanUpdated) Type() Type { return TypePlanUpdated }
 
 type VerificationCompleted struct {
+	SessionID    string
 	RunID        string
 	TaskID       string
+	Iteration    int
+	LLMCallID    string
 	Passed       bool
 	EvidenceGaps []string
 }
 
-func (VerificationCompleted) Type() Type {
-	return TypeVerificationDone
-}
+func (VerificationCompleted) Type() Type { return TypeVerificationDone }
 
 type ReflectionCompleted struct {
-	RunID   string
-	TaskID  string
-	Scope   string
-	Verdict string
+	SessionID string
+	RunID     string
+	TaskID    string
+	Iteration int
+	LLMCallID string
+	Scope     string
+	Verdict   string
 }
 
-func (ReflectionCompleted) Type() Type {
-	return TypeReflectionDone
-}
+func (ReflectionCompleted) Type() Type { return TypeReflectionDone }
 
-type EngineRunCompleted struct {
+type RunCompleted struct {
+	SessionID  string
 	RunID      string
+	TaskID     string
+	Iteration  int
+	LLMCallID  string
 	Status     string
 	StopReason string
 	Reason     string
 }
 
-func (EngineRunCompleted) Type() Type {
-	return TypeEngineRunCompleted
-}
-
-func (ErrorOccurred) Type() Type {
-	return TypeErrorOccurred
-}
+func (RunCompleted) Type() Type { return TypeRunCompleted }
 
 func (eventType Type) Valid() bool {
 	switch eventType {
-	case TypeTurnStarted,
-		TypeTurnCompleted,
-		TypeTextDelta,
-		TypeReasoningDelta,
-		TypeToolCallStarted,
-		TypeToolCallCompleted,
-		TypeApprovalRequested,
-		TypeApprovalResolved,
-		TypeUsageUpdated,
-		TypeStatusChanged,
-		TypeDiagnosticPublished,
-		TypeErrorOccurred,
-		TypeEngineRunStarted,
-		TypeEngineStatusChanged,
-		TypePlanUpdated,
-		TypeVerificationDone,
-		TypeReflectionDone,
-		TypeEngineRunCompleted:
+	case TypeLLMCallStarted, TypeLLMCallCompleted, TypeTextDelta, TypeReasoningDelta,
+		TypeToolCallStarted, TypeToolCallCompleted, TypeApprovalRequested, TypeApprovalResolved,
+		TypeUsageUpdated, TypeContextWindowUpdated, TypeStatusChanged, TypeDiagnosticPublished, TypeErrorOccurred,
+		TypeRunStarted, TypeRunStatusChanged, TypePlanUpdated, TypeVerificationDone,
+		TypeReflectionDone, TypeRunCompleted, TypeIterationStarted, TypeIterationCompleted:
 		return true
 	default:
 		return false

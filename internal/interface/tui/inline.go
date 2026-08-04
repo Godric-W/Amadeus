@@ -62,7 +62,7 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent event.
 		}
 		renderer.openText = true
 		return nil
-	case event.TurnCompleted:
+	case event.LLMCallCompleted:
 		return renderer.finishText()
 	case event.PlanUpdated:
 		renderer.phase = "planning"
@@ -70,11 +70,11 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent event.
 			renderer.phase = "replanning"
 		}
 		return renderer.planBlock(typed)
-	case event.EngineRunStarted:
+	case event.RunStarted:
 		renderer.phase = "starting"
 		renderer.currentTask = typed.TaskID
 		return renderer.statusLine("run started: %s (task=%s)", typed.RunID, typed.TaskID)
-	case event.EngineStatusChanged:
+	case event.RunStatusChanged:
 		if typed.Entity == "run" {
 			renderer.phase = inlinePhase(typed.To)
 		} else if typed.Entity == "task" {
@@ -117,7 +117,7 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent event.
 		return renderer.statusLine("verification failed: %s: %s", typed.TaskID, strings.Join(typed.EvidenceGaps, "; "))
 	case event.ReflectionCompleted:
 		return renderer.statusLine("reflection: %s (task=%s, scope=%s)", typed.Verdict, typed.TaskID, typed.Scope)
-	case event.EngineRunCompleted:
+	case event.RunCompleted:
 		renderer.phase = "idle"
 		return renderer.statusLine("run %s: %s", typed.Status, typed.Reason)
 	case event.ErrorOccurred:

@@ -2,30 +2,32 @@ package react
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
+	"github.com/Godric-W/Amadeus/internal/agent/event"
+	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type scriptedIterator struct {
 	results []IterationResult
+	errors  []error
 	inputs  []IterationInput
 }
 
 func (iterator *scriptedIterator) Run(_ context.Context, input IterationInput) (IterationResult, error) {
 	iterator.inputs = append(iterator.inputs, input)
-	if len(iterator.results) == 0 {
+	index := len(iterator.inputs) - 1
+	if index < len(iterator.errors) && iterator.errors[index] != nil {
+		return IterationResult{}, iterator.errors[index]
+	}
+	if index >= len(iterator.results) {
 		return IterationResult{}, errors.New("unexpected model iteration")
 	}
-	result := iterator.results[0]
-	iterator.results = iterator.results[1:]
-	return result, nil
+	return iterator.results[index], nil
 }
 
 type scriptedCallExecutor struct {
@@ -44,28 +46,13 @@ type scriptedProgress struct {
 	samples []ProgressSample
 }
 
-type blockingIterator struct {
-	calls int
+type fixedContextWindowManager struct {
+	view agentcontext.RequestView
+	err  error
 }
 
-type cancellingCallExecutor struct {
-	cancel context.CancelFunc
-	calls  []tool.Call
-}
-
-func (executor *cancellingCallExecutor) Execute(_ context.Context, call tool.Call) (ToolExecution, error) {
-	executor.calls = append(executor.calls, call)
-	executor.cancel()
-	execution := replayExecution(call.ID, call.Name, tool.Result{Text: "partial command output", Partial: true}, context.Canceled.Error())
-	execution.Evidence.Kind = engine.EvidenceCommand
-	execution.Evidence.Summary = "partial command output"
-	return execution, context.Canceled
-}
-
-func (iterator *blockingIterator) Run(ctx context.Context, _ IterationInput) (IterationResult, error) {
-	iterator.calls++
-	<-ctx.Done()
-	return IterationResult{}, ctx.Err()
+func (manager fixedContextWindowManager) Prepare(context.Context, agentcontext.WindowRequest) (agentcontext.RequestView, error) {
+	return manager.view, manager.err
 }
 
 func (progress *scriptedProgress) Observe(sample ProgressSample) ([]ProgressSignal, error) {
@@ -73,408 +60,255 @@ func (progress *scriptedProgress) Observe(sample ProgressSample) ([]ProgressSign
 	return append([]ProgressSignal(nil), progress.signals...), nil
 }
 
-func TestRunnerCompletesOneToolThenReturnsCandidate(t *testing.T) {
-	call := tool.NewCall("call_1", "read_file", json.RawMessage(`{"path":"README.md"}`))
-	iterator := &scriptedIterator{results: []IterationResult{
-		{
-			Kind: IterationToolCalls,
-			Response: llm.Response{
-				Message:      llm.AssistantToolCallMessage("", llm.ToolCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments}),
-				FinishReason: llm.FinishReasonToolCalls,
-				Usage:        llm.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12},
-			},
-			ToolCalls: []tool.Call{call},
-		},
-		{
-			Kind: IterationCandidate,
-			Response: llm.Response{
-				Message: llm.AssistantMessage("repository inspected"), FinishReason: llm.FinishReasonStop,
-				Usage: llm.Usage{InputTokens: 15, OutputTokens: 3, TotalTokens: 18},
-			},
-			Candidate: &engine.TaskResult{Summary: "repository inspected"},
-		},
-	}}
-	execution := replayExecution("call_1", "read_file", tool.Result{Text: "README contents"}, "")
-	execution.Evidence.Verified = true
-	executor := &scriptedCallExecutor{executions: map[string]ToolExecution{"call_1": execution}, errors: map[string]error{}}
-	progress := &scriptedProgress{}
-	runner := newTestRunner(t, iterator, executor, progress)
-	input := validRunnerInput()
-
-	outcome, err := runner.Run(context.Background(), input)
-	if err != nil {
-		t.Fatalf("run ReAct loop: %v", err)
-	}
-	if outcome.Kind != engine.TaskOutcomeCandidateComplete || outcome.Candidate == nil || outcome.Candidate.Result.Summary != "repository inspected" {
-		t.Fatalf("unexpected candidate outcome: %#v", outcome)
-	}
-	if len(outcome.Steps) != 2 || len(outcome.Evidence) != 1 || len(executor.calls) != 1 || len(iterator.inputs) != 2 {
-		t.Fatalf("unexpected loop state: outcome=%#v calls=%#v inputs=%#v", outcome, executor.calls, iterator.inputs)
-	}
-	if len(iterator.inputs[1].Messages) != 3 {
-		t.Fatalf("second iteration did not receive assistant call and result: %#v", iterator.inputs[1].Messages)
-	}
-	if iterator.inputs[1].Messages[1].Role != llm.RoleAssistant || iterator.inputs[1].Messages[2].Role != llm.RoleTool || iterator.inputs[1].Messages[2].ToolCallID != "call_1" {
-		t.Fatalf("unexpected replay history: %#v", iterator.inputs[1].Messages)
-	}
-	if outcome.Candidate.Usage.InputTokens != 25 || outcome.Candidate.Usage.OutputTokens != 5 || outcome.Candidate.Usage.TotalTokens != 30 {
-		t.Fatalf("usage was not accumulated: %#v", outcome.Candidate.Usage)
-	}
-	if input.Task.Status != engine.TaskStatusRunning {
-		t.Fatalf("runner mutated caller task status: %q", input.Task.Status)
-	}
-	if err := outcome.Validate(); err != nil {
-		t.Fatalf("candidate outcome is invalid: %v", err)
-	}
-}
-
-func TestRunnerStopsImmediatelyForBlockingToolObservation(t *testing.T) {
-	call := tool.NewCall("blocked", "read_file", json.RawMessage(`{"path":"../docs"}`))
-	iterator := &scriptedIterator{results: []IterationResult{{
-		Kind: IterationToolCalls,
-		Response: llm.Response{
-			Message:      llm.AssistantToolCallMessage("", llm.ToolCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments}),
-			FinishReason: llm.FinishReasonToolCalls,
-		},
-		ToolCalls: []tool.Call{call},
-	}}}
-	execution := replayExecution(call.ID, call.Name, tool.Result{}, "path is outside project root")
-	execution.Observation.Blocking = true
-	executor := &scriptedCallExecutor{executions: map[string]ToolExecution{call.ID: execution}, errors: map[string]error{}}
-	progress := &scriptedProgress{}
-	runner := newTestRunner(t, iterator, executor, progress)
-
-	outcome, err := runner.Run(context.Background(), validRunnerInput())
+func TestRunnerCompletesFromFinalModelMessage(t *testing.T) {
+	iterator := &scriptedIterator{results: []IterationResult{candidateIteration("done")}}
+	runner := newTestRunner(t, iterator, &scriptedCallExecutor{executions: map[string]ToolExecution{}, errors: map[string]error{}}, &scriptedProgress{})
+	result, err := runner.Run(context.Background(), validRequest())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome.Kind != engine.TaskOutcomeBlocked || outcome.Reason != "path is outside project root" {
-		t.Fatalf("unexpected blocking outcome: %#v", outcome)
-	}
-	if len(iterator.inputs) != 1 || len(executor.calls) != 1 || len(progress.samples) != 0 {
-		t.Fatalf("blocking failure was retried: inputs=%d calls=%d samples=%d", len(iterator.inputs), len(executor.calls), len(progress.samples))
+	if result.StopReason != StopCompleted || result.FinalMessage == nil || result.FinalMessage.Content != "done" || len(result.Iterations) != 1 || result.Budget.IterationsUsed != 1 {
+		t.Fatalf("unexpected completed result: %#v", result)
 	}
 }
 
-func TestRunnerAddsBufferedDeveloperMessageOnlyToNextModelRequest(t *testing.T) {
-	call := tool.NewCall("call_1", "read_file", json.RawMessage(`{"path":"README.md"}`))
-	iterator := &scriptedIterator{results: []IterationResult{
-		{Kind: IterationToolCalls, Response: llm.Response{Message: llm.AssistantToolCallMessage("", llm.ToolCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments}), FinishReason: llm.FinishReasonToolCalls}, ToolCalls: []tool.Call{call}},
-		{Kind: IterationCandidate, Response: llm.Response{Message: llm.AssistantMessage("done"), FinishReason: llm.FinishReasonStop}, Candidate: &engine.TaskResult{Summary: "done"}},
-	}}
-	execution := replayExecution(call.ID, call.Name, tool.Result{Text: "ok"}, "")
-	runner, err := NewRunner(iterator, &scriptedCallExecutor{executions: map[string]ToolExecution{call.ID: execution}, errors: map[string]error{}}, &scriptedProgress{}, RunnerOptions{
-		Temperature: 0.2, MaxOutputTokens: 512,
-		AdditionalMessages: func() ([]llm.Message, error) {
-			if len(iterator.inputs) == 0 {
-				return nil, nil
-			}
-			return []llm.Message{llm.DeveloperMessage(`{"type":"amadeus.skill_context.v1","skills":[{"name":"review"}]}`)}, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("create ReAct runner: %v", err)
-	}
-	if _, err := runner.Run(context.Background(), validRunnerInput()); err != nil {
-		t.Fatalf("run ReAct loop: %v", err)
-	}
-	if len(iterator.inputs) != 2 || len(iterator.inputs[0].Messages) != 1 {
-		t.Fatalf("Skill message appeared before load: %#v", iterator.inputs)
-	}
-	second := iterator.inputs[1].Messages
-	if len(second) != 4 || second[3].Role != llm.RoleDeveloper || !strings.Contains(second[3].Content, "skill_context") {
-		t.Fatalf("Skill message was not added to the next request: %#v", second)
-	}
-}
-
-func TestRunnerReplaysToolFailureBeforeCandidate(t *testing.T) {
-	call := tool.NewCall("call_failed", "read_file", json.RawMessage(`{"path":"missing"}`))
-	iterator := &scriptedIterator{results: []IterationResult{
-		{Kind: IterationToolCalls, Response: llm.Response{Message: llm.AssistantToolCallMessage("", llm.ToolCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments}), FinishReason: llm.FinishReasonToolCalls}, ToolCalls: []tool.Call{call}},
-		{Kind: IterationCandidate, Response: llm.Response{Message: llm.AssistantMessage("file was unavailable"), FinishReason: llm.FinishReasonStop}, Candidate: &engine.TaskResult{Summary: "file was unavailable"}},
-	}}
-	executionErr := errors.New("file not found")
-	executor := &scriptedCallExecutor{
-		executions: map[string]ToolExecution{"call_failed": replayExecution("call_failed", "read_file", tool.Result{}, executionErr.Error())},
-		errors:     map[string]error{"call_failed": executionErr},
-	}
-	runner := newTestRunner(t, iterator, executor, &scriptedProgress{})
-
-	outcome, err := runner.Run(context.Background(), validRunnerInput())
-	if err != nil || outcome.Kind != engine.TaskOutcomeCandidateComplete {
-		t.Fatalf("tool failure did not continue to candidate: outcome=%#v err=%v", outcome, err)
-	}
-	toolMessage := iterator.inputs[1].Messages[2]
-	if !strings.Contains(toolMessage.Content, `"ok":false`) || !strings.Contains(toolMessage.Content, "file not found") {
-		t.Fatalf("tool failure was not replayed: %#v", toolMessage)
-	}
-	if len(outcome.Evidence) != 1 || outcome.Evidence[0].Verified || len(outcome.Candidate.Result.EvidenceIDs) != 0 {
-		t.Fatalf("failed evidence should remain in the run but not support the candidate: %#v", outcome)
-	}
-}
-
-func TestRunnerCandidateReferencesOnlyVerifiedEvidenceAfterRecovery(t *testing.T) {
-	failedCall := tool.NewCall("failed", "apply_patch", json.RawMessage(`{"patch":"conflict"}`))
-	passedCall := tool.NewCall("passed", "execute_command", json.RawMessage(`{"command":"go test ./..."}`))
-	iterator := &scriptedIterator{results: []IterationResult{
-		{Kind: IterationToolCalls, Response: llm.Response{Message: llm.AssistantToolCallMessage("", llm.ToolCall{ID: failedCall.ID, Name: failedCall.Name, Arguments: failedCall.Arguments}), FinishReason: llm.FinishReasonToolCalls}, ToolCalls: []tool.Call{failedCall}},
-		{Kind: IterationToolCalls, Response: llm.Response{Message: llm.AssistantToolCallMessage("", llm.ToolCall{ID: passedCall.ID, Name: passedCall.Name, Arguments: passedCall.Arguments}), FinishReason: llm.FinishReasonToolCalls}, ToolCalls: []tool.Call{passedCall}},
-		{Kind: IterationCandidate, Response: llm.Response{Message: llm.AssistantMessage("recovered and verified"), FinishReason: llm.FinishReasonStop}, Candidate: &engine.TaskResult{Summary: "recovered and verified"}},
-	}}
-	failed := replayExecution("failed", "apply_patch", tool.Result{}, "patch conflict")
-	passed := replayExecution("passed", "execute_command", tool.Result{Text: "tests passed"}, "")
-	passed.Evidence.Verified = true
-	executor := &scriptedCallExecutor{
-		executions: map[string]ToolExecution{"failed": failed, "passed": passed},
-		errors:     map[string]error{"failed": errors.New("patch conflict")},
-	}
-	runner := newTestRunner(t, iterator, executor, &scriptedProgress{})
-	input := validRunnerInput()
-	input.AvailableTools = []tool.Spec{
-		{Name: "apply_patch", SideEffect: tool.SideEffectWrite, ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeExclusive}},
-		{Name: "execute_command", SideEffect: tool.SideEffectExecute, ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeExclusive}},
-	}
-
-	outcome, err := runner.Run(context.Background(), input)
-	if err != nil {
-		t.Fatalf("run recovered workflow: %v", err)
-	}
-	if len(outcome.Evidence) != 2 || len(outcome.Candidate.Result.EvidenceIDs) != 1 || outcome.Candidate.Result.EvidenceIDs[0] != passed.Evidence.ID {
-		t.Fatalf("candidate evidence did not exclude recovered failure: %#v", outcome)
-	}
-}
-
-func TestRunnerReturnsNeedsPlanFromProgressSignal(t *testing.T) {
-	call := tool.NewCall("call_1", "read_file", json.RawMessage(`{"path":"README.md"}`))
-	iterator := &scriptedIterator{results: []IterationResult{{
-		Kind:      IterationToolCalls,
-		Response:  llm.Response{Message: llm.AssistantToolCallMessage("", llm.ToolCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments}), FinishReason: llm.FinishReasonToolCalls},
-		ToolCalls: []tool.Call{call},
-	}}}
-	execution := replayExecution("call_1", "read_file", tool.Result{Text: "same result"}, "")
-	executor := &scriptedCallExecutor{executions: map[string]ToolExecution{"call_1": execution}, errors: map[string]error{}}
-	progress := &scriptedProgress{signals: []ProgressSignal{{Kind: ProgressRepeatedAction, Reason: "same call repeated", RecommendPlan: true}}}
+func TestRunnerExecutesToolsReplaysResultsAndCompletes(t *testing.T) {
+	call := tool.NewCall("call-1", "read_file", []byte(`{"path":"README.md"}`))
+	iterator := &scriptedIterator{results: []IterationResult{toolIteration(call), candidateIteration("repository inspected")}}
+	execution := successfulExecution(call, "contents")
+	executor := &scriptedCallExecutor{executions: map[string]ToolExecution{call.ID: execution}, errors: map[string]error{}}
+	progress := &scriptedProgress{}
 	runner := newTestRunner(t, iterator, executor, progress)
-
-	outcome, err := runner.Run(context.Background(), validRunnerInput())
+	result, err := runner.Run(context.Background(), validRequest())
 	if err != nil {
-		t.Fatalf("run needs-plan loop: %v", err)
+		t.Fatal(err)
 	}
-	if outcome.Kind != engine.TaskOutcomeNeedsPlan || outcome.Reason != "same call repeated" || len(outcome.Steps) != 1 {
-		t.Fatalf("unexpected needs-plan outcome: %#v", outcome)
+	if result.StopReason != StopCompleted || len(result.Iterations) != 2 || len(result.Evidence) != 1 || result.Budget.ToolCallsUsed != 1 {
+		t.Fatalf("unexpected tool result: %#v", result)
 	}
-	if len(iterator.inputs) != 1 {
-		t.Fatalf("runner called model after needs-plan signal: %d", len(iterator.inputs))
+	if len(iterator.inputs) != 2 || len(iterator.inputs[1].Messages) != 3 || iterator.inputs[1].Messages[2].Role != llm.RoleTool {
+		t.Fatalf("tool result was not replayed: %#v", iterator.inputs)
 	}
 }
 
-func TestRunnerDirectCandidateDoesNotCompleteTaskOrRun(t *testing.T) {
-	iterator := &scriptedIterator{results: []IterationResult{{
-		Kind:      IterationCandidate,
-		Response:  llm.Response{Message: llm.AssistantMessage("candidate only"), FinishReason: llm.FinishReasonStop},
-		Candidate: &engine.TaskResult{Summary: "candidate only"},
-	}}}
-	runner := newTestRunner(t, iterator, &scriptedCallExecutor{}, &scriptedProgress{})
-	input := validRunnerInput()
-
-	outcome, err := runner.Run(context.Background(), input)
-	if err != nil {
-		t.Fatalf("run direct candidate: %v", err)
-	}
-	if outcome.Kind != engine.TaskOutcomeCandidateComplete || input.Task.Status != engine.TaskStatusRunning {
-		t.Fatalf("candidate incorrectly completed task or run: outcome=%#v task=%#v", outcome, input.Task)
-	}
-}
-
-func TestRunnerStopsBeforeModelWhenStepsExhausted(t *testing.T) {
-	iterator := &scriptedIterator{}
-	runner := newTestRunner(t, iterator, &scriptedCallExecutor{}, &scriptedProgress{})
-	input := validRunnerInput()
-	input.Task.Budget.MaxSteps = 2
-	input.Budget.StepsUsed = 2
-
-	outcome, err := runner.Run(context.Background(), input)
-	if err != nil {
-		t.Fatalf("run exhausted budget: %v", err)
-	}
-	if len(iterator.inputs) != 0 || outcome.Kind != engine.TaskOutcomeFailed || outcome.StopReason != engine.StopReasonMaxSteps {
-		t.Fatalf("unexpected exhausted outcome: %#v inputs=%d", outcome, len(iterator.inputs))
-	}
-	if outcome.Limit == nil || outcome.Limit.Limit != engine.BudgetLimitSteps || outcome.Limit.Used != 2 || outcome.Limit.Maximum != 2 {
-		t.Fatalf("missing structured step limit: %#v", outcome.Limit)
-	}
-}
-
-func TestRunnerExecutesToolThenStopsAtLastStep(t *testing.T) {
-	call := tool.NewCall("call_1", "read_file", json.RawMessage(`{"path":"README.md"}`))
-	iterator := &scriptedIterator{results: []IterationResult{
-		{Kind: IterationToolCalls, Response: llm.Response{Message: llm.AssistantToolCallMessage("", llm.ToolCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments}), FinishReason: llm.FinishReasonToolCalls}, ToolCalls: []tool.Call{call}},
-		{Kind: IterationCandidate, Response: llm.Response{Message: llm.AssistantMessage("must not be called"), FinishReason: llm.FinishReasonStop}, Candidate: &engine.TaskResult{Summary: "must not be called"}},
-	}}
-	executor := &scriptedCallExecutor{executions: map[string]ToolExecution{"call_1": replayExecution("call_1", "read_file", tool.Result{Text: "ok"}, "")}, errors: map[string]error{}}
+func TestRunnerNormalizesToolArgumentsBeforeExecutionAndReplay(t *testing.T) {
+	call := tool.NewCall("call-1", "read_file", []byte(`{"path":"README.md",`))
+	iterator := &scriptedIterator{results: []IterationResult{toolIteration(call), candidateIteration("done")}}
+	executor := &scriptedCallExecutor{executions: map[string]ToolExecution{"call-1": successfulExecution(call, "contents")}, errors: map[string]error{}}
 	runner := newTestRunner(t, iterator, executor, &scriptedProgress{})
-	input := validRunnerInput()
-	input.Budget.Budget.MaxSteps = 1
-
-	outcome, err := runner.Run(context.Background(), input)
-	if err != nil {
-		t.Fatalf("run last step: %v", err)
+	result, err := runner.Run(context.Background(), validRequest())
+	if err != nil || result.StopReason != StopCompleted {
+		t.Fatalf("normalize call: result=%#v err=%v", result, err)
 	}
-	if len(iterator.inputs) != 1 || len(executor.calls) != 1 || outcome.StopReason != engine.StopReasonMaxSteps {
-		t.Fatalf("runner crossed step boundary: outcome=%#v model=%d tools=%d", outcome, len(iterator.inputs), len(executor.calls))
+	if len(executor.calls) != 1 || string(executor.calls[0].Arguments) != `{"path":"README.md"}` {
+		t.Fatalf("executor did not receive normalized arguments: %#v", executor.calls)
 	}
-	if outcome.Budget.StepsUsed != 1 || outcome.Budget.ToolCallsUsed != 1 {
-		t.Fatalf("unexpected consumed budget: %#v", outcome.Budget)
+	if got := string(iterator.inputs[1].Messages[1].ToolCalls[0].Arguments); got != `{"path":"README.md"}` {
+		t.Fatalf("assistant replay did not use normalized arguments: %s", got)
 	}
 }
 
-func TestRunnerRejectsToolBatchBeyondBudget(t *testing.T) {
-	calls := []tool.Call{
-		tool.NewCall("call_1", "read_file", json.RawMessage(`{"path":"a"}`)),
-		tool.NewCall("call_2", "read_file", json.RawMessage(`{"path":"b"}`)),
-	}
-	iterator := &scriptedIterator{results: []IterationResult{{
-		Kind: IterationToolCalls,
-		Response: llm.Response{Message: llm.AssistantToolCallMessage("",
-			llm.ToolCall{ID: calls[0].ID, Name: calls[0].Name, Arguments: calls[0].Arguments},
-			llm.ToolCall{ID: calls[1].ID, Name: calls[1].Name, Arguments: calls[1].Arguments}), FinishReason: llm.FinishReasonToolCalls},
-		ToolCalls: calls,
-	}}}
-	executor := &scriptedCallExecutor{}
+func TestRunnerReturnsArgumentErrorObservationWithoutExecutingTool(t *testing.T) {
+	call := tool.NewCall("call-1", "read_file", []byte(`{"path":`))
+	iterator := &scriptedIterator{results: []IterationResult{toolIteration(call), candidateIteration("recovered")}}
+	executor := &scriptedCallExecutor{executions: map[string]ToolExecution{}, errors: map[string]error{}}
 	runner := newTestRunner(t, iterator, executor, &scriptedProgress{})
-	input := validRunnerInput()
-	input.Budget.Budget.MaxToolCalls = 1
-
-	outcome, err := runner.Run(context.Background(), input)
-	if err != nil {
-		t.Fatalf("run tool budget: %v", err)
+	result, err := runner.Run(context.Background(), validRequest())
+	if err != nil || result.StopReason != StopCompleted {
+		t.Fatalf("argument recovery: result=%#v err=%v", result, err)
 	}
-	if len(iterator.inputs) != 1 || len(executor.calls) != 0 || outcome.StopReason != engine.StopReasonBudgetExceeded {
-		t.Fatalf("tool batch was not rejected atomically: outcome=%#v model=%d tools=%d", outcome, len(iterator.inputs), len(executor.calls))
+	if len(executor.calls) != 0 || len(result.Iterations) != 2 || result.Iterations[0].Intent != "tool_argument_error" {
+		t.Fatalf("invalid call reached executor or observation missing: calls=%#v result=%#v", executor.calls, result)
 	}
-	if outcome.Limit == nil || outcome.Limit.Limit != engine.BudgetLimitToolCalls || outcome.Limit.Used != 2 || outcome.Budget.ToolCallsUsed != 0 {
-		t.Fatalf("unexpected tool limit detail: limit=%#v budget=%#v", outcome.Limit, outcome.Budget)
+	if len(iterator.inputs[1].Messages) != 3 || iterator.inputs[1].Messages[2].Role != llm.RoleTool {
+		t.Fatalf("argument error was not replayed: %#v", iterator.inputs[1].Messages)
 	}
 }
 
-func TestRunnerStopsBeforeToolsWhenModelExceedsTokenBudget(t *testing.T) {
-	call := tool.NewCall("call_1", "read_file", json.RawMessage(`{"path":"README.md"}`))
-	iterator := &scriptedIterator{results: []IterationResult{{
-		Kind: IterationToolCalls,
-		Response: llm.Response{
-			Message:      llm.AssistantToolCallMessage("", llm.ToolCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments}),
-			FinishReason: llm.FinishReasonToolCalls,
-			Usage:        llm.Usage{InputTokens: 11, OutputTokens: 1, TotalTokens: 12},
-		},
-		ToolCalls: []tool.Call{call},
-	}}}
-	executor := &scriptedCallExecutor{}
-	runner := newTestRunner(t, iterator, executor, &scriptedProgress{})
-	input := validRunnerInput()
-	input.Budget.Budget.MaxInputTokens = 10
-
-	outcome, err := runner.Run(context.Background(), input)
+func TestRunnerStopsBlockedOnPathBoundary(t *testing.T) {
+	call := tool.NewCall("call-1", "read_file", []byte(`{"path":"../secret"}`))
+	iterator := &scriptedIterator{results: []IterationResult{toolIteration(call)}}
+	execution := successfulExecution(call, "")
+	execution.Observation.Error = "path is outside project root"
+	execution.Observation.Blocking = true
+	execution.Evidence.Verified = false
+	runner := newTestRunner(t, iterator, &scriptedCallExecutor{executions: map[string]ToolExecution{call.ID: execution}, errors: map[string]error{}}, &scriptedProgress{})
+	result, err := runner.Run(context.Background(), validRequest())
 	if err != nil {
-		t.Fatalf("run token budget: %v", err)
+		t.Fatal(err)
 	}
-	if len(iterator.inputs) != 1 || len(executor.calls) != 0 || outcome.StopReason != engine.StopReasonBudgetExceeded {
-		t.Fatalf("runner crossed token boundary: outcome=%#v model=%d tools=%d", outcome, len(iterator.inputs), len(executor.calls))
-	}
-	if outcome.Limit == nil || outcome.Limit.Limit != engine.BudgetLimitInputTokens || outcome.Budget.InputTokensUsed != 11 {
-		t.Fatalf("unexpected token limit detail: limit=%#v budget=%#v", outcome.Limit, outcome.Budget)
+	if result.StopReason != StopBlocked || result.Reason != "path is outside project root" {
+		t.Fatalf("unexpected blocked result: %#v", result)
 	}
 }
 
-func TestRunnerReportsWallClockBudgetInsteadOfCancellation(t *testing.T) {
-	iterator := &blockingIterator{}
-	runner := newTestRunner(t, iterator, &scriptedCallExecutor{}, &scriptedProgress{})
-	input := validRunnerInput()
-	input.Budget.Budget.MaxDuration = 20 * time.Millisecond
-
-	outcome, err := runner.Run(context.Background(), input)
+func TestRunnerReportsStalledWithoutRequestingPlan(t *testing.T) {
+	call := tool.NewCall("call-1", "read_file", []byte(`{"path":"README.md"}`))
+	iterator := &scriptedIterator{results: []IterationResult{toolIteration(call)}}
+	progress := &scriptedProgress{signals: []ProgressSignal{{Kind: ProgressRepeatedAction, Reason: "same call repeated", RecommendPlan: true}}}
+	runner := newTestRunner(t, iterator, &scriptedCallExecutor{executions: map[string]ToolExecution{call.ID: successfulExecution(call, "contents")}, errors: map[string]error{}}, progress)
+	result, err := runner.Run(context.Background(), validRequest())
 	if err != nil {
-		t.Fatalf("run wall clock budget: %v", err)
+		t.Fatal(err)
 	}
-	if iterator.calls != 1 || outcome.Kind != engine.TaskOutcomeFailed || outcome.StopReason != engine.StopReasonBudgetExceeded {
-		t.Fatalf("unexpected wall clock outcome: %#v calls=%d", outcome, iterator.calls)
-	}
-	if outcome.Limit == nil || outcome.Limit.Limit != engine.BudgetLimitWallClock {
-		t.Fatalf("missing wall clock limit: %#v", outcome.Limit)
+	if result.StopReason != StopStalled || result.Reason != "same call repeated" {
+		t.Fatalf("unexpected stalled result: %#v", result)
 	}
 }
 
-func TestRunnerReturnsAccumulatedBudgetWithinLimits(t *testing.T) {
-	iterator := &scriptedIterator{results: []IterationResult{{
-		Kind:      IterationCandidate,
-		Response:  llm.Response{Message: llm.AssistantMessage("done"), FinishReason: llm.FinishReasonStop, Usage: llm.Usage{InputTokens: 5, OutputTokens: 6, TotalTokens: 11}},
-		Candidate: &engine.TaskResult{Summary: "done"},
-	}}}
-	runner := newTestRunner(t, iterator, &scriptedCallExecutor{}, &scriptedProgress{})
-	input := validRunnerInput()
-	input.Budget = engine.BudgetState{
-		Budget:    engine.Budget{MaxSteps: 5, MaxToolCalls: 3, MaxInputTokens: 20, MaxOutputTokens: 10},
-		StepsUsed: 2, ToolCallsUsed: 1, InputTokensUsed: 3, OutputTokensUsed: 4,
+func TestRunnerEnforcesIterationAndToolBudgets(t *testing.T) {
+	request := validRequest()
+	request.Budget.Budget.MaxIterations = 1
+	request.Budget.IterationsUsed = 1
+	runner := newTestRunner(t, &scriptedIterator{}, &scriptedCallExecutor{executions: map[string]ToolExecution{}, errors: map[string]error{}}, &scriptedProgress{})
+	result, err := runner.Run(context.Background(), request)
+	if err != nil || result.StopReason != StopBudgetExhausted || result.Limit == nil || result.Limit.Limit != LimitIterations {
+		t.Fatalf("unexpected iteration budget result: %#v err=%v", result, err)
 	}
 
-	outcome, err := runner.Run(context.Background(), input)
-	if err != nil {
-		t.Fatalf("run within budget: %v", err)
-	}
-	if outcome.Kind != engine.TaskOutcomeCandidateComplete || outcome.Budget.StepsUsed != 3 || outcome.Budget.ToolCallsUsed != 1 || outcome.Budget.InputTokensUsed != 8 || outcome.Budget.OutputTokensUsed != 10 {
-		t.Fatalf("unexpected accumulated budget: %#v", outcome)
-	}
-	if len(iterator.inputs) != 1 || iterator.inputs[0].MaxOutputTokens != 6 {
-		t.Fatalf("remaining output budget was not applied: %#v", iterator.inputs)
+	call := tool.NewCall("call-1", "read_file", []byte(`{"path":"README.md"}`))
+	request = validRequest()
+	request.Budget.Budget.MaxToolCalls = 0
+	request.Budget.ToolCallsUsed = 1
+	request.Budget.Budget.MaxToolCalls = 1
+	runner = newTestRunner(t, &scriptedIterator{results: []IterationResult{toolIteration(call)}}, &scriptedCallExecutor{executions: map[string]ToolExecution{}, errors: map[string]error{}}, &scriptedProgress{})
+	result, err = runner.Run(context.Background(), request)
+	if err != nil || result.StopReason != StopBudgetExhausted || result.Limit == nil || result.Limit.Limit != LimitToolCalls {
+		t.Fatalf("unexpected tool budget result: %#v err=%v", result, err)
 	}
 }
 
-func TestRunnerCancellationPreservesPartialToolStepAndEvidence(t *testing.T) {
-	call := tool.NewCall("call_1", "execute_command", json.RawMessage(`{"command":"long-running"}`))
-	iterator := &scriptedIterator{results: []IterationResult{{
-		Kind:      IterationToolCalls,
-		Response:  llm.Response{Message: llm.AssistantToolCallMessage("", llm.ToolCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments}), FinishReason: llm.FinishReasonToolCalls},
-		ToolCalls: []tool.Call{call},
-	}}}
+func TestRunnerReportsProviderFailureAndCancellation(t *testing.T) {
+	runner := newTestRunner(t, &scriptedIterator{errors: []error{errors.New("provider unavailable")}}, &scriptedCallExecutor{executions: map[string]ToolExecution{}, errors: map[string]error{}}, &scriptedProgress{})
+	result, err := runner.Run(context.Background(), validRequest())
+	if err != nil || result.StopReason != StopFailed || result.Reason != "provider unavailable" {
+		t.Fatalf("unexpected provider failure: %#v err=%v", result, err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
-	executor := &cancellingCallExecutor{cancel: cancel}
-	runner := newTestRunner(t, iterator, executor, &scriptedProgress{})
-	input := validRunnerInput()
-	input.AvailableTools[0].Name = "execute_command"
+	cancel()
+	result, err = runner.Run(ctx, validRequest())
+	if err != nil || result.StopReason != StopInterrupted {
+		t.Fatalf("unexpected cancellation: %#v err=%v", result, err)
+	}
+}
 
-	outcome, err := runner.Run(ctx, input)
+func TestRunnerAccumulatesUsageAndRespectsOutputRemainder(t *testing.T) {
+	response := llm.Response{Message: llm.AssistantMessage("done"), FinishReason: llm.FinishReasonStop, Usage: llm.Usage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5}}
+	candidate := response.Message
+	iterator := &scriptedIterator{results: []IterationResult{{Kind: IterationCandidate, Response: response, Candidate: &candidate}}}
+	request := validRequest()
+	request.Budget.OutputTokensUsed = 4
+	request.Budget.Budget.MaxOutputTokens = 6
+	runner := newTestRunner(t, iterator, &scriptedCallExecutor{executions: map[string]ToolExecution{}, errors: map[string]error{}}, &scriptedProgress{})
+	result, err := runner.Run(context.Background(), request)
 	if err != nil {
-		t.Fatalf("run cancelled tool step: %v", err)
+		t.Fatal(err)
 	}
-	if outcome.Kind != engine.TaskOutcomeCancelled || len(outcome.Steps) != 1 || outcome.Steps[0].Status != engine.StepStatusCancelled || len(outcome.Evidence) != 1 {
-		t.Fatalf("partial cancellation was not retained: %#v", outcome)
+	if iterator.inputs[0].MaxOutputTokens != 2 || result.Usage.TotalTokens != 5 || result.Budget.OutputTokensUsed != 6 {
+		t.Fatalf("unexpected usage accounting: input=%#v result=%#v", iterator.inputs[0], result)
 	}
-	if !outcome.Steps[0].Observations[0].Result.Partial || outcome.Evidence[0].Summary == "" || outcome.Budget.ToolCallsUsed != 1 {
-		t.Fatalf("partial result metadata was lost: %#v", outcome)
+}
+
+func TestRunnerPublishesIterationLifecycleWithExecutionMetadata(t *testing.T) {
+	response := llm.Response{Message: llm.AssistantMessage("done"), FinishReason: llm.FinishReasonStop}
+	candidate := response.Message
+	events := event.NewMemorySink()
+	runner, err := NewRunner(
+		&scriptedIterator{results: []IterationResult{{Kind: IterationCandidate, Response: response, Candidate: &candidate}}},
+		&scriptedCallExecutor{executions: map[string]ToolExecution{}, errors: map[string]error{}},
+		&scriptedProgress{},
+		RunnerOptions{
+			Temperature: 0.2, MaxOutputTokens: 512, MaxParallelTools: 2, Events: events,
+			ContextProfile: agentcontext.ContextProfile{ContextWindow: 1000, OutputReserve: 100, SafetyMargin: 50, CompressAt: 0.8},
+			ContextWindow: fixedContextWindowManager{view: agentcontext.RequestView{
+				Messages:   []llm.Message{llm.UserMessage("goal")},
+				Usage:      agentcontext.ContextUsage{EstimatedInputTokens: 400, EffectiveInputLimit: 850},
+				Compaction: &agentcontext.CompactionReport{ProjectedToolResults: 2, DroppedMessagePairs: 3},
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := validRequest()
+	request.Metadata.TaskID = "task-1"
+	ctx := event.WithMetadata(context.Background(), event.Metadata{SessionID: "session-1"})
+	if _, err := runner.Run(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := events.Snapshot()
+	if len(snapshot) != 3 {
+		t.Fatalf("unexpected lifecycle event count: %#v", snapshot)
+	}
+	started, ok := snapshot[0].(event.IterationStarted)
+	if !ok || started.SessionID != "session-1" || started.RunID != "run-1" || started.TaskID != "task-1" || started.Iteration != 1 || started.LLMCallID != "run-1/task-1/llm-1" {
+		t.Fatalf("unexpected iteration started event: %#v", snapshot[0])
+	}
+	contextUpdate, ok := snapshot[1].(event.ContextWindowUpdated)
+	if !ok || contextUpdate.ContextWindow != 1000 || contextUpdate.EstimatedInputTokens != 400 || contextUpdate.EffectiveInputLimit != 850 || contextUpdate.ProjectedToolResults != 2 || contextUpdate.DroppedMessagePairs != 3 || contextUpdate.RunID != "run-1" || contextUpdate.Iteration != 1 || contextUpdate.LLMCallID != started.LLMCallID {
+		t.Fatalf("unexpected context window event: %#v", snapshot[1])
+	}
+	completed, ok := snapshot[2].(event.IterationCompleted)
+	if !ok || completed.Status != string(IterationCompleted) || completed.RunID != "run-1" || completed.TaskID != "task-1" || completed.LLMCallID != started.LLMCallID {
+		t.Fatalf("unexpected iteration completed event: %#v", snapshot[2])
+	}
+}
+
+func TestRunnerCompletesWithoutAvailableTools(t *testing.T) {
+	response := llm.Response{Message: llm.AssistantMessage("hello"), FinishReason: llm.FinishReasonStop}
+	candidate := response.Message
+	runner := newTestRunner(t,
+		&scriptedIterator{results: []IterationResult{{Kind: IterationCandidate, Response: response, Candidate: &candidate}}},
+		&scriptedCallExecutor{executions: map[string]ToolExecution{}, errors: map[string]error{}},
+		&scriptedProgress{},
+	)
+	request := validRequest()
+	request.AvailableTools = nil
+	result, err := runner.Run(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StopReason != StopCompleted || result.FinalMessage == nil || result.FinalMessage.Content != "hello" || len(result.Iterations) != 1 {
+		t.Fatalf("unexpected no-tools result: %#v", result)
 	}
 }
 
 func newTestRunner(t *testing.T, iterator ModelIterator, executor CallExecutor, progress ProgressObserver) *Runner {
 	t.Helper()
-	runner, err := NewRunner(iterator, executor, progress, RunnerOptions{Temperature: 0.2, MaxOutputTokens: 512})
+	runner, err := NewRunner(iterator, executor, progress, RunnerOptions{Temperature: 0.2, MaxOutputTokens: 512, MaxParallelTools: 2})
 	if err != nil {
-		t.Fatalf("create ReAct runner: %v", err)
+		t.Fatal(err)
 	}
-	runner.now = fixedClock(
-		time.Unix(0, 0), time.Unix(1, 0),
-		time.Unix(2, 0), time.Unix(3, 0),
-	)
 	return runner
 }
 
-func validRunnerInput() engine.TaskRunInput {
-	return engine.TaskRunInput{
-		RunID:    "run_1",
-		Task:     engine.Task{ID: "root", Objective: "inspect repository", Status: engine.TaskStatusRunning},
-		Messages: []llm.Message{llm.UserMessage("inspect repository")},
-		AvailableTools: []tool.Spec{{
-			Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object"}`),
-			SideEffect: tool.SideEffectRead, ParallelSafe: true, Idempotent: true,
-			ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeArguments, ArgumentPaths: []string{"/path"}},
-		}},
+func validRequest() Request {
+	return Request{
+		RunID: "run-1", Goal: "inspect repository", Messages: []llm.Message{llm.UserMessage("inspect repository")},
+		AvailableTools: []tool.Spec{{Name: "read_file", Description: "read", InputSchema: []byte(`{"type":"object"}`), SideEffect: tool.SideEffectRead, ParallelSafe: true, Idempotent: true, ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeNone}}},
+		Budget:         BudgetState{Budget: Budget{MaxIterations: 8, MaxToolCalls: 8, MaxInputTokens: 1000, MaxOutputTokens: 1000, MaxDuration: time.Minute}},
+	}
+}
+
+func candidateIteration(content string) IterationResult {
+	response := llm.Response{Message: llm.AssistantMessage(content), FinishReason: llm.FinishReasonStop}
+	candidate := response.Message
+	return IterationResult{Kind: IterationCandidate, Response: response, Candidate: &candidate}
+}
+
+func toolIteration(calls ...tool.Call) IterationResult {
+	message := llm.AssistantMessage("")
+	for _, call := range calls {
+		message.ToolCalls = append(message.ToolCalls, llm.ToolCall{ID: call.ID, Name: call.Name, Arguments: append([]byte(nil), call.Arguments...)})
+	}
+	return IterationResult{Kind: IterationToolCalls, Response: llm.Response{Message: message, FinishReason: llm.FinishReasonToolCalls}, ToolCalls: calls}
+}
+
+func successfulExecution(call tool.Call, text string) ToolExecution {
+	result := tool.Result{CallID: call.ID, ToolName: call.Name, Text: text}
+	return ToolExecution{
+		Observation: Observation{CallID: call.ID, ToolName: call.Name, Result: result},
+		Evidence:    Evidence{ID: EvidenceID("tool:" + call.ID), Kind: EvidenceTool, Source: call.Name, Summary: text, Verified: true},
 	}
 }

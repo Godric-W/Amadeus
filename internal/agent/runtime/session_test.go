@@ -88,7 +88,7 @@ func TestChatSessionRunsSingleStreamingTurn(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	response, err := session.RunTurn(context.Background(), TurnInput{ID: "turn_1", Content: "hi"})
+	response, err := session.RunCall(context.Background(), CallInput{ID: "turn_1", Content: "hi"})
 	if err != nil {
 		t.Fatalf("run turn: %v", err)
 	}
@@ -110,12 +110,12 @@ func TestChatSessionRunsSingleStreamingTurn(t *testing.T) {
 
 	events := sink.Snapshot()
 	expectedTypes := []event.Type{
-		event.TypeTurnStarted,
+		event.TypeLLMCallStarted,
 		event.TypeReasoningDelta,
 		event.TypeTextDelta,
 		event.TypeTextDelta,
 		event.TypeUsageUpdated,
-		event.TypeTurnCompleted,
+		event.TypeLLMCallCompleted,
 	}
 	if len(events) != len(expectedTypes) {
 		t.Fatalf("unexpected event count: got %d, want %d", len(events), len(expectedTypes))
@@ -125,8 +125,8 @@ func TestChatSessionRunsSingleStreamingTurn(t *testing.T) {
 			t.Fatalf("unexpected event at %d: got %q, want %q", index, events[index].Type(), expectedType)
 		}
 	}
-	completed := events[len(events)-1].(event.TurnCompleted)
-	if completed.TurnID != "turn_1" || completed.ResponseID != "response_1" || completed.RequestID != "request_1" || completed.FinishReason != llm.FinishReasonStop {
+	completed := events[len(events)-1].(event.LLMCallCompleted)
+	if completed.LLMCallID != "turn_1" || completed.ResponseID != "response_1" || completed.RequestID != "request_1" || completed.FinishReason != llm.FinishReasonStop {
 		t.Fatalf("unexpected completion event: %#v", completed)
 	}
 }
@@ -149,12 +149,12 @@ func TestChatSessionPublishesProviderError(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	_, err = session.RunTurn(context.Background(), TurnInput{ID: "turn_error", Content: "hi"})
+	_, err = session.RunCall(context.Background(), CallInput{ID: "turn_error", Content: "hi"})
 	if !errors.Is(err, providerError) {
-		t.Fatalf("unexpected turn error: %v", err)
+		t.Fatalf("unexpected LLM call error: %v", err)
 	}
 	events := sink.Snapshot()
-	if len(events) != 2 || events[0].Type() != event.TypeTurnStarted || events[1].Type() != event.TypeErrorOccurred {
+	if len(events) != 2 || events[0].Type() != event.TypeLLMCallStarted || events[1].Type() != event.TypeErrorOccurred {
 		t.Fatalf("unexpected failure events: %#v", events)
 	}
 	errorEvent := events[1].(event.ErrorOccurred)
@@ -181,10 +181,10 @@ func TestChatSessionIncludesSuccessfulTurnsInConversationHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	if _, err := session.RunTurn(context.Background(), TurnInput{ID: "turn_1", Content: "first question"}); err != nil {
+	if _, err := session.RunCall(context.Background(), CallInput{ID: "turn_1", Content: "first question"}); err != nil {
 		t.Fatalf("run first turn: %v", err)
 	}
-	if _, err := session.RunTurn(context.Background(), TurnInput{ID: "turn_2", Content: "second question"}); err != nil {
+	if _, err := session.RunCall(context.Background(), CallInput{ID: "turn_2", Content: "second question"}); err != nil {
 		t.Fatalf("run second turn: %v", err)
 	}
 	if len(client.requests) != 2 {
@@ -217,7 +217,7 @@ func TestChatSessionTreatsEOFBeforeCompletionAsProtocolError(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	response, err := session.RunTurn(context.Background(), TurnInput{ID: "turn_partial", Content: "hi"})
+	response, err := session.RunCall(context.Background(), CallInput{ID: "turn_partial", Content: "hi"})
 	var providerError *llm.ProviderError
 	if !errors.As(err, &providerError) || providerError.Kind != llm.ProviderErrorProtocol {
 		t.Fatalf("unexpected premature EOF error: %v", err)
@@ -226,7 +226,7 @@ func TestChatSessionTreatsEOFBeforeCompletionAsProtocolError(t *testing.T) {
 		t.Fatalf("unexpected partial response state: %#v, closed=%v", response, stream.closed)
 	}
 	events := sink.Snapshot()
-	if len(events) != 3 || events[0].Type() != event.TypeTurnStarted || events[1].Type() != event.TypeTextDelta || events[2].Type() != event.TypeErrorOccurred {
+	if len(events) != 3 || events[0].Type() != event.TypeLLMCallStarted || events[1].Type() != event.TypeTextDelta || events[2].Type() != event.TypeErrorOccurred {
 		t.Fatalf("unexpected premature EOF events: %#v", events)
 	}
 }
@@ -258,11 +258,11 @@ func TestChatSessionValidatesConfigurationAndInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create valid session: %v", err)
 	}
-	if _, err := session.RunTurn(context.Background(), TurnInput{Content: "hi"}); err == nil {
-		t.Fatal("expected empty turn ID error")
+	if _, err := session.RunCall(context.Background(), CallInput{Content: "hi"}); err == nil {
+		t.Fatal("expected empty LLM call ID error")
 	}
-	if _, err := session.RunTurn(context.Background(), TurnInput{ID: "turn_1", Content: "  "}); err == nil {
-		t.Fatal("expected empty turn content error")
+	if _, err := session.RunCall(context.Background(), CallInput{ID: "turn_1", Content: "  "}); err == nil {
+		t.Fatal("expected empty LLM call content error")
 	}
 	if client.streamCalled || sink.Len() != 0 {
 		t.Fatal("invalid turn reached LLM or event sink")

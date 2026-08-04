@@ -54,8 +54,8 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent event.E
 	switch typed := runtimeEvent.(type) {
 	case event.TextDelta:
 		return renderer.writeText(typed)
-	case event.TurnCompleted:
-		return renderer.closeTurn(typed.TurnID)
+	case event.LLMCallCompleted:
+		return renderer.closeTurn(typed.LLMCallID)
 	case event.ToolCallStarted:
 		return renderer.writeStatus("tool: %s (%s) started", typed.ToolName, typed.CallID)
 	case event.ToolCallCompleted:
@@ -76,7 +76,7 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent event.E
 		return renderer.writeStatus("usage: input=%d cached=%d output=%d reasoning=%d total=%d", typed.Usage.InputTokens, typed.Usage.CachedInputTokens, typed.Usage.OutputTokens, typed.Usage.ReasoningTokens, typed.Usage.TotalTokens)
 	case event.StatusChanged:
 		return renderer.writeStatus("status: %s %s %s -> %s", typed.Entity, typed.EntityID, typed.From, typed.To)
-	case event.EngineStatusChanged:
+	case event.RunStatusChanged:
 		return renderer.writeStatus("status: %s %s %s -> %s", typed.Entity, typed.EntityID, typed.From, typed.To)
 	case event.DiagnosticPublished:
 		return renderer.writeStatus("diagnostic[%s/%s]: %s", typed.Severity, typed.Code, typed.Message)
@@ -87,9 +87,9 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent event.E
 		return renderer.writeStatus("verification: failed (%s): %s", typed.TaskID, strings.Join(typed.EvidenceGaps, "; "))
 	case event.ReflectionCompleted:
 		return renderer.writeStatus("reflection: %s (%s, scope=%s)", typed.Verdict, typed.TaskID, typed.Scope)
-	case event.EngineRunStarted:
+	case event.RunStarted:
 		return renderer.writeStatus("run: started %s (task=%s)", typed.RunID, typed.TaskID)
-	case event.EngineRunCompleted:
+	case event.RunCompleted:
 		return renderer.writeStatus("run: %s (stop=%s): %s", typed.Status, typed.StopReason, typed.Reason)
 	case event.ErrorOccurred:
 		message := typed.Error.Message
@@ -97,7 +97,7 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent event.E
 			message = "request failed"
 		}
 		return renderer.writeStatus("error: %s", message)
-	case event.TurnStarted, event.ReasoningDelta:
+	case event.LLMCallStarted, event.ReasoningDelta:
 		return nil
 	default:
 		return nil
@@ -110,7 +110,7 @@ func (renderer *AgentRenderer) writeText(delta event.TextDelta) error {
 	}
 	written, err := io.WriteString(renderer.stdout, delta.Delta)
 	if written > 0 {
-		renderer.openTurns[delta.TurnID] = true
+		renderer.openTurns[delta.LLMCallID] = true
 	}
 	if err != nil {
 		return fmt.Errorf("write Agent text delta: %w", err)

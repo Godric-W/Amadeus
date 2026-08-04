@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/react"
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -47,7 +47,7 @@ func NewWriteHookWithOptions(client Client, root project.Root, events event.Sink
 	return &WriteHook{client: client, root: root, events: events, extensions: extensions}, nil
 }
 
-func (hook *WriteHook) After(ctx context.Context, spec tool.Spec, call tool.Call, result tool.Result) ([]engine.Evidence, error) {
+func (hook *WriteHook) After(ctx context.Context, spec tool.Spec, call tool.Call, result tool.Result) ([]react.Evidence, error) {
 	if hook == nil || hook.client == nil {
 		return nil, errors.New("LSP write hook is nil")
 	}
@@ -58,7 +58,7 @@ func (hook *WriteHook) After(ctx context.Context, spec tool.Spec, call tool.Call
 	if err != nil {
 		return hook.failureEvidence(ctx, call, err), nil
 	}
-	evidence := make([]engine.Evidence, 0)
+	evidence := make([]react.Evidence, 0)
 	for documentIndex, document := range documents {
 		if !hook.matches(document.Path) {
 			continue
@@ -76,10 +76,10 @@ func (hook *WriteHook) After(ctx context.Context, spec tool.Spec, call tool.Call
 			if diagnostic.Code != "" {
 				summary = diagnostic.Code + ": " + summary
 			}
-			item := engine.Evidence{
-				ID: engine.EvidenceID(fmt.Sprintf("lsp/%s/%d/%d", call.ID, documentIndex+1, diagnosticIndex+1)), Kind: engine.EvidenceDiagnostic,
+			item := react.Evidence{
+				ID: react.EvidenceID(fmt.Sprintf("lsp/%s/%d/%d", call.ID, documentIndex+1, diagnosticIndex+1)), Kind: react.EvidenceDiagnostic,
 				Source: nonEmpty(diagnostic.Source, "lsp"), Summary: summary,
-				Artifact: &engine.ArtifactRef{Path: document.Path}, Verified: diagnostic.Severity != SeverityError,
+				Artifact: &react.ArtifactRef{Path: document.Path}, Verified: diagnostic.Severity != SeverityError,
 			}
 			evidence = append(evidence, item)
 			if hook.events != nil {
@@ -144,12 +144,12 @@ func (hook *WriteHook) documents(call tool.Call, result tool.Result) ([]Document
 	return documents, nil
 }
 
-func (hook *WriteHook) failureEvidence(ctx context.Context, call tool.Call, cause error) []engine.Evidence {
+func (hook *WriteHook) failureEvidence(ctx context.Context, call tool.Call, cause error) []react.Evidence {
 	summary := "LSP diagnostics unavailable: " + strings.TrimSpace(cause.Error())
 	if hook.events != nil {
 		_ = hook.events.Publish(ctx, event.DiagnosticPublished{Severity: string(SeverityWarning), Code: "lsp_hook_failed", Message: summary})
 	}
-	return []engine.Evidence{{ID: engine.EvidenceID("lsp/" + call.ID + "/error"), Kind: engine.EvidenceDiagnostic, Source: "lsp", Summary: summary, Verified: false}}
+	return []react.Evidence{{ID: react.EvidenceID("lsp/" + call.ID + "/error"), Kind: react.EvidenceDiagnostic, Source: "lsp", Summary: summary, Verified: false}}
 }
 
 func nonEmpty(value, fallback string) string {

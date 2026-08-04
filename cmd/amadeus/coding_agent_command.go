@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/react"
 	bootstrap "github.com/Godric-W/Amadeus/internal/app/bootstrap"
 	"github.com/Godric-W/Amadeus/internal/audit"
@@ -166,7 +166,7 @@ func (runner *codingAgentCommand) runInteractive(ctx context.Context, invocation
 		}
 	}
 	if fullscreen {
-		return runner.runFullscreenInteractive(ctx, invocation)
+		return runner.runFullscreenInteractive(ctx, invocation, capabilities)
 	}
 	return runner.runPlainInteractive(ctx, invocation, reader, capabilities)
 }
@@ -225,7 +225,7 @@ func (runner *codingAgentCommand) runPlainInteractive(ctx context.Context, invoc
 	return err
 }
 
-func (runner *codingAgentCommand) runFullscreenInteractive(ctx context.Context, invocation agentInvocation) error {
+func (runner *codingAgentCommand) runFullscreenInteractive(ctx context.Context, invocation agentInvocation, capabilities tui.TerminalCapabilities) error {
 	configured, _, err := loadEffectiveConfig(runner.command, runner.flags, runner.runtime)
 	if err != nil {
 		return err
@@ -242,12 +242,14 @@ func (runner *codingAgentCommand) runFullscreenInteractive(ctx context.Context, 
 	if sessionID == "" {
 		sessionID = "draft"
 	}
+	branch := tui.ResolveWorkspaceBranch(ctx, invocation.Project.Path())
 	var application *tui.FullscreenApplication
 	application, err = tui.NewFullscreenApplication(tui.FullscreenOptions{
 		Input: invocation.Input, Output: invocation.Output, OpenSessions: invocation.SessionMode == sessionStartSelect,
+		NoColor: !capabilities.Color, Width: capabilities.Width,
 		Startup: tui.FullscreenStartup{
 			Version: buildinfo.Current().Version, Provider: configured.DefaultProvider, Model: provider.Model,
-			Project: invocation.Project.Path(), Session: sessionID, MaxContext: configured.Agent.MaxInputTokens,
+			Project: invocation.Project.Path(), Branch: branch, Session: sessionID, ContextWindow: provider.ContextWindow,
 		},
 		NewTask: runner.newRunContext,
 		Task: func(runCtx context.Context, task string) error {
@@ -450,13 +452,17 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 		return err
 	}
 	provider := configured.Providers[configured.DefaultProvider]
-	started, err := coordinator.BeginTask(context.WithoutCancel(ctx), invocation.Task, sessiondomain.RunMetadata{
+	started, err := coordinator.BeginRun(context.WithoutCancel(ctx), invocation.Task, sessiondomain.RunMetadata{
 		Provider: configured.DefaultProvider, Model: provider.Model, APIMode: string(provider.API), Dialect: string(provider.Dialect),
 		ExecutionMode: sessiondomain.ExecutionMode(executionMode),
 	})
 	if err != nil {
 		return err
 	}
+	ctx = event.WithMetadata(ctx, event.Metadata{
+		SessionID: string(started.Records.Session.ID),
+		RunID:     string(started.Records.Run.ID),
+	})
 	finished := false
 	defer func() {
 		if finished {
@@ -470,8 +476,8 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 		} else if runErr != nil {
 			reason = foldSummary(runErr.Error())
 		}
-		fallbackContext, _ := sessiondomain.EncodeInterruptedContext(sessiondomain.InterruptedContextV1{Objective: invocation.Task, Status: string(status), StopReason: reason, LastError: reason, PendingWork: []string{"Re-plan from the current workspace state."}})
-		_, finishErr := coordinator.FinishTask(context.WithoutCancel(ctx), started, status, reason, "", nil, fallbackContext)
+		fallbackContext, _ := sessiondomain.EncodePreviousWork(sessiondomain.PreviousWork{Objective: invocation.Task, Status: string(status), StopReason: reason, LastError: reason, PendingWork: []string{"Re-plan from the current workspace state."}})
+		_, finishErr := coordinator.FinishRun(context.WithoutCancel(ctx), started, status, reason, "", nil, fallbackContext)
 		if finishErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("persist failed Run terminal state: %w", finishErr))
 		}
@@ -513,6 +519,15 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 	if err != nil {
 		return err
 	}
+	eventHub, err := event.NewHub(renderer)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := eventHub.Close(); closeErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("close Coding Agent event hub: %w", closeErr))
+		}
+	}()
 	auditFactory := runner.runtime.auditSinkFactory
 	if auditFactory == nil {
 		auditFactory = defaultAuditSinkFactory(runner.runtime.lookupEnv, os.UserHomeDir)
@@ -541,7 +556,7 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 		if clientErr != nil {
 			return clientErr
 		}
-		writeHook, hookErr := lsp.NewWriteHookWithOptions(processClient, invocation.Project, renderer, lsp.WriteHookOptions{Extensions: configured.LSP.Extensions})
+		writeHook, hookErr := lsp.NewWriteHookWithOptions(processClient, invocation.Project, eventHub, lsp.WriteHookOptions{Extensions: configured.LSP.Extensions})
 		if hookErr != nil {
 			return hookErr
 		}
@@ -568,7 +583,7 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 			return runner.runtime.llmClientFactory(providerName, provider)
 		}
 	}
-	agent, err := bootstrap.NewAgentWithOptions(configured, invocation.Project, renderer, approvals, auditSink, options)
+	agent, err := bootstrap.NewAgentWithOptions(configured, invocation.Project, eventHub, approvals, auditSink, options)
 	if err != nil {
 		return err
 	}
@@ -609,13 +624,13 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 		return summaryErr
 	}
 	conversation := persistentConversation(conversationMessages)
-	interrupted, err := runner.interruptedWork(ctx, started, invocation.Project)
+	interrupted, err := runner.previousWork(ctx, started, invocation.Project)
 	if err != nil {
 		return err
 	}
 	envelope, err := agent.ContextBuilder.Build(ctx, agentcontext.BuildInput{
 		Prompt: agent.AgentPrompt, InstructionRequest: request, Instructions: resolved,
-		Conversation: conversation, ConversationSummary: summaryContent(existingSummary), InterruptedWork: interrupted,
+		Conversation: conversation, ConversationSummary: summaryContent(existingSummary), PreviousWork: interrupted,
 		Budget: agentcontext.DefaultBudget(configured.Agent.MaxInputTokens, configured.Agent.MaxOutputTokens),
 		Task:   invocation.Task, Tools: agent.AvailableTools(), SkillIndex: agent.SkillIndex(),
 	})
@@ -625,20 +640,23 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 	if err := runner.persistCompaction(ctx, coordinator, started, conversationMessages, existingSummary, envelope, configured.DefaultProvider, provider.Model); err != nil {
 		return err
 	}
-
-	goal := engine.Goal{Objective: invocation.Task}
-	state := engine.NewRun(engine.RunID(started.Records.Run.ID), goal, engine.NewDirectGraph(goal), configuredAgentBudget(configured.Agent))
-	selectedEngine := agent.Engine
-	if executionMode == agentExecutionPlanned {
-		selectedEngine = agent.PlanEngine
+	if executionMode == agentExecutionReAct {
+		var persisted bool
+		persisted, err = runner.executeReactorRun(ctx, coordinator, started, invocation, configured, agent, envelope)
+		finished = persisted
+		return err
 	}
-	if selectedEngine == nil {
+
+	goal := plan.Goal{Objective: invocation.Task}
+	state := plan.NewRun(plan.RunID(started.Records.Run.ID), goal, plan.NewPlanGraph(), configuredAgentBudget(configured.Agent))
+	controller := agent.PlanController
+	if controller == nil {
 		return fmt.Errorf("Coding Agent %s engine is not configured", executionMode)
 	}
-	result, engineErr := selectedEngine.Run(ctx, engine.DirectRunInput{
+	result, planErr := controller.Run(ctx, plan.PlanRunInput{
 		State: state,
 		WorkspaceSnapshot: func(snapshotCtx context.Context) (string, error) {
-			workspace := revalidateInterruptedWorkspace(snapshotCtx, invocation.Project, nil)
+			workspace := revalidatePreviousWorkspace(snapshotCtx, invocation.Project, nil)
 			encoded, encodeErr := json.Marshal(workspace)
 			if encodeErr != nil {
 				return "", fmt.Errorf("encode planning workspace: %w", encodeErr)
@@ -648,27 +666,27 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 		Messages: envelope.Messages, AvailableTools: envelope.AvailableTools,
 	})
 	if _, snapshotErr := agent.SnapshotRun.Complete(context.WithoutCancel(ctx)); snapshotErr != nil {
-		engineErr = errors.Join(engineErr, fmt.Errorf("capture Run snapshot after execution: %w", snapshotErr))
+		planErr = errors.Join(planErr, fmt.Errorf("capture Run snapshot after execution: %w", snapshotErr))
 	}
-	status, stopReason := persistentRunOutcome(result, engineErr, ctx.Err())
+	status, stopReason := persistentRunOutcome(result, planErr, ctx.Err())
 	usageJSON, marshalErr := json.Marshal(result.State.Budget)
 	if marshalErr != nil {
-		return errors.Join(engineErr, fmt.Errorf("encode persistent Run usage: %w", marshalErr))
+		return errors.Join(planErr, fmt.Errorf("encode persistent Run usage: %w", marshalErr))
 	}
 	interruptedContext, contextErr := interruptedContextFromResult(status, stopReason, invocation.Task, result)
 	if contextErr != nil {
-		return errors.Join(engineErr, contextErr)
+		return errors.Join(planErr, contextErr)
 	}
 	assistantContent := ""
 	if status == sessiondomain.RunCompleted {
 		assistantContent = completedAssistantContent(result)
 	}
-	if _, finishErr := coordinator.FinishTask(context.WithoutCancel(ctx), started, status, stopReason, assistantContent, usageJSON, interruptedContext); finishErr != nil {
-		return errors.Join(engineErr, finishErr)
+	if _, finishErr := coordinator.FinishRun(context.WithoutCancel(ctx), started, status, stopReason, assistantContent, usageJSON, interruptedContext); finishErr != nil {
+		return errors.Join(planErr, finishErr)
 	}
 	finished = true
-	if engineErr != nil {
-		return engineErr
+	if planErr != nil {
+		return planErr
 	}
 	outcome, code, err := classifyRunResult(result)
 	if err != nil {
@@ -680,6 +698,57 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 		return &commandExitError{code: code, message: summary, reported: true}
 	}
 	return nil
+}
+
+func (runner *codingAgentCommand) executeReactorRun(ctx context.Context, coordinator *sessiondomain.Coordinator, started sessiondomain.StartedRun, invocation agentInvocation, configured config.Config, agent *bootstrap.Agent, envelope agentcontext.Envelope) (bool, error) {
+	if err := agent.Events.Publish(ctx, event.RunStarted{}); err != nil {
+		return false, fmt.Errorf("publish Reactor Run started: %w", err)
+	}
+	if err := agent.Events.Publish(ctx, event.RunStatusChanged{Entity: "run", EntityID: string(started.Records.Run.ID), From: "", To: "running"}); err != nil {
+		return false, fmt.Errorf("publish Reactor Run status: %w", err)
+	}
+	result, runErr := agent.Runner.Run(ctx, react.Request{
+		RunID: string(started.Records.Run.ID), Goal: invocation.Task,
+		Messages: envelope.Messages, AvailableTools: envelope.AvailableTools,
+		Budget: configuredReactorBudget(configured.Agent),
+	})
+	if _, snapshotErr := agent.SnapshotRun.Complete(context.WithoutCancel(ctx)); snapshotErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("capture Run snapshot after execution: %w", snapshotErr))
+	}
+	status, stopReason := persistentReactorOutcome(result, runErr, ctx.Err())
+	if publishErr := agent.Events.Publish(context.WithoutCancel(ctx), event.RunCompleted{
+		Status: string(status), StopReason: string(result.StopReason), Reason: reactorRunEventReason(status, stopReason, result.Reason),
+	}); publishErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("publish Reactor Run completed: %w", publishErr))
+	}
+	usageJSON, marshalErr := json.Marshal(struct {
+		Budget react.BudgetState `json:"budget"`
+		Usage  llm.Usage         `json:"usage"`
+	}{Budget: result.Budget, Usage: result.Usage})
+	if marshalErr != nil {
+		return false, errors.Join(runErr, fmt.Errorf("encode persistent Reactor usage: %w", marshalErr))
+	}
+	previousWork, contextErr := previousWorkFromReactor(status, stopReason, invocation.Task, result)
+	if contextErr != nil {
+		return false, errors.Join(runErr, contextErr)
+	}
+	assistantContent := ""
+	if status == sessiondomain.RunCompleted && result.FinalMessage != nil {
+		assistantContent = strings.TrimSpace(result.FinalMessage.Content)
+	}
+	if _, finishErr := coordinator.FinishRun(context.WithoutCancel(ctx), started, status, stopReason, assistantContent, usageJSON, previousWork); finishErr != nil {
+		return false, errors.Join(runErr, finishErr)
+	}
+	if runErr != nil {
+		return true, runErr
+	}
+	outcome, code := classifyReactorResult(result)
+	summary := formatReactorSummary(outcome, result)
+	fmt.Fprintln(invocation.ErrorOutput, summary)
+	if code != exitCodeSuccess {
+		return true, &commandExitError{code: code, message: summary, reported: true}
+	}
+	return true, nil
 }
 
 func (runner *codingAgentCommand) runtimeID(kind string) string {
@@ -726,7 +795,7 @@ func summaryContent(summary *sessiondomain.ConversationSummary) string {
 	return summary.Content
 }
 
-func (runner *codingAgentCommand) persistCompaction(ctx context.Context, coordinator *sessiondomain.Coordinator, started sessiondomain.StartedTurn, recent []sessiondomain.Message, existing *sessiondomain.ConversationSummary, envelope agentcontext.Envelope, provider, model string) error {
+func (runner *codingAgentCommand) persistCompaction(ctx context.Context, coordinator *sessiondomain.Coordinator, started sessiondomain.StartedRun, recent []sessiondomain.Message, existing *sessiondomain.ConversationSummary, envelope agentcontext.Envelope, provider, model string) error {
 	if envelope.Compaction == nil || envelope.Compaction.CoveredMessages < 1 || envelope.Compaction.CoveredMessages > len(recent) {
 		return nil
 	}
@@ -756,44 +825,106 @@ func (runner *codingAgentCommand) persistCompaction(ctx context.Context, coordin
 	return err
 }
 
-func (runner *codingAgentCommand) interruptedWork(ctx context.Context, started sessiondomain.StartedTurn, root project.Root) (*agentcontext.InterruptedWork, error) {
-	if started.Interrupted == nil {
+func (runner *codingAgentCommand) previousWork(ctx context.Context, started sessiondomain.StartedRun, root project.Root) (*agentcontext.PreviousWork, error) {
+	if started.PreviousRun == nil {
 		return nil, nil
 	}
-	payload, err := sessiondomain.DecodeInterruptedContext(started.Interrupted.InterruptedContextJSON)
+	payload, err := sessiondomain.DecodePreviousWork(started.PreviousRun.InterruptedContextJSON)
 	if err != nil {
 		return nil, err
 	}
-	work := &agentcontext.InterruptedWork{
-		RunID: string(started.Interrupted.ID), Objective: payload.Objective, StopReason: payload.StopReason,
+	work := &agentcontext.PreviousWork{
+		RunID: string(started.PreviousRun.ID), Objective: payload.Objective, StopReason: payload.StopReason,
 		RelevantPaths: append([]string(nil), payload.RelevantPaths...), PendingWork: append([]string(nil), payload.PendingWork...),
 		Usage:     append(json.RawMessage(nil), payload.Usage...),
-		Workspace: revalidateInterruptedWorkspace(ctx, root, payload.RelevantPaths),
+		Workspace: revalidatePreviousWorkspace(ctx, root, payload.RelevantPaths),
 	}
-	work.CompletedSteps = append(work.CompletedSteps, payload.CompletedSteps...)
+	work.CompletedWork = append(work.CompletedWork, payload.CompletedWork...)
 	work.Evidence = append(work.Evidence, payload.Evidence...)
 	return work, nil
 }
 
-func persistentRunOutcome(result engine.DirectRunResult, runErr, contextErr error) (sessiondomain.RunStatus, string) {
-	if errors.Is(contextErr, context.Canceled) || result.State.Status == engine.RunStatusCancelled {
+func persistentRunOutcome(result plan.PlanRunResult, runErr, contextErr error) (sessiondomain.RunStatus, string) {
+	if errors.Is(contextErr, context.Canceled) || result.State.Status == plan.RunStatusCancelled {
 		return sessiondomain.RunInterrupted, "user cancelled"
 	}
 	if runErr != nil {
 		return sessiondomain.RunFailed, foldSummary(runErr.Error())
 	}
 	switch result.State.Status {
-	case engine.RunStatusCompleted:
+	case plan.RunStatusCompleted:
 		return sessiondomain.RunCompleted, ""
-	case engine.RunStatusPlanning:
-		return sessiondomain.RunInterrupted, nonEmptyStopReason(result.Reason, "planning required")
-	case engine.RunStatusSuspended:
-		return sessiondomain.RunInterrupted, nonEmptyStopReason(result.Reason, "user input required")
-	case engine.RunStatusFailed:
+	case plan.RunStatusFailed:
 		return sessiondomain.RunFailed, nonEmptyStopReason(result.Reason, string(result.State.StopReason))
 	default:
 		return sessiondomain.RunFailed, "unsupported terminal engine status"
 	}
+}
+
+func persistentReactorOutcome(result react.Result, runErr, contextErr error) (sessiondomain.RunStatus, string) {
+	if errors.Is(contextErr, context.Canceled) || result.StopReason == react.StopInterrupted {
+		return sessiondomain.RunInterrupted, "user cancelled"
+	}
+	if runErr != nil {
+		return sessiondomain.RunFailed, foldSummary(runErr.Error())
+	}
+	if result.StopReason == react.StopCompleted {
+		return sessiondomain.RunCompleted, ""
+	}
+	return sessiondomain.RunFailed, nonEmptyStopReason(result.Reason, string(result.StopReason))
+}
+
+func classifyReactorResult(result react.Result) (runOutcome, int) {
+	switch result.StopReason {
+	case react.StopCompleted:
+		return runOutcomeCompleted, exitCodeSuccess
+	case react.StopInterrupted:
+		return runOutcomeCancelled, exitCodeCancelled
+	case react.StopBlocked, react.StopStalled:
+		return runOutcomePartial, exitCodePartial
+	default:
+		return runOutcomeFailed, exitCodeFailure
+	}
+}
+
+func formatReactorSummary(outcome runOutcome, result react.Result) string {
+	parts := []string{"result: " + string(outcome)}
+	if result.StopReason != "" {
+		parts = append(parts, "stop_reason="+string(result.StopReason))
+	}
+	if reason := strings.TrimSpace(result.Reason); reason != "" {
+		parts = append(parts, "reason="+foldSummary(reason))
+	}
+	return strings.Join(parts, " ")
+}
+
+func previousWorkFromReactor(status sessiondomain.RunStatus, stopReason, objective string, result react.Result) (json.RawMessage, error) {
+	if status == sessiondomain.RunCompleted {
+		return nil, nil
+	}
+	payload := sessiondomain.PreviousWork{
+		Objective: objective, Status: string(status), StopReason: stopReason,
+		LastError: nonEmptyStopReason(result.Reason, stopReason),
+	}
+	for _, evidence := range result.Evidence {
+		summary := foldSummary(evidence.Summary)
+		if summary != "" {
+			payload.Evidence = append(payload.Evidence, summary)
+			if evidence.Verified {
+				payload.CompletedWork = append(payload.CompletedWork, summary)
+			}
+		}
+		if evidence.Artifact != nil && evidence.Artifact.Path != "" {
+			payload.RelevantPaths = append(payload.RelevantPaths, evidence.Artifact.Path)
+		}
+	}
+	payload.PendingWork = []string{"Re-plan the unfinished objective from the current workspace state."}
+	usage, _ := json.Marshal(struct {
+		Budget react.BudgetState `json:"budget"`
+		Usage  llm.Usage         `json:"usage"`
+	}{Budget: result.Budget, Usage: result.Usage})
+	payload.Usage = usage
+	return sessiondomain.EncodePreviousWork(payload)
 }
 
 func nonEmptyStopReason(values ...string) string {
@@ -805,7 +936,14 @@ func nonEmptyStopReason(values ...string) string {
 	return "run did not complete"
 }
 
-func completedAssistantContent(result engine.DirectRunResult) string {
+func reactorRunEventReason(status sessiondomain.RunStatus, values ...string) string {
+	if status == sessiondomain.RunCompleted {
+		return ""
+	}
+	return nonEmptyStopReason(values...)
+}
+
+func completedAssistantContent(result plan.PlanRunResult) string {
 	if result.FinalMessage != nil && strings.TrimSpace(result.FinalMessage.Content) != "" {
 		return result.FinalMessage.Content
 	}
@@ -815,26 +953,21 @@ func completedAssistantContent(result engine.DirectRunResult) string {
 	return "Task completed."
 }
 
-func interruptedContextFromResult(status sessiondomain.RunStatus, stopReason, objective string, result engine.DirectRunResult) (json.RawMessage, error) {
+func interruptedContextFromResult(status sessiondomain.RunStatus, stopReason, objective string, result plan.PlanRunResult) (json.RawMessage, error) {
 	if status == sessiondomain.RunCompleted {
 		return nil, nil
 	}
-	payload := sessiondomain.InterruptedContextV1{
+	payload := sessiondomain.PreviousWork{
 		Objective: objective, Status: string(status), StopReason: stopReason,
 		LastError: nonEmptyStopReason(result.Reason, stopReason),
 	}
 	for _, task := range result.State.Graph.Tasks {
 		summary := nonEmptyStopReason(task.Objective, string(task.ID))
-		if task.Status == engine.TaskStatusCompleted {
-			payload.CompletedSteps = append(payload.CompletedSteps, "task "+string(task.ID)+": "+summary)
+		if task.Status == plan.TaskStatusCompleted {
+			payload.CompletedWork = append(payload.CompletedWork, "task "+string(task.ID)+": "+summary)
 			continue
 		}
 		payload.PendingWork = append(payload.PendingWork, "task "+string(task.ID)+": "+summary)
-	}
-	for _, step := range result.Steps {
-		if step.Status == engine.StepStatusCompleted {
-			payload.CompletedSteps = append(payload.CompletedSteps, nonEmptyStopReason(step.Decision.NextAction, step.Decision.Intent, fmt.Sprintf("step-%d completed", step.Index)))
-		}
 	}
 	for _, evidence := range result.State.Evidence {
 		payload.Evidence = append(payload.Evidence, foldSummary(evidence.Summary))
@@ -847,17 +980,25 @@ func interruptedContextFromResult(status sessiondomain.RunStatus, stopReason, ob
 	}
 	usage, _ := json.Marshal(result.State.Budget)
 	payload.Usage = usage
-	return sessiondomain.EncodeInterruptedContext(payload)
+	return sessiondomain.EncodePreviousWork(payload)
 }
 
-func configuredAgentBudget(agent config.AgentConfig) engine.Budget {
-	return engine.Budget{
-		MaxSteps:        agent.MaxSteps,
+func configuredAgentBudget(agent config.AgentConfig) plan.Budget {
+	return plan.Budget{
+		MaxIterations:   agent.MaxIterations,
 		MaxToolCalls:    agent.MaxToolCalls,
 		MaxInputTokens:  agent.MaxInputTokens,
 		MaxOutputTokens: agent.MaxOutputTokens,
 		MaxDuration:     agent.MaxDuration,
 	}
+}
+
+func configuredReactorBudget(agent config.AgentConfig) react.BudgetState {
+	return react.BudgetState{Budget: react.Budget{
+		MaxIterations: agent.MaxIterations, MaxToolCalls: agent.MaxToolCalls,
+		MaxInputTokens: agent.MaxInputTokens, MaxOutputTokens: agent.MaxOutputTokens,
+		MaxDuration: agent.MaxDuration,
+	}}
 }
 
 func defaultAuditSinkFactory(lookupEnv config.EnvLookup, userHomeDir func() (string, error)) auditSinkFactory {

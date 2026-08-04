@@ -20,6 +20,9 @@ func NewMemorySink() *MemorySink {
 }
 
 func (sink *MemorySink) Publish(ctx context.Context, runtimeEvent Event) error {
+	if ctx == nil {
+		return errors.New("event publish context is nil")
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -29,9 +32,13 @@ func (sink *MemorySink) Publish(ctx context.Context, runtimeEvent Event) error {
 	if !runtimeEvent.Type().Valid() {
 		return fmt.Errorf("invalid event type %q", runtimeEvent.Type())
 	}
+	enriched, err := WithEventMetadata(runtimeEvent, MetadataFromContext(ctx))
+	if err != nil {
+		return err
+	}
 
 	sink.mutex.Lock()
-	sink.events = append(sink.events, runtimeEvent)
+	sink.events = append(sink.events, enriched)
 	sink.mutex.Unlock()
 	return nil
 }

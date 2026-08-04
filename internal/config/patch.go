@@ -29,10 +29,11 @@ type providerPatch struct {
 	MaxRetries      *int             `yaml:"max_retries"`
 	Temperature     *float64         `yaml:"temperature"`
 	MaxOutputTokens *int             `yaml:"max_output_tokens"`
+	ContextWindow   *int64           `yaml:"context_window"`
 }
 
 type agentPatch struct {
-	MaxSteps         *int           `yaml:"max_steps"`
+	MaxIterations    *int           `yaml:"max_iterations"`
 	MaxToolCalls     *int           `yaml:"max_tool_calls"`
 	MaxInputTokens   *int64         `yaml:"max_input_tokens"`
 	MaxOutputTokens  *int64         `yaml:"max_output_tokens"`
@@ -91,10 +92,11 @@ func (patch providerPatch) apply(provider *ProviderConfig) {
 	assign(&provider.MaxRetries, patch.MaxRetries)
 	assign(&provider.Temperature, patch.Temperature)
 	assign(&provider.MaxOutputTokens, patch.MaxOutputTokens)
+	assign(&provider.ContextWindow, patch.ContextWindow)
 }
 
 func (patch agentPatch) apply(agent *AgentConfig) {
-	assign(&agent.MaxSteps, patch.MaxSteps)
+	assign(&agent.MaxIterations, patch.MaxIterations)
 	assign(&agent.MaxToolCalls, patch.MaxToolCalls)
 	assign(&agent.MaxInputTokens, patch.MaxInputTokens)
 	assign(&agent.MaxOutputTokens, patch.MaxOutputTokens)

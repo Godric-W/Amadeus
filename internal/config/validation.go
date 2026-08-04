@@ -12,7 +12,8 @@ const (
 	maxProviderTimeout = 30 * time.Minute
 	maxProviderRetries = 10
 	maxOutputTokens    = 1_000_000
-	maxAgentSteps      = 1_000
+	maxContextWindow   = int64(100_000_000)
+	maxAgentIterations = 1_000
 	maxAgentToolCalls  = 10_000
 	maxAgentTokens     = int64(100_000_000)
 	maxAgentDuration   = 24 * time.Hour
@@ -145,6 +146,9 @@ func validateProvider(name string, provider ProviderConfig, addIssue func(string
 	if provider.MaxOutputTokens <= 0 || provider.MaxOutputTokens > maxOutputTokens {
 		addIssue(path+".max_output_tokens", fmt.Sprintf("must be greater than 0 and at most %d", maxOutputTokens))
 	}
+	if provider.ContextWindow <= int64(provider.MaxOutputTokens) || provider.ContextWindow > maxContextWindow {
+		addIssue(path+".context_window", fmt.Sprintf("must be greater than max_output_tokens and at most %d", maxContextWindow))
+	}
 }
 
 func validateBaseURL(path, value string, addIssue func(string, string)) {
@@ -170,8 +174,8 @@ func validateBaseURL(path, value string, addIssue func(string, string)) {
 }
 
 func validateAgent(agent AgentConfig, addIssue func(string, string)) {
-	if agent.MaxSteps <= 0 || agent.MaxSteps > maxAgentSteps {
-		addIssue("agent.max_steps", fmt.Sprintf("must be greater than 0 and at most %d", maxAgentSteps))
+	if agent.MaxIterations <= 0 || agent.MaxIterations > maxAgentIterations {
+		addIssue("agent.max_iterations", fmt.Sprintf("must be greater than 0 and at most %d", maxAgentIterations))
 	}
 	if agent.MaxToolCalls <= 0 || agent.MaxToolCalls > maxAgentToolCalls {
 		addIssue("agent.max_tool_calls", fmt.Sprintf("must be greater than 0 and at most %d", maxAgentToolCalls))

@@ -1,4 +1,4 @@
-package engine
+package plan
 
 import (
 	"context"
@@ -14,7 +14,6 @@ type TaskOutcomeKind string
 
 const (
 	TaskOutcomeCandidateComplete TaskOutcomeKind = "candidate_complete"
-	TaskOutcomeNeedsPlan         TaskOutcomeKind = "needs_plan"
 	TaskOutcomeBlocked           TaskOutcomeKind = "blocked"
 	TaskOutcomeFailed            TaskOutcomeKind = "failed"
 	TaskOutcomeCancelled         TaskOutcomeKind = "cancelled"
@@ -22,7 +21,7 @@ const (
 
 func (kind TaskOutcomeKind) Valid() bool {
 	switch kind {
-	case TaskOutcomeCandidateComplete, TaskOutcomeNeedsPlan, TaskOutcomeBlocked, TaskOutcomeFailed, TaskOutcomeCancelled:
+	case TaskOutcomeCandidateComplete, TaskOutcomeBlocked, TaskOutcomeFailed, TaskOutcomeCancelled:
 		return true
 	default:
 		return false
@@ -32,7 +31,7 @@ func (kind TaskOutcomeKind) Valid() bool {
 type BudgetLimit string
 
 const (
-	BudgetLimitSteps        BudgetLimit = "steps"
+	BudgetLimitIterations   BudgetLimit = "iterations"
 	BudgetLimitToolCalls    BudgetLimit = "tool_calls"
 	BudgetLimitInputTokens  BudgetLimit = "input_tokens"
 	BudgetLimitOutputTokens BudgetLimit = "output_tokens"
@@ -41,7 +40,7 @@ const (
 
 func (limit BudgetLimit) Valid() bool {
 	switch limit {
-	case BudgetLimitSteps, BudgetLimitToolCalls, BudgetLimitInputTokens, BudgetLimitOutputTokens, BudgetLimitWallClock:
+	case BudgetLimitIterations, BudgetLimitToolCalls, BudgetLimitInputTokens, BudgetLimitOutputTokens, BudgetLimitWallClock:
 		return true
 	default:
 		return false
@@ -69,7 +68,6 @@ type TaskRunInput struct {
 	Task           Task          `json:"task"`
 	Messages       []llm.Message `json:"messages,omitempty"`
 	AvailableTools []tool.Spec   `json:"available_tools,omitempty"`
-	PriorSteps     []Step        `json:"prior_steps,omitempty"`
 	Evidence       []Evidence    `json:"evidence,omitempty"`
 	Budget         BudgetState   `json:"budget"`
 }
@@ -97,10 +95,10 @@ func (input TaskRunInput) Validate() error {
 }
 
 func (state BudgetState) Validate() error {
-	if state.Budget.MaxSteps < 0 || state.Budget.MaxToolCalls < 0 || state.Budget.MaxInputTokens < 0 || state.Budget.MaxOutputTokens < 0 || state.Budget.MaxDuration < 0 {
+	if state.Budget.MaxIterations < 0 || state.Budget.MaxToolCalls < 0 || state.Budget.MaxInputTokens < 0 || state.Budget.MaxOutputTokens < 0 || state.Budget.MaxDuration < 0 {
 		return errors.New("limits cannot be negative")
 	}
-	if state.StepsUsed < 0 || state.ToolCallsUsed < 0 || state.InputTokensUsed < 0 || state.OutputTokensUsed < 0 || state.Elapsed < 0 {
+	if state.IterationsUsed < 0 || state.ToolCallsUsed < 0 || state.InputTokensUsed < 0 || state.OutputTokensUsed < 0 || state.Elapsed < 0 {
 		return errors.New("usage cannot be negative")
 	}
 	return nil
@@ -109,7 +107,6 @@ func (state BudgetState) Validate() error {
 type TaskOutcome struct {
 	Kind       TaskOutcomeKind      `json:"kind"`
 	Candidate  *CandidateTaskResult `json:"candidate,omitempty"`
-	Steps      []Step               `json:"steps,omitempty"`
 	Evidence   []Evidence           `json:"evidence,omitempty"`
 	Budget     BudgetState          `json:"budget"`
 	StopReason StopReason           `json:"stop_reason,omitempty"`
@@ -135,13 +132,6 @@ func (outcome TaskOutcome) Validate() error {
 		if outcome.StopReason != "" || outcome.Limit != nil {
 			return errors.New("candidate_complete task outcome cannot have a stop reason or budget limit")
 		}
-	case TaskOutcomeNeedsPlan:
-		if strings.TrimSpace(outcome.Reason) == "" {
-			return errors.New("needs_plan task outcome requires a reason")
-		}
-		if outcome.Candidate != nil || outcome.StopReason != "" || outcome.Limit != nil {
-			return errors.New("needs_plan task outcome cannot have a candidate, stop reason, or budget limit")
-		}
 	case TaskOutcomeBlocked:
 		if strings.TrimSpace(outcome.Reason) == "" {
 			return errors.New("blocked task outcome requires a reason")
@@ -156,9 +146,9 @@ func (outcome TaskOutcome) Validate() error {
 		if outcome.Candidate != nil {
 			return errors.New("failed task outcome cannot have a candidate")
 		}
-		if outcome.StopReason == StopReasonMaxSteps {
-			if outcome.Limit == nil || outcome.Limit.Limit != BudgetLimitSteps {
-				return errors.New("max_steps task outcome requires steps limit detail")
+		if outcome.StopReason == StopReasonMaxIterations {
+			if outcome.Limit == nil || outcome.Limit.Limit != BudgetLimitIterations {
+				return errors.New("max_iterations task outcome requires iterations limit detail")
 			}
 		}
 		if outcome.StopReason == StopReasonBudgetExceeded && outcome.Limit == nil {
@@ -168,7 +158,7 @@ func (outcome TaskOutcome) Validate() error {
 			if err := outcome.Limit.Validate(); err != nil {
 				return err
 			}
-			if outcome.StopReason != StopReasonMaxSteps && outcome.StopReason != StopReasonBudgetExceeded {
+			if outcome.StopReason != StopReasonMaxIterations && outcome.StopReason != StopReasonBudgetExceeded {
 				return errors.New("only budget failures can include limit detail")
 			}
 		}

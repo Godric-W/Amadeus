@@ -82,7 +82,7 @@ type ConversationStore interface {
 	BeginFirstRun(context.Context, BeginFirstRunInput) (BeginRunResult, error)
 	BeginRun(context.Context, BeginRunInput) (BeginRunResult, error)
 	FinishRun(context.Context, FinishRunInput) (FinishRunResult, error)
-	ListMessages(context.Context, ConversationSessionID) ([]Message, error)
+	ListCompletedMessages(context.Context, ConversationSessionID) ([]Message, error)
 }
 
 type RunStore interface {

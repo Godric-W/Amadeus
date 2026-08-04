@@ -1,4 +1,4 @@
-package engine
+package plan
 
 import (
 	"context"
@@ -45,20 +45,18 @@ func TestTaskOutcomeKindsValidateTheirRequiredFields(t *testing.T) {
 		valid   bool
 	}{
 		{name: "candidate", outcome: TaskOutcome{Kind: TaskOutcomeCandidateComplete, Candidate: &CandidateTaskResult{Result: TaskResult{Summary: "done"}}}, valid: true},
-		{name: "needs plan", outcome: TaskOutcome{Kind: TaskOutcomeNeedsPlan, Reason: "multiple dependent changes"}, valid: true},
 		{name: "blocked", outcome: TaskOutcome{Kind: TaskOutcomeBlocked, StopReason: StopReasonUserInputRequired, Reason: "approval required"}, valid: true},
 		{name: "failed", outcome: TaskOutcome{Kind: TaskOutcomeFailed, StopReason: StopReasonProviderError, Reason: "provider unavailable"}, valid: true},
-		{name: "max steps", outcome: TaskOutcome{Kind: TaskOutcomeFailed, StopReason: StopReasonMaxSteps, Limit: &LimitReached{Limit: BudgetLimitSteps, Used: 3, Maximum: 3}}, valid: true},
+		{name: "max steps", outcome: TaskOutcome{Kind: TaskOutcomeFailed, StopReason: StopReasonMaxIterations, Limit: &LimitReached{Limit: BudgetLimitIterations, Used: 3, Maximum: 3}}, valid: true},
 		{name: "token budget", outcome: TaskOutcome{Kind: TaskOutcomeFailed, StopReason: StopReasonBudgetExceeded, Limit: &LimitReached{Limit: BudgetLimitInputTokens, Used: 11, Maximum: 10}}, valid: true},
 		{name: "cancelled", outcome: TaskOutcome{Kind: TaskOutcomeCancelled, StopReason: StopReasonCancelled}, valid: true},
 		{name: "candidate missing result", outcome: TaskOutcome{Kind: TaskOutcomeCandidateComplete}},
-		{name: "needs plan missing reason", outcome: TaskOutcome{Kind: TaskOutcomeNeedsPlan}},
 		{name: "blocked wrong stop reason", outcome: TaskOutcome{Kind: TaskOutcomeBlocked, StopReason: StopReasonToolError, Reason: "blocked"}},
 		{name: "failed completed", outcome: TaskOutcome{Kind: TaskOutcomeFailed, StopReason: StopReasonCompleted}},
-		{name: "max steps missing detail", outcome: TaskOutcome{Kind: TaskOutcomeFailed, StopReason: StopReasonMaxSteps}},
+		{name: "max steps missing detail", outcome: TaskOutcome{Kind: TaskOutcomeFailed, StopReason: StopReasonMaxIterations}},
 		{name: "budget missing detail", outcome: TaskOutcome{Kind: TaskOutcomeFailed, StopReason: StopReasonBudgetExceeded}},
 		{name: "provider with limit", outcome: TaskOutcome{Kind: TaskOutcomeFailed, StopReason: StopReasonProviderError, Limit: &LimitReached{Limit: BudgetLimitInputTokens, Used: 1, Maximum: 1}}},
-		{name: "cancelled wrong reason", outcome: TaskOutcome{Kind: TaskOutcomeCancelled, StopReason: StopReasonMaxSteps}},
+		{name: "cancelled wrong reason", outcome: TaskOutcome{Kind: TaskOutcomeCancelled, StopReason: StopReasonMaxIterations}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -78,19 +76,19 @@ func TestTaskRunInputRequiresRunningTask(t *testing.T) {
 	if err := input.Validate(); err != nil {
 		t.Fatalf("validate task run input: %v", err)
 	}
-	input.Task.Status = TaskStatusReady
+	input.Task.Status = TaskStatusPending
 	if err := input.Validate(); err == nil || !strings.Contains(err.Error(), string(TaskStatusRunning)) {
 		t.Fatalf("unexpected task status validation: %v", err)
 	}
 }
 
 func TestTaskOutcomeJSONUsesStableKind(t *testing.T) {
-	outcome := TaskOutcome{Kind: TaskOutcomeNeedsPlan, Reason: "dependency graph required"}
+	outcome := TaskOutcome{Kind: TaskOutcomeBlocked, StopReason: StopReasonUserInputRequired, Reason: "approval required"}
 	encoded, err := json.Marshal(outcome)
 	if err != nil {
 		t.Fatalf("marshal outcome: %v", err)
 	}
-	if !strings.Contains(string(encoded), `"kind":"needs_plan"`) {
+	if !strings.Contains(string(encoded), `"kind":"blocked"`) {
 		t.Fatalf("unexpected outcome JSON: %s", encoded)
 	}
 }

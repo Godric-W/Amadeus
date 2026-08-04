@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/react"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
@@ -49,7 +48,7 @@ func TestToolResultReplayPreservesCallOrderAcrossProtocols(t *testing.T) {
 
 func toolReplayExecution(callID, toolName, text string) react.ToolExecution {
 	return react.ToolExecution{
-		Observation: engine.Observation{
+		Observation: react.Observation{
 			CallID: callID, ToolName: toolName,
 			Result: tool.Result{CallID: callID, ToolName: toolName, Text: text},
 		},

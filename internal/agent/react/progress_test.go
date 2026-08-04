@@ -2,11 +2,9 @@ package react
 
 import (
 	"encoding/json"
+	"github.com/Godric-W/Amadeus/internal/tool"
 	"sync"
 	"testing"
-
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
-	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 func TestProgressMonitorDetectsRepeatedCanonicalAction(t *testing.T) {
@@ -28,7 +26,7 @@ func TestProgressMonitorDetectsRepeatedCanonicalAction(t *testing.T) {
 func TestProgressMonitorDetectsRepeatedErrorAndNoEvidence(t *testing.T) {
 	monitor := DefaultProgressMonitor()
 	sample := ProgressSample{
-		Observations:   []engine.Observation{{ToolName: "read_file", Error: " Permission   Denied "}},
+		Observations:   []Observation{{ToolName: "read_file", Error: " Permission   Denied "}},
 		EvidenceBefore: 1, EvidenceAfter: 1,
 	}
 	if signals, err := monitor.Observe(sample); err != nil || len(signals) != 0 {

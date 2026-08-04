@@ -22,22 +22,22 @@ func TestCoordinatorDelaysPersistenceUntilFirstTaskAndResumes(t *testing.T) {
 	if sessions, err := coordinator.ListSessions(context.Background()); err != nil || len(sessions) != 0 {
 		t.Fatalf("draft should not persist: sessions=%v err=%v", sessions, err)
 	}
-	started, err := coordinator.BeginTask(context.Background(), "implement feature", RunMetadata{})
+	started, err := coordinator.BeginRun(context.Background(), "implement feature", RunMetadata{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	interrupted, _ := EncodeInterruptedContext(InterruptedContextV1{Objective: "cancelled", Status: string(RunInterrupted), StopReason: "cancelled"})
-	if _, err := coordinator.FinishTask(context.Background(), started, RunInterrupted, "cancelled", "", nil, interrupted); err != nil {
+	interrupted, _ := EncodePreviousWork(PreviousWork{Objective: "cancelled", Status: string(RunInterrupted), StopReason: "cancelled"})
+	if _, err := coordinator.FinishRun(context.Background(), started, RunInterrupted, "cancelled", "", nil, interrupted); err != nil {
 		t.Fatal(err)
 	}
-	second, err := coordinator.BeginTask(context.Background(), "please continue", RunMetadata{})
+	second, err := coordinator.BeginRun(context.Background(), "please continue", RunMetadata{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Interrupted == nil || second.Records.Run.ContextFromRunID != started.Records.Run.ID || len(second.PriorMessages) != 1 {
+	if second.PreviousRun == nil || second.Records.Run.ContextFromRunID != started.Records.Run.ID || len(second.PriorMessages) != 0 {
 		t.Fatalf("unexpected interrupted continuation: %#v", second)
 	}
-	if _, err := coordinator.FinishTask(context.Background(), second, RunCompleted, "", "done", nil, nil); err != nil {
+	if _, err := coordinator.FinishRun(context.Background(), second, RunCompleted, "", "done", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.PendingInterruptedRun(context.Background(), second.Records.Session.ID); !errors.Is(err, ErrNotFound) {
@@ -61,7 +61,7 @@ func TestCoordinatorRecoversAbandonedRunningRunBeforeContinuation(t *testing.T) 
 		return coordinator
 	}
 	firstCoordinator := newCoordinator()
-	first, err := firstCoordinator.BeginTask(context.Background(), "unfinished task", RunMetadata{})
+	first, err := firstCoordinator.BeginRun(context.Background(), "unfinished task", RunMetadata{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,11 +69,11 @@ func TestCoordinatorRecoversAbandonedRunningRunBeforeContinuation(t *testing.T) 
 	if _, err := secondCoordinator.Continue(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	second, err := secondCoordinator.BeginTask(context.Background(), "continue task", RunMetadata{})
+	second, err := secondCoordinator.BeginRun(context.Background(), "continue task", RunMetadata{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Interrupted == nil || second.Interrupted.ID != first.Records.Run.ID || second.Records.Run.ContextFromRunID != first.Records.Run.ID {
+	if second.PreviousRun == nil || second.PreviousRun.ID != first.Records.Run.ID || second.Records.Run.ContextFromRunID != first.Records.Run.ID {
 		t.Fatalf("abandoned Run was not recovered into continuation: %#v", second)
 	}
 	recovered, err := store.GetRun(context.Background(), first.Records.Run.ID)

@@ -39,7 +39,7 @@ providers:
     temperature: 0.5
     max_output_tokens: 4096
 agent:
-  max_steps: 12
+  max_iterations: 12
   max_tool_calls: 24
   max_input_tokens: 30000
   max_output_tokens: 4000
@@ -71,7 +71,7 @@ logging:
 	if compatible.Timeout != 45*time.Second {
 		t.Fatalf("unexpected compatible timeout: got %s", compatible.Timeout)
 	}
-	if configured.Agent.MaxSteps != 12 || configured.Agent.MaxToolCalls != 24 || configured.Agent.MaxInputTokens != 30_000 || configured.Agent.MaxOutputTokens != 4_000 || configured.Agent.MaxDuration != 5*time.Minute || configured.Agent.MaxParallelTools != 2 {
+	if configured.Agent.MaxIterations != 12 || configured.Agent.MaxToolCalls != 24 || configured.Agent.MaxInputTokens != 30_000 || configured.Agent.MaxOutputTokens != 4_000 || configured.Agent.MaxDuration != 5*time.Minute || configured.Agent.MaxParallelTools != 2 {
 		t.Fatalf("unexpected agent config: %#v", configured.Agent)
 	}
 	if !configured.LSP.Enabled || configured.LSP.Command != "gopls" || !reflect.DeepEqual(configured.LSP.Args, []string{"-remote=auto"}) || !reflect.DeepEqual(configured.LSP.Extensions, []string{".go"}) || configured.LSP.Timeout != 15*time.Second {

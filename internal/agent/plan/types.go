@@ -1,4 +1,4 @@
-package engine
+package plan
 
 import (
 	"time"
@@ -25,14 +25,12 @@ type Criterion struct {
 type ExecutionKind string
 
 const (
-	ExecutionDirect    ExecutionKind = "direct"
-	ExecutionPlanned   ExecutionKind = "planned"
-	ExecutionDelegated ExecutionKind = "delegated"
+	ExecutionPlanned ExecutionKind = "planned"
 )
 
 func (kind ExecutionKind) Valid() bool {
 	switch kind {
-	case ExecutionDirect, ExecutionPlanned, ExecutionDelegated:
+	case ExecutionPlanned:
 		return true
 	default:
 		return false
@@ -40,7 +38,7 @@ func (kind ExecutionKind) Valid() bool {
 }
 
 type Budget struct {
-	MaxSteps        int           `json:"max_steps,omitempty"`
+	MaxIterations   int           `json:"max_iterations,omitempty"`
 	MaxToolCalls    int           `json:"max_tool_calls,omitempty"`
 	MaxInputTokens  int64         `json:"max_input_tokens,omitempty"`
 	MaxOutputTokens int64         `json:"max_output_tokens,omitempty"`
@@ -49,7 +47,7 @@ type Budget struct {
 
 type BudgetState struct {
 	Budget           Budget        `json:"budget"`
-	StepsUsed        int           `json:"steps_used"`
+	IterationsUsed   int           `json:"iterations_used"`
 	ToolCallsUsed    int           `json:"tool_calls_used"`
 	InputTokensUsed  int64         `json:"input_tokens_used"`
 	OutputTokensUsed int64         `json:"output_tokens_used"`
@@ -62,17 +60,8 @@ type ExecutionGraph struct {
 	Tasks   []Task        `json:"tasks"`
 }
 
-func NewDirectGraph(goal Goal) ExecutionGraph {
-	return ExecutionGraph{
-		Kind:    ExecutionDirect,
-		Version: 1,
-		Tasks: []Task{{
-			ID:                 TaskID("root"),
-			Objective:          goal.Objective,
-			AcceptanceCriteria: append([]Criterion(nil), goal.AcceptanceCriteria...),
-			Status:             TaskStatusPending,
-		}},
-	}
+func NewPlanGraph() ExecutionGraph {
+	return ExecutionGraph{Kind: ExecutionPlanned, Version: 1}
 }
 
 type Task struct {
@@ -92,40 +81,6 @@ type TaskResult struct {
 	Summary     string       `json:"summary"`
 	EvidenceIDs []EvidenceID `json:"evidence_ids,omitempty"`
 	Partial     bool         `json:"partial,omitempty"`
-}
-
-type DecisionSummary struct {
-	Intent     string `json:"intent,omitempty"`
-	NextAction string `json:"next_action,omitempty"`
-}
-
-type StepStatus string
-
-const (
-	StepStatusRunning   StepStatus = "running"
-	StepStatusCompleted StepStatus = "completed"
-	StepStatusFailed    StepStatus = "failed"
-	StepStatusCancelled StepStatus = "cancelled"
-)
-
-type Step struct {
-	Index        int             `json:"index"`
-	Decision     DecisionSummary `json:"decision"`
-	ToolCalls    []tool.Call     `json:"tool_calls,omitempty"`
-	Observations []Observation   `json:"observations,omitempty"`
-	Evidence     []Evidence      `json:"evidence,omitempty"`
-	Status       StepStatus      `json:"status"`
-	StartedAt    time.Time       `json:"started_at"`
-	CompletedAt  *time.Time      `json:"completed_at,omitempty"`
-}
-
-type Observation struct {
-	CallID   string        `json:"call_id"`
-	ToolName string        `json:"tool_name"`
-	Result   tool.Result   `json:"result"`
-	Error    string        `json:"error,omitempty"`
-	Blocking bool          `json:"blocking,omitempty"`
-	Duration time.Duration `json:"duration,omitempty"`
 }
 
 type EvidenceKind string
@@ -162,7 +117,6 @@ type RunState struct {
 	Status       RunStatus      `json:"status"`
 	Budget       BudgetState    `json:"budget"`
 	Evidence     []Evidence     `json:"evidence,omitempty"`
-	Reflections  []Reflection   `json:"reflections,omitempty"`
 	StopReason   StopReason     `json:"stop_reason,omitempty"`
 }
 

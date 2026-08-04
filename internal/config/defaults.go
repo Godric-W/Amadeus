@@ -20,7 +20,7 @@ func Default() Config {
 			DefaultProviderName: openAI,
 		},
 		Agent: AgentConfig{
-			MaxSteps:         30,
+			MaxIterations:    30,
 			MaxToolCalls:     120,
 			MaxInputTokens:   1_000_000,
 			MaxOutputTokens:  245_760,
@@ -41,5 +41,6 @@ func defaultProviderConfig() ProviderConfig {
 		MaxRetries:      2,
 		Temperature:     0.2,
 		MaxOutputTokens: 8192,
+		ContextWindow:   128_000,
 	}
 }

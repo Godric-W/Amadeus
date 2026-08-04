@@ -4,17 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/project"
+	"github.com/Godric-W/Amadeus/internal/tool"
+	"github.com/Godric-W/Amadeus/internal/tool/builtin"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
-
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
-	"github.com/Godric-W/Amadeus/internal/agent/event"
-	"github.com/Godric-W/Amadeus/internal/project"
-	"github.com/Godric-W/Amadeus/internal/tool"
-	"github.com/Godric-W/Amadeus/internal/tool/builtin"
 )
 
 type fakeTool struct {
@@ -58,7 +56,7 @@ func TestToolExecutorValidatesRepairsAndExecutes(t *testing.T) {
 	if execution.Observation.CallID != "call_1" || execution.Observation.Result.CallID != "call_1" || execution.Observation.Result.ToolName != "read_file" || execution.Observation.Error != "" {
 		t.Fatalf("unexpected successful observation: %#v", execution.Observation)
 	}
-	if execution.Evidence.ID != engine.EvidenceID("tool:call_1") || !execution.Evidence.Verified || execution.Evidence.Summary != "file contents" {
+	if execution.Evidence.ID != EvidenceID("tool:call_1") || !execution.Evidence.Verified || execution.Evidence.Summary != "file contents" {
 		t.Fatalf("unexpected successful evidence: %#v", execution.Evidence)
 	}
 	if execution.Observation.Duration != time.Second {

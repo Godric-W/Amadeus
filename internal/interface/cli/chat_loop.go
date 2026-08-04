@@ -13,7 +13,7 @@ import (
 )
 
 type TurnRunner interface {
-	RunTurn(context.Context, agentruntime.TurnInput) (llm.Response, error)
+	RunCall(context.Context, agentruntime.CallInput) (llm.Response, error)
 }
 
 type TurnContextFactory func(context.Context) (context.Context, context.CancelFunc)
@@ -77,8 +77,8 @@ func (loop *ChatLoop) runLine(ctx context.Context, line string) (bool, error) {
 	}
 
 	loop.nextID++
-	turnCtx, stopTurn := loop.turnContextFactory(ctx)
-	_, err := loop.runner.RunTurn(turnCtx, agentruntime.TurnInput{
+	callCtx, stopTurn := loop.turnContextFactory(ctx)
+	_, err := loop.runner.RunCall(callCtx, agentruntime.CallInput{
 		ID:      fmt.Sprintf("turn-%d", loop.nextID),
 		Content: line,
 	})

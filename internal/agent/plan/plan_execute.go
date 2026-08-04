@@ -1,4 +1,4 @@
-package engine
+package plan
 
 import (
 	"context"
@@ -98,11 +98,13 @@ type PlannerOptions struct {
 	MaxAttempts     int
 	Temperature     float64
 	MaxOutputTokens int
+	Events          event.Sink
 }
 
 type LLMPlanDraftPlanner struct {
 	client  llm.Client
 	options PlannerOptions
+	events  event.Sink
 }
 
 func NewLLMPlanDraftPlanner(client llm.Client, options PlannerOptions) (*LLMPlanDraftPlanner, error) {
@@ -115,7 +117,7 @@ func NewLLMPlanDraftPlanner(client llm.Client, options PlannerOptions) (*LLMPlan
 	if strings.TrimSpace(options.SystemPrompt) == "" {
 		options.SystemPrompt = "You are Amadeus Planner. Return PLAN followed by a short ordered list of tasks. Do not return JSON or hidden reasoning."
 	}
-	return &LLMPlanDraftPlanner{client: client, options: options}, nil
+	return &LLMPlanDraftPlanner{client: client, options: options, events: options.Events}, nil
 }
 
 func (planner *LLMPlanDraftPlanner) Draft(ctx context.Context, input DraftPlanRequest) (PlanDraft, error) {
@@ -140,12 +142,20 @@ func (planner *LLMPlanDraftPlanner) Draft(ctx context.Context, input DraftPlanRe
 	messages = append(messages, llm.UserMessage(string(payload)))
 	var lastErr error
 	for attempt := 0; attempt < planner.options.MaxAttempts; attempt++ {
-		response, requestErr := planner.client.Complete(ctx, llm.Request{
+		callCtx := event.WithMetadata(ctx, event.Metadata{LLMCallID: planLLMCallID(ctx, "initial", attempt+1)})
+		if err := publishPlanLLMStarted(callCtx, planner.events, planner.client.Model()); err != nil {
+			return PlanDraft{}, err
+		}
+		response, requestErr := planner.client.Complete(callCtx, llm.Request{
 			Model: planner.client.Model().Name, Messages: messages,
 			Temperature: planner.options.Temperature, MaxOutputTokens: remainingOutputTokens(planner.options.MaxOutputTokens, input.Budget),
 		})
 		if requestErr != nil {
+			_ = publishPlanLLMError(callCtx, planner.events, requestErr)
 			return PlanDraft{}, fmt.Errorf("plan draft provider request: %w", requestErr)
+		}
+		if err := publishPlanLLMCompleted(callCtx, planner.events, response); err != nil {
+			return PlanDraft{}, err
 		}
 		draft, parseErr := ParsePlanDraft(response.Message.Content)
 		if parseErr == nil {
@@ -235,7 +245,6 @@ func ParseReplanDecision(content string) (ReplanDecision, error) {
 type ReplanRequest struct {
 	Goal      Goal           `json:"goal"`
 	Graph     ExecutionGraph `json:"graph"`
-	Steps     []Step         `json:"steps,omitempty"`
 	Evidence  []Evidence     `json:"evidence,omitempty"`
 	Workspace string         `json:"workspace,omitempty"`
 	LastError string         `json:"last_error,omitempty"`
@@ -249,6 +258,7 @@ type FixedReplanner interface {
 type LLMReplanner struct {
 	client  llm.Client
 	options PlannerOptions
+	events  event.Sink
 }
 
 func NewLLMReplanner(client llm.Client, options PlannerOptions) (*LLMReplanner, error) {
@@ -261,7 +271,7 @@ func NewLLMReplanner(client llm.Client, options PlannerOptions) (*LLMReplanner, 
 	if strings.TrimSpace(options.SystemPrompt) == "" {
 		options.SystemPrompt = "You are Amadeus Replanner. Return COMPLETE followed by the final user answer when the goal is done, otherwise return REPLAN followed by a short ordered task list. Do not return JSON or hidden reasoning."
 	}
-	return &LLMReplanner{client: client, options: options}, nil
+	return &LLMReplanner{client: client, options: options, events: options.Events}, nil
 }
 
 func (replanner *LLMReplanner) Decide(ctx context.Context, input ReplanRequest) (ReplanDecision, error) {
@@ -275,12 +285,20 @@ func (replanner *LLMReplanner) Decide(ctx context.Context, input ReplanRequest) 
 	messages := []llm.Message{llm.SystemMessage(replanner.options.SystemPrompt), llm.UserMessage(string(payload))}
 	var lastErr error
 	for attempt := 0; attempt < replanner.options.MaxAttempts; attempt++ {
-		response, requestErr := replanner.client.Complete(ctx, llm.Request{
+		callCtx := event.WithMetadata(ctx, event.Metadata{LLMCallID: planLLMCallID(ctx, "review", attempt+1)})
+		if err := publishPlanLLMStarted(callCtx, replanner.events, replanner.client.Model()); err != nil {
+			return ReplanDecision{}, err
+		}
+		response, requestErr := replanner.client.Complete(callCtx, llm.Request{
 			Model: replanner.client.Model().Name, Messages: messages,
 			Temperature: replanner.options.Temperature, MaxOutputTokens: remainingOutputTokens(replanner.options.MaxOutputTokens, input.Budget),
 		})
 		if requestErr != nil {
+			_ = publishPlanLLMError(callCtx, replanner.events, requestErr)
 			return ReplanDecision{}, fmt.Errorf("replanner provider request: %w", requestErr)
+		}
+		if err := publishPlanLLMCompleted(callCtx, replanner.events, response); err != nil {
+			return ReplanDecision{}, err
 		}
 		decision, parseErr := ParseReplanDecision(response.Message.Content)
 		if parseErr == nil {
@@ -293,24 +311,37 @@ func (replanner *LLMReplanner) Decide(ctx context.Context, input ReplanRequest) 
 	return ReplanDecision{}, fmt.Errorf("replanner attempts exhausted: %w", lastErr)
 }
 
-type PlanExecuteEngineOptions struct {
+type ControllerOptions struct {
 	MaxPlanCycles int
 	Events        event.Sink
 }
 
-type PlanExecuteEngine struct {
+type PlanRunInput struct {
+	State             RunState                              `json:"state"`
+	WorkspaceSnapshot func(context.Context) (string, error) `json:"-"`
+	Messages          []llm.Message                         `json:"messages,omitempty"`
+	AvailableTools    []tool.Spec                           `json:"available_tools,omitempty"`
+}
+
+type PlanRunResult struct {
+	State        RunState     `json:"state"`
+	FinalMessage *llm.Message `json:"final_message,omitempty"`
+	Reason       string       `json:"reason,omitempty"`
+}
+
+type Controller struct {
 	planner   DraftPlanner
 	runner    TaskRunner
 	replanner FixedReplanner
 	events    event.Sink
-	options   PlanExecuteEngineOptions
+	options   ControllerOptions
 }
 
-type RunEngine interface {
-	Run(context.Context, DirectRunInput) (DirectRunResult, error)
+type PlanController interface {
+	Run(context.Context, PlanRunInput) (PlanRunResult, error)
 }
 
-func NewPlanExecuteEngine(planner DraftPlanner, runner TaskRunner, replanner FixedReplanner, options PlanExecuteEngineOptions) (*PlanExecuteEngine, error) {
+func NewController(planner DraftPlanner, runner TaskRunner, replanner FixedReplanner, options ControllerOptions) (*Controller, error) {
 	if planner == nil {
 		return nil, errors.New("plan execute planner is nil")
 	}
@@ -323,61 +354,61 @@ func NewPlanExecuteEngine(planner DraftPlanner, runner TaskRunner, replanner Fix
 	if options.MaxPlanCycles <= 0 {
 		options.MaxPlanCycles = 8
 	}
-	return &PlanExecuteEngine{planner: planner, runner: runner, replanner: replanner, events: options.Events, options: options}, nil
+	return &Controller{planner: planner, runner: runner, replanner: replanner, events: options.Events, options: options}, nil
 }
 
-func (engine *PlanExecuteEngine) Run(ctx context.Context, input DirectRunInput) (DirectRunResult, error) {
-	if engine == nil {
-		return DirectRunResult{}, errors.New("plan execute engine is nil")
+func (controller *Controller) Run(ctx context.Context, input PlanRunInput) (PlanRunResult, error) {
+	if controller == nil {
+		return PlanRunResult{}, errors.New("plan Controller is nil")
 	}
 	if ctx == nil {
-		return DirectRunResult{}, errors.New("plan execute context is nil")
+		return PlanRunResult{}, errors.New("plan execute context is nil")
 	}
 	if strings.TrimSpace(input.State.Goal.Objective) == "" {
-		return DirectRunResult{}, errors.New("plan execute objective is empty")
+		return PlanRunResult{}, errors.New("plan execute objective is empty")
 	}
-	result := DirectRunResult{State: input.State, Steps: append([]Step(nil), input.PriorSteps...)}
-	if err := engine.publish(ctx, event.EngineRunStarted{RunID: string(result.State.ID), TaskID: "plan"}); err != nil {
+	result := PlanRunResult{State: input.State}
+	if err := controller.publish(ctx, event.RunStarted{RunID: string(result.State.ID)}); err != nil {
 		return result, err
 	}
 	previousStatus := result.State.Status
 	result.State.Status = RunStatusPlanning
-	if err := engine.publish(ctx, event.EngineStatusChanged{RunID: string(result.State.ID), Entity: "run", EntityID: string(result.State.ID), From: string(previousStatus), To: string(result.State.Status)}); err != nil {
+	if err := controller.publish(ctx, event.RunStatusChanged{RunID: string(result.State.ID), Entity: "run", EntityID: string(result.State.ID), From: string(previousStatus), To: string(result.State.Status)}); err != nil {
 		return result, err
 	}
 	workspace, err := planWorkspace(ctx, input.WorkspaceSnapshot)
 	if err != nil {
-		return engine.fail(result, StopReasonToolError, err)
+		return controller.fail(result, StopReasonToolError, err)
 	}
 	if err := planBudgetAvailable(result.State.Budget); err != nil {
-		return engine.fail(result, StopReasonBudgetExceeded, err)
+		return controller.fail(result, StopReasonBudgetExceeded, err)
 	}
-	draft, err := engine.planner.Draft(ctx, DraftPlanRequest{Goal: result.State.Goal, Messages: cloneLLMMessages(input.Messages), Workspace: workspace, Budget: result.State.Budget})
+	draft, err := controller.planner.Draft(ctx, DraftPlanRequest{Goal: result.State.Goal, Messages: cloneLLMMessages(input.Messages), Workspace: workspace, Budget: result.State.Budget})
 	if err != nil {
-		return engine.fail(result, StopReasonProviderError, err)
+		return controller.fail(result, StopReasonProviderError, err)
 	}
 	result.State.Budget = addLLMUsage(result.State.Budget, draft.Usage)
 	if err := planBudgetAvailable(result.State.Budget); err != nil {
-		return engine.fail(result, StopReasonBudgetExceeded, err)
+		return controller.fail(result, StopReasonBudgetExceeded, err)
 	}
 	graph, err := BuildSerialGraph(draft, 1)
 	if err != nil {
-		return engine.fail(result, StopReasonProviderError, err)
+		return controller.fail(result, StopReasonProviderError, err)
 	}
 
-	for cycle := 1; cycle <= engine.options.MaxPlanCycles; cycle++ {
+	for cycle := 1; cycle <= controller.options.MaxPlanCycles; cycle++ {
 		result.State.Graph = graph
-		if err := engine.publish(ctx, event.PlanUpdated{RunID: string(result.State.ID), Cycle: cycle, Tasks: planEventTasks(graph)}); err != nil {
+		if err := controller.publish(ctx, event.PlanUpdated{RunID: string(result.State.ID), Cycle: cycle, Tasks: planEventTasks(graph)}); err != nil {
 			return result, fmt.Errorf("publish plan updated: %w", err)
 		}
-		lastError, cancelled, runErr := engine.executeGraph(ctx, input, &result)
+		lastError, cancelled, runErr := controller.executeGraph(ctx, input, &result)
 		if runErr != nil {
 			return result, runErr
 		}
 		if cancelled {
 			result.State.Status = RunStatusCancelled
 			result.State.StopReason = StopReasonCancelled
-			if err := engine.publish(context.WithoutCancel(ctx), event.EngineRunCompleted{
+			if err := controller.publish(context.WithoutCancel(ctx), event.RunCompleted{
 				RunID: string(result.State.ID), Status: string(result.State.Status), StopReason: string(result.State.StopReason), Reason: lastError,
 			}); err != nil {
 				return result, fmt.Errorf("publish cancelled run completion: %w", err)
@@ -386,49 +417,50 @@ func (engine *PlanExecuteEngine) Run(ctx context.Context, input DirectRunInput) 
 		}
 		workspace, err = planWorkspace(ctx, input.WorkspaceSnapshot)
 		if err != nil {
-			return engine.fail(result, StopReasonToolError, err)
+			return controller.fail(result, StopReasonToolError, err)
 		}
 		result.State.Status = RunStatusPlanning
 		if err := planBudgetAvailable(result.State.Budget); err != nil {
-			return engine.fail(result, StopReasonBudgetExceeded, err)
+			return controller.fail(result, StopReasonBudgetExceeded, err)
 		}
-		decision, err := engine.replanner.Decide(ctx, ReplanRequest{
-			Goal: result.State.Goal, Graph: result.State.Graph, Steps: clonePlanSteps(result.Steps),
+		reviewCtx := event.WithMetadata(ctx, event.Metadata{Iteration: cycle})
+		decision, err := controller.replanner.Decide(reviewCtx, ReplanRequest{
+			Goal: result.State.Goal, Graph: result.State.Graph,
 			Evidence: cloneEvidence(result.State.Evidence), Workspace: workspace, LastError: lastError, Budget: result.State.Budget,
 		})
 		if err != nil {
-			return engine.fail(result, StopReasonProviderError, err)
+			return controller.fail(result, StopReasonProviderError, err)
 		}
 		result.State.Budget = addLLMUsage(result.State.Budget, decision.Usage)
 		if err := planBudgetAvailable(result.State.Budget); err != nil {
-			return engine.fail(result, StopReasonBudgetExceeded, err)
+			return controller.fail(result, StopReasonBudgetExceeded, err)
 		}
 		switch decision.Action {
 		case ReplanComplete:
 			message := llm.AssistantMessage(decision.FinalAnswer)
 			result.FinalMessage = &message
-			if err := engine.publish(ctx, event.TextDelta{TurnID: string(result.State.ID), ResponseID: "replan-final", Delta: decision.FinalAnswer}); err != nil {
+			if err := controller.publish(ctx, event.TextDelta{LLMCallID: string(result.State.ID), ResponseID: "replan-final", Delta: decision.FinalAnswer}); err != nil {
 				return result, fmt.Errorf("publish final replanner answer: %w", err)
 			}
 			result.State.Status = RunStatusCompleted
 			result.State.StopReason = StopReasonCompleted
-			if err := engine.publish(context.WithoutCancel(ctx), event.EngineRunCompleted{RunID: string(result.State.ID), Status: string(result.State.Status), StopReason: string(result.State.StopReason), Reason: decision.FinalAnswer}); err != nil {
+			if err := controller.publish(context.WithoutCancel(ctx), event.RunCompleted{RunID: string(result.State.ID), Status: string(result.State.Status), StopReason: string(result.State.StopReason), Reason: decision.FinalAnswer}); err != nil {
 				return result, err
 			}
 			return result, nil
 		case ReplanAgain:
 			graph, err = BuildSerialGraph(decision.Plan, cycle+1)
 			if err != nil {
-				return engine.fail(result, StopReasonProviderError, err)
+				return controller.fail(result, StopReasonProviderError, err)
 			}
 		default:
-			return engine.fail(result, StopReasonProviderError, fmt.Errorf("unsupported replan action %q", decision.Action))
+			return controller.fail(result, StopReasonProviderError, fmt.Errorf("unsupported replan action %q", decision.Action))
 		}
 	}
-	return engine.fail(result, StopReasonReplanExhausted, errors.New("plan execute cycles exhausted"))
+	return controller.fail(result, StopReasonReplanExhausted, errors.New("plan execute cycles exhausted"))
 }
 
-func (engine *PlanExecuteEngine) executeGraph(ctx context.Context, input DirectRunInput, result *DirectRunResult) (string, bool, error) {
+func (controller *Controller) executeGraph(ctx context.Context, input PlanRunInput, result *PlanRunResult) (string, bool, error) {
 	result.State.Status = RunStatusScheduling
 	for index := range result.State.Graph.Tasks {
 		if err := ctx.Err(); err != nil {
@@ -436,51 +468,45 @@ func (engine *PlanExecuteEngine) executeGraph(ctx context.Context, input DirectR
 		}
 		task := &result.State.Graph.Tasks[index]
 		if !dependenciesCompleted(result.State.Graph, *task) {
-			if err := engine.transitionPlanTask(ctx, result.State.ID, task, TaskStatusBlocked); err != nil {
+			if err := controller.transitionPlanTask(ctx, result.State.ID, task, TaskStatusBlocked); err != nil {
 				return err.Error(), false, err
 			}
 			return fmt.Sprintf("task %s dependencies are incomplete", task.ID), false, nil
 		}
-		if err := engine.transitionPlanTask(ctx, result.State.ID, task, TaskStatusRunning); err != nil {
+		if err := controller.transitionPlanTask(ctx, result.State.ID, task, TaskStatusRunning); err != nil {
 			return err.Error(), false, err
 		}
 		result.State.ActiveTaskID = task.ID
 		result.State.Status = RunStatusTaskRunning
 		messages := cloneLLMMessages(input.Messages)
 		messages = append(messages, llm.DeveloperMessage(fmt.Sprintf("Execute only the current planned task: %s. Use the available tools as needed. Do not create another plan or request a planning-mode upgrade. Return a concise task result when this task is complete.", task.Objective)))
-		outcome, err := engine.runner.Run(ctx, TaskRunInput{
+		outcome, err := controller.runner.Run(ctx, TaskRunInput{
 			RunID: result.State.ID, Task: *task, Messages: messages, AvailableTools: cloneToolSpecs(input.AvailableTools),
-			PriorSteps: clonePlanSteps(result.Steps), Evidence: cloneEvidence(result.State.Evidence), Budget: result.State.Budget,
+			Evidence: cloneEvidence(result.State.Evidence), Budget: result.State.Budget,
 		})
 		if err != nil {
 			return err.Error(), false, err
 		}
-		result.Steps = append(result.Steps, outcome.Steps...)
 		result.State.Evidence = mergeEvidence(result.State.Evidence, outcome.Evidence)
 		result.State.Budget = mergeBudget(result.State.Budget, outcome.Budget)
 		switch outcome.Kind {
 		case TaskOutcomeCandidateComplete:
-			if err := engine.transitionPlanTask(ctx, result.State.ID, task, TaskStatusCompleted); err != nil {
+			if err := controller.transitionPlanTask(ctx, result.State.ID, task, TaskStatusCompleted); err != nil {
 				return err.Error(), false, err
 			}
 			task.Result = cloneTaskResult(&outcome.Candidate.Result)
 		case TaskOutcomeCancelled:
-			if err := engine.transitionPlanTask(ctx, result.State.ID, task, TaskStatusCancelled); err != nil {
+			if err := controller.transitionPlanTask(ctx, result.State.ID, task, TaskStatusCancelled); err != nil {
 				return err.Error(), false, err
 			}
 			return nonEmptyPlanReason(outcome.Reason, "task cancelled"), true, nil
 		case TaskOutcomeBlocked:
-			if err := engine.transitionPlanTask(ctx, result.State.ID, task, TaskStatusBlocked); err != nil {
+			if err := controller.transitionPlanTask(ctx, result.State.ID, task, TaskStatusBlocked); err != nil {
 				return err.Error(), false, err
 			}
 			return nonEmptyPlanReason(outcome.Reason, "task blocked"), false, nil
-		case TaskOutcomeNeedsPlan:
-			if err := engine.transitionPlanTask(ctx, result.State.ID, task, TaskStatusBlocked); err != nil {
-				return err.Error(), false, err
-			}
-			return nonEmptyPlanReason(outcome.Reason, "task requested replanning"), false, nil
 		case TaskOutcomeFailed:
-			if err := engine.transitionPlanTask(ctx, result.State.ID, task, TaskStatusFailed); err != nil {
+			if err := controller.transitionPlanTask(ctx, result.State.ID, task, TaskStatusFailed); err != nil {
 				return err.Error(), false, err
 			}
 			return nonEmptyPlanReason(outcome.Reason, string(outcome.StopReason)), false, nil
@@ -492,7 +518,7 @@ func (engine *PlanExecuteEngine) executeGraph(ctx context.Context, input DirectR
 	return "", false, nil
 }
 
-func (engine *PlanExecuteEngine) transitionPlanTask(ctx context.Context, runID RunID, task *Task, next TaskStatus) error {
+func (controller *Controller) transitionPlanTask(ctx context.Context, runID RunID, task *Task, next TaskStatus) error {
 	if task == nil {
 		return errors.New("plan task is nil")
 	}
@@ -501,8 +527,8 @@ func (engine *PlanExecuteEngine) transitionPlanTask(ctx context.Context, runID R
 		return nil
 	}
 	task.Status = next
-	if err := engine.publish(context.WithoutCancel(ctx), event.EngineStatusChanged{
-		RunID: string(runID), Entity: "task", EntityID: string(task.ID), From: string(previous), To: string(next),
+	if err := controller.publish(context.WithoutCancel(ctx), event.RunStatusChanged{
+		RunID: string(runID), TaskID: string(task.ID), Entity: "task", EntityID: string(task.ID), From: string(previous), To: string(next),
 	}); err != nil {
 		return fmt.Errorf("publish task status changed: %w", err)
 	}
@@ -556,19 +582,19 @@ func remainingOutputTokens(configured int, budget BudgetState) int {
 	return configured
 }
 
-func (engine *PlanExecuteEngine) fail(result DirectRunResult, reason StopReason, err error) (DirectRunResult, error) {
+func (controller *Controller) fail(result PlanRunResult, reason StopReason, err error) (PlanRunResult, error) {
 	result.State.Status = RunStatusFailed
 	result.State.StopReason = reason
 	result.Reason = err.Error()
-	_ = engine.publish(context.Background(), event.EngineRunCompleted{RunID: string(result.State.ID), Status: string(result.State.Status), StopReason: string(reason), Reason: err.Error()})
+	_ = controller.publish(context.Background(), event.RunCompleted{RunID: string(result.State.ID), Status: string(result.State.Status), StopReason: string(reason), Reason: err.Error()})
 	return result, err
 }
 
-func (engine *PlanExecuteEngine) publish(ctx context.Context, runtimeEvent event.Event) error {
-	if engine == nil || engine.events == nil {
+func (controller *Controller) publish(ctx context.Context, runtimeEvent event.Event) error {
+	if controller == nil || controller.events == nil {
 		return nil
 	}
-	return engine.events.Publish(ctx, runtimeEvent)
+	return controller.events.Publish(ctx, runtimeEvent)
 }
 
 func planWorkspace(ctx context.Context, snapshot func(context.Context) (string, error)) (string, error) {
@@ -576,6 +602,51 @@ func planWorkspace(ctx context.Context, snapshot func(context.Context) (string, 
 		return "", nil
 	}
 	return snapshot(ctx)
+}
+
+func planLLMCallID(ctx context.Context, phase string, attempt int) string {
+	metadata := event.MetadataFromContext(ctx)
+	runID := metadata.RunID
+	if runID == "" {
+		runID = "plan"
+	}
+	if metadata.Iteration > 0 {
+		return fmt.Sprintf("%s/plan/%s-cycle-%d-attempt-%d", runID, phase, metadata.Iteration, attempt)
+	}
+	return fmt.Sprintf("%s/plan/%s-attempt-%d", runID, phase, attempt)
+}
+
+func publishPlanLLMStarted(ctx context.Context, sink event.Sink, model llm.ModelInfo) error {
+	if sink == nil {
+		return nil
+	}
+	if err := sink.Publish(ctx, event.LLMCallStarted{Model: model}); err != nil {
+		return fmt.Errorf("publish Plan LLM call started: %w", err)
+	}
+	return nil
+}
+
+func publishPlanLLMCompleted(ctx context.Context, sink event.Sink, response llm.Response) error {
+	if sink == nil {
+		return nil
+	}
+	if err := sink.Publish(ctx, event.UsageUpdated{ResponseID: response.ID, Usage: response.Usage}); err != nil {
+		return fmt.Errorf("publish Plan LLM usage: %w", err)
+	}
+	if err := sink.Publish(ctx, event.LLMCallCompleted{
+		ResponseID: response.ID, RequestID: response.RequestID,
+		FinishReason: response.FinishReason, ProviderFinishReason: response.ProviderFinishReason,
+	}); err != nil {
+		return fmt.Errorf("publish Plan LLM call completed: %w", err)
+	}
+	return nil
+}
+
+func publishPlanLLMError(ctx context.Context, sink event.Sink, callErr error) error {
+	if sink == nil || callErr == nil {
+		return nil
+	}
+	return sink.Publish(context.WithoutCancel(ctx), event.ErrorOccurred{Error: event.NewErrorInfo(callErr)})
 }
 
 func dependenciesCompleted(graph ExecutionGraph, task Task) bool {
@@ -591,20 +662,6 @@ func cloneToolSpecs(specs []tool.Spec) []tool.Spec {
 	cloned := make([]tool.Spec, len(specs))
 	for index, spec := range specs {
 		cloned[index] = spec.Clone()
-	}
-	return cloned
-}
-
-func clonePlanSteps(steps []Step) []Step {
-	cloned := make([]Step, len(steps))
-	copy(cloned, steps)
-	for index := range cloned {
-		cloned[index].ToolCalls = append([]tool.Call(nil), cloned[index].ToolCalls...)
-		for callIndex := range cloned[index].ToolCalls {
-			cloned[index].ToolCalls[callIndex].Arguments = append([]byte(nil), cloned[index].ToolCalls[callIndex].Arguments...)
-		}
-		cloned[index].Observations = append([]Observation(nil), cloned[index].Observations...)
-		cloned[index].Evidence = cloneEvidence(cloned[index].Evidence)
 	}
 	return cloned
 }

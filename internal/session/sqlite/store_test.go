@@ -46,8 +46,8 @@ func TestStorePersistsRunMessagesAndInterruptedContinuation(t *testing.T) {
 	if finished.AssistantMessage == nil || finished.AssistantMessage.RunID != second.Run.ID {
 		t.Fatalf("unexpected finished run: %#v", finished)
 	}
-	messages, err := store.ListMessages(context.Background(), first.Session.ID)
-	if err != nil || len(messages) != 3 || messages[0].RunID != first.Run.ID || messages[2].RunID != second.Run.ID {
+	messages, err := store.ListCompletedMessages(context.Background(), first.Session.ID)
+	if err != nil || len(messages) != 2 || messages[0].RunID != second.Run.ID || messages[1].RunID != second.Run.ID {
 		t.Fatalf("unexpected persisted messages: %#v err=%v", messages, err)
 	}
 }
@@ -110,7 +110,7 @@ func TestStoreRecoversAbandonedRunningRun(t *testing.T) {
 	if err != nil || recovered.Status != sessiondomain.RunInterrupted || recovered.FinishedAt == nil || len(recovered.InterruptedContextJSON) == 0 {
 		t.Fatalf("unexpected recovered Run: %#v err=%v", recovered, err)
 	}
-	context, err := sessiondomain.DecodeInterruptedContext(recovered.InterruptedContextJSON)
+	context, err := sessiondomain.DecodePreviousWork(recovered.InterruptedContextJSON)
 	if err != nil || context.Objective != first.Run.Objective {
 		t.Fatalf("unexpected recovered context: %#v err=%v", context, err)
 	}
@@ -129,7 +129,7 @@ func TestStorePersistsConversationSummary(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	messages, err := store.ListMessages(context.Background(), first.Session.ID)
+	messages, err := store.ListCompletedMessages(context.Background(), first.Session.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

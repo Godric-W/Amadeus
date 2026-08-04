@@ -7,7 +7,6 @@ import (
 	"io"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
@@ -50,7 +49,7 @@ type IterationResult struct {
 	Kind      IterationKind
 	Response  llm.Response
 	ToolCalls []tool.Call
-	Candidate *engine.TaskResult
+	Candidate *llm.Message
 }
 
 type ModelIterator interface {
@@ -92,7 +91,7 @@ func (iterator *Iterator) Run(ctx context.Context, input IterationInput) (Iterat
 	if err := input.Validate(); err != nil {
 		return IterationResult{}, err
 	}
-	if err := iterator.events.Publish(ctx, event.TurnStarted{TurnID: input.ID, Model: iterator.client.Model()}); err != nil {
+	if err := iterator.events.Publish(ctx, event.LLMCallStarted{LLMCallID: input.ID, Model: iterator.client.Model()}); err != nil {
 		return IterationResult{}, fmt.Errorf("publish model iteration started: %w", err)
 	}
 
@@ -120,8 +119,8 @@ func (iterator *Iterator) Run(ctx context.Context, input IterationInput) (Iterat
 	if err != nil {
 		return IterationResult{Response: response}, iterator.fail(ctx, input.ID, err)
 	}
-	if err := iterator.events.Publish(ctx, event.TurnCompleted{
-		TurnID:               input.ID,
+	if err := iterator.events.Publish(ctx, event.LLMCallCompleted{
+		LLMCallID:            input.ID,
 		ResponseID:           response.ID,
 		RequestID:            response.RequestID,
 		FinishReason:         response.FinishReason,
@@ -158,13 +157,13 @@ func (iterator *Iterator) consume(ctx context.Context, iterationID string, strea
 		}
 		if chunk.ReasoningDelta != "" {
 			response.Message.Reasoning += chunk.ReasoningDelta
-			if err := iterator.events.Publish(ctx, event.ReasoningDelta{TurnID: iterationID, ResponseID: response.ID, Delta: chunk.ReasoningDelta}); err != nil {
+			if err := iterator.events.Publish(ctx, event.ReasoningDelta{LLMCallID: iterationID, ResponseID: response.ID, Delta: chunk.ReasoningDelta}); err != nil {
 				return response, fmt.Errorf("publish model reasoning delta: %w", err)
 			}
 		}
 		if chunk.ContentDelta != "" {
 			response.Message.Content += chunk.ContentDelta
-			if err := iterator.events.Publish(ctx, event.TextDelta{TurnID: iterationID, ResponseID: response.ID, Delta: chunk.ContentDelta}); err != nil {
+			if err := iterator.events.Publish(ctx, event.TextDelta{LLMCallID: iterationID, ResponseID: response.ID, Delta: chunk.ContentDelta}); err != nil {
 				return response, fmt.Errorf("publish model text delta: %w", err)
 			}
 		}
@@ -173,7 +172,7 @@ func (iterator *Iterator) consume(ctx context.Context, iterationID string, strea
 		}
 		if chunk.Usage != nil {
 			response.Usage = *chunk.Usage
-			if err := iterator.events.Publish(ctx, event.UsageUpdated{TurnID: iterationID, ResponseID: response.ID, Usage: response.Usage}); err != nil {
+			if err := iterator.events.Publish(ctx, event.UsageUpdated{LLMCallID: iterationID, ResponseID: response.ID, Usage: response.Usage}); err != nil {
 				return response, fmt.Errorf("publish model usage: %w", err)
 			}
 		}
@@ -202,8 +201,8 @@ func classify(response llm.Response) (IterationResult, error) {
 	if strings.TrimSpace(response.Message.Content) == "" {
 		return IterationResult{}, &llm.ProviderError{Kind: llm.ProviderErrorProtocol, Message: "model iteration returned neither text nor tool calls"}
 	}
-	candidate := &engine.TaskResult{Summary: response.Message.Content}
-	return IterationResult{Kind: IterationCandidate, Response: response, Candidate: candidate}, nil
+	candidate := response.Message
+	return IterationResult{Kind: IterationCandidate, Response: response, Candidate: &candidate}, nil
 }
 
 func toolDefinitions(specs []tool.Spec) []llm.ToolDefinition {
@@ -223,8 +222,8 @@ func (iterator *Iterator) fail(ctx context.Context, iterationID string, iteratio
 		return nil
 	}
 	publishErr := iterator.events.Publish(context.WithoutCancel(ctx), event.ErrorOccurred{
-		TurnID: iterationID,
-		Error:  event.NewErrorInfo(iterationErr),
+		LLMCallID: iterationID,
+		Error:     event.NewErrorInfo(iterationErr),
 	})
 	if publishErr != nil {
 		return errors.Join(iterationErr, fmt.Errorf("publish model iteration error: %w", publishErr))

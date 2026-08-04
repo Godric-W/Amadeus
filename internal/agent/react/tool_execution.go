@@ -7,20 +7,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type ToolExecution struct {
-	Observation          engine.Observation
-	Evidence             engine.Evidence
-	SupplementalEvidence []engine.Evidence
+	Observation          Observation
+	Evidence             Evidence
+	SupplementalEvidence []Evidence
 }
 
 type PostExecutionHook interface {
-	After(context.Context, tool.Spec, tool.Call, tool.Result) ([]engine.Evidence, error)
+	After(context.Context, tool.Spec, tool.Call, tool.Result) ([]Evidence, error)
 }
 
 type PreExecutionHook interface {
@@ -103,7 +102,11 @@ func (executor *ToolExecutor) Execute(ctx context.Context, call tool.Call) (Tool
 	}
 	normalizedCall := tool.NewCall(call.ID, call.Name, normalized)
 	if executor.events != nil {
-		if err := executor.events.Publish(ctx, event.ToolCallStarted{CallID: call.ID, ToolName: call.Name}); err != nil {
+		presentation := tool.PresentCall(spec, normalizedCall)
+		if err := executor.events.Publish(ctx, event.ToolCallStarted{
+			CallID: call.ID, ToolName: call.Name, SideEffect: string(spec.SideEffect),
+			ActionSummary: presentation.ActionSummary, Detail: presentation.Detail,
+		}); err != nil {
 			return executor.failure(call, tool.Result{}, err, startedAt), fmt.Errorf("publish tool call started: %w", err)
 		}
 	}
@@ -131,8 +134,8 @@ func (executor *ToolExecutor) Execute(ctx context.Context, call tool.Call) (Tool
 	for _, hook := range executor.hooks {
 		evidence, hookErr := hook.After(ctx, spec, normalizedCall, result.Clone())
 		if hookErr != nil {
-			execution.SupplementalEvidence = append(execution.SupplementalEvidence, engine.Evidence{
-				ID: engine.EvidenceID("hook/" + call.ID), Kind: engine.EvidenceDiagnostic, Source: "post_execution_hook",
+			execution.SupplementalEvidence = append(execution.SupplementalEvidence, Evidence{
+				ID: EvidenceID("hook/" + call.ID), Kind: EvidenceDiagnostic, Source: "post_execution_hook",
 				Summary: hookErr.Error(), Verified: false,
 			})
 			continue
@@ -158,7 +161,7 @@ func (executor *ToolExecutor) publishCompleted(ctx context.Context, execution To
 }
 
 func (executor *ToolExecutor) success(call tool.Call, result tool.Result, startedAt time.Time) ToolExecution {
-	observation := engine.Observation{
+	observation := Observation{
 		CallID:   call.ID,
 		ToolName: call.Name,
 		Result:   result.Clone(),
@@ -166,9 +169,9 @@ func (executor *ToolExecutor) success(call tool.Call, result tool.Result, starte
 	}
 	return ToolExecution{
 		Observation: observation,
-		Evidence: engine.Evidence{
+		Evidence: Evidence{
 			ID:       toolEvidenceID(call.ID),
-			Kind:     engine.EvidenceTool,
+			Kind:     EvidenceTool,
 			Source:   call.Name,
 			Summary:  toolResultSummary(result),
 			Verified: true,
@@ -185,7 +188,7 @@ func (executor *ToolExecutor) failure(call tool.Call, result tool.Result, execut
 	}
 	message := executionErr.Error()
 	return ToolExecution{
-		Observation: engine.Observation{
+		Observation: Observation{
 			CallID:   call.ID,
 			ToolName: call.Name,
 			Result:   result.Clone(),
@@ -193,9 +196,9 @@ func (executor *ToolExecutor) failure(call tool.Call, result tool.Result, execut
 			Blocking: errors.Is(executionErr, project.ErrPathOutsideRoot),
 			Duration: executor.durationSince(startedAt),
 		},
-		Evidence: engine.Evidence{
+		Evidence: Evidence{
 			ID:       toolEvidenceID(call.ID),
-			Kind:     engine.EvidenceTool,
+			Kind:     EvidenceTool,
 			Source:   call.Name,
 			Summary:  failedToolResultSummary(result, message),
 			Verified: false,
@@ -221,8 +224,8 @@ func (executor *ToolExecutor) durationSince(startedAt time.Time) time.Duration {
 	return finishedAt.Sub(startedAt)
 }
 
-func toolEvidenceID(callID string) engine.EvidenceID {
-	return engine.EvidenceID("tool:" + callID)
+func toolEvidenceID(callID string) EvidenceID {
+	return EvidenceID("tool:" + callID)
 }
 
 func toolResultSummary(result tool.Result) string {

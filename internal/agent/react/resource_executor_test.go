@@ -3,12 +3,10 @@ package react
 import (
 	"context"
 	"encoding/json"
+	"github.com/Godric-W/Amadeus/internal/tool"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
-	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type controlledExecutor struct {
@@ -35,8 +33,8 @@ func (executor *controlledExecutor) Execute(ctx context.Context, call tool.Call)
 	executor.active--
 	executor.mutex.Unlock()
 	return ToolExecution{
-		Observation: engine.Observation{CallID: call.ID, ToolName: call.Name, Result: tool.Result{CallID: call.ID, ToolName: call.Name, Text: call.ID}},
-		Evidence:    engine.Evidence{ID: engine.EvidenceID("tool:" + call.ID), Kind: engine.EvidenceTool, Source: call.Name, Summary: call.ID, Verified: true},
+		Observation: Observation{CallID: call.ID, ToolName: call.Name, Result: tool.Result{CallID: call.ID, ToolName: call.Name, Text: call.ID}},
+		Evidence:    Evidence{ID: EvidenceID("tool:" + call.ID), Kind: EvidenceTool, Source: call.Name, Summary: call.ID, Verified: true},
 	}, ctx.Err()
 }
 

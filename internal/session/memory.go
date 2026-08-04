@@ -255,7 +255,7 @@ func (store *MemoryStore) LatestSession(ctx context.Context, projectID ProjectID
 	return ConversationSession{}, fmt.Errorf("%w: active conversation session for project %q", ErrNotFound, projectID)
 }
 
-func (store *MemoryStore) ListMessages(ctx context.Context, sessionID ConversationSessionID) ([]Message, error) {
+func (store *MemoryStore) ListCompletedMessages(ctx context.Context, sessionID ConversationSessionID) ([]Message, error) {
 	if err := validateStoreContext(ctx); err != nil {
 		return nil, err
 	}
@@ -264,7 +264,14 @@ func (store *MemoryStore) ListMessages(ctx context.Context, sessionID Conversati
 	if _, ok := store.sessions[sessionID]; !ok {
 		return nil, fmt.Errorf("%w: conversation session %q", ErrNotFound, sessionID)
 	}
-	return append([]Message(nil), store.messages[sessionID]...), nil
+	messages := make([]Message, 0, len(store.messages[sessionID]))
+	for _, message := range store.messages[sessionID] {
+		run, ok := store.runs[message.RunID]
+		if ok && run.Status == RunCompleted {
+			messages = append(messages, message)
+		}
+	}
+	return messages, nil
 }
 
 func (store *MemoryStore) GetRun(ctx context.Context, id RunID) (Run, error) {
@@ -351,7 +358,7 @@ func (store *MemoryStore) RecoverRunningRuns(ctx context.Context, sessionID Conv
 		if finishedAt.Before(run.StartedAt) {
 			finishedAt = run.StartedAt
 		}
-		contextJSON, err := EncodeInterruptedContext(InterruptedContextV1{
+		contextJSON, err := EncodePreviousWork(PreviousWork{
 			Objective: run.Objective, Status: string(RunInterrupted), StopReason: "previous process ended before run completion",
 			LastError: "previous process ended before run completion", PendingWork: []string{"Re-plan from the current workspace state."},
 		})

@@ -2,12 +2,10 @@ package react
 
 import (
 	"encoding/json"
-	"strings"
-	"testing"
-
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
+	"strings"
+	"testing"
 )
 
 func TestReplayToolResultsUsesAssistantCallOrder(t *testing.T) {
@@ -78,7 +76,7 @@ func replayExecution(callID, toolName string, result tool.Result, observationErr
 	result.CallID = callID
 	result.ToolName = toolName
 	return ToolExecution{
-		Observation: engine.Observation{CallID: callID, ToolName: toolName, Result: result, Error: observationError},
-		Evidence:    engine.Evidence{ID: engine.EvidenceID("tool:" + callID), Kind: engine.EvidenceTool, Source: toolName},
+		Observation: Observation{CallID: callID, ToolName: toolName, Result: result, Error: observationError},
+		Evidence:    Evidence{ID: EvidenceID("tool:" + callID), Kind: EvidenceTool, Source: toolName},
 	}
 }

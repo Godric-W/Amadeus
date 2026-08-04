@@ -26,12 +26,12 @@ func TestPlainRendererStreamsAnswerTextToStdout(t *testing.T) {
 		t.Fatalf("create plain renderer: %v", err)
 	}
 	events := []event.Event{
-		event.TurnStarted{TurnID: "turn_1"},
-		event.ReasoningDelta{TurnID: "turn_1", Delta: "hidden reasoning"},
-		event.TextDelta{TurnID: "turn_1", Delta: "hel"},
-		event.UsageUpdated{TurnID: "turn_1", Usage: llm.Usage{TotalTokens: 5}},
-		event.TextDelta{TurnID: "turn_1", Delta: "lo"},
-		event.TurnCompleted{TurnID: "turn_1", FinishReason: llm.FinishReasonStop},
+		event.LLMCallStarted{LLMCallID: "turn_1"},
+		event.ReasoningDelta{LLMCallID: "turn_1", Delta: "hidden reasoning"},
+		event.TextDelta{LLMCallID: "turn_1", Delta: "hel"},
+		event.UsageUpdated{LLMCallID: "turn_1", Usage: llm.Usage{TotalTokens: 5}},
+		event.TextDelta{LLMCallID: "turn_1", Delta: "lo"},
+		event.LLMCallCompleted{LLMCallID: "turn_1", FinishReason: llm.FinishReasonStop},
 	}
 	for _, runtimeEvent := range events {
 		if err := renderer.Publish(context.Background(), runtimeEvent); err != nil {
@@ -53,11 +53,11 @@ func TestPlainRendererWritesErrorsToStderr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create plain renderer: %v", err)
 	}
-	if err := renderer.Publish(context.Background(), event.TextDelta{TurnID: "turn_1", Delta: "partial"}); err != nil {
+	if err := renderer.Publish(context.Background(), event.TextDelta{LLMCallID: "turn_1", Delta: "partial"}); err != nil {
 		t.Fatalf("render partial text: %v", err)
 	}
 	if err := renderer.Publish(context.Background(), event.ErrorOccurred{
-		TurnID: "turn_1",
+		LLMCallID: "turn_1",
 		Error: event.ErrorInfo{
 			Kind:    llm.ProviderErrorRateLimit,
 			Message: "slow down\ntry later",
@@ -94,10 +94,10 @@ func TestPlainRendererPropagatesWriterErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create plain renderer: %v", err)
 	}
-	if err := renderer.Publish(context.Background(), event.TextDelta{TurnID: "turn_1", Delta: "text"}); !errors.Is(err, writeErr) {
+	if err := renderer.Publish(context.Background(), event.TextDelta{LLMCallID: "turn_1", Delta: "text"}); !errors.Is(err, writeErr) {
 		t.Fatalf("unexpected stdout writer error: %v", err)
 	}
-	if err := renderer.Publish(context.Background(), event.ErrorOccurred{TurnID: "turn_2", Error: event.ErrorInfo{Message: "failed"}}); !errors.Is(err, writeErr) {
+	if err := renderer.Publish(context.Background(), event.ErrorOccurred{LLMCallID: "turn_2", Error: event.ErrorInfo{Message: "failed"}}); !errors.Is(err, writeErr) {
 		t.Fatalf("unexpected stderr writer error: %v", err)
 	}
 }

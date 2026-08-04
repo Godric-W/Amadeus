@@ -60,7 +60,7 @@ func TestValidateReportsStableFieldPaths(t *testing.T) {
 		"providers.broken.max_retries",
 		"providers.broken.temperature",
 		"providers.broken.max_output_tokens",
-		"agent.max_steps",
+		"agent.max_iterations",
 		"agent.max_tool_calls",
 		"agent.max_input_tokens",
 		"agent.max_output_tokens",
@@ -78,7 +78,7 @@ func TestValidateReportsStableFieldPaths(t *testing.T) {
 func TestValidateRejectsAgentBudgetAboveLimits(t *testing.T) {
 	configured := Default()
 	configured.Agent = AgentConfig{
-		MaxSteps:         maxAgentSteps + 1,
+		MaxIterations:    maxAgentIterations + 1,
 		MaxToolCalls:     maxAgentToolCalls + 1,
 		MaxInputTokens:   maxAgentTokens + 1,
 		MaxOutputTokens:  maxAgentTokens + 1,
@@ -91,7 +91,7 @@ func TestValidateRejectsAgentBudgetAboveLimits(t *testing.T) {
 		t.Fatal("expected oversized Agent budget to fail")
 	}
 	for _, path := range []string{
-		"agent.max_steps", "agent.max_tool_calls", "agent.max_input_tokens",
+		"agent.max_iterations", "agent.max_tool_calls", "agent.max_input_tokens",
 		"agent.max_output_tokens", "agent.max_duration", "agent.max_parallel_tools",
 	} {
 		if !strings.Contains(err.Error(), path+":") {

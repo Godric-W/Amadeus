@@ -16,6 +16,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	sessiondomain "github.com/Godric-W/Amadeus/internal/session"
 )
 
 type codingCommandClient struct {
@@ -31,6 +32,17 @@ type interruptingCodingClient struct {
 type inlineApprovalCodingClient struct {
 	completeRequests int
 	streamRequests   int
+}
+
+type finalOnlyCodingClient struct {
+	streamRequests   []llm.Request
+	completeRequests []llm.Request
+	content          string
+}
+
+type toolFailureRecoveryClient struct {
+	streamRequests   []llm.Request
+	completeRequests []llm.Request
 }
 
 func (client *interruptingCodingClient) Stream(ctx context.Context, _ llm.Request) (llm.Stream, error) {
@@ -70,6 +82,57 @@ func (client *inlineApprovalCodingClient) Model() llm.ModelInfo {
 }
 
 func (client *inlineApprovalCodingClient) Capabilities() llm.Capabilities {
+	return llm.Capabilities{SupportsStreaming: true, SupportsDeveloperRole: true}
+}
+
+func (client *finalOnlyCodingClient) Complete(_ context.Context, request llm.Request) (llm.Response, error) {
+	client.completeRequests = append(client.completeRequests, request)
+	return llm.Response{}, errors.New("planner must not run for default ReAct")
+}
+
+func (client *finalOnlyCodingClient) Stream(_ context.Context, request llm.Request) (llm.Stream, error) {
+	client.streamRequests = append(client.streamRequests, request)
+	return &codingCommandStream{chunks: []llm.StreamChunk{
+		{ID: "final-only", ContentDelta: client.content},
+		{ID: "final-only", FinishReason: llm.FinishReasonStop, ProviderFinishReason: "stop"},
+	}}, nil
+}
+
+func (client *finalOnlyCodingClient) Model() llm.ModelInfo {
+	return llm.ModelInfo{Provider: "mock", Name: "mock-model"}
+}
+
+func (client *finalOnlyCodingClient) Capabilities() llm.Capabilities {
+	return llm.Capabilities{SupportsStreaming: true, SupportsDeveloperRole: true}
+}
+
+func (client *toolFailureRecoveryClient) Complete(_ context.Context, request llm.Request) (llm.Response, error) {
+	client.completeRequests = append(client.completeRequests, request)
+	return llm.Response{}, errors.New("planner must not run for default ReAct")
+}
+
+func (client *toolFailureRecoveryClient) Stream(_ context.Context, request llm.Request) (llm.Stream, error) {
+	client.streamRequests = append(client.streamRequests, request)
+	switch len(client.streamRequests) {
+	case 1:
+		return &codingCommandStream{chunks: []llm.StreamChunk{{
+			ID: "unknown-tool", ToolCalls: []llm.ToolCall{{ID: "unknown-1", Name: "missing_tool", Arguments: json.RawMessage(`{}`)}}, FinishReason: llm.FinishReasonToolCalls,
+		}}}, nil
+	case 2:
+		return &codingCommandStream{chunks: []llm.StreamChunk{
+			{ID: "recovered-final", ContentDelta: "Recovered after tool failure."},
+			{ID: "recovered-final", FinishReason: llm.FinishReasonStop, ProviderFinishReason: "stop"},
+		}}, nil
+	default:
+		return nil, errors.New("unexpected extra recovery stream request")
+	}
+}
+
+func (client *toolFailureRecoveryClient) Model() llm.ModelInfo {
+	return llm.ModelInfo{Provider: "mock", Name: "mock-model"}
+}
+
+func (client *toolFailureRecoveryClient) Capabilities() llm.Capabilities {
 	return llm.Capabilities{SupportsStreaming: true, SupportsDeveloperRole: true}
 }
 
@@ -127,6 +190,62 @@ func (stream *codingCommandStream) Recv() (llm.StreamChunk, error) {
 }
 
 func (stream *codingCommandStream) Close() error { return nil }
+
+func TestDefaultGreetingUsesStandaloneReactorWithoutPlanner(t *testing.T) {
+	amadeusHome := t.TempDir()
+	projectDirectory := t.TempDir()
+	writeCodingCommandConfig(t, amadeusHome)
+	client := &finalOnlyCodingClient{content: "你好！"}
+	runtime := commandRuntime{
+		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
+		terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
+		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
+		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
+		runIDFactory:     func() string { return "greeting-run" },
+	}
+	command := newRootCommandWithRuntime(&configFlags{}, runtime)
+	var stdout, stderr bytes.Buffer
+	command.SetIn(strings.NewReader(""))
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+	command.SetArgs([]string{"你好"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("execute greeting: %v\nstderr=%s", err, stderr.String())
+	}
+	if stdout.String() != "你好！\n" || len(client.streamRequests) != 1 || len(client.completeRequests) != 0 {
+		t.Fatalf("greeting used wrong execution path: stdout=%q streams=%d completes=%d", stdout.String(), len(client.streamRequests), len(client.completeRequests))
+	}
+}
+
+func TestDefaultReactorRecoversFromToolFailure(t *testing.T) {
+	amadeusHome := t.TempDir()
+	projectDirectory := t.TempDir()
+	writeCodingCommandConfig(t, amadeusHome)
+	client := &toolFailureRecoveryClient{}
+	runtime := commandRuntime{
+		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
+		terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
+		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
+		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
+		runIDFactory:     func() string { return "tool-recovery-run" },
+	}
+	command := newRootCommandWithRuntime(&configFlags{}, runtime)
+	var stdout, stderr bytes.Buffer
+	command.SetIn(strings.NewReader(""))
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+	command.SetArgs([]string{"recover from a tool failure"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("execute tool recovery: %v\nstderr=%s", err, stderr.String())
+	}
+	if stdout.String() != "Recovered after tool failure.\n" || len(client.streamRequests) != 2 || len(client.completeRequests) != 0 {
+		t.Fatalf("unexpected tool recovery path: stdout=%q streams=%d completes=%d", stdout.String(), len(client.streamRequests), len(client.completeRequests))
+	}
+	followUp := client.streamRequests[1]
+	if len(followUp.Messages) < 2 || followUp.Messages[len(followUp.Messages)-1].Role != llm.RoleTool || !strings.Contains(followUp.Messages[len(followUp.Messages)-1].Content, "missing_tool") {
+		t.Fatalf("tool failure was not replayed to Reactor: %#v", followUp.Messages)
+	}
+}
 
 func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 	amadeusHome := t.TempDir()
@@ -468,7 +587,7 @@ func TestResolveAuditPathUsesXDGThenHome(t *testing.T) {
 
 func TestConfiguredAgentBudgetMapsEveryRunLimit(t *testing.T) {
 	budget := configuredAgentBudget(config.AgentConfig{
-		MaxSteps:         7,
+		MaxIterations:    7,
 		MaxToolCalls:     11,
 		MaxInputTokens:   13_000,
 		MaxOutputTokens:  17_000,
@@ -476,7 +595,7 @@ func TestConfiguredAgentBudgetMapsEveryRunLimit(t *testing.T) {
 		MaxParallelTools: 3,
 	})
 
-	if budget.MaxSteps != 7 || budget.MaxToolCalls != 11 || budget.MaxInputTokens != 13_000 || budget.MaxOutputTokens != 17_000 || budget.MaxDuration != 19*time.Minute {
+	if budget.MaxIterations != 7 || budget.MaxToolCalls != 11 || budget.MaxInputTokens != 13_000 || budget.MaxOutputTokens != 17_000 || budget.MaxDuration != 19*time.Minute {
 		t.Fatalf("unexpected configured Agent budget: %#v", budget)
 	}
 }
@@ -497,7 +616,7 @@ providers:
     temperature: 0.1
     max_output_tokens: 512
 agent:
-  max_steps: 8
+  max_iterations: 8
   max_tool_calls: 12
   max_input_tokens: 10000
   max_output_tokens: 2000
@@ -547,7 +666,7 @@ func (client *plannedCodingCommandClient) Capabilities() llm.Capabilities {
 	return llm.Capabilities{SupportsStreaming: true, SupportsDeveloperRole: true}
 }
 
-func TestInteractivePlanCommandRunsPlanExecuteEngine(t *testing.T) {
+func TestInteractivePlanCommandRunsController(t *testing.T) {
 	amadeusHome := t.TempDir()
 	projectDirectory := t.TempDir()
 	writeCodingCommandConfig(t, amadeusHome)
@@ -586,5 +705,14 @@ func TestInteractivePlanCommandRunsPlanExecuteEngine(t *testing.T) {
 	}
 	if len(client.streamRequests) != 1 || len(client.completeRequests) != 2 {
 		t.Fatalf("unexpected planned provider calls: streams=%d complete=%d", len(client.streamRequests), len(client.completeRequests))
+	}
+}
+
+func TestReactorRunEventReasonLeavesCompletedReasonEmpty(t *testing.T) {
+	if reason := reactorRunEventReason(sessiondomain.RunCompleted, "", ""); reason != "" {
+		t.Fatalf("completed Run event has reason %q", reason)
+	}
+	if reason := reactorRunEventReason(sessiondomain.RunFailed, "", "provider failed"); reason != "provider failed" {
+		t.Fatalf("failed Run event reason = %q", reason)
 	}
 }

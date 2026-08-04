@@ -157,7 +157,7 @@ providers:
 		"providers.compatible.base_url: https://cli.example.invalid/v1 [source: cli: --base-url]",
 		"providers.compatible.model: environment-model [source: environment: " + config.EnvModel + "]",
 		"providers.compatible.timeout: 2m0s [source: default]",
-		"agent.max_steps: 30 [source: default]",
+		"agent.max_iterations: 30 [source: default]",
 		"agent.max_tool_calls: 120 [source: default]",
 		"agent.max_input_tokens: 1000000 [source: default]",
 		"agent.max_output_tokens: 245760 [source: default]",

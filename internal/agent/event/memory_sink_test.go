@@ -18,11 +18,11 @@ func (invalidEvent) Type() Type {
 func TestMemorySinkPreservesPublishOrder(t *testing.T) {
 	sink := NewMemorySink()
 	events := []Event{
-		TurnStarted{TurnID: "turn_1", Model: llm.ModelInfo{Provider: "openai", Name: "test-model"}},
-		TextDelta{TurnID: "turn_1", ResponseID: "response_1", Delta: "hello"},
-		ReasoningDelta{TurnID: "turn_1", ResponseID: "response_1", Delta: "thinking"},
-		UsageUpdated{TurnID: "turn_1", ResponseID: "response_1", Usage: llm.Usage{TotalTokens: 8}},
-		TurnCompleted{TurnID: "turn_1", ResponseID: "response_1", FinishReason: llm.FinishReasonStop},
+		LLMCallStarted{LLMCallID: "turn_1", Model: llm.ModelInfo{Provider: "openai", Name: "test-model"}},
+		TextDelta{LLMCallID: "turn_1", ResponseID: "response_1", Delta: "hello"},
+		ReasoningDelta{LLMCallID: "turn_1", ResponseID: "response_1", Delta: "thinking"},
+		UsageUpdated{LLMCallID: "turn_1", ResponseID: "response_1", Usage: llm.Usage{TotalTokens: 8}},
+		LLMCallCompleted{LLMCallID: "turn_1", ResponseID: "response_1", FinishReason: llm.FinishReasonStop},
 	}
 	for _, runtimeEvent := range events {
 		if err := sink.Publish(context.Background(), runtimeEvent); err != nil {

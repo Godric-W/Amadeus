@@ -43,6 +43,24 @@ func TestToolAuthorizerAuditsApplyPatchByArgumentHashOnly(t *testing.T) {
 	}
 }
 
+func TestToolAuthorizerUsesEventContextSessionForAudit(t *testing.T) {
+	root := newPolicyProjectRoot(t)
+	sink := audit.NewMemorySink()
+	handler := &recordingApprovalHandler{decisions: []ApprovalDecision{allowOnceDecision()}}
+	authorizer, err := NewToolAuthorizerWithOptions(root, handler, ToolAuthorizerOptions{Audit: sink})
+	if err != nil {
+		t.Fatalf("create audited authorizer: %v", err)
+	}
+	ctx := event.WithMetadata(context.Background(), event.Metadata{SessionID: "session-from-event"})
+	if err := authorizer.Authorize(ctx, writeToolSpec(), tool.NewCall("write-context", "write_file", json.RawMessage(`{"path":"result.txt","content":"ok"}`))); err != nil {
+		t.Fatalf("authorize audited write: %v", err)
+	}
+	records := sink.Snapshot()
+	if len(records) != 1 || records[0].SessionID != "session-from-event" {
+		t.Fatalf("audit did not inherit event context: %#v", records)
+	}
+}
+
 func TestToolAuthorizerAuditsAllowDenyAndError(t *testing.T) {
 	root := newPolicyProjectRoot(t)
 	sink := audit.NewMemorySink()

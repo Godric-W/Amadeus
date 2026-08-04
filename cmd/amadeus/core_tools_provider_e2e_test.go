@@ -82,7 +82,7 @@ providers:
     model: mock-model
     max_retries: 0
 agent:
-  max_steps: 12
+  max_iterations: 12
   max_tool_calls: 12
   max_input_tokens: 100000
   max_output_tokens: 10000
@@ -184,7 +184,7 @@ providers:
     model: mock-model
     max_retries: 0
 agent:
-  max_steps: 4
+  max_iterations: 4
   max_tool_calls: 2
   max_input_tokens: 100000
   max_output_tokens: 10000

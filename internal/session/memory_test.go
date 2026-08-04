@@ -30,7 +30,7 @@ func TestMemoryStoreCreatesAndCompletesFirstRunAtomically(t *testing.T) {
 	if finished.Run.Status != RunCompleted || finished.AssistantMessage == nil || finished.AssistantMessage.Sequence != 2 || finished.AssistantMessage.RunID != begun.Run.ID {
 		t.Fatalf("unexpected completed transaction: %#v", finished)
 	}
-	messages, err := store.ListMessages(context.Background(), begun.Session.ID)
+	messages, err := store.ListCompletedMessages(context.Background(), begun.Session.ID)
 	if err != nil || len(messages) != 2 || messages[0].Role != MessageUser || messages[1].Role != MessageAssistant {
 		t.Fatalf("unexpected conversation messages: %#v err=%v", messages, err)
 	}

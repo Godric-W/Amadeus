@@ -140,9 +140,10 @@ func writeConfigExplanation(writer io.Writer, path string, configured config.Con
 		writeExplainedValue(writer, prefix+"max_retries", provider.MaxRetries, sources)
 		writeExplainedValue(writer, prefix+"temperature", provider.Temperature, sources)
 		writeExplainedValue(writer, prefix+"max_output_tokens", provider.MaxOutputTokens, sources)
+		writeExplainedValue(writer, prefix+"context_window", provider.ContextWindow, sources)
 	}
 
-	writeExplainedValue(writer, "agent.max_steps", configured.Agent.MaxSteps, sources)
+	writeExplainedValue(writer, "agent.max_iterations", configured.Agent.MaxIterations, sources)
 	writeExplainedValue(writer, "agent.max_tool_calls", configured.Agent.MaxToolCalls, sources)
 	writeExplainedValue(writer, "agent.max_input_tokens", configured.Agent.MaxInputTokens, sources)
 	writeExplainedValue(writer, "agent.max_output_tokens", configured.Agent.MaxOutputTokens, sources)

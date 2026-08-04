@@ -17,7 +17,7 @@ import (
 
 const maxRevalidationCommandBytes = 32 << 10
 
-func revalidateInterruptedWorkspace(ctx context.Context, root project.Root, paths []string) agentcontext.WorkspaceRevalidation {
+func revalidatePreviousWorkspace(ctx context.Context, root project.Root, paths []string) agentcontext.WorkspaceRevalidation {
 	result := agentcontext.WorkspaceRevalidation{TestsRequireRerun: true}
 	seen := make(map[string]struct{}, len(paths))
 	for _, candidate := range paths {

@@ -9,8 +9,8 @@ import (
 
 func TestEventTypeValidation(t *testing.T) {
 	validTypes := []Type{
-		TypeTurnStarted,
-		TypeTurnCompleted,
+		TypeLLMCallStarted,
+		TypeLLMCallCompleted,
 		TypeTextDelta,
 		TypeReasoningDelta,
 		TypeToolCallStarted,
@@ -18,15 +18,16 @@ func TestEventTypeValidation(t *testing.T) {
 		TypeApprovalRequested,
 		TypeApprovalResolved,
 		TypeUsageUpdated,
+		TypeContextWindowUpdated,
 		TypeStatusChanged,
 		TypeDiagnosticPublished,
 		TypeErrorOccurred,
-		TypeEngineRunStarted,
-		TypeEngineStatusChanged,
+		TypeRunStarted,
+		TypeRunStatusChanged,
 		TypePlanUpdated,
 		TypeVerificationDone,
 		TypeReflectionDone,
-		TypeEngineRunCompleted,
+		TypeRunCompleted,
 	}
 	for _, eventType := range validTypes {
 		if !eventType.Valid() {
@@ -64,11 +65,11 @@ func TestNewErrorInfoClassifiesGenericErrorAsUnknown(t *testing.T) {
 func TestAgentEventPayloadsExposeStableTypes(t *testing.T) {
 	events := []Event{
 		ToolCallStarted{}, ToolCallCompleted{}, ApprovalRequested{}, ApprovalResolved{},
-		StatusChanged{}, DiagnosticPublished{}, PlanUpdated{},
+		StatusChanged{}, DiagnosticPublished{}, PlanUpdated{}, ContextWindowUpdated{},
 	}
 	want := []Type{
 		TypeToolCallStarted, TypeToolCallCompleted, TypeApprovalRequested, TypeApprovalResolved,
-		TypeStatusChanged, TypeDiagnosticPublished, TypePlanUpdated,
+		TypeStatusChanged, TypeDiagnosticPublished, TypePlanUpdated, TypeContextWindowUpdated,
 	}
 	for index, runtimeEvent := range events {
 		if runtimeEvent.Type() != want[index] {

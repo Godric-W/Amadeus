@@ -20,7 +20,10 @@ func (sink taskIterationEventSink) Publish(ctx context.Context, item event.Event
 	}
 	switch item.Type() {
 	case event.TypeTextDelta, event.TypeReasoningDelta:
-		return nil
+		if event.TaskIDFromContext(ctx) != "" {
+			return nil
+		}
+		return sink.downstream.Publish(ctx, item)
 	default:
 		return sink.downstream.Publish(ctx, item)
 	}

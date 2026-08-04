@@ -17,7 +17,7 @@ type ChatSessionOptions struct {
 	MaxOutputTokens int
 }
 
-type TurnInput struct {
+type CallInput struct {
 	ID      string
 	Content string
 }
@@ -49,21 +49,21 @@ func NewChatSession(client llm.Client, events event.Sink, options ChatSessionOpt
 	return &ChatSession{client: client, events: events, options: options}, nil
 }
 
-func (session *ChatSession) RunTurn(ctx context.Context, input TurnInput) (llm.Response, error) {
+func (session *ChatSession) RunCall(ctx context.Context, input CallInput) (llm.Response, error) {
 	if strings.TrimSpace(input.ID) == "" {
-		return llm.Response{}, errors.New("turn ID is empty")
+		return llm.Response{}, errors.New("LLM call ID is empty")
 	}
 	if strings.TrimSpace(input.Content) == "" {
-		return llm.Response{}, errors.New("turn content is empty")
+		return llm.Response{}, errors.New("LLM call content is empty")
 	}
 	session.mutex.Lock()
 	defer session.mutex.Unlock()
 
-	if err := session.events.Publish(ctx, event.TurnStarted{
-		TurnID: input.ID,
-		Model:  session.client.Model(),
+	if err := session.events.Publish(ctx, event.LLMCallStarted{
+		LLMCallID: input.ID,
+		Model:     session.client.Model(),
 	}); err != nil {
-		return llm.Response{}, fmt.Errorf("publish turn started: %w", err)
+		return llm.Response{}, fmt.Errorf("publish LLM call started: %w", err)
 	}
 
 	userMessage := llm.UserMessage(input.Content)
@@ -78,29 +78,29 @@ func (session *ChatSession) RunTurn(ctx context.Context, input TurnInput) (llm.R
 	}
 	stream, err := session.client.Stream(ctx, request)
 	if err != nil {
-		return llm.Response{}, session.failTurn(ctx, input.ID, err)
+		return llm.Response{}, session.failCall(ctx, input.ID, err)
 	}
 
 	response, consumeErr := session.consumeStream(ctx, input.ID, stream)
 	closeErr := stream.Close()
 	if consumeErr != nil || closeErr != nil {
 		combined := errors.Join(consumeErr, closeErr)
-		return response, session.failTurn(ctx, input.ID, combined)
+		return response, session.failCall(ctx, input.ID, combined)
 	}
 	session.history = append(session.history, userMessage, response.Message)
-	if err := session.events.Publish(ctx, event.TurnCompleted{
-		TurnID:               input.ID,
+	if err := session.events.Publish(ctx, event.LLMCallCompleted{
+		LLMCallID:            input.ID,
 		ResponseID:           response.ID,
 		RequestID:            response.RequestID,
 		FinishReason:         response.FinishReason,
 		ProviderFinishReason: response.ProviderFinishReason,
 	}); err != nil {
-		return response, fmt.Errorf("publish turn completed: %w", err)
+		return response, fmt.Errorf("publish LLM call completed: %w", err)
 	}
 	return response, nil
 }
 
-func (session *ChatSession) consumeStream(ctx context.Context, turnID string, stream llm.Stream) (llm.Response, error) {
+func (session *ChatSession) consumeStream(ctx context.Context, llmCallID string, stream llm.Stream) (llm.Response, error) {
 	response := llm.Response{Message: llm.AssistantMessage("")}
 	for {
 		chunk, err := stream.Recv()
@@ -123,7 +123,7 @@ func (session *ChatSession) consumeStream(ctx context.Context, turnID string, st
 		if chunk.ReasoningDelta != "" {
 			response.Message.Reasoning += chunk.ReasoningDelta
 			if err := session.events.Publish(ctx, event.ReasoningDelta{
-				TurnID:     turnID,
+				LLMCallID:  llmCallID,
 				ResponseID: response.ID,
 				Delta:      chunk.ReasoningDelta,
 			}); err != nil {
@@ -133,7 +133,7 @@ func (session *ChatSession) consumeStream(ctx context.Context, turnID string, st
 		if chunk.ContentDelta != "" {
 			response.Message.Content += chunk.ContentDelta
 			if err := session.events.Publish(ctx, event.TextDelta{
-				TurnID:     turnID,
+				LLMCallID:  llmCallID,
 				ResponseID: response.ID,
 				Delta:      chunk.ContentDelta,
 			}); err != nil {
@@ -146,7 +146,7 @@ func (session *ChatSession) consumeStream(ctx context.Context, turnID string, st
 		if chunk.Usage != nil {
 			response.Usage = *chunk.Usage
 			if err := session.events.Publish(ctx, event.UsageUpdated{
-				TurnID:     turnID,
+				LLMCallID:  llmCallID,
 				ResponseID: response.ID,
 				Usage:      response.Usage,
 			}); err != nil {
@@ -161,16 +161,16 @@ func (session *ChatSession) consumeStream(ctx context.Context, turnID string, st
 	}
 }
 
-func (session *ChatSession) failTurn(ctx context.Context, turnID string, turnErr error) error {
-	if turnErr == nil {
+func (session *ChatSession) failCall(ctx context.Context, llmCallID string, callErr error) error {
+	if callErr == nil {
 		return nil
 	}
 	publishErr := session.events.Publish(context.WithoutCancel(ctx), event.ErrorOccurred{
-		TurnID: turnID,
-		Error:  event.NewErrorInfo(turnErr),
+		LLMCallID: llmCallID,
+		Error:     event.NewErrorInfo(callErr),
 	})
 	if publishErr != nil {
-		return errors.Join(turnErr, fmt.Errorf("publish turn error: %w", publishErr))
+		return errors.Join(callErr, fmt.Errorf("publish LLM call error: %w", publishErr))
 	}
-	return turnErr
+	return callErr
 }

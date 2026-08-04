@@ -80,8 +80,9 @@ providers:
     temperature: 0.2
     max_output_tokens: 8192
 
+    context_window: 128000
 agent:
-  max_steps: 30
+  max_iterations: 30
   max_tool_calls: 120
   max_input_tokens: 1000000
   max_output_tokens: 245760

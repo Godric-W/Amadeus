@@ -12,7 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/react"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
@@ -306,12 +305,12 @@ func (*integratedWebFetcher) Fetch(context.Context, string) (web.Document, error
 
 type integratedWriteHook struct{ calls int }
 
-func (hook *integratedWriteHook) After(_ context.Context, spec tool.Spec, _ tool.Call, _ tool.Result) ([]engine.Evidence, error) {
+func (hook *integratedWriteHook) After(_ context.Context, spec tool.Spec, _ tool.Call, _ tool.Result) ([]react.Evidence, error) {
 	if spec.SideEffect != tool.SideEffectWrite {
 		return nil, nil
 	}
 	hook.calls++
-	return []engine.Evidence{{ID: "diagnostic/write", Kind: engine.EvidenceDiagnostic, Source: "test", Summary: "diagnostic published", Verified: true}}, nil
+	return []react.Evidence{{ID: "diagnostic/write", Kind: react.EvidenceDiagnostic, Source: "test", Summary: "diagnostic published", Verified: true}}, nil
 }
 
 func TestCodingWorkflowIntegratesSkillMCPWebSnapshotAndDiagnosticHook(t *testing.T) {

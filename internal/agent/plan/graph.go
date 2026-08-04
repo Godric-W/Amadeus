@@ -1,4 +1,4 @@
-package engine
+package plan
 
 import (
 	"errors"
@@ -17,9 +17,6 @@ func (graph ExecutionGraph) Validate() error {
 	}
 	if len(graph.Tasks) == 0 {
 		return errors.New("execution graph tasks are empty")
-	}
-	if graph.Kind == ExecutionDirect && len(graph.Tasks) != 1 {
-		return errors.New("direct execution graph requires exactly one task")
 	}
 	positions := make(map[TaskID]int, len(graph.Tasks))
 	for index, task := range graph.Tasks {
@@ -85,7 +82,7 @@ func validateGraphTask(task Task) error {
 		}
 		seenCriteria[criterion.ID] = struct{}{}
 	}
-	if task.Budget.MaxSteps < 0 || task.Budget.MaxToolCalls < 0 || task.Budget.MaxInputTokens < 0 || task.Budget.MaxOutputTokens < 0 || task.Budget.MaxDuration < 0 {
+	if task.Budget.MaxIterations < 0 || task.Budget.MaxToolCalls < 0 || task.Budget.MaxInputTokens < 0 || task.Budget.MaxOutputTokens < 0 || task.Budget.MaxDuration < 0 {
 		return fmt.Errorf("task %q budget cannot be negative", task.ID)
 	}
 	seenResources := make(map[string]struct{}, len(task.Resources))

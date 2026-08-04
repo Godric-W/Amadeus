@@ -5,14 +5,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
+	"github.com/Godric-W/Amadeus/internal/agent/plan"
 )
 
 const (
 	exitCodeSuccess   = 0
 	exitCodeFailure   = 1
 	exitCodePartial   = 2
-	exitCodeNeedsPlan = 3
 	exitCodeCancelled = 130
 )
 
@@ -23,7 +22,6 @@ const (
 	runOutcomePartial   runOutcome = "partial"
 	runOutcomeFailed    runOutcome = "failed"
 	runOutcomeCancelled runOutcome = "cancelled"
-	runOutcomeNeedsPlan runOutcome = "needs_plan"
 )
 
 type commandExitError struct {
@@ -52,24 +50,20 @@ func errorAlreadyReported(err error) bool {
 	return errors.As(err, &exitErr) && exitErr.reported
 }
 
-func classifyRunResult(result engine.DirectRunResult) (runOutcome, int, error) {
+func classifyRunResult(result plan.PlanRunResult) (runOutcome, int, error) {
 	switch result.State.Status {
-	case engine.RunStatusCompleted:
+	case plan.RunStatusCompleted:
 		return runOutcomeCompleted, exitCodeSuccess, nil
-	case engine.RunStatusPlanning:
-		return runOutcomeNeedsPlan, exitCodeNeedsPlan, nil
-	case engine.RunStatusSuspended:
-		return runOutcomePartial, exitCodePartial, nil
-	case engine.RunStatusCancelled:
+	case plan.RunStatusCancelled:
 		return runOutcomeCancelled, exitCodeCancelled, nil
-	case engine.RunStatusFailed:
+	case plan.RunStatusFailed:
 		return runOutcomeFailed, exitCodeFailure, nil
 	default:
 		return "", exitCodeFailure, fmt.Errorf("unsupported terminal Run status %q", result.State.Status)
 	}
 }
 
-func formatRunSummary(outcome runOutcome, result engine.DirectRunResult) string {
+func formatRunSummary(outcome runOutcome, result plan.PlanRunResult) string {
 	parts := []string{"result: " + string(outcome)}
 	if result.State.StopReason != "" {
 		parts = append(parts, "stop_reason="+string(result.State.StopReason))

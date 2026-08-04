@@ -26,10 +26,10 @@ type RunMetadata struct {
 	ExecutionMode ExecutionMode
 }
 
-type StartedTurn struct {
+type StartedRun struct {
 	Records       BeginRunResult
 	PriorMessages []Message
-	Interrupted   *Run
+	PreviousRun   *Run
 }
 
 type Coordinator struct {
@@ -106,10 +106,10 @@ func (coordinator *Coordinator) Resume(ctx context.Context, id ConversationSessi
 	return conversation, nil
 }
 
-func (coordinator *Coordinator) BeginTask(ctx context.Context, objective string, metadata RunMetadata) (StartedTurn, error) {
+func (coordinator *Coordinator) BeginRun(ctx context.Context, objective string, metadata RunMetadata) (StartedRun, error) {
 	objective = strings.TrimSpace(objective)
 	if objective == "" {
-		return StartedTurn{}, errors.New("session task objective is empty")
+		return StartedRun{}, errors.New("session run objective is empty")
 	}
 	now := coordinator.clock().UTC()
 	messageID := MessageID(coordinator.nextID("msg"))
@@ -123,24 +123,24 @@ func (coordinator *Coordinator) BeginTask(ctx context.Context, objective string,
 			StartedAt: now,
 		})
 		if err != nil {
-			return StartedTurn{}, err
+			return StartedRun{}, err
 		}
 		coordinator.current = result.Session.ID
-		return StartedTurn{Records: result}, nil
+		return StartedRun{Records: result}, nil
 	}
-	prior, err := coordinator.store.ListMessages(ctx, coordinator.current)
+	prior, err := coordinator.store.ListCompletedMessages(ctx, coordinator.current)
 	if err != nil {
-		return StartedTurn{}, err
+		return StartedRun{}, err
 	}
 	if err := coordinator.store.RecoverRunningRuns(ctx, coordinator.current, now); err != nil {
-		return StartedTurn{}, err
+		return StartedRun{}, err
 	}
 	var interrupted *Run
 	contextRun, err := coordinator.store.PendingInterruptedRun(ctx, coordinator.current)
 	if err == nil {
 		interrupted = &contextRun
 	} else if !errors.Is(err, ErrNotFound) {
-		return StartedTurn{}, err
+		return StartedRun{}, err
 	}
 	input := BeginRunInput{
 		SessionID: coordinator.current, UserMessageID: messageID, RunID: runID,
@@ -152,12 +152,12 @@ func (coordinator *Coordinator) BeginTask(ctx context.Context, objective string,
 	}
 	result, err := coordinator.store.BeginRun(ctx, input)
 	if err != nil {
-		return StartedTurn{}, err
+		return StartedRun{}, err
 	}
-	return StartedTurn{Records: result, PriorMessages: prior, Interrupted: interrupted}, nil
+	return StartedRun{Records: result, PriorMessages: prior, PreviousRun: interrupted}, nil
 }
 
-func (coordinator *Coordinator) FinishTask(ctx context.Context, started StartedTurn, status RunStatus, stopReason, assistantContent string, usage, interruptedContext json.RawMessage) (FinishRunResult, error) {
+func (coordinator *Coordinator) FinishRun(ctx context.Context, started StartedRun, status RunStatus, stopReason, assistantContent string, usage, interruptedContext json.RawMessage) (FinishRunResult, error) {
 	messageID := MessageID("")
 	if status == RunCompleted {
 		messageID = MessageID(coordinator.nextID("msg"))

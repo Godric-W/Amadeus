@@ -55,10 +55,11 @@ type ProviderConfig struct {
 	MaxRetries      int             `yaml:"max_retries"`
 	Temperature     float64         `yaml:"temperature"`
 	MaxOutputTokens int             `yaml:"max_output_tokens"`
+	ContextWindow   int64           `yaml:"context_window"`
 }
 
 type AgentConfig struct {
-	MaxSteps         int           `yaml:"max_steps"`
+	MaxIterations    int           `yaml:"max_iterations"`
 	MaxToolCalls     int           `yaml:"max_tool_calls"`
 	MaxInputTokens   int64         `yaml:"max_input_tokens"`
 	MaxOutputTokens  int64         `yaml:"max_output_tokens"`
