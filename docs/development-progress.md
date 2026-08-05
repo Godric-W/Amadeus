@@ -3,7 +3,7 @@
 > 创建日期：2026-07-29
 > 对应架构：`docs/design.md`
 > 源项目：`../paicli-main`
-> 总体状态：M6R 已完成；当前进入 M8T Rich Inline TUI 产品化，再执行 M8 首个版本发布准备；M7 Multi-Agent、文件树/高级 Diff、Runtime API 与后台任务不阻塞发布
+> 总体状态：M6R、M8T 与 M7 已完成；当前进入 M8 首个版本发布准备；M9 Multi-Agent、文件树/高级 Diff、Runtime API 与后台任务不阻塞发布
 
 ## 1. 使用规则
 
@@ -49,24 +49,24 @@
 | M6 | Coding Workflow 扩展 | DONE | 100% |
 | M6R | 运行时语义、独立 Reactor 与 Typed EventHub 重构 | DONE | 100% |
 | M8T | Codex 风格 Rich Inline TUI 产品化 | DONE | 100% |
+| M7 | 核心工具链与 Process Runtime 收敛 | DONE | 100% |
 | M8 | 兼容回归与发布 | TODO | 0% |
-| M7 | 可选 Multi-Agent 与高级入口 | TODO | 0% |
+| M9 | 可选 Multi-Agent 与高级入口 | TODO | 0% |
 
 当前首个发布关键路径为：
 
 ```text
-M8T Rich Inline TUI 产品化
-  -> M8 兼容回归与首个发布
+M8 兼容回归与首个发布
 ```
 
-`M7` 是发布后或并行实验里程碑，不是 `M8` 的前置条件。
+`M9` 是发布后或并行实验里程碑，不是 `M8` 的前置条件。
 
 ## 3. 当前焦点
 
-- 当前阶段：`M8`，兼容回归与首个发布。
-- 下一任务：`M8-01`，建立发布行为基线 fixture。
+- 当前阶段：`M8`，兼容回归与首个版本发布准备。
+- 下一任务：`M8-01`，冻结核心 CLI、配置、工具暴露与 Session 行为基线。
 - 当前阻塞：无。
-- 最近完成：`M8T-00～15`；Rich Inline 已完成响应式 Logo、Codex 风格 Transcript/Tool Activity、Working、Context 状态、bounded Ctrl+T Viewer、Plain/TTY 降级和全仓 race 验收。
+- 最近完成：`M7-01～20`；Workspace、Patch、持续 Process、多模态、Tool Exposure、Skill/Snapshot、MCP Resource、Web Search/Fetch 与 LSP 删除已完成，并通过全仓测试、race、`make check` 和差异检查。
 - 数据库决策：只保留 `schema_migrations`、`projects`、`conversation_sessions`、`runs`、`conversation_messages`、`conversation_summaries` 六表；Conversation 只重建 completed Run 的完整 Message Pairs，interrupted/failed Run 只提供有界 Previous Work。
 
 ### 3.1 交付优先级
@@ -74,20 +74,21 @@ M8T Rich Inline TUI 产品化
 1. **M3 可用基线**：真实 Provider + 根命令 `amadeus`/`amadeus "<task>"` + 项目工具 + 分层 `AGENTS.md` + 安全审批，可以在用户项目中完成读、改、测。
 2. **M4 单 Agent 可靠性历史基线**：结构化读搜、Patch 修改、Shell 执行、Conversation Session、Run、长上下文和中断摘要已经交付；旧 Turn/Checkpoint 实现只保留在历史记录中。
 3. **已完成 M6R 核心重构**：Session/Run 语义、独立 Reactor、Plan Controller、Per-Think Context、Typed EventHub 与旧链删除已经完成并通过最终验收。
-4. **已完成 Coding Workflow**：Snapshot、LSP、Skill、MCP、Web、Session、Approval 和 Rich Inline TUI 继续复用，不因 Reactor 重构改变产品语义。
+4. **已完成 Coding Workflow 收敛**：Snapshot、Skill、MCP、Web、Session、Approval 和 Rich Inline TUI 已复用到统一 Runtime；核心 LSP 已删除，Skill/Web/Tool 暴露已按最新设计替换历史实现。
 5. **已完成 M8T TUI 产品化**：在不破坏 main-screen、原生 scrollback、中文输入和运行中排队的前提下，已交付品牌 Logo、Codex 风格 Tool Activity、Working 动画、Context 状态与临时详情查看器。
-6. **当前 M8 首个发布**：以稳定的默认 ReAct、显式 Plan-and-Execute、最小 Approval、Session 和完成产品化的 Rich Inline TUI 为发布基线，不等待 Multi-Agent。
-7. **M7 可选高级能力**：首个发布路径稳定后，再验证最多两个只读 SubAgent 的最小收益；图片、Browser、TUI 多 Pane、Runtime API 和后台任务分别立项。
+6. **已完成 M7 工具链收敛**：保留结构化探索，交付持续 Process、`write_stdin`、Patch Move/诊断、`write_file` 退场、图片链路、条件 Tool Exposure，并完成 LSP/Skill/Web 历史实现清理。
+7. **当前 M8 首个发布**：以稳定的默认 ReAct、显式 Plan-and-Execute、最小 Approval、Session、收敛工具链和 Rich Inline TUI 为发布基线，不等待 Multi-Agent。
+8. **M9 可选高级能力**：首个发布路径稳定后，再验证最多两个只读 SubAgent 的最小收益；Browser、TUI 多 Pane、Runtime API 和后台任务分别立项。
 
 ### 3.2 当前执行队列
 
 | 顺序 | 范围 | 目的 | 开始条件 |
 |---:|---|---|---|
-| 1 | M8-01～05 | 固化行为、迁移、安全与性能基线 | M8T-15 DONE；当前可开始 |
+| 1 | M8-01～05 | 固化行为、迁移、安全与性能基线 | M7-20 DONE |
 | 2 | M8-06～11 | 构建发布产物、文档和版本候选 | M8-01～05 DONE |
-| 3 | M7-01～08 | 验证只读 Multi-Agent 的实际收益 | 不阻塞 M8；默认在首个发布后开始 |
+| 3 | M9-01～08 | 验证只读 Multi-Agent 的实际收益 | 不阻塞 M8；默认在首个发布后开始 |
 
-除非 M8T 或 M8 暴露阻断发布的问题，否则不在当前队列中插入新的 Agent 模式、长期记忆、RAG、Browser、图片、多 Pane TUI、Runtime API 或后台 Job。
+除非 M8T 或 M8 暴露阻断发布的问题，否则不在当前队列中插入新的 Agent 模式、长期记忆、RAG、Browser、多 Pane TUI、Runtime API 或后台 Job。图片只按 M7 已定义的 `view_image` 最小多模态链交付，不扩展为图片生成、OCR 平台或独立媒体子系统。
 
 ## 4. D0：架构与计划
 
@@ -360,14 +361,14 @@ M6 增加高价值编码辅助与外部扩展能力，但必须在 M5R 固定主
 | M6-01 | DONE | M5R-10,M3-13 | 定义 Snapshot Service 接口 | fake 可通过 `SnapshotFactory` 挂到完整 Agent 组合；默认实现与安全工具流水线隔离 |
 | M6-02 | DONE | M6-01 | 实现首次写入触发的 Run 快照 | 首个获授权 write-side-effect 执行前 lazy Begin，一个 Run 只创建一次；纯读取 Run 不扫描项目；完成后 manifest 识别新增、修改、删除并由 `cmd/amadeus` E2E 验证 |
 | M6-03 | DONE | M6-02 | 实现 `revert_turn` | 只恢复指定 Run 的 before snapshot；作为 write/exclusive Tool 复用现有 Approval 与 Audit |
-| M6-04 | DONE | M5R-10,M2-23 | 定义 LSP Client/Diagnostic | Process Client、Document、Range、Diagnostic 与具体语言服务器命令解耦 |
-| M6-05 | DONE | M6-04 | 实现 LSP process 生命周期 | 标准 JSON-RPC stdio `initialize`、`didOpen/didChange`、`publishDiagnostics`、`shutdown/exit` 与取消 fixture 测试通过 |
-| M6-06 | DONE | M6-05 | 实现可配置生产写后诊断 hook | `lsp.enabled/command/args/extensions/timeout` 完成加载、校验和 CLI 接线；首个匹配写入后 lazy 启动，写成功不因诊断失败回滚，失败形成 Evidence/Event，Run 结束关闭 Client |
+| M6-04 | SUPERSEDED | M5R-10,M2-23 | 定义 LSP Client/Diagnostic | 历史实现与测试已完成；ADR-021 决定核心 LSP 不进入产品基线，待 M7-19 删除 |
+| M6-05 | SUPERSEDED | M6-04 | 实现 LSP process 生命周期 | 历史 JSON-RPC stdio Client 已完成；异步诊断、多语言和生命周期成本不再继续投入 |
+| M6-06 | SUPERSEDED | M6-05 | 实现可配置生产写后诊断 hook | 历史生产接线已完成；目标由项目原生 formatter/build/lint/typecheck/test 验证替代 |
 | M6-07 | DONE | M5R-10,M3-04 | 定义 Skill Domain 与最小 frontmatter parser | 只接受 name/description；大小、字符、重复名称、UTF-8、frontmatter 和文件位置错误稳定 |
 | M6-08 | DONE | M6-07,M3-08 | 实现用户/项目 Skill Loader | `$AMADEUS_HOME/skills` 与 `<project>/.amadeus/skills` 扫描、项目同名整体覆盖、symlink 防逃逸测试通过 |
-| M6-09 | DONE | M6-08,M4-23 | 实现 Skill 索引与 `load_skill` | Prompt 仅注入 name/description/source；`load_skill` 仅在有 Skill 时注册，正文通过有界的一次性 SkillContextBuffer 注入下一次模型请求 |
-| M6-10 | DONE | M6-09,M2-23 | 实现 Skill `references/` 只读访问 | `read_skill_reference` 仅访问已索引 Skill 的 `references/`；相对路径、Root 围栏、UTF-8/binary、大小预算和 partial 语义测试通过 |
-| M6-11 | DONE | M6-10,M3-15 | 增加文本 Skill E2E | 命令 E2E 覆盖用户/项目同名覆盖、`load_skill`、下一轮正文注入与 `references`；现有 Coding Workflow E2E 覆盖统一工具 Approval；scripts 明确不支持 |
+| M6-09 | SUPERSEDED | M6-08,M4-23 | 实现 Skill 索引与 `load_skill` | 历史一次性 SkillContextBuffer 已完成；ADR-016 改为直接 Tool Observation 的 `read_skill` |
+| M6-10 | SUPERSEDED | M6-09,M2-23 | 实现 Skill `references/` 只读访问 | 历史独立 `read_skill_reference` 已完成；目标与正文读取合并为 `read_skill(name,path?)` |
+| M6-11 | SUPERSEDED | M6-10,M3-15 | 增加文本 Skill E2E | 历史行为测试保留；M7-15 迁移后以无隐藏状态的新 E2E 取代 |
 | M6-12 | DONE | M5R-10,M3-26 | 定义 MCP 配置与合并 | `$AMADEUS_HOME/mcp.yaml`、项目 `.amadeus/mcp.yaml`、同名整体覆盖、环境变量展开、严格字段校验和凭证脱敏测试通过 |
 | M6-13 | DONE | M6-12 | 封装 `mark3labs/mcp-go` Client Port 与 stdio transport | Domain 不暴露第三方类型；真实 stdio 子进程 fixture 覆盖 initialize、tools/list、tools/call、timeout 与 close 生命周期 |
 | M6-14 | DONE | M6-13 | 实现 Lazy MCP Manager 生命周期 | 启动和 Run 开始均不连接 server；首次 `mcp_list_tools`/`mcp_call` 才启动，Run 内复用、单 server 一次有界重连、关闭与失败隔离测试通过 |
@@ -378,7 +379,7 @@ M6 增加高价值编码辅助与外部扩展能力，但必须在 M5R 固定主
 | M6-19 | DONE | M5R-10,M2-01 | 定义 SearchProvider/WebFetcher | 可替换 Fetcher/SearchProvider Port 与 mock Tool 测试通过 |
 | M6-20 | DONE | M6-19 | 实现网络策略 | HTTP/HTTPS、私网拒绝、重定向检查、可取消限流与响应大小限制测试通过 |
 | M6-21 | DONE | M6-20 | 实现 `web_fetch` 与正文提取 | HTML fixture 稳定提取标题/正文；结果带来源和不可信边界 |
-| M6-22 | DONE | M6-20 | 实现至少一个 `web_search` Provider | DuckDuckGo JSON Provider 与 mock 响应格式化测试通过 |
+| M6-22 | SUPERSEDED | M6-20 | 实现至少一个 `web_search` Provider | DuckDuckGo Instant Answer 历史实现已完成；ADR-022 改为独立 Search Service 与四 Provider |
 | M6-23 | DONE | M6-03,M6-06,M6-11,M6-18,M6-21,M6-22 | 增加 Coding Workflow 扩展 E2E | 单条命令 E2E 覆盖 lazy Snapshot、写后诊断 Hook、Skill、`mcp_list_tools`→`mcp_call`、Web、Approval、Audit 与 Context 主链 |
 | M6-24 | SUPERSEDED | M5R-19,M4-16,M3-13 | 移植 PaiCLI Go Bubble Tea 全屏 TUI | 首次交付像素 `A`、textarea、Markdown、事件块、TUI Approval 和 `/resume` selector；其中 alternate-screen/viewport 展示策略已由 M6-27 的 Rich Inline 主屏模式取代 |
 | M6-25 | DONE | M6-24,M5R-03 | 修复 TUI 输入污染与简单问候过度规划 | 滚轮转义片段不进入 textarea；Backspace 按 Unicode rune 删除；纯问候稳定收敛为单个无工具 Task；默认 Draft Session 不读取历史 |
@@ -542,13 +543,66 @@ M8T 分四个批次执行：
 - `Ctrl+T` 只打开 bounded 临时 Viewer，不引入持久 Event Store 或第二 Conversation 历史。
 - `--plain`、非 TTY 和 dumb terminal 行为保持稳定。
 
-## 12. M8：兼容回归与首个发布
+## 12. M7：核心工具链与 Process Runtime 收敛
 
-M8 直接依赖 M8T-15，不依赖 M7。发布基线是：默认独立 ReAct、显式 `/plan`、完整 Session/Message/Run 语义、Previous Work、六表 SQLite、最小 Approval、核心工具和完成产品化的 Rich Inline TUI。
+M7 是 M8 发布前的最后一轮产品能力收敛，不引入新 Agent 模式，也不实现完整 Sandbox。目标是保留结构化探索的安全、稳定输出与免审批优势，同时吸收 Codex 在持续命令、Patch、图片和 Tool Exposure 上的成熟语义。`read_file/list_dir/glob_files/grep_code` 与 Shell 的能力重叠是有意设计：前者负责高频、受限、可预算的 Workspace 探索，后者负责构建、测试、Git、格式化、项目脚本和复杂 fallback。任务顺序固定为：**Workspace 探索基础 → Patch/`write_file` 迁移 → Process Runtime → 多模态与 Tool Exposure → Skill/MCP/Web/LSP 清理 → 全链路验收**。
+
+### M7-A：Workspace 探索与 Patch
 
 | ID | 状态 | 依赖 | 最小任务 | 验收标准 |
 |---|---|---|---|---|
-| M8-01 | TODO | M8T-15 | 建立发布行为基线 fixture | 覆盖配置、Provider 方言、默认 ReAct、`/plan`、工具顺序、Approval、Session resume、Previous Work 和 Rich Inline TUI 行为 |
+| M7-01 | DONE | M6R-22,M8T-15,ADR-023 | 固定目标 Tool Set、Exposure 与兼容策略 | 已建立核心/条件/延迟/隐藏工具目录、Registry Exposure 和 `amadeus tools list` 投影；最终回归并入 M7-20 |
+| M7-02 | DONE | M7-01 | 提取共享 Workspace 读取基础设施 | 已建立 Reader、IgnoreMatcher、FileEnumerator、TextDetector、OutputLimiter 与 glob matcher，供 read/list/glob/grep 复用 |
+| M7-03 | DONE | M7-02 | 优化 `read_file` 大文件局部读取 | 已支持一基行号、稳定 `L<line>:`、局部读取、next line、长行与输出预算；旧 offset 暂作兼容输入 |
+| M7-04 | DONE | M7-02 | 优化 `glob_files` ignore 与 Backend | 已支持 path+pattern、`rg --files`、`.gitignore/.ignore` 和 Go fallback；最终一致性回归并入 M7-20 |
+| M7-05 | DONE | M7-02 | 优化 `grep_code` 与 `list_dir` | 已直接解析 `rg --json` 并返回 file/line/column，Go fallback 复用 Enumerator；list 复用 Workspace Reader |
+| M7-06 | DONE | M7-01,M4-03 | 强化 Codex 兼容 Patch 协议 | Add/Update/Delete/Move、`*** Move to`、纯移动/移动后修改、保守行尾匹配、冲突候选和 destination metadata 均有专项 fixture |
+| M7-07 | DONE | M7-06 | 隐藏并删除 `write_file` | Provider Prompt、CLI/Provider/Bootstrap E2E、Catalog、Policy 与生产 Registry 已迁移到 Patch；生产实现和注册已删除，Snapshot/revert 回归通过 |
+
+### M7-B：持续 Process Runtime
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M7-08 | DONE | M7-01,M2-30 | 定义 `ProcessManager/ProcessID/ProcessState` | 已实现 Run owner 隔离、running/completed/cancelled/timed_out/failed、PTY、stdin、yield、输出预算与生命周期关闭 |
+| M7-09 | DONE | M7-08 | 将 `execute_command` 升级为 yield-aware | 已支持 `tty/yield_time_ms/max_output_tokens`，长命令返回 process_id，输出采用 UTF-8 head+tail |
+| M7-10 | DONE | M7-09 | 实现 `write_stdin` | 已支持写入、poll 与持续进程复用原命令授权；不对同一 Process 重复审批 |
+| M7-11 | DONE | M7-10,M8T-09 | 完成 Process 生命周期与 TUI E2E | Tool 交互 stdin、PTY、非零退出、timeout、双取消、Run owner 隔离和 Run/Agent 关闭清理均有回归；TUI 继续消费统一 Tool Activity |
+
+### M7-C：多模态与 Tool Exposure
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M7-12 | DONE | M7-01,M1-14 | 扩展 LLM Message Content Parts | text/image Domain、Responses/Chat 用户图片与 Tool 图片 replay、流式前 capability 拒绝均有序列化 fixture |
+| M7-13 | DONE | M7-12,M7-02 | 实现 `view_image` | PNG/JPEG/WebP/静态 GIF、PathGuard、大小/尺寸/像素预算、真实 image Content Part 与 capability gate 专项测试通过 |
+| M7-14 | DONE | M7-01,M7-07,M7-13 | 实现 Direct/Conditional/Deferred/Hidden Tool Exposure | Registry 与模型可见快照已分离，工具可按能力/配置暴露；Deferred 的 Run-local discovery 语义留待真实需求验证 |
+
+### M7-D：扩展工具迁移与清理
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M7-15 | DONE | M7-14,M6-08,M6-03 | 收敛 Skill 与 Snapshot Tool 命名 | `read_skill(name,path?,line?,limit?)`、`revert_run` 已取代隐藏 buffer、`load_skill`、reference Tool 与 `revert_turn`；覆盖优先级、Reference 边界和错误传播通过 |
+| M7-16 | DONE | M7-14,M6-18 | 增加 MCP Resource gateway | Resource list/read、文本/图片 Content Part、Catalog Cache、重连失效、URI 校验、结果预算、目标感知 Approval 与安全 TUI 摘要均已验证 |
+| M7-17 | DONE | M7-14,ADR-022 | 拆分 Web Search 与 Web Fetch Domain | `internal/websearch`/`internal/webfetch`、独立配置、Service 错误分类/总 timeout/retry、Proxy-aware Fetch 与 SSRF/redirect/输出边界已实现；未启用时不注册 Tool |
+| M7-18 | DONE | M7-17 | 实现四个 Search Provider 与 `web check` | DuckDuckGo HTML-first/API-fallback、Tavily、SearXNG、Brave 的请求、认证、限流、5xx、timeout、空结果、去重和 CLI check fixture 通过 |
+| M7-19 | DONE | M7-14,ADR-021 | 删除核心 LSP 历史实现 | `lsp.*` 配置、CLI explain/validation、生产接线、`internal/lsp` 与旧测试已删除；项目原生验证仍由 Prompt/命令/Evidence 覆盖 |
+| M7-20 | DONE | M7-11,M7-15,M7-16,M7-18,M7-19 | 完成工具链架构与发布前验收 | 默认 ReAct、`/plan`、Approval、Snapshot、Session/Previous Work、Context、Rich Inline/Plain、Responses/Chat、Exposure、Process、Web、MCP Resource 与图片链路 E2E 通过；全仓测试、race、`make check`、`go mod tidy`、`git diff --check` 全绿 |
+
+### M7 出口
+
+- 模型默认只看到必要工具；无效 Web/MCP/Skill/图片能力不进入 RequestView。
+- 常规探索继续免审批且严格位于 Project Root；Shell-first 仍不是当前安全基线。
+- 文件修改只通过 `apply_patch`，生产代码不再注册 `write_file`。
+- 长命令不会因前台等待超时被误杀，可通过 `process_id + write_stdin` 继续、轮询和取消。
+- 图片以真正多模态内容回灌；不支持图片的模型不会看到 `view_image`。
+- LSP 历史代码删除，Skill/Web/MCP 与最新 ADR 一致。
+
+## 13. M8：兼容回归与首个发布
+
+M8 直接依赖 M7-20，不依赖 M9。发布基线是：默认独立 ReAct、显式 `/plan`、完整 Session/Message/Run 语义、Previous Work、六表 SQLite、最小 Approval、收敛后的核心工具与 Process Runtime，以及完成产品化的 Rich Inline TUI。
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M8-01 | TODO | M7-20 | 建立发布行为基线 fixture | 覆盖配置、Provider 方言、默认 ReAct、`/plan`、目标 Tool Set/Exposure、Process、Approval、Session resume、Previous Work 和 Rich Inline TUI 行为 |
 | M8-02 | TODO | M8-01 | 建立架构与术语守卫测试 | 禁止生产引用 TurnID、synthetic root Task、旧 Engine 和 `max_steps`；Task 只存在 Plan 路径，Iteration 只存在 Reactor |
 | M8-03 | TODO | M8-01 | 验证 SQLite 与配置兼容迁移 | 旧六表前版本、`interrupted_context.v1`、旧 `max_steps` 配置均有明确迁移或错误提示，不静默丢失 Message/Run |
 | M8-04 | TODO | M8-02,M8-03 | 执行安全回归 | PathGuard、CommandGuard、Approval、Audit、Snapshot、MCP/Web 边界和凭证脱敏全部通过 |
@@ -557,39 +611,38 @@ M8 直接依赖 M8T-15，不依赖 M7。发布基线是：默认独立 ReAct、�
 | M8-07 | TODO | M8-06 | 完成 macOS amd64/arm64 构建 | 二进制可启动并通过 Coding Agent smoke test |
 | M8-08 | TODO | M8-07 | 评估 Windows 支持范围 | 支持则构建；不支持则记录命令、进程组和 TTY 边界 |
 | M8-09 | TODO | M8-06 | 完成安装、配置、Session 与故障排查文档 | 新用户可从零配置并完成首个编码任务、中断、继续和 `/plan` 任务 |
-| M8-10 | TODO | M8-09 | 生成版本说明与迁移文档 | 明确 PaiCLI 差异、旧配置/数据库兼容、已知限制和可选 M7 能力状态 |
+| M8-10 | TODO | M8-09 | 生成版本说明与迁移文档 | 明确 PaiCLI 差异、旧配置/数据库/工具兼容、已知限制和可选 M9 能力状态 |
 | M8-11 | TODO | M8-10 | 生成首个版本候选 | version、commit、build time、checksums、变更日志、已知问题和完整 smoke 结果齐全 |
 
-## 13. M7：可选 Multi-Agent 与高级入口
+## 14. M9：可选 Multi-Agent 与高级入口
 
-M7 不阻塞 M8 发布。只有 M6R-22 证明单 Agent 主链稳定后，才优先验证最小只读 Multi-Agent；它可以在 M8 之后实施，也可以在不影响发布关键路径的前提下独立实验。图片、Browser、文件树/多 Pane/高级 Diff、Runtime API 和后台 Job 均属于独立可选批次，不能同时开工。
+M9 不阻塞 M8 发布。只有 M7-20 证明单 Agent 与工具主链稳定后，才优先验证最小只读 Multi-Agent；它可以在 M8 之后实施，也可以在不影响发布关键路径的前提下独立实验。Browser、文件树/多 Pane/高级 Diff、Runtime API 和后台 Job 均属于独立可选批次，不能同时开工。
 
-### 13.1 只读 Multi-Agent MVP
+### 14.1 只读 Multi-Agent MVP
 
 | ID | 状态 | 依赖 | 最小任务 | 验收标准 |
 |---|---|---|---|---|
-| M7-01 | TODO | M6R-22 | 定义 `SubAgentTask/Result` 与只读 Runner Port | Objective、最小 Context、子预算、Summary/Evidence/Usage/StopReason 可表达；不共享主 Reactor 临时消息链 |
-| M7-02 | TODO | M7-01 | 实现只读 SubAgent ContextBuilder | 只注入当前 Task、适用 `AGENTS.md`、依赖 Evidence、Project Root 和 read/list/glob/grep；无 Conversation 全量复制 |
-| M7-03 | TODO | M7-02 | 实现 bounded SubAgent Runner | 与主 Agent 同模型；最多两个、depth=1；不注册写入、命令、网络、MCP 或继续委派能力 |
-| M7-04 | TODO | M7-03 | 实现确定性 placement | 仅 `/team` + `/plan`、至少两个 independent ready read-only Tasks、预算足够时并行；否则安全退化单 Agent |
-| M7-05 | TODO | M7-04 | 合并 SubAgent Result | 按 TaskID 稳定合并 Summary/Evidence/Usage；SubAgent 不写正式 Message、不决定 Run 完成、不直接输出最终回答 |
-| M7-06 | TODO | M7-05 | 实现取消与失败边界 | 主 Run 取消传播全部子 Context；保留已完成 Summary/Evidence；失败由主 Agent执行、review 或解释，不自动创建替代 Agent |
-| M7-07 | TODO | M7-06 | 增加只读 Multi-Agent E2E | 两个调查 Task 并行、主 Agent汇总后修改/测试、单子失败、取消、预算和事件关联通过 |
-| M7-08 | TODO | M7-07 | 执行收益审计 | 记录延迟、token、完成质量和复杂度；收益不足则保持实验能力，不进入默认主链 |
+| M9-01 | TODO | M7-20 | 定义 `SubAgentTask/Result` 与只读 Runner Port | Objective、最小 Context、子预算、Summary/Evidence/Usage/StopReason 可表达；不共享主 Reactor 临时消息链 |
+| M9-02 | TODO | M9-01 | 实现只读 SubAgent ContextBuilder | 只注入当前 Task、适用 `AGENTS.md`、依赖 Evidence、Project Root 和 read/list/glob/grep；无 Conversation 全量复制 |
+| M9-03 | TODO | M9-02 | 实现 bounded SubAgent Runner | 与主 Agent 同模型；最多两个、depth=1；不注册写入、命令、网络、MCP 或继续委派能力 |
+| M9-04 | TODO | M9-03 | 实现确定性 placement | 仅 `/team` + `/plan`、至少两个 independent ready read-only Tasks、预算足够时并行；否则安全退化单 Agent |
+| M9-05 | TODO | M9-04 | 合并 SubAgent Result | 按 TaskID 稳定合并 Summary/Evidence/Usage；SubAgent 不写正式 Message、不决定 Run 完成、不直接输出最终回答 |
+| M9-06 | TODO | M9-05 | 实现取消与失败边界 | 主 Run 取消传播全部子 Context；保留已完成 Summary/Evidence；失败由主 Agent执行、review 或解释，不自动创建替代 Agent |
+| M9-07 | TODO | M9-06 | 增加只读 Multi-Agent E2E | 两个调查 Task 并行、主 Agent汇总后修改/测试、单子失败、取消、预算和事件关联通过 |
+| M9-08 | TODO | M9-07 | 执行收益审计 | 记录延迟、token、完成质量和复杂度；收益不足则保持实验能力，不进入默认主链 |
 
-### 13.2 高级入口候选
+### 14.2 高级入口候选
 
-以下能力在 M7-08 后逐项立项，不预先展开为互相依赖的大型任务树：
+以下能力在 M9-08 后逐项立项，不预先展开为互相依赖的大型任务树：
 
 - TUI 文件树、Diff/Tool Result 折叠和无障碍增强；
-- 图片输入与 Provider 多模态转换；
 - Browser Connector；
 - Runtime API：使用 `/v1/sessions/{id}/runs` 和事件流，不设计 turns endpoint；
 - 后台 Job/Worker：使用独立 Job Domain，不复用 Conversation Run 或恢复 Checkpoint 语义。
 
 每项开始前必须新增独立设计小节、任务表和验收标准；未立项能力不计入当前里程碑完成度。
 
-## 14. 参考项目到 Go 模块映射
+## 15. 参考项目到 Go 模块映射
 
 | Java 模块/文件 | Go 目标 | 实现阶段 |
 |---|---|---|
@@ -598,7 +651,7 @@ M7 不阻塞 M8 发布。只有 M6R-22 证明单 Agent 主链稳定后，才优�
 | `llm/*Client.java` | `internal/llm/openai` + capability config | M1 |
 | `agent/Agent.java` 与 WeKnora ReAct loop | 吸收行为后收敛到独立 `internal/agent/react`；默认 CLI 不经过 Plan Task 或 ExecutionGraph | M6R |
 | `agent/PlanExecuteAgent.java` | 仅迁移 Plan/DAG/Replan 编排到 `internal/agent/plan`；通过 `ReActTaskExecutor` 调用同一个 Reactor，不保留第二套执行循环 | M6R |
-| `agent/AgentOrchestrator.java`、`SubAgent.java` | 可选迁移为 `internal/agent/team` 的只读 Task placement；主 Agent 保持唯一写入者与最终回答者 | M7 |
+| `agent/AgentOrchestrator.java`、`SubAgent.java` | 可选迁移为 `internal/agent/team` 的只读 Task placement；主 Agent 保持唯一写入者与最终回答者 | M9 |
 | `tool/ToolRegistry.java` | `internal/tool` + `internal/tool/builtin/*` | M2-M7 |
 | `policy/*`、`hitl/*` | `internal/policy` | M3 |
 | `prompt/*`、`resources/prompts/*` | `internal/prompt` + `prompts/*` | M3 |
@@ -607,13 +660,13 @@ M7 不阻塞 M8 发布。只有 M6R-22 证明单 Agent 主链稳定后，才优�
 | `mcp/*` | `internal/mcp` | M6 |
 | `skill/*` | `internal/skill` | M6 |
 | `snapshot/*` | `internal/snapshot` | M6 |
-| `lsp/*` | `internal/lsp` | M6 |
-| `image/*` | 候选 `internal/image`，须在 M7-08 收益审计后单独立项 | 候选 |
-| `browser/*` | 候选 `internal/browser`，须在 M7-08 收益审计后单独立项 | 候选 |
+| `lsp/*` | 已删除；未来只允许以 MCP、插件或 Extension Tool 重新立项 | M7-19 DONE |
+| `image/*` | `internal/llm` Content Parts + `internal/tool/builtin/view_image.go`；只交付受能力约束的 `view_image` | M7-12～M7-13 DONE |
+| `browser/*` | 候选 `internal/browser`，须在 M9-08 收益审计后单独立项 | 候选 |
 | `render/*`、`tui/*` | `internal/render` + `internal/interface/tui`；M6R 迁移为 Typed EventHub subscriber，M8T 完成 Codex 风格 Rich Inline 产品化 | M1、M3、M6、M6R、M8T |
 | `runtime/api/*`、`runtime/task/*` | 候选 `internal/runtimeapi` 与独立 Job Domain；Conversation API 使用 `/v1/sessions/{id}/runs` | 候选 |
 
-## 15. 优化记录
+## 16. 优化记录
 
 说明：`PROPOSED` 仅表示在代码梳理中发现的优化机会；只有 Go 实现落地且测试通过后，才能改为 `DONE`。记录必须写明原文件、原函数/区域、Go 目标和行为影响。
 
@@ -638,7 +691,7 @@ M7 不阻塞 M8 发布。只有 M6R-22 证明单 Agent 主链稳定后，才优�
 | OPT-017 | SUPERSEDED | WeKnora `ToolCall.Reflection` 预留字段与 PaiCLI 缺少 Reflection 闭环 | 旧方案拟增加独立 Verifier/Reflector；现改为 Reactor 根据 StopReason 返回结果，只有显式 `/plan` 的 Plan Controller 执行完成判断与 bounded replan | 避免默认 ReAct 被额外质量门和规划状态绑定 | 不再建设通用 Verifier/Reflector 链；后续若需要专项验证器，按工具或任务类型单独立项 |
 | OPT-018 | PROPOSED | PaiCLI `memory/MemoryManager.java` 同时管理 Conversation、Long-term Memory、Retriever、Compressor、TokenBudget、ContextProfile 和 project scope | 只迁移 completed Message Pair 查询、BaseContextBuilder、ContextWindowManager、Summary 与 Previous Work；用户/项目长期规则改为分层 `AGENTS.md`，不实现自动 MemoryManager 或 Checkpoint Store | 消除隐藏压缩和偏好推断，Conversation 与中断工作边界清楚，指令可编辑、可审查、可版本控制 | 不提供自动 remember/recall 或精确执行恢复；未来仅在真实需求验证后另立 ADR |
 
-## 16. 决策与阻塞日志
+## 17. 决策与阻塞日志
 
 | 日期 | 类型 | 内容 | 结果/后续 |
 |---|---|---|---|
@@ -655,11 +708,11 @@ M7 不阻塞 M8 发布。只有 M6R-22 证明单 Agent 主链稳定后，才优�
 | 2026-07-30 | 决策 | 删除 `agent.mode` 配置 | 默认入口固定为独立 ReAct；`/plan` 显式选择外层 Plan Controller；可选 `/team` 只影响 Plan Task placement，不增加持久化 Agent 模式 |
 | 2026-07-30 | 决策 | 首要目标调整为可用 Coding Agent | M3 直接交付真实 Provider + 根命令 Coding Agent + 工具 + `AGENTS.md` + 安全审批；不等待规划、恢复或扩展能力 |
 | 2026-07-30 | 决策 | 根命令直接启动 Coding Agent | `amadeus` 进入交互模式，`amadeus "<task>"` 执行一次性任务；不创建独立 `run` 子命令 |
-| 2026-07-30 | 决策 | Multi-Agent 后移为可选增强 | Adaptive Planning 与 Replan 先在单 Agent 上稳定；SubAgent placement 移至 M7，不阻塞首个可用版本或发布基线 |
+| 2026-07-30 | SUPERSEDED | Multi-Agent 后移为可选增强 | 当时将 SubAgent placement 移至 M7；当前路线进一步顺延到 M9，不阻塞 M7 工具链收敛或 M8 发布 |
 | 2026-07-31 | 决策 | 用户级 resume 只恢复 Conversation Session | 保留 `--continue`、`--resume [session-id]`、`sessions list` 和交互 `/resume`；不实现 `--session`、`/sessions` 或首版 `--all` |
 | 2026-07-31 | SUPERSEDED | SQLite 归档到 `$AMADEUS_HOME/data/amadeus.db` | 数据库位置与独立 JSONL 审计继续有效；Session、Turn、Message、Run、Checkpoint 共库模型已被 2026-08-01 六表方案和 2026-08-03 Previous Work 语义取代 |
 | 2026-07-31 | 决策 | 中断 Run 不精确恢复而由新 Run 重新规划 | 下一真实输入自动获得最近中断摘要；重新加载工作区和 `AGENTS.md`，不重放工具/审批、不增加 Router，只记录 `context_from_run_id` |
-| 2026-07-31 | 决策 | 内置工具采用结构化读搜、Patch 修改和 Shell 执行 | 保留 read/list/glob/grep；新增 `apply_patch`；`write_file` 收窄为显式 create/replace；Shell 负责构建、测试、Git 和 fallback |
+| 2026-07-31 | SUPERSEDED | 内置工具采用结构化读搜、Patch 修改和 Shell 执行 | 保留 read/list/glob/grep 与 Shell fallback 的方向继续有效；`write_file` 的长期保留已由 2026-08-04 工具链决策取代 |
 | 2026-07-31 | 决策 | Multi-Agent 第一版收敛为最多两个只读 SubAgent | 仅 `/team` 请求 `prefer_subagents`；委派独立 ready read-only Task，SubAgent 不写文件/执行命令/递归/互聊，主 Agent统一修改、验证和回复 |
 | 2026-08-01 | 决策 | Approval 收敛为 PaiCLI 风格固定规则 | 删除配置开关和三层 Sandbox 设计；只读直接执行，写入/命令/网络/MCP 审批，越界和 blocked 直接拒绝；MVP 只保留 once/session/deny |
 | 2026-08-01 | SUPERSEDED | M5R 增加第一版 Inline TUI | 旧方案曾采用主屏 transcript 和自维护 raw mode；2026-08-03 由 M6-27 Bubble Tea Rich Inline TUI 取代，旧控制器仅保留给 `--plain` fallback |
@@ -669,8 +722,10 @@ M7 不阻塞 M8 发布。只有 M6R-22 证明单 Agent 主链稳定后，才优�
 | 2026-08-03 | 决策 | 采用 WeKnora 的 Think→Analyze→Act→Observe 语义分层，并保留 Amadeus Coding Agent 执行能力 | M6R 将默认路径解耦为独立 Reactor；Approval、PathGuard、CommandGuard、Snapshot、Evidence、预算和资源感知工具并行继续复用 |
 | 2026-08-03 | 决策 | 统一 Session/Message/Run、Iteration、Plan Task、LLM Call 与 Previous Work | Turn 不再是核心 Domain/数据库实体；Step 改为 Reactor 内部 Iteration；Task/ExecutionGraph 只属于 `/plan`；Provider 调用使用 LLMCallID；普通历史只含 completed Message Pairs，中断/失败 Run 通过有界 Previous Work 进入下一新 Run |
 | 2026-08-03 | M6R-00 | DONE | 固定默认纯 ReAct、显式 `/plan` 外层编排、运行时语义与 Typed EventHub 目标 | `design.md` 明确 Plan Controller 通过 `ReActTaskExecutor` 调用同一个 Reactor，并规定 Run/Task/Iteration/LLMCall metadata、fanout 与 channel subscriber adapter 的后续实现边界 |
-| 2026-08-04 | M6R-01～21 | DONE | 完成 Session/Run 语义、独立 Reactor、Per-Think Context、默认/Plan 主链、Typed EventHub 与旧 Engine 删除 | 当前只保留 M6R-22 发布前全链路验收；下一阶段固定为 M8，M7 不进入发布关键路径 |
+| 2026-08-04 | M6R-01～21 | DONE | 完成 Session/Run 语义、独立 Reactor、Per-Think Context、默认/Plan 主链、Typed EventHub 与旧 Engine 删除 | M6R-22 已完成；后续根据工具审计新增 M7 工具链收敛，再进入 M8 发布 |
 | 2026-08-04 | M6R-22 | DONE | 补齐问候、工具失败恢复、新任务覆盖旧 Pending 和成功 Run reason 回归；修正 `iterations_used` JSON；更新架构审计 | 生产架构守卫、`make check`、全仓 race 与 `git diff --check` 全部通过；M6R 完成 |
+| 2026-08-04 | 决策 | 保留结构化探索并新增持续 Process 工具链 | 无成熟 Sandbox 前不采用 Shell-first；M7 交付共享 Workspace 基础、`write_stdin`、Patch/图片/Exposure，删除 `write_file` 与核心 LSP，并将 Multi-Agent 顺延至 M9 |
+| 2026-08-05 | 决策 | 明确结构化探索与 Shell 的稳定分工 | read/list/glob/grep 继续承担免审批、受预算、可审计的高频探索；Shell 只负责 Process 类工作和复杂 fallback；只有成熟 Sandbox、Permission Profile、Evidence 与真实基准全部成立后才复审 Shell-first |
 | 2026-08-04 | M8T-00 | DONE | 根据 `docs/tui.md` 固定 Codex 风格 Rich Inline 目标，补充 Logo、Activity Presenter、Iteration 聚合、Working、Context 与 bounded Viewer 设计 | 发布关键路径调整为 M8T→M8；下一任务为 M8T-01，Multi-Agent 和多 Pane TUI 不阻塞发布 |
 | 2026-08-04 | M8T-01～09 | DOING | 已完成 Logo、workspace metadata、Working/Esc、安全 Action Summary、Typed Tool 展示字段和 Activity Domain；Transcript 与 Iteration 聚合进入收敛 | 当前先完成 M8T-03、M8T-08～09，再进入 Context 状态与 bounded Viewer；不扩大到 alternate screen、mouse tracking 或多 Pane |
 | 2026-08-04 | M8T-01～15 | DONE | 完成响应式终端 Logo、启动卡片、Transcript/Activity Presenter、ContextWindowUpdated、bounded Ctrl+T Viewer、无颜色/Plain 降级与终端兼容矩阵 | 40/100 列真实 PTY、`make check`、全仓 race 和 `git diff --check` 通过；下一阶段为 M8-01 |
@@ -684,8 +739,9 @@ M7 不阻塞 M8 发布。只有 M6R-22 证明单 Agent 主链稳定后，才优�
 | 2026-08-04 | M8T Iteration 边界与成功状态 | DONE | 恢复每轮 Reactor Activity 后的横线 separator；成功 Tool 标题点改为 green；启动信息栏恢复 4 列右 margin；Think 和 Worked 前后补齐一行空白 | 覆盖 success/partial 判定、separator 尾换行、100 列 panel 盒模型、Think batch 换行及 Worked 单独/同批提交间距 |
 | 2026-08-04 | M8T Approval 选择器与完成行留白 | DONE | 默认 TUI Approval 改为三项 ↑/↓ 选择、Enter 确认和 Esc 拒绝；Worked 删除前置换行并建立下一批 user entry 间距规则 | 覆盖默认选项、方向键移动、session allow 决策、Think 尾换行、Worked 批次与下一批输出留白；最终输入区距离由下一条记录继续收敛 |
 | 2026-08-04 | M8T Worked 与 Resume 视觉收敛 | DONE | Worked 删除自身尾换行，由底部活动区保持两行输入距离；下一条 user entry 在前一条为 worked 时补一个换行；`/resume` 改为无边框列表并使用 amber 黄色高亮 | 覆盖 Worked 无前后换行、下一用户消息间隔、Resume 无方框、黄色自适应色、方向键移动和窄宽度截断 |
+| 2026-08-05 | M7-01～M7-20 | DONE | 完成 Workspace 共享基础、Patch Move/冲突诊断、`write_file` 删除、持续 Process/PTY/`write_stdin`、多模态 `view_image`、Tool Exposure、`read_skill`/`revert_run`、MCP Resource/Catalog/目标级授权、Web Search/Fetch 四 Provider 与 `web check`，并删除核心 LSP | `go test ./... -count=1`、`go test -race ./... -count=1`、`make check`、`go mod tidy`、`git diff --check` 全部通过；下一任务为 M8-01 |
 
-## 17. 每次更新模板
+## 18. 每次更新模板
 
 完成或阻塞任务时追加一行：
 
@@ -735,7 +791,7 @@ YYYY-MM-DD | TASK-ID | DONE/BLOCKED | 变更文件 | 测试命令与结果 | 备
 | 2026-07-30 | Agent Engine 重设计 | DONE | `design.md` 改为 Plan-on-Demand + ReActRunner + Verifier + Triggered Reflection + Replan；重排 M2-M4 | PaiCLI 仅作行为参考；吸收 WeKnora ReAct 工程优点；下一任务仍为 M2-01 |
 | 2026-07-30 | Memory System 重设计 | DONE | 初步拆分 Conversation、Context、Memory、Lesson 与 Checkpoint | 后续已被“指令与记忆设计收敛”决策取代，仅保留 Conversation、Context、Run-local Reflection 与 Checkpoint |
 | 2026-07-30 | 指令与记忆设计收敛 | DONE | 删除 Agent mode 设计；以用户/项目/目录级 `AGENTS.md` 取代自动长期记忆；重排 M3 与后续依赖 | 新增 M3-00、M3-12～M3-23 指令/Context 任务；Durable Memory、MemoryRetriever、自动 Lesson 退出当前路线图 |
-| 2026-07-30 | 可用 Coding Agent 路线重排 | DONE | 将 CLI Agent composition、安全、Prompt 和 `AGENTS.md` 前移到 M3；Context/恢复置于 M4；Planning/Replan 置于 M5；Multi-Agent 后移到 M7 | M3 出口改为真实项目可直接执行 `amadeus`；M6/M7 不阻塞可用基线，M8 以稳定单 Agent 为发布基线 |
+| 2026-07-30 | 可用 Coding Agent 路线重排 | SUPERSEDED | 当时将 CLI Agent composition、安全、Prompt 和 `AGENTS.md` 前移到 M3，并把 Multi-Agent 后移到 M7 | 可用 Coding Agent 基线已交付；当前 M7 改为发布前工具链收敛，Multi-Agent 进一步顺延至 M9 |
 | 2026-07-30 | M3-00 | DONE | 删除 `AgentMode`、`agent.mode` 配置补丁、默认值、来源、校验和 explain 输出，并更新示例与回归测试 | 旧 `agent.mode` 被严格 YAML 解码拒绝；配置专项测试与 `make check` 通过；下一任务为 M3-01 |
 | 2026-07-30 | M3-01 | DONE | 新增根级 `--project`、启动 cwd 捕获和目标 Project Resolver | 默认/相对/绝对/空值/getwd 错误、cwd 稳定性与 `AMADEUS_HOME` 隔离测试通过；帮助输出和 `make check` 通过；下一任务为 M3-02 |
 | 2026-07-30 | M3-02 | DONE | 新增 `internal/app/bootstrap` Agent composition root，集中装配选定 Provider、Project、事件、MVP 工具、ReActRunner、Verifier、Reflector 与 DirectEngine | 构造失败边界、单 Provider client、工具快照隔离、聚焦 race 与 `make check` 全部通过；下一任务为 M3-03 |
@@ -799,7 +855,7 @@ YYYY-MM-DD | TASK-ID | DONE/BLOCKED | 变更文件 | 测试命令与结果 | 备
 | 2026-07-31 | M3-26 | DONE | 新增根 README 首版使用文档，覆盖构建、Amadeus home、Provider、预算、AGENTS.md、项目选择、运行、审批、安全、审计、退出码与诊断 | 示例与当前 CLI/config 行为一致；进入 M3 完成审计 |
 | 2026-07-31 | M3 完成审计 | DONE | 按 M3-00～M3-26 逐项核对实现、测试、文档、真实 Provider 行为与命令出口 | M3 无 TODO；真实读/改/测 smoke、Responses/Chat mock E2E、`go test -race ./... -count=1`、`make check`、示例配置、help/no-run 与 `git diff --check` 全部通过；下一任务为 M4-01 |
 | 2026-07-31 | M4-00 | DONE | 重写核心工具、Session/Turn/Run/Checkpoint、SQLite 九表、命令 UX和中断后 Replan 设计；重排 M4-01～M4-25 | `apply_patch` 前置为下一任务；用户级 resume 不再表示 Run 恢复 |
-| 2026-07-31 | Multi-Agent MVP 重设计 | DONE | 将 M7 收敛为主 Agent + 最多两个只读 SubAgent，补充 Task/Result、Placement、失败/取消和延后能力边界 | `/team` 只请求 `prefer_subagents`；不实现并行写、Reviewer Agent、Worktree、递归委派或 Agent 群聊 |
+| 2026-07-31 | Multi-Agent MVP 重设计 | SUPERSEDED | 当时将 M7 收敛为主 Agent + 最多两个只读 SubAgent，补充 Task/Result、Placement、失败/取消和延后能力边界 | 能力边界继续有效，但实现阶段已顺延至 M9；不阻塞 M7 工具链或 M8 发布 |
 | 2026-07-31 | M4-01 | DONE | 新增 `internal/tool/patch` Document/Operation/Hunk/Line Domain 与 Patch v1 解析器 | legacy/v1 header、Add/Update/Delete、上下文/变更约束、UTF-8、预算、重复路径、line/column 错误、专项 race 与 `make check` 通过；下一任务为 M4-02 |
 | 2026-07-31 | M4-02 | DONE | 新增 `apply_patch` 文件执行器，完成全 Patch 预检、PathGuard、hunk 唯一匹配、同目录临时文件和顺序提交 | 原子 Add/Update、权限与换行保留、受控 Delete、冲突零副作用、跨文件 partial metadata、取消、专项 race 与 `make check` 通过；下一任务为 M4-03 |
 | 2026-07-31 | M4-03 | DONE | 将 `apply_patch` 作为第七个核心工具接入 Registry、Policy、Approval、Audit、Tool Result/Evidence 和资源调度 | high-impact 审批、全路径预检、参数 hash 不泄露正文、exclusive 串行屏障、partial Evidence、取消零写入、专项 race 与 `make check` 通过；下一任务为 M4-04 |

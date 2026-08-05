@@ -26,7 +26,6 @@ import (
 	interfacecli "github.com/Godric-W/Amadeus/internal/interface/cli"
 	"github.com/Godric-W/Amadeus/internal/interface/tui"
 	"github.com/Godric-W/Amadeus/internal/llm"
-	"github.com/Godric-W/Amadeus/internal/lsp"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/render"
@@ -547,27 +546,6 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 		}()
 	}
 	postWriteHooks := append([]react.PostExecutionHook(nil), runner.runtime.postWriteHooks...)
-	var lspClient lsp.Client
-	if configured.LSP.Enabled {
-		processClient, clientErr := lsp.NewProcessClient(lsp.ProcessOptions{
-			Command: configured.LSP.Command, Args: append([]string(nil), configured.LSP.Args...),
-			Root: invocation.Project, Timeout: configured.LSP.Timeout,
-		})
-		if clientErr != nil {
-			return clientErr
-		}
-		writeHook, hookErr := lsp.NewWriteHookWithOptions(processClient, invocation.Project, eventHub, lsp.WriteHookOptions{Extensions: configured.LSP.Extensions})
-		if hookErr != nil {
-			return hookErr
-		}
-		lspClient = processClient
-		postWriteHooks = append(postWriteHooks, writeHook)
-		defer func() {
-			if closeErr := lspClient.Close(context.WithoutCancel(ctx)); closeErr != nil {
-				runErr = errors.Join(runErr, fmt.Errorf("close LSP client: %w", closeErr))
-			}
-		}()
-	}
 
 	options := bootstrap.AgentOptions{
 		SnapshotRunID:    string(started.Records.Run.ID),
@@ -587,6 +565,7 @@ func (runner *codingAgentCommand) runOnce(ctx context.Context, invocation agentI
 	if err != nil {
 		return err
 	}
+	defer agent.Processes.CloseOwner(string(started.Records.Run.ID))
 	defer func() {
 		if closeErr := agent.Close(); closeErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("close Coding Agent MCP clients: %w", closeErr))

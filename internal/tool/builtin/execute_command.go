@@ -1,49 +1,53 @@
 package builtin
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
-	"sync"
 	"time"
-	"unicode/utf8"
 
+	"github.com/Godric-W/Amadeus/internal/agent/event"
+	processdomain "github.com/Godric-W/Amadeus/internal/process"
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 var ErrCommandTimeout = errors.New("command timed out")
 
-type CommandExitError struct {
-	ExitCode int
-}
+type CommandExitError struct{ ExitCode int }
 
 func (err *CommandExitError) Error() string {
 	return fmt.Sprintf("command exited with code %d", err.ExitCode)
 }
 
 type ExecuteCommandOptions struct {
-	Shell          string
-	DefaultTimeout time.Duration
-	MaxTimeout     time.Duration
-	MaxOutputBytes int64
-	MaxOutputLines int
+	Shell           string
+	DefaultTimeout  time.Duration
+	MaxTimeout      time.Duration
+	DefaultYield    time.Duration
+	MaxYield        time.Duration
+	MaxOutputBytes  int64
+	MaxOutputLines  int
+	MaxOutputTokens int
+	ProcessManager  *processdomain.Manager
 }
 
 type ExecuteCommand struct {
 	root    project.Root
 	guard   *project.PathGuard
 	options ExecuteCommandOptions
+	manager *processdomain.Manager
 }
 
 type executeCommandArguments struct {
-	Command   string `json:"command"`
-	CWD       string `json:"cwd,omitempty"`
-	TimeoutMS int64  `json:"timeout_ms,omitempty"`
+	Command         string `json:"command"`
+	CWD             string `json:"cwd,omitempty"`
+	TimeoutMS       int64  `json:"timeout_ms,omitempty"`
+	YieldTimeMS     int64  `json:"yield_time_ms,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+	TTY             bool   `json:"tty,omitempty"`
 }
 
 func NewExecuteCommand(root project.Root, options ExecuteCommandOptions) (*ExecuteCommand, error) {
@@ -56,18 +60,35 @@ func NewExecuteCommand(root project.Root, options ExecuteCommandOptions) (*Execu
 	if options.DefaultTimeout <= 0 || options.MaxTimeout <= 0 || options.DefaultTimeout > options.MaxTimeout {
 		return nil, errors.New("execute_command timeout limits are invalid")
 	}
+	if options.DefaultYield <= 0 {
+		options.DefaultYield = 10 * time.Second
+	}
+	if options.MaxYield <= 0 {
+		options.MaxYield = 30 * time.Second
+	}
+	if options.DefaultYield > options.MaxYield {
+		return nil, errors.New("execute_command yield limits are invalid")
+	}
 	if options.MaxOutputBytes <= 0 || options.MaxOutputLines <= 0 {
 		return nil, errors.New("execute_command output limits must be greater than zero")
+	}
+	if options.MaxOutputTokens <= 0 {
+		options.MaxOutputTokens = int(options.MaxOutputBytes / 4)
 	}
 	guard, err := project.NewPathGuard(root)
 	if err != nil {
 		return nil, err
 	}
-	return &ExecuteCommand{root: root, guard: guard, options: options}, nil
+	manager := options.ProcessManager
+	if manager == nil {
+		manager = processdomain.NewManager()
+	}
+	return &ExecuteCommand{root: root, guard: guard, options: options, manager: manager}, nil
 }
 
-func (executeCommand *ExecuteCommand) Spec() tool.Spec {
-	return executeCommandSpec()
+func (executeCommand *ExecuteCommand) Spec() tool.Spec { return executeCommandSpec() }
+func (executeCommand *ExecuteCommand) ProcessManager() *processdomain.Manager {
+	return executeCommand.manager
 }
 
 func (executeCommand *ExecuteCommand) Execute(ctx context.Context, input json.RawMessage) (tool.Result, error) {
@@ -78,124 +99,78 @@ func (executeCommand *ExecuteCommand) Execute(ctx context.Context, input json.Ra
 	if strings.TrimSpace(arguments.Command) == "" {
 		return tool.Result{}, errors.New("execute_command command is empty")
 	}
-	if arguments.TimeoutMS < 0 {
-		return tool.Result{}, errors.New("execute_command timeout cannot be negative")
+	if arguments.TimeoutMS < 0 || arguments.YieldTimeMS < 0 || arguments.MaxOutputTokens < 0 {
+		return tool.Result{}, errors.New("execute_command timeout, yield and output limits cannot be negative")
 	}
-	relativeCWD := arguments.CWD
-	if strings.TrimSpace(relativeCWD) == "" {
+	relativeCWD := strings.TrimSpace(arguments.CWD)
+	if relativeCWD == "" {
 		relativeCWD = "."
 	}
 	workingDirectory, err := executeCommand.guard.ResolveExisting(relativeCWD, project.PathDirectory)
 	if err != nil {
 		return tool.Result{}, err
 	}
-	timeout := executeCommand.options.DefaultTimeout
-	if arguments.TimeoutMS > 0 {
-		timeout = time.Duration(arguments.TimeoutMS) * time.Millisecond
-		if timeout > executeCommand.options.MaxTimeout {
-			timeout = executeCommand.options.MaxTimeout
-		}
+	timeout := durationFromMilliseconds(arguments.TimeoutMS, executeCommand.options.DefaultTimeout, executeCommand.options.MaxTimeout)
+	yield := durationFromMilliseconds(arguments.YieldTimeMS, executeCommand.options.DefaultYield, executeCommand.options.MaxYield)
+	maxTokens := arguments.MaxOutputTokens
+	if maxTokens == 0 || maxTokens > executeCommand.options.MaxOutputTokens {
+		maxTokens = executeCommand.options.MaxOutputTokens
 	}
-	if err := ctx.Err(); err != nil {
+	maxBytes := min(int(executeCommand.options.MaxOutputBytes), maxTokens*4)
+	owner := event.MetadataFromContext(ctx).RunID
+	if owner == "" {
+		owner = "standalone"
+	}
+	startedAt := time.Now()
+	processID, err := executeCommand.manager.Start(owner, processdomain.Command{
+		Shell: executeCommand.options.Shell, Command: arguments.Command, Directory: workingDirectory,
+		Timeout: timeout, TTY: arguments.TTY, MaxOutputBytes: maxBytes,
+	}, configureCommandProcess)
+	if err != nil {
+		return tool.Result{}, fmt.Errorf("start execute_command: %w", err)
+	}
+	snapshot, err := executeCommand.manager.SnapshotContext(ctx, processID, owner, yield)
+	if err != nil {
+		_ = executeCommand.manager.Cancel(processID, owner)
 		return tool.Result{}, err
 	}
-	commandCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	command := exec.CommandContext(commandCtx, executeCommand.options.Shell, "-c", arguments.Command)
-	command.Dir = workingDirectory
-	configureCommandProcess(command)
-	output := newBoundedOutput(executeCommand.options.MaxOutputBytes, executeCommand.options.MaxOutputLines)
-	command.Stdout = output
-	command.Stderr = output
-	startedAt := time.Now()
-	runErr := command.Run()
-	duration := time.Since(startedAt)
-	text, totalBytes, totalLines, truncated := output.snapshot()
-	exitCode := 0
-	if command.ProcessState != nil {
-		exitCode = command.ProcessState.ExitCode()
-	} else if runErr != nil {
-		exitCode = -1
+	return commandSnapshotResult("execute_command", relativeCWD, snapshot, time.Since(startedAt))
+}
+
+func durationFromMilliseconds(value int64, fallback, maximum time.Duration) time.Duration {
+	if value <= 0 {
+		return fallback
 	}
-	timedOut := commandCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil
-	cancelled := ctx.Err() != nil
+	result := time.Duration(value) * time.Millisecond
+	if result > maximum {
+		return maximum
+	}
+	return result
+}
+
+func commandSnapshotResult(toolName, cwd string, snapshot processdomain.Snapshot, duration time.Duration) (tool.Result, error) {
 	result := tool.Result{
-		ToolName: "execute_command", Text: text, Partial: truncated || timedOut || cancelled,
+		ToolName: toolName, Text: snapshot.Output,
+		Partial: snapshot.OutputTruncated || snapshot.State == processdomain.StateRunning || snapshot.State == processdomain.StateTimedOut || snapshot.State == processdomain.StateCancelled,
 		Metadata: map[string]any{
-			"cwd": relativeCWD, "exit_code": exitCode, "duration_ms": duration.Milliseconds(),
-			"timed_out": timedOut, "cancelled": cancelled, "output_bytes": totalBytes,
-			"output_lines": totalLines, "output_truncated": truncated,
+			"process_id": string(snapshot.ID), "status": string(snapshot.State), "cwd": cwd, "exit_code": snapshot.ExitCode,
+			"duration_ms": duration.Milliseconds(), "timed_out": snapshot.State == processdomain.StateTimedOut,
+			"cancelled": snapshot.State == processdomain.StateCancelled, "output_bytes": snapshot.TotalOutputBytes,
+			"output_truncated": snapshot.OutputTruncated,
 		},
 	}
-	if timedOut {
-		return result, fmt.Errorf("%w after %s", ErrCommandTimeout, timeout)
+	switch snapshot.State {
+	case processdomain.StateRunning, processdomain.StateCompleted:
+		return result, nil
+	case processdomain.StateTimedOut:
+		return result, ErrCommandTimeout
+	case processdomain.StateCancelled:
+		return result, context.Canceled
+	case processdomain.StateFailed:
+		return result, &CommandExitError{ExitCode: snapshot.ExitCode}
+	default:
+		return result, fmt.Errorf("process has unknown state %q", snapshot.State)
 	}
-	if cancelled {
-		return result, ctx.Err()
-	}
-	if runErr != nil {
-		var exitError *exec.ExitError
-		if errors.As(runErr, &exitError) {
-			return result, &CommandExitError{ExitCode: exitCode}
-		}
-		return result, fmt.Errorf("start execute_command: %w", runErr)
-	}
-	return result, nil
-}
-
-type boundedOutput struct {
-	mutex         sync.Mutex
-	buffer        bytes.Buffer
-	maxBytes      int64
-	maxLines      int
-	totalBytes    int64
-	totalNewlines int64
-	lastByte      byte
-	hasBytes      bool
-	retainedLines int
-	truncated     bool
-}
-
-func newBoundedOutput(maxBytes int64, maxLines int) *boundedOutput {
-	return &boundedOutput{maxBytes: maxBytes, maxLines: maxLines}
-}
-
-func (output *boundedOutput) Write(content []byte) (int, error) {
-	output.mutex.Lock()
-	defer output.mutex.Unlock()
-	originalLength := len(content)
-	output.totalBytes += int64(originalLength)
-	for _, current := range content {
-		output.hasBytes = true
-		output.lastByte = current
-		if current == '\n' {
-			output.totalNewlines++
-		}
-		if int64(output.buffer.Len()) >= output.maxBytes || output.retainedLines >= output.maxLines {
-			output.truncated = true
-			continue
-		}
-		_ = output.buffer.WriteByte(current)
-		if current == '\n' {
-			output.retainedLines++
-		}
-	}
-	return originalLength, nil
-}
-
-func (output *boundedOutput) snapshot() (string, int64, int64, bool) {
-	output.mutex.Lock()
-	defer output.mutex.Unlock()
-	totalLines := output.totalNewlines
-	if output.hasBytes && output.lastByte != '\n' {
-		totalLines++
-	}
-	content := output.buffer.Bytes()
-	text := string(content)
-	if !utf8.Valid(content) {
-		text = strings.ToValidUTF8(text, "�")
-	}
-	return text, output.totalBytes, totalLines, output.truncated
 }
 
 var _ tool.Tool = (*ExecuteCommand)(nil)

@@ -18,7 +18,9 @@ const (
 	maxAgentTokens     = int64(100_000_000)
 	maxAgentDuration   = 24 * time.Hour
 	maxParallelTools   = 64
-	maxLSPTimeout      = 2 * time.Minute
+	maxWebTimeout      = 2 * time.Minute
+	maxWebBytes        = int64(16 << 20)
+	maxWebResults      = 10
 )
 
 type ValidationIssue struct {
@@ -75,7 +77,7 @@ func Validate(configured Config) error {
 	}
 
 	validateAgent(configured.Agent, addIssue)
-	validateLSP(configured.LSP, addIssue)
+	validateWeb(configured.Web, addIssue)
 	validateLogging(configured.Logging, addIssue)
 
 	if len(issues) == 0 {
@@ -85,25 +87,40 @@ func Validate(configured Config) error {
 	return &ValidationError{Issues: issues}
 }
 
-func validateLSP(configured LSPConfig, addIssue func(string, string)) {
-	if configured.Timeout <= 0 || configured.Timeout > maxLSPTimeout {
-		addIssue("lsp.timeout", fmt.Sprintf("must be greater than 0 and at most %s", maxLSPTimeout))
+func validateWeb(configured WebConfig, addIssue func(string, string)) {
+	if configured.Fetch.Timeout <= 0 || configured.Fetch.Timeout > maxWebTimeout {
+		addIssue("web.fetch.timeout", fmt.Sprintf("must be greater than 0 and at most %s", maxWebTimeout))
 	}
-	if configured.Enabled && strings.TrimSpace(configured.Command) == "" {
-		addIssue("lsp.command", "must not be empty when LSP is enabled")
+	if configured.Fetch.MaxBytes <= 0 || configured.Fetch.MaxBytes > maxWebBytes {
+		addIssue("web.fetch.max_bytes", fmt.Sprintf("must be greater than 0 and at most %d", maxWebBytes))
 	}
-	seen := make(map[string]struct{}, len(configured.Extensions))
-	for index, extension := range configured.Extensions {
-		extension = strings.TrimSpace(extension)
-		path := fmt.Sprintf("lsp.extensions[%d]", index)
-		if len(extension) < 2 || extension[0] != '.' || strings.ContainsAny(extension, `/\\`) {
-			addIssue(path, "must be a file extension such as .go")
-			continue
+	if configured.Fetch.MaxRedirects < 0 || configured.Fetch.MaxRedirects > 10 {
+		addIssue("web.fetch.max_redirects", "must be between 0 and 10")
+	}
+	if configured.Search.Timeout <= 0 || configured.Search.Timeout > maxWebTimeout {
+		addIssue("web.search.timeout", fmt.Sprintf("must be greater than 0 and at most %s", maxWebTimeout))
+	}
+	if configured.Search.MaxResults <= 0 || configured.Search.MaxResults > maxWebResults {
+		addIssue("web.search.max_results", fmt.Sprintf("must be greater than 0 and at most %d", maxWebResults))
+	}
+	if !configured.Search.Enabled {
+		return
+	}
+	switch configured.Search.Provider {
+	case WebSearchDuckDuckGo:
+	case WebSearchTavily, WebSearchBrave:
+		if strings.TrimSpace(configured.Search.APIKey) == "" {
+			addIssue("web.search.api_key", "must not be empty for the selected provider")
 		}
-		if _, exists := seen[extension]; exists {
-			addIssue(path, "must not duplicate another extension")
+	case WebSearchSearXNG:
+		if strings.TrimSpace(configured.Search.BaseURL) == "" {
+			addIssue("web.search.base_url", "must not be empty for searxng")
 		}
-		seen[extension] = struct{}{}
+	default:
+		addIssue("web.search.provider", fmt.Sprintf("must be %q, %q, %q, or %q", WebSearchDuckDuckGo, WebSearchTavily, WebSearchSearXNG, WebSearchBrave))
+	}
+	if strings.TrimSpace(configured.Search.BaseURL) != "" {
+		validateBaseURL("web.search.base_url", configured.Search.BaseURL, addIssue)
 	}
 }
 

@@ -100,40 +100,43 @@ func TestValidateRejectsAgentBudgetAboveLimits(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsInvalidLSPConfig(t *testing.T) {
+func TestValidateRejectsInvalidWebConfig(t *testing.T) {
 	tests := []struct {
 		name       string
 		configure  func(*Config)
 		expectPath string
 	}{
 		{
-			name: "enabled without command",
+			name: "brave without key",
 			configure: func(configured *Config) {
-				configured.LSP.Enabled = true
-				configured.LSP.Command = ""
+				configured.Web.Search.Enabled = true
+				configured.Web.Search.Provider = WebSearchBrave
+				configured.Web.Search.APIKey = ""
 			},
-			expectPath: "lsp.command",
+			expectPath: "web.search.api_key",
 		},
 		{
-			name: "invalid extension",
+			name: "searxng without URL",
 			configure: func(configured *Config) {
-				configured.LSP.Extensions = []string{"go"}
+				configured.Web.Search.Enabled = true
+				configured.Web.Search.Provider = WebSearchSearXNG
+				configured.Web.Search.BaseURL = ""
 			},
-			expectPath: "lsp.extensions[0]",
+			expectPath: "web.search.base_url",
 		},
 		{
-			name: "duplicate extension",
+			name: "invalid result limit",
 			configure: func(configured *Config) {
-				configured.LSP.Extensions = []string{".go", ".go"}
+				configured.Web.Search.MaxResults = maxWebResults + 1
 			},
-			expectPath: "lsp.extensions[1]",
+			expectPath: "web.search.max_results",
 		},
 		{
-			name: "invalid timeout",
+			name: "invalid fetch timeout",
 			configure: func(configured *Config) {
-				configured.LSP.Timeout = maxLSPTimeout + time.Second
+				configured.Web.Fetch.Timeout = maxWebTimeout + time.Second
 			},
-			expectPath: "lsp.timeout",
+			expectPath: "web.fetch.timeout",
 		},
 	}
 
@@ -144,7 +147,7 @@ func TestValidateRejectsInvalidLSPConfig(t *testing.T) {
 
 			err := Validate(configured)
 			if err == nil {
-				t.Fatal("expected invalid LSP config to fail")
+				t.Fatal("expected invalid Web config to fail")
 			}
 			if !strings.Contains(err.Error(), test.expectPath+":") {
 				t.Fatalf("validation error does not contain %q: %v", test.expectPath, err)

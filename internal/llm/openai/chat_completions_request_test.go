@@ -173,6 +173,55 @@ func TestChatCompletionsRequestSerializesStandardToolProtocol(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsRequestSerializesUserAndSyntheticToolImages(t *testing.T) {
+	var requestBody map[string]any
+	provider := config.Default().Providers[config.DefaultProviderName]
+	provider.APIKey = "test-secret"
+	provider.BaseURL = "https://chat.example.invalid/v1"
+	provider.MaxRetries = 0
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(request.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode Chat image request: %v", err)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"chat_images","object":"chat.completion","created":0,"model":"test-model","choices":[]}`))}, nil
+	})}
+	client, err := newSDKClient(provider, httpClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	domainRequest := llm.Request{
+		Model: "test-model", Temperature: 0.2, MaxOutputTokens: 100,
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: "inspect", Parts: []llm.ContentPart{llm.ImagePart("image/png", "YQ==")}},
+			llm.ToolResultMessageWithParts("call_image", "tool image", llm.ImagePart("image/jpeg", "Yg==")),
+		},
+	}
+	params, err := newChatCompletionsRequest(domainRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Chat.Completions.New(context.Background(), params); err != nil {
+		t.Fatal(err)
+	}
+	messages := requestBody["messages"].([]any)
+	if len(messages) != 3 {
+		t.Fatalf("unexpected Chat image message count: %#v", messages)
+	}
+	userContent := messages[0].(map[string]any)["content"].([]any)
+	if len(userContent) != 2 || userContent[1].(map[string]any)["type"] != "image_url" || userContent[1].(map[string]any)["image_url"].(map[string]any)["url"] != "data:image/png;base64,YQ==" {
+		t.Fatalf("unexpected Chat user image content: %#v", userContent)
+	}
+	toolMessage := messages[1].(map[string]any)
+	if toolMessage["role"] != "tool" || toolMessage["content"] != "tool image" {
+		t.Fatalf("unexpected Chat tool text message: %#v", toolMessage)
+	}
+	synthetic := messages[2].(map[string]any)
+	syntheticContent := synthetic["content"].([]any)
+	if synthetic["role"] != "user" || len(syntheticContent) != 2 || syntheticContent[1].(map[string]any)["image_url"].(map[string]any)["url"] != "data:image/jpeg;base64,Yg==" {
+		t.Fatalf("unexpected synthetic Chat image message: %#v", synthetic)
+	}
+}
+
 func TestChatCompletionsRequestRejectsUnsupportedInput(t *testing.T) {
 	tests := []struct {
 		name       string

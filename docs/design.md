@@ -2,7 +2,7 @@
 
 > 状态：Draft v0.4
 > 创建日期：2026-07-29
-> 最近修订：2026-08-03
+> 最近修订：2026-08-04
 > 输入依据：`docs/thought.md`、`../paicli-main` 当前代码、WeKnora ReAct 实现研究
 > 目标语言：Go
 > 产品形态：本地 Agent CLI，后续可复用同一运行时提供 Runtime API
@@ -61,6 +61,7 @@ Amadeus 的目标是实现面向真实软件工程任务的通用 Agent CLI。`.
 - 通过配置文件切换 `base_url`、`api_key`、`model` 和 API 模式。
 - 默认交付独立纯 ReAct 执行内核；用户显式输入 `/plan` 时，由外层 Plan-and-Execute 编排器拆分任务并复用同一个 Reactor，Multi-Agent 作为后续 placement 增强。
 - 保持工具调用、流式输出、上下文取消、HITL 和审计能力。
+- 面向多语言、多构建系统的软件项目，不把 Go、`gopls` 或任何单一语言工具链设为核心前提。
 - 核心运行时不依赖具体 UI，可被 CLI、TUI 和 HTTP API 复用。
 
 ### 3.2 工程目标
@@ -102,7 +103,7 @@ CLI / TUI / Runtime API
 Application Service
   │
   ├── Agent Engine ──────── LLM Adapter ───── OpenAI/OpenAI-compatible endpoint
-  ├── Tool Executor ─────── Filesystem / Shell / Web / MCP / LSP / Browser
+  ├── Tool Executor ─────── Filesystem / Shell / Web / MCP / Browser
   ├── Context Manager ───── Prompt / Instructions / Conversation / Skills
   ├── Safety Pipeline ───── PathGuard / CommandGuard / HITL / Audit
   └── Typed EventHub ────── Renderer / API stream / Audit / Trace log
@@ -172,7 +173,7 @@ Application Service
 - `internal/config`：配置文件、环境变量和 CLI override 合并。
 - `internal/logging`：结构化日志初始化、级别过滤和敏感属性脱敏。
 - `internal/store`：SQLite/JSONL/文件存储。
-- `internal/mcp`、`internal/web`、`internal/browser`、`internal/lsp`。
+- `internal/mcp`、`internal/websearch`、`internal/webfetch`、`internal/browser`。
 - `internal/skill`、`internal/snapshot`。
 - `internal/policy`：路径、命令、审批和审计实现。
 
@@ -215,10 +216,10 @@ amadeus/
 │   ├── snapshot/
 │   ├── runtimeapi/
 │   ├── render/
-│   ├── web/
+│   ├── websearch/
+│   ├── webfetch/
 │   ├── browser/
 │   ├── image/
-│   ├── lsp/
 │   └── store/
 ├── prompts/
 ├── skills/
@@ -1001,6 +1002,23 @@ agent:
   max_duration: 30m
   max_parallel_tools: 4
 
+web_search:
+  enabled: false
+  provider: duckduckgo # duckduckgo | tavily | searxng | brave
+  timeout: 15s
+  max_results: 5
+  providers:
+    duckduckgo:
+      proxy_url: ""
+    tavily:
+      api_key: ${TAVILY_API_KEY}
+      base_url: https://api.tavily.com
+    searxng:
+      base_url: https://search.example.com
+    brave:
+      api_key: ${BRAVE_SEARCH_API_KEY}
+      base_url: https://api.search.brave.com
+
 logging:
   level: info
   trace_llm: false
@@ -1011,6 +1029,8 @@ logging:
 `agent` 不提供持久 `mode` 配置。普通输入默认使用 ReAct；`/plan <task>` 只为当前 Run 显式选择 Plan→Execute→Replan。该 slash command 是一次性执行策略选择，不是计划审核，也不会改变后续 Run 的默认行为。
 
 配置文件不提供 `approval.enabled`、`approval.default` 或工具级 allow/deny 规则。审批属于内置安全机制，不能通过 YAML 关闭；TTY 中按固定规则询问，非 TTY 对需要审批的调用 fail closed。
+
+`web_search` 与 `providers` 中的 LLM 配置是两个独立能力域：用户可以用 DeepSeek/Qwen/GLM 生成推理，同时使用 Tavily、SearXNG、Brave 或 DuckDuckGo 搜索。`web_search.enabled=false`、Provider 不存在或必要凭证缺失时，不向模型注册 `web_search` Tool，避免模型反复调用必然失败的能力。搜索凭证同样参与环境变量展开、来源追踪、权限警告和统一脱敏，但不复用 `AMADEUS_API_KEY`。
 
 `providers.<name>.max_output_tokens` 限制单次模型请求可生成的 token；`agent.max_input_tokens` 与 `agent.max_output_tokens` 分别限制整次 Run 的累计输入和输出 token。`agent.max_iterations`、`agent.max_tool_calls`、`agent.max_duration` 控制总执行预算，`agent.max_parallel_tools` 只控制同一批可并行工具的并发度，不会扩大工具调用总额度。首版默认值保持保守且显式：30 iterations、120 tool calls、1,000,000 input tokens、245,760 output tokens、30 分钟和 4 个并行工具。
 
@@ -1116,49 +1136,73 @@ M3-03 只提供不可变资产、稳定 ID、固定层顺序和嵌入完整性�
 
 ### 14.1 设计原则
 
-Amadeus 采用“结构化高频工具 + 通用 Shell fallback”，不因为 Shell 可以运行 `cat`、`find`、`grep` 或重定向写文件，就删除专用文件工具：
+Amadeus 采用“结构化高频工具 + 通用 Shell fallback”，不因为 Shell 可以运行 `cat`、`find`、`grep` 或重定向写文件，就删除专用文件工具。Codex 的 Shell-first 依赖成熟的 Sandbox、Permission Profile、PTY、持续 Process、权限升级和跨平台隔离；Amadeus 当前明确采用“只读结构化工具直接执行，写入/命令请求审批”的最小安全模型。在没有同等级 Sandbox 前只删除模型可见的读工具，会把几个简单 Tool 的维护成本转化为 Shell 副作用识别、频繁审批和宿主机安全问题：
 
 - 结构化工具是模型读取、搜索和修改项目的主路径，提供严格 schema、Project Root/PathGuard、稳定输出、预算元数据、Evidence 和跨平台语义。
 - `execute_command` 是构建、测试、Git、格式化、代码生成、项目脚本和未被专用工具覆盖操作的通用逃生舱，不作为绕过文件工具、安全策略或审批的捷径。
 - 工具数量保持克制；只有高频操作确实需要更稳定输出、更细权限或更强领域语义时，才从 Shell 提升为专用工具。
 - Tool 名称表达能力而非具体命令行程序；内部可以使用 ripgrep 或平台能力加速，但 fallback 必须保持同一领域结果。
 - 结构化 Tool Result 必须显式报告来源、截断、partial、资源使用和副作用，不能把普通 stdout 当作完整事实。
+- 维护成本通过共享 `WorkspaceReader/IgnoreMatcher/FileEnumerator/TextScanner/OutputLimiter` 降低，而不是把所有读取退化为 Shell；四个模型可见 Exploration Tool 应保持薄 Adapter。
+- Shell-first 只作为未来 Sandbox 成熟后的整体架构候选，不进行“删掉读工具但继续直接在宿主机执行 Shell”的半迁移。
+
+模型选择工具时遵循以下稳定分工，而不是因为能力重叠就随机二选一：
+
+| 需求 | 首选能力 | Shell 的位置 | 原因 |
+|---|---|---|---|
+| 读取已知文件片段 | `read_file` | 仅处理专用工具不支持的格式或组合流水线 | 一基行号、截断和 Context 预算稳定，常规读取无需命令审批 |
+| 浏览目录与发现文件 | `list_dir` / `glob_files` | 复杂 `find`、项目专用脚本作为 fallback | PathGuard、ignore、排序和 partial 语义跨平台一致 |
+| 搜索代码或文本 | `grep_code` | `rg` 高级表达式、管道组合或一次性诊断作为 fallback | 返回稳定 file/line/column，而不是让模型解析任意 stdout |
+| 修改项目文件 | `apply_patch` | 不使用 `sed -i`、重定向或脚本绕过 Patch/Approval | 变更可预检、可审计、可生成 Evidence，并支持冲突诊断 |
+| 构建、测试、Git、格式化、项目脚本 | `execute_command` + `write_stdin` | 主能力 | 这些操作本身属于 Process，而不是文件读取协议 |
+
+未来只有同时满足以下条件，才重新评估是否收缩 `list_dir/glob_files/grep_code` 并转向 Shell-first：
+
+1. Shell 已运行在真实、可验证且跨平台的 Sandbox 中，而不是直接继承 Amadeus 进程的宿主机权限；
+2. Permission Profile 能区分只读探索、workspace write、越界 write、网络和进程控制，并只在权限升级时询问用户；
+3. PTY、后台 Process、取消、超时、孤儿清理和输出预算已经稳定；
+4. Shell 输出可以生成与结构化工具等价的 Evidence、来源、截断和审计信息；
+5. 真实基准证明缩小 Tool Set 能提高模型成功率，而不是只减少少量 Go Adapter 代码。
+
+即使未来采用 Shell-first，`apply_patch`、`view_image` 和必要的交互/扩展 gateway 仍保留专用语义；是否删除某个探索工具必须逐项用成功率、安全性和跨平台结果验证，不能一次性清空。
 
 ### 14.2 内置工具分层
 
-首个稳定工具面分为三组：
+目标稳定核心工具面分为三组：
 
 ```text
 Exploration
 ├── read_file
 ├── list_dir
 ├── glob_files
-└── grep_code
+├── grep_code
+└── view_image          # 仅模型支持图片时注册
 
 Mutation
-├── apply_patch
-└── write_file
+└── apply_patch
 
 Execution
-└── execute_command
+├── execute_command
+└── write_stdin
 ```
 
-交互和策略能力不强制伪装成 Provider Tool：需要用户补充信息时，Reactor 以 `blocked` 终止并给出明确问题；`request_approval` 由 Tool Pipeline 在副作用前调用 Approval Port。未来的 LSP、Web、MCP、Snapshot/Revert、Browser 和 SubAgent 作为扩展能力加入；不恢复自动长期 Memory/remember/recall 工具。
+`write_file` 的迁移已经完成：`apply_patch` 覆盖 create/update/delete/move、整文件替换和稳定冲突诊断，Provider Prompt、E2E、Registry 与生产实现均不再包含 `write_file`。条件工具包括 `revert_run`、`read_skill`、`web_search/web_fetch`、MCP gateway 和未来 SubAgent；只有能力存在且配置有效时才暴露。交互和策略能力不强制伪装成 Provider Tool：`request_approval` 由 Tool Pipeline 调用 Approval Port；`request_user_input` 只有在后续证明“Run 内等待用户”明显优于 blocked 后新 Run 时再立项。LSP 不进入核心 Tool/Hook 基线。
 
 ### 14.3 探索工具
 
-- `read_file`：读取 Project Root 内 UTF-8 regular file，支持 offset/limit、总行数、字节数、partial 和稳定路径元数据；读取正文优先于 Shell `cat/head/sed`。
-- `list_dir`：稳定列出目录项，提供类型、隐藏项和 entry budget 语义；优先于仅为查看目录而调用 `ls`。
-- `glob_files`：按稳定 project-relative 路径发现文件，统一 ignore、symlink 和结果预算；优先于 `find` 或 Shell glob。
-- `grep_code`：按文件/行号返回有界文本匹配，统一 literal/regex/case/context 和 engine 元数据；优先于直接运行 `grep/rg`。
+- `read_file`：按一基行号局部读取 Project Root 内 UTF-8 regular file；大文件不能因为总大小超限而阻止小范围读取。输出带稳定 `L<line>:` 前缀、选区/总行数、下一起点、超长行截断和 byte/token budget。
+- `list_dir`：稳定列出一层目录，提供 file/dir/symlink、大小、hidden、entry budget 和截断语义；深层发现继续交给 `glob_files`，不新增重叠的 `tree` Tool。
+- `glob_files`：支持 `path + pattern`，优先通过 `rg --files` 获得 `.gitignore/.ignore` 语义，无 `rg` 时使用共享 IgnoreMatcher 的纯 Go fallback；两条 Backend 返回相同 project-relative 路径、排序和 partial metadata。
+- `grep_code`：优先直接消费 `rg` 的结构化或稳定输出获得文件、行、列、上下文和匹配文本，不再先 `--files-with-matches` 后重新读取全部候选文件；支持 path/glob/type 过滤并保留纯 Go fallback。
+- `view_image`：只读取 Project Root 内受支持的 PNG/JPEG/WebP/静态 GIF，校验格式、大小和尺寸后返回真正的多模态 Content Part；必须先扩展 `llm.Message` 与 Responses/Chat Adapter，不能把 base64 图片包装成普通文本 Tool Result。
 
-这些工具与 Shell 有意重叠。区别不在“是否能完成”，而在专用工具可以严格限制读取范围、避免启动子进程、提供可验证 metadata，并直接进入 Context Budget、Evidence 和 Previous Work 摘要。
+这些工具与 Shell 有意重叠。区别不在“是否能完成”，而在专用工具可以严格限制读取范围、免去常规探索审批、提供可验证 metadata，并直接进入 Context Budget、Evidence 和 Previous Work 摘要。底层是否调用 ripgrep 是实现细节，模型不需要知道或拼接平台相关命令。
 
 ### 14.4 修改工具
 
-`apply_patch` 是修改已有文件的默认工具，并支持受控的 create/update/delete operation。输入采用可版本化、确定性解析的 Patch Document；每个 update hunk 必须携带足够上下文并在当前文件唯一匹配，旧内容不匹配时返回冲突，不进行猜测式替换。执行前解析并预检整个 Patch，所有路径都必须通过 PathGuard；每个 create/update 使用同目录临时文件、同步必要内容并原子 rename，delete 只允许 regular file。跨文件中途失败必须返回明确 partial/已应用 operation，不得伪装成原子成功，Snapshot 能力按 Run/Snapshot ID 提供恢复。
+`apply_patch` 是唯一目标文件修改工具，并支持受控的 create/update/delete/move operation。JSON Function Tool 外壳继续只接收 `patch` 字符串，以兼容 Responses、Chat Completions、DeepSeek、Qwen 和 GLM；内部行协议对齐模型熟悉的 Codex Patch 语义，不依赖 OpenAI-only Freeform Grammar Tool。每个 update hunk 必须携带足够上下文并在当前文件唯一匹配；匹配只允许 exact → CRLF/LF 归一化 → 行尾空白归一化三层保守降级，仍不唯一时明确失败，不进行宽松猜测式替换。执行前解析并预检整个 Patch，所有源/目标路径都必须通过 PathGuard；跨文件中途失败必须返回明确 partial/已应用 operation，不得伪装成原子成功。
 
-M4-01 将 Patch Document v1 固定为 UTF-8 行协议。规范头为 `*** Begin Patch v1`，同时接受 `*** Begin Patch` 作为 v1 兼容入口；未知版本明确拒绝。Add 正文行使用 `+`，Delete 不允许正文，Update 至少包含一个以 `@@` 开始的 hunk，hunk 行分别以空格、`+`、`-` 表示 context/add/delete，并且必须同时包含旧内容和真实变更。单文档禁止对同一路径声明多个 operation，解析错误稳定包含 line/column；默认限制 1 MiB、128 operations、1024 hunks 和 20000 行。
+M4-01 将 Patch Document v1 固定为 UTF-8 行协议。历史规范头为 `*** Begin Patch v1`；目标 Prompt 和 Tool description 统一生成模型更熟悉的 `*** Begin Patch`，解析器继续接受 v1 兼容入口并拒绝未知版本。Add 正文行使用 `+`，Delete 不允许正文，Update 至少包含一个以 `@@` 开始的 hunk，hunk 行分别以空格、`+`、`-` 表示 context/add/delete，并且必须同时包含旧内容和真实变更。目标协议增加 `*** Move to:`，源路径与目标路径都进入预检、审批摘要和原子提交。解析错误除 line/column 外还应提供 error kind、path、hunk、期望上下文和有界 candidate lines，便于 Reactor 修正而不是盲目重试。
 
 ```text
 *** Begin Patch v1
@@ -1177,24 +1221,29 @@ M4-02 的文件执行器采用“全 Patch 预检、逐 operation 提交”的�
 
 M4-03 将 `apply_patch` 作为第七个核心工具接入 Registry。Tool Spec 使用单一必填 `patch` 字符串、`SideEffectWrite`、`ParallelSafe=false`、`Idempotent=false` 和 `ResourceModeExclusive`：Patch 内嵌多条路径，在引入可靠的 operation-level resource extraction 前必须作为全局串行屏障。Policy 在请求高风险审批前再次解析 Patch 并对全部 operation 执行 PathGuard 预检；Approval 和 Audit 沿用规范化完整参数的 SHA-256，只展示/持久化哈希而不记录 Patch 正文。成功或失败结果都返回 operation metadata；中途失败保留 `partial=true` 和已应用 operation，Observation 标记失败，Evidence 明确为未验证且指出部分副作用，取消沿 ToolExecutor 传播且提交前取消不产生写入。
 
-`write_file` 保留，但职责收窄为创建新文件或用户/模型明确要求的整文件替换，不再作为修改已有文件的首选。参数必须显式区分 `create` 与 `replace`，默认拒绝隐式覆盖；replace 继续使用原子临时文件写入并保留权限。Prompt 和 Tool description 必须引导已有文件优先使用 `apply_patch`。
+`write_file` 的 M4 实现只作为历史兼容记录。M7 已按“`apply_patch` 补齐 Add/Move/整文件替换与失败诊断 → Provider/E2E 迁移 → 删除生产注册、实现和 Prompt”的顺序完成退场；Patch 冲突只能通过重新读取现场并构造新的唯一匹配 Patch 修正，不能回退到整文件写入逃生路径。
 
 M4-04 将 `write_file` 的 `mode` 固定为必填枚举 `create|replace`。`create` 只允许目标不存在，必要时创建父目录，并通过同目录 staged file + hard link 以 no-replace 语义原子发布；并发出现同名目标时确定性失败，不覆盖任何内容。`replace` 只允许目标已经是 regular file，不创建缺失目标或父目录，使用同目录 staged file + atomic rename，并继承原文件权限。旧的无 `mode` 参数在 Tool Schema 和直接执行层都明确失败；非法 mode、create-existing、replace-missing、路径逃逸、超限和提交前取消均为零内容副作用。
 
-首版不单独增加 `edit_file`、`create_project`、`git_status`、`git_diff`、`run_tests` 或 `format_code`：Patch 已覆盖结构化编辑，Git/测试/格式化和项目脚本继续由 `execute_command` 处理。只有后续实际使用证明需要独立权限、结构化结果或可移植行为时再拆分。
+不单独增加 `edit_file`、`delete_file`、`move_file`、`create_directory`、`create_project`、`git_status`、`git_diff`、`run_tests` 或 `format_code`：Patch 覆盖文件变更，Git/测试/格式化和项目脚本继续由命令工具处理。只有后续实际使用证明需要独立权限、结构化结果或可移植行为时再拆分。
 
 ### 14.5 Shell 使用策略
 
 模型选择顺序固定为：
 
 1. 读取、目录浏览、文件发现和代码搜索优先使用 Exploration Tool。
-2. 修改已有文件优先使用 `apply_patch`；创建或明确整文件替换才使用 `write_file`。
+2. 所有文件创建、更新、删除和移动优先使用 `apply_patch`；迁移期 `write_file` 不作为模型默认选择。
 3. 构建、测试、Git、格式化、生成器和项目自定义 CLI 使用 `execute_command`。
-4. 专用工具无法表达需求时允许 Shell fallback，但仍经过 CommandGuard、Approval、Audit、timeout、进程组取消和输出预算。
+4. 命令在 yield 时间内未结束时返回 `process_id`；后续通过 `write_stdin` 输入或空输入轮询，不因前台等待超时直接杀死正常长任务。
+5. 专用工具无法表达需求时允许 Shell fallback，但仍经过 CommandGuard、Approval、Audit、timeout、进程组取消和输出预算。
 
 Shell 中的 `cat`、`sed`、`grep`、Python/Node 文件访问不会绕过 Project Root 和安全模型。CommandGuard 能确定性识别的只读命令可以使用只读策略；无法可靠判定的动态命令按更高风险处理，而不是假设无副作用。专用工具失败时，模型可以根据错误选择修正参数或使用 Shell，但不得为了绕过策略拒绝而改写成等价 Shell 命令。
 
-M4-05 新增独立 `Tool Selection` Agent Prompt 层，并将相同边界写入七个 Tool Spec description：常规读取、目录、发现和搜索优先结构化工具；已有文件普通编辑使用 `apply_patch`，冲突后重新读取并构造新 Patch；`write_file` 只接受显式 `mode=create|replace` 的整文件操作；构建、测试、Git、格式化、生成器和项目脚本使用 `execute_command`。Shell 只在专用工具无法表达时 fallback，且不得通过重定向、脚本或等价命令绕过 Tool contract、PathGuard、策略拒绝或审批。失败工具调用本身是未完成 Evidence，模型必须修正或选择合法替代，不能静默宣称成功。
+M4-05 的 Tool Selection Prompt 是历史七工具基线；目标 Prompt 更新为 Exploration → Patch → Command/Process 的三层选择，不再引导 `write_file`。Shell 只在专用工具无法表达时 fallback，且不得通过重定向、脚本或等价命令绕过 Tool contract、PathGuard、策略拒绝或审批。失败工具调用本身是未完成 Evidence，模型必须修正或选择合法替代，不能静默宣称成功。
+
+`execute_command` 目标实现由 `ProcessManager` 支撑，参数增加 `tty`、`yield_time_ms` 和 `max_output_tokens`。命令在 yield 时间内结束则直接返回 completed；仍运行则返回 `process_id/status=running` 和当前增量输出。`write_stdin(process_id, chars, yield_time_ms)` 既可写入 stdin，也可用空 `chars` 轮询。Amadeus 使用 `process_id` 而不是 `session_id`，避免与 Conversation Session 混淆；原始命令审批覆盖该 Process 的后续输入/轮询，但每次调用仍审计，且不能操作其他 Run 创建的 Process。
+
+命令输出采用有界 head+tail，而不是达到上限后只保留开头；结果同时报告 retained/total bytes、lines、truncated、exit code、duration 和 running/completed/cancelled/timed_out。Run 取消、Session 关闭和进程退出必须清理 Process/PTY，按 process ID 串行化 stdin 与 poll，避免并发读取破坏输出顺序。
 
 ### 14.6 执行流水线
 
@@ -1205,10 +1254,12 @@ lookup → schema validation → policy precheck → approval
 
 所有内置和动态工具共享该流水线。文件读取/搜索通常标记为只读且 `ParallelSafe`；Patch、整文件写入和 Shell 根据资源与副作用分类进入串行屏障。Audit 记录工具名、参数摘要/hash、目标资源、策略结论、审批结果、耗时、partial 和 outcome，不记录凭证或无限正文。
 
+Registry 与模型可见 Tool Set 分离。Tool Exposure 至少支持 `Direct/Conditional/Deferred/Hidden`：核心探索、Patch 和命令工具 Direct；`view_image` 按模型图片 capability Conditional；Web/MCP/Skill 按配置与发现结果 Conditional；动态 MCP/SubAgent 可 Deferred；迁移期 `write_file` Hidden。ContextWindowManager 只计算当前 RequestView 实际可见 Tool Schema，不再默认把 Registry 全量快照发送给每次模型请求。`tool_search` 只有动态工具数量真实造成上下文或选择问题后再立项。
+
 ### 14.7 并发规则
 
 - 默认只并行执行模型在同一响应中发起、且工具声明为 `ParallelSafe` 的调用。
-- `apply_patch`、`write_file`、`execute_command` 和 Snapshot 恢复默认不与其他有副作用工具并行。
+- `apply_patch`、`execute_command`、`write_stdin` 和 Snapshot 恢复默认不与其他有副作用工具并行；同一 `process_id` 的输入与轮询强制串行。
 - 使用固定大小 worker pool，不为每次调用创建无界 goroutine。
 - 一个调用失败不自动取消独立调用；上下文取消或策略拒绝除外。
 - 结果按原始 tool call 顺序回灌，保证行为可复现。
@@ -1236,7 +1287,7 @@ M2-26～M2-27 已实现 `grep_code` 的统一语义层。纯 Go fallback 稳定�
 
 M2-28～M2-30 已实现 `execute_command`。命令通过固定 `project.Root` 下的 project-relative cwd 启动，stdout/stderr 写入同一个并发安全 writer，以实际到达顺序生成 combined output；非零退出同时返回结构化 exit code 和已产生输出。每次调用使用受全局上限约束的 timeout；Unix 平台为 shell 创建独立进程组，取消或超时时终止整组，其他平台明确退化为 `exec.CommandContext` 能力。输出同时受 byte/line budget 限制，仍统计原始总字节/行数，截断、timeout 和 cancel 均返回 partial Result，供 Observation/Evidence 保留。
 
-M2-31 已提供 `builtin.DefaultMVPOptions`、`RegisterMVP/NewMVPRegistry` 和稳定 `MVPSpecs`，集中装配 `read_file/write_file/list_dir/glob_files/grep_code/execute_command`。`amadeus tools list` 不需要读取 Provider 配置即可按稳定顺序展示六个工具的 side effect、ParallelSafe、Idempotent 和 resource mode，供用户与后续 Bootstrap 检查实际工具面。
+M2-31 曾提供首版 `builtin.DefaultMVPOptions`、`RegisterMVP/NewMVPRegistry` 和 `MVPSpecs`。M7 后当前核心装配固定为 `apply_patch/read_file/list_dir/glob_files/grep_code/execute_command/write_stdin`；`amadeus tools list` 不需要读取 Provider 配置即可展示完整目标 Catalog 的 Exposure、Condition、状态和 Side Effect，供用户与 Bootstrap 检查工具面。
 
 M2-32 已把资源感知的有界并发执行器接入 ReActRunner。只有 SideEffect 为 none/read、声明 ParallelSafe 且非 exclusive 的连续调用组可以并行；argument resource strategy 从规范化 JSON pointer 提取资源键，同键调用串行，write/execute/network/unknown/exclusive 调用作为前后屏障。Worker 数受 MaxParallelTools 限制，取消后不启动剩余调用，Observation/Evidence 和 ToolResult 始终恢复为原始 model call 顺序。
 
@@ -1272,10 +1323,11 @@ MVP 直接采用 PaiCLI 风格的固定分类，不新增 Sandbox、ExecutionBou
 
 | 工具/行为 | MVP 行为 |
 |---|---|
-| `read_file`、`list_dir`、`glob_files`、`grep_code` | PathGuard 通过后直接执行 |
-| `write_file`、`apply_patch` | PathGuard 预检通过后请求审批 |
-| `execute_command` | CommandGuard 未 blocked 时仍请求审批 |
-| network side effect、`mcp_list_tools`、`mcp_call` | 默认请求审批 |
+| `read_file`、`list_dir`、`glob_files`、`grep_code`、`view_image` | PathGuard 通过后直接执行；`view_image` 还需模型 capability 与媒体预算通过 |
+| `apply_patch`、迁移期 `write_file`、`revert_run` | PathGuard 预检通过后请求审批 |
+| `execute_command` | CommandGuard 未 blocked 时仍请求审批；成功启动后建立当前 Run 所有的 Process |
+| `write_stdin` | 只允许访问当前 Run 已审批 Process；空输入轮询或写 stdin 均审计，不重复扩大命令权限 |
+| network side effect、`mcp_list_tools`、`mcp_call`、MCP Resource 读取 | 默认请求审批 |
 | Skill 读取说明文件 | 按只读工具执行，不额外审批 |
 | Skill 引发写入、命令、网络或 MCP 调用 | 复用对应工具审批，不建立 Skill 专属审批系统 |
 | Project Root 外路径、软链接逃逸 | 直接拒绝，不提供扩大路径权限的审批 |
@@ -1283,7 +1335,9 @@ MVP 直接采用 PaiCLI 风格的固定分类，不新增 Sandbox、ExecutionBou
 
 `ToolAuthorizer` 顺序固定为：参数 schema 校验 → PathGuard preflight → CommandGuard（命令工具）→ 固定工具分类 → ApprovalHandler（如需要）→ 工具内部副作用前复检 → Tool Execute → Audit。只读工具跳过 ApprovalHandler，但不跳过参数、路径、预算、取消和审计。
 
-TTY 审批只提供 `allow once`、`allow this tool for current session` 和 `deny`。默认 Rich Inline TUI 使用 Codex 风格三项选择器：第一项默认选中，用户通过 `↑/↓`（兼容 `j/k`）移动，按 Enter 确认，Esc 直接拒绝；`y/s/n` 继续作为无提示兼容快捷键，但不再作为面板主交互说明。删除 `always`：当前实现没有持久化的永久 Grant Store，继续展示该选项会造成错误预期。Session Grant 按工具名缓存，而不是按完整参数 hash 缓存；例如批准本 Session 的 `apply_patch` 后，后续 `apply_patch` 不再询问，但 `write_file` 和 `execute_command` 仍分别询问。每次调用仍先经过 PathGuard/CommandGuard，因此 Session Grant 不能绕过路径越界或 blocked 命令。
+TTY 审批只提供 `allow once`、`allow this target for current session` 和 `deny`。默认 Rich Inline TUI 使用 Codex 风格三项选择器：第一项默认选中，用户通过 `↑/↓`（兼容 `j/k`）移动，按 Enter 确认，Esc 直接拒绝；`y/s/n` 继续作为无提示兼容快捷键，但不再作为面板主交互说明。删除 `always`：当前实现没有持久化的永久 Grant Store，继续展示该选项会造成错误预期。普通内置工具的 Session Grant 默认按工具名缓存，例如批准本 Session 的 `apply_patch` 后，后续 `apply_patch` 不再询问，而 `execute_command` 仍独立询问；`write_stdin` 不创建新的 Session Grant，只继承原命令 Process 的授权边界。MCP gateway 必须使用目标感知 Key，至少细化为 `mcp_list_tools:<server>`、`mcp_call:<server>:<remote-tool>` 和 `mcp_read_resource:<server>:<uri-scope>`，禁止一次批准 `mcp_call` 后放行所有 server 和远端工具。每次调用仍先经过 PathGuard/CommandGuard/MCP target preflight，因此 Session Grant 不能绕过路径越界、blocked 命令、未配置 server 或未声明远端能力。
+
+ApprovalRequest 除 canonical arguments hash 外，还必须携带或可派生脱敏后的 Action Summary。MCP 审批面板至少展示 server、远端 tool/resource、transport、脱敏 target 和配置来源；stdio server 需要展示将启动的 command/args 摘要，HTTP server 展示 host，不显示 env、headers 或凭证。项目 `.amadeus/mcp.yaml` 定义的 stdio server 不能只以泛化的“tool accesses external systems”提示用户。
 
 非 TTY 不读取 stdin，也不使用配置自动允许：所有需要审批的调用直接拒绝。配置文件删除 `approval.enabled` 与 `approval.default`，Approval 不能由用户关闭；未来若出现明确的自动化场景，再单独设计受限的非交互授权入口。
 
@@ -1652,36 +1706,147 @@ Durable Memory、自动偏好提取、MemoryRetriever、跨 Run Reflexion Lesson
 ### 17.1 MCP
 
 - 用户级配置固定为 `$AMADEUS_HOME/mcp.yaml`，项目级配置固定为 `<project>/.amadeus/mcp.yaml`；项目同名 server 整体覆盖用户 server，不做 command/args/env/headers 字段级混合。
-- 配置只定义 server name、transport、command/args/env 或 url/headers、timeout 和 enabled；字符串支持环境变量展开，凭证不进入日志、TUI、Audit 或 `config explain`。
-- 使用成熟 Go MCP Client Library 承担协议细节，借鉴 WeKnora 的 Client/Manager 边界，但不迁移其 GORM、Tenant、HTTP Handler、Redis、跨实例 Approval 和数据库服务层。
-- MVP 首批实现 stdio、streamable HTTP、initialize、tools/list 和 tools/call；resources、prompts、sampling、notifications、mentions 和图片后置。
-- server 默认懒启动：启动 Amadeus 时只加载和校验配置，第一次需要该 server 时连接并 initialize；单 server 失败不阻止 Agent 或其他 server 工作。
-- 当前生产 CLI 为每个 Run 创建 MCP Manager，并在 Run 内复用已建立连接；Run 结束时关闭进程/连接。一次调用失败允许一次有界重连，不做无限后台重试。跨交互 Session/Run 复用连接属于后续优化。
-- 生产工具面固定注册 `mcp_list_tools(server)` 与 `mcp_call(server, tool, arguments)` 两个 lazy gateway。启动 Amadeus 和开始 Run 时不连接 server，也不执行 `tools/list`；第一次调用 gateway 时才启动目标 server、initialize 并按需查询工具。
-- `mcp_list_tools` 返回清理后的有界工具元数据；`mcp_call` 在调用前验证目标工具已由该 server 的 `tools/list` 声明，再执行远端调用。两者均为 `ParallelSafe=false`、network side effect，并进入现有 Validation → Approval → Audit → Execute 主链。
-- 旧的 `mcp__{server}__{tool}` Tool Adapter 与原子 Registry 替换能力保留为基础设施，但不是当前生产 CLI 入口。MCP 描述和 server 返回值不能声明自己无需审批。
-- MVP 只回灌有界文本结果；`isError` 转为失败 Tool Result，超长结果标记 partial。正文增加“外部不可信数据”来源包络，不能伪装成 system、`AGENTS.md`、Skill 或当前用户指令。
+- 配置只定义 server name、transport、command/args/env 或 url/headers、timeout 和 enabled；字符串支持环境变量展开，凭证不进入日志、TUI、Audit、Trace 或 `config explain`。解析后的 server 必须保留 `user/project + config path` 来源元数据，供审批和诊断使用。
+- 协议层继续使用成熟 Go MCP Client Library 承担 transport、JSON-RPC 和协议兼容，借鉴 WeKnora 的 Client/Manager/Result Normalizer 边界，但不迁移其 GORM、Tenant、HTTP Handler、Redis、跨实例 Approval 和数据库服务层。PaiCLI Go 的自研 stdio/HTTP JSON-RPC 只作为行为参考，不复制为 Amadeus 协议核心。
+- CLI 产品必须保留 stdio 与 streamable HTTP：stdio 是本地 Coding Agent 生态的重要入口，不能照搬 WeKnora 服务端产品“禁用 stdio”的策略；但 stdio 启动属于本地进程执行风险，HTTP 属于外部网络风险，ToolAuthorizer 必须根据目标 server 配置生成不同的审批摘要。
+- server 默认懒启动：启动 Amadeus 和创建 Run 时只加载、合并和校验配置，第一次需要该 server 时才连接并 initialize；单 server 失败不阻止 Agent 或其他 server 工作。当前每个 Run 创建 MCP Manager、Run 内复用连接并在终态关闭；一次调用失败允许一次有界重连，不做无限后台重试。跨交互 Run 复用连接只有在默认 TUI 主链稳定后才提升到 Application 级 Extension Host。
+- 生产工具面继续采用稳定的 lazy gateway，而不是默认把所有远端工具动态展开进 Provider Tool Schema：首批固定 `mcp_list_tools(server)` 与 `mcp_call(server, name, arguments)`，后续增加 `mcp_list_resources(server)` 与 `mcp_read_resource(server, uri)`。这样避免启动延迟、远端 Tool 数量导致的 Schema 膨胀和不同 Provider 的 Tool 上限差异。
+- 每个已连接 server 维护有界 `ServerState`：Client、InitializeResult/Capabilities、Tool Catalog、Resource Catalog metadata 和连接代次。第一次 list/call 时加载 Tool Catalog；后续 `mcp_call` 从缓存验证远端 Tool，不得每次调用都重复执行 `tools/list`。重连时清空缓存；未来支持 `notifications/tools/list_changed` 后按通知失效，不实现无限后台刷新。
+- `mcp_list_tools` 返回清理、排序和有界的 name/description/input schema；`mcp_call` 只允许调用当前连接代次 Catalog 中已声明的 Tool。gateway 均为 `ParallelSafe=false`，并进入 Validation → MCP target preflight → Approval → Audit → Execute 主链。Session Grant 使用 server/tool 感知 Key，不能因为本地 gateway 名相同而共享全部授权。
+- MCP Tool Result 统一进入普通 Tool Observation，不进入 system/developer/`AGENTS.md`。所有正文增加“外部不可信数据”来源包络；`isError` 转为失败 Tool Result，超长结果标记 partial。第一阶段保留 bounded text 与 structured JSON；Resources 只自动回灌受限 UTF-8 文本，二进制返回 URI/MIME/size 元信息。图片等 Provider 主链支持多模态后，再借鉴 WeKnora 的 MIME 白名单、数量/大小限制和 Base64 日志脱敏接入。
+- MCP Prompts、Sampling、Mentions 和完整 Notification 订阅不进入首个可用版本；Resources 是 Tool 稳定后的下一项能力。旧 `mcp__{server}__{tool}` Adapter 与原子 Registry 替换只保留为测试和未来小 Catalog 优化基础设施，不作为默认生产入口。
+- 增加用户可观察命令：`amadeus mcp list` 只展示脱敏后的合并配置与来源，不连接 server；`amadeus mcp check` 逐个执行连接/initialize/能力检查后关闭；`amadeus mcp tools <server>` 显式查询 Tool Catalog。TUI `/status` 只展示 configured/connected/error 摘要，不泄露凭证。
 
 ### 17.2 Skill
 
-- 用户级 Skill 固定放在 `$AMADEUS_HOME/skills/<name>/SKILL.md`，项目级 Skill 固定放在 `<project>/.amadeus/skills/<name>/SKILL.md`；项目同名 Skill 整体覆盖用户 Skill。MVP 不额外设计用户根目录，也不要求内置 Skill 层。
-- Skill MVP 只支持 `SKILL.md` 与可选 `references/`，不正式支持 `scripts/`、`execute_skill_script`、Docker 或 Skill Sandbox。
-- `SKILL.md` 使用 YAML frontmatter，MVP 只接受必填 `name` 和 `description`；name 为小写字母、数字和连字符，正文、描述、Skill 数量和索引总大小均受预算限制。
-- 启动时只扫描并注入 `name + description + source` 索引，不把所有正文塞入 Prompt。模型匹配任务后调用只读内置工具 `load_skill(name)`，将正文写入一次性 SkillContextBuffer，下一次模型请求消费后清空。
-- SkillContextBuffer 按 Skill name 去重、数量和总字节有界；注入内容带 `$AMADEUS_HOME` 或 project source，但优先级低于内置安全、当前用户任务和适用 `AGENTS.md`。
-- `references/` 只能通过受 Skill Root 围栏保护的只读接口按需读取，拒绝绝对路径、`..`、软链接逃逸、binary 和超限文件；不扫描或自动注入整个资料目录。
-- MVP 不实现 enable/disable Store：发现且校验成功的 Skill 默认可用，无效 Skill 记录 warning 并跳过，不阻塞 Agent 启动；真实需要出现后再增加 `/skill on/off` 和持久化 disabled 列表。
-- PaiCLI 的 `scripts/` 只是由 Skill 指导模型调用普通 `execute_command`，没有独立 Script Executor 或 Sandbox。Amadeus MVP 不复制该能力；项目 Skill 未来可复用普通命令审批，用户 Skill 脚本因位于 Project Root 外必须另行设计专用边界后才能支持。
-- Skill 引发的写入、命令、网络或 MCP 调用复用对应工具 Approval；Skill 文本不能关闭审批、绕过 PathGuard/CommandGuard、扩大 Project Root 或自动获得 Session Grant。
+- 用户级 Skill 固定放在 `$AMADEUS_HOME/skills/<name>/SKILL.md`，项目级 Skill 固定放在 `<project>/.amadeus/skills/<name>/SKILL.md`；项目同名 Skill 整体覆盖用户 Skill。MVP 不额外设计用户根目录，也不要求内置 Skill 层或模型推断式自动安装。
+- Skill 采用渐进披露：Level 1 为启动时可见的 `name + description + source` Index；Level 2 为按需读取的 `SKILL.md` 正文；Level 3 为按需读取的 `references/`。正文和 Reference 都必须通过普通只读 Tool Result 进入 Reactor，不能伪装成 system、developer、`AGENTS.md` 或当前 user message。
+- `SKILL.md` 使用 YAML frontmatter，MVP 只接受必填 `name` 和 `description`；name 为小写字母、数字和连字符，正文、描述、Skill 数量和索引总大小均受预算限制。用户/项目扫描拒绝软链接目录逃逸、非 UTF-8、超限文件、重复名称和不完整 frontmatter；无效 Skill 产生带来源 warning 并跳过，不阻塞其他 Skill 或 Agent 启动。
+- 生产工具面收敛为 `read_skill(name, path?, offset?, limit?)`：省略 path 时直接返回有界 Skill 正文、description/source 和可用 Reference 文件列表；提供 path 时只读取该 Skill `references/` 下的相对路径。返回值是当前 Tool Call 的 Observation，不再使用 `load_skill → SkillContextBuffer → 下一次 developer message` 隐式注入链；目标实现删除 SkillContextBuffer、MarshalContext 和 Reactor AdditionalMessages 的 Skill 特例。
+- `references/` 继续使用 Skill Root 围栏与专用只读接口，拒绝绝对路径、`..`、软链接逃逸、binary、非 UTF-8 和超限文件；目录列表和正文均有数量/字节预算，不扫描或自动注入整个资料目录。Skill Index 可留在 BaseEnvelope 作为运行时能力元数据，但 Skill 正文只能作为 Tool Observation。
+- Skill 读取本身为 read side effect，不额外审批；Skill 指导模型调用写入、命令、网络或 MCP 时，复用目标工具现有 Approval/Audit，不建立 Skill 专属授权系统。Skill 文本不能关闭审批、绕过 PathGuard/CommandGuard/MCP target preflight、扩大 Project Root 或自动获得 Session Grant。
+- 项目级 Skill 的 `scripts/` 在首版不注册 `execute_skill_script`：因为文件位于 Project Root 内，Skill 可以指导模型通过普通 `execute_command` 显式运行 `.amadeus/skills/<name>/scripts/...`，自然复用 CommandGuard、Approval、Audit、timeout 和输出预算。用户级 Skill 位于 `$AMADEUS_HOME`、超出 Project Root，首版只允许说明和 References，禁止执行脚本。
+- 只有独立 Sandbox 基础设施完成后，才重新评估用户级 `execute_skill_script(skill, path, args, stdin)`。该能力必须使用只读 Skill 挂载、独立临时可写目录、默认无网络、解释器与环境变量白名单、超时/输出限制、软链接防逃逸和每次显式审批；可借鉴 WeKnora 的 Tool/Manager/Sandbox 边界，但不复制其完整服务层。
+- MVP 不实现 enable/disable Store。增加用户可观察命令：`amadeus skills list` 展示 name/description/source，`amadeus skills check` 展示解析 warning，`amadeus skills show <name>` 展示正文和有界 Reference 列表。只有真实 Skill 数量和禁用需求出现后，再设计 `$AMADEUS_HOME` 下的 disabled 状态文件或交互开关。
 
-## 18. Snapshot、LSP、Browser 与图片
+### 17.3 实施顺序
 
-- Snapshot：每个 Run 使用 lazy tracker；只有首个已获授权的 write-side-effect 工具真正执行前才创建 before snapshot，一个 Run 最多创建一次。纯读取 Run 不扫描项目、不创建 snapshot；Run 完成时仅在已 Begin 的情况下记录 after manifest。当前首次写入仍使用有界的全项目 FileService snapshot，恢复操作按 Run/Snapshot ID 表达，增量快照后置。
-- LSP：配置通过 `lsp.enabled/command/args/extensions/timeout` 显式启用。Process Client 在首个匹配扩展的成功写入后由 PostWrite Hook 懒启动，发布诊断或失败 Evidence；诊断失败不回滚已经成功的文件写入，Run 结束时关闭 Client。
+MCP 与 Skill 不再按“协议是否存在”判断完成，而按安全语义、用户可观察性和扩展能力三阶段落地：
+
+1. **P0 正确性与安全收敛**：MCP Grant Key 改为 server/tool/resource 感知；Approval 展示脱敏目标和配置来源；`load_skill + SkillContextBuffer` 迁移为直接返回 Tool Observation 的 `read_skill`；Skill/MCP warning 可被 CLI/TUI 查看。
+2. **P1 可使用产品面**：增加 `amadeus mcp list/check/tools` 与 `amadeus skills list/check/show`；实现 MCP Tool Catalog Cache、连接代次失效和 Resources gateway；补充示例配置、Skill 目录示例、真实 stdio/HTTP fixture 与 Approval E2E。
+3. **P2 稳定后增强**：支持 structured content、Tool/Resource change notifications、Application 级连接复用和多模态结果；独立 Sandbox 成熟后再评估用户级 Skill scripts。MCP Prompts、Sampling、Mentions 和自动 Skill 安装必须有真实使用场景后再立项。
+
+P0 完成前，不应把当前“代码中已有 MCP/Skill 包”视为最终产品完成：现有 lazy lifecycle、配置覆盖、PathGuard 和文本结果基础继续复用，但授权粒度与 Skill Role 语义属于发布前必须修正的问题。
+
+## 18. Snapshot、项目验证、Web、Browser 与图片
+
+### 18.1 Snapshot
+
+每个 Run 使用 lazy tracker；只有首个已获授权的 write-side-effect 工具真正执行前才创建 before snapshot，一个 Run 最多创建一次。纯读取 Run 不扫描项目、不创建 snapshot；Run 完成时仅在已 Begin 的情况下记录 after manifest。当前首次写入仍使用有界的全项目 FileService snapshot，恢复操作按 Run/Snapshot ID 表达，增量快照后置。
+
+### 18.2 项目验证与 LSP 边界
+
+Amadeus 不内置或要求用户配置 Language Server。Reactor 在修改后通过项目原生 formatter、build、lint、typecheck 和 test 命令形成验证闭环，并把退出码、诊断文本和测试结果作为 Evidence 回灌。验证入口的发现优先级为有效 `AGENTS.md` → 项目脚本/Makefile/CI 配置 → 语言与构建系统常见约定；不得假定项目使用 Go，也不得在核心 Runtime 中硬编码单一语言命令。
+
+核心配置、Runtime 和写后 Hook 不承载 LSP Client。M7 已删除 `internal/lsp`、`lsp.*` 配置、CLI explain/validation 与生产接线；原写后单文件诊断只保留在历史记录中。未来只有在真实场景证明编译、测试和类型检查无法提供足够及时的局部反馈时，才以 MCP、插件或 Extension Tool 形式重新立项。
+
+### 18.3 Web Search 与 Web Fetch
+
+`web_search` 与 `web_fetch` 是两个独立能力。Search 面向结构化搜索 Provider API，负责查询、结果归一化、超时、错误分类和来源元数据；Fetch 面向任意外部 URL，负责 SSRF、DNS/Redirect 安全、正文提取和内容上限。二者可以共享底层 HTTP、安全和可观测性组件，但不能复用同一个业务 Fetcher 或混用配置。
+
+目标目录收敛为：
+
+```text
+internal/websearch/
+├── request.go
+├── result.go
+├── provider.go
+├── registry.go
+├── service.go
+├── errors.go
+└── providers/
+    ├── duckduckgo/
+    ├── tavily/
+    ├── searxng/
+    └── brave/
+
+internal/webfetch/
+├── fetcher.go
+├── policy.go
+├── transport.go
+└── extractor.go
+```
+
+Search Provider Domain 保持最小且与厂商无关：
+
+```go
+type SearchRequest struct {
+    Query          string
+    Limit          int
+    AllowedDomains []string
+    RecencyDays    int
+}
+
+type SearchResult struct {
+    Title       string
+    URL         string
+    Snippet     string
+    Content     string
+    Source      string
+    PublishedAt *time.Time
+}
+
+type SearchResponse struct {
+    Provider string
+    Results  []SearchResult
+    Partial  bool
+    Duration time.Duration
+}
+
+type SearchProvider interface {
+    Name() string
+    Search(context.Context, SearchRequest) (SearchResponse, error)
+}
+```
+
+`SearchService` 负责选择已配置 Provider、创建总超时、执行一次有界重试、归一化与去重 URL、过滤无效结果、限制 snippet/content、记录耗时并返回统一错误；Provider Adapter 只处理各厂商的认证、请求/响应格式和状态码。错误至少区分 `configuration`、`authentication`、`rate_limited`、`timeout`、`network_unreachable`、`provider_unavailable` 与 `invalid_response`，不得只向 Reactor 返回无上下文的 `context deadline exceeded`。
+
+首版 Provider 集合固定为：
+
+| Provider | 定位 | 首版约束 |
+|---|---|---|
+| DuckDuckGo | 无 API key 的 best-effort 搜索 | HTML 搜索优先，Instant Answer API 只作 fallback；不承诺网络稳定性，不再作为静默唯一实现 |
+| Tavily | 面向 Agent 的托管搜索主选项 | 需要独立 API key；返回结构化 snippet/content，明确处理认证、限流与服务错误 |
+| SearXNG | 用户自建或指定的元搜索后端 | 必须显式配置 Base URL；要求实例启用 JSON 格式，不假定公网实例可靠 |
+| Brave | 独立商业搜索 API | 需要独立 API key；支持结构化网页结果，Provider Adapter 隔离其 header、分页和限流语义 |
+
+当前 `api.duckduckgo.com` Instant Answer 实现属于待替换历史代码：它不是通用 SERP，常规技术、新闻和长尾查询可能返回空结果；固定 30 秒等待也会把网络不可达放大为长时间卡顿。DuckDuckGo 新实现必须参考 WeKnora 的 HTML-first/API-fallback 思路，但不复制其 Tenant、数据库、Redis、临时知识库或 RAG 压缩。
+
+网络超时采用分层预算而不是单一无限等待：连接/DNS、TLS、Response Header 和 Search Overall 分别受限，首版 Search Overall 默认 15 秒；仅对瞬时网络错误和 HTTP 5xx 最多重试一次，认证、参数错误和限流遵守 Provider 提示而不盲目重试。显式 Proxy 与目标 URL 必须分开建模：SSRF Guard 验证用户目标和 Redirect，用户明确配置的代理连接不能被误判为目标私网访问。
+
+Tool 输出向模型提供有界、易读的编号结果，并在 Metadata 保留结构化值：
+
+```text
+Web search results for: <query>
+Provider: <provider>
+
+[1] <title>
+URL: <url>
+Published: <optional date>
+Snippet: <bounded snippet>
+```
+
+首版工作流保持 `web_search → 选择 URL → web_fetch`，不立即复制 Codex 的完整 `open/click/find/ref_id` 浏览协议；后续可增加一次多 query、domain/recency filter 和 Run 内稳定引用。OpenAI Responses Hosted Web Search 只能作为 capability 驱动的未来 Adapter：必须由 Provider 明确声明支持，不能根据 `dialect=openai` 猜测，更不能让 DeepSeek、Qwen、GLM 等模型依赖 OpenAI 私有的 `alpha/search` 端点。
+
+未启用、配置不完整或没有可用 Provider 时不注册 `web_search` Tool。后续提供 `amadeus web check`，在不启动 Agent Run 的情况下验证配置、认证、连接、响应格式、耗时和脱敏错误。搜索请求彼此只读且资源独立，可标记为 `ParallelSafe`；是否继续要求网络审批仍由统一 Approval 策略决定，不在 Provider 内绕过。
+
+### 18.4 Browser 与图片
+
 - Browser：连接、会话、敏感页面策略和审计分离。
 - 图片：本地图片先校验类型、尺寸与上限，再压缩/缩放；历史轮次只保留文本元信息。
 
-这些能力均通过 Tool 或 Hook 接入 Runtime，不能反向依赖 CLI。
+这些能力通过 Tool、项目命令或有明确边界的扩展接口接入 Runtime，不能反向依赖 CLI。验证失败只表示需要继续观察和修复，不自动回滚已经成功的文件写入；是否恢复文件由 Agent 根据任务、Diff、测试结果和用户意图决定。
 
 ## 19. 事件与渲染
 
@@ -1855,12 +2020,13 @@ type ToolActivity struct {
 | `list_dir` | `List <path>` |
 | `glob_files` | `Find <pattern>` |
 | `grep_code` | `Search <pattern>` |
-| `load_skill` | `Load skill <name>` |
-| `read_skill_reference` | `Read skill reference <path>` |
+| `read_skill`（正文） | `Read skill <name>` |
+| `read_skill`（Reference） | `Read skill reference <path>` |
 | `apply_patch` | `Applied patch` |
-| `write_file` | `Wrote <path>` |
-| `revert_turn` | `Reverted changes` |
+| `revert_run` | `Reverted changes` |
 | `execute_command` | `Ran command` |
+| `write_stdin` | `Continued process` |
+| `view_image` | `Viewed <path>` |
 | `web_search` | `Searched web` |
 | `web_fetch` | `Fetched <host>` |
 | MCP | `Called MCP tool` |
@@ -2177,6 +2343,8 @@ Store 必须以事务保证 user Message 在执行前持久化、completed Run �
 - PathGuard、CommandGuard、Approval 和 Audit。
 - Tool schema、输出截断和并发顺序。
 - Prompt 覆盖和 hash。
+- Web Search Provider 请求转换、结果归一化、URL 去重、错误分类、超时和重试边界。
+- Web Fetch SSRF、Proxy/目标地址分离、Redirect、正文提取和内容上限。
 
 ### 22.2 集成测试
 
@@ -2184,6 +2352,7 @@ Store 必须以事务保证 user Message 在执行前持久化、completed Run �
 - 使用临时目录验证文件工具和符号链接逃逸。
 - 使用假命令验证超时、取消和输出限制。
 - 使用进程 fixture 验证 MCP stdio JSON-RPC。
+- 使用 `httptest.Server` 分别模拟 DuckDuckGo HTML/API fallback、Tavily、SearXNG 与 Brave 的成功、空结果、认证、限流、5xx 和超时响应。
 - 使用 SQLite 临时库验证 Session 恢复、完整消息对加载和 Previous Work 生命周期。
 
 ### 22.3 兼容性测试
@@ -2224,11 +2393,12 @@ Store 必须以事务保证 user Message 在执行前持久化、completed Run �
 | M3 | 首个可用 Coding Agent CLI | 根命令可在真实项目中安全读、改、测，分层 `AGENTS.md` 生效 |
 | M4 | 核心工具增强、长上下文与 Session 持久化 | `apply_patch` 成为默认编辑路径；可跨进程恢复会话，中断后新 Run 重新规划 |
 | M5R | Agent 主链收敛 | 默认 ReAct 与显式 `/plan` 的产品语义、Session 持久化和 TUI 主链完成收敛 |
-| M6 | Coding Workflow 扩展 | Snapshot、LSP、Skill、MCP 与 Web 可选接入 |
+| M6 | Coding Workflow 扩展 | Snapshot、Skill、MCP、Web 与项目原生验证闭环可选接入；移除核心 LSP |
 | M6R | 独立 Reactor 与 Typed EventHub 重构 | 默认路径直接执行 Think→Analyze→Act→Observe Iterations；`/plan` 通过适配器复用同一个 Reactor，事件统一使用 Run/Task/LLMCall 关联语义 |
 | M8T | Rich Inline TUI 产品化 | 完成品牌 Logo、Codex 风格 Activity、Working 动画、Context 状态和 bounded Transcript Viewer，同时保留终端原生 scrollback |
+| M7 | 核心工具链与 Process Runtime 收敛 | 保留薄型结构化探索，交付持续 Process、Patch Move、图片、Tool Exposure，并删除 `write_file` 与核心 LSP 历史实现 |
 | M8 | 兼容回归与发布 | 形成可发布二进制和迁移说明 |
-| M7 | Multi-Agent 与高级入口 | placement、TUI 多 Pane/高级 Diff、Runtime API 和后台任务复用统一 Runtime；默认 Rich Inline TUI 产品化不依赖 M7 |
+| M9 | Multi-Agent 与高级入口 | placement、TUI 多 Pane/高级 Diff、Runtime API 和后台任务复用统一 Runtime；首个发布不依赖 M9 |
 
 每个阶段的最小任务、依赖与验收见 `docs/development-progress.md`。
 
@@ -2352,22 +2522,23 @@ Store 必须以事务保证 user Message 在执行前持久化、completed Run �
 ### ADR-015：采用 PaiCLI 风格的最小 Approval 机制
 
 - 决策：MVP 不实现 Sandbox/ExecutionBoundary 抽象、Policy DSL、Docker/microVM 或项目外路径授权，只复用现有 PathGuard、CommandGuard、ApprovalHandler 和 Audit。
-- 决策：只读工具在路径预检通过后直接执行；`write_file`、`apply_patch`、所有 `execute_command`、network side effect、`mcp_list_tools` 和 `mcp_call` 固定请求审批。
+- 决策：只读工具在路径预检通过后直接执行；`write_file`、`apply_patch`、所有 `execute_command`、network side effect、MCP Tool/Resource gateway 固定请求审批。
 - 决策：Project Root 外路径、软链接逃逸和 CommandGuard blocked 操作直接拒绝，不允许通过 Approval Grant 绕过。
 - 决策：配置文件删除 `approval.enabled/default`，TTY 固定询问，非 TTY 对需要审批的调用固定拒绝。
-- 决策：MVP 只提供 `once/session/deny`；删除未持久化的 `always`。Session Grant 按工具名缓存，但每次调用仍先经过 PathGuard/CommandGuard。
+- 决策：MVP 只提供 `once/session/deny`；删除未持久化的 `always`。普通内置工具的 Session Grant 按工具名缓存；MCP 使用 server/tool/resource 感知 Grant Key，每次调用仍先经过 PathGuard/CommandGuard/MCP target preflight。
 - 决策：Skill 不建立独立审批系统；读取 Skill 文档属于只读，Skill 引发的副作用复用对应工具审批。
 - 原因：现有 M3 已完成审批主链，固定分类最容易交付和测试；先接受写入与命令审批带来的交互频率，真实使用后再决定是否增加安全命令白名单或更细策略。
 
-### ADR-016：文本 Skill 优先与最小 MCP Client
+### ADR-016：Tool Observation Skill 与 Lazy MCP Gateway
 
 - 决策：用户级 Skill/MCP 统一位于 `$AMADEUS_HOME/skills` 和 `$AMADEUS_HOME/mcp.yaml`；项目级位于 `<project>/.amadeus/skills` 和 `<project>/.amadeus/mcp.yaml`，项目同名定义整体覆盖用户定义。
-- 决策：Skill MVP 采用 Progressive Disclosure，只实现 `SKILL.md`、`references/`、metadata index、`load_skill` 和一次性 SkillContextBuffer；不实现 scripts、专用脚本执行器、Docker 或 Sandbox。
+- 决策：Skill 采用 Progressive Disclosure，只把 metadata index 放入 BaseEnvelope；`read_skill(name, path?)` 直接以普通 Tool Observation 返回正文或有界 Reference，不再使用 SkillContextBuffer、下一轮 developer 注入或其他隐藏状态。
 - 决策：MVP 不实现 Skill enable/disable Store，发现且校验成功的 Skill 默认可用；真实需求出现后再增加状态持久化。
 - 决策：MCP 优先封装 `github.com/mark3labs/mcp-go`，第三方类型限制在基础设施 Adapter；不复制 WeKnora 的 Tenant/GORM/Handler/Redis/跨实例 Approval 层，也不从零维护完整 JSON-RPC 协议栈。
-- 决策：MCP MVP 只交付 stdio、streamable HTTP、initialize、tools/list、tools/call、lazy lifecycle、一次有界重连、`mcp_list_tools`/`mcp_call` gateway、Approval、Audit 和有界文本结果；动态 Tool Adapter 保留为非生产基础设施。
-- 决策：resources、prompts、sampling、notifications、mentions、图片和 Skill scripts 延后，不阻塞首个 MCP/Skill 可用版本。
-- 原因：WeKnora 的 Go Client/Manager 和 Progressive Disclosure 思路值得复用，但其 Web、多租户和 Sandbox 复杂度不适合本地 CLI；PaiCLI 的配置覆盖、工具命名和按需注入范围更利于先交付。
+- 决策：MCP 默认使用 lazy gateway，不在启动时连接全部 server 或动态展开全部远端 Tool；ServerState 缓存连接代次、能力与 Tool Catalog，重连后失效。`mcp_list_tools`、`mcp_call` 首先稳定，Resources 随后通过独立 gateway 接入。
+- 决策：MCP Session Grant 按 server + remote tool/resource 细化，Approval 显示脱敏目标、transport 和配置来源；项目 stdio 配置不能被泛化提示隐藏。
+- 决策：项目 Skill script 可通过现有 `execute_command` 在 Project Root 内运行；用户 Skill script 在独立 Sandbox 完成前禁止执行。Prompts、sampling、mentions、完整 notifications、图片和用户级 Skill Sandbox 后置。
+- 原因：WeKnora 的 Go Client/Manager、Result Normalizer、Progressive Disclosure 和 Sandbox 边界值得借鉴，但其 Web、多租户和数据库复杂度不适合本地 CLI；PaiCLI Go 的配置覆盖和 Resources 可作为产品行为参考，其自研 MCP JSON-RPC、启动即连接和 Skill 正文拼入 user message 不作为 Amadeus 目标实现。
 
 ### ADR-017：持久化收敛为六表与 Run 摘要
 
@@ -2410,6 +2581,33 @@ Store 必须以事务保证 user Message 在执行前持久化、completed Run �
 - 决策：`Ctrl+T` 使用 bounded in-memory Transcript Detail Viewer 临时查看完整输出，不尝试原位修改已提交的终端历史，也不把详情写入 Conversation SQLite。
 - 原因：目标交互需要接近 Codex 的可读运行轨迹，同时保留当前中文输入、运行中排队、原生滚轮和文本选择优势；把活动语义放在 Presenter、把安全摘要放在 ToolExecutor，可以避免 UI 解析业务参数或形成第二事实源。
 
+### ADR-021：项目原生验证取代核心 LSP
+
+- 决策：Amadeus 是面向多语言、多构建系统的通用 Coding Agent，核心配置、Runtime、Tool Pipeline 和 PostWrite Hook 不包含 Language Server Client，也不要求用户安装或配置 `gopls`、`pyright`、`rust-analyzer` 等语言服务器。
+- 决策：代码修改后的主要验证链是项目原生 formatter、build、lint、typecheck 和 test。Reactor 优先读取有效 `AGENTS.md`、项目脚本、Makefile、CI 和语言配置来选择命令，再使用常见生态约定兜底；验证输出作为普通 Tool Observation/Evidence 进入后续 Iteration。
+- 决策：删除现有 `lsp.*` 配置、生产接线和 `internal/lsp` 历史实现，不为保留已完成代码而维持无产品承诺的死模块。删除动作进入开发进度单独跟踪，并与当前设计文档的目标状态区分。
+- 决策：未来如需毫秒级局部诊断、符号查询、引用或重命名能力，只能以可选 MCP Server、插件或 Extension Tool 重新接入；它不得成为启动必需项，也不得把核心 Agent 限定为某一种语言。
+- 原因：Codex 类 Coding Agent 可通过文件探索、Shell 和项目原生验证完成可靠闭环；当前 Amadeus LSP 只提供异步写后单文件诊断，却引入文档版本同步、进程生命周期、Server 自动发现、多语言管理和额外配置面，收益不足以抵消复杂度。
+
+### ADR-022：独立 Web Search Provider 与 Web Fetch
+
+- 决策：M7 已将历史 `internal/web` 拆分为 `internal/websearch` 与 `internal/webfetch`；Search Provider API 与任意网页抓取共享底层安全组件，但不共享业务 Fetcher、结果模型或配置生命周期。
+- 决策：首版 Search Provider 固定为 DuckDuckGo、Tavily、SearXNG 和 Brave。DuckDuckGo 采用 HTML-first/API-fallback 且只定位为 best-effort；Tavily、Brave 使用独立凭证；SearXNG 使用显式 Base URL。
+- 决策：Search Service 统一处理 Provider 选择、15 秒默认总超时、一次有界瞬时错误重试、URL 归一化/去重、结果裁剪、耗时与错误分类；Provider Adapter 不承载 Agent、Approval、TUI 或 Context 逻辑。
+- 决策：未启用或配置不完整时不注册 `web_search`；提供独立 `amadeus web check` 诊断配置、认证、网络和响应格式。LLM Provider 与 Search Provider 完全分离，搜索密钥不复用模型 API key。
+- 决策：首版保持 `web_search → web_fetch`，Codex 风格多 query、domain/recency、稳定 ref_id、open/find/click 和 OpenAI Hosted Web Search 后置；Hosted 能力必须显式声明，不能根据 Provider 名称或 Dialect 推断。
+- 原因：当前 DuckDuckGo Instant Answer API 不是通用 SERP，网络不可达时固定等待且缺少可诊断配置；WeKnora 的 Provider Registry/Service 值得复用，但其多租户、数据库、Redis 和 RAG 不适合本地 Coding Agent；Codex 的托管搜索语义值得借鉴，但 OpenAI `alpha/search` 不能作为跨 Provider 基线。
+
+### ADR-023：结构化探索与持续命令工具链
+
+- 决策：在没有成熟跨平台 Sandbox 前保留 `read_file/list_dir/glob_files/grep_code`，不采用只删除读工具的半成品 Shell-first；四个 Tool 共享 Workspace 读取、Ignore、枚举、文本检测和输出预算基础设施。
+- 决策：`execute_command` 升级为 yield-aware 持续 Process Tool，并新增 `write_stdin`；使用 `process_id` 区分 Conversation Session，支持 PTY、轮询、增量输出、head+tail、取消和生命周期清理。
+- 决策：`apply_patch` 继续使用跨 Provider JSON Function 外壳，内部对齐 Codex Patch 的 Add/Update/Delete/Move 语义和保守唯一匹配；补齐后隐藏并删除 `write_file`，不新增独立 move/delete/mkdir/Git/test/format Tool。
+- 决策：打通 LLM 多模态 Content Part 后增加 capability-gated `view_image`；图片内容不能以 base64 JSON 文本冒充模型图片输入。
+- 决策：Registry 与模型可见 Tool Set 分离，使用 Direct/Conditional/Deferred/Hidden Exposure；`tool_search`、`request_user_input` 和完整 Sandbox 只有真实需求出现后再立项。
+- 原因：Codex 的小工具面建立在复杂 Sandbox/Process/Permission 基础上；Amadeus 当前安全模型下，结构化只读工具更容易交付且避免频繁审批，而持续命令、Patch 可靠性、图片和条件暴露是更高价值的复杂度投入。
+- 复审条件：只有 Sandbox、Permission Profile、Process 生命周期、Evidence 投影和跨平台行为全部达到 14.1 的门槛，并有真实任务基准证明收益后，才允许提出 Shell-first ADR；在此之前不得以“Shell 也能 cat/find/grep”为理由删除结构化探索工具。
+
 ## 27. 已确认与待确认的实现决策
 
 已确认：
@@ -2425,7 +2623,7 @@ Store 必须以事务保证 user Message 在执行前持久化、completed Run �
 9. Conversation Session、Terminal Session、Message 与 Run 使用独立语义；`Turn` 不作为核心实体，用户级 resume 不接受 Run ID，Task/Iteration 不持久化。
 10. SQLite 固定在 `$AMADEUS_HOME/data/amadeus.db`；目标项目只提供 Project 身份与工作区，不承载运行数据库。
 11. 中断后始终创建新 Run 并重新规划；只记录 `context_from_run_id`，不做精确 Run 恢复或继续意图分类。
-12. 内置工具采用结构化探索、`apply_patch` 修改和受约束 Shell 执行；`write_file` 只承担新建或显式整文件替换。
+12. 内置工具采用结构化探索、`apply_patch` 修改和受约束持续命令执行；`write_file` 已从生产注册、实现、Prompt 与 Provider/E2E 删除。
 13. Multi-Agent 第一版只有主 Agent 与最多两个只读 SubAgent；只通过 `/team` 请求并行调查，所有修改、命令、验证和最终回答仍由主 Agent 完成。
 14. Approval 采用固定分类：只读直接执行，写入/命令/网络/MCP 请求审批，路径越界和 blocked 命令直接拒绝。
 15. 配置文件不提供 Approval 开关或默认决策；MVP 只支持 once/session/deny，非 TTY 对需要审批的调用固定拒绝。
@@ -2433,7 +2631,7 @@ Store 必须以事务保证 user Message 在执行前持久化、completed Run �
 17. 默认 TUI 使用静态终端 Logo、安全 Tool Activity Presenter、Iteration 聚合、Working 动画与 ContextWindowUpdated；`Ctrl+T` 只打开 bounded 临时 Viewer，不原位修改 scrollback。
 18. `amadeus --plain`、非 TTY 和 `TERM=dumb` 使用逐行模式；不再支持 `AMADEUS_PLAIN`。文件树 Pane、多 Pane Diff 和持久化输入历史仍后置。
 19. 用户级 Skill/MCP 只使用 `$AMADEUS_HOME/skills` 与 `$AMADEUS_HOME/mcp.yaml`；项目级 `.amadeus` 同名定义整体覆盖用户定义。
-20. Skill MVP 只实现 SKILL.md、references、load_skill 和一次性上下文注入，不实现 scripts 或 Sandbox；MCP MVP 封装 mcp-go，只实现最小 tool client 闭环。
+20. Skill 采用 metadata index + `read_skill` Tool Observation，不再使用一次性 developer 注入；项目 Skill script 复用受审批的 `execute_command`，用户 Skill script 等待 Sandbox。MCP 封装 mcp-go 并采用 lazy gateway、目标感知 Approval 与 Catalog Cache，Tools 稳定后补 Resources。
 21. SQLite 最终收敛为 `schema_migrations`、`projects`、`conversation_sessions`、`runs`、`conversation_messages`、`conversation_summaries` 六表；不单独持久化 Turn、Checkpoint、Plan、Task、Iteration、Tool Call 或 Approval Grant。
 22. 中断 Run 只保存有界 `interrupted_context_json`；下一 Run 只加载完整 completed Message Pairs，重新检查现场并注入 Previous Work，不恢复旧调用栈、工具位置或旧指令快照。
 23. Context 分为 Run 级 BaseEnvelope 与每次 Think 的 RequestView；BaseContextBuilder 只组装稳定来源，ContextWindowManager 负责每轮 token 计算、动态投影和压缩。
@@ -2441,6 +2639,9 @@ Store 必须以事务保证 user Message 在执行前持久化、completed Run �
 25. Conversation Summary 使用有界 Rollup；Tool Call/Result 与完整 user/assistant Message Pair 按原子组压缩，Tool Result 在进入 LLM 前使用 token-aware projection。
 26. Reactor 内部一次 Think→Analyze→Act→Observe 统一称为 Iteration；`Step` 不再作为跨层 Domain，Run Budget 使用 `max_iterations/iterations_used` 表达循环限制。
 27. Provider 请求使用 LLMCallID；事件协议不再使用 TurnID 混合表达用户对话和模型请求。
+28. Amadeus 不以内置 LSP 作为核心能力；代码修改通过项目原生 formatter/build/lint/typecheck/test 验证，LSP 只允许未来以可选 MCP、插件或 Extension Tool 回归。
+29. Web Search 与 Web Fetch 独立分层；首版搜索 Provider 为 DuckDuckGo、Tavily、SearXNG 和 Brave，未正确启用时不向模型暴露工具，当前 Instant Answer 单实现不属于目标基线。
+30. 在无成熟 Sandbox 时保留四个结构化探索 Tool；核心工具链增加持续 `execute_command/write_stdin` 与 capability-gated `view_image`，Patch 补齐后删除 `write_file`，Registry 使用条件/延迟暴露控制模型可见工具。
 
 后续增强开始前仍需固定：
 

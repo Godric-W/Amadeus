@@ -10,6 +10,7 @@ const (
 	OperationAdd    OperationKind = "add"
 	OperationUpdate OperationKind = "update"
 	OperationDelete OperationKind = "delete"
+	OperationMove   OperationKind = "move"
 )
 
 type LineKind string
@@ -29,6 +30,7 @@ type Document struct {
 type Operation struct {
 	Kind     OperationKind
 	Path     string
+	MovePath string
 	AddLines []string
 	Hunks    []Hunk
 	Line     int

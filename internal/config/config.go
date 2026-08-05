@@ -28,21 +28,43 @@ const (
 	LogLevelError LogLevel = "error"
 )
 
+type WebSearchProvider string
+
+const (
+	WebSearchDuckDuckGo WebSearchProvider = "duckduckgo"
+	WebSearchTavily     WebSearchProvider = "tavily"
+	WebSearchSearXNG    WebSearchProvider = "searxng"
+	WebSearchBrave      WebSearchProvider = "brave"
+)
+
 type Config struct {
 	Version         int                       `yaml:"version"`
 	DefaultProvider string                    `yaml:"default_provider"`
 	Providers       map[string]ProviderConfig `yaml:"providers"`
 	Agent           AgentConfig               `yaml:"agent"`
-	LSP             LSPConfig                 `yaml:"lsp"`
+	Web             WebConfig                 `yaml:"web"`
 	Logging         LoggingConfig             `yaml:"logging"`
 }
 
-type LSPConfig struct {
-	Enabled    bool          `yaml:"enabled"`
-	Command    string        `yaml:"command"`
-	Args       []string      `yaml:"args"`
-	Extensions []string      `yaml:"extensions"`
-	Timeout    time.Duration `yaml:"timeout"`
+type WebConfig struct {
+	Fetch  WebFetchConfig  `yaml:"fetch"`
+	Search WebSearchConfig `yaml:"search"`
+}
+
+type WebFetchConfig struct {
+	Enabled      bool          `yaml:"enabled"`
+	Timeout      time.Duration `yaml:"timeout"`
+	MaxBytes     int64         `yaml:"max_bytes"`
+	MaxRedirects int           `yaml:"max_redirects"`
+}
+
+type WebSearchConfig struct {
+	Enabled    bool              `yaml:"enabled"`
+	Provider   WebSearchProvider `yaml:"provider"`
+	APIKey     string            `yaml:"api_key"`
+	BaseURL    string            `yaml:"base_url"`
+	Timeout    time.Duration     `yaml:"timeout"`
+	MaxResults int               `yaml:"max_results"`
 }
 
 type ProviderConfig struct {

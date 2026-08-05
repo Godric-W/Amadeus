@@ -74,7 +74,7 @@ func TestAgentSystemUsesDocumentedLayerOrder(t *testing.T) {
 	if !strings.Contains(combined, "outer Plan Controller reviews") || !strings.Contains(combined, "Do not claim success") {
 		t.Fatalf("Agent protocol omitted verification or handoff contract: %q", combined)
 	}
-	for _, required := range []string{"structured exploration tools", "Use `apply_patch` for normal edits", "`mode=create`", "builds, tests, Git", "Do not use shell redirection"} {
+	for _, required := range []string{"structured exploration tools", "Use `apply_patch` for all project file creation", "moves, and deletes", "builds, tests, Git", "Do not use shell redirection"} {
 		if !strings.Contains(combined, required) {
 			t.Fatalf("Agent protocol omitted tool selection rule %q", required)
 		}

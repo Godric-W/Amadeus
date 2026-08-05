@@ -7,16 +7,29 @@ type configPatch struct {
 	DefaultProvider *string                  `yaml:"default_provider"`
 	Providers       map[string]providerPatch `yaml:"providers"`
 	Agent           *agentPatch              `yaml:"agent"`
-	LSP             *lspPatch                `yaml:"lsp"`
+	Web             *webPatch                `yaml:"web"`
 	Logging         *loggingPatch            `yaml:"logging"`
 }
 
-type lspPatch struct {
-	Enabled    *bool          `yaml:"enabled"`
-	Command    *string        `yaml:"command"`
-	Args       *[]string      `yaml:"args"`
-	Extensions *[]string      `yaml:"extensions"`
-	Timeout    *time.Duration `yaml:"timeout"`
+type webPatch struct {
+	Fetch  *webFetchPatch  `yaml:"fetch"`
+	Search *webSearchPatch `yaml:"search"`
+}
+
+type webFetchPatch struct {
+	Enabled      *bool          `yaml:"enabled"`
+	Timeout      *time.Duration `yaml:"timeout"`
+	MaxBytes     *int64         `yaml:"max_bytes"`
+	MaxRedirects *int           `yaml:"max_redirects"`
+}
+
+type webSearchPatch struct {
+	Enabled    *bool              `yaml:"enabled"`
+	Provider   *WebSearchProvider `yaml:"provider"`
+	APIKey     *string            `yaml:"api_key"`
+	BaseURL    *string            `yaml:"base_url"`
+	Timeout    *time.Duration     `yaml:"timeout"`
+	MaxResults *int               `yaml:"max_results"`
 }
 
 type providerPatch struct {
@@ -64,8 +77,8 @@ func (patch configPatch) apply(base Config) Config {
 	if patch.Agent != nil {
 		patch.Agent.apply(&configured.Agent)
 	}
-	if patch.LSP != nil {
-		patch.LSP.apply(&configured.LSP)
+	if patch.Web != nil {
+		patch.Web.apply(&configured.Web)
 	}
 	if patch.Logging != nil {
 		patch.Logging.apply(&configured.Logging)
@@ -74,12 +87,21 @@ func (patch configPatch) apply(base Config) Config {
 	return configured
 }
 
-func (patch lspPatch) apply(configured *LSPConfig) {
-	assign(&configured.Enabled, patch.Enabled)
-	assign(&configured.Command, patch.Command)
-	assign(&configured.Args, patch.Args)
-	assign(&configured.Extensions, patch.Extensions)
-	assign(&configured.Timeout, patch.Timeout)
+func (patch webPatch) apply(configured *WebConfig) {
+	if patch.Fetch != nil {
+		assign(&configured.Fetch.Enabled, patch.Fetch.Enabled)
+		assign(&configured.Fetch.Timeout, patch.Fetch.Timeout)
+		assign(&configured.Fetch.MaxBytes, patch.Fetch.MaxBytes)
+		assign(&configured.Fetch.MaxRedirects, patch.Fetch.MaxRedirects)
+	}
+	if patch.Search != nil {
+		assign(&configured.Search.Enabled, patch.Search.Enabled)
+		assign(&configured.Search.Provider, patch.Search.Provider)
+		assign(&configured.Search.APIKey, patch.Search.APIKey)
+		assign(&configured.Search.BaseURL, patch.Search.BaseURL)
+		assign(&configured.Search.Timeout, patch.Search.Timeout)
+		assign(&configured.Search.MaxResults, patch.Search.MaxResults)
+	}
 }
 
 func (patch providerPatch) apply(provider *ProviderConfig) {
@@ -115,9 +137,6 @@ func clone(configured Config) Config {
 	for name, provider := range configured.Providers {
 		cloned.Providers[name] = provider
 	}
-	cloned.LSP.Args = append([]string(nil), configured.LSP.Args...)
-	cloned.LSP.Extensions = append([]string(nil), configured.LSP.Extensions...)
-
 	return cloned
 }
 

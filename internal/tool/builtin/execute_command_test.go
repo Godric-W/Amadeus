@@ -59,7 +59,7 @@ func TestExecuteCommandAppliesByteAndLineOutputBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute bounded command: %v", err)
 	}
-	if !result.Partial || result.Text != "one\ntwo\n" || result.Metadata["output_bytes"] != int64(14) || result.Metadata["output_lines"] != int64(3) || result.Metadata["output_truncated"] != true {
+	if !result.Partial || !strings.Contains(result.Text, "one\n") || !strings.Contains(result.Text, "ree\n") || !strings.Contains(result.Text, "output truncated") || result.Metadata["output_bytes"] != int64(14) || result.Metadata["output_truncated"] != true {
 		t.Fatalf("unexpected bounded output: %#v", result)
 	}
 }

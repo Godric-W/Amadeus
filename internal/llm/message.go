@@ -1,6 +1,9 @@
 package llm
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type Role string
 
@@ -15,9 +18,30 @@ const (
 type Message struct {
 	Role       Role
 	Content    string
+	Parts      []ContentPart
 	Reasoning  string
 	ToolCalls  []ToolCall
 	ToolCallID string
+}
+
+type ContentKind string
+
+const (
+	ContentText  ContentKind = "text"
+	ContentImage ContentKind = "image"
+)
+
+type ContentPart struct {
+	Kind      ContentKind `json:"kind"`
+	Text      string      `json:"text,omitempty"`
+	MediaType string      `json:"media_type,omitempty"`
+	Data      string      `json:"data,omitempty"`
+}
+
+func TextPart(text string) ContentPart { return ContentPart{Kind: ContentText, Text: text} }
+
+func ImagePart(mediaType, base64Data string) ContentPart {
+	return ContentPart{Kind: ContentImage, MediaType: strings.TrimSpace(mediaType), Data: strings.TrimSpace(base64Data)}
 }
 
 type ToolCall struct {
@@ -50,6 +74,10 @@ func ToolResultMessage(callID, content string) Message {
 	return Message{Role: RoleTool, ToolCallID: callID, Content: content}
 }
 
+func ToolResultMessageWithParts(callID, content string, parts ...ContentPart) Message {
+	return Message{Role: RoleTool, ToolCallID: callID, Content: content, Parts: cloneContentParts(parts)}
+}
+
 func cloneToolCalls(calls []ToolCall) []ToolCall {
 	cloned := make([]ToolCall, len(calls))
 	for index, call := range calls {
@@ -57,6 +85,10 @@ func cloneToolCalls(calls []ToolCall) []ToolCall {
 		cloned[index].Arguments = append(json.RawMessage(nil), call.Arguments...)
 	}
 	return cloned
+}
+
+func cloneContentParts(parts []ContentPart) []ContentPart {
+	return append([]ContentPart(nil), parts...)
 }
 
 func (role Role) Valid() bool {

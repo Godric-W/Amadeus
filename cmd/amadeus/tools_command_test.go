@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestToolsListShowsSevenCoreToolsAndMetadata(t *testing.T) {
+func TestToolsListShowsTargetExposureAndMigrationMetadata(t *testing.T) {
 	var output bytes.Buffer
 	command := newRootCommand()
 	command.SetOut(&output)
@@ -17,16 +17,30 @@ func TestToolsListShowsSevenCoreToolsAndMetadata(t *testing.T) {
 		t.Fatalf("execute tools list: %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
-	if len(lines) != 8 || !strings.Contains(lines[0], "SIDE_EFFECT") {
+	if len(lines) != 17 || !strings.Contains(lines[0], "EXPOSURE") || !strings.Contains(lines[0], "CONDITION") {
 		t.Fatalf("unexpected tools list shape: %q", output.String())
 	}
-	wantNames := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "write_file"}
+	wantNames := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "write_stdin", "view_image", "read_skill", "revert_run", "web_search", "web_fetch", "mcp_list_tools", "mcp_call", "mcp_list_resources", "mcp_read_resource"}
 	for index, name := range wantNames {
 		if !strings.HasPrefix(strings.TrimSpace(lines[index+1]), name+" ") {
 			t.Fatalf("unexpected tool at row %d: %q", index+1, lines[index+1])
 		}
 	}
-	if !strings.Contains(output.String(), "apply_patch      write        false          false       exclusive") || !strings.Contains(output.String(), "execute_command  execute") || !strings.Contains(output.String(), "read_file        read") {
-		t.Fatalf("tool side effect metadata missing: %q", output.String())
+	wantMetadata := map[string][]string{
+		"apply_patch": {"direct", "-", "available", "write"},
+		"view_image":  {"conditional", "provider.images", "available", "read"},
+		"mcp_call":    {"deferred", "mcp.catalog", "available", "network"},
+	}
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if want, exists := wantMetadata[fields[0]]; exists {
+			if strings.Join(fields[1:], ",") != strings.Join(want, ",") {
+				t.Fatalf("unexpected metadata for %q: %q", fields[0], line)
+			}
+			delete(wantMetadata, fields[0])
+		}
+	}
+	if len(wantMetadata) != 0 {
+		t.Fatalf("missing tool metadata rows: %#v", wantMetadata)
 	}
 }

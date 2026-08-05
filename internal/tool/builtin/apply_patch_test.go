@@ -75,6 +75,22 @@ func TestApplyPatchPreservesPartialExecutorResult(t *testing.T) {
 	}
 }
 
+func TestApplyPatchReportsMoveMetadata(t *testing.T) {
+	applier := &fakePatchApplier{result: patchtool.ApplyResult{Applied: []patchtool.OperationResult{{Kind: patchtool.OperationMove, Path: "old.txt", Destination: "new.txt", Bytes: 4, Moved: true}}}}
+	candidate, err := newApplyPatch(ApplyPatchOptions{}, applier)
+	if err != nil {
+		t.Fatalf("create fake apply_patch tool: %v", err)
+	}
+	result, err := candidate.Execute(context.Background(), json.RawMessage(`{"patch":"*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n*** End Patch"}`))
+	if err != nil {
+		t.Fatalf("execute move patch: %v", err)
+	}
+	operations, ok := result.Metadata["operations"].([]map[string]any)
+	if !ok || len(operations) != 1 || operations[0]["destination"] != "new.txt" || operations[0]["moved"] != true {
+		t.Fatalf("unexpected move metadata: %#v", result.Metadata)
+	}
+}
+
 func TestApplyPatchHonorsPreCancelledContext(t *testing.T) {
 	applier := &fakePatchApplier{}
 	candidate, err := newApplyPatch(ApplyPatchOptions{}, applier)

@@ -1,9 +1,9 @@
 # Amadeus Architecture Integration Audit
 
-Audit date: 2026-08-04
-Target architecture: `docs/design.md` ADR-011、ADR-014、ADR-017、ADR-018、ADR-019、ADR-020
-Implementation plan: `docs/development-progress.md` M6R、M8T
-Result: M6R runtime architecture and M8T Rich Inline product requirements are implemented; final verification commands pass.
+Audit date: 2026-08-05
+Target architecture: `docs/design.md` ADR-011、ADR-014、ADR-017、ADR-018、ADR-019、ADR-020、ADR-021、ADR-022、ADR-023
+Implementation plan: `docs/development-progress.md` M6R、M8T、M7
+Result: M6R runtime architecture, M8T Rich Inline, and M7 core toolchain requirements are implemented; final verification commands pass.
 
 ## Production Request Chain
 
@@ -102,6 +102,23 @@ CLI / Rich Inline TUI / --plain input
 | Rich Inline TUI and `--plain` remain connected | TUI inline tests, render tests, terminal approval and dumb-terminal fallback tests |
 | Responses and Chat Completions dialects | `TestCodingAgentProviderMockE2E` and `TestCodingAgentProviderMockE2EReplansBeforeCompletion` |
 
+## M7 Requirement Audit
+
+| M7 requirement | Authoritative implementation evidence | Verification evidence | Result |
+|---|---|---|---|
+| Stable target Tool Catalog and conditional exposure | `internal/tool/builtin/catalog.go`、`internal/tool/registry.go`、`cmd/amadeus/tools_command.go` | Catalog/Registry/Bootstrap/CLI list tests | PASS |
+| Shared bounded Workspace exploration | `internal/workspace` and read/list/glob/grep builtins | line-window, ignore, rg/fallback, binary/escape and output-budget tests | PASS |
+| Codex-compatible Patch Move and conflict diagnostics | `internal/tool/patch`、`internal/tool/builtin/apply_patch.go` | Add/Update/Delete/Move, move-after-update, destination conflict, ambiguous candidate and metadata fixtures | PASS |
+| `write_file` removed from production | no production file, Registry, Prompt, Provider fixture or Catalog entry remains | production-source guard search and migrated CLI/Provider/Bootstrap E2E | PASS |
+| Persistent Process runtime | `internal/process`、`execute_command`、`write_stdin` | yield, PTY, stdin, owner isolation, non-zero exit, timeout, duplicate cancel and owner cleanup tests | PASS |
+| Real image Content Parts | `internal/llm/message.go`、OpenAI Responses/Chat converters、`view_image` | user/tool image serialization, capability rejection, format/size/dimension/path fixtures | PASS |
+| Skill and Snapshot tool convergence | `read_skill`、`revert_run`; old buffer/load/reference/revert-turn code removed | project-over-user, bounded reference, escape, Run identity and error propagation tests | PASS |
+| MCP Resource gateway and target-aware approval | `internal/mcp/manager.go`、`resource_tool.go`、`internal/policy/grants.go` | Catalog cache/reconnect, URI validation, text/image bounds, server/tool/URI grant scope and safe presentation tests | PASS |
+| Independent Web Search and Fetch domains | `internal/websearch`、`internal/webfetch`、`cmd/amadeus/web_command.go` | SSRF/redirect/body bounds, timeout/retry/dedup/error classes, disabled exposure and redacted CLI check tests | PASS |
+| Four Search Providers | DuckDuckGo, Tavily, SearXNG and Brave adapters in `internal/websearch/providers.go` | HTML-first/API fallback, request/auth fixtures, auth/rate-limit/5xx/empty/timeout tests | PASS |
+| Core LSP removal | `internal/lsp` and `lsp.*` config/CLI wiring deleted | production-source guard search, strict config tests and full build | PASS |
+| Unified release-path behavior remains intact | default Reactor, `/plan` Controller, Session/Previous Work, Approval, Snapshot, Context and Rich Inline paths | full CLI/Provider integration suite, `make check`, full race | PASS |
+
 ## Architecture Guards
 
 Production source search returns no references to:
@@ -115,17 +132,24 @@ internal/agent/engine
 internal/agent/reflect
 max_steps / steps_used
 dead Engine retry or Reflection Prompt bundles
+production write_file implementation or registration
+internal/web legacy package imports
+LSPConfig / lsp.* production wiring
+load_skill / read_skill_reference / revert_turn production tools
 ```
 
 The legacy SQLite migration intentionally retains old `turn_id`、`session_turns` and `needs_plan` strings so existing databases can be migrated without data loss. Negative regression tests may also contain forbidden names as test fixtures; neither case is a production execution dependency.
 
 ## Verification Commands
 
-The following commands pass on 2026-08-04:
+The following commands pass on 2026-08-05:
 
 ```bash
+GOMODCACHE=/tmp/amadeus-go-mod GOCACHE=/tmp/amadeus-go-build go test ./... -count=1
 GOMODCACHE=/tmp/amadeus-go-mod GOCACHE=/tmp/amadeus-go-build make check
 GOMODCACHE=/tmp/amadeus-go-mod GOCACHE=/tmp/amadeus-go-build go test -race ./... -count=1
+GOMODCACHE=/tmp/amadeus-go-mod GOCACHE=/tmp/amadeus-go-build go mod tidy
+git diff --check
 ```
 
 `make check` covers formatting, `go vet ./...`, `go test ./...` and building `bin/amadeus`.

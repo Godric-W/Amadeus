@@ -16,8 +16,10 @@ var (
 )
 
 type Entry struct {
-	Spec Spec
-	Tool Tool
+	Spec      Spec
+	Tool      Tool
+	Exposure  Exposure
+	Condition string
 }
 
 type Registry struct {
@@ -31,9 +33,17 @@ func NewRegistry() *Registry {
 }
 
 func (registry *Registry) ReplaceGroup(group string, candidates []Tool) error {
+	return registry.ReplaceGroupWithRegistration(group, candidates, DirectRegistration())
+}
+
+func (registry *Registry) ReplaceGroupWithRegistration(group string, candidates []Tool, registration Registration) error {
 	group = strings.TrimSpace(group)
 	if group == "" {
 		return errors.New("tool registry group is empty")
+	}
+	registration, err := normalizeRegistration(registration)
+	if err != nil {
+		return err
 	}
 	entries := make([]Entry, 0, len(candidates))
 	seen := make(map[string]struct{}, len(candidates))
@@ -49,7 +59,7 @@ func (registry *Registry) ReplaceGroup(group string, candidates []Tool) error {
 			return fmt.Errorf("%w: %s", ErrDuplicateTool, spec.Name)
 		}
 		seen[spec.Name] = struct{}{}
-		entries = append(entries, Entry{Spec: spec, Tool: candidate})
+		entries = append(entries, Entry{Spec: spec, Tool: candidate, Exposure: registration.Exposure, Condition: registration.Condition})
 	}
 
 	registry.mutex.Lock()
@@ -74,8 +84,16 @@ func (registry *Registry) ReplaceGroup(group string, candidates []Tool) error {
 }
 
 func (registry *Registry) Register(candidate Tool) error {
+	return registry.RegisterWithRegistration(candidate, DirectRegistration())
+}
+
+func (registry *Registry) RegisterWithRegistration(candidate Tool, registration Registration) error {
 	if candidate == nil || isNilTool(candidate) {
 		return ErrNilTool
+	}
+	registration, err := normalizeRegistration(registration)
+	if err != nil {
+		return err
 	}
 	spec := candidate.Spec().Clone()
 	if err := validateSpec(spec); err != nil {
@@ -87,7 +105,7 @@ func (registry *Registry) Register(candidate Tool) error {
 	if _, exists := registry.tools[spec.Name]; exists {
 		return fmt.Errorf("%w: %s", ErrDuplicateTool, spec.Name)
 	}
-	registry.tools[spec.Name] = Entry{Spec: spec, Tool: candidate}
+	registry.tools[spec.Name] = Entry{Spec: spec, Tool: candidate, Exposure: registration.Exposure, Condition: registration.Condition}
 	return nil
 }
 
@@ -102,13 +120,48 @@ func (registry *Registry) Snapshot() []Entry {
 	registry.mutex.RLock()
 	entries := make([]Entry, 0, len(registry.tools))
 	for _, entry := range registry.tools {
-		entries = append(entries, Entry{Spec: entry.Spec.Clone(), Tool: entry.Tool})
+		entries = append(entries, Entry{Spec: entry.Spec.Clone(), Tool: entry.Tool, Exposure: entry.Exposure, Condition: entry.Condition})
 	}
 	registry.mutex.RUnlock()
 	sort.Slice(entries, func(left, right int) bool {
 		return entries[left].Spec.Name < entries[right].Spec.Name
 	})
 	return entries
+}
+
+func (registry *Registry) VisibleSnapshot(conditions map[string]bool) []Entry {
+	entries := registry.Snapshot()
+	visible := make([]Entry, 0, len(entries))
+	for _, entry := range entries {
+		switch entry.Exposure {
+		case ExposureDirect:
+			visible = append(visible, entry)
+		case ExposureConditional:
+			if conditions != nil && conditions[entry.Condition] {
+				visible = append(visible, entry)
+			}
+		case ExposureDeferred:
+			if conditions != nil && conditions[entry.Condition] {
+				visible = append(visible, entry)
+			}
+		case ExposureHidden:
+		}
+	}
+	return visible
+}
+
+func normalizeRegistration(registration Registration) (Registration, error) {
+	if registration.Exposure == "" {
+		registration.Exposure = ExposureDirect
+	}
+	if !registration.Exposure.Valid() {
+		return Registration{}, fmt.Errorf("tool registration exposure %q is unsupported", registration.Exposure)
+	}
+	registration.Condition = strings.TrimSpace(registration.Condition)
+	if registration.Exposure == ExposureConditional && registration.Condition == "" {
+		return Registration{}, errors.New("conditional tool registration has no condition")
+	}
+	return registration, nil
 }
 
 func (registry *Registry) Len() int {

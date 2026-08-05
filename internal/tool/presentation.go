@@ -45,15 +45,14 @@ func PresentCall(spec Spec, call Call) CallPresentation {
 			summary += " in " + path
 		}
 		return CallPresentation{ActionSummary: summary}
-	case "load_skill":
-		return CallPresentation{ActionSummary: joinAction("Load skill", value("name"))}
-	case "read_skill_reference":
-		return CallPresentation{ActionSummary: joinAction("Read skill reference", path)}
+	case "read_skill":
+		if path != "" {
+			return CallPresentation{ActionSummary: joinAction("Read skill reference", path)}
+		}
+		return CallPresentation{ActionSummary: joinAction("Read skill", value("name"))}
 	case "apply_patch":
 		return CallPresentation{ActionSummary: "Applied patch"}
-	case "write_file":
-		return CallPresentation{ActionSummary: joinAction("Wrote", path)}
-	case "revert_turn":
+	case "revert_run":
 		return CallPresentation{ActionSummary: "Reverted changes"}
 	case "execute_command":
 		command := value("command")
@@ -74,6 +73,10 @@ func PresentCall(spec Spec, call Call) CallPresentation {
 		}
 		detail := strings.Trim(strings.Join([]string{server, remoteTool}, " · "), " ·")
 		return CallPresentation{ActionSummary: "Called MCP tool", Detail: detail}
+	case "mcp_list_resources":
+		return CallPresentation{ActionSummary: joinAction("Listed MCP resources", value("server"))}
+	case "mcp_read_resource":
+		return CallPresentation{ActionSummary: joinAction("Read MCP resource", value("server")), Detail: value("uri")}
 	}
 	switch spec.SideEffect {
 	case SideEffectNone, SideEffectRead:

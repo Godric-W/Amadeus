@@ -4,29 +4,27 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
-	"os"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/tool"
+	"github.com/Godric-W/Amadeus/internal/workspace"
 )
 
 type ReadFileOptions struct {
-	MaxBytes int64
+	MaxBytes     int64
+	MaxLineBytes int
 }
 
 type ReadFile struct {
-	root    project.Root
-	guard   *project.PathGuard
+	reader  *workspace.Reader
 	options ReadFileOptions
 }
 
 type readFileArguments struct {
 	Path   string `json:"path"`
-	Offset int    `json:"offset,omitempty"`
+	Line   int    `json:"line,omitempty"`
+	Offset *int   `json:"offset,omitempty"`
 	Limit  int    `json:"limit,omitempty"`
 }
 
@@ -37,11 +35,14 @@ func NewReadFile(root project.Root, options ReadFileOptions) (*ReadFile, error) 
 	if options.MaxBytes <= 0 {
 		return nil, errors.New("read_file max bytes must be greater than zero")
 	}
-	guard, err := project.NewPathGuard(root)
+	if options.MaxLineBytes <= 0 {
+		options.MaxLineBytes = 32 << 10
+	}
+	reader, err := workspace.NewReader(root)
 	if err != nil {
 		return nil, err
 	}
-	return &ReadFile{root: root, guard: guard, options: options}, nil
+	return &ReadFile{reader: reader, options: options}, nil
 }
 
 func (readFile *ReadFile) Spec() tool.Spec {
@@ -56,78 +57,39 @@ func (readFile *ReadFile) Execute(ctx context.Context, input json.RawMessage) (t
 	if strings.TrimSpace(arguments.Path) == "" {
 		return tool.Result{}, errors.New("read_file path is empty")
 	}
-	if arguments.Offset < 0 || arguments.Limit < 0 {
-		return tool.Result{}, errors.New("read_file offset and limit cannot be negative")
+	if arguments.Line < 0 || arguments.Limit < 0 || (arguments.Offset != nil && *arguments.Offset < 0) {
+		return tool.Result{}, errors.New("read_file line, legacy offset and limit cannot be negative")
 	}
 	if err := ctx.Err(); err != nil {
 		return tool.Result{}, err
 	}
-	path, err := readFile.guard.ResolveExisting(arguments.Path, project.PathFile)
+	startLine := arguments.Line
+	if startLine == 0 {
+		startLine = 1
+	}
+	if arguments.Offset != nil {
+		if arguments.Line != 0 {
+			return tool.Result{}, errors.New("read_file line and legacy offset cannot be used together")
+		}
+		startLine = *arguments.Offset + 1
+	}
+	read, err := readFile.reader.ReadRange(ctx, arguments.Path, workspace.ReadRangeOptions{
+		StartLine: startLine, LineLimit: arguments.Limit, MaxBytes: int(readFile.options.MaxBytes),
+		MaxLineBytes: readFile.options.MaxLineBytes, PrefixLines: true,
+	})
 	if err != nil {
 		return tool.Result{}, err
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		return tool.Result{}, fmt.Errorf("open file %q: %w", arguments.Path, err)
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return tool.Result{}, fmt.Errorf("stat file %q: %w", arguments.Path, err)
-	}
-	if !info.Mode().IsRegular() {
-		return tool.Result{}, fmt.Errorf("read_file path is not a regular file: %q", arguments.Path)
-	}
-	if info.Size() > readFile.options.MaxBytes {
-		return tool.Result{}, fmt.Errorf("read_file size %d exceeds limit %d", info.Size(), readFile.options.MaxBytes)
-	}
-	content, err := io.ReadAll(io.LimitReader(file, readFile.options.MaxBytes+1))
-	if err != nil {
-		return tool.Result{}, fmt.Errorf("read file %q: %w", arguments.Path, err)
-	}
-	if int64(len(content)) > readFile.options.MaxBytes {
-		return tool.Result{}, fmt.Errorf("read_file size exceeds limit %d", readFile.options.MaxBytes)
-	}
-	if err := ctx.Err(); err != nil {
-		return tool.Result{}, err
-	}
-	if bytesAreBinary(content) {
-		return tool.Result{}, fmt.Errorf("read_file does not support binary or non-UTF-8 file %q", arguments.Path)
-	}
-
-	lines := splitLines(string(content))
-	start := arguments.Offset
-	if start > len(lines) {
-		start = len(lines)
-	}
-	end := len(lines)
-	if arguments.Limit > 0 && start+arguments.Limit < end {
-		end = start + arguments.Limit
-	}
-	selected := strings.Join(lines[start:end], "")
-	partial := start > 0 || end < len(lines)
 	return tool.Result{
-		ToolName: "read_file", Text: selected, Partial: partial,
+		ToolName: "read_file", Text: read.Text, Partial: read.Partial,
 		Metadata: map[string]any{
-			"path": arguments.Path, "offset": start, "lines_returned": end - start,
-			"total_lines": len(lines), "bytes": len(content),
+			"path": arguments.Path, "start_line": read.StartLine, "end_line": read.EndLine,
+			"next_line": read.NextLine, "lines_returned": read.LinesReturned, "total_lines": read.TotalLines,
+			"bytes_returned": read.BytesReturned, "file_bytes": read.FileBytes,
+			"estimated_tokens": workspace.EstimateTokens(read.BytesReturned), "output_truncated": read.OutputTruncated,
+			"lines_truncated": read.LinesTruncated,
 		},
 	}, nil
-}
-
-func bytesAreBinary(content []byte) bool {
-	return !utf8.Valid(content) || strings.IndexByte(string(content), 0) >= 0
-}
-
-func splitLines(content string) []string {
-	if content == "" {
-		return nil
-	}
-	lines := strings.SplitAfter(content, "\n")
-	if lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	return lines
 }
 
 var _ tool.Tool = (*ReadFile)(nil)

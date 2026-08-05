@@ -45,12 +45,18 @@ agent:
   max_output_tokens: 4000
   max_duration: 5m
   max_parallel_tools: 2
-lsp:
-  enabled: true
-  command: gopls
-  args: [-remote=auto]
-  extensions: [.go]
-  timeout: 15s
+web:
+  fetch:
+    enabled: true
+    timeout: 20s
+    max_bytes: 2097152
+    max_redirects: 2
+  search:
+    enabled: true
+    provider: brave
+    api_key: brave-key
+    timeout: 12s
+    max_results: 7
 logging:
   level: debug
   trace_llm: true
@@ -74,8 +80,11 @@ logging:
 	if configured.Agent.MaxIterations != 12 || configured.Agent.MaxToolCalls != 24 || configured.Agent.MaxInputTokens != 30_000 || configured.Agent.MaxOutputTokens != 4_000 || configured.Agent.MaxDuration != 5*time.Minute || configured.Agent.MaxParallelTools != 2 {
 		t.Fatalf("unexpected agent config: %#v", configured.Agent)
 	}
-	if !configured.LSP.Enabled || configured.LSP.Command != "gopls" || !reflect.DeepEqual(configured.LSP.Args, []string{"-remote=auto"}) || !reflect.DeepEqual(configured.LSP.Extensions, []string{".go"}) || configured.LSP.Timeout != 15*time.Second {
-		t.Fatalf("unexpected LSP config: %#v", configured.LSP)
+	if !configured.Web.Fetch.Enabled || configured.Web.Fetch.Timeout != 20*time.Second || configured.Web.Fetch.MaxBytes != 2<<20 || configured.Web.Fetch.MaxRedirects != 2 {
+		t.Fatalf("unexpected Web fetch config: %#v", configured.Web.Fetch)
+	}
+	if !configured.Web.Search.Enabled || configured.Web.Search.Provider != WebSearchBrave || configured.Web.Search.APIKey != "brave-key" || configured.Web.Search.Timeout != 12*time.Second || configured.Web.Search.MaxResults != 7 {
+		t.Fatalf("unexpected Web search config: %#v", configured.Web.Search)
 	}
 	if configured.Logging.Level != LogLevelDebug || !configured.Logging.TraceLLM {
 		t.Fatalf("unexpected logging config: %#v", configured.Logging)

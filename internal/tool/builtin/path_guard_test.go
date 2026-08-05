@@ -33,7 +33,7 @@ func TestMVPToolsRejectSymlinkEscapes(t *testing.T) {
 		input string
 	}{
 		{name: "read_file", tool: mustReadFile(t, root, options.ReadFile), input: `{"path":"escape/secret.txt"}`},
-		{name: "write_file", tool: mustWriteFile(t, root, options.WriteFile), input: `{"path":"escape/new.txt","content":"blocked","mode":"create"}`},
+		{name: "apply_patch", tool: mustApplyPatch(t, root, options.ApplyPatch), input: `{"patch":"*** Begin Patch\n*** Add File: escape/new.txt\n+blocked\n*** End Patch"}`},
 		{name: "list_dir", tool: mustListDir(t, root, options.ListDir), input: `{"path":"escape"}`},
 		{name: "glob_files", tool: mustGlobFiles(t, root, options.GlobFiles), input: `{"pattern":"**"}`},
 		{name: "grep_code", tool: mustGrepCode(t, root, options.GrepCode), input: `{"query":"secret","path":"escape"}`},
@@ -42,13 +42,13 @@ func TestMVPToolsRejectSymlinkEscapes(t *testing.T) {
 	for _, test := range tools {
 		t.Run(test.name, func(t *testing.T) {
 			result, err := test.tool.Execute(context.Background(), json.RawMessage(test.input))
-			if err == nil || !strings.Contains(err.Error(), "outside project root") || result.ToolName != "" {
+			if err == nil || !strings.Contains(err.Error(), "outside project root") {
 				t.Fatalf("unexpected symlink escape result: result=%#v err=%v", result, err)
 			}
 		})
 	}
 	if _, err := os.Stat(filepath.Join(external, "new.txt")); !os.IsNotExist(err) {
-		t.Fatalf("write_file modified escaped target: %v", err)
+		t.Fatalf("apply_patch modified escaped target: %v", err)
 	}
 }
 
@@ -67,14 +67,14 @@ func TestMVPFileToolsAllowInternalDirectorySymlink(t *testing.T) {
 	root, _ := project.NewRoot(rootPath)
 	options := DefaultMVPOptions()
 	readResult, err := mustReadFile(t, root, options.ReadFile).Execute(context.Background(), json.RawMessage(`{"path":"alias/file.txt"}`))
-	if err != nil || readResult.Text != "inside" {
+	if err != nil || readResult.Text != "L1:inside" {
 		t.Fatalf("unexpected internal symlink read: result=%#v err=%v", readResult, err)
 	}
-	if _, err := mustWriteFile(t, root, options.WriteFile).Execute(context.Background(), json.RawMessage(`{"path":"alias/new.txt","content":"new","mode":"create"}`)); err != nil {
-		t.Fatalf("write through internal directory symlink: %v", err)
+	if _, err := mustApplyPatch(t, root, options.ApplyPatch).Execute(context.Background(), json.RawMessage(`{"patch":"*** Begin Patch\n*** Add File: alias/new.txt\n+new\n*** End Patch"}`)); err != nil {
+		t.Fatalf("patch through internal directory symlink: %v", err)
 	}
 	content, err := os.ReadFile(filepath.Join(realDirectory, "new.txt"))
-	if err != nil || string(content) != "new" {
+	if err != nil || string(content) != "new\n" {
 		t.Fatalf("unexpected internal symlink write: content=%q err=%v", content, err)
 	}
 }
@@ -88,11 +88,11 @@ func mustReadFile(t *testing.T, root project.Root, options ReadFileOptions) *Rea
 	return value
 }
 
-func mustWriteFile(t *testing.T, root project.Root, options WriteFileOptions) *WriteFile {
+func mustApplyPatch(t *testing.T, root project.Root, options ApplyPatchOptions) *ApplyPatch {
 	t.Helper()
-	value, err := NewWriteFile(root, options)
+	value, err := NewApplyPatch(root, options)
 	if err != nil {
-		t.Fatalf("create write_file: %v", err)
+		t.Fatalf("create apply_patch: %v", err)
 	}
 	return value
 }

@@ -26,6 +26,36 @@ func TestGrantCacheReusesSessionDecisionByToolName(t *testing.T) {
 	}
 }
 
+func TestGrantCacheScopesMCPSessionDecisionToTarget(t *testing.T) {
+	cache := NewGrantCache()
+	request := testNamedGrantRequest(t, "mcp-1", "mcp_call", `{"server":"demo","name":"echo","arguments":{"value":"one"}}`)
+	decision := ApprovalDecision{Outcome: ApprovalAllow, Scope: ApprovalSession, Source: ApprovalSourceUser, Reason: "session allow"}
+	if err := cache.Remember(request, decision); err != nil {
+		t.Fatalf("remember MCP session decision: %v", err)
+	}
+
+	sameTarget := testNamedGrantRequest(t, "mcp-2", "mcp_call", `{"server":"demo","name":"echo","arguments":{"value":"two"}}`)
+	if _, ok := cache.Lookup(sameTarget); !ok {
+		t.Fatal("MCP grant was not reused for the same server and tool")
+	}
+	for _, other := range []ApprovalRequest{
+		testNamedGrantRequest(t, "mcp-3", "mcp_call", `{"server":"demo","name":"other","arguments":{}}`),
+		testNamedGrantRequest(t, "mcp-4", "mcp_call", `{"server":"other","name":"echo","arguments":{}}`),
+	} {
+		if _, ok := cache.Lookup(other); ok {
+			t.Fatalf("MCP grant escaped its target: %#v", other)
+		}
+	}
+
+	resource := testNamedGrantRequest(t, "resource-1", "mcp_read_resource", `{"server":"demo","uri":"file:///one"}`)
+	if err := cache.Remember(resource, decision); err != nil {
+		t.Fatalf("remember MCP resource decision: %v", err)
+	}
+	if _, ok := cache.Lookup(testNamedGrantRequest(t, "resource-2", "mcp_read_resource", `{"server":"demo","uri":"file:///two"}`)); ok {
+		t.Fatal("MCP resource grant escaped its URI")
+	}
+}
+
 func TestGrantCacheIgnoresOnceAndValidatesInputs(t *testing.T) {
 	cache := NewGrantCache()
 	request := testGrantRequest(t, "once", `{"path":"once.txt"}`)
@@ -46,8 +76,12 @@ func TestGrantCacheIgnoresOnceAndValidatesInputs(t *testing.T) {
 }
 
 func testGrantRequest(t *testing.T, id, arguments string) ApprovalRequest {
+	return testNamedGrantRequest(t, id, "write_file", arguments)
+}
+
+func testNamedGrantRequest(t *testing.T, id, name, arguments string) ApprovalRequest {
 	t.Helper()
-	request, err := NewApprovalRequest(id, "write_file", json.RawMessage(arguments), CommandRiskHigh, "write operation")
+	request, err := NewApprovalRequest(id, name, json.RawMessage(arguments), CommandRiskHigh, "write operation")
 	if err != nil {
 		t.Fatalf("create grant request: %v", err)
 	}

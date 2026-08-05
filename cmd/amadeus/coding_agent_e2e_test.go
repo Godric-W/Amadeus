@@ -19,7 +19,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/mcp"
 	"github.com/Godric-W/Amadeus/internal/snapshot"
 	"github.com/Godric-W/Amadeus/internal/tool"
-	"github.com/Godric-W/Amadeus/internal/web"
+	"github.com/Godric-W/Amadeus/internal/webfetch"
 )
 
 type codingWorkflowClient struct {
@@ -46,7 +46,7 @@ func (client *codingWorkflowClient) Stream(_ context.Context, request llm.Reques
 	case 1:
 		call = llm.ToolCall{ID: "read-calc", Name: "read_file", Arguments: json.RawMessage(`{"path":"calc.go"}`)}
 	case 2:
-		call = llm.ToolCall{ID: "write-calc", Name: "write_file", Arguments: json.RawMessage(`{"path":"calc.go","content":"package calc\n\nfunc Add(left, right int) int { return left + right }\n","mode":"replace"}`)}
+		call = llm.ToolCall{ID: "write-calc", Name: "apply_patch", Arguments: json.RawMessage(`{"patch":"*** Begin Patch\n*** Update File: calc.go\n@@\n-func Add(left, right int) int { return left - right }\n+func Add(left, right int) int { return left + right }\n*** End Patch"}`)}
 	case 3:
 		call = llm.ToolCall{ID: "test-project", Name: "execute_command", Arguments: json.RawMessage(`{"command":"go test ./...","timeout_ms":30000}`)}
 	default:
@@ -111,7 +111,7 @@ func TestCodingAgentCommandReadsFixesTestsAndCompletes(t *testing.T) {
 	if stdout.String() != "fixed Add and verified go test\n" {
 		t.Fatalf("unexpected workflow stdout: %q", stdout.String())
 	}
-	for _, fragment := range []string{"tool started: read_file", "tool started: write_file", "tool started: execute_command", "result: completed"} {
+	for _, fragment := range []string{"tool started: read_file", "tool started: apply_patch", "tool started: execute_command", "result: completed"} {
 		if !strings.Contains(stderr.String(), fragment) {
 			t.Fatalf("workflow stderr missing %q: %s", fragment, stderr.String())
 		}
@@ -162,9 +162,9 @@ func (client *skillWorkflowClient) Stream(_ context.Context, request llm.Request
 	client.streamIndex++
 	switch client.streamIndex {
 	case 1:
-		return skillWorkflowToolStream("load-skill", "load_skill", `{"name":"review"}`), nil
+		return skillWorkflowToolStream("load-skill", "read_skill", `{"name":"review"}`), nil
 	case 2:
-		return skillWorkflowToolStream("read-reference", "read_skill_reference", `{"skill":"review","path":"guide.md"}`), nil
+		return skillWorkflowToolStream("read-reference", "read_skill", `{"name":"review","path":"guide.md"}`), nil
 	case 3:
 		return &codingCommandStream{chunks: []llm.StreamChunk{
 			{ID: "skill-final", ContentDelta: "review Skill was loaded", Usage: &llm.Usage{InputTokens: 20, OutputTokens: 6, TotalTokens: 26}},
@@ -232,10 +232,10 @@ func TestCodingAgentSkillWorkflowUsesProjectOverrideAndNextRequestContext(t *tes
 	if !requestContains(first, "amadeus.skill_index.v1") || !requestContains(first, "Project review guidance") || requestContains(first, "PROJECT-SKILL-BODY") {
 		t.Fatalf("initial request did not contain disclosure-safe project Skill index: %#v", first.Messages)
 	}
-	if !requestContains(second, "amadeus.skill_context.v1") || !requestContains(second, "PROJECT-SKILL-BODY") || requestContains(second, "USER-SKILL-BODY") {
+	if !requestContains(second, "PROJECT-SKILL-BODY") || requestContains(second, "USER-SKILL-BODY") {
 		t.Fatalf("second request did not contain the project Skill body: %#v", second.Messages)
 	}
-	if !strings.Contains(stderr.String(), "tool started: load_skill") || !strings.Contains(stderr.String(), "tool started: read_skill_reference") {
+	if strings.Count(stderr.String(), "tool started: read_skill") != 2 {
 		t.Fatalf("Skill tools did not execute: %s", stderr.String())
 	}
 }
@@ -264,11 +264,11 @@ func (client *integratedWorkflowClient) Complete(context.Context, llm.Request) (
 func (client *integratedWorkflowClient) Stream(_ context.Context, _ llm.Request) (llm.Stream, error) {
 	client.stream++
 	calls := []struct{ id, name, arguments string }{
-		{"load", "load_skill", `{"name":"review"}`},
+		{"load", "read_skill", `{"name":"review"}`},
 		{"mcp-list", "mcp_list_tools", `{"server":"demo"}`},
 		{"mcp", "mcp_call", `{"server":"demo","name":"echo","arguments":{"value":"hello"}}`},
 		{"web", "web_fetch", `{"url":"https://example.com/article"}`},
-		{"write", "write_file", `{"path":"report.txt","content":"integrated\n","mode":"create"}`},
+		{"write", "apply_patch", `{"patch":"*** Begin Patch\n*** Add File: report.txt\n+integrated\n*** End Patch"}`},
 	}
 	if client.stream <= len(calls) {
 		call := calls[client.stream-1]
@@ -291,6 +291,12 @@ type integratedMCPClient struct {
 func (*integratedMCPClient) ListTools(context.Context) ([]mcp.RemoteTool, error) {
 	return []mcp.RemoteTool{{Name: "echo", Description: "Echo", InputSchema: json.RawMessage(`{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}`)}}, nil
 }
+func (*integratedMCPClient) ListResources(context.Context) ([]mcp.RemoteResource, error) {
+	return []mcp.RemoteResource{{URI: "fixture://review", Name: "Review fixture", MIMEType: "text/plain"}}, nil
+}
+func (*integratedMCPClient) ReadResource(context.Context, string) ([]mcp.RemoteResourceContent, error) {
+	return []mcp.RemoteResourceContent{{URI: "fixture://review", MIMEType: "text/plain", Text: "resource fixture"}}, nil
+}
 func (client *integratedMCPClient) CallTool(_ context.Context, name string, arguments json.RawMessage) (mcp.RemoteResult, error) {
 	client.calls++
 	return mcp.RemoteResult{Text: name + ":" + string(arguments)}, nil
@@ -299,8 +305,8 @@ func (client *integratedMCPClient) Close() error { client.closed++; return nil }
 
 type integratedWebFetcher struct{}
 
-func (*integratedWebFetcher) Fetch(context.Context, string) (web.Document, error) {
-	return web.Document{URL: "https://example.com/article", Title: "Article", Text: "web fixture"}, nil
+func (*integratedWebFetcher) Fetch(context.Context, string) (webfetch.Document, error) {
+	return webfetch.Document{URL: "https://example.com/article", Title: "Article", Text: "web fixture"}, nil
 }
 
 type integratedWriteHook struct{ calls int }
@@ -316,6 +322,15 @@ func (hook *integratedWriteHook) After(_ context.Context, spec tool.Spec, _ tool
 func TestCodingWorkflowIntegratesSkillMCPWebSnapshotAndDiagnosticHook(t *testing.T) {
 	amadeusHome, projectDirectory := t.TempDir(), t.TempDir()
 	writeCodingCommandConfig(t, amadeusHome)
+	configPath := filepath.Join(amadeusHome, "config.yaml")
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content = append(content, []byte("web:\n  fetch:\n    enabled: true\n")...)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(amadeusHome, "skills", "review"), 0o700); err != nil {
 		t.Fatal(err)
 	}

@@ -61,21 +61,21 @@ func SourcesFor(configured Config) Sources {
 		"agent.max_output_tokens",
 		"agent.max_duration",
 		"agent.max_parallel_tools",
-		"lsp.enabled",
-		"lsp.command",
-		"lsp.timeout",
+		"web.fetch.enabled",
+		"web.fetch.timeout",
+		"web.fetch.max_bytes",
+		"web.fetch.max_redirects",
+		"web.search.enabled",
+		"web.search.provider",
+		"web.search.api_key",
+		"web.search.base_url",
+		"web.search.timeout",
+		"web.search.max_results",
 		"logging.level",
 		"logging.trace_llm",
 	} {
 		set(path)
 	}
-	for index := range configured.LSP.Args {
-		set(fmt.Sprintf("lsp.args[%d]", index))
-	}
-	for index := range configured.LSP.Extensions {
-		set(fmt.Sprintf("lsp.extensions[%d]", index))
-	}
-
 	return sources
 }
 

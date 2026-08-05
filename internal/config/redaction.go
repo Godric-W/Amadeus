@@ -10,6 +10,9 @@ func Redact(configured Config) Config {
 			redacted.Providers[name] = provider
 		}
 	}
+	if redacted.Web.Search.APIKey != "" {
+		redacted.Web.Search.APIKey = RedactedSecret
+	}
 
 	return redacted
 }

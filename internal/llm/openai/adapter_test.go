@@ -1,11 +1,13 @@
 package openai
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/config"
+	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
 func TestNewAdapterExposesStableModelAndCapabilities(t *testing.T) {
@@ -123,6 +125,24 @@ func TestNewAdapterRejectsInvalidRuntimeConfiguration(t *testing.T) {
 				t.Fatalf("unexpected adapter error: %v", err)
 			}
 		})
+	}
+}
+
+func TestAdapterRejectsImagesBeforeCallingUnsupportedProvider(t *testing.T) {
+	provider := validAdapterProvider()
+	provider.API = config.APIChatCompletions
+	provider.Dialect = config.DialectDeepSeek
+	adapter, err := NewAdapter("deepseek", provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Stream(context.Background(), llm.Request{
+		Model: provider.Model, Messages: []llm.Message{{Role: llm.RoleUser, Parts: []llm.ContentPart{llm.ImagePart("image/png", "YQ==")}}},
+		MaxOutputTokens: 10,
+	})
+	var providerError *llm.ProviderError
+	if !errors.As(err, &providerError) || providerError.Kind != llm.ProviderErrorInvalidRequest || !strings.Contains(providerError.Message, "does not support image") {
+		t.Fatalf("unexpected image capability error: %v", err)
 	}
 }
 

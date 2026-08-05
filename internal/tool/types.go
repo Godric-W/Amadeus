@@ -24,6 +24,33 @@ func (effect SideEffect) Valid() bool {
 	}
 }
 
+type Exposure string
+
+const (
+	ExposureDirect      Exposure = "direct"
+	ExposureConditional Exposure = "conditional"
+	ExposureDeferred    Exposure = "deferred"
+	ExposureHidden      Exposure = "hidden"
+)
+
+func (exposure Exposure) Valid() bool {
+	switch exposure {
+	case ExposureDirect, ExposureConditional, ExposureDeferred, ExposureHidden:
+		return true
+	default:
+		return false
+	}
+}
+
+type Registration struct {
+	Exposure  Exposure
+	Condition string
+}
+
+func DirectRegistration() Registration {
+	return Registration{Exposure: ExposureDirect}
+}
+
 type ResourceMode string
 
 const (

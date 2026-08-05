@@ -46,7 +46,7 @@ func TestToolAuthorizerRunsPathPreflightBeforeApproval(t *testing.T) {
 	handler := &recordingApprovalHandler{decisions: []ApprovalDecision{allowOnceDecision()}}
 	authorizer := newTestToolAuthorizer(t, root, handler, nil)
 
-	err := authorizer.Authorize(context.Background(), writeToolSpec(), tool.NewCall("write-1", "write_file", json.RawMessage(`{"path":"../outside","content":"x"}`)))
+	err := authorizer.Authorize(context.Background(), applyPatchToolSpec(), tool.NewCall("write-1", "apply_patch", patchPolicyArguments(t, "*** Begin Patch\n*** Add File: ../outside\n+x\n*** End Patch")))
 	if err == nil || !strings.Contains(err.Error(), "path preflight") {
 		t.Fatalf("unexpected path preflight result: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestToolAuthorizerRunsPathPreflightBeforeApproval(t *testing.T) {
 	if err := os.Symlink(external, filepath.Join(root.Path(), "escape")); err != nil {
 		t.Fatalf("create escape symlink: %v", err)
 	}
-	err = authorizer.Authorize(context.Background(), writeToolSpec(), tool.NewCall("write-2", "write_file", json.RawMessage(`{"path":"escape/file.txt","content":"x"}`)))
+	err = authorizer.Authorize(context.Background(), applyPatchToolSpec(), tool.NewCall("write-2", "apply_patch", patchPolicyArguments(t, "*** Begin Patch\n*** Add File: escape/file.txt\n+x\n*** End Patch")))
 	if err == nil || !strings.Contains(err.Error(), "outside project root") || handler.count() != 0 {
 		t.Fatalf("symlink escape did not fail before approval: err=%v calls=%d", err, handler.count())
 	}
@@ -149,6 +149,23 @@ func TestToolAuthorizerClassifiesNoneReadAndNetworkTools(t *testing.T) {
 	}
 	if handler.count() != 1 || handler.requests[0].Risk != CommandRiskHigh || handler.requests[0].Reason != "tool accesses external systems" {
 		t.Fatalf("unexpected network approval request: %#v", handler.requests)
+	}
+}
+
+func TestToolAuthorizerDescribesMCPTargetWithoutLeakingArguments(t *testing.T) {
+	root := newPolicyProjectRoot(t)
+	handler := &recordingApprovalHandler{decisions: []ApprovalDecision{allowOnceDecision()}}
+	authorizer := newTestToolAuthorizer(t, root, handler, nil)
+	spec := tool.Spec{Name: "mcp_call", SideEffect: tool.SideEffectNetwork}
+	arguments := json.RawMessage(`{"server":"demo","name":"echo","arguments":{"api_key":"must-not-leak"}}`)
+	if err := authorizer.Authorize(context.Background(), spec, tool.NewCall("mcp-1", "mcp_call", arguments)); err != nil {
+		t.Fatalf("authorize MCP call: %v", err)
+	}
+	if handler.count() != 1 || !strings.Contains(handler.requests[0].Reason, "demo") || !strings.Contains(handler.requests[0].Reason, "echo") {
+		t.Fatalf("MCP approval omitted target: %#v", handler.requests)
+	}
+	if strings.Contains(handler.requests[0].Reason, "must-not-leak") {
+		t.Fatalf("MCP approval leaked arguments: %#v", handler.requests[0])
 	}
 }
 

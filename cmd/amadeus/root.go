@@ -11,7 +11,8 @@ import (
 	"github.com/Godric-W/Amadeus/internal/buildinfo"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/mcp"
-	"github.com/Godric-W/Amadeus/internal/web"
+	"github.com/Godric-W/Amadeus/internal/webfetch"
+	"github.com/Godric-W/Amadeus/internal/websearch"
 	"github.com/spf13/cobra"
 )
 
@@ -26,8 +27,8 @@ type commandRuntime struct {
 	lookupEnv           config.EnvLookup
 	llmClientFactory    llmClientFactory
 	mcpClientFactory    mcp.ClientFactory
-	webFetcher          web.Fetcher
-	webSearch           web.SearchProvider
+	webFetcher          webfetch.Fetcher
+	webSearch           websearch.Provider
 	postWriteHooks      []react.PostExecutionHook
 	turnContextFactory  chatTurnContextFactory
 	agentContextFactory chatTurnContextFactory
@@ -75,6 +76,7 @@ func newRootCommandWithFlags(configFlags *configFlags, projectFlags *projectFlag
 	command.AddCommand(newConfigCommand(configFlags, runtime))
 	command.AddCommand(newToolsCommand())
 	command.AddCommand(newSessionsCommand(projectFlags, runtime))
+	command.AddCommand(newWebCommand(configFlags, runtime))
 	command.AddCommand(newVersionCommand(buildinfo.Current()))
 
 	return command

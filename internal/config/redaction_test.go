@@ -21,12 +21,16 @@ func TestRedactMasksEveryConfiguredAPIKey(t *testing.T) {
 		Temperature:     openAI.Temperature,
 		MaxOutputTokens: openAI.MaxOutputTokens,
 	}
+	configured.Web.Search.APIKey = "web-search-secret"
 
 	redacted := Redact(configured)
 	for name, provider := range redacted.Providers {
 		if provider.APIKey != RedactedSecret {
 			t.Fatalf("provider %q API key was not redacted: got %q", name, provider.APIKey)
 		}
+	}
+	if redacted.Web.Search.APIKey != RedactedSecret {
+		t.Fatalf("Web search API key was not redacted: got %q", redacted.Web.Search.APIKey)
 	}
 }
 

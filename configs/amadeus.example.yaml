@@ -105,14 +105,30 @@ agent:
   max_duration: 30m
   max_parallel_tools: 4
 
-# Optional write-after diagnostics. The process starts lazily after the first
-# successful write to a matching extension and is closed when the Run ends.
-lsp:
-  enabled: false
-  command: gopls
-  args: []
-  extensions: [.go]
-  timeout: 10s
+# Web tools are conditional: disabled capabilities are not registered and are
+# therefore invisible to the model.
+web:
+  fetch:
+    enabled: false
+    timeout: 30s
+    max_bytes: 1048576
+    # Set to 0 to reject redirects; the default allows at most 3.
+    max_redirects: 3
+  search:
+    enabled: false
+    # Supported providers:
+    #   duckduckgo - no API key; best-effort HTML search with API fallback
+    #   tavily     - requires api_key; official endpoint is used by default
+    #   searxng    - requires base_url for the selected SearXNG instance
+    #   brave      - requires api_key; official endpoint is used by default
+    provider: duckduckgo
+    # Prefer environment expansion, for example ${TAVILY_API_KEY} or
+    # ${BRAVE_API_KEY}, instead of storing credentials in this file.
+    api_key: ""
+    # Usually empty for DuckDuckGo, Tavily, and Brave. Required for SearXNG.
+    base_url: ""
+    timeout: 15s
+    max_results: 5
 
 logging:
   level: info

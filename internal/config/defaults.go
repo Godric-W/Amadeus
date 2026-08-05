@@ -27,7 +27,10 @@ func Default() Config {
 			MaxDuration:      30 * time.Minute,
 			MaxParallelTools: 4,
 		},
-		LSP: LSPConfig{Timeout: 10 * time.Second},
+		Web: WebConfig{
+			Fetch:  WebFetchConfig{Timeout: 30 * time.Second, MaxBytes: 1 << 20, MaxRedirects: 3},
+			Search: WebSearchConfig{Provider: WebSearchDuckDuckGo, Timeout: 15 * time.Second, MaxResults: 5},
+		},
 		Logging: LoggingConfig{
 			Level: LogLevelInfo,
 		},

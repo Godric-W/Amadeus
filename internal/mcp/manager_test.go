@@ -9,13 +9,17 @@ import (
 )
 
 type fakeClient struct {
-	tools      []RemoteTool
-	result     RemoteResult
-	listErrs   []error
-	callErrs   []error
-	listCalls  int
-	callCalls  int
-	closeCalls int
+	tools             []RemoteTool
+	resources         []RemoteResource
+	contents          []RemoteResourceContent
+	result            RemoteResult
+	listErrs          []error
+	callErrs          []error
+	listCalls         int
+	callCalls         int
+	resourceListCalls int
+	resourceReadCalls int
+	closeCalls        int
 }
 
 func (client *fakeClient) ListTools(context.Context) ([]RemoteTool, error) {
@@ -26,6 +30,15 @@ func (client *fakeClient) ListTools(context.Context) ([]RemoteTool, error) {
 		return nil, err
 	}
 	return append([]RemoteTool(nil), client.tools...), nil
+}
+
+func (client *fakeClient) ListResources(context.Context) ([]RemoteResource, error) {
+	client.resourceListCalls++
+	return append([]RemoteResource(nil), client.resources...), nil
+}
+func (client *fakeClient) ReadResource(context.Context, string) ([]RemoteResourceContent, error) {
+	client.resourceReadCalls++
+	return append([]RemoteResourceContent(nil), client.contents...), nil
 }
 
 func (client *fakeClient) CallTool(context.Context, string, json.RawMessage) (RemoteResult, error) {
@@ -65,7 +78,7 @@ func TestManagerIsLazyReusesClientAndReconnectsOnce(t *testing.T) {
 	if factories != 2 || first.closeCalls != 1 || !reflect.DeepEqual(tools, second.tools) {
 		t.Fatalf("unexpected lazy reconnect lifecycle: factories=%d first=%#v tools=%#v", factories, first, tools)
 	}
-	if _, err := manager.ListTools(context.Background(), "demo"); err != nil || factories != 2 || second.listCalls != 2 {
+	if _, err := manager.ListTools(context.Background(), "demo"); err != nil || factories != 2 || second.listCalls != 1 {
 		t.Fatalf("MCP client was not reused: err=%v factories=%d client=%#v", err, factories, second)
 	}
 	if err := manager.Close(); err != nil || second.closeCalls != 1 {
@@ -90,6 +103,41 @@ func TestToolAdapterSanitizesSchemaBoundsUntrustedResultAndUsesNetworkApprovalCl
 	client.result = RemoteResult{Text: "tool failure", IsError: true}
 	if _, err := adapter.Execute(context.Background(), json.RawMessage(`{}`)); err == nil {
 		t.Fatal("MCP isError result was not converted to a tool failure")
+	}
+}
+
+func TestManagerCachesCatalogsAndValidatesResourceURI(t *testing.T) {
+	client := &fakeClient{
+		tools:     []RemoteTool{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		resources: []RemoteResource{{URI: "fixture://one", Name: "One", MIMEType: "text/plain"}},
+		contents:  []RemoteResourceContent{{URI: "fixture://one", MIMEType: "text/plain", Text: "hello"}},
+	}
+	manager, err := NewManager(Config{Servers: map[string]ServerConfig{"demo": {Transport: TransportStdio, Command: "demo"}}}, func(context.Context, ServerConfig) (Client, error) { return client, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	firstTools, err := manager.ListTools(context.Background(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstTools[0].Name = "mutated"
+	secondTools, err := manager.ListTools(context.Background(), "demo")
+	if err != nil || client.listCalls != 1 || secondTools[0].Name != "echo" {
+		t.Fatalf("tool catalog cache failed: calls=%d tools=%#v err=%v", client.listCalls, secondTools, err)
+	}
+	if _, err := manager.ListResources(context.Background(), "demo"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.ListResources(context.Background(), "demo"); err != nil || client.resourceListCalls != 1 {
+		t.Fatalf("resource catalog cache failed: calls=%d err=%v", client.resourceListCalls, err)
+	}
+	contents, err := manager.ReadResource(context.Background(), "demo", "fixture://one")
+	if err != nil || len(contents) != 1 || client.resourceReadCalls != 1 {
+		t.Fatalf("read cached resource: contents=%#v calls=%d err=%v", contents, client.resourceReadCalls, err)
+	}
+	if _, err := manager.ReadResource(context.Background(), "demo", "fixture://missing"); err == nil || client.resourceReadCalls != 1 {
+		t.Fatalf("unknown resource reached server: calls=%d err=%v", client.resourceReadCalls, err)
 	}
 }
 

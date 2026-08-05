@@ -29,9 +29,25 @@ type RemoteResult struct {
 	Partial bool
 }
 
+type RemoteResource struct {
+	URI         string
+	Name        string
+	Description string
+	MIMEType    string
+}
+
+type RemoteResourceContent struct {
+	URI      string
+	MIMEType string
+	Text     string
+	Blob     string
+}
+
 type Client interface {
 	ListTools(context.Context) ([]RemoteTool, error)
 	CallTool(context.Context, string, json.RawMessage) (RemoteResult, error)
+	ListResources(context.Context) ([]RemoteResource, error)
+	ReadResource(context.Context, string) ([]RemoteResourceContent, error)
 	Close() error
 }
 
@@ -135,6 +151,50 @@ func (client *nativeClient) CallTool(ctx context.Context, name string, arguments
 		text = append(text, string(result.RawStructuredContent))
 	}
 	return RemoteResult{Text: strings.Join(text, "\n"), IsError: result.IsError}, nil
+}
+
+func (client *nativeClient) ListResources(ctx context.Context) ([]RemoteResource, error) {
+	if client == nil || client.client == nil {
+		return nil, errors.New("MCP client is nil")
+	}
+	requestContext, cancel := withTimeout(ctx, client.timeout)
+	defer cancel()
+	result, err := client.client.ListResources(requestContext, mcpgo.ListResourcesRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("list MCP resources: %w", err)
+	}
+	resources := make([]RemoteResource, 0, len(result.Resources))
+	for _, value := range result.Resources {
+		resources = append(resources, RemoteResource{URI: value.URI, Name: value.Name, Description: value.Description, MIMEType: value.MIMEType})
+	}
+	sort.Slice(resources, func(left, right int) bool { return resources[left].URI < resources[right].URI })
+	return resources, nil
+}
+
+func (client *nativeClient) ReadResource(ctx context.Context, uri string) ([]RemoteResourceContent, error) {
+	if client == nil || client.client == nil {
+		return nil, errors.New("MCP client is nil")
+	}
+	uri = strings.TrimSpace(uri)
+	if uri == "" {
+		return nil, errors.New("MCP resource URI is empty")
+	}
+	requestContext, cancel := withTimeout(ctx, client.timeout)
+	defer cancel()
+	result, err := client.client.ReadResource(requestContext, mcpgo.ReadResourceRequest{Params: mcpgo.ReadResourceParams{URI: uri}})
+	if err != nil {
+		return nil, fmt.Errorf("read MCP resource %q: %w", uri, err)
+	}
+	contents := make([]RemoteResourceContent, 0, len(result.Contents))
+	for _, content := range result.Contents {
+		switch value := content.(type) {
+		case mcpgo.TextResourceContents:
+			contents = append(contents, RemoteResourceContent{URI: value.URI, MIMEType: value.MIMEType, Text: value.Text})
+		case mcpgo.BlobResourceContents:
+			contents = append(contents, RemoteResourceContent{URI: value.URI, MIMEType: value.MIMEType, Blob: value.Blob})
+		}
+	}
+	return contents, nil
 }
 
 func (client *nativeClient) Close() error {

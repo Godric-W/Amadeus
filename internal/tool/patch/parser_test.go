@@ -84,6 +84,24 @@ func TestDocumentCloneIsolated(t *testing.T) {
 	}
 }
 
+func TestParseMoveWithOptionalUpdate(t *testing.T) {
+	document, err := Parse([]byte(strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: old.txt",
+		"*** Move to: nested/new.txt",
+		"@@",
+		"-old",
+		"+new",
+		"*** End Patch",
+	}, "\n")), ParseOptions{})
+	if err != nil {
+		t.Fatalf("parse move patch: %v", err)
+	}
+	if len(document.Operations) != 1 || document.Operations[0].Kind != OperationMove || document.Operations[0].Path != "old.txt" || document.Operations[0].MovePath != "nested/new.txt" || len(document.Operations[0].Hunks) != 1 {
+		t.Fatalf("unexpected move operation: %#v", document.Operations)
+	}
+}
+
 func TestParseRejectsInvalidDocuments(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -102,6 +120,8 @@ func TestParseRejectsInvalidDocuments(t *testing.T) {
 		{name: "add body prefix", input: "*** Begin Patch\n*** Add File: a\nplain\n*** End Patch", line: 3, column: 1, message: "must start with '+'"},
 		{name: "delete body", input: "*** Begin Patch\n*** Delete File: a\n-body\n*** End Patch", line: 3, column: 1, message: "cannot contain body"},
 		{name: "update without hunk", input: "*** Begin Patch\n*** Update File: a\n*** End Patch", line: 2, column: 1, message: "requires at least one hunk"},
+		{name: "empty move destination", input: "*** Begin Patch\n*** Update File: a\n*** Move to:   \n*** End Patch", line: 3, column: 13, message: "move destination is empty"},
+		{name: "duplicate move destination", input: "*** Begin Patch\n*** Add File: b\n+x\n*** Update File: a\n*** Move to: b\n*** End Patch", line: 4, column: 1, message: "duplicate operation"},
 		{name: "invalid hunk header", input: "*** Begin Patch\n*** Update File: a\nnot-a-hunk\n*** End Patch", line: 3, column: 1, message: "must start with '@@'"},
 		{name: "empty hunk", input: "*** Begin Patch\n*** Update File: a\n@@\n*** End Patch", line: 3, column: 1, message: "hunk is empty"},
 		{name: "hunk no old lines", input: "*** Begin Patch\n*** Update File: a\n@@\n+new\n*** End Patch", line: 3, column: 1, message: "requires context"},

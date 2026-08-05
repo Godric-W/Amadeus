@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -144,6 +145,47 @@ func TestResponsesRequestSerializesStandardToolProtocol(t *testing.T) {
 	}
 	if result["type"] != "function_call_output" || result["call_id"] != "call_1" || result["output"] != "file contents" {
 		t.Fatalf("unexpected Responses tool result: %#v", result)
+	}
+}
+
+func TestResponsesRequestSerializesUserAndToolImagesAsContentParts(t *testing.T) {
+	var requestBody map[string]any
+	provider := config.Default().Providers[config.DefaultProviderName]
+	provider.APIKey = "test-secret"
+	provider.BaseURL = "https://responses.example.invalid/v1"
+	provider.MaxRetries = 0
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(request.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode Responses image request: %v", err)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"resp_images"}`))}, nil
+	})}
+	client, err := newSDKClient(provider, httpClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := llm.Request{
+		Model: "test-model", Temperature: 0.2, MaxOutputTokens: 100,
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: "inspect", Parts: []llm.ContentPart{llm.ImagePart("image/png", "YQ==")}},
+			llm.ToolResultMessageWithParts("call_image", "tool image", llm.ImagePart("image/jpeg", "Yg==")),
+		},
+	}
+	params, err := newResponsesRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Responses.New(context.Background(), params); err != nil {
+		t.Fatal(err)
+	}
+	input := requestBody["input"].([]any)
+	userContent := input[0].(map[string]any)["content"].([]any)
+	if len(userContent) != 2 || userContent[0].(map[string]any)["type"] != "input_text" || userContent[1].(map[string]any)["type"] != "input_image" || userContent[1].(map[string]any)["image_url"] != "data:image/png;base64,YQ==" {
+		t.Fatalf("unexpected Responses user image content: %#v", userContent)
+	}
+	output := input[1].(map[string]any)["output"].([]any)
+	if len(output) != 2 || output[0].(map[string]any)["type"] != "input_text" || output[1].(map[string]any)["type"] != "input_image" || output[1].(map[string]any)["image_url"] != "data:image/jpeg;base64,Yg==" {
+		t.Fatalf("unexpected Responses tool image output: %#v", output)
 	}
 }
 

@@ -30,18 +30,21 @@ type ApplyResult struct {
 }
 
 type OperationResult struct {
-	Kind    OperationKind
-	Path    string
-	Bytes   int
-	Created bool
-	Deleted bool
+	Kind        OperationKind
+	Path        string
+	Destination string
+	Bytes       int
+	Created     bool
+	Deleted     bool
+	Moved       bool
 }
 
 type ConflictError struct {
-	Path    string
-	Line    int
-	Matches int
-	Reason  string
+	Path       string
+	Line       int
+	Matches    int
+	Candidates []int
+	Reason     string
 }
 
 func (conflict *ConflictError) Error() string {
@@ -49,7 +52,11 @@ func (conflict *ConflictError) Error() string {
 	if conflict.Line > 0 {
 		location = fmt.Sprintf(" at patch line %d", conflict.Line)
 	}
-	return fmt.Sprintf("patch conflict for %q%s: %s", conflict.Path, location, conflict.Reason)
+	candidates := ""
+	if len(conflict.Candidates) > 0 {
+		candidates = fmt.Sprintf("; candidate lines %v", conflict.Candidates)
+	}
+	return fmt.Sprintf("patch conflict for %q%s: %s%s", conflict.Path, location, conflict.Reason, candidates)
 }
 
 type commitOperations interface {
@@ -69,6 +76,7 @@ type preparedOperation struct {
 	content   []byte
 	mode      os.FileMode
 	temporary string
+	source    string
 }
 
 func NewExecutor(root project.Root, options ExecutorOptions) (*Executor, error) {
@@ -163,6 +171,15 @@ func validateDocument(document Document) error {
 			return fmt.Errorf("apply_patch contains duplicate operation for path %q", operation.Path)
 		}
 		seen[operation.Path] = struct{}{}
+		if operation.MovePath != "" {
+			if strings.TrimSpace(operation.MovePath) == "" || strings.ContainsRune(operation.MovePath, '\x00') {
+				return fmt.Errorf("apply_patch move destination %q is invalid", operation.MovePath)
+			}
+			if _, duplicate := seen[operation.MovePath]; duplicate {
+				return fmt.Errorf("apply_patch contains duplicate operation for path %q", operation.MovePath)
+			}
+			seen[operation.MovePath] = struct{}{}
+		}
 		switch operation.Kind {
 		case OperationAdd:
 			if len(operation.Hunks) != 0 {
@@ -185,6 +202,15 @@ func validateDocument(document Document) error {
 		case OperationDelete:
 			if len(operation.AddLines) != 0 || len(operation.Hunks) != 0 {
 				return fmt.Errorf("apply_patch delete operation %q cannot contain content", operation.Path)
+			}
+		case OperationMove:
+			for _, hunk := range operation.Hunks {
+				if err := validateHunk(operation.Path, hunk); err != nil {
+					return err
+				}
+			}
+			if operation.MovePath == "" {
+				return fmt.Errorf("apply_patch move operation %q has no destination", operation.Path)
 			}
 		default:
 			return fmt.Errorf("apply_patch operation kind %q is invalid", operation.Kind)
@@ -225,11 +251,18 @@ func validateHunk(path string, hunk Hunk) error {
 }
 
 func (executor *Executor) prepare(operation Operation) (preparedOperation, error) {
-	target, err := executor.guard.ResolveForWrite(operation.Path)
+	source, err := executor.guard.ResolveForWrite(operation.Path)
 	if err != nil {
 		return preparedOperation{}, fmt.Errorf("prepare %s %q: %w", operation.Kind, operation.Path, err)
 	}
-	prepared := preparedOperation{operation: operation, target: target, mode: executor.options.FileMode}
+	target := source
+	if operation.Kind == OperationMove {
+		target, err = executor.guard.ResolveForWrite(operation.MovePath)
+		if err != nil {
+			return preparedOperation{}, fmt.Errorf("prepare move destination %q: %w", operation.MovePath, err)
+		}
+	}
+	prepared := preparedOperation{operation: operation, source: source, target: target, mode: executor.options.FileMode}
 
 	switch operation.Kind {
 	case OperationAdd:
@@ -239,8 +272,8 @@ func (executor *Executor) prepare(operation Operation) (preparedOperation, error
 			return preparedOperation{}, fmt.Errorf("inspect apply_patch add target %q: %w", operation.Path, err)
 		}
 		prepared.content = joinAddedLines(operation.AddLines)
-	case OperationUpdate, OperationDelete:
-		info, err := os.Lstat(target)
+	case OperationUpdate, OperationDelete, OperationMove:
+		info, err := os.Lstat(source)
 		if err != nil {
 			return preparedOperation{}, fmt.Errorf("inspect apply_patch %s target %q: %w", operation.Kind, operation.Path, err)
 		}
@@ -251,12 +284,20 @@ func (executor *Executor) prepare(operation Operation) (preparedOperation, error
 			return preparedOperation{}, fmt.Errorf("apply_patch target %q size %d exceeds limit %d",
 				operation.Path, info.Size(), executor.options.MaxFileBytes)
 		}
-		prepared.original, err = os.ReadFile(target)
+		prepared.original, err = os.ReadFile(source)
 		if err != nil {
 			return preparedOperation{}, fmt.Errorf("read apply_patch target %q: %w", operation.Path, err)
 		}
 		prepared.mode = info.Mode().Perm()
-		if operation.Kind == OperationUpdate {
+		if operation.Kind == OperationMove {
+			if _, err := os.Lstat(target); err == nil {
+				return preparedOperation{}, fmt.Errorf("apply_patch move destination already exists: %q", operation.MovePath)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return preparedOperation{}, fmt.Errorf("inspect apply_patch move destination %q: %w", operation.MovePath, err)
+			}
+			prepared.content = append([]byte(nil), prepared.original...)
+		}
+		if operation.Kind == OperationUpdate || (operation.Kind == OperationMove && len(operation.Hunks) > 0) {
 			if !validText(prepared.original) {
 				return preparedOperation{}, fmt.Errorf("apply_patch target is binary or non-UTF-8: %q", operation.Path)
 			}
@@ -318,8 +359,8 @@ func (executor *Executor) revalidate(prepared []preparedOperation) error {
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("revalidate apply_patch add target %q: %w", candidate.operation.Path, err)
 			}
-		case OperationUpdate, OperationDelete:
-			current, err := os.ReadFile(candidate.target)
+		case OperationUpdate, OperationDelete, OperationMove:
+			current, err := os.ReadFile(candidate.source)
 			if err != nil {
 				return &ConflictError{Path: candidate.operation.Path, Reason: "target changed or disappeared after preflight"}
 			}
@@ -333,7 +374,7 @@ func (executor *Executor) revalidate(prepared []preparedOperation) error {
 
 func (executor *Executor) commit(candidate *preparedOperation) (OperationResult, error) {
 	operation := candidate.operation
-	result := OperationResult{Kind: operation.Kind, Path: operation.Path}
+	result := OperationResult{Kind: operation.Kind, Path: operation.Path, Destination: operation.MovePath}
 	switch operation.Kind {
 	case OperationAdd, OperationUpdate:
 		if err := executor.commitOps.Rename(candidate.temporary, candidate.target); err != nil {
@@ -347,6 +388,16 @@ func (executor *Executor) commit(candidate *preparedOperation) (OperationResult,
 			return OperationResult{}, fmt.Errorf("commit apply_patch delete %q: %w", operation.Path, err)
 		}
 		result.Deleted = true
+	case OperationMove:
+		if err := executor.commitOps.Rename(candidate.temporary, candidate.target); err != nil {
+			return OperationResult{}, fmt.Errorf("commit apply_patch move destination %q: %w", operation.MovePath, err)
+		}
+		candidate.temporary = ""
+		if err := executor.commitOps.Remove(candidate.source); err != nil {
+			return OperationResult{}, fmt.Errorf("remove apply_patch move source %q: %w", operation.Path, err)
+		}
+		result.Bytes = len(candidate.content)
+		result.Moved = true
 	}
 	return result, nil
 }
@@ -394,7 +445,7 @@ func applyHunks(path string, original []byte, hunks []Hunk) ([]byte, error) {
 				Reason: "hunk context does not match current file"}
 		}
 		if len(matches) > 1 {
-			return nil, &ConflictError{Path: path, Line: hunk.Line, Matches: len(matches),
+			return nil, &ConflictError{Path: path, Line: hunk.Line, Matches: len(matches), Candidates: oneBased(matches),
 				Reason: fmt.Sprintf("hunk context is ambiguous (%d matches)", len(matches))}
 		}
 		start := matches[0]
@@ -427,6 +478,14 @@ func hunkSequences(hunk Hunk) ([]string, []string) {
 }
 
 func findSequence(lines, sequence []string) []int {
+	matches := findSequenceWith(lines, sequence, func(value string) string { return value })
+	if len(matches) > 0 {
+		return matches
+	}
+	return findSequenceWith(lines, sequence, func(value string) string { return strings.TrimRight(value, " \t\r") })
+}
+
+func findSequenceWith(lines, sequence []string, normalize func(string) string) []int {
 	if len(sequence) == 0 || len(sequence) > len(lines) {
 		return nil
 	}
@@ -434,7 +493,7 @@ func findSequence(lines, sequence []string) []int {
 	for start := 0; start+len(sequence) <= len(lines); start++ {
 		matched := true
 		for offset := range sequence {
-			if lines[start+offset] != sequence[offset] {
+			if normalize(lines[start+offset]) != normalize(sequence[offset]) {
 				matched = false
 				break
 			}
@@ -444,4 +503,12 @@ func findSequence(lines, sequence []string) []int {
 		}
 	}
 	return matches
+}
+
+func oneBased(values []int) []int {
+	result := make([]int, len(values))
+	for index, value := range values {
+		result[index] = value + 1
+	}
+	return result
 }

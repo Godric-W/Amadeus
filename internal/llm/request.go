@@ -34,6 +34,7 @@ func cloneMessages(messages []Message) []Message {
 	cloned := make([]Message, len(messages))
 	for index, message := range messages {
 		cloned[index] = message
+		cloned[index].Parts = cloneContentParts(message.Parts)
 		cloned[index].ToolCalls = cloneToolCalls(message.ToolCalls)
 	}
 	return cloned

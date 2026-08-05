@@ -15,7 +15,6 @@ import (
 type MVPOptions struct {
 	ApplyPatch     ApplyPatchOptions
 	ReadFile       ReadFileOptions
-	WriteFile      WriteFileOptions
 	ListDir        ListDirOptions
 	GlobFiles      GlobFilesOptions
 	GrepCode       GrepCodeOptions
@@ -25,16 +24,16 @@ type MVPOptions struct {
 func DefaultMVPOptions() MVPOptions {
 	return MVPOptions{
 		ApplyPatch: ApplyPatchOptions{Executor: patchExecutorDefaults()},
-		ReadFile:   ReadFileOptions{MaxBytes: 2 << 20},
-		WriteFile:  WriteFileOptions{MaxBytes: 2 << 20},
+		ReadFile:   ReadFileOptions{MaxBytes: 2 << 20, MaxLineBytes: 32 << 10},
 		ListDir:    ListDirOptions{MaxEntries: 1_000},
-		GlobFiles:  GlobFilesOptions{MaxResults: 1_000},
+		GlobFiles:  GlobFilesOptions{MaxResults: 1_000, MaxRGOutputBytes: 4 << 20},
 		GrepCode: GrepCodeOptions{
 			MaxResults: 200, MaxFileBytes: 2 << 20, MaxContextLines: 5, MaxRGOutputBytes: 4 << 20,
 		},
 		ExecuteCommand: ExecuteCommandOptions{
 			DefaultTimeout: 2 * time.Minute, MaxTimeout: 10 * time.Minute,
-			MaxOutputBytes: 1 << 20, MaxOutputLines: 5_000,
+			DefaultYield: 10 * time.Second, MaxYield: 30 * time.Second,
+			MaxOutputBytes: 1 << 20, MaxOutputLines: 5_000, MaxOutputTokens: 64_000,
 		},
 	}
 }
@@ -44,7 +43,7 @@ func patchExecutorDefaults() patchtool.ExecutorOptions {
 }
 
 func MVPSpecs() []tool.Spec {
-	specs := []tool.Spec{applyPatchSpec(), executeCommandSpec(), globFilesSpec(), grepCodeSpec(), listDirSpec(), readFileSpec(), writeFileSpec()}
+	specs := []tool.Spec{applyPatchSpec(), executeCommandSpec(), globFilesSpec(), grepCodeSpec(), listDirSpec(), readFileSpec(), writeStdinSpec()}
 	for index := range specs {
 		specs[index] = specs[index].Clone()
 	}
@@ -71,10 +70,6 @@ func RegisterMVP(registry *tool.Registry, root project.Root, options MVPOptions)
 	if err != nil {
 		return err
 	}
-	writeFile, err := NewWriteFile(root, options.WriteFile)
-	if err != nil {
-		return err
-	}
 	listDir, err := NewListDir(root, options.ListDir)
 	if err != nil {
 		return err
@@ -91,7 +86,11 @@ func RegisterMVP(registry *tool.Registry, root project.Root, options MVPOptions)
 	if err != nil {
 		return err
 	}
-	for _, candidate := range []tool.Tool{applyPatch, readFile, writeFile, listDir, globFiles, grepCode, executeCommand} {
+	writeStdin, err := NewWriteStdin(WriteStdinOptions{Manager: executeCommand.ProcessManager()})
+	if err != nil {
+		return err
+	}
+	for _, candidate := range []tool.Tool{applyPatch, readFile, listDir, globFiles, grepCode, executeCommand, writeStdin} {
 		if err := registry.Register(candidate); err != nil {
 			return fmt.Errorf("register MVP tool %q: %w", candidate.Spec().Name, err)
 		}
@@ -110,18 +109,9 @@ func applyPatchSpec() tool.Spec {
 
 func readFileSpec() tool.Spec {
 	return tool.Spec{
-		Name: "read_file", Description: "Preferred over shell file reads: read a UTF-8 project file using a zero-based line offset and optional line limit.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}},"required":["path"],"additionalProperties":false}`),
+		Name: "read_file", Description: "Preferred over shell file reads: stream a UTF-8 project file using a one-based start line and optional line limit; output includes stable line prefixes and continuation metadata.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1},"line":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1}},"required":["path"],"additionalProperties":false}`),
 		SideEffect:  tool.SideEffectRead, ParallelSafe: true, Idempotent: true,
-		ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeArguments, ArgumentPaths: []string{"path"}},
-	}
-}
-
-func writeFileSpec() tool.Spec {
-	return tool.Spec{
-		Name: "write_file", Description: "Atomically create a new UTF-8 project file or explicitly replace an existing whole file; use apply_patch for normal edits.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1},"content":{"type":"string"},"mode":{"type":"string","enum":["create","replace"]}},"required":["path","content","mode"],"additionalProperties":false}`),
-		SideEffect:  tool.SideEffectWrite, ParallelSafe: false, Idempotent: true,
 		ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeArguments, ArgumentPaths: []string{"path"}},
 	}
 }
@@ -137,17 +127,17 @@ func listDirSpec() tool.Spec {
 
 func globFilesSpec() tool.Spec {
 	return tool.Spec{
-		Name: "glob_files", Description: "Preferred over shell find/glob: discover project files with a slash-separated pattern; ** matches zero or more path segments.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string","minLength":1},"include_hidden":{"type":"boolean"},"limit":{"type":"integer","minimum":1}},"required":["pattern"],"additionalProperties":false}`),
+		Name: "glob_files", Description: "Preferred over shell file discovery: match paths below an optional project-relative directory using slash globs and ** while honoring workspace ignore files.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"pattern":{"type":"string","minLength":1},"include_hidden":{"type":"boolean"},"limit":{"type":"integer","minimum":1}},"required":["pattern"],"additionalProperties":false}`),
 		SideEffect:  tool.SideEffectRead, ParallelSafe: true, Idempotent: true,
-		ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeArguments, ArgumentPaths: []string{"pattern"}},
+		ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeArguments, ArgumentPaths: []string{"path"}},
 	}
 }
 
 func grepCodeSpec() tool.Spec {
 	return tool.Spec{
-		Name: "grep_code", Description: "Preferred over shell grep for routine search: scan project text files with stable line numbers, optional regular expressions, and bounded context.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","minLength":1},"path":{"type":"string"},"regex":{"type":"boolean"},"case_sensitive":{"type":"boolean"},"context":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}},"required":["query"],"additionalProperties":false}`),
+		Name: "grep_code", Description: "Preferred over shell grep for routine search: scan project text with stable file, line and column output plus optional path, glob, type and bounded context filters.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","minLength":1},"path":{"type":"string"},"glob":{"type":"string"},"type":{"type":"string"},"regex":{"type":"boolean"},"case_sensitive":{"type":"boolean"},"context":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}},"required":["query"],"additionalProperties":false}`),
 		SideEffect:  tool.SideEffectRead, ParallelSafe: true, Idempotent: true,
 		ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeArguments, ArgumentPaths: []string{"path", "query"}},
 	}
@@ -156,7 +146,7 @@ func grepCodeSpec() tool.Spec {
 func executeCommandSpec() tool.Spec {
 	return tool.Spec{
 		Name: "execute_command", Description: "Run builds, tests, Git, formatting, generators, project scripts, or legitimate fallback commands in a fixed project-relative directory; never use it to bypass tool policy.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","minLength":1},"cwd":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1}},"required":["command"],"additionalProperties":false}`),
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","minLength":1},"cwd":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1},"yield_time_ms":{"type":"integer","minimum":0},"max_output_tokens":{"type":"integer","minimum":1},"tty":{"type":"boolean"}},"required":["command"],"additionalProperties":false}`),
 		SideEffect:  tool.SideEffectExecute, ParallelSafe: false, Idempotent: false,
 		ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeExclusive},
 	}

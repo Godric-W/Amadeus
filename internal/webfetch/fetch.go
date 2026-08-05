@@ -1,8 +1,7 @@
-package web
+package webfetch
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -31,70 +30,83 @@ type Document struct {
 	Partial     bool
 }
 
-type SearchResult struct {
-	Title   string `json:"title"`
-	URL     string `json:"url"`
-	Snippet string `json:"snippet"`
-}
-
 type Fetcher interface {
 	Fetch(context.Context, string) (Document, error)
 }
-type SearchProvider interface {
-	Search(context.Context, string, int) ([]SearchResult, error)
-}
 
-type PolicyOptions struct {
+type Options struct {
 	MaxBytes     int64
 	MaxRedirects int
 	Timeout      time.Duration
 	MinInterval  time.Duration
 	Resolve      func(context.Context, string) ([]netip.Addr, error)
 	DialContext  func(context.Context, string, string) (net.Conn, error)
+	HTTPClient   *http.Client
 }
 
 type HTTPFetcher struct {
-	client       *http.Client
-	maxBytes     int64
-	checkURL     func(context.Context, *url.URL) error
-	maxRedirects int
-	minInterval  time.Duration
-	mutex        sync.Mutex
-	lastRequest  time.Time
+	client      *http.Client
+	maxBytes    int64
+	checkURL    func(context.Context, *url.URL) error
+	minInterval time.Duration
+	mutex       sync.Mutex
+	lastRequest time.Time
 }
 
-func NewHTTPFetcher(options PolicyOptions) (*HTTPFetcher, error) {
-	maxBytes, maxRedirects, timeout := normalizeOptions(options)
+func New(options Options) (*HTTPFetcher, error) {
+	maxBytes := options.MaxBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultMaxBytes
+	}
+	maxRedirects := options.MaxRedirects
+	if maxRedirects < 0 {
+		return nil, errors.New("web fetch redirect limit cannot be negative")
+	}
+	if maxRedirects == 0 {
+		maxRedirects = defaultMaxRedirects
+	}
+	timeout := options.Timeout
+	if timeout <= 0 {
+		timeout = defaultTimeout
+	}
 	resolve := options.Resolve
 	if resolve == nil {
 		resolve = resolveHost
 	}
 	checkURL := func(ctx context.Context, value *url.URL) error { return validateURL(ctx, value, resolve) }
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = http.ProxyFromEnvironment
-	dial := options.DialContext
-	if dial == nil {
-		dial = (&net.Dialer{}).DialContext
-	}
-	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		host, _, err := net.SplitHostPort(address)
-		if err != nil {
-			return nil, err
+	client := options.HTTPClient
+	if client == nil {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = http.ProxyFromEnvironment
+		dial := options.DialContext
+		if dial == nil {
+			dial = (&net.Dialer{}).DialContext
 		}
-		parsed := &url.URL{Scheme: "http", Host: host}
-		if err := checkURL(ctx, parsed); err != nil {
-			return nil, err
+		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, err
+			}
+			if err := checkURL(ctx, &url.URL{Scheme: "http", Host: host}); err != nil {
+				return nil, err
+			}
+			return dial(ctx, network, address)
 		}
-		return dial(ctx, network, address)
+		client = &http.Client{Transport: transport, Timeout: timeout}
+	} else {
+		cloned := *client
+		client = &cloned
+		if client.Timeout == 0 {
+			client.Timeout = timeout
+		}
 	}
-	client := &http.Client{Transport: transport, Timeout: timeout}
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
 		if len(via) > maxRedirects {
 			return errors.New("web request exceeded redirect limit")
 		}
 		return checkURL(request.Context(), request.URL)
 	}
-	return &HTTPFetcher{client: client, maxBytes: maxBytes, checkURL: checkURL, maxRedirects: maxRedirects, minInterval: options.MinInterval}, nil
+	return &HTTPFetcher{client: client, maxBytes: maxBytes, checkURL: checkURL, minInterval: options.MinInterval}, nil
 }
 
 func (fetcher *HTTPFetcher) Fetch(ctx context.Context, rawURL string) (Document, error) {
@@ -157,113 +169,6 @@ func (fetcher *HTTPFetcher) wait(ctx context.Context) error {
 	return nil
 }
 
-type DuckDuckGoProvider struct {
-	fetcher  Fetcher
-	endpoint string
-}
-
-func NewDuckDuckGoProvider(fetcher Fetcher) (*DuckDuckGoProvider, error) {
-	if fetcher == nil {
-		return nil, errors.New("DuckDuckGo web fetcher is nil")
-	}
-	return NewDuckDuckGoProviderWithEndpoint(fetcher, "https://api.duckduckgo.com/")
-}
-
-func NewDuckDuckGoProviderWithEndpoint(fetcher Fetcher, endpoint string) (*DuckDuckGoProvider, error) {
-	if fetcher == nil {
-		return nil, errors.New("DuckDuckGo web fetcher is nil")
-	}
-	value, err := url.Parse(strings.TrimSpace(endpoint))
-	if err != nil || value.Scheme == "" || value.Host == "" {
-		return nil, errors.New("DuckDuckGo search endpoint is invalid")
-	}
-	return &DuckDuckGoProvider{fetcher: fetcher, endpoint: value.String()}, nil
-}
-
-func (provider *DuckDuckGoProvider) Search(ctx context.Context, query string, limit int) ([]SearchResult, error) {
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return nil, errors.New("web search query is empty")
-	}
-	if limit <= 0 {
-		limit = 5
-	}
-	endpoint, err := url.Parse(provider.endpoint)
-	if err != nil {
-		return nil, err
-	}
-	parameters := endpoint.Query()
-	parameters.Set("format", "json")
-	parameters.Set("no_html", "1")
-	parameters.Set("skip_disambig", "1")
-	parameters.Set("q", query)
-	endpoint.RawQuery = parameters.Encode()
-	document, err := provider.fetcher.Fetch(ctx, endpoint.String())
-	if err != nil {
-		return nil, err
-	}
-	var payload struct {
-		Heading       string            `json:"Heading"`
-		AbstractText  string            `json:"AbstractText"`
-		AbstractURL   string            `json:"AbstractURL"`
-		RelatedTopics []json.RawMessage `json:"RelatedTopics"`
-	}
-	if err := json.Unmarshal([]byte(document.Text), &payload); err != nil {
-		return nil, fmt.Errorf("decode search response: %w", err)
-	}
-	results := make([]SearchResult, 0, limit)
-	if payload.AbstractURL != "" {
-		results = append(results, SearchResult{Title: payload.Heading, URL: payload.AbstractURL, Snippet: payload.AbstractText})
-	}
-	for _, raw := range payload.RelatedTopics {
-		collectDuckDuckGoResult(raw, &results, limit)
-		if len(results) >= limit {
-			break
-		}
-	}
-	return results, nil
-}
-
-func collectDuckDuckGoResult(raw json.RawMessage, results *[]SearchResult, limit int) {
-	if len(*results) >= limit {
-		return
-	}
-	var item struct {
-		Text     string            `json:"Text"`
-		FirstURL string            `json:"FirstURL"`
-		Topics   []json.RawMessage `json:"Topics"`
-	}
-	if json.Unmarshal(raw, &item) != nil {
-		return
-	}
-	if item.FirstURL != "" {
-		*results = append(*results, SearchResult{Title: item.Text, URL: item.FirstURL, Snippet: item.Text})
-		return
-	}
-	for _, nested := range item.Topics {
-		collectDuckDuckGoResult(nested, results, limit)
-		if len(*results) >= limit {
-			return
-		}
-	}
-}
-
-func normalizeOptions(options PolicyOptions) (int64, int, time.Duration) {
-	maxBytes := options.MaxBytes
-	if maxBytes <= 0 {
-		maxBytes = defaultMaxBytes
-	}
-	maxRedirects := options.MaxRedirects
-	if maxRedirects <= 0 {
-		maxRedirects = defaultMaxRedirects
-	}
-	timeout := options.Timeout
-	if timeout <= 0 {
-		timeout = defaultTimeout
-	}
-	return maxBytes, maxRedirects, timeout
-}
-
 func validateURL(ctx context.Context, value *url.URL, resolve func(context.Context, string) ([]netip.Addr, error)) error {
 	if value == nil || (value.Scheme != "http" && value.Scheme != "https") || strings.TrimSpace(value.Hostname()) == "" || value.User != nil {
 		return errors.New("web URL must be an absolute http or https URL without userinfo")
@@ -291,11 +196,7 @@ func validateURL(ctx context.Context, value *url.URL, resolve func(context.Conte
 }
 
 func resolveHost(ctx context.Context, host string) ([]netip.Addr, error) {
-	values, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-	if err != nil {
-		return nil, err
-	}
-	return values, nil
+	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 }
 
 func privateAddress(address netip.Addr) bool {

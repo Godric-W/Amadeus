@@ -1,32 +1,38 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
-	"os"
-	"path"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/tool"
+	"github.com/Godric-W/Amadeus/internal/workspace"
 )
 
 type GlobFilesOptions struct {
-	MaxResults int
+	MaxResults       int
+	RipgrepPath      string
+	DisableRipgrep   bool
+	MaxRGOutputBytes int64
 }
 
 type GlobFiles struct {
-	root    project.Root
-	guard   *project.PathGuard
-	options GlobFilesOptions
+	root       project.Root
+	reader     *workspace.Reader
+	enumerator *workspace.FileEnumerator
+	options    GlobFilesOptions
+	ripgrep    string
 }
 
 type globFilesArguments struct {
+	Path          string `json:"path,omitempty"`
 	Pattern       string `json:"pattern"`
 	IncludeHidden bool   `json:"include_hidden,omitempty"`
 	Limit         int    `json:"limit,omitempty"`
@@ -43,11 +49,30 @@ func NewGlobFiles(root project.Root, options GlobFilesOptions) (*GlobFiles, erro
 	if options.MaxResults <= 0 {
 		return nil, errors.New("glob_files max results must be greater than zero")
 	}
-	guard, err := project.NewPathGuard(root)
+	if options.MaxRGOutputBytes <= 0 {
+		options.MaxRGOutputBytes = 4 << 20
+	}
+	reader, err := workspace.NewReader(root)
 	if err != nil {
 		return nil, err
 	}
-	return &GlobFiles{root: root, guard: guard, options: options}, nil
+	matcher, err := workspace.LoadIgnoreMatcher(root)
+	if err != nil {
+		return nil, fmt.Errorf("load workspace ignores: %w", err)
+	}
+	enumerator, err := workspace.NewFileEnumerator(root, matcher)
+	if err != nil {
+		return nil, err
+	}
+	ripgrep := ""
+	if !options.DisableRipgrep {
+		if strings.TrimSpace(options.RipgrepPath) != "" {
+			ripgrep = options.RipgrepPath
+		} else if discovered, lookErr := exec.LookPath("rg"); lookErr == nil {
+			ripgrep = discovered
+		}
+	}
+	return &GlobFiles{root: root, reader: reader, enumerator: enumerator, options: options, ripgrep: ripgrep}, nil
 }
 
 func (globFiles *GlobFiles) Spec() tool.Spec {
@@ -59,145 +84,130 @@ func (globFiles *GlobFiles) Execute(ctx context.Context, input json.RawMessage) 
 	if err := decodeArguments(input, &arguments); err != nil {
 		return tool.Result{}, err
 	}
-	pattern, err := normalizeGlobPattern(arguments.Pattern)
+	pattern, err := workspace.NormalizeGlob(arguments.Pattern)
 	if err != nil {
-		return tool.Result{}, err
+		return tool.Result{}, fmt.Errorf("glob_files pattern is invalid: %w", err)
 	}
 	if arguments.Limit < 0 {
 		return tool.Result{}, errors.New("glob_files limit cannot be negative")
+	}
+	base := strings.TrimSpace(arguments.Path)
+	if base == "" {
+		base = "."
+	}
+	absoluteBase, err := globFiles.reader.ResolveExisting(base, project.PathDirectory)
+	if err != nil {
+		return tool.Result{}, err
 	}
 	limit := globFiles.options.MaxResults
 	if arguments.Limit > 0 && arguments.Limit < limit {
 		limit = arguments.Limit
 	}
+	matches, partial, backend, err := globFiles.ripgrepMatches(ctx, absoluteBase, pattern, arguments.IncludeHidden, limit)
+	if err != nil && ctx.Err() != nil {
+		return tool.Result{}, ctx.Err()
+	}
+	if err != nil || globFiles.ripgrep == "" {
+		matches, partial, err = globFiles.goMatches(ctx, base, absoluteBase, pattern, arguments.IncludeHidden, limit)
+		backend = "go"
+		if err != nil {
+			return tool.Result{}, err
+		}
+	}
+	return tool.Result{
+		ToolName: "glob_files", Text: strings.Join(matches, "\n"), Partial: partial,
+		Metadata: map[string]any{"path": base, "pattern": pattern, "matches_returned": len(matches), "backend": backend},
+	}, nil
+}
+
+func (globFiles *GlobFiles) ripgrepMatches(ctx context.Context, absoluteBase, pattern string, includeHidden bool, limit int) ([]string, bool, string, error) {
+	if globFiles.ripgrep == "" {
+		return nil, false, "", errors.New("ripgrep is unavailable")
+	}
+	baseRelative, err := globFiles.root.Relative(absoluteBase)
+	if err != nil {
+		return nil, false, "", err
+	}
+	arguments := []string{"--files", "--null", "--no-messages"}
+	if includeHidden {
+		arguments = append(arguments, "--hidden")
+	}
+	for directory := range ignoredGlobDirectories {
+		arguments = append(arguments, "--glob", "!"+directory+"/**")
+	}
+	arguments = append(arguments, "--", filepath.FromSlash(baseRelative))
+	command := exec.CommandContext(ctx, globFiles.ripgrep, arguments...)
+	command.Dir = globFiles.root.Path()
+	stdout := &limitedCommandBuffer{limit: globFiles.options.MaxRGOutputBytes}
+	stderr := &limitedCommandBuffer{limit: 64 << 10}
+	command.Stdout = stdout
+	command.Stderr = stderr
+	if err := command.Run(); err != nil {
+		return nil, false, "", fmt.Errorf("run ripgrep files: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	if stdout.exceeded {
+		return nil, false, "", errors.New("ripgrep file output exceeded limit")
+	}
 	matches := make([]string, 0, limit+1)
-	walkErr := filepath.WalkDir(globFiles.root.Path(), func(filePath string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	for _, part := range bytes.Split(stdout.Bytes(), []byte{0}) {
+		if len(part) == 0 {
+			continue
 		}
-		if err := ctx.Err(); err != nil {
-			return err
+		relative := strings.TrimPrefix(filepath.ToSlash(string(part)), "./")
+		if _, err := globFiles.reader.ResolveExisting(filepath.FromSlash(relative), project.PathFile); err != nil {
+			return nil, false, "", err
 		}
-		if filePath == globFiles.root.Path() {
-			return nil
-		}
-		relative, err := globFiles.root.Relative(filePath)
+		candidate, err := filepath.Rel(absoluteBase, filepath.Join(globFiles.root.Path(), filepath.FromSlash(relative)))
 		if err != nil {
-			return err
+			return nil, false, "", err
 		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			if _, err := globFiles.guard.ResolveExisting(filepath.FromSlash(relative), project.PathAny); err != nil {
-				return err
-			}
-		}
-		if entry.IsDir() {
-			if _, ignored := ignoredGlobDirectories[entry.Name()]; ignored {
-				return filepath.SkipDir
-			}
-			if !arguments.IncludeHidden && strings.HasPrefix(entry.Name(), ".") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !arguments.IncludeHidden && pathHasHiddenSegment(relative) {
-			return nil
-		}
-		matched, err := matchGlob(pattern, relative)
+		matched, err := workspace.MatchGlob(pattern, filepath.ToSlash(candidate))
 		if err != nil {
-			return err
+			return nil, false, "", err
 		}
 		if matched {
 			matches = append(matches, relative)
 			if len(matches) > limit {
-				return fs.SkipAll
+				break
 			}
 		}
-		return nil
-	})
-	if walkErr != nil {
-		return tool.Result{}, fmt.Errorf("glob project files: %w", walkErr)
 	}
 	sort.Strings(matches)
 	partial := len(matches) > limit
 	if partial {
 		matches = matches[:limit]
 	}
-	return tool.Result{
-		ToolName: "glob_files", Text: strings.Join(matches, "\n"), Partial: partial,
-		Metadata: map[string]any{"pattern": pattern, "matches_returned": len(matches)},
-	}, nil
+	return matches, partial, "rg", nil
 }
 
-func normalizeGlobPattern(pattern string) (string, error) {
-	pattern = strings.TrimSpace(filepath.ToSlash(pattern))
-	if pattern == "" {
-		return "", errors.New("glob_files pattern is empty")
+func (globFiles *GlobFiles) goMatches(ctx context.Context, base, absoluteBase, pattern string, includeHidden bool, limit int) ([]string, bool, error) {
+	result, err := globFiles.enumerator.Enumerate(ctx, workspace.EnumerateOptions{Path: base, IncludeHidden: includeHidden, MaxResults: 0})
+	if err != nil {
+		return nil, false, fmt.Errorf("enumerate project files: %w", err)
 	}
-	if path.IsAbs(pattern) {
-		return "", errors.New("glob_files pattern must be project-relative")
-	}
-	for _, segment := range strings.Split(pattern, "/") {
-		if segment == ".." {
-			return "", errors.New("glob_files pattern cannot escape project root")
+	matches := make([]string, 0, limit+1)
+	for _, entry := range result.Files {
+		candidate, err := filepath.Rel(absoluteBase, entry.Absolute)
+		if err != nil {
+			return nil, false, err
 		}
-	}
-	if _, err := path.Match(strings.ReplaceAll(pattern, "**", "*"), "validation"); err != nil {
-		return "", fmt.Errorf("glob_files pattern is invalid: %w", err)
-	}
-	return pattern, nil
-}
-
-func matchGlob(pattern, candidate string) (bool, error) {
-	patternSegments := strings.Split(pattern, "/")
-	candidateSegments := strings.Split(candidate, "/")
-	type position struct{ pattern, candidate int }
-	memo := make(map[position]bool)
-	seen := make(map[position]bool)
-	var match func(int, int) (bool, error)
-	match = func(patternIndex, candidateIndex int) (bool, error) {
-		key := position{patternIndex, candidateIndex}
-		if seen[key] {
-			return memo[key], nil
+		matched, err := workspace.MatchGlob(pattern, filepath.ToSlash(candidate))
+		if err != nil {
+			return nil, false, err
 		}
-		seen[key] = true
-		if patternIndex == len(patternSegments) {
-			memo[key] = candidateIndex == len(candidateSegments)
-			return memo[key], nil
-		}
-		if patternSegments[patternIndex] == "**" {
-			zero, err := match(patternIndex+1, candidateIndex)
-			if err != nil || zero {
-				memo[key] = zero
-				return zero, err
+		if matched {
+			matches = append(matches, entry.Relative)
+			if len(matches) > limit {
+				break
 			}
-			if candidateIndex < len(candidateSegments) {
-				more, err := match(patternIndex, candidateIndex+1)
-				memo[key] = more
-				return more, err
-			}
-			return false, nil
-		}
-		if candidateIndex >= len(candidateSegments) {
-			return false, nil
-		}
-		segmentMatch, err := path.Match(patternSegments[patternIndex], candidateSegments[candidateIndex])
-		if err != nil || !segmentMatch {
-			return false, err
-		}
-		matched, err := match(patternIndex+1, candidateIndex+1)
-		memo[key] = matched
-		return matched, err
-	}
-	return match(0, 0)
-}
-
-func pathHasHiddenSegment(relative string) bool {
-	for _, segment := range strings.Split(relative, "/") {
-		if strings.HasPrefix(segment, ".") {
-			return true
 		}
 	}
-	return false
+	sort.Strings(matches)
+	partial := len(matches) > limit
+	if partial {
+		matches = matches[:limit]
+	}
+	return matches, partial, nil
 }
 
 var _ tool.Tool = (*GlobFiles)(nil)

@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,9 +60,14 @@ func responsesInputItems(message llm.Message) ([]responses.ResponseInputItemUnio
 		if len(message.ToolCalls) != 0 {
 			return nil, errors.New("tool result cannot contain tool calls")
 		}
-		return []responses.ResponseInputItemUnionParam{
-			responses.ResponseInputItemParamOfFunctionCallOutput(message.ToolCallID, message.Content),
-		}, nil
+		if len(message.Parts) == 0 {
+			return []responses.ResponseInputItemUnionParam{responses.ResponseInputItemParamOfFunctionCallOutput(message.ToolCallID, message.Content)}, nil
+		}
+		output, err := responsesToolOutput(message)
+		if err != nil {
+			return nil, err
+		}
+		return []responses.ResponseInputItemUnionParam{responses.ResponseInputItemParamOfFunctionCallOutput(message.ToolCallID, output)}, nil
 	}
 
 	role, err := responsesRole(message.Role)
@@ -73,8 +79,16 @@ func responsesInputItems(message llm.Message) ([]responses.ResponseInputItemUnio
 	}
 
 	items := make([]responses.ResponseInputItemUnionParam, 0, 1+len(message.ToolCalls))
-	if message.Content != "" || len(message.ToolCalls) == 0 {
-		items = append(items, responses.ResponseInputItemParamOfMessage(message.Content, role))
+	if message.Content != "" || len(message.Parts) != 0 || len(message.ToolCalls) == 0 {
+		content, err := responsesMessageContent(message)
+		if err != nil {
+			return nil, err
+		}
+		if content == nil {
+			items = append(items, responses.ResponseInputItemParamOfMessage(message.Content, role))
+		} else {
+			items = append(items, responses.ResponseInputItemParamOfMessage(content, role))
+		}
 	}
 	for index, call := range message.ToolCalls {
 		if err := validateToolCall(call); err != nil {
@@ -83,6 +97,73 @@ func responsesInputItems(message llm.Message) ([]responses.ResponseInputItemUnio
 		items = append(items, responses.ResponseInputItemParamOfFunctionCall(string(call.Arguments), call.ID, call.Name))
 	}
 	return items, nil
+}
+
+func responsesMessageContent(message llm.Message) (responses.ResponseInputMessageContentListParam, error) {
+	if len(message.Parts) == 0 {
+		return nil, nil
+	}
+	parts := make(responses.ResponseInputMessageContentListParam, 0, len(message.Parts)+1)
+	if message.Content != "" {
+		parts = append(parts, responses.ResponseInputContentParamOfInputText(message.Content))
+	}
+	for _, part := range message.Parts {
+		converted, err := responsesContentPart(part)
+		if err != nil {
+			return nil, err
+		}
+		parts = append(parts, converted)
+	}
+	return parts, nil
+}
+
+func responsesToolOutput(message llm.Message) (responses.ResponseFunctionCallOutputItemListParam, error) {
+	parts := make(responses.ResponseFunctionCallOutputItemListParam, 0, len(message.Parts)+1)
+	if message.Content != "" {
+		parts = append(parts, responses.ResponseFunctionCallOutputItemParamOfInputText(message.Content))
+	}
+	for _, part := range message.Parts {
+		switch part.Kind {
+		case llm.ContentText:
+			parts = append(parts, responses.ResponseFunctionCallOutputItemParamOfInputText(part.Text))
+		case llm.ContentImage:
+			url, err := imageDataURL(part)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, responses.ResponseFunctionCallOutputItemUnionParam{OfInputImage: &responses.ResponseInputImageContentParam{ImageURL: openaisdk.String(url), Detail: "auto"}})
+		default:
+			return nil, fmt.Errorf("unsupported content part kind %q", part.Kind)
+		}
+	}
+	return parts, nil
+}
+
+func responsesContentPart(part llm.ContentPart) (responses.ResponseInputContentUnionParam, error) {
+	switch part.Kind {
+	case llm.ContentText:
+		return responses.ResponseInputContentParamOfInputText(part.Text), nil
+	case llm.ContentImage:
+		url, err := imageDataURL(part)
+		if err != nil {
+			return responses.ResponseInputContentUnionParam{}, err
+		}
+		value := responses.ResponseInputContentParamOfInputImage("auto")
+		value.OfInputImage.ImageURL = openaisdk.String(url)
+		return value, nil
+	default:
+		return responses.ResponseInputContentUnionParam{}, fmt.Errorf("unsupported content part kind %q", part.Kind)
+	}
+}
+
+func imageDataURL(part llm.ContentPart) (string, error) {
+	if !strings.HasPrefix(part.MediaType, "image/") || strings.TrimSpace(part.Data) == "" {
+		return "", errors.New("image content part requires media type and base64 data")
+	}
+	if _, err := base64.StdEncoding.DecodeString(part.Data); err != nil {
+		return "", fmt.Errorf("image content part data is invalid base64: %w", err)
+	}
+	return "data:" + part.MediaType + ";base64," + part.Data, nil
 }
 
 func responsesTools(definitions []llm.ToolDefinition) ([]responses.ToolUnionParam, error) {

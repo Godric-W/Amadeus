@@ -52,7 +52,7 @@ func TestToolAuthorizerUsesEventContextSessionForAudit(t *testing.T) {
 		t.Fatalf("create audited authorizer: %v", err)
 	}
 	ctx := event.WithMetadata(context.Background(), event.Metadata{SessionID: "session-from-event"})
-	if err := authorizer.Authorize(ctx, writeToolSpec(), tool.NewCall("write-context", "write_file", json.RawMessage(`{"path":"result.txt","content":"ok"}`))); err != nil {
+	if err := authorizer.Authorize(ctx, applyPatchToolSpec(), tool.NewCall("write-context", "apply_patch", patchPolicyArguments(t, "*** Begin Patch\n*** Add File: result.txt\n+ok\n*** End Patch"))); err != nil {
 		t.Fatalf("authorize audited write: %v", err)
 	}
 	records := sink.Snapshot()
@@ -84,14 +84,14 @@ func TestToolAuthorizerAuditsAllowDenyAndError(t *testing.T) {
 		t.Fatalf("create audited authorizer: %v", err)
 	}
 
-	if err := authorizer.Authorize(context.Background(), writeToolSpec(), tool.NewCall("write-audit", "write_file", json.RawMessage(`{"path":"result.txt","content":"secret body is hashed only"}`))); err != nil {
+	if err := authorizer.Authorize(context.Background(), applyPatchToolSpec(), tool.NewCall("write-audit", "apply_patch", patchPolicyArguments(t, "*** Begin Patch\n*** Add File: result.txt\n+secret body is hashed only\n*** End Patch"))); err != nil {
 		t.Fatalf("authorize audited write: %v", err)
 	}
 	blockedErr := authorizer.Authorize(context.Background(), executeToolSpec(), tool.NewCall("blocked-audit", "execute_command", json.RawMessage(`{"command":"rm -rf /"}`)))
 	if !errors.Is(blockedErr, ErrToolDenied) {
 		t.Fatalf("unexpected blocked authorization: %v", blockedErr)
 	}
-	pathErr := authorizer.Authorize(context.Background(), writeToolSpec(), tool.NewCall("error-audit", "write_file", json.RawMessage(`{"path":"../outside","content":"x"}`)))
+	pathErr := authorizer.Authorize(context.Background(), applyPatchToolSpec(), tool.NewCall("error-audit", "apply_patch", patchPolicyArguments(t, "*** Begin Patch\n*** Add File: ../outside\n+x\n*** End Patch")))
 	if pathErr == nil {
 		t.Fatal("expected path preflight error")
 	}

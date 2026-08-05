@@ -21,6 +21,7 @@ const (
 	addPrefix         = "*** Add File:"
 	updatePrefix      = "*** Update File:"
 	deletePrefix      = "*** Delete File:"
+	moveToPrefix      = "*** Move to:"
 )
 
 type ParseOptions struct {
@@ -99,6 +100,13 @@ func Parse(input []byte, options ParseOptions) (Document, error) {
 				fmt.Sprintf("duplicate operation for path %q; first declared at line %d", operation.Path, previousLine))
 		}
 		parser.seen[operation.Path] = operation.Line
+		if operation.MovePath != "" {
+			if previousLine, duplicate := parser.seen[operation.MovePath]; duplicate {
+				return Document{}, parser.errorAt(operation.Line-1, 1,
+					fmt.Sprintf("duplicate operation for path %q; first declared at line %d", operation.MovePath, previousLine))
+			}
+			parser.seen[operation.MovePath] = operation.Line
+		}
 		document.Operations = append(document.Operations, operation)
 	}
 
@@ -199,6 +207,18 @@ func (parser *documentParser) parseOperation() (Operation, error) {
 			return Operation{}, parser.errorAt(parser.index, 1, "delete operation cannot contain body lines")
 		}
 	case OperationUpdate:
+		if parser.index < len(parser.lines) && strings.HasPrefix(parser.lines[parser.index], moveToPrefix) {
+			moveLine := parser.lines[parser.index]
+			operation.MovePath = strings.TrimSpace(strings.TrimPrefix(moveLine, moveToPrefix))
+			if operation.MovePath == "" {
+				return Operation{}, parser.errorAt(parser.index, len(moveToPrefix)+1, "move destination is empty")
+			}
+			if strings.ContainsRune(operation.MovePath, '\x00') {
+				return Operation{}, parser.errorAt(parser.index, len(moveToPrefix)+1, "move destination contains NUL")
+			}
+			operation.Kind = OperationMove
+			parser.index++
+		}
 		for parser.index < len(parser.lines) && !isOperationOrEnd(parser.lines[parser.index]) {
 			if parser.hunkCount >= parser.options.MaxHunks {
 				return Operation{}, parser.errorAt(parser.index, 1,
@@ -211,7 +231,7 @@ func (parser *documentParser) parseOperation() (Operation, error) {
 			parser.hunkCount++
 			operation.Hunks = append(operation.Hunks, hunk)
 		}
-		if len(operation.Hunks) == 0 {
+		if len(operation.Hunks) == 0 && operation.Kind != OperationMove {
 			return Operation{}, parser.errorAt(lineIndex, 1, "update operation requires at least one hunk")
 		}
 	}
@@ -278,7 +298,7 @@ func (parser *documentParser) errorAt(lineIndex int, column int, message string)
 }
 
 func isBoundary(line string) bool {
-	return isOperationOrEnd(line) || line == "@@" || strings.HasPrefix(line, "@@ ")
+	return isOperationOrEnd(line) || strings.HasPrefix(line, moveToPrefix) || line == "@@" || strings.HasPrefix(line, "@@ ")
 }
 
 func isOperationOrEnd(line string) bool {

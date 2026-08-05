@@ -39,14 +39,16 @@ func newChatCompletionsRequestForDialect(request llm.Request, dialect Dialect) (
 		if prepared.Role == llm.RoleDeveloper && !dialect.Capabilities(config.APIChatCompletions).SupportsDeveloperRole {
 			prepared.Role = llm.RoleSystem
 		}
-		converted, err := chatCompletionMessage(prepared)
+		converted, err := chatCompletionMessages(prepared)
 		if err != nil {
 			return openaisdk.ChatCompletionNewParams{}, fmt.Errorf("chat completions request messages[%d]: %w", index, err)
 		}
-		if err := dialect.PrepareChatMessage(prepared, &converted); err != nil {
-			return openaisdk.ChatCompletionNewParams{}, fmt.Errorf("chat completions request messages[%d]: %w", index, err)
+		for convertedIndex := range converted {
+			if err := dialect.PrepareChatMessage(prepared, &converted[convertedIndex]); err != nil {
+				return openaisdk.ChatCompletionNewParams{}, fmt.Errorf("chat completions request messages[%d]: %w", index, err)
+			}
 		}
-		messages = append(messages, converted)
+		messages = append(messages, converted...)
 	}
 	tools, err := chatCompletionTools(request.Tools, dialect.SupportsStrictToolSchema())
 	if err != nil {
@@ -66,19 +68,35 @@ func newChatCompletionsRequestForDialect(request llm.Request, dialect Dialect) (
 	return params, nil
 }
 
-func chatCompletionMessage(message llm.Message) (openaisdk.ChatCompletionMessageParamUnion, error) {
+func chatCompletionMessages(message llm.Message) ([]openaisdk.ChatCompletionMessageParamUnion, error) {
 	switch message.Role {
 	case llm.RoleSystem:
-		return openaisdk.SystemMessage(message.Content), nil
+		if len(message.Parts) != 0 {
+			return nil, errors.New("system message cannot contain image parts")
+		}
+		return []openaisdk.ChatCompletionMessageParamUnion{openaisdk.SystemMessage(message.Content)}, nil
 	case llm.RoleDeveloper:
-		return openaisdk.DeveloperMessage(message.Content), nil
+		if len(message.Parts) != 0 {
+			return nil, errors.New("developer message cannot contain image parts")
+		}
+		return []openaisdk.ChatCompletionMessageParamUnion{openaisdk.DeveloperMessage(message.Content)}, nil
 	case llm.RoleUser:
-		return openaisdk.UserMessage(message.Content), nil
+		parts, err := chatContentParts(message)
+		if err != nil {
+			return nil, err
+		}
+		if parts == nil {
+			return []openaisdk.ChatCompletionMessageParamUnion{openaisdk.UserMessage(message.Content)}, nil
+		}
+		return []openaisdk.ChatCompletionMessageParamUnion{openaisdk.UserMessage(parts)}, nil
 	case llm.RoleAssistant:
+		if len(message.Parts) != 0 {
+			return nil, errors.New("assistant message cannot contain image parts")
+		}
 		assistant := openaisdk.AssistantMessage(message.Content)
 		for index, call := range message.ToolCalls {
 			if err := validateToolCall(call); err != nil {
-				return openaisdk.ChatCompletionMessageParamUnion{}, fmt.Errorf("tool_calls[%d]: %w", index, err)
+				return nil, fmt.Errorf("tool_calls[%d]: %w", index, err)
 			}
 			assistant.OfAssistant.ToolCalls = append(assistant.OfAssistant.ToolCalls, openaisdk.ChatCompletionMessageToolCallUnionParam{
 				OfFunction: &openaisdk.ChatCompletionMessageFunctionToolCallParam{
@@ -89,18 +107,51 @@ func chatCompletionMessage(message llm.Message) (openaisdk.ChatCompletionMessage
 				},
 			})
 		}
-		return assistant, nil
+		return []openaisdk.ChatCompletionMessageParamUnion{assistant}, nil
 	case llm.RoleTool:
 		if strings.TrimSpace(message.ToolCallID) == "" {
-			return openaisdk.ChatCompletionMessageParamUnion{}, errors.New("tool result call ID is empty")
+			return nil, errors.New("tool result call ID is empty")
 		}
 		if len(message.ToolCalls) != 0 {
-			return openaisdk.ChatCompletionMessageParamUnion{}, errors.New("tool result cannot contain tool calls")
+			return nil, errors.New("tool result cannot contain tool calls")
 		}
-		return openaisdk.ToolMessage(message.Content, message.ToolCallID), nil
+		messages := []openaisdk.ChatCompletionMessageParamUnion{openaisdk.ToolMessage(message.Content, message.ToolCallID)}
+		if len(message.Parts) != 0 {
+			parts, err := chatContentParts(llm.Message{Content: "Image output from tool call " + message.ToolCallID + ".", Parts: message.Parts})
+			if err != nil {
+				return nil, err
+			}
+			messages = append(messages, openaisdk.UserMessage(parts))
+		}
+		return messages, nil
 	default:
-		return openaisdk.ChatCompletionMessageParamUnion{}, fmt.Errorf("unsupported role %q", message.Role)
+		return nil, fmt.Errorf("unsupported role %q", message.Role)
 	}
+}
+
+func chatContentParts(message llm.Message) ([]openaisdk.ChatCompletionContentPartUnionParam, error) {
+	if len(message.Parts) == 0 {
+		return nil, nil
+	}
+	parts := make([]openaisdk.ChatCompletionContentPartUnionParam, 0, len(message.Parts)+1)
+	if message.Content != "" {
+		parts = append(parts, openaisdk.TextContentPart(message.Content))
+	}
+	for _, part := range message.Parts {
+		switch part.Kind {
+		case llm.ContentText:
+			parts = append(parts, openaisdk.TextContentPart(part.Text))
+		case llm.ContentImage:
+			url, err := imageDataURL(part)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, openaisdk.ImageContentPart(openaisdk.ChatCompletionContentPartImageImageURLParam{URL: url, Detail: "auto"}))
+		default:
+			return nil, fmt.Errorf("unsupported content part kind %q", part.Kind)
+		}
+	}
+	return parts, nil
 }
 
 func chatCompletionTools(definitions []llm.ToolDefinition, supportsStrict bool) ([]openaisdk.ChatCompletionToolUnionParam, error) {

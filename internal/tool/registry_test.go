@@ -130,3 +130,17 @@ func TestRegistryReplaceGroupIsAtomicAndLeavesOtherTools(t *testing.T) {
 		t.Fatal("failed replacement was not atomic")
 	}
 }
+
+func TestRegistryStoresExposureMetadata(t *testing.T) {
+	registry := NewRegistry()
+	if err := registry.RegisterWithRegistration(newFakeTool("view_image"), Registration{Exposure: ExposureConditional, Condition: "provider.images"}); err != nil {
+		t.Fatal(err)
+	}
+	entries := registry.Snapshot()
+	if len(entries) != 1 || entries[0].Exposure != ExposureConditional || entries[0].Condition != "provider.images" {
+		t.Fatalf("unexpected registry metadata: %#v", entries)
+	}
+	if err := registry.RegisterWithRegistration(newFakeTool("invalid"), Registration{Exposure: ExposureConditional}); err == nil {
+		t.Fatal("conditional registration without a condition succeeded")
+	}
+}

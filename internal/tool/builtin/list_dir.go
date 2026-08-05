@@ -11,6 +11,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/tool"
+	"github.com/Godric-W/Amadeus/internal/workspace"
 )
 
 type ListDirOptions struct {
@@ -18,8 +19,7 @@ type ListDirOptions struct {
 }
 
 type ListDir struct {
-	root    project.Root
-	guard   *project.PathGuard
+	reader  *workspace.Reader
 	options ListDirOptions
 }
 
@@ -36,11 +36,11 @@ func NewListDir(root project.Root, options ListDirOptions) (*ListDir, error) {
 	if options.MaxEntries <= 0 {
 		return nil, errors.New("list_dir max entries must be greater than zero")
 	}
-	guard, err := project.NewPathGuard(root)
+	reader, err := workspace.NewReader(root)
 	if err != nil {
 		return nil, err
 	}
-	return &ListDir{root: root, guard: guard, options: options}, nil
+	return &ListDir{reader: reader, options: options}, nil
 }
 
 func (listDir *ListDir) Spec() tool.Spec {
@@ -62,7 +62,7 @@ func (listDir *ListDir) Execute(ctx context.Context, input json.RawMessage) (too
 	if strings.TrimSpace(relativePath) == "" {
 		relativePath = "."
 	}
-	path, err := listDir.guard.ResolveExisting(relativePath, project.PathDirectory)
+	path, err := listDir.reader.ResolveExisting(relativePath, project.PathDirectory)
 	if err != nil {
 		return tool.Result{}, err
 	}

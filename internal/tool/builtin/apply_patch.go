@@ -77,7 +77,7 @@ func patchToolResult(document patchtool.Document, applied patchtool.ApplyResult,
 	for index, operation := range applied.Applied {
 		operations[index] = map[string]any{
 			"kind": operation.Kind, "path": operation.Path, "bytes": operation.Bytes,
-			"created": operation.Created, "deleted": operation.Deleted,
+			"destination": operation.Destination, "created": operation.Created, "deleted": operation.Deleted, "moved": operation.Moved,
 		}
 	}
 	text := fmt.Sprintf("applied %d patch operation(s)", len(applied.Applied))

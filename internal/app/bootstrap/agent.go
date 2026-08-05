@@ -16,13 +16,15 @@ import (
 	openaiadapter "github.com/Godric-W/Amadeus/internal/llm/openai"
 	"github.com/Godric-W/Amadeus/internal/mcp"
 	"github.com/Godric-W/Amadeus/internal/policy"
+	processdomain "github.com/Godric-W/Amadeus/internal/process"
 	"github.com/Godric-W/Amadeus/internal/project"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/skill"
 	"github.com/Godric-W/Amadeus/internal/snapshot"
 	"github.com/Godric-W/Amadeus/internal/tool"
 	"github.com/Godric-W/Amadeus/internal/tool/builtin"
-	"github.com/Godric-W/Amadeus/internal/web"
+	"github.com/Godric-W/Amadeus/internal/webfetch"
+	"github.com/Godric-W/Amadeus/internal/websearch"
 	"github.com/Godric-W/Amadeus/prompts"
 )
 
@@ -38,8 +40,8 @@ type AgentOptions struct {
 	UserSkillRoot    string
 	UserMCPRoot      string
 	MCPClientFactory mcp.ClientFactory
-	WebFetcher       web.Fetcher
-	WebSearch        web.SearchProvider
+	WebFetcher       webfetch.Fetcher
+	WebSearch        websearch.Provider
 }
 
 type Agent struct {
@@ -69,9 +71,11 @@ type Agent struct {
 	SkillWarnings    []error
 	MCP              *mcp.Manager
 	MCPWarnings      []error
-	WebFetcher       web.Fetcher
-	WebSearch        web.SearchProvider
+	WebFetcher       webfetch.Fetcher
+	WebSearch        websearch.Provider
+	Processes        *processdomain.Manager
 	tools            []tool.Spec
+	visibility       map[string]bool
 }
 
 func NewAgent(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink) (*Agent, error) {
@@ -94,7 +98,7 @@ func (agent *Agent) AvailableTools() []tool.Spec {
 	if agent == nil || agent.Registry == nil {
 		return nil
 	}
-	entries := agent.Registry.Snapshot()
+	entries := agent.Registry.VisibleSnapshot(agent.visibility)
 	tools := make([]tool.Spec, 0, len(entries))
 	for _, entry := range entries {
 		tools = append(tools, entry.Spec.Clone())
@@ -106,7 +110,7 @@ func newAgent(configured config.Config, root project.Root, events event.Sink, ap
 	return newAgentWithSnapshotFactory(configured, root, events, approvals, auditSink, createClient, defaultSnapshotFactory, "", nil, "", "", nil, nil, nil)
 }
 
-func newAgentWithSnapshotFactory(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory, createSnapshots SnapshotFactory, snapshotRunID string, postWriteHooks []react.PostExecutionHook, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, webFetcher web.Fetcher, webSearch web.SearchProvider) (*Agent, error) {
+func newAgentWithSnapshotFactory(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory, createSnapshots SnapshotFactory, snapshotRunID string, postWriteHooks []react.PostExecutionHook, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, webFetcher webfetch.Fetcher, webSearch websearch.Provider) (*Agent, error) {
 	if err := config.Validate(configured); err != nil {
 		return nil, fmt.Errorf("validate Agent configuration: %w", err)
 	}
@@ -163,6 +167,25 @@ func newAgentWithSnapshotFactory(configured config.Config, root project.Root, ev
 	if err != nil {
 		return nil, fmt.Errorf("create MVP tool registry: %w", err)
 	}
+	executeTool, exists := registry.Lookup("execute_command")
+	if !exists {
+		return nil, errors.New("create MVP tool registry: execute_command is missing")
+	}
+	executeCommand, ok := executeTool.(*builtin.ExecuteCommand)
+	if !ok {
+		return nil, errors.New("create MVP tool registry: execute_command has unexpected type")
+	}
+	visibility := make(map[string]bool)
+	if client.Capabilities().SupportsImages {
+		viewImage, imageErr := builtin.NewViewImage(root, builtin.ViewImageOptions{})
+		if imageErr != nil {
+			return nil, fmt.Errorf("create view_image tool: %w", imageErr)
+		}
+		if imageErr := registry.RegisterWithRegistration(viewImage, tool.Registration{Exposure: tool.ExposureConditional, Condition: "provider.images"}); imageErr != nil {
+			return nil, fmt.Errorf("register view_image tool: %w", imageErr)
+		}
+		visibility["provider.images"] = true
+	}
 	snapshots, err := createSnapshots(root)
 	if err != nil {
 		return nil, fmt.Errorf("create snapshot service: %w", err)
@@ -174,63 +197,63 @@ func newAgentWithSnapshotFactory(configured config.Config, root project.Root, ev
 			return nil, fmt.Errorf("create snapshot run tracker: %w", err)
 		}
 	}
-	revertTurn, err := builtin.NewRevertTurn(snapshots)
+	revertRun, err := builtin.NewRevertRun(snapshots)
 	if err != nil {
-		return nil, fmt.Errorf("create revert_turn tool: %w", err)
+		return nil, fmt.Errorf("create revert_run tool: %w", err)
 	}
-	if err := registry.Register(revertTurn); err != nil {
-		return nil, fmt.Errorf("register revert_turn tool: %w", err)
+	if err := registry.RegisterWithRegistration(revertRun, tool.Registration{Exposure: tool.ExposureConditional, Condition: "snapshot.available"}); err != nil {
+		return nil, fmt.Errorf("register revert_run tool: %w", err)
 	}
-	if webFetcher == nil {
-		webFetcher, err = web.NewHTTPFetcher(web.PolicyOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("create web fetcher: %w", err)
+	visibility["snapshot.available"] = true
+	if configured.Web.Fetch.Enabled {
+		if webFetcher == nil {
+			webFetcher, err = webfetch.New(webfetch.Options{MaxBytes: configured.Web.Fetch.MaxBytes, MaxRedirects: configured.Web.Fetch.MaxRedirects, Timeout: configured.Web.Fetch.Timeout})
+			if err != nil {
+				return nil, fmt.Errorf("create web fetcher: %w", err)
+			}
 		}
-	}
-	if webSearch == nil {
-		webSearch, err = web.NewDuckDuckGoProvider(webFetcher)
-		if err != nil {
-			return nil, fmt.Errorf("create web search provider: %w", err)
+		webFetchTool, toolErr := builtin.NewWebFetch(webFetcher)
+		if toolErr != nil {
+			return nil, fmt.Errorf("create web_fetch tool: %w", toolErr)
 		}
+		if toolErr := registry.RegisterWithRegistration(webFetchTool, tool.Registration{Exposure: tool.ExposureConditional, Condition: "web.fetch.configured"}); toolErr != nil {
+			return nil, fmt.Errorf("register web_fetch tool: %w", toolErr)
+		}
+		visibility["web.fetch.configured"] = true
 	}
-	webFetchTool, err := builtin.NewWebFetch(webFetcher)
-	if err != nil {
-		return nil, fmt.Errorf("create web_fetch tool: %w", err)
-	}
-	if err := registry.Register(webFetchTool); err != nil {
-		return nil, fmt.Errorf("register web_fetch tool: %w", err)
-	}
-	webSearchTool, err := builtin.NewWebSearch(webSearch)
-	if err != nil {
-		return nil, fmt.Errorf("create web_search tool: %w", err)
-	}
-	if err := registry.Register(webSearchTool); err != nil {
-		return nil, fmt.Errorf("register web_search tool: %w", err)
+	if configured.Web.Search.Enabled {
+		if webSearch == nil {
+			provider, providerErr := websearch.NewProvider(websearch.ProviderOptions{Name: string(configured.Web.Search.Provider), APIKey: configured.Web.Search.APIKey, BaseURL: configured.Web.Search.BaseURL})
+			if providerErr != nil {
+				return nil, fmt.Errorf("create web search provider: %w", providerErr)
+			}
+			webSearch, providerErr = websearch.NewService(provider, websearch.ServiceOptions{Timeout: configured.Web.Search.Timeout, MaxResults: configured.Web.Search.MaxResults})
+			if providerErr != nil {
+				return nil, fmt.Errorf("create web search service: %w", providerErr)
+			}
+		}
+		webSearchTool, toolErr := builtin.NewWebSearch(webSearch)
+		if toolErr != nil {
+			return nil, fmt.Errorf("create web_search tool: %w", toolErr)
+		}
+		if toolErr := registry.RegisterWithRegistration(webSearchTool, tool.Registration{Exposure: tool.ExposureConditional, Condition: "web.search.configured"}); toolErr != nil {
+			return nil, fmt.Errorf("register web_search tool: %w", toolErr)
+		}
+		visibility["web.search.configured"] = true
 	}
 	skills, skillWarnings, err := skill.Load(userSkillRoot, root, skill.DefaultLoadOptions())
 	if err != nil {
 		return nil, fmt.Errorf("load Skills: %w", err)
 	}
-	var skillBuffer *skill.ContextBuffer
 	if skills.Len() > 0 {
-		skillBuffer, err = skill.NewContextBuffer(skill.BufferOptions{})
+		readSkill, err := builtin.NewReadSkill(skills, builtin.ReadSkillOptions{})
 		if err != nil {
-			return nil, fmt.Errorf("create Skill context buffer: %w", err)
+			return nil, fmt.Errorf("create read_skill tool: %w", err)
 		}
-		loadSkill, err := builtin.NewLoadSkill(skills, skillBuffer)
-		if err != nil {
-			return nil, fmt.Errorf("create load_skill tool: %w", err)
+		if err := registry.RegisterWithRegistration(readSkill, tool.Registration{Exposure: tool.ExposureConditional, Condition: "skills.available"}); err != nil {
+			return nil, fmt.Errorf("register read_skill tool: %w", err)
 		}
-		if err := registry.Register(loadSkill); err != nil {
-			return nil, fmt.Errorf("register load_skill tool: %w", err)
-		}
-		readReference, err := builtin.NewReadSkillReference(skills, builtin.ReadSkillReferenceOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("create read_skill_reference tool: %w", err)
-		}
-		if err := registry.Register(readReference); err != nil {
-			return nil, fmt.Errorf("register read_skill_reference tool: %w", err)
-		}
+		visibility["skills.available"] = true
 	}
 	mcpConfig, err := mcp.Load(userMCPRoot, root, mcp.LoadOptions{})
 	if err != nil {
@@ -245,14 +268,33 @@ func newAgentWithSnapshotFactory(configured config.Config, root project.Root, ev
 		return nil, fmt.Errorf("create lazy MCP tools: %w", err)
 	}
 	if mcpListTool != nil {
-		if err := registry.Register(mcpListTool); err != nil {
+		if err := registry.RegisterWithRegistration(mcpListTool, tool.Registration{Exposure: tool.ExposureConditional, Condition: "mcp.configured"}); err != nil {
 			return nil, fmt.Errorf("register lazy MCP tool: %w", err)
 		}
 	}
 	if mcpCallTool != nil {
-		if err := registry.Register(mcpCallTool); err != nil {
+		if err := registry.RegisterWithRegistration(mcpCallTool, tool.Registration{Exposure: tool.ExposureDeferred, Condition: "mcp.catalog"}); err != nil {
 			return nil, fmt.Errorf("register lazy MCP tool: %w", err)
 		}
+	}
+	mcpListResources, mcpReadResource, err := mcp.NewResourceTools(mcpManager)
+	if err != nil {
+		return nil, fmt.Errorf("create MCP resource tools: %w", err)
+	}
+	if mcpListResources != nil {
+		if err := registry.RegisterWithRegistration(mcpListResources, tool.Registration{Exposure: tool.ExposureConditional, Condition: "mcp.resources"}); err != nil {
+			return nil, fmt.Errorf("register MCP resource list tool: %w", err)
+		}
+	}
+	if mcpReadResource != nil {
+		if err := registry.RegisterWithRegistration(mcpReadResource, tool.Registration{Exposure: tool.ExposureDeferred, Condition: "mcp.resources"}); err != nil {
+			return nil, fmt.Errorf("register MCP resource read tool: %w", err)
+		}
+	}
+	if len(mcpManager.EnabledServers()) > 0 {
+		visibility["mcp.configured"] = true
+		visibility["mcp.catalog"] = true
+		visibility["mcp.resources"] = true
 	}
 	validator := tool.NewArgumentValidator()
 	grants := policy.NewGrantCache()
@@ -274,13 +316,12 @@ func newAgentWithSnapshotFactory(configured config.Config, root project.Root, ev
 	}
 	progress := react.DefaultProgressMonitor()
 	runner, err := react.NewRunner(iterator, toolExecutor, progress, react.RunnerOptions{
-		Temperature:        provider.Temperature,
-		MaxOutputTokens:    provider.MaxOutputTokens,
-		MaxParallelTools:   configured.Agent.MaxParallelTools,
-		AdditionalMessages: skillContextMessages(skillBuffer),
-		ContextWindow:      agentcontext.NewContextWindowManager(nil),
-		ContextProfile:     agentcontext.DefaultContextProfile(provider.ContextWindow, provider.MaxOutputTokens),
-		Events:             events,
+		Temperature:      provider.Temperature,
+		MaxOutputTokens:  provider.MaxOutputTokens,
+		MaxParallelTools: configured.Agent.MaxParallelTools,
+		ContextWindow:    agentcontext.NewContextWindowManager(nil),
+		ContextProfile:   agentcontext.DefaultContextProfile(provider.ContextWindow, provider.MaxOutputTokens),
+		Events:           events,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create ReAct runner: %w", err)
@@ -302,7 +343,7 @@ func newAgentWithSnapshotFactory(configured config.Config, root project.Root, ev
 		return nil, fmt.Errorf("create Controller: %w", err)
 	}
 
-	entries := registry.Snapshot()
+	entries := registry.VisibleSnapshot(visibility)
 	availableTools := make([]tool.Spec, 0, len(entries))
 	for _, entry := range entries {
 		availableTools = append(availableTools, entry.Spec.Clone())
@@ -336,7 +377,9 @@ func newAgentWithSnapshotFactory(configured config.Config, root project.Root, ev
 		MCP:              mcpManager,
 		WebFetcher:       webFetcher,
 		WebSearch:        webSearch,
+		Processes:        executeCommand.ProcessManager(),
 		tools:            availableTools,
+		visibility:       visibility,
 	}, nil
 }
 
@@ -345,19 +388,6 @@ func (agent *Agent) SkillIndex() []skill.IndexEntry {
 		return nil
 	}
 	return agent.Skills.Index()
-}
-
-func skillContextMessages(buffer *skill.ContextBuffer) func() ([]llm.Message, error) {
-	if buffer == nil {
-		return nil
-	}
-	return func() ([]llm.Message, error) {
-		content, err := skill.MarshalContext(buffer.Consume())
-		if err != nil || content == "" {
-			return nil, err
-		}
-		return []llm.Message{llm.DeveloperMessage(content)}, nil
-	}
 }
 
 func (agent *Agent) RefreshMCP(ctx context.Context) []error {
@@ -375,7 +405,7 @@ func (agent *Agent) RefreshMCP(ctx context.Context) []error {
 		for index, value := range tools {
 			values[index] = value
 		}
-		if err := agent.Registry.ReplaceGroup("mcp:"+server, values); err != nil {
+		if err := agent.Registry.ReplaceGroupWithRegistration("mcp:"+server, values, tool.Registration{Exposure: tool.ExposureDeferred, Condition: "mcp.catalog"}); err != nil {
 			warnings = append(warnings, fmt.Errorf("register MCP server %q tools: %w", server, err))
 		}
 	}
@@ -384,7 +414,13 @@ func (agent *Agent) RefreshMCP(ctx context.Context) []error {
 }
 
 func (agent *Agent) Close() error {
-	if agent == nil || agent.MCP == nil {
+	if agent == nil {
+		return nil
+	}
+	if agent.Processes != nil {
+		agent.Processes.Close()
+	}
+	if agent.MCP == nil {
 		return nil
 	}
 	return agent.MCP.Close()

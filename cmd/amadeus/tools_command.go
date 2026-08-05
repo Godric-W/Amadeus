@@ -21,15 +21,19 @@ func newToolsCommand() *cobra.Command {
 func newToolsListCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List built-in MVP tools",
+		Short: "List the target Amadeus tool surface",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
-			if _, err := fmt.Fprintln(writer, "NAME\tSIDE_EFFECT\tPARALLEL_SAFE\tIDEMPOTENT\tRESOURCE_MODE"); err != nil {
+			if _, err := fmt.Fprintln(writer, "NAME\tEXPOSURE\tCONDITION\tSTATUS\tSIDE_EFFECT"); err != nil {
 				return err
 			}
-			for _, spec := range builtin.MVPSpecs() {
-				if _, err := fmt.Fprintf(writer, "%s\t%s\t%t\t%t\t%s\n", spec.Name, spec.SideEffect, spec.ParallelSafe, spec.Idempotent, spec.ResourceStrategy.Mode); err != nil {
+			for _, entry := range builtin.TargetCatalog() {
+				condition := entry.Condition
+				if condition == "" {
+					condition = "-"
+				}
+				if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", entry.Name, entry.Exposure, condition, entry.Status, entry.SideEffect); err != nil {
 					return err
 				}
 			}

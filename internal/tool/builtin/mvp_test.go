@@ -23,7 +23,7 @@ func TestMVPRegistryContainsSevenStableTools(t *testing.T) {
 	for index, entry := range entries {
 		names[index] = entry.Spec.Name
 	}
-	want := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "write_file"}
+	want := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "write_stdin"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("unexpected MVP tools: got %v, want %v", names, want)
 	}
@@ -56,7 +56,6 @@ func TestMVPDescriptionsEnforceToolSelectionBoundaries(t *testing.T) {
 		"glob_files":      {"Preferred over shell"},
 		"grep_code":       {"Preferred over shell"},
 		"apply_patch":     {"Preferred tool", "editing existing files"},
-		"write_file":      {"create a new", "explicitly replace", "use apply_patch"},
 		"execute_command": {"builds, tests, Git", "never use it to bypass"},
 	}
 	for name, fragments := range checks {

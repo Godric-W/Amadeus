@@ -96,6 +96,57 @@ func TestExecutorDeletesBinaryRegularFile(t *testing.T) {
 	}
 }
 
+func TestExecutorMovesFileWithoutAndWithUpdate(t *testing.T) {
+	rootPath := t.TempDir()
+	writeTestFile(t, rootPath, "plain.txt", "plain\n", 0o600)
+	writeTestFile(t, rootPath, "edit.txt", "old\n", 0o640)
+	executor := newTestExecutor(t, rootPath, osCommitOperations{})
+	document := mustParse(t, strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: plain.txt",
+		"*** Move to: moved/plain.txt",
+		"*** Update File: edit.txt",
+		"*** Move to: moved/edit.txt",
+		"@@",
+		"-old",
+		"+new",
+		"*** End Patch",
+	}, "\n"))
+
+	result, err := executor.Apply(context.Background(), document)
+	if err != nil {
+		t.Fatalf("apply move patch: %v", err)
+	}
+	if result.Partial || len(result.Applied) != 2 || !result.Applied[0].Moved || result.Applied[0].Destination != "moved/plain.txt" || !result.Applied[1].Moved || result.Applied[1].Destination != "moved/edit.txt" {
+		t.Fatalf("unexpected move result: %#v", result)
+	}
+	assertFileContent(t, rootPath, "moved/plain.txt", "plain\n")
+	assertFileContent(t, rootPath, "moved/edit.txt", "new\n")
+	for _, source := range []string{"plain.txt", "edit.txt"} {
+		if _, statErr := os.Stat(filepath.Join(rootPath, source)); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("move source %q still exists: %v", source, statErr)
+		}
+	}
+	info, err := os.Stat(filepath.Join(rootPath, "moved/edit.txt"))
+	if err != nil || info.Mode().Perm() != 0o640 {
+		t.Fatalf("move did not preserve mode: info=%v err=%v", info, err)
+	}
+}
+
+func TestExecutorMoveRejectsExistingDestinationWithoutChangingSource(t *testing.T) {
+	rootPath := t.TempDir()
+	writeTestFile(t, rootPath, "source.txt", "source\n", 0o600)
+	writeTestFile(t, rootPath, "destination.txt", "destination\n", 0o600)
+	executor := newTestExecutor(t, rootPath, osCommitOperations{})
+	document := mustParse(t, "*** Begin Patch\n*** Update File: source.txt\n*** Move to: destination.txt\n*** End Patch")
+
+	if _, err := executor.Apply(context.Background(), document); err == nil || !strings.Contains(err.Error(), "destination") {
+		t.Fatalf("expected destination conflict, got %v", err)
+	}
+	assertFileContent(t, rootPath, "source.txt", "source\n")
+	assertFileContent(t, rootPath, "destination.txt", "destination\n")
+}
+
 func TestExecutorPreflightFailureLeavesAllFilesUnchanged(t *testing.T) {
 	rootPath := t.TempDir()
 	writeTestFile(t, rootPath, "existing.txt", "actual\n", 0o644)
@@ -138,6 +189,9 @@ func TestExecutorRejectsAmbiguousHunk(t *testing.T) {
 	var conflict *ConflictError
 	if !errors.As(err, &conflict) || conflict.Matches != 2 {
 		t.Fatalf("expected ambiguous conflict, got %v", err)
+	}
+	if len(conflict.Candidates) != 2 || conflict.Candidates[0] != 1 || conflict.Candidates[1] != 3 {
+		t.Fatalf("unexpected conflict candidates: %#v", conflict.Candidates)
 	}
 	assertFileContent(t, rootPath, "duplicate.txt", "same\nold\nsame\nold\n")
 }

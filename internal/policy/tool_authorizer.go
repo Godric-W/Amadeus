@@ -178,6 +178,9 @@ func (authorizer *ToolAuthorizer) assess(spec tool.Spec, arguments json.RawMessa
 		}
 		return assessment.Risk, assessment.Disposition, assessment.Reason, nil
 	}
+	if spec.Name == "write_stdin" {
+		return CommandRiskModerate, CommandAllow, "continues a process already approved for the current Run", nil
+	}
 
 	switch spec.SideEffect {
 	case tool.SideEffectNone, tool.SideEffectRead:
@@ -187,6 +190,14 @@ func (authorizer *ToolAuthorizer) assess(spec tool.Spec, arguments json.RawMessa
 	case tool.SideEffectExecute:
 		return CommandRiskHigh, CommandRequireApproval, "tool executes code or commands", nil
 	case tool.SideEffectNetwork:
+		switch spec.Name {
+		case "mcp_list_tools", "mcp_call", "mcp_list_resources", "mcp_read_resource":
+			presentation := tool.PresentCall(spec, tool.NewCall("approval", spec.Name, arguments))
+			target := strings.TrimSpace(strings.Join([]string{presentation.ActionSummary, presentation.Detail}, ": "))
+			if target != "" {
+				return CommandRiskHigh, CommandRequireApproval, "tool accesses external systems: " + target, nil
+			}
+		}
 		return CommandRiskHigh, CommandRequireApproval, "tool accesses external systems", nil
 	default:
 		return "", "", "", fmt.Errorf("tool side effect %q is invalid", spec.SideEffect)
@@ -208,6 +219,11 @@ func (authorizer *ToolAuthorizer) preflightPaths(toolName string, arguments json
 			if _, err := authorizer.pathGuard.ResolveForWrite(operation.Path); err != nil {
 				return fmt.Errorf("preflight patch path %q: %w", operation.Path, err)
 			}
+			if operation.MovePath != "" {
+				if _, err := authorizer.pathGuard.ResolveForWrite(operation.MovePath); err != nil {
+					return fmt.Errorf("preflight patch move destination %q: %w", operation.MovePath, err)
+				}
+			}
 		}
 		return nil
 	case "read_file":
@@ -216,13 +232,6 @@ func (authorizer *ToolAuthorizer) preflightPaths(toolName string, arguments json
 			return err
 		}
 		_, err = authorizer.pathGuard.ResolveExisting(path, project.PathFile)
-		return err
-	case "write_file":
-		path, err := requiredStringArgument(arguments, "path")
-		if err != nil {
-			return err
-		}
-		_, err = authorizer.pathGuard.ResolveForWrite(path)
 		return err
 	case "list_dir":
 		path, err := optionalStringArgument(arguments, "path", ".")

@@ -23,7 +23,7 @@ func TestGrepCodeFallbackReturnsLineNumbersAndContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("grep code: %v", err)
 	}
-	want := "sample.go-2-\nsample.go:3:func Alpha() {}\nsample.go-4-func Beta() {}"
+	want := "sample.go-2-\nsample.go:3:1:func Alpha() {}\nsample.go-4-func Beta() {}"
 	if result.Text != want || result.Partial || result.Metadata["backend"] != "go" {
 		t.Fatalf("unexpected grep result: %#v", result)
 	}
@@ -37,7 +37,11 @@ func TestGrepCodeRipgrepFastPathMatchesFallbackSemantics(t *testing.T) {
 		}
 	}
 	fakeRG := filepath.Join(t.TempDir(), "rg")
-	script := "#!/bin/sh\nprintf 'a.go\\0'\n"
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"context","data":{"path":{"text":"a.go"},"lines":{"text":"before\n"},"line_number":1,"submatches":[]}}'
+printf '%s\n' '{"type":"match","data":{"path":{"text":"a.go"},"lines":{"text":"needle\n"},"line_number":2,"submatches":[{"start":0,"end":6,"match":{"text":"needle"}}]}}'
+printf '%s\n' '{"type":"context","data":{"path":{"text":"a.go"},"lines":{"text":"after\n"},"line_number":3,"submatches":[]}}'
+`
 	if err := os.WriteFile(fakeRG, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake rg: %v", err)
 	}
@@ -82,7 +86,7 @@ func TestGrepCodeFallsBackWhenRipgrepFails(t *testing.T) {
 		t.Fatalf("create grep: %v", err)
 	}
 	result, err := grepCode.Execute(context.Background(), json.RawMessage(`{"query":"needle"}`))
-	if err != nil || result.Text != "a.txt:1:needle" || result.Metadata["backend"] != "go" {
+	if err != nil || result.Text != "a.txt:1:1:needle" || result.Metadata["backend"] != "go" {
 		t.Fatalf("unexpected fallback result: result=%#v err=%v", result, err)
 	}
 }
@@ -123,7 +127,7 @@ func TestGrepCodeFallbackSkipsBinaryOversizeAndIgnoredTrees(t *testing.T) {
 	}
 	grepCode := newTestGrepCode(t, rootPath, 10, 8)
 	result, err := grepCode.Execute(context.Background(), json.RawMessage(`{"query":"needle"}`))
-	if err != nil || result.Text != "visible.txt:1:needle" || result.Metadata["files_skipped"] != 2 {
+	if err != nil || result.Text != "visible.txt:1:1:needle" || result.Metadata["files_skipped"] != 2 {
 		t.Fatalf("unexpected skip result: result=%#v err=%v", result, err)
 	}
 }

@@ -170,7 +170,7 @@ func errorsForUnsupportedReasoningOption(dialect config.ProviderDialect, option 
 }
 
 func openAICapabilities(api config.APIMode) llm.Capabilities {
-	capabilities := llm.Capabilities{SupportsStreaming: true}
+	capabilities := llm.Capabilities{SupportsStreaming: true, SupportsImages: true}
 	if api == config.APIResponses {
 		capabilities.SupportsDeveloperRole = true
 		capabilities.SupportsReasoning = true

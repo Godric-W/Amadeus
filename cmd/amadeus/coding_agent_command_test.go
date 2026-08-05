@@ -65,7 +65,7 @@ func (client *inlineApprovalCodingClient) Stream(_ context.Context, _ llm.Reques
 	switch client.streamRequests {
 	case 1:
 		return &codingCommandStream{chunks: []llm.StreamChunk{
-			{ID: "write-tool", ToolCalls: []llm.ToolCall{{ID: "write-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"approved.txt","content":"approved\n","mode":"create"}`)}}, FinishReason: llm.FinishReasonToolCalls},
+			{ID: "write-tool", ToolCalls: []llm.ToolCall{{ID: "write-1", Name: "apply_patch", Arguments: json.RawMessage(`{"patch":"*** Begin Patch\n*** Add File: approved.txt\n+approved\n*** End Patch"}`)}}, FinishReason: llm.FinishReasonToolCalls},
 		}}, nil
 	case 2:
 		return &codingCommandStream{chunks: []llm.StreamChunk{
@@ -303,7 +303,7 @@ func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 		t.Fatalf("unexpected Provider request counts: stream=%d complete=%d", len(client.streamRequests), len(client.completeRequests))
 	}
 	first := client.streamRequests[0]
-	if len(first.Messages) != 3 || first.Messages[0].Role != llm.RoleSystem || first.Messages[1].Role != llm.RoleDeveloper || first.Messages[2].Content != "Inspect README and finish" || len(first.Tools) != 10 {
+	if len(first.Messages) != 3 || first.Messages[0].Role != llm.RoleSystem || first.Messages[1].Role != llm.RoleDeveloper || first.Messages[2].Content != "Inspect README and finish" || len(first.Tools) != 8 {
 		t.Fatalf("unexpected first Agent request: %#v", first)
 	}
 	if !strings.Contains(first.Messages[1].Content, "user instruction") || !strings.Contains(first.Messages[1].Content, "project instruction") {
@@ -398,7 +398,7 @@ func TestPlainInteractiveRunUsesTerminalApprovalPrompt(t *testing.T) {
 	if err != nil || string(content) != "approved\n" {
 		t.Fatalf("approved write missing: content=%q err=%v", content, err)
 	}
-	for _, fragment := range []string{"approval: requested for write_file", "Approval required", "tool: write_file", "approval: allow for write_file", "result: completed", "session: closed"} {
+	for _, fragment := range []string{"approval: requested for apply_patch", "Approval required", "tool: apply_patch", "approval: allow for apply_patch", "result: completed", "session: closed"} {
 		if !strings.Contains(stderr.String(), fragment) {
 			t.Fatalf("inline approval transcript missing %q: %s", fragment, stderr.String())
 		}
@@ -431,7 +431,7 @@ func TestInteractivePaletteCommandsExposeStatusAndTools(t *testing.T) {
 	for _, fragment := range []string{
 		"commands: /help, /plan, /exit, /clear, /resume, /status, /tools",
 		"status: project=" + projectDirectory + " session=draft",
-		"write_file (write)",
+		"apply_patch (write)",
 		"\x1b[2J\x1b[H",
 		"session: closed",
 	} {

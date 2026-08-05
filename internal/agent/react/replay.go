@@ -59,7 +59,16 @@ func ReplayToolResults(assistant llm.Message, executions []ToolExecution) ([]llm
 		if err != nil {
 			return nil, fmt.Errorf("tool result replay call %q: %w", callID, err)
 		}
-		messages = append(messages, llm.ToolResultMessage(callID, payload))
+		parts := make([]llm.ContentPart, 0, len(execution.Observation.Result.Parts))
+		for _, part := range execution.Observation.Result.Parts {
+			switch part.Kind {
+			case tool.ContentText:
+				parts = append(parts, llm.TextPart(part.Text))
+			case tool.ContentImage:
+				parts = append(parts, llm.ImagePart(part.MediaType, part.Data))
+			}
+		}
+		messages = append(messages, llm.ToolResultMessageWithParts(callID, payload, parts...))
 	}
 	if len(seenCalls) != len(byCallID) {
 		for callID := range byCallID {
@@ -76,7 +85,6 @@ func encodeToolResultPayload(execution ToolExecution) (string, error) {
 	payload := ToolResultPayload{
 		OK:       execution.Observation.Error == "",
 		Text:     result.Text,
-		Parts:    result.Parts,
 		Metadata: result.Metadata,
 		Partial:  result.Partial,
 		Error:    execution.Observation.Error,

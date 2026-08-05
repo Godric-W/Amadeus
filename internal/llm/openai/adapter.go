@@ -63,6 +63,9 @@ func (adapter *Adapter) Complete(ctx context.Context, request llm.Request) (llm.
 }
 
 func (adapter *Adapter) Stream(ctx context.Context, request llm.Request) (llm.Stream, error) {
+	if requestHasImages(request) && !adapter.Capabilities().SupportsImages {
+		return nil, &llm.ProviderError{Kind: llm.ProviderErrorInvalidRequest, Message: "provider does not support image content parts"}
+	}
 	switch adapter.provider.API {
 	case config.APIResponses:
 		return openResponsesStream(ctx, adapter.sdk, request)
@@ -74,6 +77,17 @@ func (adapter *Adapter) Stream(ctx context.Context, request llm.Request) (llm.St
 			Message: "provider API mode is unsupported",
 		}
 	}
+}
+
+func requestHasImages(request llm.Request) bool {
+	for _, message := range request.Messages {
+		for _, part := range message.Parts {
+			if part.Kind == llm.ContentImage {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (adapter *Adapter) Model() llm.ModelInfo {

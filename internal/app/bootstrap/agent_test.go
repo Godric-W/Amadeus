@@ -20,6 +20,8 @@ import (
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/snapshot"
 	"github.com/Godric-W/Amadeus/internal/tool"
+	"github.com/Godric-W/Amadeus/internal/webfetch"
+	"github.com/Godric-W/Amadeus/internal/websearch"
 	"github.com/Godric-W/Amadeus/prompts"
 )
 
@@ -73,10 +75,10 @@ func TestNewAgentBuildsDefaultComposition(t *testing.T) {
 	if agent.Client.Model().Provider != configured.DefaultProvider || agent.Client.Model().Name != "test-model" {
 		t.Fatalf("unexpected composed client model: %#v", agent.Client.Model())
 	}
-	if agent.Registry.Len() != 10 {
-		t.Fatalf("unexpected Agent registry size: got %d, want 10", agent.Registry.Len())
+	if agent.Registry.Len() != 9 {
+		t.Fatalf("unexpected Agent registry size: got %d, want 9", agent.Registry.Len())
 	}
-	wantTools := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "revert_turn", "web_fetch", "web_search", "write_file"}
+	wantTools := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "revert_run", "view_image", "write_stdin"}
 	if got := toolNames(agent.AvailableTools()); !reflect.DeepEqual(got, wantTools) {
 		t.Fatalf("unexpected available tools: got %v, want %v", got, wantTools)
 	}
@@ -97,6 +99,36 @@ func TestNewAgentWithOptionsUsesInjectedSnapshotService(t *testing.T) {
 	}
 }
 
+func TestNewAgentRegistersOnlyEnabledWebTools(t *testing.T) {
+	configured := validBootstrapConfig()
+	configured.Web.Fetch.Enabled = true
+	configured.Web.Search.Enabled = true
+	agent, err := NewAgentWithOptions(configured, newBootstrapProjectRoot(t), event.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink(), AgentOptions{
+		ClientFactory: successfulBootstrapFactory,
+		WebFetcher:    bootstrapWebFetcher{document: webfetch.Document{URL: "https://example.test", Text: "ok"}},
+		WebSearch:     bootstrapWebSearch{results: []websearch.Result{{Title: "One", URL: "https://example.test", Snippet: "ok"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "revert_run", "web_fetch", "web_search", "write_stdin"}
+	if got := toolNames(agent.AvailableTools()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("configured Web tools = %v, want %v", got, want)
+	}
+}
+
+type bootstrapWebFetcher struct{ document webfetch.Document }
+
+func (fetcher bootstrapWebFetcher) Fetch(context.Context, string) (webfetch.Document, error) {
+	return fetcher.document, nil
+}
+
+type bootstrapWebSearch struct{ results []websearch.Result }
+
+func (provider bootstrapWebSearch) Search(context.Context, string, int) ([]websearch.Result, error) {
+	return append([]websearch.Result(nil), provider.results...), nil
+}
+
 func TestNewAgentWithOptionsAttachesPostWriteHook(t *testing.T) {
 	root := newBootstrapProjectRoot(t)
 	hook := &bootstrapPostWriteHook{}
@@ -106,7 +138,7 @@ func TestNewAgentWithOptionsAttachesPostWriteHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agent.ToolExecutor.Execute(context.Background(), tool.NewCall("write-1", "write_file", json.RawMessage(`{"path":"hook.txt","content":"value","mode":"create"}`))); err != nil {
+	if _, err := agent.ToolExecutor.Execute(context.Background(), tool.NewCall("write-1", "apply_patch", json.RawMessage(`{"patch":"*** Begin Patch\n*** Add File: hook.txt\n+value\n*** End Patch"}`))); err != nil {
 		t.Fatal(err)
 	}
 	if hook.calls != 1 {
@@ -173,7 +205,7 @@ func TestAgentCompositionDeniesToolBeforeSideEffect(t *testing.T) {
 		t.Fatalf("build secured Agent composition: %v", err)
 	}
 	execution, err := agent.ToolExecutor.Execute(context.Background(), tool.NewCall(
-		"write-denied", "write_file", json.RawMessage(`{"path":"denied.txt","content":"must not exist","mode":"create"}`),
+		"write-denied", "apply_patch", json.RawMessage(`{"patch":"*** Begin Patch\n*** Add File: denied.txt\n+must not exist\n*** End Patch"}`),
 	))
 	if !errors.Is(err, policy.ErrToolDenied) || execution.Evidence.Verified {
 		t.Fatalf("unexpected denied write result: execution=%#v err=%v", execution, err)
@@ -208,7 +240,7 @@ func TestAgentCompositionFailsClosedBeforeWriteWhenAuditFails(t *testing.T) {
 		t.Fatalf("build audited Agent composition: %v", err)
 	}
 	_, err = agent.ToolExecutor.Execute(context.Background(), tool.NewCall(
-		"write-audit-failed", "write_file", json.RawMessage(`{"path":"unaudited.txt","content":"must not exist","mode":"create"}`),
+		"write-audit-failed", "apply_patch", json.RawMessage(`{"patch":"*** Begin Patch\n*** Add File: unaudited.txt\n+must not exist\n*** End Patch"}`),
 	))
 	if !errors.Is(err, expected) {
 		t.Fatalf("unexpected audit write failure: %v", err)
