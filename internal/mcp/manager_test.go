@@ -87,7 +87,10 @@ func TestManagerIsLazyReusesClientAndReconnectsOnce(t *testing.T) {
 }
 
 func TestToolAdapterSanitizesSchemaBoundsUntrustedResultAndUsesNetworkApprovalClass(t *testing.T) {
-	client := &fakeClient{result: RemoteResult{Text: "abcdefgh", IsError: false}}
+	client := &fakeClient{
+		tools:  []RemoteTool{{Name: "echo", Description: "Echo", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		result: RemoteResult{Text: "abcdefgh", IsError: false},
+	}
 	manager, err := NewManager(Config{Servers: map[string]ServerConfig{"demo": {Transport: TransportStdio, Command: "demo"}}}, func(context.Context, ServerConfig) (Client, error) { return client, nil })
 	if err != nil {
 		t.Fatal(err)
@@ -96,12 +99,12 @@ func TestToolAdapterSanitizesSchemaBoundsUntrustedResultAndUsesNetworkApprovalCl
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := adapter.Execute(context.Background(), json.RawMessage(`{"value":"ok"}`))
+	result, err := executePreparedTool(t, context.Background(), adapter, json.RawMessage(`{"value":"ok"}`))
 	if err != nil || adapter.Spec().Name != "mcp__demo__echo" || adapter.Spec().SideEffect != "network" || !result.Partial || !contains(result.Text, "Untrusted external MCP result") || contains(string(adapter.Spec().InputSchema), "title") || contains(string(adapter.Spec().InputSchema), "format") {
 		t.Fatalf("unexpected MCP tool adapter result: spec=%#v result=%#v err=%v", adapter.Spec(), result, err)
 	}
 	client.result = RemoteResult{Text: "tool failure", IsError: true}
-	if _, err := adapter.Execute(context.Background(), json.RawMessage(`{}`)); err == nil {
+	if _, err := executePreparedTool(t, context.Background(), adapter, json.RawMessage(`{}`)); err == nil {
 		t.Fatal("MCP isError result was not converted to a tool failure")
 	}
 }
@@ -138,6 +141,45 @@ func TestManagerCachesCatalogsAndValidatesResourceURI(t *testing.T) {
 	}
 	if _, err := manager.ReadResource(context.Background(), "demo", "fixture://missing"); err == nil || client.resourceReadCalls != 1 {
 		t.Fatalf("unknown resource reached server: calls=%d err=%v", client.resourceReadCalls, err)
+	}
+}
+
+func TestManagerBindingRevisionTracksCatalogAndReconnectRevalidatesTool(t *testing.T) {
+	configured := Config{Servers: map[string]ServerConfig{"demo": {Transport: TransportStdio, Command: "demo"}}}
+	first := &fakeClient{
+		tools:    []RemoteTool{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		callErrs: []error{errors.New("connection lost")},
+	}
+	second := &fakeClient{tools: []RemoteTool{{Name: "different", InputSchema: json.RawMessage(`{"type":"object"}`)}}}
+	factories := 0
+	manager, err := NewManager(configured, func(context.Context, ServerConfig) (Client, error) {
+		factories++
+		if factories == 1 {
+			return first, nil
+		}
+		return second, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	initial := manager.BindingSnapshot()
+	if len(initial.Revision) != 64 || len(initial.Servers) != 1 || initial.Servers[0].ConnectionGeneration != 0 || initial.Servers[0].ToolsLoaded {
+		t.Fatalf("unexpected initial MCP binding: %#v", initial)
+	}
+	if _, err := manager.ListTools(context.Background(), "demo"); err != nil {
+		t.Fatal(err)
+	}
+	loaded := manager.BindingSnapshot()
+	if loaded.Revision == initial.Revision || loaded.Servers[0].ConnectionGeneration != 1 || loaded.Servers[0].CatalogRevision == 0 || !loaded.Servers[0].ToolsLoaded {
+		t.Fatalf("MCP binding did not track first catalog: %#v", loaded)
+	}
+	if _, err := manager.CallTool(context.Background(), "demo", "echo", json.RawMessage(`{}`)); err == nil {
+		t.Fatal("MCP call was allowed after reconnect removed the Tool")
+	}
+	current := manager.BindingSnapshot()
+	if current.Revision == loaded.Revision || current.Servers[0].ConnectionGeneration != 2 || second.callCalls != 0 {
+		t.Fatalf("MCP reconnect did not revalidate catalog: binding=%#v second=%#v", current, second)
 	}
 }
 

@@ -52,6 +52,16 @@ func NewFileEnumerator(root project.Root, matcher *IgnoreMatcher) (*FileEnumerat
 	return &FileEnumerator{root: root, guard: guard, ignored: matcher}, nil
 }
 
+func NewFileEnumeratorWithGuard(root project.Root, matcher *IgnoreMatcher, guard *project.PathGuard) (*FileEnumerator, error) {
+	if root.Path() == "" {
+		return nil, errors.New("file enumerator project root is empty")
+	}
+	if guard == nil {
+		return nil, errors.New("file enumerator path guard is nil")
+	}
+	return &FileEnumerator{root: root, guard: guard, ignored: matcher}, nil
+}
+
 func (enumerator *FileEnumerator) Enumerate(ctx context.Context, options EnumerateOptions) (EnumerateResult, error) {
 	base := strings.TrimSpace(options.Path)
 	if base == "" {
@@ -61,15 +71,16 @@ func (enumerator *FileEnumerator) Enumerate(ctx context.Context, options Enumera
 	if err != nil {
 		return EnumerateResult{}, err
 	}
+	return enumerator.EnumeratePrepared(ctx, absolute, options)
+}
+
+func (enumerator *FileEnumerator) EnumeratePrepared(ctx context.Context, absolute string, options EnumerateOptions) (EnumerateResult, error) {
 	info, err := os.Stat(absolute)
 	if err != nil {
 		return EnumerateResult{}, err
 	}
 	if info.Mode().IsRegular() {
-		relative, err := enumerator.root.Relative(absolute)
-		if err != nil {
-			return EnumerateResult{}, err
-		}
+		relative := enumerator.displayPath(absolute)
 		return EnumerateResult{Files: []FileEntry{{Relative: relative, Absolute: absolute, Size: info.Size()}}, Scanned: 1}, nil
 	}
 	result := EnumerateResult{}
@@ -83,24 +94,25 @@ func (enumerator *FileEnumerator) Enumerate(ctx context.Context, options Enumera
 		if filePath == absolute {
 			return nil
 		}
-		relative, err := enumerator.root.Relative(filePath)
+		walkRelative, err := filepath.Rel(absolute, filePath)
 		if err != nil {
 			return err
 		}
-		hidden := hasHiddenSegment(relative)
+		displayPath := enumerator.displayPath(filePath)
+		hidden := hasHiddenSegment(walkRelative)
 		if entry.IsDir() {
-			if _, ignored := defaultIgnoredDirectories[entry.Name()]; ignored || (!options.IncludeHidden && hidden) || enumerator.ignored.Ignored(relative, true) {
+			if _, ignored := defaultIgnoredDirectories[entry.Name()]; ignored || (!options.IncludeHidden && hidden) || enumerator.ignored.Ignored(walkRelative, true) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if (!options.IncludeHidden && hidden) || enumerator.ignored.Ignored(relative, false) {
+		if (!options.IncludeHidden && hidden) || enumerator.ignored.Ignored(walkRelative, false) {
 			return nil
 		}
 		resolved := filePath
 		symlink := entry.Type()&os.ModeSymlink != 0
 		if symlink {
-			resolved, err = enumerator.guard.ResolveExisting(filepath.FromSlash(relative), project.PathFile)
+			resolved, err = enumerator.guard.ResolveExisting(filePath, project.PathAny)
 			if err != nil {
 				return err
 			}
@@ -117,7 +129,7 @@ func (enumerator *FileEnumerator) Enumerate(ctx context.Context, options Enumera
 			result.Partial = true
 			return fs.SkipAll
 		}
-		result.Files = append(result.Files, FileEntry{Relative: relative, Absolute: resolved, Size: info.Size(), Symlink: symlink})
+		result.Files = append(result.Files, FileEntry{Relative: displayPath, Absolute: resolved, Size: info.Size(), Symlink: symlink})
 		return nil
 	})
 	if err != nil {
@@ -125,6 +137,13 @@ func (enumerator *FileEnumerator) Enumerate(ctx context.Context, options Enumera
 	}
 	sort.Slice(result.Files, func(left, right int) bool { return result.Files[left].Relative < result.Files[right].Relative })
 	return result, nil
+}
+
+func (enumerator *FileEnumerator) displayPath(path string) string {
+	if relative, err := enumerator.root.Relative(path); err == nil {
+		return relative
+	}
+	return filepath.ToSlash(filepath.Clean(path))
 }
 
 func hasHiddenSegment(relative string) bool {

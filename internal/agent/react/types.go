@@ -1,11 +1,13 @@
 package react
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -64,15 +66,13 @@ type LimitReached struct {
 	Maximum int64
 }
 
-type EvidenceID string
-type EvidenceKind string
+type ToolOutcomeStatus string
 
 const (
-	EvidenceTool       EvidenceKind = "tool"
-	EvidenceFile       EvidenceKind = "file"
-	EvidenceCommand    EvidenceKind = "command"
-	EvidenceTest       EvidenceKind = "test"
-	EvidenceDiagnostic EvidenceKind = "diagnostic"
+	ToolOutcomeSucceeded   ToolOutcomeStatus = "succeeded"
+	ToolOutcomeFailed      ToolOutcomeStatus = "failed"
+	ToolOutcomeDenied      ToolOutcomeStatus = "denied"
+	ToolOutcomeInterrupted ToolOutcomeStatus = "interrupted"
 )
 
 type ArtifactRef struct {
@@ -81,23 +81,40 @@ type ArtifactRef struct {
 	Digest string
 }
 
-type Evidence struct {
-	ID           EvidenceID
-	Kind         EvidenceKind
-	Source       string
-	Summary      string
-	CriterionIDs []string
-	Artifact     *ArtifactRef
-	Verified     bool
+func (status ToolOutcomeStatus) Valid() bool {
+	switch status {
+	case ToolOutcomeSucceeded, ToolOutcomeFailed, ToolOutcomeDenied, ToolOutcomeInterrupted:
+		return true
+	default:
+		return false
+	}
 }
 
-type Observation struct {
-	CallID   string
-	ToolName string
-	Result   tool.Result
-	Error    string
-	Blocking bool
-	Duration time.Duration
+type ToolError struct {
+	Kind    string `json:"kind"`
+	Message string `json:"message"`
+}
+
+type ToolOutcome struct {
+	CallID    string            `json:"call_id"`
+	ToolName  string            `json:"tool_name"`
+	Status    ToolOutcomeStatus `json:"status"`
+	Result    tool.Result       `json:"result"`
+	Error     *ToolError        `json:"error,omitempty"`
+	Blocking  bool              `json:"blocking,omitempty"`
+	Partial   bool              `json:"partial,omitempty"`
+	Duration  time.Duration     `json:"duration"`
+	Artifacts []ArtifactRef     `json:"artifacts,omitempty"`
+	Metadata  map[string]any    `json:"metadata,omitempty"`
+}
+
+func (outcome ToolOutcome) Succeeded() bool { return outcome.Status == ToolOutcomeSucceeded }
+
+func (outcome ToolOutcome) ErrorMessage() string {
+	if outcome.Error == nil {
+		return ""
+	}
+	return outcome.Error.Message
 }
 
 type IterationStatus string
@@ -110,26 +127,20 @@ const (
 )
 
 type Iteration struct {
-	Index        int
-	LLMCallID    string
-	Intent       string
-	ToolCalls    []tool.Call
-	Observations []Observation
-	Evidence     []Evidence
-	Status       IterationStatus
-	StartedAt    time.Time
-	CompletedAt  *time.Time
-}
-
-type ExecutionMetadata struct {
-	TaskID string
+	Index       int
+	LLMCallID   string
+	Intent      string
+	ToolCalls   []tool.Call
+	Outcomes    []ToolOutcome
+	Status      IterationStatus
+	StartedAt   time.Time
+	CompletedAt *time.Time
 }
 
 type LoopState struct {
 	Budget          BudgetState
 	RuntimeMessages []llm.Message
 	Iterations      []Iteration
-	Evidence        []Evidence
 	Usage           llm.Usage
 	PreviousUsage   *llm.Usage
 	LastSentCount   int
@@ -140,19 +151,17 @@ func newLoopState(request Request) LoopState {
 		Budget:          request.Budget,
 		RuntimeMessages: make([]llm.Message, 0),
 		Iterations:      append([]Iteration(nil), request.PriorIterations...),
-		Evidence:        append([]Evidence(nil), request.Evidence...),
 	}
 }
 
 type Request struct {
-	RunID           string
-	Goal            string
-	Messages        []llm.Message
-	AvailableTools  []tool.Spec
-	PriorIterations []Iteration
-	Evidence        []Evidence
-	Budget          BudgetState
-	Metadata        ExecutionMetadata
+	RunID               string
+	Goal                string
+	Messages            []llm.Message
+	AvailableTools      []tool.Spec
+	RequestViewProvider RequestViewProvider
+	PriorIterations     []Iteration
+	Budget              BudgetState
 }
 
 func (request Request) Validate() error {
@@ -168,10 +177,26 @@ func (request Request) Validate() error {
 	return nil
 }
 
+type RequestViewInput struct {
+	RuntimeMessages []llm.Message
+	Additional      []llm.Message
+	PreviousUsage   *llm.Usage
+	LastSentCount   int
+}
+
+type RequestViewProvider interface {
+	PrepareRequestView(context.Context, RequestViewInput) (agentcontext.RequestView, error)
+}
+
+type RequestViewProviderFunc func(context.Context, RequestViewInput) (agentcontext.RequestView, error)
+
+func (provider RequestViewProviderFunc) PrepareRequestView(ctx context.Context, input RequestViewInput) (agentcontext.RequestView, error) {
+	return provider(ctx, input)
+}
+
 type Result struct {
 	FinalMessage *llm.Message
 	Iterations   []Iteration
-	Evidence     []Evidence
 	Usage        llm.Usage
 	Budget       BudgetState
 	StopReason   StopReason

@@ -27,8 +27,8 @@ const (
 	TypeRunStarted           Type = "run.started"
 	TypeRunStatusChanged     Type = "run.status.changed"
 	TypePlanUpdated          Type = "plan.updated"
-	TypeVerificationDone     Type = "verification.completed"
-	TypeReflectionDone       Type = "reflection.completed"
+	TypeRunDiffUpdated       Type = "run_diff.updated"
+	TypeRunDiffInvalidated   Type = "run_diff.invalidated"
 	TypeRunCompleted         Type = "run.completed"
 	TypeIterationStarted     Type = "iteration.started"
 	TypeIterationCompleted   Type = "iteration.completed"
@@ -288,46 +288,54 @@ type RunStatusChanged struct {
 
 func (RunStatusChanged) Type() Type { return TypeRunStatusChanged }
 
-type PlanTask struct {
-	ID        string
-	Objective string
-	Status    string
+type PlanItem struct {
+	Step   string
+	Status string
 }
 type PlanUpdated struct {
-	SessionID string
-	RunID     string
-	TaskID    string
-	Iteration int
-	LLMCallID string
-	Cycle     int
-	Tasks     []PlanTask
+	SessionID   string
+	RunID       string
+	TaskID      string
+	Iteration   int
+	LLMCallID   string
+	Explanation string
+	Items       []PlanItem
+	Revision    int64
+	UpdatedAt   time.Time
 }
 
 func (PlanUpdated) Type() Type { return TypePlanUpdated }
 
-type VerificationCompleted struct {
-	SessionID    string
-	RunID        string
-	TaskID       string
-	Iteration    int
-	LLMCallID    string
-	Passed       bool
-	EvidenceGaps []string
+type RunDiffChange struct {
+	Path         string
+	PreviousPath string
+	Kind         string
+	Bytes        int
 }
 
-func (VerificationCompleted) Type() Type { return TypeVerificationDone }
-
-type ReflectionCompleted struct {
+type RunDiffUpdated struct {
 	SessionID string
 	RunID     string
 	TaskID    string
 	Iteration int
 	LLMCallID string
-	Scope     string
-	Verdict   string
+	Revision  int64
+	Changes   []RunDiffChange
 }
 
-func (ReflectionCompleted) Type() Type { return TypeReflectionDone }
+func (RunDiffUpdated) Type() Type { return TypeRunDiffUpdated }
+
+type RunDiffInvalidated struct {
+	SessionID string
+	RunID     string
+	TaskID    string
+	Iteration int
+	LLMCallID string
+	Revision  int64
+	Reason    string
+}
+
+func (RunDiffInvalidated) Type() Type { return TypeRunDiffInvalidated }
 
 type RunCompleted struct {
 	SessionID  string
@@ -347,8 +355,8 @@ func (eventType Type) Valid() bool {
 	case TypeLLMCallStarted, TypeLLMCallCompleted, TypeTextDelta, TypeReasoningDelta,
 		TypeToolCallStarted, TypeToolCallCompleted, TypeApprovalRequested, TypeApprovalResolved,
 		TypeUsageUpdated, TypeContextWindowUpdated, TypeStatusChanged, TypeDiagnosticPublished, TypeErrorOccurred,
-		TypeRunStarted, TypeRunStatusChanged, TypePlanUpdated, TypeVerificationDone,
-		TypeReflectionDone, TypeRunCompleted, TypeIterationStarted, TypeIterationCompleted:
+		TypeRunStarted, TypeRunStatusChanged, TypePlanUpdated, TypeRunDiffUpdated, TypeRunDiffInvalidated,
+		TypeRunCompleted, TypeIterationStarted, TypeIterationCompleted:
 		return true
 	default:
 		return false

@@ -18,7 +18,7 @@ func TestReadFileSupportsOneBasedLineLimitAndStableMetadata(t *testing.T) {
 	}
 	readFile := newTestReadFile(t, rootPath, 1024)
 
-	result, err := readFile.Execute(context.Background(), json.RawMessage(`{"path":"notes.txt","line":2,"limit":1}`))
+	result, err := executePreparedTool(t, context.Background(), readFile, json.RawMessage(`{"path":"notes.txt","line":2,"limit":1}`))
 	if err != nil {
 		t.Fatalf("read file: %v", err)
 	}
@@ -36,12 +36,12 @@ func TestReadFileStreamsOversizeFileAndRejectsBinaryAndEscape(t *testing.T) {
 		t.Fatalf("write binary fixture: %v", err)
 	}
 	readFile := newTestReadFile(t, rootPath, 16)
-	result, err := readFile.Execute(context.Background(), json.RawMessage(`{"path":"large.txt","line":2,"limit":1}`))
+	result, err := executePreparedTool(t, context.Background(), readFile, json.RawMessage(`{"path":"large.txt","line":2,"limit":1}`))
 	if err != nil || result.Text != "L2:two\n" || result.Metadata["file_bytes"] != int64(14) {
 		t.Fatalf("large file range read failed: result=%#v err=%v", result, err)
 	}
 	for _, input := range []string{`{"path":"binary.bin"}`, `{"path":"../outside"}`} {
-		if _, err := readFile.Execute(context.Background(), json.RawMessage(input)); err == nil {
+		if _, err := executePreparedTool(t, context.Background(), readFile, json.RawMessage(input)); err == nil {
 			t.Fatalf("expected read rejection for %s", input)
 		}
 	}
@@ -60,7 +60,7 @@ func TestReadFileTruncatesLongLinesWithinOutputBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := readFile.Execute(context.Background(), json.RawMessage(`{"path":"long.txt","limit":1}`))
+	result, err := executePreparedTool(t, context.Background(), readFile, json.RawMessage(`{"path":"long.txt","limit":1}`))
 	if err != nil || !strings.HasPrefix(result.Text, "L1:") || result.Metadata["lines_truncated"] != 1 || result.Metadata["next_line"] != 2 {
 		t.Fatalf("unexpected truncated line result: result=%#v err=%v", result, err)
 	}

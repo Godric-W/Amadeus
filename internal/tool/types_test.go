@@ -11,15 +11,11 @@ func TestCallAndSpecCloneIsolateMutableFields(t *testing.T) {
 		Description: "Read a file",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
 		SideEffect:  SideEffectRead,
-		ResourceStrategy: ResourceStrategy{
-			Mode:          ResourceModeArguments,
-			ArgumentPaths: []string{"path"},
-		},
+		Concurrency: ToolConcurrencyShared,
 	}
 	clonedSpec := spec.Clone()
 	clonedSpec.InputSchema[0] = '['
-	clonedSpec.ResourceStrategy.ArgumentPaths[0] = "other"
-	if string(spec.InputSchema) != `{"type":"object"}` || spec.ResourceStrategy.ArgumentPaths[0] != "path" {
+	if string(spec.InputSchema) != `{"type":"object"}` {
 		t.Fatalf("spec clone shares mutable fields: %#v", spec)
 	}
 
@@ -31,7 +27,25 @@ func TestCallAndSpecCloneIsolateMutableFields(t *testing.T) {
 	}
 }
 
-func TestSideEffectAndResourceModeValidation(t *testing.T) {
+func TestPreparedCallClonesCallAndTargets(t *testing.T) {
+	call := NewCall("call", "read_file", json.RawMessage(`{"path":"a"}`))
+	prepared, err := NewPreparedCall(call, PreparedOptions{Targets: []PreparedTarget{{Kind: TargetFilesystem, Access: TargetAccessRead, CanonicalPath: "/tmp/a"}}, Payload: "payload"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clonedCall := prepared.Call()
+	clonedCall.Arguments[0] = '['
+	targets := prepared.Targets()
+	targets[0].CanonicalPath = "/changed"
+	if string(prepared.Call().Arguments) != `{"path":"a"}` || prepared.Targets()[0].CanonicalPath != "/tmp/a" {
+		t.Fatal("prepared call exposes mutable call or targets")
+	}
+	if payload, ok := PreparedPayloadAs[string](prepared); !ok || payload != "payload" {
+		t.Fatalf("unexpected payload: %q %v", payload, ok)
+	}
+}
+
+func TestSideEffectAndToolConcurrencyValidation(t *testing.T) {
 	for _, effect := range []SideEffect{SideEffectNone, SideEffectRead, SideEffectWrite, SideEffectExecute, SideEffectNetwork} {
 		if !effect.Valid() {
 			t.Fatalf("known side effect is invalid: %q", effect)
@@ -40,12 +54,12 @@ func TestSideEffectAndResourceModeValidation(t *testing.T) {
 	if SideEffect("mutate").Valid() {
 		t.Fatal("unknown side effect is valid")
 	}
-	for _, mode := range []ResourceMode{ResourceModeNone, ResourceModeExclusive, ResourceModeArguments} {
-		if !mode.Valid() {
-			t.Fatalf("known resource mode is invalid: %q", mode)
+	for _, concurrency := range []ToolConcurrency{ToolConcurrencyShared, ToolConcurrencyExclusive} {
+		if !concurrency.Valid() {
+			t.Fatalf("known tool concurrency is invalid: %q", concurrency)
 		}
 	}
-	if ResourceMode("dynamic").Valid() {
-		t.Fatal("unknown resource mode is valid")
+	if ToolConcurrency("dynamic").Valid() {
+		t.Fatal("unknown tool concurrency is valid")
 	}
 }

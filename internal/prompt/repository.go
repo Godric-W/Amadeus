@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/prompts"
+	"github.com/Godric-W/Amadeus/internal/prompt/builtin"
 )
 
 const BuiltinSource = "builtin"
@@ -46,7 +46,10 @@ func NewRepository(files fs.FS, sourceKind string) (*Repository, error) {
 }
 
 func NewBuiltinRepository() (*Repository, error) {
-	return NewRepository(prompts.Embedded(), BuiltinSource)
+	if err := builtin.Validate(); err != nil {
+		return nil, fmt.Errorf("validate built-in Prompts: %w", err)
+	}
+	return NewRepository(builtin.Embedded(), BuiltinSource)
 }
 
 func (repository *Repository) Load(path string) (Document, error) {

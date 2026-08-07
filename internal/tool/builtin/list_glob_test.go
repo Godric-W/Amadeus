@@ -23,7 +23,7 @@ func TestListDirSortsFiltersHiddenAndLimits(t *testing.T) {
 	}
 	listDir := newTestListDir(t, rootPath, 2)
 
-	result, err := listDir.Execute(context.Background(), json.RawMessage(`{}`))
+	result, err := executePreparedTool(t, context.Background(), listDir, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("list directory: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestListDirSortsFiltersHiddenAndLimits(t *testing.T) {
 		t.Fatalf("unexpected directory listing: %#v", result)
 	}
 	visibleList := newTestListDir(t, rootPath, 10)
-	visible, err := visibleList.Execute(context.Background(), json.RawMessage(`{"include_hidden":true,"limit":10}`))
+	visible, err := executePreparedTool(t, context.Background(), visibleList, json.RawMessage(`{"include_hidden":true,"limit":10}`))
 	if err != nil || !strings.HasPrefix(visible.Text, "file\t.secret") || visible.Partial {
 		t.Fatalf("unexpected hidden listing: result=%#v err=%v", visible, err)
 	}
@@ -51,7 +51,7 @@ func TestGlobFilesSupportsRecursivePatternAndIgnoresBuildTrees(t *testing.T) {
 	}
 	globFiles := newTestGlobFiles(t, rootPath, 10)
 
-	result, err := globFiles.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*.go"}`))
+	result, err := executePreparedTool(t, context.Background(), globFiles, json.RawMessage(`{"pattern":"**/*.go"}`))
 	if err != nil {
 		t.Fatalf("glob files: %v", err)
 	}
@@ -68,11 +68,11 @@ func TestGlobFilesAppliesResultBudgetAndRejectsEscape(t *testing.T) {
 		}
 	}
 	globFiles := newTestGlobFiles(t, rootPath, 2)
-	result, err := globFiles.Execute(context.Background(), json.RawMessage(`{"pattern":"*.go"}`))
+	result, err := executePreparedTool(t, context.Background(), globFiles, json.RawMessage(`{"pattern":"*.go"}`))
 	if err != nil || result.Text != "a.go\nb.go" || !result.Partial {
 		t.Fatalf("unexpected limited glob: result=%#v err=%v", result, err)
 	}
-	if _, err := globFiles.Execute(context.Background(), json.RawMessage(`{"pattern":"../*.go"}`)); err == nil {
+	if _, err := executePreparedTool(t, context.Background(), globFiles, json.RawMessage(`{"pattern":"../*.go"}`)); err == nil {
 		t.Fatal("expected escaping glob rejection")
 	}
 }

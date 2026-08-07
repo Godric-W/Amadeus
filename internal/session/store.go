@@ -13,93 +13,83 @@ var (
 )
 
 type BeginFirstRunInput struct {
-	ProjectID        ProjectID
-	CanonicalPath    string
-	ProjectName      string
-	SessionID        ConversationSessionID
-	SessionTitle     string
-	UserMessageID    MessageID
-	RunID            RunID
-	Objective        string
-	UserContent      string
-	ContextFromRunID RunID
-	Provider         string
-	Model            string
-	APIMode          string
-	Dialect          string
-	ExecutionMode    ExecutionMode
-	StartedAt        time.Time
+	ProjectID     ProjectID
+	CanonicalPath string
+	ProjectName   string
+	SessionID     SessionID
+	SessionTitle  string
+	RunID         RunID
+	UserItemID    RolloutItemID
+	UserContent   string
+	Provider      string
+	Model         string
+	APIMode       string
+	Dialect       string
+	Mode          RunMode
+	StartedAt     time.Time
 }
 
 type BeginRunInput struct {
-	SessionID        ConversationSessionID
-	UserMessageID    MessageID
-	RunID            RunID
-	Objective        string
-	UserContent      string
-	ContextFromRunID RunID
-	Provider         string
-	Model            string
-	APIMode          string
-	Dialect          string
-	ExecutionMode    ExecutionMode
-	StartedAt        time.Time
+	SessionID   SessionID
+	RunID       RunID
+	UserItemID  RolloutItemID
+	UserContent string
+	Provider    string
+	Model       string
+	APIMode     string
+	Dialect     string
+	Mode        RunMode
+	StartedAt   time.Time
 }
 
 type BeginRunResult struct {
 	Project Project
-	Session ConversationSession
-	Message Message
+	Session Session
 	Run     Run
+	Item    RolloutItem
+}
+
+type AppendItem struct {
+	ID        RolloutItemID
+	RunID     RunID
+	Kind      RolloutKind
+	Payload   json.RawMessage
+	CreatedAt time.Time
+}
+
+type AppendItemsInput struct {
+	SessionID SessionID
+	Items     []AppendItem
 }
 
 type FinishRunInput struct {
-	SessionID          ConversationSessionID
-	RunID              RunID
-	RunStatus          RunStatus
-	StopReason         string
-	AssistantMessageID MessageID
-	AssistantContent   string
-	UsageJSON          json.RawMessage
-	InterruptedContext json.RawMessage
-	FinishedAt         time.Time
+	SessionID     SessionID
+	RunID         RunID
+	RunStatus     RunStatus
+	StopReason    string
+	UsageJSON     json.RawMessage
+	TerminalItems []AppendItem
+	FinishedAt    time.Time
 }
 
 type FinishRunResult struct {
-	Session          ConversationSession
-	Run              Run
-	AssistantMessage *Message
-}
-
-type SessionStore interface {
-	GetProjectByCanonicalPath(context.Context, string) (Project, error)
-	GetSession(context.Context, ConversationSessionID) (ConversationSession, error)
-	ListSessions(context.Context, ProjectID) ([]ConversationSession, error)
-	LatestSession(context.Context, ProjectID) (ConversationSession, error)
-}
-
-type ConversationStore interface {
-	BeginFirstRun(context.Context, BeginFirstRunInput) (BeginRunResult, error)
-	BeginRun(context.Context, BeginRunInput) (BeginRunResult, error)
-	FinishRun(context.Context, FinishRunInput) (FinishRunResult, error)
-	ListCompletedMessages(context.Context, ConversationSessionID) ([]Message, error)
-}
-
-type RunStore interface {
-	GetRun(context.Context, RunID) (Run, error)
-	LatestInterruptedRun(context.Context, ConversationSessionID) (Run, error)
-	PendingInterruptedRun(context.Context, ConversationSessionID) (Run, error)
-	RecoverRunningRuns(context.Context, ConversationSessionID, time.Time) error
-}
-
-type SummaryStore interface {
-	AppendSummary(context.Context, ConversationSummary) (ConversationSummary, error)
-	LatestSummary(context.Context, ConversationSessionID) (ConversationSummary, error)
+	Session Session
+	Run     Run
+	Items   []RolloutItem
 }
 
 type Store interface {
-	SessionStore
-	ConversationStore
-	RunStore
-	SummaryStore
+	GetProjectByCanonicalPath(context.Context, string) (Project, error)
+	GetSession(context.Context, SessionID) (Session, error)
+	ListSessions(context.Context, ProjectID) ([]Session, error)
+	LatestSession(context.Context, ProjectID) (Session, error)
+
+	BeginFirstRun(context.Context, BeginFirstRunInput) (BeginRunResult, error)
+	BeginRun(context.Context, BeginRunInput) (BeginRunResult, error)
+	AppendItems(context.Context, AppendItemsInput) ([]RolloutItem, error)
+	FinishRun(context.Context, FinishRunInput) (FinishRunResult, error)
+
+	GetRun(context.Context, RunID) (Run, error)
+	ListItems(context.Context, SessionID) ([]RolloutItem, error)
+	RecoverRunningRuns(context.Context, SessionID, time.Time) error
 }

@@ -2,74 +2,46 @@ package session
 
 import (
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 )
 
-func TestConversationSessionAllocatesRunSequences(t *testing.T) {
-	now := time.Unix(100, 0).UTC()
-	conversation, err := NewConversationSession("session-1", "project-1", "Title", now)
+func TestSessionRunAndRolloutValidation(t *testing.T) {
+	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
+	value, err := NewSession("session-1", "project-1", "Title", now)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("new session: %v", err)
 	}
-	sequence, err := conversation.AllocateRunSequence(now.Add(time.Second))
-	if err != nil || sequence != 1 || conversation.NextRunSequence != 2 {
-		t.Fatalf("unexpected run sequence allocation: session=%#v sequence=%d err=%v", conversation, sequence, err)
+	if value.NextRunSequence != 1 || value.NextItemSequence != 1 || value.Status != SessionActive {
+		t.Fatalf("unexpected session: %#v", value)
 	}
-}
-
-func TestRunTransitionsAndValidation(t *testing.T) {
-	startedAt := time.Unix(100, 0).UTC()
-	for _, status := range []RunStatus{RunCompleted, RunInterrupted, RunFailed} {
-		t.Run(string(status), func(t *testing.T) {
-			run, err := NewRun("run-1", "session-1", "Objective", startedAt)
-			if err != nil {
-				t.Fatal(err)
-			}
-			run.ContextFromRunID = "run-previous"
-			run.UsageJSON = json.RawMessage(`{"input_tokens":10}`)
-			reason := ""
-			if status != RunCompleted {
-				reason = "terminal outcome"
-			}
-			if err := run.Finish(status, reason, startedAt.Add(time.Second)); err != nil {
-				t.Fatal(err)
-			}
-			if err := run.Finish(RunCompleted, "", startedAt.Add(2*time.Second)); !isTransitionError(err) {
-				t.Fatalf("terminal run transitioned again: %v", err)
-			}
-		})
+	run, err := NewRun("run-1", value.ID, 1, RunModePlan, now)
+	if err != nil {
+		t.Fatalf("new run: %v", err)
+	}
+	if err := run.Finish(RunCompleted, "", json.RawMessage(`{"input_tokens":4}`), now.Add(time.Second)); err != nil {
+		t.Fatalf("finish run: %v", err)
+	}
+	payload, _ := EncodePayload(UserMessagePayload{Content: "hello"})
+	item, err := NewRolloutItem("item-1", value.ID, run.ID, 1, RolloutUserMessage, payload, now)
+	if err != nil {
+		t.Fatalf("new rollout item: %v", err)
+	}
+	decoded, err := DecodeUserMessage(item)
+	if err != nil || decoded.Content != "hello" {
+		t.Fatalf("decode user item: %#v err=%v", decoded, err)
 	}
 }
 
-func TestDomainValidationRejectsInvalidRunAndMessageFields(t *testing.T) {
-	now := time.Unix(100, 0).UTC()
-	if _, err := NewProject("bad id", t.TempDir(), "Project", now); err == nil {
-		t.Fatal("project accepted whitespace ID")
+func TestDomainRejectsInvalidCanonicalState(t *testing.T) {
+	now := time.Now().UTC()
+	if _, err := NewSession("session-1", "", "Title", now); err == nil {
+		t.Fatal("session without project was accepted")
 	}
-	if _, err := NewConversationSession("session-1", "", "Title", now); err == nil {
-		t.Fatal("conversation accepted empty project ID")
+	if _, err := NewRun("run-1", "session-1", 1, "planned", now); err == nil {
+		t.Fatal("legacy run mode was accepted")
 	}
-	run, _ := NewRun("run-1", "session-1", "Objective", now)
-	run.ContextFromRunID = run.ID
-	if err := run.Validate(); err == nil {
-		t.Fatal("run accepted itself as interrupted context")
+	if _, err := NewRolloutItem("item-1", "session-1", "run-1", 1, RolloutUserMessage, json.RawMessage(`{"broken"`), now); err == nil {
+		t.Fatal("invalid rollout payload was accepted")
 	}
-	run.ContextFromRunID = ""
-	run.UsageJSON = json.RawMessage(`{"broken"`)
-	if err := run.Validate(); err == nil {
-		t.Fatal("run accepted invalid usage JSON")
-	}
-	if _, err := NewMessage("message-1", "session-1", "", 1, MessageUser, "content", now); err == nil {
-		t.Fatal("message accepted missing run ID")
-	}
-	if err := run.Finish(RunFailed, "", now.Add(time.Second)); err == nil {
-		t.Fatal("failed run accepted empty stop reason")
-	}
-}
-
-func isTransitionError(err error) bool {
-	var transition *TransitionError
-	return errors.As(err, &transition)
 }

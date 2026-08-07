@@ -3,7 +3,6 @@ package builtin
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -21,6 +20,7 @@ type GlobFilesOptions struct {
 	RipgrepPath      string
 	DisableRipgrep   bool
 	MaxRGOutputBytes int64
+	PathGuard        *project.PathGuard
 }
 
 type GlobFiles struct {
@@ -38,6 +38,13 @@ type globFilesArguments struct {
 	Limit         int    `json:"limit,omitempty"`
 }
 
+type preparedGlobFiles struct {
+	arguments globFilesArguments
+	base      string
+	absolute  string
+	pattern   string
+}
+
 var ignoredGlobDirectories = map[string]struct{}{
 	".git": {}, ".hg": {}, ".svn": {}, "node_modules": {}, "vendor": {}, "dist": {}, "build": {}, "target": {},
 }
@@ -52,7 +59,10 @@ func NewGlobFiles(root project.Root, options GlobFilesOptions) (*GlobFiles, erro
 	if options.MaxRGOutputBytes <= 0 {
 		options.MaxRGOutputBytes = 4 << 20
 	}
-	reader, err := workspace.NewReader(root)
+	reader, err := workspace.NewReaderWithGuard(root, options.PathGuard)
+	if options.PathGuard == nil {
+		reader, err = workspace.NewReader(root)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +70,10 @@ func NewGlobFiles(root project.Root, options GlobFilesOptions) (*GlobFiles, erro
 	if err != nil {
 		return nil, fmt.Errorf("load workspace ignores: %w", err)
 	}
-	enumerator, err := workspace.NewFileEnumerator(root, matcher)
+	enumerator, err := workspace.NewFileEnumeratorWithGuard(root, matcher, options.PathGuard)
+	if options.PathGuard == nil {
+		enumerator, err = workspace.NewFileEnumerator(root, matcher)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -79,26 +92,35 @@ func (globFiles *GlobFiles) Spec() tool.Spec {
 	return globFilesSpec()
 }
 
-func (globFiles *GlobFiles) Execute(ctx context.Context, input json.RawMessage) (tool.Result, error) {
+func (globFiles *GlobFiles) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
 	var arguments globFilesArguments
-	if err := decodeArguments(input, &arguments); err != nil {
-		return tool.Result{}, err
+	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+		return tool.PreparedCall{}, err
 	}
 	pattern, err := workspace.NormalizeGlob(arguments.Pattern)
 	if err != nil {
-		return tool.Result{}, fmt.Errorf("glob_files pattern is invalid: %w", err)
+		return tool.PreparedCall{}, fmt.Errorf("glob_files pattern is invalid: %w", err)
 	}
 	if arguments.Limit < 0 {
-		return tool.Result{}, errors.New("glob_files limit cannot be negative")
+		return tool.PreparedCall{}, errors.New("glob_files limit cannot be negative")
 	}
 	base := strings.TrimSpace(arguments.Path)
 	if base == "" {
 		base = "."
 	}
-	absoluteBase, err := globFiles.reader.ResolveExisting(base, project.PathDirectory)
+	resolved, err := globFiles.reader.ResolveExistingTarget(base, project.PathDirectory)
+	if err != nil {
+		return tool.PreparedCall{}, err
+	}
+	return tool.NewPreparedCall(call, tool.PreparedOptions{Targets: []tool.PreparedTarget{preparedFilesystemTarget(resolved)}, Payload: preparedGlobFiles{arguments: arguments, base: base, absolute: resolved.Canonical, pattern: pattern}})
+}
+
+func (globFiles *GlobFiles) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
+	payload, err := preparedPayload[preparedGlobFiles](prepared, "glob_files")
 	if err != nil {
 		return tool.Result{}, err
 	}
+	arguments, base, absoluteBase, pattern := payload.arguments, payload.base, payload.absolute, payload.pattern
 	limit := globFiles.options.MaxResults
 	if arguments.Limit > 0 && arguments.Limit < limit {
 		limit = arguments.Limit
@@ -108,7 +130,7 @@ func (globFiles *GlobFiles) Execute(ctx context.Context, input json.RawMessage) 
 		return tool.Result{}, ctx.Err()
 	}
 	if err != nil || globFiles.ripgrep == "" {
-		matches, partial, err = globFiles.goMatches(ctx, base, absoluteBase, pattern, arguments.IncludeHidden, limit)
+		matches, partial, err = globFiles.goMatches(ctx, absoluteBase, pattern, arguments.IncludeHidden, limit)
 		backend = "go"
 		if err != nil {
 			return tool.Result{}, err
@@ -180,8 +202,8 @@ func (globFiles *GlobFiles) ripgrepMatches(ctx context.Context, absoluteBase, pa
 	return matches, partial, "rg", nil
 }
 
-func (globFiles *GlobFiles) goMatches(ctx context.Context, base, absoluteBase, pattern string, includeHidden bool, limit int) ([]string, bool, error) {
-	result, err := globFiles.enumerator.Enumerate(ctx, workspace.EnumerateOptions{Path: base, IncludeHidden: includeHidden, MaxResults: 0})
+func (globFiles *GlobFiles) goMatches(ctx context.Context, absoluteBase, pattern string, includeHidden bool, limit int) ([]string, bool, error) {
+	result, err := globFiles.enumerator.EnumeratePrepared(ctx, absoluteBase, workspace.EnumerateOptions{IncludeHidden: includeHidden, MaxResults: 0})
 	if err != nil {
 		return nil, false, fmt.Errorf("enumerate project files: %w", err)
 	}

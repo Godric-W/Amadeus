@@ -13,11 +13,16 @@ import (
 )
 
 type CallExecutor interface {
-	Execute(context.Context, tool.Call) (ToolExecution, error)
+	Execute(context.Context, tool.Call) (ToolOutcome, error)
 }
 
 type ProgressObserver interface {
 	Observe(ProgressSample) ([]ProgressSignal, error)
+}
+
+type RolloutRecorder interface {
+	RecordToolCalls(context.Context, llm.Message) error
+	RecordToolOutcomes(context.Context, []ToolOutcome) error
 }
 
 type RunnerOptions struct {
@@ -28,6 +33,7 @@ type RunnerOptions struct {
 	ContextWindow      agentcontext.ContextWindowManager
 	ContextProfile     agentcontext.ContextProfile
 	Events             event.Sink
+	Rollout            RolloutRecorder
 }
 
 type Runner struct {
@@ -68,13 +74,13 @@ func NewRunner(iterator ModelIterator, executor CallExecutor, progress ProgressO
 	if options.MaxParallelTools <= 0 {
 		options.MaxParallelTools = 1
 	}
-	resources, err := newResourceExecutor(executor, options.MaxParallelTools)
+	gate, err := newToolExecutionGate(executor, options.MaxParallelTools)
 	if err != nil {
 		return nil, err
 	}
 	return NewRunnerWithPhases(RunnerPhases{
 		Think: newModelThinker(iterator), Analyze: newDefaultAnalyzer(),
-		Act: &defaultActor{resources: resources}, Observe: &defaultObserver{progress: progress, now: time.Now},
+		Act: &defaultActor{gate: gate}, Observe: &defaultObserver{progress: progress, now: time.Now},
 	}, options)
 }
 
@@ -134,16 +140,15 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 		baseMessages = append(baseMessages, llm.UserMessage(request.Goal))
 	}
 	for iterationIndex := len(state.Iterations); ; iterationIndex++ {
-		if result, ok := contextResult(ctx, runCtx, state.Budget, state.Iterations, state.Evidence, state.Usage); ok {
+		if result, ok := contextResult(ctx, runCtx, state.Budget, state.Iterations, state.Usage); ok {
 			return finish(result)
 		}
-		if result, ok := exhaustedBeforeThink(state.Budget, state.Iterations, state.Evidence, state.Usage); ok {
+		if result, ok := exhaustedBeforeThink(state.Budget, state.Iterations, state.Usage); ok {
 			return finish(result)
 		}
 		llmCallID := iterationID(request, iterationIndex)
 		iterationCtx := event.WithMetadata(runCtx, event.Metadata{
-			RunID: request.RunID, TaskID: request.Metadata.TaskID,
-			Iteration: iterationIndex + 1, LLMCallID: llmCallID,
+			RunID: request.RunID, Iteration: iterationIndex + 1, LLMCallID: llmCallID,
 		})
 		if err := runner.publish(iterationCtx, event.IterationStarted{}); err != nil {
 			return Result{}, fmt.Errorf("publish Reactor iteration started: %w", err)
@@ -160,16 +165,12 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 				return Result{}, fmt.Errorf("prepare additional Reactor messages: %w", err)
 			}
 		}
-		view, err := runner.window.Prepare(iterationCtx, agentcontext.WindowRequest{
-			Base:    agentcontext.BaseEnvelope{Messages: baseMessages, AvailableTools: request.AvailableTools},
-			Runtime: state.RuntimeMessages, Additional: additional, Profile: runner.profile,
-			PreviousUsage: state.PreviousUsage, LastSentCount: state.LastSentCount,
-		})
+		view, err := runner.prepareRequestView(iterationCtx, request, baseMessages, additional, state)
 		if err != nil {
 			if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
 				err = errors.Join(err, publishErr)
 			}
-			return finish(Result{Iterations: state.Iterations, Evidence: state.Evidence, Usage: state.Usage, StopReason: StopFailed, Reason: err.Error()})
+			return finish(Result{Iterations: state.Iterations, Usage: state.Usage, StopReason: StopFailed, Reason: err.Error()})
 		}
 		contextUpdate := event.ContextWindowUpdated{
 			EstimatedInputTokens: view.Usage.EstimatedInputTokens,
@@ -198,10 +199,10 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 			if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
 				err = errors.Join(err, publishErr)
 			}
-			if result, ok := contextResult(ctx, runCtx, state.Budget, state.Iterations, state.Evidence, state.Usage); ok {
+			if result, ok := contextResult(ctx, runCtx, state.Budget, state.Iterations, state.Usage); ok {
 				return finish(result)
 			}
-			return finish(Result{Iterations: state.Iterations, Evidence: state.Evidence, Usage: state.Usage, StopReason: StopFailed, Reason: err.Error()})
+			return finish(Result{Iterations: state.Iterations, Usage: state.Usage, StopReason: StopFailed, Reason: err.Error()})
 		}
 		state.Usage = addUsage(state.Usage, think.Response.Usage)
 		latestUsage := think.Response.Usage
@@ -210,32 +211,45 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 		state.Budget.IterationsUsed++
 		state.Budget.InputTokensUsed += think.Response.Usage.InputTokens
 		state.Budget.OutputTokensUsed += think.Response.Usage.OutputTokens
-		if result, ok := exceededAfterThink(state.Budget, state.Iterations, state.Evidence, state.Usage); ok {
+		if result, ok := exceededAfterThink(state.Budget, state.Iterations, state.Usage); ok {
 			if err := completeIteration("budget_exhausted", result.Reason); err != nil {
 				return Result{}, err
 			}
 			return finish(result)
 		}
 
-		analysis, err := runner.analyze.Analyze(AnalyzeInput{Think: think, AvailableTools: request.AvailableTools})
+		analysis, err := runner.analyze.Analyze(AnalyzeInput{Think: think, AvailableTools: view.Tools})
 		if err != nil {
 			if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
 				err = errors.Join(err, publishErr)
 			}
-			return finish(Result{Iterations: state.Iterations, Evidence: state.Evidence, Usage: state.Usage, StopReason: StopFailed, Reason: err.Error()})
+			return finish(Result{Iterations: state.Iterations, Usage: state.Usage, StopReason: StopFailed, Reason: err.Error()})
+		}
+		if analysis.Kind != AnalysisFinal && runner.options.Rollout != nil {
+			if err := runner.options.Rollout.RecordToolCalls(iterationCtx, analysis.Response.Message); err != nil {
+				if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
+					err = errors.Join(err, publishErr)
+				}
+				return finish(Result{Iterations: state.Iterations, Usage: state.Usage, StopReason: StopFailed, Reason: err.Error()})
+			}
 		}
 		var act ActOutput
 		if analysis.Kind == AnalysisAct {
 			if state.Budget.Budget.MaxToolCalls > 0 && state.Budget.ToolCallsUsed+len(analysis.Calls) > state.Budget.Budget.MaxToolCalls {
 				state.Iterations = append(state.Iterations, runner.rejectedToolIteration(iterationIndex, analysis))
 				result := budgetResult(state.Budget, LimitToolCalls, int64(state.Budget.ToolCallsUsed+len(analysis.Calls)), int64(state.Budget.Budget.MaxToolCalls))
-				result.Iterations, result.Evidence, result.Usage = state.Iterations, state.Evidence, state.Usage
+				result.Iterations, result.Usage = state.Iterations, state.Usage
 				if err := completeIteration("budget_exhausted", result.Reason); err != nil {
 					return Result{}, err
 				}
 				return finish(result)
 			}
-			act, err = runner.act.Act(iterationCtx, ActInput{Calls: analysis.Calls, AvailableTools: request.AvailableTools})
+			toolCtx := tool.WithRequestSnapshot(iterationCtx, tool.RequestSnapshot{
+				MCPBindingRevision: view.MCPBindingRevision,
+				SkillRevision:      view.Revisions.SkillCatalog,
+				ToolRevision:       view.Revisions.ToolExposure,
+			})
+			act, err = runner.act.Act(toolCtx, ActInput{Calls: analysis.Calls, AvailableTools: view.Tools})
 			if err != nil {
 				if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
 					err = errors.Join(err, publishErr)
@@ -244,10 +258,19 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 			}
 			state.Budget.ToolCallsUsed += act.Attempted
 		}
-		observed, err := runner.observe.Observe(ObserveInput{
-			Index: iterationIndex, Analysis: analysis, Act: act,
-			EvidenceBefore: countVerified(state.Evidence), AvailableTools: request.AvailableTools,
-		})
+		if analysis.Kind != AnalysisFinal && runner.options.Rollout != nil {
+			outcomes := act.Outcomes
+			if analysis.Kind == AnalysisArgumentError {
+				outcomes = analysis.ArgumentFailures
+			}
+			if err := runner.options.Rollout.RecordToolOutcomes(iterationCtx, outcomes); err != nil {
+				if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
+					err = errors.Join(err, publishErr)
+				}
+				return finish(Result{Iterations: state.Iterations, Usage: state.Usage, StopReason: StopFailed, Reason: err.Error()})
+			}
+		}
+		observed, err := runner.observe.Observe(ObserveInput{Index: iterationIndex, Analysis: analysis, Act: act, AvailableTools: view.Tools})
 		if err != nil {
 			if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
 				err = errors.Join(err, publishErr)
@@ -267,25 +290,48 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 			return Result{}, err
 		}
 		state.Iterations = append(state.Iterations, observed.Iteration)
-		state.Evidence = append(state.Evidence, observed.Evidence...)
-		if result, ok := contextResult(ctx, runCtx, state.Budget, state.Iterations, state.Evidence, state.Usage); ok {
+		if result, ok := contextResult(ctx, runCtx, state.Budget, state.Iterations, state.Usage); ok {
 			return finish(result)
 		}
 		if observed.BlockedReason != "" {
-			return finish(Result{Iterations: state.Iterations, Evidence: state.Evidence, Usage: state.Usage, StopReason: StopBlocked, Reason: observed.BlockedReason})
+			return finish(Result{Iterations: state.Iterations, Usage: state.Usage, StopReason: StopBlocked, Reason: observed.BlockedReason})
 		}
 		if observed.StalledReason != "" {
-			return finish(Result{Iterations: state.Iterations, Evidence: state.Evidence, Usage: state.Usage, StopReason: StopStalled, Reason: observed.StalledReason})
+			return finish(Result{Iterations: state.Iterations, Usage: state.Usage, StopReason: StopStalled, Reason: observed.StalledReason})
 		}
 		if analysis.Kind == AnalysisFinal {
 			if analysis.FinalMessage == nil {
 				return Result{}, errors.New("final analysis has no final message")
 			}
 			message := *analysis.FinalMessage
-			return finish(Result{FinalMessage: &message, Iterations: state.Iterations, Evidence: state.Evidence, Usage: state.Usage, StopReason: StopCompleted})
+			return finish(Result{FinalMessage: &message, Iterations: state.Iterations, Usage: state.Usage, StopReason: StopCompleted})
 		}
 		state.RuntimeMessages = append(state.RuntimeMessages, observed.Replay...)
 	}
+}
+
+func (runner *Runner) prepareRequestView(ctx context.Context, request Request, baseMessages, additional []llm.Message, state LoopState) (agentcontext.RequestView, error) {
+	if request.RequestViewProvider != nil {
+		return request.RequestViewProvider.PrepareRequestView(ctx, RequestViewInput{
+			RuntimeMessages: append([]llm.Message(nil), state.RuntimeMessages...),
+			Additional:      append([]llm.Message(nil), additional...),
+			PreviousUsage:   cloneUsage(state.PreviousUsage),
+			LastSentCount:   state.LastSentCount,
+		})
+	}
+	return runner.window.Prepare(ctx, agentcontext.WindowRequest{
+		Base:    agentcontext.BaseEnvelope{Messages: baseMessages, AvailableTools: request.AvailableTools},
+		Runtime: state.RuntimeMessages, Additional: additional, Profile: runner.profile,
+		PreviousUsage: state.PreviousUsage, LastSentCount: state.LastSentCount,
+	})
+}
+
+func cloneUsage(value *llm.Usage) *llm.Usage {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func (runner *Runner) publish(ctx context.Context, runtimeEvent event.Event) error {
@@ -295,12 +341,9 @@ func (runner *Runner) publish(ctx context.Context, runtimeEvent event.Event) err
 	return runner.events.Publish(ctx, runtimeEvent)
 }
 
-func argumentFailureExecution(call tool.Call, err error) ToolExecution {
+func argumentFailureExecution(call tool.Call, err error) ToolOutcome {
 	result := tool.Result{CallID: call.ID, ToolName: call.Name}
-	return ToolExecution{
-		Observation: Observation{CallID: call.ID, ToolName: call.Name, Result: result, Error: err.Error()},
-		Evidence:    Evidence{ID: EvidenceID("tool:" + call.ID), Kind: EvidenceTool, Source: call.Name, Summary: "tool arguments rejected: " + err.Error(), Verified: false},
-	}
+	return ToolOutcome{CallID: call.ID, ToolName: call.Name, Status: ToolOutcomeFailed, Result: result, Error: &ToolError{Kind: "invalid_arguments", Message: err.Error()}}
 }
 
 func normalizedMessageToolCalls(original []llm.ToolCall, calls []tool.Call) []llm.ToolCall {
@@ -332,19 +375,19 @@ func (runner *Runner) durationSince(startedAt time.Time) time.Duration {
 	return finishedAt.Sub(startedAt)
 }
 
-func contextResult(parent, runCtx context.Context, budget BudgetState, iterations []Iteration, evidence []Evidence, usage llm.Usage) (Result, bool) {
+func contextResult(parent, runCtx context.Context, budget BudgetState, iterations []Iteration, usage llm.Usage) (Result, bool) {
 	if err := parent.Err(); err != nil {
-		return Result{Iterations: iterations, Evidence: evidence, Usage: usage, StopReason: StopInterrupted, Reason: err.Error()}, true
+		return Result{Iterations: iterations, Usage: usage, StopReason: StopInterrupted, Reason: err.Error()}, true
 	}
 	if budget.Budget.MaxDuration > 0 && runCtx.Err() != nil {
 		result := budgetResult(budget, LimitWallClock, int64(budget.Budget.MaxDuration), int64(budget.Budget.MaxDuration))
-		result.Iterations, result.Evidence, result.Usage = iterations, evidence, usage
+		result.Iterations, result.Usage = iterations, usage
 		return result, true
 	}
 	return Result{}, false
 }
 
-func exhaustedBeforeThink(budget BudgetState, iterations []Iteration, evidence []Evidence, usage llm.Usage) (Result, bool) {
+func exhaustedBeforeThink(budget BudgetState, iterations []Iteration, usage llm.Usage) (Result, bool) {
 	checks := []struct {
 		reached bool
 		limit   LimitKind
@@ -358,14 +401,14 @@ func exhaustedBeforeThink(budget BudgetState, iterations []Iteration, evidence [
 	for _, check := range checks {
 		if check.reached {
 			result := budgetResult(budget, check.limit, check.used, check.maximum)
-			result.Iterations, result.Evidence, result.Usage = iterations, evidence, usage
+			result.Iterations, result.Usage = iterations, usage
 			return result, true
 		}
 	}
 	return Result{}, false
 }
 
-func exceededAfterThink(budget BudgetState, iterations []Iteration, evidence []Evidence, usage llm.Usage) (Result, bool) {
+func exceededAfterThink(budget BudgetState, iterations []Iteration, usage llm.Usage) (Result, bool) {
 	checks := []struct {
 		exceeded bool
 		limit    LimitKind
@@ -378,7 +421,7 @@ func exceededAfterThink(budget BudgetState, iterations []Iteration, evidence []E
 	for _, check := range checks {
 		if check.exceeded {
 			result := budgetResult(budget, check.limit, check.used, check.maximum)
-			result.Iterations, result.Evidence, result.Usage = iterations, evidence, usage
+			result.Iterations, result.Usage = iterations, usage
 			return result, true
 		}
 	}
@@ -401,20 +444,7 @@ func maxOutputTokens(configured int, budget BudgetState) int {
 }
 
 func iterationID(request Request, index int) string {
-	if request.Metadata.TaskID != "" {
-		return fmt.Sprintf("%s/%s/llm-%d", request.RunID, request.Metadata.TaskID, index+1)
-	}
 	return fmt.Sprintf("%s/llm-%d", request.RunID, index+1)
-}
-
-func countVerified(evidence []Evidence) int {
-	count := 0
-	for _, item := range evidence {
-		if item.Verified {
-			count++
-		}
-	}
-	return count
 }
 
 func addUsage(total, next llm.Usage) llm.Usage {

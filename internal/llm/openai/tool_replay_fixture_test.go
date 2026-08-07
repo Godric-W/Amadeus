@@ -14,11 +14,11 @@ func TestToolResultReplayPreservesCallOrderAcrossProtocols(t *testing.T) {
 		llm.ToolCall{ID: "call_1", Name: "first", Arguments: json.RawMessage(`{"value":1}`)},
 		llm.ToolCall{ID: "call_2", Name: "second", Arguments: json.RawMessage(`{"value":2}`)},
 	)
-	executions := []react.ToolExecution{
+	outcomes := []react.ToolOutcome{
 		toolReplayExecution("call_2", "second", "two"),
 		toolReplayExecution("call_1", "first", "one"),
 	}
-	messages, err := react.ReplayToolResults(assistant, executions)
+	messages, err := react.ReplayToolResults(assistant, outcomes)
 	if err != nil {
 		t.Fatalf("build replay messages: %v", err)
 	}
@@ -46,13 +46,8 @@ func TestToolResultReplayPreservesCallOrderAcrossProtocols(t *testing.T) {
 	}
 }
 
-func toolReplayExecution(callID, toolName, text string) react.ToolExecution {
-	return react.ToolExecution{
-		Observation: react.Observation{
-			CallID: callID, ToolName: toolName,
-			Result: tool.Result{CallID: callID, ToolName: toolName, Text: text},
-		},
-	}
+func toolReplayExecution(callID, toolName, text string) react.ToolOutcome {
+	return react.ToolOutcome{CallID: callID, ToolName: toolName, Status: react.ToolOutcomeSucceeded, Result: tool.Result{CallID: callID, ToolName: toolName, Text: text}}
 }
 
 func marshalRequestBody(t *testing.T, value any) map[string]any {

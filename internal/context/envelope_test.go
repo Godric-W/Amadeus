@@ -68,6 +68,97 @@ func TestBuilderCreatesStableCategorizedEnvelope(t *testing.T) {
 	}
 }
 
+func TestBuilderProjectsDeveloperPromptSourcesBudgetAndHash(t *testing.T) {
+	input := testBuildInput(t)
+	developerContent := "dynamic execute and permission context"
+	input.DeveloperPrompts = []prompt.NamedBundle{{
+		ID: "developer.runtime",
+		Bundle: prompt.Bundle{
+			Content: developerContent, SHA256: contentHash(developerContent),
+			Sources: []prompt.Source{{Kind: prompt.BuiltinSource, Path: "templates/runtime/workspace.md", SHA256: strings.Repeat("c", 64)}},
+		},
+	}}
+	first, err := NewBuilder().Build(context.Background(), input)
+	if err != nil {
+		t.Fatalf("build context with Developer Prompt: %v", err)
+	}
+	if len(first.Messages) != 4 || first.Messages[0].Role != llm.RoleSystem || first.Messages[1].Role != llm.RoleDeveloper || first.Messages[1].Content != developerContent || first.Messages[2].Role != llm.RoleDeveloper || first.Messages[3].Role != llm.RoleUser {
+		t.Fatalf("unexpected Developer Prompt message order: %#v", first.Messages)
+	}
+	foundBundle, foundLayer := false, false
+	for _, source := range first.Sources {
+		if source.Kind == SourcePromptBundle && source.ID == "developer.runtime" && source.SHA256 == input.DeveloperPrompts[0].Bundle.SHA256 {
+			foundBundle = true
+		}
+		if source.Kind == SourcePromptLayer && strings.HasPrefix(source.ID, "developer.runtime:") && source.Path == "templates/runtime/workspace.md" {
+			foundLayer = true
+		}
+	}
+	if !foundBundle || !foundLayer {
+		t.Fatalf("Developer Prompt sources missing: %#v", first.Sources)
+	}
+	instructionEnvelopeContent, err := marshalInstructionEnvelope(input.Instructions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	estimator := ConservativeEstimator{}
+	wantInstructionUsage := estimator.EstimateText(developerContent) + estimator.EstimateText(instructionEnvelopeContent)
+	if first.BudgetUsage.Instructions != wantInstructionUsage {
+		t.Fatalf("Developer Prompt budget missing: got %d, want %d", first.BudgetUsage.Instructions, wantInstructionUsage)
+	}
+
+	changed := input
+	changedContent := developerContent + " with grant"
+	changed.DeveloperPrompts = []prompt.NamedBundle{{
+		ID: "developer.runtime",
+		Bundle: prompt.Bundle{
+			Content: changedContent, SHA256: contentHash(changedContent),
+			Sources: []prompt.Source{{Kind: prompt.BuiltinSource, Path: "templates/runtime/workspace.md", SHA256: strings.Repeat("c", 64)}},
+		},
+	}}
+	second, err := NewBuilder().Build(context.Background(), changed)
+	if err != nil {
+		t.Fatalf("build changed Developer Prompt context: %v", err)
+	}
+	if first.SHA256 == second.SHA256 {
+		t.Fatal("Envelope hash did not change with Developer Prompt")
+	}
+}
+
+func TestBuilderRejectsDuplicateDeveloperPromptIDs(t *testing.T) {
+	input := testBuildInput(t)
+	content := "developer context"
+	bundle := prompt.NamedBundle{ID: "developer.runtime", Bundle: prompt.Bundle{
+		Content: content, SHA256: contentHash(content),
+		Sources: []prompt.Source{{Kind: prompt.BuiltinSource, Path: "runtime.md", SHA256: strings.Repeat("d", 64)}},
+	}}
+	input.DeveloperPrompts = []prompt.NamedBundle{bundle, bundle}
+	if _, err := NewBuilder().Build(context.Background(), input); err == nil || !strings.Contains(err.Error(), "is duplicated") {
+		t.Fatalf("unexpected duplicate Developer Prompt error: %v", err)
+	}
+}
+
+func TestBuilderDoesNotDuplicateTaskAlreadyInCanonicalConversation(t *testing.T) {
+	input := testBuildInput(t)
+	input.Conversation = []llm.Message{
+		llm.UserMessage("Fix the failing test"),
+		llm.AssistantToolCallMessage("", llm.ToolCall{ID: "read-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
+		llm.ToolResultMessage("read-1", "contents"),
+	}
+	input.ConversationSources = []int64{1, 2, 3}
+	input.TaskInConversation = true
+	envelope, err := NewBuilder().Build(context.Background(), input)
+	if err != nil {
+		t.Fatalf("build canonical active Run context: %v", err)
+	}
+	if len(envelope.Messages) != 5 {
+		t.Fatalf("current task was duplicated: %#v", envelope.Messages)
+	}
+	if envelope.Messages[2].Role != llm.RoleUser || envelope.Messages[3].Role != llm.RoleAssistant || envelope.Messages[4].Role != llm.RoleTool {
+		t.Fatalf("canonical Tool protocol order changed: %#v", envelope.Messages)
+	}
+}
+
 func TestBuilderHashTracksSemanticInputs(t *testing.T) {
 	builder := NewBuilder()
 	base := testBuildInput(t)
@@ -122,9 +213,8 @@ func TestEnvelopeCloneIsIndependent(t *testing.T) {
 	clone := envelope.Clone()
 	clone.Messages[0].Content = "changed"
 	clone.AvailableTools[0].InputSchema[0] = '['
-	clone.AvailableTools[0].ResourceStrategy.ArgumentPaths[0] = "changed"
 	clone.Sources[0].ID = "changed"
-	if envelope.Messages[0].Content == "changed" || envelope.AvailableTools[0].InputSchema[0] == '[' || envelope.AvailableTools[0].ResourceStrategy.ArgumentPaths[0] == "changed" || envelope.Sources[0].ID == "changed" {
+	if envelope.Messages[0].Content == "changed" || envelope.AvailableTools[0].InputSchema[0] == '[' || envelope.Sources[0].ID == "changed" {
 		t.Fatal("Agent context clone shares mutable storage")
 	}
 }
@@ -136,8 +226,8 @@ func TestBuilderValidatesInputsAndCancellation(t *testing.T) {
 		mutate   func(*BuildInput)
 		contains string
 	}{
-		{name: "empty prompt", mutate: func(input *BuildInput) { input.Prompt.Content = "" }, contains: "Prompt content is empty"},
-		{name: "prompt hash mismatch", mutate: func(input *BuildInput) { input.Prompt.SHA256 = strings.Repeat("0", 64) }, contains: "Prompt SHA-256"},
+		{name: "empty prompt", mutate: func(input *BuildInput) { input.Prompt.Content = "" }, contains: "Prompt bundle content is empty"},
+		{name: "prompt hash mismatch", mutate: func(input *BuildInput) { input.Prompt.SHA256 = strings.Repeat("0", 64) }, contains: "Prompt bundle SHA-256"},
 		{name: "empty task", mutate: func(input *BuildInput) { input.Task = " \n" }, contains: "task is empty"},
 		{name: "duplicate tool", mutate: func(input *BuildInput) { input.Tools[1] = input.Tools[0].Clone() }, contains: "duplicated"},
 		{name: "invalid tool schema", mutate: func(input *BuildInput) { input.Tools[0].InputSchema = json.RawMessage(`{`) }, contains: "schema"},
@@ -213,14 +303,17 @@ func mustContextInstruction(t *testing.T, source instruction.Source, path string
 }
 
 func contextToolSpec(name string, sideEffect tool.SideEffect) tool.Spec {
-	return tool.Spec{
+	spec := tool.Spec{
 		Name: name, Description: name + " test tool", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`),
-		SideEffect: sideEffect, ParallelSafe: sideEffect == tool.SideEffectRead, Idempotent: true,
-		ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeArguments, ArgumentPaths: []string{"path"}},
+		SideEffect: sideEffect, Concurrency: tool.ToolConcurrencyExclusive, Idempotent: true,
 	}
+	if sideEffect == tool.SideEffectRead {
+		spec.Concurrency = tool.ToolConcurrencyShared
+	}
+	return spec
 }
 
-func TestBuilderCompactsHistoryWithinBudgetAndPreservesSummarySource(t *testing.T) {
+func TestBuilderCompactsHistoryWithinBudgetAndPreservesReplacementSource(t *testing.T) {
 	input := testBuildInput(t)
 	input.Conversation = []llm.Message{
 		llm.UserMessage("first request with enough historical detail to require compaction"),
@@ -240,57 +333,90 @@ func TestBuilderCompactsHistoryWithinBudgetAndPreservesSummarySource(t *testing.
 	if len(envelope.Messages) >= len(input.Conversation)+3 {
 		t.Fatalf("history was not compacted: got %d messages", len(envelope.Messages))
 	}
-	foundSummary := false
-	for _, message := range envelope.Messages {
-		if strings.Contains(message.Content, "amadeus.conversation_summary.v1") {
-			foundSummary = true
+	foundReplacement := false
+	for _, source := range envelope.Sources {
+		if source.Kind == SourceReplacement {
+			foundReplacement = true
 		}
 	}
-	if !foundSummary {
-		t.Fatal("compacted context did not include structured summary")
+	if !foundReplacement {
+		t.Fatal("compacted context did not include replacement history source")
 	}
 	if envelope.BudgetUsage.History <= 0 || envelope.Sources == nil {
 		t.Fatalf("missing budget/source accounting: %#v", envelope)
 	}
 }
 
-func TestBuilderInjectsPreviousWorkAsBoundedDeveloperEnvelope(t *testing.T) {
+func TestBuilderAcceptsCanonicalToolProtocolAndInterruptedMarker(t *testing.T) {
 	input := testBuildInput(t)
-	input.Conversation = []llm.Message{llm.UserMessage("completed request"), llm.AssistantMessage("completed response")}
-	input.ConversationSummary = "older completed history"
-	input.PreviousWork = &PreviousWork{RunID: "run-cancelled", Objective: "finish the migration", StopReason: "user cancelled", Workspace: WorkspaceRevalidation{TestsRequireRerun: true}}
+	input.Conversation = []llm.Message{
+		llm.UserMessage("inspect"),
+		llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
+		llm.ToolResultMessage("call-1", `{"ok":true,"text":"contents"}`),
+		llm.DeveloperMessage("Previous Run interrupted: user cancelled. Re-plan from the current workspace state."),
+	}
 	envelope, err := NewBuilder().Build(context.Background(), input)
 	if err != nil {
-		t.Fatalf("build interrupted context: %v", err)
+		t.Fatalf("build canonical history: %v", err)
 	}
-	found := false
-	for _, message := range envelope.Messages {
-		if strings.Contains(message.Content, "amadeus.previous_work.v1") && strings.Contains(message.Content, "tests_require_rerun") {
-			found = true
-		}
+	if len(envelope.Messages) < len(input.Conversation)+3 {
+		t.Fatalf("canonical history was not preserved: %#v", envelope.Messages)
 	}
-	if !found {
-		t.Fatal("interrupted work envelope missing")
+}
+
+func TestBuilderPlacesCompactionReplacementBeforeRetainedTail(t *testing.T) {
+	input := testBuildInput(t)
+	input.Budget = DefaultBudget(4000, 500)
+	input.Budget.History = 300
+	input.Conversation = []llm.Message{
+		llm.UserMessage("old request " + strings.Repeat("history ", 500)),
+		llm.AssistantMessage("old response " + strings.Repeat("detail ", 500)),
+		llm.UserMessage("recent request"),
+		llm.AssistantMessage("recent response"),
 	}
-	conversationIndex, summaryIndex, previousIndex, currentIndex := -1, -1, -1, -1
+	input.ConversationSources = []int64{1, 2, 3, 4}
+	envelope, err := NewBuilder().Build(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Compaction == nil {
+		t.Fatal("expected compaction")
+	}
+	replacementIndex := -1
+	recentIndex := -1
 	for index, message := range envelope.Messages {
-		switch {
-		case message.Content == "completed request":
-			conversationIndex = index
-		case strings.Contains(message.Content, "amadeus.conversation_summary.v1"):
-			summaryIndex = index
-		case strings.Contains(message.Content, "amadeus.previous_work.v1"):
-			previousIndex = index
-		case message.Content == strings.TrimSpace(input.Task):
-			currentIndex = index
+		if message.Role == llm.RoleAssistant && message.Content == envelope.Compaction.ReplacementHistory[0].Content {
+			replacementIndex = index
+		}
+		if message.Role == llm.RoleUser && message.Content == "recent request" {
+			recentIndex = index
 		}
 	}
-	if !(conversationIndex >= 0 && conversationIndex < summaryIndex && summaryIndex < previousIndex && previousIndex < currentIndex) {
-		t.Fatalf("unexpected context order: conversation=%d summary=%d previous=%d current=%d", conversationIndex, summaryIndex, previousIndex, currentIndex)
+	if replacementIndex < 0 || recentIndex < 0 || replacementIndex >= recentIndex {
+		t.Fatalf("replacement history must precede retained tail: %#v", envelope.Messages)
+	}
+}
+
+func TestBuilderInjectsExplicitSkillWithSourceAndHash(t *testing.T) {
+	input := testBuildInput(t)
+	content := "Follow the review workflow."
+	input.SkillInjections = []SkillInjection{{Name: "review", Content: content, ContentHash: contentHash(content), Source: skill.SourceProject}}
+	envelope, err := NewBuilder().Build(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundMessage, foundSource := false, false
+	for _, message := range envelope.Messages {
+		if message.Role == llm.RoleDeveloper && strings.Contains(message.Content, "amadeus.skill_injection.v1") && strings.Contains(message.Content, content) {
+			foundMessage = true
+		}
 	}
 	for _, source := range envelope.Sources {
-		if source.Kind == SourcePreviousWork && source.ID != "run-cancelled" {
-			t.Fatalf("unexpected interrupted source: %#v", source)
+		if source.Kind == SourceSkillInject && source.ID == "review" && source.SHA256 == contentHash(content) {
+			foundSource = true
 		}
+	}
+	if !foundMessage || !foundSource || envelope.BudgetUsage.Resources == 0 {
+		t.Fatalf("explicit Skill injection was not fully projected: message=%v source=%v envelope=%#v", foundMessage, foundSource, envelope)
 	}
 }

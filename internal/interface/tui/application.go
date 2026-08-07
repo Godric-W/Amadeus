@@ -134,6 +134,17 @@ var fullscreenApprovalChoices = []fullscreenApprovalChoice{
 	{label: "No, deny", decision: policy.ApprovalDecision{Outcome: policy.ApprovalDeny, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "user denied the request"}},
 }
 
+func approvalChoices(request policy.ApprovalRequest) []fullscreenApprovalChoice {
+	if request.Purpose != policy.ApprovalPurposePermission {
+		return fullscreenApprovalChoices
+	}
+	return []fullscreenApprovalChoice{
+		{label: "Yes, allow for this run", decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalRun, Source: policy.ApprovalSourceUser, Reason: "user approved for the run"}},
+		{label: "Yes, allow for this session", decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalSession, Source: policy.ApprovalSourceUser, Reason: "user approved for the session"}},
+		{label: "No, deny", decision: policy.ApprovalDecision{Outcome: policy.ApprovalDeny, Scope: policy.ApprovalRun, Source: policy.ApprovalSourceUser, Reason: "user denied the request"}},
+	}
+}
+
 type fullscreenEventMsg struct{ item event.Event }
 type fullscreenApprovalMsg struct{ prompt *fullscreenApproval }
 type fullscreenTaskDoneMsg struct {
@@ -662,6 +673,7 @@ func (model *fullscreenModel) refreshCurrentSession() {
 }
 
 func (model fullscreenModel) handleApprovalKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	choices := approvalChoices(model.approval.request)
 	switch key.String() {
 	case "up", "k":
 		if model.approvalSelected > 0 {
@@ -669,21 +681,21 @@ func (model fullscreenModel) handleApprovalKey(key tea.KeyMsg) (tea.Model, tea.C
 		}
 		return model, nil
 	case "down", "j":
-		if model.approvalSelected+1 < len(fullscreenApprovalChoices) {
+		if model.approvalSelected+1 < len(choices) {
 			model.approvalSelected++
 		}
 		return model, nil
 	case "enter":
-		return model.resolveApproval(fullscreenApprovalChoices[model.approvalSelected].decision)
+		return model.resolveApproval(choices[model.approvalSelected].decision)
 	case "y", "Y":
-		return model.resolveApproval(fullscreenApprovalChoices[0].decision)
+		return model.resolveApproval(choices[0].decision)
 	case "s", "S":
-		return model.resolveApproval(fullscreenApprovalChoices[1].decision)
+		return model.resolveApproval(choices[1].decision)
 	case "n", "N", "esc":
-		return model.resolveApproval(fullscreenApprovalChoices[2].decision)
+		return model.resolveApproval(choices[2].decision)
 	case "ctrl+c":
 		model.app.cancelActiveRun()
-		decision := fullscreenApprovalChoices[2].decision
+		decision := choices[2].decision
 		decision.Reason = "user cancelled the run"
 		return model.resolveApproval(decision)
 	}
@@ -757,24 +769,33 @@ func (model *fullscreenModel) applyEvent(item event.Event) {
 	case event.PlanUpdated:
 		model.finishDraft()
 		var builder strings.Builder
-		fmt.Fprintf(&builder, "• Updated Plan · cycle %d", item.Cycle)
-		for index, task := range item.Tasks {
+		fmt.Fprintf(&builder, "• Updated Plan · revision %d", item.Revision)
+		for index, planItem := range item.Items {
 			marker := "○"
-			if task.Status == "completed" {
+			if planItem.Status == "completed" {
 				marker = "✔"
-			} else if task.Status == "running" {
+			} else if planItem.Status == "in_progress" {
 				marker = "◉"
-			} else if task.Status == "failed" || task.Status == "blocked" {
-				marker = "✘"
 			}
 			prefix := "    "
 			if index == 0 {
 				prefix = "  └ "
 			}
-			fmt.Fprintf(&builder, "\n%s%s %s · %s", prefix, marker, task.ID, task.Objective)
+			fmt.Fprintf(&builder, "\n%s%s plan-%d · %s", prefix, marker, index+1, planItem.Step)
 		}
 		model.entries = append(model.entries, fullscreenEntry{kind: "plan", content: builder.String()})
 		model.status = "planning"
+	case event.RunDiffUpdated:
+		model.finishDraft()
+		var builder strings.Builder
+		fmt.Fprintf(&builder, "• Updated Diff · %d file(s)", len(item.Changes))
+		for _, change := range item.Changes {
+			fmt.Fprintf(&builder, "\n    %s · %s", change.Kind, change.Path)
+		}
+		model.entries = append(model.entries, fullscreenEntry{kind: "diff", content: builder.String()})
+	case event.RunDiffInvalidated:
+		model.finishDraft()
+		model.entries = append(model.entries, fullscreenEntry{kind: "warning", content: "• Diff attribution unavailable · " + item.Reason})
 	case event.IterationStarted:
 		if _, exists := model.iterations[item.Iteration]; !exists {
 			model.iterations[item.Iteration] = newIterationActivity(item.Iteration)
@@ -1113,13 +1134,14 @@ func (model fullscreenModel) inputBox() string {
 	width := maxInt(40, model.width)
 	if model.approval != nil {
 		request := model.approval.request
+		choices := approvalChoices(request)
 		lines := []string{
 			fullscreenSectionStyle.Render("Approval required") + "  " + fullscreenMutedStyle.Render("↑/↓ select · Enter confirm · Esc deny"),
 			"Tool: " + sanitizeInlineEventText(request.ToolName),
 			fmt.Sprintf("Risk: %s", request.Risk),
 			"Reason: " + sanitizeInlineEventText(request.Reason),
 		}
-		for index, choice := range fullscreenApprovalChoices {
+		for index, choice := range choices {
 			prefix := "  "
 			if index == model.approvalSelected {
 				prefix = "› "

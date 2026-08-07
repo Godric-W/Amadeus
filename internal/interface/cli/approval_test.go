@@ -78,6 +78,33 @@ func TestTerminalApprovalRejectsInvalidChoiceThenAccepts(t *testing.T) {
 	}
 }
 
+func TestTerminalApprovalPermissionChoiceUsesRunScope(t *testing.T) {
+	var output bytes.Buffer
+	handler, err := NewTerminalApprovalHandler(TerminalApprovalOptions{
+		Input: strings.NewReader("y\n"), Output: &output, IsTerminal: func(_ io.Reader) bool { return true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := policy.NewApprovalRequestForPurpose(
+		"permission-1", "request_permissions", json.RawMessage(`{"writable_roots":["/outside"]}`),
+		policy.ApprovalPurposePermission, policy.CommandRiskHigh, "write outside the workspace",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := handler.Decide(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Outcome != policy.ApprovalAllow || decision.Scope != policy.ApprovalRun || decision.Source != policy.ApprovalSourceUser {
+		t.Fatalf("unexpected permission decision: %#v", decision)
+	}
+	if !strings.Contains(output.String(), "[y] this run / [s] session / [n] deny") {
+		t.Fatalf("permission prompt omitted run scope: %q", output.String())
+	}
+}
+
 func testApprovalRequest(t *testing.T) policy.ApprovalRequest {
 	t.Helper()
 	request, err := policy.NewApprovalRequest("approval-1", "write_file", json.RawMessage(`{"path":"a.txt"}`), policy.CommandRiskHigh, "writes a project file")

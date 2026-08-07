@@ -98,11 +98,16 @@ providers:
 
     context_window: 128000
 agent:
+  # Limits apply to one Run. The default execute path uses one Reactor; there
+  # is no agent.mode, DAG scheduler, Planner, Replanner, or reflection model.
   max_iterations: 30
   max_tool_calls: 120
   max_input_tokens: 1000000
   max_output_tokens: 245760
   max_duration: 30m
+  # Shared read-only tools may overlap up to this limit. apply_patch,
+  # execute_command, write_stdin, and unknown dynamic tools are Exclusive and
+  # form a Run-wide barrier. There is no path/resource-level lock layer.
   max_parallel_tools: 4
 
 # Web tools are conditional: disabled capabilities are not registered and are

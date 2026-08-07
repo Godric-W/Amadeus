@@ -8,7 +8,7 @@ import (
 
 func TestTargetCatalogFixesCoreConditionalDeferredAndHiddenTools(t *testing.T) {
 	entries := TargetCatalog()
-	if len(entries) != 16 {
+	if len(entries) != 17 {
 		t.Fatalf("unexpected target catalog size: %d", len(entries))
 	}
 	byName := make(map[string]CatalogEntry, len(entries))
@@ -19,9 +19,10 @@ func TestTargetCatalogFixesCoreConditionalDeferredAndHiddenTools(t *testing.T) {
 		byName[entry.Name] = entry
 	}
 	checks := map[string]tool.Exposure{
-		"read_file":  tool.ExposureDirect,
-		"view_image": tool.ExposureConditional,
-		"mcp_call":   tool.ExposureDeferred,
+		"read_file":           tool.ExposureDirect,
+		"request_permissions": tool.ExposureDirect,
+		"view_image":          tool.ExposureConditional,
+		"mcp_call":            tool.ExposureDeferred,
 	}
 	for name, exposure := range checks {
 		if byName[name].Exposure != exposure {

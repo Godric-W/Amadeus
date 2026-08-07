@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/project"
+	sandboxdomain "github.com/Godric-W/Amadeus/internal/sandbox"
 )
 
 func TestExecuteCommandUsesFixedProjectCWDAndCombinedOutput(t *testing.T) {
@@ -19,7 +20,7 @@ func TestExecuteCommandUsesFixedProjectCWDAndCombinedOutput(t *testing.T) {
 		t.Fatalf("create subdirectory: %v", err)
 	}
 	executeCommand := newTestExecuteCommand(t, rootPath, 5*time.Second, 1024, 100)
-	result, err := executeCommand.Execute(context.Background(), json.RawMessage(`{"command":"printf 'out\\n'; printf 'err\\n' >&2; pwd","cwd":"sub"}`))
+	result, err := executePreparedTool(t, context.Background(), executeCommand, json.RawMessage(`{"command":"printf 'out\\n'; printf 'err\\n' >&2; pwd","cwd":"sub"}`))
 	if err != nil {
 		t.Fatalf("execute command: %v", err)
 	}
@@ -30,7 +31,7 @@ func TestExecuteCommandUsesFixedProjectCWDAndCombinedOutput(t *testing.T) {
 
 func TestExecuteCommandReturnsOutputWithExitError(t *testing.T) {
 	executeCommand := newTestExecuteCommand(t, t.TempDir(), 5*time.Second, 1024, 100)
-	result, err := executeCommand.Execute(context.Background(), json.RawMessage(`{"command":"printf failure; exit 7"}`))
+	result, err := executePreparedTool(t, context.Background(), executeCommand, json.RawMessage(`{"command":"printf failure; exit 7"}`))
 	var exitError *CommandExitError
 	if !errors.As(err, &exitError) || exitError.ExitCode != 7 || result.Text != "failure" || result.Metadata["exit_code"] != 7 {
 		t.Fatalf("unexpected exit failure: result=%#v err=%v", result, err)
@@ -40,14 +41,14 @@ func TestExecuteCommandReturnsOutputWithExitError(t *testing.T) {
 func TestExecuteCommandTimeoutAndCancellationArePartial(t *testing.T) {
 	executeCommand := newTestExecuteCommand(t, t.TempDir(), 2*time.Second, 1024, 100)
 	startedAt := time.Now()
-	result, err := executeCommand.Execute(context.Background(), json.RawMessage(`{"command":"printf started; sleep 5","timeout_ms":30}`))
+	result, err := executePreparedTool(t, context.Background(), executeCommand, json.RawMessage(`{"command":"printf started; sleep 5","timeout_ms":30}`))
 	if !errors.Is(err, ErrCommandTimeout) || !result.Partial || result.Metadata["timed_out"] != true || time.Since(startedAt) > time.Second {
 		t.Fatalf("unexpected timeout result: result=%#v err=%v elapsed=%s", result, err, time.Since(startedAt))
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	result, err = executeCommand.Execute(ctx, json.RawMessage(`{"command":"printf ignored"}`))
+	result, err = executePreparedTool(t, ctx, executeCommand, json.RawMessage(`{"command":"printf ignored"}`))
 	if !errors.Is(err, context.Canceled) || result.ToolName != "" {
 		t.Fatalf("unexpected pre-cancel result: result=%#v err=%v", result, err)
 	}
@@ -55,7 +56,7 @@ func TestExecuteCommandTimeoutAndCancellationArePartial(t *testing.T) {
 
 func TestExecuteCommandAppliesByteAndLineOutputBudget(t *testing.T) {
 	executeCommand := newTestExecuteCommand(t, t.TempDir(), 5*time.Second, 8, 2)
-	result, err := executeCommand.Execute(context.Background(), json.RawMessage(`{"command":"printf 'one\\ntwo\\nthree\\n'"}`))
+	result, err := executePreparedTool(t, context.Background(), executeCommand, json.RawMessage(`{"command":"printf 'one\\ntwo\\nthree\\n'"}`))
 	if err != nil {
 		t.Fatalf("execute bounded command: %v", err)
 	}
@@ -64,10 +65,83 @@ func TestExecuteCommandAppliesByteAndLineOutputBudget(t *testing.T) {
 	}
 }
 
-func TestExecuteCommandRejectsEscapingCWD(t *testing.T) {
-	executeCommand := newTestExecuteCommand(t, t.TempDir(), 5*time.Second, 1024, 100)
-	if _, err := executeCommand.Execute(context.Background(), json.RawMessage(`{"command":"pwd","cwd":".."}`)); err == nil {
-		t.Fatal("expected escaping cwd rejection")
+func TestExecuteCommandAllowsReadableExternalCWD(t *testing.T) {
+	rootPath := t.TempDir()
+	root, err := project.NewRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := project.NewFileSystemPolicy(project.FileSystemPolicyOptions{CWD: rootPath, Profile: project.PermissionProfile{ReadHost: true, WorkspaceRoots: []string{rootPath}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard, err := project.NewPathGuardWithPolicy(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executeCommand, err := NewExecuteCommand(root, ExecuteCommandOptions{DefaultTimeout: 5 * time.Second, MaxTimeout: 5 * time.Second, MaxOutputBytes: 1024, MaxOutputLines: 100, PathGuard: guard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executePreparedTool(t, context.Background(), executeCommand, json.RawMessage(`{"command":"pwd","cwd":".."}`)); err != nil {
+		t.Fatalf("external readable cwd rejected: %v", err)
+	}
+}
+
+func TestExecuteCommandWorkspaceWriteSandboxReadsHostAndDeniesUndeclaredWrites(t *testing.T) {
+	primary := t.TempDir()
+	readOnly := t.TempDir()
+	outsideFile := filepath.Join(readOnly, "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := project.NewRoot(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := project.NewFileSystemPolicy(project.FileSystemPolicyOptions{CWD: primary, Profile: project.PermissionProfile{ReadHost: true, WorkspaceRoots: []string{primary}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := sandboxdomain.NewRunner(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner.Mode() != sandboxdomain.IsolationSandboxed {
+		t.Skip("workspace-write sandbox unavailable: " + runner.Diagnostic())
+	}
+	guard, err := project.NewPathGuardWithPolicy(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executeCommand, err := NewExecuteCommand(root, ExecuteCommandOptions{
+		DefaultTimeout: 5 * time.Second, MaxTimeout: 5 * time.Second, MaxOutputBytes: 4096, MaxOutputLines: 100,
+		PathGuard: guard, Sandbox: runner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readInput, _ := json.Marshal(map[string]any{"command": "cat " + outsideFile, "cwd": readOnly})
+	result, err := executePreparedTool(t, context.Background(), executeCommand, readInput)
+	if err != nil || result.Text != "outside\n" || result.Metadata["sandbox_mode"] != string(sandboxdomain.IsolationSandboxed) {
+		t.Fatalf("sandbox host read failed: %#v err=%v", result, err)
+	}
+	insideFile := filepath.Join(primary, "inside.txt")
+	insideInput, _ := json.Marshal(map[string]any{"command": "printf inside > " + insideFile})
+	if _, err := executePreparedTool(t, context.Background(), executeCommand, insideInput); err != nil {
+		t.Fatalf("sandbox writable root write failed: %v", err)
+	}
+	if content, err := os.ReadFile(insideFile); err != nil || string(content) != "inside" {
+		t.Fatalf("sandbox writable file mismatch: %q err=%v", content, err)
+	}
+	deniedFile := filepath.Join(readOnly, "denied.txt")
+	deniedInput, _ := json.Marshal(map[string]any{"command": "printf denied > " + deniedFile})
+	deniedResult, err := executePreparedTool(t, context.Background(), executeCommand, deniedInput)
+	if !errors.Is(err, ErrSandboxDenied) || deniedResult.Metadata["sandbox_mode"] != string(sandboxdomain.IsolationSandboxed) {
+		t.Fatalf("sandbox undeclared write was not classified: %#v err=%v", deniedResult, err)
+	}
+	if _, statErr := os.Stat(deniedFile); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("sandbox created undeclared file: %v", statErr)
 	}
 }
 

@@ -28,22 +28,26 @@ func TestMVPToolsRejectSymlinkEscapes(t *testing.T) {
 	options := DefaultMVPOptions()
 	options.GrepCode.DisableRipgrep = true
 	tools := []struct {
-		name  string
-		tool  tool.Tool
-		input string
+		name      string
+		tool      tool.Tool
+		input     string
+		wantError string
 	}{
-		{name: "read_file", tool: mustReadFile(t, root, options.ReadFile), input: `{"path":"escape/secret.txt"}`},
-		{name: "apply_patch", tool: mustApplyPatch(t, root, options.ApplyPatch), input: `{"patch":"*** Begin Patch\n*** Add File: escape/new.txt\n+blocked\n*** End Patch"}`},
-		{name: "list_dir", tool: mustListDir(t, root, options.ListDir), input: `{"path":"escape"}`},
-		{name: "glob_files", tool: mustGlobFiles(t, root, options.GlobFiles), input: `{"pattern":"**"}`},
-		{name: "grep_code", tool: mustGrepCode(t, root, options.GrepCode), input: `{"query":"secret","path":"escape"}`},
-		{name: "execute_command", tool: mustExecuteCommand(t, root, options.ExecuteCommand), input: `{"command":"pwd","cwd":"escape"}`},
+		{name: "read_file", tool: mustReadFile(t, root, options.ReadFile), input: `{"path":"escape/secret.txt"}`, wantError: "path_denied"},
+		{name: "apply_patch", tool: mustApplyPatch(t, root, options.ApplyPatch), input: `{"patch":"*** Begin Patch\n*** Add File: escape/new.txt\n+blocked\n*** End Patch"}`, wantError: "permission_required"},
+		{name: "list_dir", tool: mustListDir(t, root, options.ListDir), input: `{"path":"escape"}`, wantError: "path_denied"},
+		{name: "glob_files", tool: mustGlobFiles(t, root, options.GlobFiles), input: `{"pattern":"**"}`, wantError: "path_denied"},
+		{name: "grep_code", tool: mustGrepCode(t, root, options.GrepCode), input: `{"query":"secret","path":"escape"}`, wantError: "path_denied"},
+		{name: "execute_command", tool: mustExecuteCommand(t, root, options.ExecuteCommand), input: `{"command":"pwd","cwd":"escape"}`, wantError: "path_denied"},
 	}
 	for _, test := range tools {
 		t.Run(test.name, func(t *testing.T) {
-			result, err := test.tool.Execute(context.Background(), json.RawMessage(test.input))
-			if err == nil || !strings.Contains(err.Error(), "outside project root") {
-				t.Fatalf("unexpected symlink escape result: result=%#v err=%v", result, err)
+			result, err := executePreparedTool(t, context.Background(), test.tool, json.RawMessage(test.input))
+			if test.wantError == "" && err != nil {
+				t.Fatalf("unexpected result: result=%#v err=%v", result, err)
+			}
+			if test.wantError != "" && (err == nil || !strings.Contains(err.Error(), test.wantError)) {
+				t.Fatalf("unexpected external write result: result=%#v err=%v", result, err)
 			}
 		})
 	}
@@ -66,11 +70,11 @@ func TestMVPFileToolsAllowInternalDirectorySymlink(t *testing.T) {
 	}
 	root, _ := project.NewRoot(rootPath)
 	options := DefaultMVPOptions()
-	readResult, err := mustReadFile(t, root, options.ReadFile).Execute(context.Background(), json.RawMessage(`{"path":"alias/file.txt"}`))
+	readResult, err := executePreparedTool(t, context.Background(), mustReadFile(t, root, options.ReadFile), json.RawMessage(`{"path":"alias/file.txt"}`))
 	if err != nil || readResult.Text != "L1:inside" {
 		t.Fatalf("unexpected internal symlink read: result=%#v err=%v", readResult, err)
 	}
-	if _, err := mustApplyPatch(t, root, options.ApplyPatch).Execute(context.Background(), json.RawMessage(`{"patch":"*** Begin Patch\n*** Add File: alias/new.txt\n+new\n*** End Patch"}`)); err != nil {
+	if _, err := executePreparedTool(t, context.Background(), mustApplyPatch(t, root, options.ApplyPatch), json.RawMessage(`{"patch":"*** Begin Patch\n*** Add File: alias/new.txt\n+new\n*** End Patch"}`)); err != nil {
 		t.Fatalf("patch through internal directory symlink: %v", err)
 	}
 	content, err := os.ReadFile(filepath.Join(realDirectory, "new.txt"))

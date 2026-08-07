@@ -16,6 +16,7 @@ import (
 type ExecutorOptions struct {
 	MaxFileBytes int64
 	FileMode     os.FileMode
+	PathGuard    *project.PathGuard
 }
 
 type Executor struct {
@@ -79,6 +80,37 @@ type preparedOperation struct {
 	source    string
 }
 
+type PreparedDocument struct {
+	document   Document
+	operations []preparedOperation
+}
+
+type PreparedTarget struct {
+	Requested string
+	Canonical string
+}
+
+func (prepared *PreparedDocument) Document() Document {
+	if prepared == nil {
+		return Document{}
+	}
+	return prepared.document
+}
+
+func (prepared *PreparedDocument) Targets() []PreparedTarget {
+	if prepared == nil {
+		return nil
+	}
+	targets := make([]PreparedTarget, 0, len(prepared.operations)*2)
+	for _, operation := range prepared.operations {
+		targets = append(targets, PreparedTarget{Requested: operation.operation.Path, Canonical: operation.source})
+		if operation.operation.Kind == OperationMove {
+			targets = append(targets, PreparedTarget{Requested: operation.operation.MovePath, Canonical: operation.target})
+		}
+	}
+	return targets
+}
+
 func NewExecutor(root project.Root, options ExecutorOptions) (*Executor, error) {
 	return newExecutor(root, options, osCommitOperations{})
 }
@@ -96,36 +128,55 @@ func newExecutor(root project.Root, options ExecutorOptions, commitOps commitOpe
 	if commitOps == nil {
 		return nil, errors.New("apply_patch commit operations are nil")
 	}
-	guard, err := project.NewPathGuard(root)
-	if err != nil {
-		return nil, err
+	guard := options.PathGuard
+	if guard == nil {
+		var err error
+		guard, err = project.NewPathGuard(root)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &Executor{guard: guard, options: options, commitOps: commitOps}, nil
 }
 
 func (executor *Executor) Apply(ctx context.Context, document Document) (ApplyResult, error) {
+	prepared, err := executor.Prepare(ctx, document)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	return executor.ApplyPrepared(ctx, prepared)
+}
+
+func (executor *Executor) Prepare(ctx context.Context, document Document) (*PreparedDocument, error) {
 	if executor == nil || executor.guard == nil {
-		return ApplyResult{}, errors.New("apply_patch executor is nil")
+		return nil, errors.New("apply_patch executor is nil")
 	}
 	if err := ctx.Err(); err != nil {
-		return ApplyResult{}, err
+		return nil, err
 	}
 	if err := validateDocument(document); err != nil {
-		return ApplyResult{}, err
+		return nil, err
 	}
 
 	prepared := make([]preparedOperation, 0, len(document.Operations))
 	for _, operation := range document.Operations {
 		candidate, err := executor.prepare(operation)
 		if err != nil {
-			return ApplyResult{}, err
+			return nil, err
 		}
 		prepared = append(prepared, candidate)
 	}
 	if err := ctx.Err(); err != nil {
-		return ApplyResult{}, err
+		return nil, err
 	}
+	return &PreparedDocument{document: document, operations: prepared}, nil
+}
 
+func (executor *Executor) ApplyPrepared(ctx context.Context, document *PreparedDocument) (ApplyResult, error) {
+	if executor == nil || document == nil {
+		return ApplyResult{}, errors.New("apply_patch prepared document is nil")
+	}
+	prepared := document.operations
 	if err := executor.stage(prepared); err != nil {
 		cleanupPrepared(prepared)
 		return ApplyResult{}, err
@@ -142,12 +193,14 @@ func (executor *Executor) Apply(ctx context.Context, document Document) (ApplyRe
 			result.Partial = len(result.Applied) > 0
 			return result, err
 		}
-		operationResult, err := executor.commit(&prepared[index])
+		operationResult, applied, err := executor.commit(&prepared[index])
+		if applied {
+			result.Applied = append(result.Applied, operationResult)
+		}
 		if err != nil {
 			result.Partial = len(result.Applied) > 0
 			return result, err
 		}
-		result.Applied = append(result.Applied, operationResult)
 	}
 	return result, nil
 }
@@ -372,34 +425,35 @@ func (executor *Executor) revalidate(prepared []preparedOperation) error {
 	return nil
 }
 
-func (executor *Executor) commit(candidate *preparedOperation) (OperationResult, error) {
+func (executor *Executor) commit(candidate *preparedOperation) (OperationResult, bool, error) {
 	operation := candidate.operation
-	result := OperationResult{Kind: operation.Kind, Path: operation.Path, Destination: operation.MovePath}
+	result := OperationResult{Kind: operation.Kind, Path: candidate.source, Destination: candidate.target}
 	switch operation.Kind {
 	case OperationAdd, OperationUpdate:
 		if err := executor.commitOps.Rename(candidate.temporary, candidate.target); err != nil {
-			return OperationResult{}, fmt.Errorf("commit apply_patch %s %q: %w", operation.Kind, operation.Path, err)
+			return OperationResult{}, false, fmt.Errorf("commit apply_patch %s %q: %w", operation.Kind, operation.Path, err)
 		}
 		candidate.temporary = ""
 		result.Bytes = len(candidate.content)
 		result.Created = operation.Kind == OperationAdd
 	case OperationDelete:
 		if err := executor.commitOps.Remove(candidate.target); err != nil {
-			return OperationResult{}, fmt.Errorf("commit apply_patch delete %q: %w", operation.Path, err)
+			return OperationResult{}, false, fmt.Errorf("commit apply_patch delete %q: %w", operation.Path, err)
 		}
 		result.Deleted = true
 	case OperationMove:
 		if err := executor.commitOps.Rename(candidate.temporary, candidate.target); err != nil {
-			return OperationResult{}, fmt.Errorf("commit apply_patch move destination %q: %w", operation.MovePath, err)
+			return OperationResult{}, false, fmt.Errorf("commit apply_patch move destination %q: %w", operation.MovePath, err)
 		}
 		candidate.temporary = ""
 		if err := executor.commitOps.Remove(candidate.source); err != nil {
-			return OperationResult{}, fmt.Errorf("remove apply_patch move source %q: %w", operation.Path, err)
+			partial := OperationResult{Kind: OperationAdd, Path: candidate.target, Bytes: len(candidate.content), Created: true}
+			return partial, true, fmt.Errorf("remove apply_patch move source %q after creating destination %q: %w", operation.Path, operation.MovePath, err)
 		}
 		result.Bytes = len(candidate.content)
 		result.Moved = true
 	}
-	return result, nil
+	return result, true, nil
 }
 
 func cleanupPrepared(prepared []preparedOperation) {

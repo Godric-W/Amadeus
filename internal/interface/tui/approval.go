@@ -58,7 +58,11 @@ func (prompt *InlineApprovalPrompt) Decide(ctx context.Context, request policy.A
 	if !prompt.isTerminal(prompt.input) {
 		return inlinePolicyDecision("approval requires a TTY; non-interactive input was denied"), nil
 	}
-	if _, err := fmt.Fprintf(prompt.output, "approval input\n  tool: %s\n  risk: %s\n  reason: %s\n  arguments_sha256: %s\nAllow? [y] once / [s] session / [n] deny: ", sanitizeInlineEventText(request.ToolName), request.Risk, sanitizeInlineEventText(request.Reason), request.ArgumentsSHA256); err != nil {
+	first := "once"
+	if request.Purpose == policy.ApprovalPurposePermission {
+		first = "this run"
+	}
+	if _, err := fmt.Fprintf(prompt.output, "approval input\n  tool: %s\n  risk: %s\n  reason: %s\n  arguments_sha256: %s\nAllow? [y] %s / [s] session / [n] deny: ", sanitizeInlineEventText(request.ToolName), request.Risk, sanitizeInlineEventText(request.Reason), request.ArgumentsSHA256, first); err != nil {
 		return policy.ApprovalDecision{}, fmt.Errorf("write inline approval prompt: %w", err)
 	}
 	for {
@@ -72,7 +76,7 @@ func (prompt *InlineApprovalPrompt) Decide(ctx context.Context, request policy.A
 			}
 			return policy.ApprovalDecision{}, fmt.Errorf("read inline approval: %w", err)
 		}
-		if decision, ok := parseInlineApprovalChoice(line); ok {
+		if decision, ok := parseInlineApprovalChoiceForPurpose(line, request.Purpose); ok {
 			return decision, nil
 		}
 		if _, err := io.WriteString(prompt.output, "Invalid choice. Enter y, s, or n: "); err != nil {
@@ -82,13 +86,21 @@ func (prompt *InlineApprovalPrompt) Decide(ctx context.Context, request policy.A
 }
 
 func parseInlineApprovalChoice(input string) (policy.ApprovalDecision, bool) {
+	return parseInlineApprovalChoiceForPurpose(input, policy.ApprovalPurposeCommand)
+}
+
+func parseInlineApprovalChoiceForPurpose(input string, purpose policy.ApprovalPurpose) (policy.ApprovalDecision, bool) {
+	firstScope, firstReason := policy.ApprovalOnce, "user approved once"
+	if purpose == policy.ApprovalPurposePermission {
+		firstScope, firstReason = policy.ApprovalRun, "user approved for the run"
+	}
 	switch strings.ToLower(strings.TrimSpace(input)) {
 	case "y", "yes":
-		return inlineUserDecision(policy.ApprovalAllow, policy.ApprovalOnce, "user approved once"), true
+		return inlineUserDecision(policy.ApprovalAllow, firstScope, firstReason), true
 	case "s", "session":
 		return inlineUserDecision(policy.ApprovalAllow, policy.ApprovalSession, "user approved for the session"), true
 	case "n", "no", "deny":
-		return inlineUserDecision(policy.ApprovalDeny, policy.ApprovalOnce, "user denied the request"), true
+		return inlineUserDecision(policy.ApprovalDeny, firstScope, "user denied the request"), true
 	default:
 		return policy.ApprovalDecision{}, false
 	}

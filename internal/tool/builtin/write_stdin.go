@@ -46,16 +46,24 @@ func NewWriteStdin(options WriteStdinOptions) (*WriteStdin, error) {
 
 func (writeStdin *WriteStdin) Spec() tool.Spec { return writeStdinSpec() }
 
-func (writeStdin *WriteStdin) Execute(ctx context.Context, input json.RawMessage) (tool.Result, error) {
+func (writeStdin *WriteStdin) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
 	var arguments writeStdinArguments
-	if err := decodeArguments(input, &arguments); err != nil {
-		return tool.Result{}, err
+	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+		return tool.PreparedCall{}, err
 	}
 	if strings.TrimSpace(arguments.ProcessID) == "" {
-		return tool.Result{}, errors.New("write_stdin process_id is empty")
+		return tool.PreparedCall{}, errors.New("write_stdin process_id is empty")
 	}
 	if arguments.YieldTimeMS < 0 {
-		return tool.Result{}, errors.New("write_stdin yield time cannot be negative")
+		return tool.PreparedCall{}, errors.New("write_stdin yield time cannot be negative")
+	}
+	return tool.NewPreparedCall(call, tool.PreparedOptions{Targets: []tool.PreparedTarget{{Kind: tool.TargetProcess, Access: tool.TargetAccessExecute, Identity: arguments.ProcessID}}, Payload: arguments})
+}
+
+func (writeStdin *WriteStdin) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
+	arguments, err := preparedPayload[writeStdinArguments](prepared, "write_stdin")
+	if err != nil {
+		return tool.Result{}, err
 	}
 	chars := arguments.Chars
 	if arguments.Enter {
@@ -70,15 +78,14 @@ func (writeStdin *WriteStdin) Execute(ctx context.Context, input json.RawMessage
 	if err != nil {
 		return tool.Result{}, err
 	}
-	return commandSnapshotResult("write_stdin", "", snapshot, time.Since(snapshot.StartedAt))
+	return commandSnapshotResult("write_stdin", "", snapshot, time.Since(snapshot.StartedAt), "")
 }
 
 func writeStdinSpec() tool.Spec {
 	return tool.Spec{
 		Name: "write_stdin", Description: "Continue or poll a running process created by execute_command in the current Run; optionally write characters, Enter, or EOF.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"process_id":{"type":"string","minLength":1},"chars":{"type":"string"},"enter":{"type":"boolean"},"eof":{"type":"boolean"},"yield_time_ms":{"type":"integer","minimum":0}},"required":["process_id"],"additionalProperties":false}`),
-		SideEffect:  tool.SideEffectExecute, ParallelSafe: false, Idempotent: false,
-		ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeArguments, ArgumentPaths: []string{"process_id"}},
+		SideEffect:  tool.SideEffectExecute, Concurrency: tool.ToolConcurrencyExclusive, Idempotent: false,
 	}
 }
 

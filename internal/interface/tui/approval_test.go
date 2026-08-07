@@ -67,6 +67,56 @@ func TestInlineApprovalPromptDeniesNonTTYAndRetriesInvalidInput(t *testing.T) {
 	}
 }
 
+func TestInlineApprovalPromptPermissionChoiceUsesRunScope(t *testing.T) {
+	var output bytes.Buffer
+	prompt, err := NewInlineApprovalPrompt(InlineApprovalPromptOptions{
+		Input: strings.NewReader("y\n"), Output: &output, IsTerminal: func(io.Reader) bool { return true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := policy.NewApprovalRequestForPurpose(
+		"permission-1", "request_permissions", json.RawMessage(`{"writable_roots":["/outside"]}`),
+		policy.ApprovalPurposePermission, policy.CommandRiskHigh, "write outside the workspace",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := prompt.Decide(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Outcome != policy.ApprovalAllow || decision.Scope != policy.ApprovalRun || decision.Source != policy.ApprovalSourceUser {
+		t.Fatalf("unexpected permission decision: %#v", decision)
+	}
+	if !strings.Contains(output.String(), "[y] this run / [s] session / [n] deny") {
+		t.Fatalf("permission prompt omitted run scope: %q", output.String())
+	}
+}
+
+func TestFullscreenApprovalPermissionChoicesUseRunThenSession(t *testing.T) {
+	request, err := policy.NewApprovalRequestForPurpose(
+		"permission-1", "request_permissions", json.RawMessage(`{"writable_roots":["/outside"]}`),
+		policy.ApprovalPurposePermission, policy.CommandRiskHigh, "write outside the workspace",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	choices := approvalChoices(request)
+	if len(choices) != 3 {
+		t.Fatalf("unexpected permission choices: %#v", choices)
+	}
+	if choices[0].decision.Outcome != policy.ApprovalAllow || choices[0].decision.Scope != policy.ApprovalRun || !strings.Contains(choices[0].label, "this run") {
+		t.Fatalf("unexpected run choice: %#v", choices[0])
+	}
+	if choices[1].decision.Outcome != policy.ApprovalAllow || choices[1].decision.Scope != policy.ApprovalSession || !strings.Contains(choices[1].label, "this session") {
+		t.Fatalf("unexpected session choice: %#v", choices[1])
+	}
+	if choices[2].decision.Outcome != policy.ApprovalDeny {
+		t.Fatalf("unexpected deny choice: %#v", choices[2])
+	}
+}
+
 func inlineApprovalRequest(t *testing.T, reason string) policy.ApprovalRequest {
 	t.Helper()
 	request, err := policy.NewApprovalRequest("approval-1", "write_file", json.RawMessage(`{"path":"a.txt"}`), policy.CommandRiskHigh, reason)

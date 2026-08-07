@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +84,33 @@ func TestConfigValidationRejectsWrongTransportFields(t *testing.T) {
 	configured.Servers["bad"] = ServerConfig{Transport: TransportStreamableHTTP, URL: "https://example.invalid", Timeout: -time.Second}
 	if err := configured.Validate(); err == nil {
 		t.Fatal("negative timeout was accepted")
+	}
+}
+
+func TestCheckedInMCPExampleLoads(t *testing.T) {
+	_, current, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve MCP test path")
+	}
+	content, err := os.ReadFile(filepath.Join(filepath.Dir(current), "..", "..", "configs", "mcp.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	userRoot := t.TempDir()
+	writeMCPConfig(t, filepath.Join(userRoot, "mcp.yaml"), string(content))
+	projectPath := t.TempDir()
+	root, err := project.NewRoot(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured, err := Load(userRoot, root, LoadOptions{LookupEnv: func(name string) (string, bool) {
+		return "test-secret", name == "EXAMPLE_TOKEN" || name == "MCP_AUTH_TOKEN"
+	}})
+	if err != nil {
+		t.Fatalf("load checked-in MCP example: %v", err)
+	}
+	if len(configured.Servers) != 2 || len(configured.EnabledServers()) != 0 {
+		t.Fatalf("unexpected checked-in MCP example: %#v", configured)
 	}
 }
 

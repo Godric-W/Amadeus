@@ -2,12 +2,12 @@ package tool
 
 import (
 	"context"
-	"encoding/json"
 )
 
 type Tool interface {
 	Spec() Spec
-	Execute(ctx context.Context, input json.RawMessage) (Result, error)
+	Prepare(ctx context.Context, call Call) (PreparedCall, error)
+	Execute(ctx context.Context, prepared PreparedCall) (Result, error)
 }
 
 type Executor interface {
@@ -15,5 +15,5 @@ type Executor interface {
 }
 
 type Authorizer interface {
-	Authorize(ctx context.Context, spec Spec, call Call) error
+	Authorize(ctx context.Context, spec Spec, prepared PreparedCall) error
 }

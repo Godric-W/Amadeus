@@ -10,7 +10,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
-	"github.com/Godric-W/Amadeus/prompts"
 )
 
 type IterationKind string
@@ -82,7 +81,7 @@ func NewIteratorWithOptions(client llm.Client, events event.Sink, options Iterat
 	}
 	systemPrompt := strings.TrimSpace(options.SystemPrompt)
 	if systemPrompt == "" {
-		systemPrompt = prompts.AgentSystem()
+		return nil, errors.New("model iterator system Prompt is empty")
 	}
 	return &Iterator{client: client, events: events, systemPrompt: systemPrompt}, nil
 }

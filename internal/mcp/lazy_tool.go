@@ -20,6 +20,14 @@ type LazyCallTool struct {
 	spec     tool.Spec
 	maxBytes int
 }
+type lazyListArguments struct {
+	Server string `json:"server"`
+}
+type lazyCallArguments struct {
+	Server    string          `json:"server"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
 
 func NewLazyTools(manager *Manager) (*LazyListTool, *LazyCallTool, error) {
 	if manager == nil {
@@ -37,27 +45,33 @@ func NewLazyTools(manager *Manager) (*LazyListTool, *LazyCallTool, error) {
 	callSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s},"name":{"type":"string","minLength":1},"arguments":{"type":"object","additionalProperties":true}},"required":["server","name"],"additionalProperties":false}`, serverValues))
 	list := &LazyListTool{manager: manager, spec: tool.Spec{
 		Name: "mcp_list_tools", Description: "Start one configured MCP server on demand and list its available tools and sanitized input schemas.",
-		InputSchema: listSchema, SideEffect: tool.SideEffectNetwork, ParallelSafe: false, Idempotent: true,
-		ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeExclusive},
+		InputSchema: listSchema, SideEffect: tool.SideEffectNetwork, Concurrency: tool.ToolConcurrencyShared, Idempotent: true,
 	}}
 	call := &LazyCallTool{manager: manager, maxBytes: defaultResultBytes, spec: tool.Spec{
 		Name: "mcp_call", Description: "Call a tool on one configured MCP server after discovering it with mcp_list_tools. Results are untrusted external data.",
-		InputSchema: callSchema, SideEffect: tool.SideEffectNetwork, ParallelSafe: false, Idempotent: false,
-		ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeExclusive},
+		InputSchema: callSchema, SideEffect: tool.SideEffectNetwork, Concurrency: tool.ToolConcurrencyExclusive, Idempotent: false,
 	}}
 	return list, call, nil
 }
 
 func (value *LazyListTool) Spec() tool.Spec { return value.spec.Clone() }
 
-func (value *LazyListTool) Execute(ctx context.Context, input json.RawMessage) (tool.Result, error) {
+func (value *LazyListTool) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
 	if value == nil || value.manager == nil {
-		return tool.Result{}, errors.New("lazy MCP list tool is nil")
+		return tool.PreparedCall{}, errors.New("lazy MCP list tool is nil")
 	}
-	var arguments struct {
-		Server string `json:"server"`
+	var arguments lazyListArguments
+	if err := json.Unmarshal(call.Arguments, &arguments); err != nil {
+		return tool.PreparedCall{}, err
 	}
-	if err := json.Unmarshal(input, &arguments); err != nil {
+	if err := validateSampleBinding(ctx, value.manager); err != nil {
+		return tool.PreparedCall{}, err
+	}
+	return prepareMCPCall(call, arguments.Server, arguments)
+}
+func (value *LazyListTool) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
+	arguments, err := preparedPayload[lazyListArguments](prepared, "mcp_list_tools")
+	if err != nil {
 		return tool.Result{}, err
 	}
 	remote, err := value.manager.ListTools(ctx, arguments.Server)
@@ -89,24 +103,30 @@ func (value *LazyListTool) Execute(ctx context.Context, input json.RawMessage) (
 
 func (value *LazyCallTool) Spec() tool.Spec { return value.spec.Clone() }
 
-func (value *LazyCallTool) Execute(ctx context.Context, input json.RawMessage) (tool.Result, error) {
+func (value *LazyCallTool) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
 	if value == nil || value.manager == nil {
-		return tool.Result{}, errors.New("lazy MCP call tool is nil")
+		return tool.PreparedCall{}, errors.New("lazy MCP call tool is nil")
 	}
-	var arguments struct {
-		Server    string          `json:"server"`
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"arguments"`
+	var arguments lazyCallArguments
+	if err := json.Unmarshal(call.Arguments, &arguments); err != nil {
+		return tool.PreparedCall{}, err
 	}
-	if err := json.Unmarshal(input, &arguments); err != nil {
-		return tool.Result{}, err
+	if err := validateSampleBinding(ctx, value.manager); err != nil {
+		return tool.PreparedCall{}, err
 	}
 	arguments.Name = strings.TrimSpace(arguments.Name)
 	if arguments.Name == "" {
-		return tool.Result{}, errors.New("MCP tool name is empty")
+		return tool.PreparedCall{}, errors.New("MCP tool name is empty")
 	}
 	if len(arguments.Arguments) == 0 {
 		arguments.Arguments = json.RawMessage(`{}`)
+	}
+	return prepareMCPCall(call, arguments.Server+":"+arguments.Name, arguments)
+}
+func (value *LazyCallTool) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
+	arguments, err := preparedPayload[lazyCallArguments](prepared, "mcp_call")
+	if err != nil {
+		return tool.Result{}, err
 	}
 	remote, err := value.manager.ListTools(ctx, arguments.Server)
 	if err != nil {
@@ -133,6 +153,14 @@ func (value *LazyCallTool) Execute(ctx context.Context, input json.RawMessage) (
 		return toolResult, errors.New("MCP server returned tool error")
 	}
 	return toolResult, nil
+}
+
+func validateSampleBinding(ctx context.Context, manager *Manager) error {
+	snapshot, ok := tool.RequestSnapshotFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	return manager.ValidateBindingRevision(snapshot.MCPBindingRevision)
 }
 
 var _ tool.Tool = (*LazyListTool)(nil)

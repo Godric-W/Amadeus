@@ -46,7 +46,7 @@ type AnalyzeOutput struct {
 	Response         llm.Response
 	FinalMessage     *llm.Message
 	Calls            []tool.Call
-	ArgumentFailures []ToolExecution
+	ArgumentFailures []ToolOutcome
 }
 
 type AnalyzePort interface {
@@ -59,8 +59,8 @@ type ActInput struct {
 }
 
 type ActOutput struct {
-	Executions []ToolExecution
-	Attempted  int
+	Outcomes  []ToolOutcome
+	Attempted int
 }
 
 type ActPort interface {
@@ -71,13 +71,11 @@ type ObserveInput struct {
 	Index          int
 	Analysis       AnalyzeOutput
 	Act            ActOutput
-	EvidenceBefore int
 	AvailableTools []tool.Spec
 }
 
 type ObserveOutput struct {
 	Iteration     Iteration
-	Evidence      []Evidence
 	Replay        []llm.Message
 	BlockedReason string
 	StalledReason string
@@ -183,13 +181,13 @@ func argumentErrorMessageToolCalls(calls []llm.ToolCall) []llm.ToolCall {
 	return result
 }
 
-func (analyzer *defaultAnalyzer) normalizeCalls(calls []tool.Call, specs []tool.Spec) ([]tool.Call, []ToolExecution, error) {
+func (analyzer *defaultAnalyzer) normalizeCalls(calls []tool.Call, specs []tool.Spec) ([]tool.Call, []ToolOutcome, error) {
 	indexed := make(map[string]tool.Spec, len(specs))
 	for _, spec := range specs {
 		indexed[spec.Name] = spec
 	}
 	normalized := make([]tool.Call, len(calls))
-	failures := make([]ToolExecution, len(calls))
+	failures := make([]ToolOutcome, len(calls))
 	var combined error
 	for index, call := range calls {
 		spec, ok := indexed[call.Name]
@@ -211,7 +209,7 @@ func (analyzer *defaultAnalyzer) normalizeCalls(calls []tool.Call, specs []tool.
 		return normalized, nil, nil
 	}
 	for index, call := range calls {
-		if failures[index].Observation.CallID == "" {
+		if failures[index].CallID == "" {
 			failures[index] = argumentFailureExecution(call, errors.New("tool call was not executed because another call had invalid arguments"))
 		}
 	}
@@ -219,19 +217,19 @@ func (analyzer *defaultAnalyzer) normalizeCalls(calls []tool.Call, specs []tool.
 }
 
 type defaultActor struct {
-	resources *resourceExecutor
+	gate *toolExecutionGate
 }
 
 func (actor *defaultActor) Act(ctx context.Context, input ActInput) (ActOutput, error) {
-	indexed, err := actor.resources.Execute(ctx, input.Calls, input.AvailableTools)
+	indexed, err := actor.gate.Execute(ctx, input.Calls, input.AvailableTools)
 	if err != nil {
 		return ActOutput{}, err
 	}
-	executions := make([]ToolExecution, 0, len(indexed))
+	outcomes := make([]ToolOutcome, 0, len(indexed))
 	for _, item := range indexed {
-		executions = append(executions, item.execution)
+		outcomes = append(outcomes, item.outcome)
 	}
-	return ActOutput{Executions: executions, Attempted: len(indexed)}, nil
+	return ActOutput{Outcomes: outcomes, Attempted: len(indexed)}, nil
 }
 
 type defaultObserver struct {
@@ -245,28 +243,24 @@ func (observer *defaultObserver) Observe(input ObserveInput) (ObserveOutput, err
 		Index: input.Index, LLMCallID: input.Analysis.LLMCallID, ToolCalls: append([]tool.Call(nil), input.Analysis.Calls...),
 		Status: IterationRunning, StartedAt: startedAt,
 	}
-	var executions []ToolExecution
+	var outcomes []ToolOutcome
 	switch input.Analysis.Kind {
 	case AnalysisFinal:
 		iteration.Intent = "final"
 	case AnalysisArgumentError:
 		iteration.Intent = "tool_argument_error"
-		executions = input.Analysis.ArgumentFailures
+		outcomes = input.Analysis.ArgumentFailures
 	case AnalysisAct:
 		iteration.Intent = "tool_calls"
-		executions = input.Act.Executions
+		outcomes = input.Act.Outcomes
 	default:
 		return ObserveOutput{}, fmt.Errorf("unsupported observation analysis kind %q", input.Analysis.Kind)
 	}
 	output := ObserveOutput{Iteration: iteration}
-	for _, execution := range executions {
-		output.Iteration.Observations = append(output.Iteration.Observations, execution.Observation)
-		output.Iteration.Evidence = append(output.Iteration.Evidence, execution.Evidence)
-		output.Iteration.Evidence = append(output.Iteration.Evidence, execution.SupplementalEvidence...)
-		output.Evidence = append(output.Evidence, execution.Evidence)
-		output.Evidence = append(output.Evidence, execution.SupplementalEvidence...)
-		if execution.Observation.Blocking && output.BlockedReason == "" {
-			output.BlockedReason = execution.Observation.Error
+	for _, outcome := range outcomes {
+		output.Iteration.Outcomes = append(output.Iteration.Outcomes, outcome)
+		if outcome.Blocking && output.BlockedReason == "" {
+			output.BlockedReason = outcome.ErrorMessage()
 		}
 	}
 	completedAt := observer.now()
@@ -277,8 +271,7 @@ func (observer *defaultObserver) Observe(input ObserveInput) (ObserveOutput, err
 	}
 	if input.Analysis.Kind == AnalysisAct {
 		signals, err := observer.progress.Observe(ProgressSample{
-			Calls: input.Analysis.Calls, Observations: output.Iteration.Observations,
-			EvidenceBefore: input.EvidenceBefore, EvidenceAfter: input.EvidenceBefore + countVerified(output.Evidence), Specs: input.AvailableTools,
+			Calls: input.Analysis.Calls, Outcomes: output.Iteration.Outcomes, Specs: input.AvailableTools,
 		})
 		if err != nil {
 			return ObserveOutput{}, err
@@ -287,7 +280,7 @@ func (observer *defaultObserver) Observe(input ObserveInput) (ObserveOutput, err
 			output.StalledReason = signal.Reason
 		}
 	}
-	replay, err := ReplayToolResults(input.Analysis.Response.Message, executions)
+	replay, err := ReplayToolResults(input.Analysis.Response.Message, outcomes)
 	if err != nil {
 		return ObserveOutput{}, err
 	}

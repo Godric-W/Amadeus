@@ -2,7 +2,6 @@ package builtin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -18,7 +17,8 @@ type ApplyPatchOptions struct {
 }
 
 type patchApplier interface {
-	Apply(context.Context, patchtool.Document) (patchtool.ApplyResult, error)
+	Prepare(context.Context, patchtool.Document) (*patchtool.PreparedDocument, error)
+	ApplyPrepared(context.Context, *patchtool.PreparedDocument) (patchtool.ApplyResult, error)
 }
 
 type ApplyPatch struct {
@@ -28,6 +28,12 @@ type ApplyPatch struct {
 
 type applyPatchArguments struct {
 	Patch string `json:"patch"`
+}
+
+type preparedApplyPatch struct {
+	arguments applyPatchArguments
+	document  patchtool.Document
+	prepared  *patchtool.PreparedDocument
 }
 
 func NewApplyPatch(root project.Root, options ApplyPatchOptions) (*ApplyPatch, error) {
@@ -49,26 +55,39 @@ func (applyPatch *ApplyPatch) Spec() tool.Spec {
 	return applyPatchSpec()
 }
 
-func (applyPatch *ApplyPatch) Execute(ctx context.Context, input json.RawMessage) (tool.Result, error) {
+func (applyPatch *ApplyPatch) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
 	if err := ctx.Err(); err != nil {
-		return tool.Result{}, err
+		return tool.PreparedCall{}, err
 	}
 	var arguments applyPatchArguments
-	if err := decodeArguments(input, &arguments); err != nil {
-		return tool.Result{}, err
+	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+		return tool.PreparedCall{}, err
 	}
 	if strings.TrimSpace(arguments.Patch) == "" {
-		return tool.Result{}, errors.New("apply_patch patch is empty")
+		return tool.PreparedCall{}, errors.New("apply_patch patch is empty")
 	}
 	document, err := patchtool.Parse([]byte(arguments.Patch), applyPatch.parseOptions)
 	if err != nil {
+		return tool.PreparedCall{}, err
+	}
+	preparedDocument, err := applyPatch.executor.Prepare(ctx, document)
+	if err != nil {
+		return tool.PreparedCall{}, err
+	}
+	targets := make([]tool.PreparedTarget, 0, len(preparedDocument.Targets()))
+	for _, target := range preparedDocument.Targets() {
+		targets = append(targets, tool.PreparedTarget{Kind: tool.TargetFilesystem, RequestedPath: target.Requested, CanonicalPath: target.Canonical, Access: tool.TargetAccessWrite})
+	}
+	return tool.NewPreparedCall(call, tool.PreparedOptions{Targets: targets, Payload: preparedApplyPatch{arguments: arguments, document: document, prepared: preparedDocument}})
+}
+
+func (applyPatch *ApplyPatch) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
+	payload, err := preparedPayload[preparedApplyPatch](prepared, "apply_patch")
+	if err != nil {
 		return tool.Result{}, err
 	}
-	if err := ctx.Err(); err != nil {
-		return tool.Result{}, err
-	}
-	applied, applyErr := applyPatch.executor.Apply(ctx, document)
-	result := patchToolResult(document, applied, applyErr)
+	applied, applyErr := applyPatch.executor.ApplyPrepared(ctx, payload.prepared)
+	result := patchToolResult(payload.document, applied, applyErr)
 	return result, applyErr
 }
 

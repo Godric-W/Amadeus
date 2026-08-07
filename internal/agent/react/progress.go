@@ -15,10 +15,10 @@ import (
 type ProgressSignalKind string
 
 const (
-	ProgressRepeatedAction ProgressSignalKind = "repeated_action"
-	ProgressRepeatedError  ProgressSignalKind = "repeated_error"
-	ProgressNoEvidence     ProgressSignalKind = "no_evidence"
-	ProgressHighImpact     ProgressSignalKind = "high_impact"
+	ProgressRepeatedAction  ProgressSignalKind = "repeated_action"
+	ProgressRepeatedError   ProgressSignalKind = "repeated_error"
+	ProgressRepeatedOutcome ProgressSignalKind = "repeated_outcome"
+	ProgressHighImpact      ProgressSignalKind = "high_impact"
 )
 
 type ProgressSignal struct {
@@ -31,51 +31,47 @@ type ProgressSignal struct {
 }
 
 type ProgressSample struct {
-	Calls          []tool.Call
-	Observations   []Observation
-	EvidenceBefore int
-	EvidenceAfter  int
-	Specs          []tool.Spec
+	Calls    []tool.Call
+	Outcomes []ToolOutcome
+	Specs    []tool.Spec
 }
 
 type ProgressMonitorOptions struct {
-	RepeatedActionThreshold int
-	RepeatedErrorThreshold  int
-	NoEvidenceThreshold     int
+	RepeatedActionThreshold  int
+	RepeatedErrorThreshold   int
+	RepeatedOutcomeThreshold int
 }
 
 type ProgressMonitor struct {
-	mutex          sync.Mutex
-	options        ProgressMonitorOptions
-	actionCounts   map[string]int
-	errorCounts    map[string]int
-	noEvidenceRuns int
+	mutex         sync.Mutex
+	options       ProgressMonitorOptions
+	actionCounts  map[string]int
+	errorCounts   map[string]int
+	outcomeCounts map[string]int
 }
 
 func NewProgressMonitor(options ProgressMonitorOptions) (*ProgressMonitor, error) {
-	if options.RepeatedActionThreshold <= 0 || options.RepeatedErrorThreshold <= 0 || options.NoEvidenceThreshold <= 0 {
+	if options.RepeatedActionThreshold <= 0 || options.RepeatedErrorThreshold <= 0 || options.RepeatedOutcomeThreshold <= 0 {
 		return nil, errors.New("progress monitor thresholds must be greater than zero")
 	}
 	return &ProgressMonitor{
-		options:      options,
-		actionCounts: make(map[string]int),
-		errorCounts:  make(map[string]int),
+		options:       options,
+		actionCounts:  make(map[string]int),
+		errorCounts:   make(map[string]int),
+		outcomeCounts: make(map[string]int),
 	}, nil
 }
 
 func DefaultProgressMonitor() *ProgressMonitor {
 	monitor, _ := NewProgressMonitor(ProgressMonitorOptions{
-		RepeatedActionThreshold: 2,
-		RepeatedErrorThreshold:  2,
-		NoEvidenceThreshold:     2,
+		RepeatedActionThreshold:  2,
+		RepeatedErrorThreshold:   2,
+		RepeatedOutcomeThreshold: 2,
 	})
 	return monitor
 }
 
 func (monitor *ProgressMonitor) Observe(sample ProgressSample) ([]ProgressSignal, error) {
-	if sample.EvidenceBefore < 0 || sample.EvidenceAfter < 0 {
-		return nil, errors.New("progress sample evidence counts must not be negative")
-	}
 	monitor.mutex.Lock()
 	defer monitor.mutex.Unlock()
 
@@ -89,13 +85,15 @@ func (monitor *ProgressMonitor) Observe(sample ProgressSample) ([]ProgressSignal
 		if err != nil {
 			return nil, fmt.Errorf("progress sample calls[%d]: %w", index, err)
 		}
-		monitor.actionCounts[signature]++
-		count := monitor.actionCounts[signature]
-		if count >= monitor.options.RepeatedActionThreshold {
-			signals = append(signals, ProgressSignal{
-				Kind: ProgressRepeatedAction, Key: signature, ToolName: call.Name, Count: count,
-				Reason: "the same normalized tool call has been attempted repeatedly", RecommendPlan: true,
-			})
+		if progressCallWasAttempted(sample.Outcomes, index) {
+			monitor.actionCounts[signature]++
+			count := monitor.actionCounts[signature]
+			if count >= monitor.options.RepeatedActionThreshold {
+				signals = append(signals, ProgressSignal{
+					Kind: ProgressRepeatedAction, Key: signature, ToolName: call.Name, Count: count,
+					Reason: "the same normalized tool call has been attempted repeatedly", RecommendPlan: true,
+				})
+			}
 		}
 		if spec, ok := specs[call.Name]; ok && highImpact(spec) {
 			signals = append(signals, ProgressSignal{
@@ -105,40 +103,44 @@ func (monitor *ProgressMonitor) Observe(sample ProgressSample) ([]ProgressSignal
 		}
 	}
 
-	for _, observation := range sample.Observations {
-		if strings.TrimSpace(observation.Error) == "" {
+	for index, outcome := range sample.Outcomes {
+		callKey := strings.TrimSpace(outcome.ToolName)
+		if index < len(sample.Calls) {
+			signature, signatureErr := toolCallSignature(sample.Calls[index])
+			if signatureErr != nil {
+				return nil, fmt.Errorf("progress sample outcome call %d: %w", index, signatureErr)
+			}
+			callKey = signature
+		}
+		fingerprint := callKey + "\n" + outcomeFingerprint(outcome)
+		monitor.outcomeCounts[fingerprint]++
+		if count := monitor.outcomeCounts[fingerprint]; count >= monitor.options.RepeatedOutcomeThreshold {
+			signals = append(signals, ProgressSignal{Kind: ProgressRepeatedOutcome, Key: fingerprint, ToolName: outcome.ToolName, Count: count, Reason: "the same normalized tool outcome has occurred repeatedly", RecommendPlan: true})
+		}
+		if outcome.Error == nil || strings.TrimSpace(outcome.Error.Message) == "" {
 			continue
 		}
-		key := normalizedErrorKey(observation)
+		key := callKey + "\n" + normalizedErrorKey(outcome)
 		monitor.errorCounts[key]++
-		count := monitor.errorCounts[key]
-		if count >= monitor.options.RepeatedErrorThreshold {
-			signals = append(signals, ProgressSignal{
-				Kind: ProgressRepeatedError, Key: key, ToolName: observation.ToolName, Count: count,
-				Reason: "the same normalized tool error has occurred repeatedly", RecommendPlan: true,
-			})
-		}
-	}
-
-	if sample.EvidenceAfter > sample.EvidenceBefore {
-		monitor.noEvidenceRuns = 0
-	} else if len(sample.Observations) != 0 {
-		monitor.noEvidenceRuns++
-		if monitor.noEvidenceRuns >= monitor.options.NoEvidenceThreshold {
-			signals = append(signals, ProgressSignal{
-				Kind: ProgressNoEvidence, Count: monitor.noEvidenceRuns,
-				Reason: "recent execution produced no new evidence", RecommendPlan: true,
-			})
+		if count := monitor.errorCounts[key]; count >= monitor.options.RepeatedErrorThreshold {
+			signals = append(signals, ProgressSignal{Kind: ProgressRepeatedError, Key: key, ToolName: outcome.ToolName, Count: count, Reason: "the same normalized tool error has occurred repeatedly", RecommendPlan: true})
 		}
 	}
 	return signals, nil
+}
+
+func progressCallWasAttempted(outcomes []ToolOutcome, index int) bool {
+	if index >= len(outcomes) || outcomes[index].Error == nil {
+		return true
+	}
+	return strings.TrimSpace(outcomes[index].Error.Kind) != "permission_required"
 }
 
 func (monitor *ProgressMonitor) Reset() {
 	monitor.mutex.Lock()
 	monitor.actionCounts = make(map[string]int)
 	monitor.errorCounts = make(map[string]int)
-	monitor.noEvidenceRuns = 0
+	monitor.outcomeCounts = make(map[string]int)
 	monitor.mutex.Unlock()
 }
 
@@ -177,14 +179,18 @@ func toolCallSignature(call tool.Call) (string, error) {
 	return strings.TrimSpace(call.Name) + ":" + string(canonical), nil
 }
 
-func normalizedErrorKey(observation Observation) string {
-	message := strings.ToLower(strings.Join(strings.Fields(observation.Error), " "))
-	return strings.TrimSpace(observation.ToolName) + ":" + message
+func normalizedErrorKey(outcome ToolOutcome) string {
+	message := strings.ToLower(strings.Join(strings.Fields(outcome.ErrorMessage()), " "))
+	return strings.TrimSpace(outcome.ToolName) + ":" + message
+}
+
+func outcomeFingerprint(outcome ToolOutcome) string {
+	return strings.TrimSpace(outcome.ToolName) + ":" + string(outcome.Status) + ":" + strings.ToLower(strings.Join(strings.Fields(outcomeSummary(outcome)), " "))
 }
 
 func highImpact(spec tool.Spec) bool {
 	return spec.SideEffect == tool.SideEffectWrite ||
 		spec.SideEffect == tool.SideEffectExecute ||
 		spec.SideEffect == tool.SideEffectNetwork ||
-		spec.ResourceStrategy.Mode == tool.ResourceModeExclusive
+		spec.Concurrency == tool.ToolConcurrencyExclusive
 }

@@ -35,7 +35,7 @@ func TestWebFetchProducesUntrustedBoundedDocument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := fetch.Execute(context.Background(), json.RawMessage(`{"url":"https://example.com"}`))
+	result, err := executePreparedTool(t, context.Background(), fetch, json.RawMessage(`{"url":"https://example.com"}`))
 	if err != nil || !result.Partial || !strings.Contains(result.Text, "Untrusted web content") || result.Metadata["title"] != "Example" || fetch.Spec().SideEffect != tool.SideEffectNetwork {
 		t.Fatalf("unexpected web fetch result: %#v err=%v", result, err)
 	}
@@ -46,7 +46,7 @@ func TestWebSearchFormatsProviderResultsAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := search.Execute(context.Background(), json.RawMessage(`{"query":"one","limit":1}`))
+	result, err := executePreparedTool(t, context.Background(), search, json.RawMessage(`{"query":"one","limit":1}`))
 	if err != nil || !strings.Contains(result.Text, "https://one.example") || search.Spec().SideEffect != tool.SideEffectNetwork {
 		t.Fatalf("unexpected web search result: %#v err=%v", result, err)
 	}
@@ -54,7 +54,7 @@ func TestWebSearchFormatsProviderResultsAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := failing.Execute(context.Background(), json.RawMessage(`{"query":"one"}`)); err == nil {
+	if _, err := executePreparedTool(t, context.Background(), failing, json.RawMessage(`{"query":"one"}`)); err == nil {
 		t.Fatal("provider failure was not returned")
 	}
 }

@@ -17,7 +17,11 @@ func (tool *fakeTool) Spec() Spec {
 	return tool.spec
 }
 
-func (tool *fakeTool) Execute(context.Context, json.RawMessage) (Result, error) {
+func (tool *fakeTool) Prepare(_ context.Context, call Call) (PreparedCall, error) {
+	return PreparePassthrough(call, call.Arguments)
+}
+
+func (tool *fakeTool) Execute(context.Context, PreparedCall) (Result, error) {
 	return Result{ToolName: tool.spec.Name}, nil
 }
 
@@ -42,8 +46,8 @@ func TestRegistryRegisterLookupDuplicateAndSnapshot(t *testing.T) {
 	if len(entries) != 2 || entries[0].Spec.Name != "read_file" || entries[1].Spec.Name != "write_file" {
 		t.Fatalf("snapshot is not stable: %#v", entries)
 	}
-	entries[0].Spec.ResourceStrategy.ArgumentPaths[0] = "changed"
-	if registry.Snapshot()[0].Spec.ResourceStrategy.ArgumentPaths[0] != "path" {
+	entries[0].Spec.InputSchema[0] = '['
+	if registry.Snapshot()[0].Spec.InputSchema[0] == '[' {
 		t.Fatal("snapshot mutation changed registry state")
 	}
 }
@@ -90,16 +94,12 @@ func TestRegistrySupportsConcurrentRegistrationAndLookup(t *testing.T) {
 
 func newFakeTool(name string) *fakeTool {
 	return &fakeTool{spec: Spec{
-		Name:         name,
-		Description:  "test tool",
-		InputSchema:  json.RawMessage(`{"type":"object"}`),
-		SideEffect:   SideEffectRead,
-		ParallelSafe: true,
-		Idempotent:   true,
-		ResourceStrategy: ResourceStrategy{
-			Mode:          ResourceModeArguments,
-			ArgumentPaths: []string{"path"},
-		},
+		Name:        name,
+		Description: "test tool",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		SideEffect:  SideEffectRead,
+		Concurrency: ToolConcurrencyShared,
+		Idempotent:  true,
 	}}
 }
 

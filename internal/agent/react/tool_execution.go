@@ -12,14 +12,8 @@ import (
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
-type ToolExecution struct {
-	Observation          Observation
-	Evidence             Evidence
-	SupplementalEvidence []Evidence
-}
-
 type PostExecutionHook interface {
-	After(context.Context, tool.Spec, tool.Call, tool.Result) ([]Evidence, error)
+	After(context.Context, tool.Spec, tool.Call, tool.Result) error
 }
 
 type PreExecutionHook interface {
@@ -79,80 +73,115 @@ func NewToolExecutorWithOptions(registry *tool.Registry, validator *tool.Argumen
 	return &ToolExecutor{registry: registry, validator: validator, authorizer: options.Authorizer, events: options.Events, preHooks: preHooks, hooks: hooks, now: time.Now}, nil
 }
 
-func (executor *ToolExecutor) Execute(ctx context.Context, call tool.Call) (ToolExecution, error) {
+func (executor *ToolExecutor) Execute(ctx context.Context, call tool.Call) (ToolOutcome, error) {
 	startedAt := executor.now()
 	if strings.TrimSpace(call.ID) == "" {
-		err := errors.New("tool call ID is empty")
-		return executor.failure(call, tool.Result{}, err, startedAt), err
+		return executor.failure(call, tool.Result{}, ToolOutcomeFailed, "invalid_call", errors.New("tool call ID is empty"), startedAt), nil
 	}
 	if strings.TrimSpace(call.Name) == "" {
-		err := errors.New("tool call name is empty")
-		return executor.failure(call, tool.Result{}, err, startedAt), err
+		return executor.failure(call, tool.Result{}, ToolOutcomeFailed, "invalid_call", errors.New("tool call name is empty"), startedAt), nil
 	}
 
 	registered, ok := executor.registry.Lookup(call.Name)
 	if !ok {
-		err := fmt.Errorf("tool %q is not registered", call.Name)
-		return executor.failure(call, tool.Result{}, err, startedAt), err
+		return executor.failure(call, tool.Result{}, ToolOutcomeFailed, "not_registered", fmt.Errorf("tool %q is not registered", call.Name), startedAt), nil
 	}
 	spec := registered.Spec()
 	normalized, err := executor.validator.Validate(spec, call.Arguments)
 	if err != nil {
-		return executor.failure(call, tool.Result{}, err, startedAt), err
+		return executor.failure(call, tool.Result{}, ToolOutcomeFailed, "invalid_arguments", err, startedAt), nil
 	}
 	normalizedCall := tool.NewCall(call.ID, call.Name, normalized)
+	prepared, err := registered.Prepare(ctx, normalizedCall)
+	if err != nil {
+		status, kind := ToolOutcomeFailed, "prepare_failed"
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			status, kind = ToolOutcomeInterrupted, "interrupted"
+		} else {
+			var kindProvider tool.ErrorKindProvider
+			if errors.As(err, &kindProvider) && strings.TrimSpace(kindProvider.ToolErrorKind()) != "" {
+				kind = strings.TrimSpace(kindProvider.ToolErrorKind())
+				if kind == "permission_required" || kind == "permission_denied" || kind == "path_denied" || kind == "symlink_escape" {
+					status = ToolOutcomeDenied
+				}
+			}
+		}
+		outcome := executor.failure(call, tool.Result{}, status, kind, err, startedAt)
+		return outcome, executor.publishCompleted(ctx, outcome)
+	}
+	preparedCall := prepared.Call()
+	if preparedCall.ID != normalizedCall.ID || preparedCall.Name != normalizedCall.Name || string(preparedCall.Arguments) != string(normalizedCall.Arguments) {
+		outcome := executor.failure(call, tool.Result{}, ToolOutcomeFailed, "invalid_prepared_call", errors.New("tool prepare changed normalized call identity or arguments"), startedAt)
+		return outcome, executor.publishCompleted(ctx, outcome)
+	}
 	if executor.events != nil {
-		presentation := tool.PresentCall(spec, normalizedCall)
+		presentation := tool.PresentCall(spec, preparedCall)
 		if err := executor.events.Publish(ctx, event.ToolCallStarted{
 			CallID: call.ID, ToolName: call.Name, SideEffect: string(spec.SideEffect),
 			ActionSummary: presentation.ActionSummary, Detail: presentation.Detail,
 		}); err != nil {
-			return executor.failure(call, tool.Result{}, err, startedAt), fmt.Errorf("publish tool call started: %w", err)
+			return ToolOutcome{}, fmt.Errorf("publish tool call started: %w", err)
 		}
 	}
 	if executor.authorizer != nil {
-		if err := executor.authorizer.Authorize(ctx, spec, normalizedCall); err != nil {
-			execution := executor.failure(call, tool.Result{}, err, startedAt)
-			return execution, errors.Join(err, executor.publishCompleted(ctx, execution))
+		if err := executor.authorizer.Authorize(ctx, spec, prepared); err != nil {
+			kind := "approval_denied"
+			var kindProvider tool.ErrorKindProvider
+			if errors.As(err, &kindProvider) && strings.TrimSpace(kindProvider.ToolErrorKind()) != "" {
+				kind = strings.TrimSpace(kindProvider.ToolErrorKind())
+			}
+			outcome := executor.failure(call, tool.Result{}, ToolOutcomeDenied, kind, err, startedAt)
+			return outcome, executor.publishCompleted(ctx, outcome)
 		}
 	}
 	for _, hook := range executor.preHooks {
-		if err := hook.Before(ctx, spec, normalizedCall); err != nil {
-			execution := executor.failure(call, tool.Result{}, err, startedAt)
-			return execution, errors.Join(err, executor.publishCompleted(ctx, execution))
+		if err := hook.Before(ctx, spec, preparedCall); err != nil {
+			outcome := executor.failure(call, tool.Result{}, ToolOutcomeFailed, "pre_hook_failed", err, startedAt)
+			return outcome, executor.publishCompleted(ctx, outcome)
 		}
 	}
 
-	result, executeErr := registered.Execute(ctx, normalized)
+	result, executeErr := registered.Execute(ctx, prepared)
 	result.CallID = call.ID
 	result.ToolName = call.Name
 	if executeErr != nil {
-		execution := executor.failure(call, result, executeErr, startedAt)
-		return execution, errors.Join(executeErr, executor.publishCompleted(ctx, execution))
-	}
-	execution := executor.success(call, result, startedAt)
-	for _, hook := range executor.hooks {
-		evidence, hookErr := hook.After(ctx, spec, normalizedCall, result.Clone())
-		if hookErr != nil {
-			execution.SupplementalEvidence = append(execution.SupplementalEvidence, Evidence{
-				ID: EvidenceID("hook/" + call.ID), Kind: EvidenceDiagnostic, Source: "post_execution_hook",
-				Summary: hookErr.Error(), Verified: false,
-			})
-			continue
+		status, kind := ToolOutcomeFailed, "execution_failed"
+		var kindProvider tool.ErrorKindProvider
+		if errors.As(executeErr, &kindProvider) && strings.TrimSpace(kindProvider.ToolErrorKind()) != "" {
+			kind = strings.TrimSpace(kindProvider.ToolErrorKind())
 		}
-		execution.SupplementalEvidence = append(execution.SupplementalEvidence, evidence...)
+		if errors.Is(executeErr, context.Canceled) || errors.Is(executeErr, context.DeadlineExceeded) || ctx.Err() != nil {
+			status, kind = ToolOutcomeInterrupted, "interrupted"
+		}
+		outcome := executor.failure(call, result, status, kind, executeErr, startedAt)
+		executor.applyPostHooks(ctx, spec, preparedCall, result, &outcome)
+		return outcome, executor.publishCompleted(ctx, outcome)
 	}
-	return execution, executor.publishCompleted(ctx, execution)
+	outcome := executor.success(call, result, startedAt)
+	executor.applyPostHooks(ctx, spec, preparedCall, result, &outcome)
+	return outcome, executor.publishCompleted(ctx, outcome)
 }
 
-func (executor *ToolExecutor) publishCompleted(ctx context.Context, execution ToolExecution) error {
+func (executor *ToolExecutor) applyPostHooks(ctx context.Context, spec tool.Spec, call tool.Call, result tool.Result, outcome *ToolOutcome) {
+	for _, hook := range executor.hooks {
+		if hookErr := hook.After(ctx, spec, call, result.Clone()); hookErr != nil {
+			if outcome.Metadata == nil {
+				outcome.Metadata = make(map[string]any)
+			}
+			values, _ := outcome.Metadata["hook_errors"].([]string)
+			outcome.Metadata["hook_errors"] = append(values, hookErr.Error())
+		}
+	}
+}
+
+func (executor *ToolExecutor) publishCompleted(ctx context.Context, outcome ToolOutcome) error {
 	if executor.events == nil {
 		return nil
 	}
 	completed := event.ToolCallCompleted{
-		CallID: execution.Observation.CallID, ToolName: execution.Observation.ToolName,
-		Success: execution.Observation.Error == "", Partial: execution.Observation.Result.Partial,
-		Summary: execution.Evidence.Summary, Duration: execution.Observation.Duration,
+		CallID: outcome.CallID, ToolName: outcome.ToolName,
+		Success: outcome.Succeeded(), Partial: outcome.Partial,
+		Summary: outcomeSummary(outcome), Duration: outcome.Duration,
 	}
 	if err := executor.events.Publish(ctx, completed); err != nil {
 		return fmt.Errorf("publish tool call completed: %w", err)
@@ -160,60 +189,54 @@ func (executor *ToolExecutor) publishCompleted(ctx context.Context, execution To
 	return nil
 }
 
-func (executor *ToolExecutor) success(call tool.Call, result tool.Result, startedAt time.Time) ToolExecution {
-	observation := Observation{
-		CallID:   call.ID,
-		ToolName: call.Name,
-		Result:   result.Clone(),
-		Duration: executor.durationSince(startedAt),
-	}
-	return ToolExecution{
-		Observation: observation,
-		Evidence: Evidence{
-			ID:       toolEvidenceID(call.ID),
-			Kind:     EvidenceTool,
-			Source:   call.Name,
-			Summary:  toolResultSummary(result),
-			Verified: true,
-		},
+func (executor *ToolExecutor) success(call tool.Call, result tool.Result, startedAt time.Time) ToolOutcome {
+	return ToolOutcome{
+		CallID: call.ID, ToolName: call.Name, Status: ToolOutcomeSucceeded,
+		Result: result.Clone(), Partial: result.Partial, Duration: executor.durationSince(startedAt),
+		Metadata: cloneMetadata(result.Metadata),
 	}
 }
 
-func (executor *ToolExecutor) failure(call tool.Call, result tool.Result, executionErr error, startedAt time.Time) ToolExecution {
+func (executor *ToolExecutor) failure(call tool.Call, result tool.Result, status ToolOutcomeStatus, kind string, executionErr error, startedAt time.Time) ToolOutcome {
 	if result.CallID == "" {
 		result.CallID = call.ID
 	}
 	if result.ToolName == "" {
 		result.ToolName = call.Name
 	}
-	message := executionErr.Error()
-	return ToolExecution{
-		Observation: Observation{
-			CallID:   call.ID,
-			ToolName: call.Name,
-			Result:   result.Clone(),
-			Error:    message,
-			Blocking: errors.Is(executionErr, project.ErrPathOutsideRoot),
-			Duration: executor.durationSince(startedAt),
-		},
-		Evidence: Evidence{
-			ID:       toolEvidenceID(call.ID),
-			Kind:     EvidenceTool,
-			Source:   call.Name,
-			Summary:  failedToolResultSummary(result, message),
-			Verified: false,
-		},
+	return ToolOutcome{
+		CallID: call.ID, ToolName: call.Name, Status: status, Result: result.Clone(),
+		Error:    &ToolError{Kind: kind, Message: executionErr.Error()},
+		Blocking: errors.Is(executionErr, project.ErrPathOutsideRoot), Partial: result.Partial,
+		Duration: executor.durationSince(startedAt), Metadata: cloneMetadata(result.Metadata),
 	}
 }
 
-func failedToolResultSummary(result tool.Result, message string) string {
-	if result.Partial {
-		if summary := strings.TrimSpace(result.Text); summary != "" {
-			return "tool partially applied: " + summary + ": " + message
-		}
-		return "tool partially applied before failure: " + message
+func outcomeSummary(outcome ToolOutcome) string {
+	if summary := strings.TrimSpace(outcome.Result.Text); summary != "" {
+		return summary
 	}
-	return "tool failed: " + message
+	if outcome.Error != nil && strings.TrimSpace(outcome.Error.Message) != "" {
+		return outcome.Error.Message
+	}
+	if len(outcome.Result.Parts) != 0 {
+		return fmt.Sprintf("tool returned %d content part(s)", len(outcome.Result.Parts))
+	}
+	if outcome.Partial {
+		return "tool completed with partial output"
+	}
+	return "tool completed"
+}
+
+func cloneMetadata(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	result := make(map[string]any, len(value))
+	for key, item := range value {
+		result[key] = item
+	}
+	return result
 }
 
 func (executor *ToolExecutor) durationSince(startedAt time.Time) time.Duration {
@@ -222,21 +245,4 @@ func (executor *ToolExecutor) durationSince(startedAt time.Time) time.Duration {
 		return 0
 	}
 	return finishedAt.Sub(startedAt)
-}
-
-func toolEvidenceID(callID string) EvidenceID {
-	return EvidenceID("tool:" + callID)
-}
-
-func toolResultSummary(result tool.Result) string {
-	if summary := strings.TrimSpace(result.Text); summary != "" {
-		return summary
-	}
-	if len(result.Parts) != 0 {
-		return fmt.Sprintf("tool returned %d content part(s)", len(result.Parts))
-	}
-	if result.Partial {
-		return "tool completed with partial output"
-	}
-	return "tool completed"
 }

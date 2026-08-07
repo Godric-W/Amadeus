@@ -23,7 +23,15 @@ type ApprovalScope string
 
 const (
 	ApprovalOnce    ApprovalScope = "once"
+	ApprovalRun     ApprovalScope = "run"
 	ApprovalSession ApprovalScope = "session"
+)
+
+type ApprovalPurpose string
+
+const (
+	ApprovalPurposeCommand    ApprovalPurpose = "command_operation"
+	ApprovalPurposePermission ApprovalPurpose = "filesystem_permission"
 )
 
 type ApprovalSource string
@@ -39,18 +47,23 @@ type ApprovalRequest struct {
 	ToolName        string          `json:"tool_name"`
 	Arguments       json.RawMessage `json:"arguments"`
 	ArgumentsSHA256 string          `json:"arguments_sha256"`
+	Purpose         ApprovalPurpose `json:"purpose"`
 	Risk            CommandRisk     `json:"risk"`
 	Reason          string          `json:"reason"`
 }
 
 func NewApprovalRequest(id, toolName string, arguments json.RawMessage, risk CommandRisk, reason string) (ApprovalRequest, error) {
+	return NewApprovalRequestForPurpose(id, toolName, arguments, ApprovalPurposeCommand, risk, reason)
+}
+
+func NewApprovalRequestForPurpose(id, toolName string, arguments json.RawMessage, purpose ApprovalPurpose, risk CommandRisk, reason string) (ApprovalRequest, error) {
 	canonical, err := canonicalArguments(arguments)
 	if err != nil {
 		return ApprovalRequest{}, err
 	}
 	request := ApprovalRequest{
 		ID: strings.TrimSpace(id), ToolName: strings.TrimSpace(toolName), Arguments: canonical,
-		ArgumentsSHA256: approvalHash(canonical), Risk: risk, Reason: strings.TrimSpace(reason),
+		ArgumentsSHA256: approvalHash(canonical), Purpose: purpose, Risk: risk, Reason: strings.TrimSpace(reason),
 	}
 	if err := request.Validate(); err != nil {
 		return ApprovalRequest{}, err
@@ -64,6 +77,9 @@ func (request ApprovalRequest) Validate() error {
 	}
 	if request.ToolName == "" {
 		return errors.New("approval request tool name is empty")
+	}
+	if request.Purpose != ApprovalPurposeCommand && request.Purpose != ApprovalPurposePermission {
+		return fmt.Errorf("approval purpose %q is invalid", request.Purpose)
 	}
 	if !request.Risk.Valid() {
 		return fmt.Errorf("approval request risk %q is invalid", request.Risk)
@@ -100,7 +116,7 @@ func (decision ApprovalDecision) Validate() error {
 	if decision.Outcome != ApprovalAllow && decision.Outcome != ApprovalDeny {
 		return fmt.Errorf("approval outcome %q is invalid", decision.Outcome)
 	}
-	if decision.Scope != ApprovalOnce && decision.Scope != ApprovalSession {
+	if decision.Scope != ApprovalOnce && decision.Scope != ApprovalRun && decision.Scope != ApprovalSession {
 		return fmt.Errorf("approval scope %q is invalid", decision.Scope)
 	}
 	switch decision.Source {

@@ -31,6 +31,8 @@ var ErrOwnerMismatch = errors.New("process owner mismatch")
 type Command struct {
 	Shell          string
 	Command        string
+	Executable     string
+	Arguments      []string
 	Directory      string
 	Timeout        time.Duration
 	TTY            bool
@@ -79,7 +81,7 @@ func (manager *Manager) Start(owner string, command Command, configure func(*exe
 	if manager == nil {
 		return "", errors.New("process manager is nil")
 	}
-	if command.Shell == "" || command.Command == "" || command.Directory == "" || command.Timeout <= 0 || command.MaxOutputBytes <= 0 {
+	if command.Directory == "" || command.Timeout <= 0 || command.MaxOutputBytes <= 0 || (command.Executable == "" && (command.Shell == "" || command.Command == "")) {
 		return "", errors.New("process command is invalid")
 	}
 	id, err := newID()
@@ -87,8 +89,15 @@ func (manager *Manager) Start(owner string, command Command, configure func(*exe
 		return "", err
 	}
 	processCtx, cancel := context.WithTimeout(context.Background(), command.Timeout)
-	cmd := exec.CommandContext(processCtx, command.Shell, "-c", command.Command)
+	executable := command.Executable
+	arguments := append([]string(nil), command.Arguments...)
+	if executable == "" {
+		executable = command.Shell
+		arguments = []string{"-c", command.Command}
+	}
+	cmd := exec.CommandContext(processCtx, executable, arguments...)
 	cmd.Dir = command.Directory
+	configureManagedCommand(cmd, command.TTY)
 	if configure != nil {
 		configure(cmd)
 	}

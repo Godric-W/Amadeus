@@ -3,171 +3,117 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"sync"
 	"testing"
 	"time"
 
 	sessiondomain "github.com/Godric-W/Amadeus/internal/session"
 )
 
-func TestStorePersistsRunMessagesAndInterruptedContinuation(t *testing.T) {
-	store := openTestStore(t)
-	startedAt := time.Unix(100, 0).UTC()
-	first, err := store.BeginFirstRun(context.Background(), sqliteFirstRunInput(t.TempDir(), "project-1", "session-1", "user-1", "run-1", startedAt))
+func TestStorePersistsCanonicalRunAndRollout(t *testing.T) {
+	store, database := newSQLiteStore(t)
+	defer database.Close()
+	startedAt := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
+	first, err := store.BeginFirstRun(context.Background(), sqliteFirstRunInput(t.TempDir(), "project-1", "session-1", "item-1", "run-1", startedAt))
 	if err != nil {
 		t.Fatalf("begin first run: %v", err)
 	}
-	if first.Session.NextRunSequence != 2 || first.Run.Sequence != 1 || first.Message.RunID != first.Run.ID {
-		t.Fatalf("unexpected first run: %#v", first)
-	}
-	if _, err := store.FinishRun(context.Background(), sessiondomain.FinishRunInput{
-		SessionID: first.Session.ID, RunID: first.Run.ID, RunStatus: sessiondomain.RunInterrupted, StopReason: "cancelled", FinishedAt: startedAt.Add(time.Second),
-	}); err != nil {
-		t.Fatalf("finish interrupted run: %v", err)
+	if first.Session.NextRunSequence != 2 || first.Session.NextItemSequence != 2 || first.Item.Sequence != 1 {
+		t.Fatalf("unexpected first records: %#v", first)
 	}
 	second, err := store.BeginRun(context.Background(), sessiondomain.BeginRunInput{
-		SessionID: first.Session.ID, UserMessageID: "user-2", RunID: "run-2", Objective: "continue", UserContent: "continue",
-		ContextFromRunID: first.Run.ID, Provider: "openai", Model: "model", APIMode: "responses", Dialect: "openai", ExecutionMode: sessiondomain.ExecutionModePlanned, StartedAt: startedAt.Add(2 * time.Second),
+		SessionID: first.Session.ID, RunID: "run-2", UserItemID: "item-2", UserContent: "continue",
+		Provider: "openai", Model: "model", APIMode: "responses", Dialect: "openai", Mode: sessiondomain.RunModePlan,
+		StartedAt: startedAt.Add(time.Second),
 	})
 	if err != nil {
-		t.Fatalf("begin continuation: %v", err)
+		t.Fatalf("begin second run: %v", err)
 	}
-	if second.Run.Sequence != 2 || second.Message.Sequence != 2 || second.Run.ContextFromRunID != first.Run.ID || second.Run.ExecutionMode != sessiondomain.ExecutionModePlanned {
-		t.Fatalf("unexpected continuation: %#v", second)
+	if second.Run.Sequence != 2 || second.Item.Sequence != 2 || second.Run.Mode != sessiondomain.RunModePlan {
+		t.Fatalf("unexpected second records: %#v", second)
 	}
+	assistant, _ := sessiondomain.EncodePayload(sessiondomain.AssistantMessagePayload{Content: "done"})
 	finished, err := store.FinishRun(context.Background(), sessiondomain.FinishRunInput{
-		SessionID: second.Session.ID, RunID: second.Run.ID, RunStatus: sessiondomain.RunCompleted, AssistantMessageID: "assistant-2", AssistantContent: "done",
-		UsageJSON: json.RawMessage(`{"input_tokens":4}`), FinishedAt: startedAt.Add(3 * time.Second),
+		SessionID: second.Session.ID, RunID: second.Run.ID, RunStatus: sessiondomain.RunCompleted,
+		UsageJSON: json.RawMessage(`{"input_tokens":4}`), FinishedAt: startedAt.Add(2 * time.Second),
+		TerminalItems: []sessiondomain.AppendItem{{ID: "item-3", RunID: second.Run.ID, Kind: sessiondomain.RolloutAssistantMessage, Payload: assistant, CreatedAt: startedAt.Add(2 * time.Second)}},
 	})
 	if err != nil {
-		t.Fatalf("finish continuation: %v", err)
+		t.Fatalf("finish second run: %v", err)
 	}
-	if finished.AssistantMessage == nil || finished.AssistantMessage.RunID != second.Run.ID {
-		t.Fatalf("unexpected finished run: %#v", finished)
+	if finished.Run.Status != sessiondomain.RunCompleted || len(finished.Items) != 1 || finished.Items[0].Sequence != 3 {
+		t.Fatalf("unexpected finish result: %#v", finished)
 	}
-	messages, err := store.ListCompletedMessages(context.Background(), first.Session.ID)
-	if err != nil || len(messages) != 2 || messages[0].RunID != second.Run.ID || messages[1].RunID != second.Run.ID {
-		t.Fatalf("unexpected persisted messages: %#v err=%v", messages, err)
-	}
-}
-
-func TestStoreAllocatesDistinctRunSequencesConcurrently(t *testing.T) {
-	store := openTestStore(t)
-	startedAt := time.Unix(100, 0).UTC()
-	first, err := store.BeginFirstRun(context.Background(), sqliteFirstRunInput(t.TempDir(), "project-1", "session-1", "user-1", "run-1", startedAt))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.FinishRun(context.Background(), sessiondomain.FinishRunInput{SessionID: first.Session.ID, RunID: first.Run.ID, RunStatus: sessiondomain.RunInterrupted, StopReason: "ready", FinishedAt: startedAt.Add(time.Second)}); err != nil {
-		t.Fatal(err)
-	}
-
-	var wait sync.WaitGroup
-	sequences := make(chan int64, 3)
-	errs := make(chan error, 3)
-	for index := 0; index < 3; index++ {
-		wait.Add(1)
-		go func(index int) {
-			defer wait.Done()
-			result, err := store.BeginRun(context.Background(), sessiondomain.BeginRunInput{
-				SessionID: first.Session.ID, UserMessageID: sessiondomain.MessageID(fmt.Sprintf("user-%d", index+2)), RunID: sessiondomain.RunID(fmt.Sprintf("run-%d", index+2)),
-				Objective: "continue", UserContent: "continue", ContextFromRunID: first.Run.ID, StartedAt: startedAt.Add(2 * time.Second),
-			})
-			if err != nil {
-				errs <- err
-				return
-			}
-			sequences <- result.Run.Sequence
-		}(index)
-	}
-	wait.Wait()
-	close(errs)
-	close(sequences)
-	for err := range errs {
-		t.Fatalf("concurrent BeginRun failed: %v", err)
-	}
-	seen := map[int64]bool{}
-	for sequence := range sequences {
-		seen[sequence] = true
-	}
-	if len(seen) != 3 || !seen[2] || !seen[3] || !seen[4] {
-		t.Fatalf("unexpected concurrent sequences: %#v", seen)
+	items, err := store.ListItems(context.Background(), first.Session.ID)
+	if err != nil || len(items) != 3 {
+		t.Fatalf("list rollout: count=%d err=%v", len(items), err)
 	}
 }
 
-func TestStoreRecoversAbandonedRunningRun(t *testing.T) {
-	store := openTestStore(t)
-	startedAt := time.Unix(100, 0).UTC()
-	first, err := store.BeginFirstRun(context.Background(), sqliteFirstRunInput(t.TempDir(), "project-1", "session-1", "user-1", "run-1", startedAt))
+func TestStoreRecoversRunningRunsAsInterruptedMarkers(t *testing.T) {
+	store, database := newSQLiteStore(t)
+	defer database.Close()
+	startedAt := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
+	first, err := store.BeginFirstRun(context.Background(), sqliteFirstRunInput(t.TempDir(), "project-1", "session-1", "item-1", "run-1", startedAt))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("begin run: %v", err)
 	}
 	if err := store.RecoverRunningRuns(context.Background(), first.Session.ID, startedAt.Add(time.Second)); err != nil {
-		t.Fatal(err)
+		t.Fatalf("recover running runs: %v", err)
 	}
-	recovered, err := store.GetRun(context.Background(), first.Run.ID)
-	if err != nil || recovered.Status != sessiondomain.RunInterrupted || recovered.FinishedAt == nil || len(recovered.InterruptedContextJSON) == 0 {
-		t.Fatalf("unexpected recovered Run: %#v err=%v", recovered, err)
-	}
-	context, err := sessiondomain.DecodePreviousWork(recovered.InterruptedContextJSON)
-	if err != nil || context.Objective != first.Run.Objective {
-		t.Fatalf("unexpected recovered context: %#v err=%v", context, err)
+	run, _ := store.GetRun(context.Background(), first.Run.ID)
+	items, _ := store.ListItems(context.Background(), first.Session.ID)
+	if run.Status != sessiondomain.RunInterrupted || len(items) != 2 || items[1].Kind != sessiondomain.RolloutRunInterrupted {
+		t.Fatalf("unexpected recovery: run=%#v items=%#v", run, items)
 	}
 }
 
-func TestStorePersistsConversationSummary(t *testing.T) {
-	store := openTestStore(t)
-	startedAt := time.Unix(100, 0).UTC()
-	first, err := store.BeginFirstRun(context.Background(), sqliteFirstRunInput(t.TempDir(), "project-1", "session-1", "user-1", "run-1", startedAt))
+func TestStoreRepairsPendingToolCallBeforeRecoveryMarker(t *testing.T) {
+	store, database := newSQLiteStore(t)
+	defer database.Close()
+	startedAt := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
+	first, err := store.BeginFirstRun(context.Background(), sqliteFirstRunInput(t.TempDir(), "project-1", "session-1", "item-1", "run-1", startedAt))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.FinishRun(context.Background(), sessiondomain.FinishRunInput{
-		SessionID: first.Session.ID, RunID: first.Run.ID, RunStatus: sessiondomain.RunCompleted,
-		AssistantMessageID: "assistant-1", AssistantContent: "done", FinishedAt: startedAt.Add(time.Second),
-	}); err != nil {
+	payload, _ := sessiondomain.EncodePayload(sessiondomain.ToolCallPayload{Calls: []sessiondomain.ToolCallRecord{{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)}}})
+	if _, err := store.AppendItems(context.Background(), sessiondomain.AppendItemsInput{SessionID: first.Session.ID, Items: []sessiondomain.AppendItem{{
+		ID: "item-call", RunID: first.Run.ID, Kind: sessiondomain.RolloutToolCall, Payload: payload, CreatedAt: startedAt.Add(time.Second),
+	}}}); err != nil {
 		t.Fatal(err)
 	}
-	messages, err := store.ListCompletedMessages(context.Background(), first.Session.ID)
+	if err := store.RecoverRunningRuns(context.Background(), first.Session.ID, startedAt.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ListItems(context.Background(), first.Session.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sourceHash, err := sessiondomain.ConversationSourceHash(messages)
-	if err != nil {
-		t.Fatal(err)
+	if len(items) != 4 || items[2].Kind != sessiondomain.RolloutToolResult || items[3].Kind != sessiondomain.RolloutRunInterrupted {
+		t.Fatalf("unexpected repaired rollout: %#v", items)
 	}
-	summary, err := sessiondomain.NewConversationSummary("summary-1", first.Session.ID, messages[0].Sequence, messages[len(messages)-1].Sequence, "summary", sourceHash, "openai", "model", startedAt.Add(2*time.Second))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.AppendSummary(context.Background(), summary); err != nil {
-		t.Fatal(err)
-	}
-	latest, err := store.LatestSummary(context.Background(), first.Session.ID)
-	if err != nil || latest.ID != summary.ID || latest.Content != summary.Content {
-		t.Fatalf("unexpected persisted summary: %#v err=%v", latest, err)
+	result, err := sessiondomain.DecodeToolResult(items[2])
+	if err != nil || result.CallID != "call-1" || result.Status != "interrupted" || result.Error == nil || result.Error.Kind != "process_terminated" {
+		t.Fatalf("unexpected synthetic result: payload=%#v err=%v", result, err)
 	}
 }
 
-func openTestStore(t *testing.T) *Store {
+func newSQLiteStore(t *testing.T) (*Store, *Database) {
 	t.Helper()
 	database, err := Open(context.Background(), t.TempDir())
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	t.Cleanup(func() { _ = database.Close() })
 	store, err := NewStore(database)
 	if err != nil {
+		database.Close()
 		t.Fatalf("new store: %v", err)
 	}
-	return store
+	return store, database
 }
 
-func sqliteFirstRunInput(projectPath string, projectID sessiondomain.ProjectID, sessionID sessiondomain.ConversationSessionID, messageID sessiondomain.MessageID, runID sessiondomain.RunID, startedAt time.Time) sessiondomain.BeginFirstRunInput {
+func sqliteFirstRunInput(projectPath string, projectID sessiondomain.ProjectID, sessionID sessiondomain.SessionID, itemID sessiondomain.RolloutItemID, runID sessiondomain.RunID, startedAt time.Time) sessiondomain.BeginFirstRunInput {
 	return sessiondomain.BeginFirstRunInput{
 		ProjectID: projectID, CanonicalPath: projectPath, ProjectName: "project", SessionID: sessionID, SessionTitle: "Fix tests",
-		UserMessageID: messageID, RunID: runID, Objective: "Fix tests", UserContent: "Fix tests",
-		Provider: "openai", Model: "model", APIMode: "responses", Dialect: "openai", StartedAt: startedAt,
+		RunID: runID, UserItemID: itemID, UserContent: "Fix tests", Mode: sessiondomain.RunModeExecute, StartedAt: startedAt,
 	}
 }

@@ -1,94 +1,80 @@
 package policy
 
 import (
-	"encoding/json"
-	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
+
+	sandboxdomain "github.com/Godric-W/Amadeus/internal/sandbox"
 )
 
-type GrantCache struct {
-	mutex   sync.RWMutex
-	session map[string]ApprovalDecision
+type CommandApprovalKey struct {
+	Shell         string
+	Command       string
+	CWD           string
+	TTY           bool
+	IsolationMode sandboxdomain.IsolationMode
 }
 
-func NewGrantCache() *GrantCache {
-	return &GrantCache{
-		session: make(map[string]ApprovalDecision),
+func NewCommandApprovalKey(shell, command, cwd string, tty bool, isolation sandboxdomain.IsolationMode) (CommandApprovalKey, bool) {
+	if strings.ContainsRune(command, '\x00') {
+		return CommandApprovalKey{}, false
 	}
+	shell = filepath.Clean(strings.TrimSpace(shell))
+	cwd = filepath.Clean(strings.TrimSpace(cwd))
+	command = strings.ReplaceAll(command, "\r\n", "\n")
+	if shell == "." || cwd == "." || strings.TrimSpace(command) == "" || !filepath.IsAbs(shell) || !filepath.IsAbs(cwd) {
+		return CommandApprovalKey{}, false
+	}
+	if isolation != sandboxdomain.IsolationSandboxed && isolation != sandboxdomain.IsolationUnsandboxed {
+		return CommandApprovalKey{}, false
+	}
+	return CommandApprovalKey{Shell: shell, Command: command, CWD: cwd, TTY: tty, IsolationMode: isolation}, true
 }
 
-func (cache *GrantCache) Lookup(request ApprovalRequest) (ApprovalDecision, bool) {
-	if cache == nil {
-		return ApprovalDecision{}, false
-	}
-	key := grantKey(request)
-	cache.mutex.RLock()
-	decision, ok := cache.session[key]
-	cache.mutex.RUnlock()
-	if !ok {
-		return ApprovalDecision{}, false
-	}
-	decision.Source = ApprovalSourceGrant
-	return decision, true
+type SessionApprovalStore struct {
+	mutex sync.RWMutex
+	keys  map[CommandApprovalKey]struct{}
 }
 
-func (cache *GrantCache) Remember(request ApprovalRequest, decision ApprovalDecision) error {
-	if cache == nil {
-		return errors.New("approval grant cache is nil")
-	}
-	if err := request.Validate(); err != nil {
-		return err
-	}
-	if err := decision.Validate(); err != nil {
-		return err
-	}
-	cache.mutex.Lock()
-	defer cache.mutex.Unlock()
-	switch decision.Scope {
-	case ApprovalOnce:
-		return nil
-	case ApprovalSession:
-		cache.session[grantKey(request)] = decision
-	}
-	return nil
+func NewSessionApprovalStore() *SessionApprovalStore {
+	return &SessionApprovalStore{keys: make(map[CommandApprovalKey]struct{})}
 }
 
-func grantKey(request ApprovalRequest) string {
-	switch request.ToolName {
-	case "mcp_call":
-		return mcpGrantKey(request, "name")
-	case "mcp_list_tools", "mcp_list_resources":
-		return mcpGrantKey(request)
-	case "mcp_read_resource":
-		return mcpGrantKey(request, "uri")
-	default:
-		return request.ToolName
+func (store *SessionApprovalStore) IsApproved(key CommandApprovalKey) bool {
+	if store == nil {
+		return false
 	}
+	store.mutex.RLock()
+	_, ok := store.keys[key]
+	store.mutex.RUnlock()
+	return ok
 }
 
-func mcpGrantKey(request ApprovalRequest, targetFields ...string) string {
-	var arguments map[string]any
-	if err := json.Unmarshal(request.Arguments, &arguments); err != nil {
-		return request.ToolName + "\x00" + request.ArgumentsSHA256
-	}
-	parts := []string{request.ToolName, stringArgument(arguments, "server")}
-	for _, field := range targetFields {
-		parts = append(parts, stringArgument(arguments, field))
-	}
-	return strings.Join(parts, "\x00")
-}
-
-func stringArgument(arguments map[string]any, name string) string {
-	value, _ := arguments[name].(string)
-	return strings.TrimSpace(value)
-}
-
-func (cache *GrantCache) ClearSession() {
-	if cache == nil {
+func (store *SessionApprovalStore) Approve(key CommandApprovalKey) {
+	if store == nil {
 		return
 	}
-	cache.mutex.Lock()
-	cache.session = make(map[string]ApprovalDecision)
-	cache.mutex.Unlock()
+	store.mutex.Lock()
+	store.keys[key] = struct{}{}
+	store.mutex.Unlock()
+}
+
+func (store *SessionApprovalStore) Clear() {
+	if store == nil {
+		return
+	}
+	store.mutex.Lock()
+	store.keys = make(map[CommandApprovalKey]struct{})
+	store.mutex.Unlock()
+}
+
+func (store *SessionApprovalStore) Count() int {
+	if store == nil {
+		return 0
+	}
+	store.mutex.RLock()
+	count := len(store.keys)
+	store.mutex.RUnlock()
+	return count
 }

@@ -19,7 +19,7 @@ type ToolResultPayload struct {
 	Error    string             `json:"error,omitempty"`
 }
 
-func ReplayToolResults(assistant llm.Message, executions []ToolExecution) ([]llm.Message, error) {
+func ReplayToolResults(assistant llm.Message, outcomes []ToolOutcome) ([]llm.Message, error) {
 	if assistant.Role != llm.RoleAssistant {
 		return nil, errors.New("tool result replay requires an assistant message")
 	}
@@ -27,16 +27,16 @@ func ReplayToolResults(assistant llm.Message, executions []ToolExecution) ([]llm
 		return nil, errors.New("tool result replay assistant message has no tool calls")
 	}
 
-	byCallID := make(map[string]ToolExecution, len(executions))
-	for index, execution := range executions {
-		callID := strings.TrimSpace(execution.Observation.CallID)
+	byCallID := make(map[string]ToolOutcome, len(outcomes))
+	for index, outcome := range outcomes {
+		callID := strings.TrimSpace(outcome.CallID)
 		if callID == "" {
 			return nil, fmt.Errorf("tool result replay executions[%d] has an empty call ID", index)
 		}
 		if _, exists := byCallID[callID]; exists {
 			return nil, fmt.Errorf("tool result replay has duplicate result for call %q", callID)
 		}
-		byCallID[callID] = execution
+		byCallID[callID] = outcome
 	}
 
 	messages := make([]llm.Message, 0, 1+len(assistant.ToolCalls))
@@ -51,16 +51,16 @@ func ReplayToolResults(assistant llm.Message, executions []ToolExecution) ([]llm
 			return nil, fmt.Errorf("tool result replay assistant has duplicate call ID %q", callID)
 		}
 		seenCalls[callID] = struct{}{}
-		execution, exists := byCallID[callID]
+		outcome, exists := byCallID[callID]
 		if !exists {
 			return nil, fmt.Errorf("tool result replay is missing result for call %q", callID)
 		}
-		payload, err := encodeToolResultPayload(execution)
+		payload, err := encodeToolResultPayload(outcome)
 		if err != nil {
 			return nil, fmt.Errorf("tool result replay call %q: %w", callID, err)
 		}
-		parts := make([]llm.ContentPart, 0, len(execution.Observation.Result.Parts))
-		for _, part := range execution.Observation.Result.Parts {
+		parts := make([]llm.ContentPart, 0, len(outcome.Result.Parts))
+		for _, part := range outcome.Result.Parts {
 			switch part.Kind {
 			case tool.ContentText:
 				parts = append(parts, llm.TextPart(part.Text))
@@ -80,14 +80,14 @@ func ReplayToolResults(assistant llm.Message, executions []ToolExecution) ([]llm
 	return messages, nil
 }
 
-func encodeToolResultPayload(execution ToolExecution) (string, error) {
-	result := execution.Observation.Result.Clone()
+func encodeToolResultPayload(outcome ToolOutcome) (string, error) {
+	result := outcome.Result.Clone()
 	payload := ToolResultPayload{
-		OK:       execution.Observation.Error == "",
+		OK:       outcome.Succeeded(),
 		Text:     result.Text,
 		Metadata: result.Metadata,
 		Partial:  result.Partial,
-		Error:    execution.Observation.Error,
+		Error:    outcome.ErrorMessage(),
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {

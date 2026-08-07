@@ -10,14 +10,46 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const flagProject = "project"
+const (
+	flagProject = "project"
+	flagAddDir  = "add-dir"
+)
 
 type projectFlags struct {
-	path string
+	path    string
+	addDirs []string
 }
 
 func (flags *projectFlags) bind(command *cobra.Command) {
 	command.PersistentFlags().StringVar(&flags.path, flagProject, "", "use an explicit target project directory")
+	command.PersistentFlags().StringArrayVar(&flags.addDirs, flagAddDir, nil, "add an additional writable directory (repeatable)")
+}
+
+func (flags *projectFlags) resolveAdditional(runtime commandRuntime, primary project.Root) ([]string, error) {
+	result := make([]string, 0, len(flags.addDirs))
+	seen := map[string]struct{}{primary.Path(): {}}
+	for _, configured := range flags.addDirs {
+		candidate := strings.TrimSpace(configured)
+		if candidate == "" {
+			return nil, errors.New("--add-dir path is empty")
+		}
+		if !filepath.IsAbs(candidate) {
+			if runtime.workingDirectoryErr != nil {
+				return nil, fmt.Errorf("resolve relative --add-dir without startup working directory: %w", runtime.workingDirectoryErr)
+			}
+			candidate = filepath.Join(runtime.workingDirectory, candidate)
+		}
+		root, err := project.NewRoot(candidate)
+		if err != nil {
+			return nil, fmt.Errorf("resolve --add-dir %q: %w", configured, err)
+		}
+		if _, duplicate := seen[root.Path()]; duplicate {
+			continue
+		}
+		seen[root.Path()] = struct{}{}
+		result = append(result, root.Path())
+	}
+	return result, nil
 }
 
 func (flags *projectFlags) resolve(command *cobra.Command, runtime commandRuntime) (project.Root, error) {

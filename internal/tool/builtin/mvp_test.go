@@ -27,7 +27,7 @@ func TestMVPRegistryContainsSevenStableTools(t *testing.T) {
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("unexpected MVP tools: got %v, want %v", names, want)
 	}
-	if entries[0].Spec.SideEffect != tool.SideEffectWrite || entries[0].Spec.ParallelSafe || entries[0].Spec.Idempotent || entries[0].Spec.ResourceStrategy.Mode != tool.ResourceModeExclusive || entries[1].Spec.SideEffect != tool.SideEffectExecute || entries[5].Spec.SideEffect != tool.SideEffectRead || !entries[5].Spec.ParallelSafe {
+	if entries[0].Spec.SideEffect != tool.SideEffectWrite || entries[0].Spec.Concurrency != tool.ToolConcurrencyExclusive || entries[0].Spec.Idempotent || entries[1].Spec.SideEffect != tool.SideEffectExecute || entries[5].Spec.SideEffect != tool.SideEffectRead || entries[5].Spec.Concurrency != tool.ToolConcurrencyShared {
 		t.Fatalf("unexpected MVP metadata: %#v", entries)
 	}
 }
@@ -39,9 +39,9 @@ func TestMVPSpecsReturnIndependentCopies(t *testing.T) {
 	if string(second[0].InputSchema[:1]) != "{" {
 		t.Fatal("MVP specs share input schema storage")
 	}
-	first[2].ResourceStrategy.ArgumentPaths[0] = "changed"
-	if second[2].ResourceStrategy.ArgumentPaths[0] == "changed" {
-		t.Fatal("MVP specs share resource strategy storage")
+	first[2].Description = "changed"
+	if second[2].Description == "changed" {
+		t.Fatal("MVP specs share mutable fields")
 	}
 }
 

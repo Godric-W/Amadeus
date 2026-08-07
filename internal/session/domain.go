@@ -4,29 +4,28 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
 type ProjectID string
-type ConversationSessionID string
+type SessionID string
 type RunID string
+type RolloutItemID string
 
-type ConversationSessionStatus string
+type SessionStatus string
 
 const (
-	ConversationSessionActive   ConversationSessionStatus = "active"
-	ConversationSessionArchived ConversationSessionStatus = "archived"
+	SessionActive   SessionStatus = "active"
+	SessionArchived SessionStatus = "archived"
 )
 
-func (status ConversationSessionStatus) Valid() bool {
-	return status == ConversationSessionActive || status == ConversationSessionArchived
+func (status SessionStatus) Valid() bool {
+	return status == SessionActive || status == SessionArchived
 }
 
 type RunStatus string
-type ExecutionMode string
 
 const (
 	RunRunning     RunStatus = "running"
@@ -34,15 +33,6 @@ const (
 	RunInterrupted RunStatus = "interrupted"
 	RunFailed      RunStatus = "failed"
 )
-
-const (
-	ExecutionModeReAct   ExecutionMode = "react"
-	ExecutionModePlanned ExecutionMode = "planned"
-)
-
-func (mode ExecutionMode) Valid() bool {
-	return mode == ExecutionModeReAct || mode == ExecutionModePlanned
-}
 
 func (status RunStatus) Valid() bool {
 	switch status {
@@ -57,6 +47,42 @@ func (status RunStatus) Terminal() bool {
 	return status.Valid() && status != RunRunning
 }
 
+type RunMode string
+
+const (
+	RunModeExecute RunMode = "execute"
+	RunModePlan    RunMode = "plan"
+)
+
+func (mode RunMode) Valid() bool {
+	return mode == RunModeExecute || mode == RunModePlan
+}
+
+type RolloutKind string
+
+const (
+	RolloutUserMessage       RolloutKind = "user_message"
+	RolloutAssistantMessage  RolloutKind = "assistant_message"
+	RolloutToolCall          RolloutKind = "tool_call"
+	RolloutToolResult        RolloutKind = "tool_result"
+	RolloutPlanUpdate        RolloutKind = "plan_update"
+	RolloutContextSnapshot   RolloutKind = "context_snapshot"
+	RolloutRunInterrupted    RolloutKind = "run_interrupted"
+	RolloutRunFailed         RolloutKind = "run_failed"
+	RolloutContextCompaction RolloutKind = "context_compaction"
+)
+
+func (kind RolloutKind) Valid() bool {
+	switch kind {
+	case RolloutUserMessage, RolloutAssistantMessage, RolloutToolCall, RolloutToolResult,
+		RolloutPlanUpdate, RolloutContextSnapshot, RolloutRunInterrupted, RolloutRunFailed,
+		RolloutContextCompaction:
+		return true
+	default:
+		return false
+	}
+}
+
 type Project struct {
 	ID            ProjectID `json:"id"`
 	CanonicalPath string    `json:"canonical_path"`
@@ -68,206 +94,191 @@ type Project struct {
 
 func NewProject(id ProjectID, canonicalPath, displayName string, now time.Time) (Project, error) {
 	now = now.UTC()
-	project := Project{
+	value := Project{
 		ID: id, CanonicalPath: strings.TrimSpace(canonicalPath), DisplayName: strings.TrimSpace(displayName),
 		CreatedAt: now, UpdatedAt: now, LastOpenedAt: now,
 	}
-	return project, project.Validate()
+	return value, value.Validate()
 }
 
-func (project Project) Validate() error {
-	if err := validateID("project", string(project.ID)); err != nil {
+func (value Project) Validate() error {
+	if err := validateID("project", string(value.ID)); err != nil {
 		return err
 	}
-	if project.CanonicalPath == "" || !filepath.IsAbs(project.CanonicalPath) || filepath.Clean(project.CanonicalPath) != project.CanonicalPath {
+	if value.CanonicalPath == "" || !filepath.IsAbs(value.CanonicalPath) || filepath.Clean(value.CanonicalPath) != value.CanonicalPath {
 		return errors.New("project canonical path must be a clean absolute path")
 	}
-	if strings.TrimSpace(project.DisplayName) == "" {
+	if strings.TrimSpace(value.DisplayName) == "" {
 		return errors.New("project display name is empty")
 	}
-	if err := validateTimeline(project.CreatedAt, project.UpdatedAt, "project updated_at"); err != nil {
+	if err := validateTimeline(value.CreatedAt, value.UpdatedAt, "project updated_at"); err != nil {
 		return err
 	}
-	return validateTimeline(project.CreatedAt, project.LastOpenedAt, "project last_opened_at")
+	return validateTimeline(value.CreatedAt, value.LastOpenedAt, "project last_opened_at")
 }
 
-type ConversationSession struct {
-	ID              ConversationSessionID     `json:"id"`
-	ProjectID       ProjectID                 `json:"project_id"`
-	Title           string                    `json:"title"`
-	Status          ConversationSessionStatus `json:"status"`
-	NextRunSequence int64                     `json:"next_run_sequence"`
-	CreatedAt       time.Time                 `json:"created_at"`
-	UpdatedAt       time.Time                 `json:"updated_at"`
-	LastActiveAt    time.Time                 `json:"last_active_at"`
+type Session struct {
+	ID               SessionID     `json:"id"`
+	ProjectID        ProjectID     `json:"project_id"`
+	Title            string        `json:"title"`
+	Status           SessionStatus `json:"status"`
+	NextRunSequence  int64         `json:"next_run_sequence"`
+	NextItemSequence int64         `json:"next_item_sequence"`
+	CreatedAt        time.Time     `json:"created_at"`
+	UpdatedAt        time.Time     `json:"updated_at"`
+	LastActiveAt     time.Time     `json:"last_active_at"`
 }
 
-func NewConversationSession(id ConversationSessionID, projectID ProjectID, title string, now time.Time) (ConversationSession, error) {
+func NewSession(id SessionID, projectID ProjectID, title string, now time.Time) (Session, error) {
 	now = now.UTC()
-	session := ConversationSession{
-		ID: id, ProjectID: projectID, Title: strings.TrimSpace(title), Status: ConversationSessionActive,
-		NextRunSequence: 1, CreatedAt: now, UpdatedAt: now, LastActiveAt: now,
+	value := Session{
+		ID: id, ProjectID: projectID, Title: strings.TrimSpace(title), Status: SessionActive,
+		NextRunSequence: 1, NextItemSequence: 1, CreatedAt: now, UpdatedAt: now, LastActiveAt: now,
 	}
-	return session, session.Validate()
+	return value, value.Validate()
 }
 
-func (session ConversationSession) Validate() error {
-	if err := validateID("conversation session", string(session.ID)); err != nil {
+func (value Session) Validate() error {
+	if err := validateID("session", string(value.ID)); err != nil {
 		return err
 	}
-	if err := validateID("conversation session project", string(session.ProjectID)); err != nil {
+	if err := validateID("session project", string(value.ProjectID)); err != nil {
 		return err
 	}
-	if strings.TrimSpace(session.Title) == "" {
-		return errors.New("conversation session title is empty")
+	if strings.TrimSpace(value.Title) == "" {
+		return errors.New("session title is empty")
 	}
-	if !session.Status.Valid() {
-		return fmt.Errorf("conversation session status %q is invalid", session.Status)
+	if !value.Status.Valid() {
+		return fmt.Errorf("session status %q is invalid", value.Status)
 	}
-	if session.NextRunSequence < 1 {
-		return errors.New("conversation session next run sequence must be at least one")
+	if value.NextRunSequence < 1 || value.NextItemSequence < 1 {
+		return errors.New("session next sequences must be at least one")
 	}
-	if err := validateTimeline(session.CreatedAt, session.UpdatedAt, "conversation session updated_at"); err != nil {
+	if err := validateTimeline(value.CreatedAt, value.UpdatedAt, "session updated_at"); err != nil {
 		return err
 	}
-	return validateTimeline(session.CreatedAt, session.LastActiveAt, "conversation session last_active_at")
-}
-
-func (session *ConversationSession) Transition(status ConversationSessionStatus, at time.Time) error {
-	if session == nil {
-		return errors.New("conversation session is nil")
-	}
-	if !status.Valid() {
-		return fmt.Errorf("conversation session status %q is invalid", status)
-	}
-	if session.Status == status {
-		return &TransitionError{Entity: "conversation_session", ID: string(session.ID), From: string(session.Status), To: string(status)}
-	}
-	at = at.UTC()
-	if at.IsZero() || at.Before(session.UpdatedAt) || at.Before(session.LastActiveAt) {
-		return errors.New("conversation session transition time precedes current timestamps")
-	}
-	session.Status = status
-	session.UpdatedAt = at
-	session.LastActiveAt = at
-	return session.Validate()
-}
-
-func (session *ConversationSession) AllocateRunSequence(at time.Time) (int64, error) {
-	if session == nil {
-		return 0, errors.New("conversation session is nil")
-	}
-	if session.NextRunSequence < 1 || session.NextRunSequence == math.MaxInt64 {
-		return 0, errors.New("conversation session run sequence is exhausted")
-	}
-	at = at.UTC()
-	if at.IsZero() || at.Before(session.UpdatedAt) || at.Before(session.LastActiveAt) {
-		return 0, errors.New("conversation session allocation time precedes current timestamps")
-	}
-	sequence := session.NextRunSequence
-	session.NextRunSequence++
-	session.UpdatedAt = at
-	session.LastActiveAt = at
-	return sequence, session.Validate()
+	return validateTimeline(value.CreatedAt, value.LastActiveAt, "session last_active_at")
 }
 
 type Run struct {
-	ID                     RunID                 `json:"id"`
-	SessionID              ConversationSessionID `json:"session_id"`
-	Sequence               int64                 `json:"sequence"`
-	ContextFromRunID       RunID                 `json:"context_from_run_id,omitempty"`
-	Objective              string                `json:"objective"`
-	Status                 RunStatus             `json:"status"`
-	StopReason             string                `json:"stop_reason,omitempty"`
-	Provider               string                `json:"provider,omitempty"`
-	Model                  string                `json:"model,omitempty"`
-	APIMode                string                `json:"api_mode,omitempty"`
-	Dialect                string                `json:"dialect,omitempty"`
-	ExecutionMode          ExecutionMode         `json:"execution_mode"`
-	UsageJSON              json.RawMessage       `json:"usage_json,omitempty"`
-	InterruptedContextJSON json.RawMessage       `json:"interrupted_context_json,omitempty"`
-	StartedAt              time.Time             `json:"started_at"`
-	FinishedAt             *time.Time            `json:"finished_at,omitempty"`
+	ID         RunID           `json:"id"`
+	SessionID  SessionID       `json:"session_id"`
+	Sequence   int64           `json:"sequence"`
+	Status     RunStatus       `json:"status"`
+	StopReason string          `json:"stop_reason,omitempty"`
+	Provider   string          `json:"provider,omitempty"`
+	Model      string          `json:"model,omitempty"`
+	APIMode    string          `json:"api_mode,omitempty"`
+	Dialect    string          `json:"dialect,omitempty"`
+	Mode       RunMode         `json:"run_mode"`
+	UsageJSON  json.RawMessage `json:"usage_json,omitempty"`
+	StartedAt  time.Time       `json:"started_at"`
+	FinishedAt *time.Time      `json:"finished_at,omitempty"`
 }
 
-func NewRun(id RunID, sessionID ConversationSessionID, objective string, now time.Time) (Run, error) {
-	return NewSequencedRun(id, sessionID, 1, objective, now)
+func NewRun(id RunID, sessionID SessionID, sequence int64, mode RunMode, now time.Time) (Run, error) {
+	value := Run{ID: id, SessionID: sessionID, Sequence: sequence, Status: RunRunning, Mode: mode, StartedAt: now.UTC()}
+	return value, value.Validate()
 }
 
-func NewSequencedRun(id RunID, sessionID ConversationSessionID, sequence int64, objective string, now time.Time) (Run, error) {
-	run := Run{
-		ID: id, SessionID: sessionID, Sequence: sequence, Objective: strings.TrimSpace(objective),
-		Status: RunRunning, ExecutionMode: ExecutionModeReAct, StartedAt: now.UTC(),
-	}
-	return run, run.Validate()
-}
-
-func (run Run) Validate() error {
-	if err := validateID("run", string(run.ID)); err != nil {
+func (value Run) Validate() error {
+	if err := validateID("run", string(value.ID)); err != nil {
 		return err
 	}
-	if err := validateID("run session", string(run.SessionID)); err != nil {
+	if err := validateID("run session", string(value.SessionID)); err != nil {
 		return err
 	}
-	if run.Sequence < 1 {
+	if value.Sequence < 1 {
 		return errors.New("run sequence must be at least one")
 	}
-	if run.ContextFromRunID != "" {
-		if err := validateID("run context", string(run.ContextFromRunID)); err != nil {
-			return err
-		}
-		if run.ContextFromRunID == run.ID {
-			return errors.New("run cannot use itself as interrupted context")
-		}
+	if !value.Status.Valid() {
+		return fmt.Errorf("run status %q is invalid", value.Status)
 	}
-	if strings.TrimSpace(run.Objective) == "" {
-		return errors.New("run objective is empty")
+	if !value.Mode.Valid() {
+		return fmt.Errorf("run mode %q is invalid", value.Mode)
 	}
-	if !run.Status.Valid() {
-		return fmt.Errorf("run status %q is invalid", run.Status)
-	}
-	if !run.ExecutionMode.Valid() {
-		return fmt.Errorf("run execution mode %q is invalid", run.ExecutionMode)
-	}
-	if run.StartedAt.IsZero() {
+	if value.StartedAt.IsZero() {
 		return errors.New("run started_at is zero")
 	}
-	if err := validateOptionalJSON("run usage_json", run.UsageJSON); err != nil {
+	if err := validateOptionalJSON("run usage_json", value.UsageJSON); err != nil {
 		return err
 	}
-	if err := validateOptionalJSON("run interrupted_context_json", run.InterruptedContextJSON); err != nil {
-		return err
-	}
-	if run.Status == RunRunning {
-		if run.FinishedAt != nil || strings.TrimSpace(run.StopReason) != "" {
+	if value.Status == RunRunning {
+		if value.FinishedAt != nil || strings.TrimSpace(value.StopReason) != "" {
 			return errors.New("running run cannot have finished_at or stop reason")
 		}
 		return nil
 	}
-	if run.FinishedAt == nil || run.FinishedAt.IsZero() || run.FinishedAt.Before(run.StartedAt) {
+	if value.FinishedAt == nil || value.FinishedAt.IsZero() || value.FinishedAt.Before(value.StartedAt) {
 		return errors.New("terminal run requires finished_at at or after started_at")
 	}
-	if run.Status != RunCompleted && strings.TrimSpace(run.StopReason) == "" {
+	if value.Status != RunCompleted && strings.TrimSpace(value.StopReason) == "" {
 		return errors.New("non-completed terminal run requires a stop reason")
 	}
 	return nil
 }
 
-func (run *Run) Finish(status RunStatus, stopReason string, at time.Time) error {
-	if run == nil {
+func (value *Run) Finish(status RunStatus, stopReason string, usage json.RawMessage, at time.Time) error {
+	if value == nil {
 		return errors.New("run is nil")
 	}
-	if !status.Terminal() || run.Status != RunRunning {
-		return &TransitionError{Entity: "run", ID: string(run.ID), From: string(run.Status), To: string(status)}
+	if !status.Terminal() || value.Status != RunRunning {
+		return &TransitionError{Entity: "run", ID: string(value.ID), From: string(value.Status), To: string(status)}
 	}
 	at = at.UTC()
-	if at.IsZero() || at.Before(run.StartedAt) {
+	if at.IsZero() || at.Before(value.StartedAt) {
 		return errors.New("run finish time precedes start")
 	}
-	run.Status = status
-	run.StopReason = strings.TrimSpace(stopReason)
-	run.FinishedAt = &at
-	return run.Validate()
+	value.Status = status
+	value.StopReason = strings.TrimSpace(stopReason)
+	value.UsageJSON = append(json.RawMessage(nil), usage...)
+	value.FinishedAt = &at
+	return value.Validate()
+}
+
+type RolloutItem struct {
+	ID          RolloutItemID   `json:"id"`
+	SessionID   SessionID       `json:"session_id"`
+	RunID       RunID           `json:"run_id,omitempty"`
+	Sequence    int64           `json:"sequence"`
+	Kind        RolloutKind     `json:"kind"`
+	PayloadJSON json.RawMessage `json:"payload_json"`
+	CreatedAt   time.Time       `json:"created_at"`
+}
+
+func NewRolloutItem(id RolloutItemID, sessionID SessionID, runID RunID, sequence int64, kind RolloutKind, payload json.RawMessage, now time.Time) (RolloutItem, error) {
+	value := RolloutItem{
+		ID: id, SessionID: sessionID, RunID: runID, Sequence: sequence, Kind: kind,
+		PayloadJSON: append(json.RawMessage(nil), payload...), CreatedAt: now.UTC(),
+	}
+	return value, value.Validate()
+}
+
+func (value RolloutItem) Validate() error {
+	if err := validateID("rollout item", string(value.ID)); err != nil {
+		return err
+	}
+	if err := validateID("rollout item session", string(value.SessionID)); err != nil {
+		return err
+	}
+	if value.RunID != "" {
+		if err := validateID("rollout item run", string(value.RunID)); err != nil {
+			return err
+		}
+	}
+	if value.Sequence < 1 {
+		return errors.New("rollout item sequence must be at least one")
+	}
+	if !value.Kind.Valid() {
+		return fmt.Errorf("rollout item kind %q is invalid", value.Kind)
+	}
+	if len(value.PayloadJSON) == 0 || !json.Valid(value.PayloadJSON) {
+		return errors.New("rollout item payload_json is invalid")
+	}
+	if value.CreatedAt.IsZero() {
+		return errors.New("rollout item created_at is zero")
+	}
+	return nil
 }
 
 type TransitionError struct {
@@ -277,8 +288,8 @@ type TransitionError struct {
 	To     string
 }
 
-func (err *TransitionError) Error() string {
-	return fmt.Sprintf("invalid %s transition for %q: %s -> %s", err.Entity, err.ID, err.From, err.To)
+func (value *TransitionError) Error() string {
+	return fmt.Sprintf("invalid %s transition for %q: %s -> %s", value.Entity, value.ID, value.From, value.To)
 }
 
 func validateID(entity, id string) error {

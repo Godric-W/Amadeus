@@ -2,7 +2,6 @@ package builtin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -16,6 +15,7 @@ import (
 
 type ListDirOptions struct {
 	MaxEntries int
+	PathGuard  *project.PathGuard
 }
 
 type ListDir struct {
@@ -29,6 +29,12 @@ type listDirArguments struct {
 	Limit         int    `json:"limit,omitempty"`
 }
 
+type preparedListDir struct {
+	arguments listDirArguments
+	path      string
+	display   string
+}
+
 func NewListDir(root project.Root, options ListDirOptions) (*ListDir, error) {
 	if root.Path() == "" {
 		return nil, errors.New("list_dir project root is empty")
@@ -36,7 +42,10 @@ func NewListDir(root project.Root, options ListDirOptions) (*ListDir, error) {
 	if options.MaxEntries <= 0 {
 		return nil, errors.New("list_dir max entries must be greater than zero")
 	}
-	reader, err := workspace.NewReader(root)
+	reader, err := workspace.NewReaderWithGuard(root, options.PathGuard)
+	if options.PathGuard == nil {
+		reader, err = workspace.NewReader(root)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -47,26 +56,35 @@ func (listDir *ListDir) Spec() tool.Spec {
 	return listDirSpec()
 }
 
-func (listDir *ListDir) Execute(ctx context.Context, input json.RawMessage) (tool.Result, error) {
+func (listDir *ListDir) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
 	var arguments listDirArguments
-	if err := decodeArguments(input, &arguments); err != nil {
-		return tool.Result{}, err
+	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+		return tool.PreparedCall{}, err
 	}
 	if arguments.Limit < 0 {
-		return tool.Result{}, errors.New("list_dir limit cannot be negative")
-	}
-	if err := ctx.Err(); err != nil {
-		return tool.Result{}, err
+		return tool.PreparedCall{}, errors.New("list_dir limit cannot be negative")
 	}
 	relativePath := arguments.Path
 	if strings.TrimSpace(relativePath) == "" {
 		relativePath = "."
 	}
-	path, err := listDir.reader.ResolveExisting(relativePath, project.PathDirectory)
+	resolved, err := listDir.reader.ResolveExistingTarget(relativePath, project.PathDirectory)
+	if err != nil {
+		return tool.PreparedCall{}, err
+	}
+	return tool.NewPreparedCall(call, tool.PreparedOptions{Targets: []tool.PreparedTarget{preparedFilesystemTarget(resolved)}, Payload: preparedListDir{arguments: arguments, path: resolved.Canonical, display: relativePath}})
+}
+
+func (listDir *ListDir) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
+	payload, err := preparedPayload[preparedListDir](prepared, "list_dir")
 	if err != nil {
 		return tool.Result{}, err
 	}
-	entries, err := os.ReadDir(path)
+	if err := ctx.Err(); err != nil {
+		return tool.Result{}, err
+	}
+	arguments, relativePath := payload.arguments, payload.display
+	entries, err := os.ReadDir(payload.path)
 	if err != nil {
 		return tool.Result{}, fmt.Errorf("list directory %q: %w", relativePath, err)
 	}

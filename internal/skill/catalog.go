@@ -1,6 +1,9 @@
 package skill
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -34,16 +37,27 @@ type Skill struct {
 	Content     string
 	Source      Source
 	Root        string
+	Path        string
+	Size        int64
+	Revision    string
 }
 
 type IndexEntry struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Source      Source `json:"source"`
+	Path        string `json:"path"`
+	Size        int64  `json:"size"`
+	Revision    string `json:"revision"`
 }
 
 type Catalog struct {
-	values map[string]Skill
+	values  map[string]catalogEntry
+	options LoadOptions
+}
+
+type catalogEntry struct {
+	metadata Skill
 }
 
 type LoadOptions struct {
@@ -62,7 +76,7 @@ func Load(userRoot string, root project.Root, options LoadOptions) (*Catalog, []
 		return nil, nil, errors.New("skill project root is empty")
 	}
 	options = normalizeOptions(options)
-	catalog := &Catalog{values: make(map[string]Skill)}
+	catalog := &Catalog{values: make(map[string]catalogEntry), options: options}
 	warnings := make([]error, 0)
 	if strings.TrimSpace(userRoot) != "" {
 		values, sourceWarnings := scan(filepath.Join(userRoot, "skills"), SourceUser, options)
@@ -89,8 +103,26 @@ func (catalog *Catalog) Lookup(name string) (Skill, bool) {
 	if catalog == nil {
 		return Skill{}, false
 	}
-	value, ok := catalog.values[strings.TrimSpace(name)]
-	return value, ok
+	entry, ok := catalog.values[strings.TrimSpace(name)]
+	return entry.metadata, ok
+}
+
+func (catalog *Catalog) Load(name string) (Skill, error) {
+	if catalog == nil {
+		return Skill{}, errors.New("skill catalog is nil")
+	}
+	entry, ok := catalog.values[strings.TrimSpace(name)]
+	if !ok {
+		return Skill{}, fmt.Errorf("skill %q is not available", strings.TrimSpace(name))
+	}
+	value, err := parse(entry.metadata.Path, entry.metadata.Source, entry.metadata.Root, catalog.options)
+	if err != nil {
+		return Skill{}, fmt.Errorf("load Skill %q: %w", entry.metadata.Name, err)
+	}
+	if value.Name != entry.metadata.Name || value.Source != entry.metadata.Source || value.Root != entry.metadata.Root {
+		return Skill{}, fmt.Errorf("Skill %q metadata changed since catalog discovery", entry.metadata.Name)
+	}
+	return value, nil
 }
 
 func (catalog *Catalog) Index() []IndexEntry {
@@ -98,11 +130,33 @@ func (catalog *Catalog) Index() []IndexEntry {
 		return nil
 	}
 	entries := make([]IndexEntry, 0, len(catalog.values))
-	for _, value := range catalog.values {
-		entries = append(entries, IndexEntry{Name: value.Name, Description: value.Description, Source: value.Source})
+	for _, entry := range catalog.values {
+		value := entry.metadata
+		entries = append(entries, IndexEntry{Name: value.Name, Description: value.Description, Source: value.Source, Path: value.Path, Size: value.Size, Revision: value.Revision})
 	}
 	sort.Slice(entries, func(left, right int) bool { return entries[left].Name < entries[right].Name })
 	return entries
+}
+
+func (catalog *Catalog) Revision() (string, error) {
+	if catalog == nil {
+		return "", errors.New("skill catalog is nil")
+	}
+	entries := catalog.Index()
+	for index := range entries {
+		value, err := catalog.Load(entries[index].Name)
+		if err != nil {
+			return "", err
+		}
+		entries[index].Size = value.Size
+		entries[index].Revision = value.Revision
+	}
+	encoded, err := json.Marshal(entries)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func (catalog *Catalog) Len() int {
@@ -112,8 +166,8 @@ func (catalog *Catalog) Len() int {
 	return len(catalog.values)
 }
 
-func scan(root string, source Source, options LoadOptions) (map[string]Skill, []error) {
-	values := make(map[string]Skill)
+func scan(root string, source Source, options LoadOptions) (map[string]catalogEntry, []error) {
+	values := make(map[string]catalogEntry)
 	entries, err := os.ReadDir(root)
 	if errors.Is(err, os.ErrNotExist) {
 		return values, nil
@@ -150,7 +204,8 @@ func scan(root string, source Source, options LoadOptions) (map[string]Skill, []
 			warnings = append(warnings, fmt.Errorf("ignore duplicate %s skill name %q", source, value.Name))
 			continue
 		}
-		values[value.Name] = value
+		value.Content = ""
+		values[value.Name] = catalogEntry{metadata: value}
 	}
 	return values, warnings
 }
@@ -201,7 +256,11 @@ func parse(path string, source Source, root string, options LoadOptions) (Skill,
 	if body == "" {
 		return Skill{}, errors.New("SKILL.md body is empty")
 	}
-	return Skill{Name: header.Name, Description: header.Description, Content: body, Source: source, Root: root}, nil
+	digest := sha256.Sum256([]byte(body))
+	return Skill{
+		Name: header.Name, Description: header.Description, Content: body, Source: source, Root: root,
+		Path: filepath.Clean(path), Size: info.Size(), Revision: hex.EncodeToString(digest[:]),
+	}, nil
 }
 
 func splitFrontmatter(content string) (string, string, error) {
@@ -255,7 +314,7 @@ func inside(root, candidate string) bool {
 func indexBytes(entries []IndexEntry) int {
 	total := 0
 	for _, entry := range entries {
-		total += len(entry.Name) + len(entry.Description) + len(entry.Source)
+		total += len(entry.Name) + len(entry.Description) + len(entry.Source) + len(entry.Path) + len(entry.Revision) + 8
 	}
 	return total
 }

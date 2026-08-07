@@ -1,0 +1,24 @@
+# Copy to either:
+#   $AMADEUS_HOME/mcp.yaml
+#   <project>/.amadeus/mcp.yaml
+#
+# Project servers replace user servers with the same name. Credentials should
+# use environment expansion; resolved values are redacted from diagnostics.
+
+servers:
+  local-tools:
+    transport: stdio
+    command: npx
+    args: ["-y", "@example/mcp-server"]
+    env:
+      EXAMPLE_TOKEN: ${EXAMPLE_TOKEN}
+    timeout: 30s
+    enabled: false
+
+  remote-tools:
+    transport: streamable_http
+    url: https://mcp.example.invalid/mcp
+    headers:
+      Authorization: Bearer ${MCP_AUTH_TOKEN}
+    timeout: 30s
+    enabled: false

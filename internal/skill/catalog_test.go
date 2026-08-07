@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -25,11 +26,44 @@ func TestLoadMergesUserAndProjectSkillsWithProjectOverride(t *testing.T) {
 		t.Fatalf("load catalog = %#v, warnings=%v, err=%v", catalog, warnings, err)
 	}
 	review, ok := catalog.Lookup("review")
-	if !ok || review.Source != SourceProject || review.Description != "project review" || review.Content != "project body" {
+	if !ok || review.Source != SourceProject || review.Description != "project review" || review.Content != "" || review.Path == "" || review.Size == 0 || len(review.Revision) != 64 {
 		t.Fatalf("project override was not retained: %#v", review)
 	}
-	if got, want := catalog.Index(), []IndexEntry{{Name: "format", Description: "format code", Source: SourceUser}, {Name: "review", Description: "project review", Source: SourceProject}}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("skill index = %#v, want %#v", got, want)
+	loaded, err := catalog.Load("review")
+	if err != nil || loaded.Content != "project body" {
+		t.Fatalf("project Skill body was not loaded on demand: value=%#v err=%v", loaded, err)
+	}
+	index := catalog.Index()
+	if got, want := []string{index[0].Name, index[1].Name}, []string{"format", "review"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("skill index order = %#v, want %#v", got, want)
+	}
+	for _, entry := range index {
+		if entry.Path == "" || entry.Size == 0 || len(entry.Revision) != 64 {
+			t.Fatalf("skill metadata index is incomplete: %#v", entry)
+		}
+	}
+}
+
+func TestCatalogLoadsCurrentSkillBodyWithoutCachingContent(t *testing.T) {
+	projectPath := t.TempDir()
+	path := filepath.Join(projectPath, ".amadeus", "skills", "review", "SKILL.md")
+	writeSkill(t, path, "review", "review", "first body")
+	root, err := project.NewRoot(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, warnings, err := Load("", root, DefaultLoadOptions())
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("load Skill catalog: warnings=%v err=%v", warnings, err)
+	}
+	metadata, ok := catalog.Lookup("review")
+	if !ok || metadata.Content != "" {
+		t.Fatalf("catalog retained Skill body: %#v", metadata)
+	}
+	writeSkill(t, path, "review", "review", "second body")
+	loaded, err := catalog.Load("review")
+	if err != nil || loaded.Content != "second body" || loaded.Revision == metadata.Revision {
+		t.Fatalf("on-demand Skill load did not observe current content: value=%#v err=%v", loaded, err)
 	}
 }
 
@@ -74,6 +108,41 @@ func TestLoadRejectsInvalidMetadataAndIndexBudget(t *testing.T) {
 	writeSkill(t, filepath.Join(projectPath, ".amadeus", "skills", "good", "SKILL.md"), "good", "description", "body")
 	if _, _, err := Load("", root, LoadOptions{MaxIndexBytes: 1}); err == nil || !strings.Contains(err.Error(), "index exceeds") {
 		t.Fatalf("expected index budget error, got %v", err)
+	}
+}
+
+func TestCheckedInSkillExampleLoadsOnDemand(t *testing.T) {
+	_, current, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve Skill test path")
+	}
+	content, err := os.ReadFile(filepath.Join(filepath.Dir(current), "..", "..", "configs", "skills", "review", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectPath := t.TempDir()
+	path := filepath.Join(projectPath, ".amadeus", "skills", "review", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := project.NewRoot(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, warnings, err := Load("", root, DefaultLoadOptions())
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("load checked-in Skill example: warnings=%v err=%v", warnings, err)
+	}
+	metadata, ok := catalog.Lookup("review")
+	if !ok || metadata.Content != "" {
+		t.Fatalf("checked-in Skill example was not metadata-only: %#v", metadata)
+	}
+	loaded, err := catalog.Load("review")
+	if err != nil || !strings.Contains(loaded.Content, "Review Workflow") {
+		t.Fatalf("load checked-in Skill body: value=%#v err=%v", loaded, err)
 	}
 }
 

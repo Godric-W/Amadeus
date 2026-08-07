@@ -30,8 +30,7 @@ type commandRuntime struct {
 	webFetcher          webfetch.Fetcher
 	webSearch           websearch.Provider
 	postWriteHooks      []react.PostExecutionHook
-	turnContextFactory  chatTurnContextFactory
-	agentContextFactory chatTurnContextFactory
+	agentContextFactory runContextFactory
 	agentCommand        agentCommand
 	agentCommandFactory agentCommandFactory
 	terminalDetector    terminalDetector
@@ -62,8 +61,17 @@ func newRootCommandWithFlags(configFlags *configFlags, projectFlags *projectFlag
 		Short:         "Amadeus agent CLI",
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		Args:          cobra.MaximumNArgs(1),
+		Args: func(command *cobra.Command, arguments []string) error {
+			if command.Flags().Changed(flagResume) && sessionFlags.resume == resumeSelectorFlag {
+				return cobra.MaximumNArgs(2)(command, arguments)
+			}
+			return cobra.MaximumNArgs(1)(command, arguments)
+		},
 		RunE: func(command *cobra.Command, arguments []string) error {
+			if command.Flags().Changed(flagResume) && sessionFlags.resume == resumeSelectorFlag && len(arguments) > 0 {
+				sessionFlags.resume = arguments[0]
+				arguments = arguments[1:]
+			}
 			return runRootAgent(command, arguments, configFlags, projectFlags, sessionFlags, plain, runtime)
 		},
 	}
@@ -72,7 +80,6 @@ func newRootCommandWithFlags(configFlags *configFlags, projectFlags *projectFlag
 	projectFlags.bind(command)
 	sessionFlags.bind(command)
 	command.PersistentFlags().BoolVar(&plain, flagPlain, false, "use plain line-oriented terminal output")
-	command.AddCommand(newChatCommand(configFlags, runtime))
 	command.AddCommand(newConfigCommand(configFlags, runtime))
 	command.AddCommand(newToolsCommand())
 	command.AddCommand(newSessionsCommand(projectFlags, runtime))

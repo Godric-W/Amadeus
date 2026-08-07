@@ -80,13 +80,10 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent event.E
 		return renderer.writeStatus("status: %s %s %s -> %s", typed.Entity, typed.EntityID, typed.From, typed.To)
 	case event.DiagnosticPublished:
 		return renderer.writeStatus("diagnostic[%s/%s]: %s", typed.Severity, typed.Code, typed.Message)
-	case event.VerificationCompleted:
-		if typed.Passed {
-			return renderer.writeStatus("verification: passed (%s)", typed.TaskID)
-		}
-		return renderer.writeStatus("verification: failed (%s): %s", typed.TaskID, strings.Join(typed.EvidenceGaps, "; "))
-	case event.ReflectionCompleted:
-		return renderer.writeStatus("reflection: %s (%s, scope=%s)", typed.Verdict, typed.TaskID, typed.Scope)
+	case event.RunDiffUpdated:
+		return renderer.writeStatus("diff: updated (%d files)", len(typed.Changes))
+	case event.RunDiffInvalidated:
+		return renderer.writeStatus("diff: attribution unavailable: %s", typed.Reason)
 	case event.RunStarted:
 		return renderer.writeStatus("run: started %s (task=%s)", typed.RunID, typed.TaskID)
 	case event.RunCompleted:

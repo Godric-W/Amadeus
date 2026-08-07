@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/agent/plan"
@@ -19,63 +18,66 @@ import (
 	processdomain "github.com/Godric-W/Amadeus/internal/process"
 	"github.com/Godric-W/Amadeus/internal/project"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
+	promptbuiltin "github.com/Godric-W/Amadeus/internal/prompt/builtin"
+	sandboxdomain "github.com/Godric-W/Amadeus/internal/sandbox"
 	"github.com/Godric-W/Amadeus/internal/skill"
-	"github.com/Godric-W/Amadeus/internal/snapshot"
 	"github.com/Godric-W/Amadeus/internal/tool"
 	"github.com/Godric-W/Amadeus/internal/tool/builtin"
 	"github.com/Godric-W/Amadeus/internal/webfetch"
 	"github.com/Godric-W/Amadeus/internal/websearch"
-	"github.com/Godric-W/Amadeus/prompts"
 )
 
 type ClientFactory func(string, config.ProviderConfig) (llm.Client, error)
 
-type SnapshotFactory func(project.Root) (snapshot.Service, error)
-
 type AgentOptions struct {
-	ClientFactory    ClientFactory
-	SnapshotFactory  SnapshotFactory
-	SnapshotRunID    string
-	PostWriteHooks   []react.PostExecutionHook
-	UserSkillRoot    string
-	UserMCPRoot      string
-	MCPClientFactory mcp.ClientFactory
-	WebFetcher       webfetch.Fetcher
-	WebSearch        websearch.Provider
+	ClientFactory      ClientFactory
+	PostWriteHooks     []react.PostExecutionHook
+	RolloutRecorder    react.RolloutRecorder
+	PlanState          *plan.State
+	PlanRecorder       builtin.PlanUpdateRecorder
+	UserSkillRoot      string
+	UserMCPRoot        string
+	MCPClientFactory   mcp.ClientFactory
+	Skills             *skill.Catalog
+	SkillWarnings      []error
+	MCP                *mcp.Manager
+	WebFetcher         webfetch.Fetcher
+	WebSearch          websearch.Provider
+	FileSystemPolicy   *project.FileSystemPolicy
+	RunPermissions     *project.PermissionStore
+	SessionPermissions *project.PermissionStore
+	SessionApprovals   *policy.SessionApprovalStore
 }
 
 type Agent struct {
-	ProviderName     string
-	Project          project.Root
-	Client           llm.Client
-	Events           event.Sink
-	Audit            audit.Sink
-	ContextBuilder   *agentcontext.Builder
-	PromptRepository *internalprompt.Repository
-	PromptAssembler  *internalprompt.Assembler
-	AgentPrompt      internalprompt.Bundle
-	Registry         *tool.Registry
-	Validator        *tool.ArgumentValidator
-	Grants           *policy.GrantCache
-	Authorizer       *policy.ToolAuthorizer
-	ToolExecutor     *react.ToolExecutor
-	Iterator         *react.Iterator
-	Progress         *react.ProgressMonitor
-	Runner           *react.Runner
-	PlanController   plan.PlanController
-	Planner          plan.DraftPlanner
-	Replanner        plan.FixedReplanner
-	Snapshots        snapshot.Service
-	SnapshotRun      *snapshot.RunTracker
-	Skills           *skill.Catalog
-	SkillWarnings    []error
-	MCP              *mcp.Manager
-	MCPWarnings      []error
-	WebFetcher       webfetch.Fetcher
-	WebSearch        websearch.Provider
-	Processes        *processdomain.Manager
-	tools            []tool.Spec
-	visibility       map[string]bool
+	ProviderName      string
+	Project           project.Root
+	Client            llm.Client
+	Events            event.Sink
+	Audit             audit.Sink
+	ContextManager    *agentcontext.Manager
+	PromptRepository  *internalprompt.Repository
+	PromptAssembler   *internalprompt.Assembler
+	AgentPrompt       internalprompt.Bundle
+	Registry          *tool.Registry
+	Validator         *tool.ArgumentValidator
+	Authorizer        *policy.ToolAuthorizer
+	ToolExecutor      *react.ToolExecutor
+	Iterator          *react.Iterator
+	Progress          *react.ProgressMonitor
+	Runner            *react.Runner
+	Skills            *skill.Catalog
+	SkillWarnings     []error
+	MCP               *mcp.Manager
+	MCPWarnings       []error
+	WebFetcher        webfetch.Fetcher
+	WebSearch         websearch.Provider
+	Processes         *processdomain.Manager
+	SandboxMode       sandboxdomain.IsolationMode
+	SandboxDiagnostic string
+	ownMCP            bool
+	tools             []tool.Spec
+	visibility        map[string]bool
 }
 
 func NewAgent(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink) (*Agent, error) {
@@ -87,11 +89,7 @@ func NewAgentWithOptions(configured config.Config, root project.Root, events eve
 	if createClient == nil {
 		createClient = defaultClientFactory
 	}
-	createSnapshots := options.SnapshotFactory
-	if createSnapshots == nil {
-		createSnapshots = defaultSnapshotFactory
-	}
-	return newAgentWithSnapshotFactory(configured, root, events, approvals, auditSink, createClient, createSnapshots, options.SnapshotRunID, options.PostWriteHooks, options.UserSkillRoot, options.UserMCPRoot, options.MCPClientFactory, options.WebFetcher, options.WebSearch)
+	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, options.PostWriteHooks, options.RolloutRecorder, options.PlanState, options.PlanRecorder, options.UserSkillRoot, options.UserMCPRoot, options.MCPClientFactory, options.Skills, options.SkillWarnings, options.MCP, options.WebFetcher, options.WebSearch, options.FileSystemPolicy, options.RunPermissions, options.SessionPermissions, options.SessionApprovals)
 }
 
 func (agent *Agent) AvailableTools() []tool.Spec {
@@ -107,10 +105,10 @@ func (agent *Agent) AvailableTools() []tool.Spec {
 }
 
 func newAgent(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory) (*Agent, error) {
-	return newAgentWithSnapshotFactory(configured, root, events, approvals, auditSink, createClient, defaultSnapshotFactory, "", nil, "", "", nil, nil, nil)
+	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, nil, nil, nil, nil, "", "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 }
 
-func newAgentWithSnapshotFactory(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory, createSnapshots SnapshotFactory, snapshotRunID string, postWriteHooks []react.PostExecutionHook, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, webFetcher webfetch.Fetcher, webSearch websearch.Provider) (*Agent, error) {
+func newAgentWithOptions(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory, postWriteHooks []react.PostExecutionHook, rolloutRecorder react.RolloutRecorder, planState *plan.State, planRecorder builtin.PlanUpdateRecorder, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, externalSkills *skill.Catalog, externalSkillWarnings []error, externalMCP *mcp.Manager, webFetcher webfetch.Fetcher, webSearch websearch.Provider, fileSystemPolicy *project.FileSystemPolicy, runPermissions, sessionPermissions *project.PermissionStore, sessionApprovals *policy.SessionApprovalStore) (*Agent, error) {
 	if err := config.Validate(configured); err != nil {
 		return nil, fmt.Errorf("validate Agent configuration: %w", err)
 	}
@@ -129,10 +127,6 @@ func newAgentWithSnapshotFactory(configured config.Config, root project.Root, ev
 	if createClient == nil {
 		return nil, errors.New("bootstrap Agent client factory is nil")
 	}
-	if createSnapshots == nil {
-		return nil, errors.New("bootstrap Agent snapshot factory is nil")
-	}
-
 	providerName := configured.DefaultProvider
 	provider := configured.Providers[providerName]
 	client, err := createClient(providerName, provider)
@@ -150,22 +144,50 @@ func newAgentWithSnapshotFactory(configured config.Config, root project.Root, ev
 	if err != nil {
 		return nil, fmt.Errorf("create Prompt assembler: %w", err)
 	}
-	agentPrompt, err := assemblePrompts(promptAssembler, prompts.AgentLayers())
+	agentPrompt, err := assemblePrompts(promptAssembler, promptbuiltin.AgentSystemLayers())
 	if err != nil {
 		return nil, fmt.Errorf("assemble Agent Prompt: %w", err)
 	}
-	plannerPrompt, err := assemblePrompts(promptAssembler, []prompts.ID{prompts.Planner})
-	if err != nil {
-		return nil, fmt.Errorf("assemble planner Prompt: %w", err)
+	mvpOptions := builtin.DefaultMVPOptions()
+	var pathGuard *project.PathGuard
+	var sandboxRunner *sandboxdomain.Runner
+	if fileSystemPolicy != nil {
+		var guardErr error
+		pathGuard, guardErr = project.NewPathGuardWithPolicy(fileSystemPolicy)
+		if guardErr != nil {
+			return nil, fmt.Errorf("create filesystem path guard: %w", guardErr)
+		}
+		mvpOptions.PathGuard = pathGuard
+		sandboxRunner, guardErr = sandboxdomain.NewRunner(fileSystemPolicy)
+		if guardErr != nil {
+			return nil, fmt.Errorf("create command sandbox: %w", guardErr)
+		}
+		mvpOptions.ExecuteCommand.Sandbox = sandboxRunner
 	}
-	replannerPrompt, err := assemblePrompts(promptAssembler, []prompts.ID{prompts.Replanner})
-	if err != nil {
-		return nil, fmt.Errorf("assemble replanner Prompt: %w", err)
-	}
-
-	registry, err := builtin.NewMVPRegistry(root, builtin.DefaultMVPOptions())
+	registry, err := builtin.NewMVPRegistry(root, mvpOptions)
 	if err != nil {
 		return nil, fmt.Errorf("create MVP tool registry: %w", err)
+	}
+	if fileSystemPolicy != nil && runPermissions != nil && sessionPermissions != nil {
+		requestPermissions, requestErr := builtin.NewRequestPermissions(builtin.RequestPermissionsOptions{
+			Policy: fileSystemPolicy, RunPermissions: runPermissions, SessionPermissions: sessionPermissions,
+			Approvals: approvals, Events: events, Audit: auditSink,
+		})
+		if requestErr != nil {
+			return nil, fmt.Errorf("create request_permissions tool: %w", requestErr)
+		}
+		if requestErr := registry.Register(requestPermissions); requestErr != nil {
+			return nil, fmt.Errorf("register request_permissions tool: %w", requestErr)
+		}
+	}
+	if planState != nil || planRecorder != nil {
+		updatePlan, planErr := builtin.NewUpdatePlan(planState, builtin.UpdatePlanOptions{Events: events, Recorder: planRecorder})
+		if planErr != nil {
+			return nil, fmt.Errorf("create update_plan tool: %w", planErr)
+		}
+		if planErr := registry.Register(updatePlan); planErr != nil {
+			return nil, fmt.Errorf("register update_plan tool: %w", planErr)
+		}
 	}
 	executeTool, exists := registry.Lookup("execute_command")
 	if !exists {
@@ -177,7 +199,7 @@ func newAgentWithSnapshotFactory(configured config.Config, root project.Root, ev
 	}
 	visibility := make(map[string]bool)
 	if client.Capabilities().SupportsImages {
-		viewImage, imageErr := builtin.NewViewImage(root, builtin.ViewImageOptions{})
+		viewImage, imageErr := builtin.NewViewImage(root, builtin.ViewImageOptions{PathGuard: pathGuard})
 		if imageErr != nil {
 			return nil, fmt.Errorf("create view_image tool: %w", imageErr)
 		}
@@ -186,25 +208,6 @@ func newAgentWithSnapshotFactory(configured config.Config, root project.Root, ev
 		}
 		visibility["provider.images"] = true
 	}
-	snapshots, err := createSnapshots(root)
-	if err != nil {
-		return nil, fmt.Errorf("create snapshot service: %w", err)
-	}
-	var snapshotRun *snapshot.RunTracker
-	if strings.TrimSpace(snapshotRunID) != "" {
-		snapshotRun, err = snapshot.NewRunTracker(snapshots, snapshotRunID)
-		if err != nil {
-			return nil, fmt.Errorf("create snapshot run tracker: %w", err)
-		}
-	}
-	revertRun, err := builtin.NewRevertRun(snapshots)
-	if err != nil {
-		return nil, fmt.Errorf("create revert_run tool: %w", err)
-	}
-	if err := registry.RegisterWithRegistration(revertRun, tool.Registration{Exposure: tool.ExposureConditional, Condition: "snapshot.available"}); err != nil {
-		return nil, fmt.Errorf("register revert_run tool: %w", err)
-	}
-	visibility["snapshot.available"] = true
 	if configured.Web.Fetch.Enabled {
 		if webFetcher == nil {
 			webFetcher, err = webfetch.New(webfetch.Options{MaxBytes: configured.Web.Fetch.MaxBytes, MaxRedirects: configured.Web.Fetch.MaxRedirects, Timeout: configured.Web.Fetch.Timeout})
@@ -241,9 +244,13 @@ func newAgentWithSnapshotFactory(configured config.Config, root project.Root, ev
 		}
 		visibility["web.search.configured"] = true
 	}
-	skills, skillWarnings, err := skill.Load(userSkillRoot, root, skill.DefaultLoadOptions())
-	if err != nil {
-		return nil, fmt.Errorf("load Skills: %w", err)
+	skills := externalSkills
+	skillWarnings := append([]error(nil), externalSkillWarnings...)
+	if skills == nil {
+		skills, skillWarnings, err = skill.Load(userSkillRoot, root, skill.DefaultLoadOptions())
+		if err != nil {
+			return nil, fmt.Errorf("load Skills: %w", err)
+		}
 	}
 	if skills.Len() > 0 {
 		readSkill, err := builtin.NewReadSkill(skills, builtin.ReadSkillOptions{})
@@ -255,13 +262,18 @@ func newAgentWithSnapshotFactory(configured config.Config, root project.Root, ev
 		}
 		visibility["skills.available"] = true
 	}
-	mcpConfig, err := mcp.Load(userMCPRoot, root, mcp.LoadOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("load MCP config: %w", err)
-	}
-	mcpManager, err := mcp.NewManager(mcpConfig, mcpClientFactory)
-	if err != nil {
-		return nil, fmt.Errorf("create MCP manager: %w", err)
+	mcpManager := externalMCP
+	ownMCP := false
+	if mcpManager == nil {
+		mcpConfig, loadErr := mcp.Load(userMCPRoot, root, mcp.LoadOptions{})
+		if loadErr != nil {
+			return nil, fmt.Errorf("load MCP config: %w", loadErr)
+		}
+		mcpManager, err = mcp.NewManager(mcpConfig, mcpClientFactory)
+		if err != nil {
+			return nil, fmt.Errorf("create MCP manager: %w", err)
+		}
+		ownMCP = true
 	}
 	mcpListTool, mcpCallTool, err := mcp.NewLazyTools(mcpManager)
 	if err != nil {
@@ -297,89 +309,74 @@ func newAgentWithSnapshotFactory(configured config.Config, root project.Root, ev
 		visibility["mcp.resources"] = true
 	}
 	validator := tool.NewArgumentValidator()
-	grants := policy.NewGrantCache()
-	authorizer, err := policy.NewToolAuthorizerWithOptions(root, approvals, policy.ToolAuthorizerOptions{Grants: grants, Audit: auditSink, Events: events})
+	authorizer, err := policy.NewToolAuthorizerWithOptions(approvals, policy.ToolAuthorizerOptions{
+		SessionApprovals: sessionApprovals, Audit: auditSink, Events: events,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("create tool authorizer: %w", err)
 	}
-	preHooks := make([]react.PreExecutionHook, 0, 1)
-	if snapshotRun != nil {
-		preHooks = append(preHooks, snapshotRun)
-	}
-	toolExecutor, err := react.NewToolExecutorWithOptions(registry, validator, react.ToolExecutorOptions{Authorizer: authorizer, Events: events, PreHooks: preHooks, Hooks: postWriteHooks})
+	toolExecutor, err := react.NewToolExecutorWithOptions(registry, validator, react.ToolExecutorOptions{Authorizer: authorizer, Events: events, Hooks: postWriteHooks})
 	if err != nil {
 		return nil, fmt.Errorf("create tool executor: %w", err)
 	}
-	iterator, err := react.NewIteratorWithOptions(client, newTaskIterationEventSink(events), react.IteratorOptions{SystemPrompt: agentPrompt.Content})
+	iterator, err := react.NewIteratorWithOptions(client, events, react.IteratorOptions{SystemPrompt: agentPrompt.Content})
 	if err != nil {
 		return nil, fmt.Errorf("create model iterator: %w", err)
 	}
 	progress := react.DefaultProgressMonitor()
+	contextManager := agentcontext.NewManager(nil)
 	runner, err := react.NewRunner(iterator, toolExecutor, progress, react.RunnerOptions{
 		Temperature:      provider.Temperature,
 		MaxOutputTokens:  provider.MaxOutputTokens,
 		MaxParallelTools: configured.Agent.MaxParallelTools,
-		ContextWindow:    agentcontext.NewContextWindowManager(nil),
+		ContextWindow:    contextManager,
 		ContextProfile:   agentcontext.DefaultContextProfile(provider.ContextWindow, provider.MaxOutputTokens),
 		Events:           events,
+		Rollout:          rolloutRecorder,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create ReAct runner: %w", err)
 	}
-	reactTaskExecutor, err := plan.NewReActTaskExecutor(runner)
-	if err != nil {
-		return nil, fmt.Errorf("create default ReAct task executor: %w", err)
-	}
-	planner, err := plan.NewLLMPlanDraftPlanner(client, plan.PlannerOptions{SystemPrompt: plannerPrompt.Content, MaxAttempts: 2, Temperature: 0, MaxOutputTokens: provider.MaxOutputTokens, Events: events})
-	if err != nil {
-		return nil, fmt.Errorf("create Planner: %w", err)
-	}
-	replanner, err := plan.NewLLMReplanner(client, plan.PlannerOptions{SystemPrompt: replannerPrompt.Content, MaxAttempts: 2, Temperature: 0, MaxOutputTokens: provider.MaxOutputTokens, Events: events})
-	if err != nil {
-		return nil, fmt.Errorf("create Replanner: %w", err)
-	}
-	planController, err := plan.NewController(planner, reactTaskExecutor, replanner, plan.ControllerOptions{MaxPlanCycles: 8, Events: events})
-	if err != nil {
-		return nil, fmt.Errorf("create Controller: %w", err)
-	}
-
 	entries := registry.VisibleSnapshot(visibility)
 	availableTools := make([]tool.Spec, 0, len(entries))
 	for _, entry := range entries {
 		availableTools = append(availableTools, entry.Spec.Clone())
 	}
 
+	sandboxMode := sandboxdomain.IsolationMode("")
+	sandboxDiagnostic := ""
+	if sandboxRunner != nil {
+		sandboxMode = sandboxRunner.Mode()
+		sandboxDiagnostic = sandboxRunner.Diagnostic()
+	}
 	return &Agent{
-		ProviderName:     providerName,
-		Project:          root,
-		Client:           client,
-		Events:           events,
-		Audit:            auditSink,
-		ContextBuilder:   agentcontext.NewBuilder(),
-		PromptRepository: promptRepository,
-		PromptAssembler:  promptAssembler,
-		AgentPrompt:      agentPrompt,
-		Registry:         registry,
-		Validator:        validator,
-		Grants:           grants,
-		Authorizer:       authorizer,
-		ToolExecutor:     toolExecutor,
-		Iterator:         iterator,
-		Progress:         progress,
-		Runner:           runner,
-		PlanController:   planController,
-		Planner:          planner,
-		Replanner:        replanner,
-		Snapshots:        snapshots,
-		SnapshotRun:      snapshotRun,
-		Skills:           skills,
-		SkillWarnings:    append([]error(nil), skillWarnings...),
-		MCP:              mcpManager,
-		WebFetcher:       webFetcher,
-		WebSearch:        webSearch,
-		Processes:        executeCommand.ProcessManager(),
-		tools:            availableTools,
-		visibility:       visibility,
+		ProviderName:      providerName,
+		Project:           root,
+		Client:            client,
+		Events:            events,
+		Audit:             auditSink,
+		ContextManager:    contextManager,
+		PromptRepository:  promptRepository,
+		PromptAssembler:   promptAssembler,
+		AgentPrompt:       agentPrompt,
+		Registry:          registry,
+		Validator:         validator,
+		Authorizer:        authorizer,
+		ToolExecutor:      toolExecutor,
+		Iterator:          iterator,
+		Progress:          progress,
+		Runner:            runner,
+		Skills:            skills,
+		SkillWarnings:     append([]error(nil), skillWarnings...),
+		MCP:               mcpManager,
+		WebFetcher:        webFetcher,
+		WebSearch:         webSearch,
+		Processes:         executeCommand.ProcessManager(),
+		SandboxMode:       sandboxMode,
+		SandboxDiagnostic: sandboxDiagnostic,
+		ownMCP:            ownMCP,
+		tools:             availableTools,
+		visibility:        visibility,
 	}, nil
 }
 
@@ -420,17 +417,13 @@ func (agent *Agent) Close() error {
 	if agent.Processes != nil {
 		agent.Processes.Close()
 	}
-	if agent.MCP == nil {
+	if agent.MCP == nil || !agent.ownMCP {
 		return nil
 	}
 	return agent.MCP.Close()
 }
 
-func defaultSnapshotFactory(root project.Root) (snapshot.Service, error) {
-	return snapshot.NewFileService(root, snapshot.FileServiceOptions{})
-}
-
-func assemblePrompts(assembler *internalprompt.Assembler, ids []prompts.ID) (internalprompt.Bundle, error) {
+func assemblePrompts(assembler *internalprompt.Assembler, ids []promptbuiltin.ID) (internalprompt.Bundle, error) {
 	layers := make([]string, len(ids))
 	for index, id := range ids {
 		layers[index] = string(id)

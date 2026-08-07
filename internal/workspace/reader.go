@@ -50,6 +50,16 @@ func NewReader(root project.Root) (*Reader, error) {
 	return &Reader{root: root, guard: guard}, nil
 }
 
+func NewReaderWithGuard(root project.Root, guard *project.PathGuard) (*Reader, error) {
+	if root.Path() == "" {
+		return nil, errors.New("workspace reader project root is empty")
+	}
+	if guard == nil {
+		return nil, errors.New("workspace reader path guard is nil")
+	}
+	return &Reader{root: root, guard: guard}, nil
+}
+
 func (reader *Reader) ResolveExisting(relative string, expected project.PathType) (string, error) {
 	if reader == nil || reader.guard == nil {
 		return "", errors.New("workspace reader is nil")
@@ -57,25 +67,36 @@ func (reader *Reader) ResolveExisting(relative string, expected project.PathType
 	return reader.guard.ResolveExisting(relative, expected)
 }
 
+func (reader *Reader) ResolveExistingTarget(relative string, expected project.PathType) (project.ResolvedPath, error) {
+	if reader == nil || reader.guard == nil {
+		return project.ResolvedPath{}, errors.New("workspace reader is nil")
+	}
+	return reader.guard.ResolveExistingTarget(relative, expected)
+}
+
 func (reader *Reader) ReadRange(ctx context.Context, relative string, options ReadRangeOptions) (ReadRangeResult, error) {
+	path, err := reader.ResolveExisting(relative, project.PathFile)
+	if err != nil {
+		return ReadRangeResult{}, err
+	}
+	return reader.ReadRangePrepared(ctx, path, relative, options)
+}
+
+func (reader *Reader) ReadRangePrepared(ctx context.Context, path, displayPath string, options ReadRangeOptions) (ReadRangeResult, error) {
 	if options.StartLine <= 0 {
 		options.StartLine = 1
 	}
 	if options.LineLimit < 0 || options.MaxBytes <= 0 || options.MaxLineBytes <= 0 {
 		return ReadRangeResult{}, errors.New("workspace read range limits are invalid")
 	}
-	path, err := reader.ResolveExisting(relative, project.PathFile)
-	if err != nil {
-		return ReadRangeResult{}, err
-	}
 	file, err := os.Open(path)
 	if err != nil {
-		return ReadRangeResult{}, fmt.Errorf("open workspace file %q: %w", relative, err)
+		return ReadRangeResult{}, fmt.Errorf("open workspace file %q: %w", displayPath, err)
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return ReadRangeResult{}, fmt.Errorf("stat workspace file %q: %w", relative, err)
+		return ReadRangeResult{}, fmt.Errorf("stat workspace file %q: %w", displayPath, err)
 	}
 
 	buffered := bufio.NewReaderSize(file, 64<<10)
@@ -93,7 +114,7 @@ func (reader *Reader) ReadRange(ctx context.Context, relative string, options Re
 		if line != "" {
 			lineNumber++
 			if !detector.Valid([]byte(line)) {
-				return ReadRangeResult{}, fmt.Errorf("workspace file is binary or non-UTF-8: %q", relative)
+				return ReadRangeResult{}, fmt.Errorf("workspace file is binary or non-UTF-8: %q", displayPath)
 			}
 			selected := lineNumber >= options.StartLine && (options.LineLimit == 0 || result.LinesReturned < options.LineLimit)
 			if selected && !selectionEnded {
@@ -117,7 +138,7 @@ func (reader *Reader) ReadRange(ctx context.Context, relative string, options Re
 		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
-				return ReadRangeResult{}, fmt.Errorf("read workspace file %q: %w", relative, readErr)
+				return ReadRangeResult{}, fmt.Errorf("read workspace file %q: %w", displayPath, readErr)
 			}
 			break
 		}

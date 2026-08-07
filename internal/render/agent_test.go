@@ -33,8 +33,6 @@ func TestAgentRendererRendersCompleteAgentEventSequence(t *testing.T) {
 		event.StatusChanged{Entity: "task", EntityID: "task-1", From: "ready", To: "running"},
 		event.RunStatusChanged{Entity: "run", EntityID: "run-1", From: "running", To: "verifying"},
 		event.DiagnosticPublished{Severity: "warn", Code: "partial", Message: "output was truncated"},
-		event.VerificationCompleted{TaskID: "task-1", Passed: false, EvidenceGaps: []string{"tests missing", "diff unchecked"}},
-		event.ReflectionCompleted{TaskID: "task-1", Scope: "task", Verdict: "retry"},
 		event.ErrorOccurred{LLMCallID: "turn-1", Error: event.ErrorInfo{Message: "provider\nfailed"}},
 		event.RunCompleted{RunID: "run-1", Status: "cancelled", StopReason: "context_cancelled", Reason: "user interrupted"},
 		event.LLMCallCompleted{LLMCallID: "turn-1"},
@@ -57,8 +55,6 @@ func TestAgentRendererRendersCompleteAgentEventSequence(t *testing.T) {
 		"usage: input=10 cached=2 output=4 reasoning=1 total=14",
 		"status: task task-1 ready -> running",
 		"diagnostic[warn/partial]: output was truncated",
-		"verification: failed (task-1): tests missing; diff unchecked",
-		"reflection: retry (task-1, scope=task)",
 		"error: provider failed",
 		"run: cancelled (stop=context_cancelled): user interrupted",
 	} {
@@ -80,7 +76,6 @@ func TestAgentRendererRendersSuccessPartialAndFallbacks(t *testing.T) {
 	}
 	for _, runtimeEvent := range []event.Event{
 		event.ToolCallCompleted{CallID: "call", ToolName: "execute_command", Success: false, Partial: true, Summary: "exit 1"},
-		event.VerificationCompleted{TaskID: "task", Passed: true},
 		event.ErrorOccurred{},
 	} {
 		if err := renderer.Publish(context.Background(), runtimeEvent); err != nil {
@@ -88,7 +83,7 @@ func TestAgentRendererRendersSuccessPartialAndFallbacks(t *testing.T) {
 		}
 	}
 	output := stderr.String()
-	if !strings.Contains(output, "failed partial") || !strings.Contains(output, "verification: passed") || !strings.Contains(output, "error: request failed") {
+	if !strings.Contains(output, "failed partial") || !strings.Contains(output, "error: request failed") {
 		t.Fatalf("unexpected fallback rendering: %s", output)
 	}
 }

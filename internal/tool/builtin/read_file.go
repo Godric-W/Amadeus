@@ -2,7 +2,6 @@ package builtin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 
@@ -14,6 +13,7 @@ import (
 type ReadFileOptions struct {
 	MaxBytes     int64
 	MaxLineBytes int
+	PathGuard    *project.PathGuard
 }
 
 type ReadFile struct {
@@ -28,6 +28,11 @@ type readFileArguments struct {
 	Limit  int    `json:"limit,omitempty"`
 }
 
+type preparedReadFile struct {
+	arguments readFileArguments
+	path      string
+}
+
 func NewReadFile(root project.Root, options ReadFileOptions) (*ReadFile, error) {
 	if root.Path() == "" {
 		return nil, errors.New("read_file project root is empty")
@@ -38,7 +43,10 @@ func NewReadFile(root project.Root, options ReadFileOptions) (*ReadFile, error) 
 	if options.MaxLineBytes <= 0 {
 		options.MaxLineBytes = 32 << 10
 	}
-	reader, err := workspace.NewReader(root)
+	reader, err := workspace.NewReaderWithGuard(root, options.PathGuard)
+	if options.PathGuard == nil {
+		reader, err = workspace.NewReader(root)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -49,17 +57,30 @@ func (readFile *ReadFile) Spec() tool.Spec {
 	return readFileSpec()
 }
 
-func (readFile *ReadFile) Execute(ctx context.Context, input json.RawMessage) (tool.Result, error) {
+func (readFile *ReadFile) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
 	var arguments readFileArguments
-	if err := decodeArguments(input, &arguments); err != nil {
-		return tool.Result{}, err
+	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+		return tool.PreparedCall{}, err
 	}
 	if strings.TrimSpace(arguments.Path) == "" {
-		return tool.Result{}, errors.New("read_file path is empty")
+		return tool.PreparedCall{}, errors.New("read_file path is empty")
 	}
 	if arguments.Line < 0 || arguments.Limit < 0 || (arguments.Offset != nil && *arguments.Offset < 0) {
-		return tool.Result{}, errors.New("read_file line, legacy offset and limit cannot be negative")
+		return tool.PreparedCall{}, errors.New("read_file line, legacy offset and limit cannot be negative")
 	}
+	resolved, err := readFile.reader.ResolveExistingTarget(arguments.Path, project.PathFile)
+	if err != nil {
+		return tool.PreparedCall{}, err
+	}
+	return tool.NewPreparedCall(call, tool.PreparedOptions{Targets: []tool.PreparedTarget{preparedFilesystemTarget(resolved)}, Payload: preparedReadFile{arguments: arguments, path: resolved.Canonical}})
+}
+
+func (readFile *ReadFile) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
+	payload, err := preparedPayload[preparedReadFile](prepared, "read_file")
+	if err != nil {
+		return tool.Result{}, err
+	}
+	arguments := payload.arguments
 	if err := ctx.Err(); err != nil {
 		return tool.Result{}, err
 	}
@@ -73,7 +94,7 @@ func (readFile *ReadFile) Execute(ctx context.Context, input json.RawMessage) (t
 		}
 		startLine = *arguments.Offset + 1
 	}
-	read, err := readFile.reader.ReadRange(ctx, arguments.Path, workspace.ReadRangeOptions{
+	read, err := readFile.reader.ReadRangePrepared(ctx, payload.path, arguments.Path, workspace.ReadRangeOptions{
 		StartLine: startLine, LineLimit: arguments.Limit, MaxBytes: int(readFile.options.MaxBytes),
 		MaxLineBytes: readFile.options.MaxLineBytes, PrefixLines: true,
 	})

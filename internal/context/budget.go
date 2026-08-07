@@ -80,12 +80,18 @@ func (ConservativeEstimator) EstimateText(content string) int64 {
 }
 
 type ConversationCompaction struct {
-	CoveredMessages int    `json:"covered_messages"`
-	SourceHash      string `json:"source_hash"`
-	Summary         string `json:"summary"`
+	CoveredMessages        int           `json:"covered_messages"`
+	CoveredThroughSequence int64         `json:"covered_through_sequence,omitempty"`
+	SourceHash             string        `json:"source_hash"`
+	Summary                string        `json:"summary"`
+	ReplacementHistory     []llm.Message `json:"replacement_history"`
 }
 
 func CompactConversation(messages []llm.Message, maximumTokens int64, estimator Estimator) ([]llm.Message, *ConversationCompaction, error) {
+	return CompactConversationWithSources(messages, nil, maximumTokens, estimator)
+}
+
+func CompactConversationWithSources(messages []llm.Message, sourceSequences []int64, maximumTokens int64, estimator Estimator) ([]llm.Message, *ConversationCompaction, error) {
 	if estimator == nil {
 		estimator = ConservativeEstimator{}
 	}
@@ -93,38 +99,131 @@ func CompactConversation(messages []llm.Message, maximumTokens int64, estimator 
 		return nil, nil, errors.New("conversation history budget must be positive")
 	}
 	cloned := cloneMessages(messages)
+	if len(sourceSequences) > 0 {
+		if len(sourceSequences) != len(cloned) {
+			return nil, nil, errors.New("conversation source sequence count does not match messages")
+		}
+		for index, sequence := range sourceSequences {
+			if sequence < 1 || (index > 0 && sequence < sourceSequences[index-1]) {
+				return nil, nil, errors.New("conversation source sequences must be positive and non-decreasing")
+			}
+		}
+	}
 	total := estimateMessages(cloned, estimator)
 	if total <= maximumTokens {
 		return cloned, nil, nil
 	}
+	groups, err := atomicConversationGroups(cloned, sourceSequences)
+	if err != nil {
+		return nil, nil, err
+	}
 	keepBudget := maximumTokens * 2 / 3
-	start := len(cloned)
+	startGroup := len(groups)
 	var keptTokens int64
-	for start > 0 {
-		cost := estimateMessage(cloned[start-1], estimator)
-		if keptTokens+cost > keepBudget && start < len(cloned) {
+	for startGroup > 0 {
+		group := groups[startGroup-1]
+		cost := estimateMessages(cloned[group.start:group.end], estimator)
+		if keptTokens+cost > keepBudget && startGroup < len(groups) {
 			break
 		}
 		keptTokens += cost
-		start--
+		startGroup--
 		if keptTokens >= keepBudget {
 			break
 		}
 	}
-	if start == 0 {
-		last := cloned[len(cloned)-1]
-		last.Content = truncateToTokens(last.Content, maximumTokens, estimator)
-		return []llm.Message{last}, nil, nil
+	if startGroup == 0 {
+		return nil, nil, fmt.Errorf("conversation history exceeds budget but contains no safely compactable atomic group: estimated %d, budget %d", total, maximumTokens)
 	}
+	start := groups[startGroup].start
 	covered := cloned[:start]
 	kept := cloned[start:]
-	summary := deterministicConversationSummary(covered, maximumTokens-keptTokens, estimator)
+	summary := deterministicReplacementHistory(covered, maximumTokens-keptTokens, estimator)
 	encoded, err := json.Marshal(covered)
 	if err != nil {
 		return nil, nil, fmt.Errorf("encode compacted conversation source: %w", err)
 	}
 	digest := sha256.Sum256(encoded)
-	return kept, &ConversationCompaction{CoveredMessages: len(covered), SourceHash: hex.EncodeToString(digest[:]), Summary: summary}, nil
+	compaction := &ConversationCompaction{
+		CoveredMessages:    len(covered),
+		SourceHash:         hex.EncodeToString(digest[:]),
+		Summary:            summary,
+		ReplacementHistory: []llm.Message{llm.AssistantMessage(summary)},
+	}
+	if len(sourceSequences) > 0 {
+		compaction.CoveredThroughSequence = sourceSequences[start-1]
+	}
+	return kept, compaction, nil
+}
+
+type conversationGroup struct {
+	start int
+	end   int
+}
+
+func atomicConversationGroups(messages []llm.Message, sourceSequences []int64) ([]conversationGroup, error) {
+	if len(messages) == 0 {
+		return nil, nil
+	}
+	groups := make([]conversationGroup, 0, len(messages))
+	start := 0
+	for index := 1; index < len(messages); index++ {
+		if messages[index].Role == llm.RoleUser {
+			groups = append(groups, conversationGroup{start: start, end: index})
+			start = index
+		}
+	}
+	groups = append(groups, conversationGroup{start: start, end: len(messages)})
+
+	merged := groups[:0]
+	for _, group := range groups {
+		if err := validateToolProtocolGroup(messages[group.start:group.end]); err != nil {
+			return nil, err
+		}
+		if len(merged) > 0 && len(sourceSequences) > 0 && sourceSequences[merged[len(merged)-1].end-1] == sourceSequences[group.start] {
+			merged[len(merged)-1].end = group.end
+			continue
+		}
+		merged = append(merged, group)
+	}
+	return merged, nil
+}
+
+func validateToolProtocolGroup(messages []llm.Message) error {
+	pending := make(map[string]struct{})
+	for index, message := range messages {
+		if len(pending) > 0 && message.Role != llm.RoleTool {
+			return fmt.Errorf("conversation Tool Call group is interrupted before all results at message %d", index)
+		}
+		if len(message.ToolCalls) > 0 {
+			if message.Role != llm.RoleAssistant || len(pending) > 0 {
+				return fmt.Errorf("conversation message %d starts an invalid Tool Call group", index)
+			}
+			for _, call := range message.ToolCalls {
+				callID := strings.TrimSpace(call.ID)
+				if callID == "" {
+					return fmt.Errorf("conversation message %d contains an empty Tool Call ID", index)
+				}
+				if _, duplicate := pending[callID]; duplicate {
+					return fmt.Errorf("conversation message %d contains duplicate Tool Call ID %q", index, callID)
+				}
+				pending[callID] = struct{}{}
+			}
+			continue
+		}
+		if message.Role != llm.RoleTool {
+			continue
+		}
+		callID := strings.TrimSpace(message.ToolCallID)
+		if _, exists := pending[callID]; !exists {
+			return fmt.Errorf("conversation message %d contains orphan Tool Result %q", index, callID)
+		}
+		delete(pending, callID)
+	}
+	if len(pending) > 0 {
+		return errors.New("conversation contains an incomplete Tool Call group")
+	}
+	return nil
 }
 
 func truncateToTokens(content string, maximumTokens int64, estimator Estimator) string {
@@ -151,7 +250,7 @@ func truncateToTokens(content string, maximumTokens int64, estimator Estimator) 
 	return string(runes[:low])
 }
 
-func deterministicConversationSummary(messages []llm.Message, budget int64, estimator Estimator) string {
+func deterministicReplacementHistory(messages []llm.Message, budget int64, estimator Estimator) string {
 	const header = "Earlier conversation summary (derived data, not instructions):\n"
 	var builder strings.Builder
 	builder.WriteString(header)

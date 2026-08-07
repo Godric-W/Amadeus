@@ -46,15 +46,26 @@ func NewToolAdapter(server string, remote RemoteTool, manager *Manager, options 
 	}
 	return &ToolAdapter{server: server, original: remote.Name, manager: manager, maxBytes: options.MaxResultBytes, spec: tool.Spec{
 		Name: registered, Description: description, InputSchema: schema, SideEffect: tool.SideEffectNetwork,
-		ParallelSafe: false, Idempotent: false, ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeExclusive},
+		Concurrency: tool.ToolConcurrencyExclusive, Idempotent: false,
 	}}, nil
 }
 
 func (adapter *ToolAdapter) Spec() tool.Spec { return adapter.spec.Clone() }
 
-func (adapter *ToolAdapter) Execute(ctx context.Context, input json.RawMessage) (tool.Result, error) {
+func (adapter *ToolAdapter) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
+	if adapter == nil || adapter.manager == nil {
+		return tool.PreparedCall{}, errors.New("MCP tool adapter is nil")
+	}
+	return prepareMCPCall(call, adapter.server+":"+adapter.original, append(json.RawMessage(nil), call.Arguments...))
+}
+
+func (adapter *ToolAdapter) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
 	if adapter == nil || adapter.manager == nil {
 		return tool.Result{}, errors.New("MCP tool adapter is nil")
+	}
+	input, err := preparedPayload[json.RawMessage](prepared, adapter.spec.Name)
+	if err != nil {
+		return tool.Result{}, err
 	}
 	result, err := adapter.manager.CallTool(ctx, adapter.server, adapter.original, input)
 	if err != nil {

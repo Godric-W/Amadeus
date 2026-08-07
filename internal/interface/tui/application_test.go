@@ -517,7 +517,7 @@ func TestFullscreenModelRendersAgentEvents(t *testing.T) {
 	}
 	model := newFullscreenModel(context.Background(), app)
 	for _, item := range []event.Event{
-		event.PlanUpdated{Cycle: 1, Tasks: []event.PlanTask{{ID: "task-1", Objective: "检查项目", Status: "running"}}},
+		event.PlanUpdated{Revision: 1, Items: []event.PlanItem{{Step: "检查项目", Status: "in_progress"}}},
 		event.IterationStarted{Iteration: 1},
 		event.ToolCallStarted{CallID: "read-1", Iteration: 1, ToolName: "read_file", SideEffect: "read", ActionSummary: "Read planner.go"},
 		event.ToolCallCompleted{CallID: "read-1", Iteration: 1, ToolName: "read_file", Success: true, Summary: "读取成功"},

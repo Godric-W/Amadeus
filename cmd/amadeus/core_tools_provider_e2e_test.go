@@ -55,14 +55,7 @@ func TestCoreToolsProviderMockE2E(t *testing.T) {
 				currentRequest := requestIndex
 				mutex.Unlock()
 				writer.Header().Set("Content-Type", "text/event-stream")
-				switch currentRequest {
-				case 1:
-					fmt.Fprint(writer, providerTextFixture(api, "PLAN\n- Complete the requested code changes and verification"))
-				case len(steps) + 3:
-					fmt.Fprint(writer, providerTextFixture(api, "COMPLETE\ncore tools workflow complete"))
-				default:
-					fmt.Fprint(writer, coreToolsProviderFixture(api, currentRequest-1, steps))
-				}
+				fmt.Fprint(writer, coreToolsProviderFixture(api, currentRequest, steps))
 			}))
 			defer server.Close()
 
@@ -111,7 +104,7 @@ agent:
 			command.SetIn(strings.NewReader("s\ns\ns\ns\n"))
 			command.SetOut(&stdout)
 			command.SetErr(&stderr)
-			command.SetArgs([]string{"/plan Fix Add, clean obsolete files, create the requested artifact, and run tests"})
+			command.SetArgs([]string{"Fix Add, clean obsolete files, create the requested artifact, and run tests"})
 			if err := command.Execute(); err != nil {
 				t.Fatalf("execute %s core tools Agent: %v\nstderr=%s", api, err, stderr.String())
 			}
@@ -119,7 +112,7 @@ agent:
 			mutex.Lock()
 			captured := append([]map[string]any(nil), bodies...)
 			mutex.Unlock()
-			if len(captured) != len(steps)+3 || stdout.String() != "core tools workflow complete\n" {
+			if len(captured) != len(steps)+1 || stdout.String() != "core tools workflow complete\n" {
 				t.Fatalf("unexpected %s core tools trace: requests=%d stdout=%q stderr=%q", api, len(captured), stdout.String(), stderr.String())
 			}
 			assertCoreToolsProviderRequests(t, api, captured)
@@ -155,13 +148,9 @@ func TestCoreToolsProviderMockE2EDeniedWrite(t *testing.T) {
 				writer.Header().Set("Content-Type", "text/event-stream")
 				switch currentRequest {
 				case 1:
-					fmt.Fprint(writer, providerTextFixture(api, "PLAN\n- Attempt the requested write"))
-				case 2:
 					fmt.Fprint(writer, providerToolCallFixture(api, 1, step))
-				case 3:
-					fmt.Fprint(writer, providerTextFixture(api, "write was denied; no changes were made"))
-				case 4:
-					fmt.Fprint(writer, providerTextFixture(api, "COMPLETE\nwrite denial handled"))
+				case 2:
+					fmt.Fprint(writer, providerTextFixture(api, "write denial handled"))
 				default:
 					t.Errorf("unexpected denied-write Provider request %d", currentRequest)
 				}
@@ -170,6 +159,10 @@ func TestCoreToolsProviderMockE2EDeniedWrite(t *testing.T) {
 
 			amadeusHome := t.TempDir()
 			projectDirectory := t.TempDir()
+			if err := os.Mkdir(filepath.Join(projectDirectory, ".amadeus"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			step.arguments = map[string]any{"patch": "*** Begin Patch\n*** Add File: .amadeus/denied.txt\n+must not be written\n*** End Patch"}
 			dialect := config.DialectStandard
 			if api == config.APIResponses {
 				dialect = config.DialectOpenAI
@@ -206,30 +199,153 @@ agent:
 			command.SetIn(strings.NewReader("n\n"))
 			command.SetOut(&stdout)
 			command.SetErr(&stderr)
-			command.SetArgs([]string{"/plan Create denied.txt"})
+			command.SetArgs([]string{"Create denied.txt"})
 			if err := command.Execute(); err != nil {
 				t.Fatalf("execute %s denied-write Agent: %v\nstderr=%s", api, err, stderr.String())
 			}
 
-			if _, err := os.Stat(filepath.Join(projectDirectory, "denied.txt")); !os.IsNotExist(err) {
+			if _, err := os.Stat(filepath.Join(projectDirectory, ".amadeus", "denied.txt")); !os.IsNotExist(err) {
 				t.Fatalf("denied write changed the project: %v", err)
 			}
 			mutex.Lock()
 			captured := append([]map[string]any(nil), bodies...)
 			mutex.Unlock()
-			if len(captured) != 4 || stdout.String() != "write denial handled\n" {
+			if len(captured) != 2 || stdout.String() != "write denial handled\n" {
 				t.Fatalf("unexpected %s denied-write trace: requests=%d stdout=%q stderr=%q", api, len(captured), stdout.String(), stderr.String())
 			}
-			followUp, _ := json.Marshal(captured[2])
-			if !bytes.Contains(followUp, []byte("tool execution denied")) {
+			followUp, _ := json.Marshal(captured[1])
+			if !bytes.Contains(followUp, []byte("path_denied")) {
 				t.Fatalf("%s follow-up omitted tool denial: %s", api, followUp)
 			}
 			records := auditSink.Snapshot()
-			if len(records) != 1 || records[0].Outcome != audit.OutcomeDeny || records[0].Source != "user" || records[0].ArgumentsSHA256 == "" {
+			if len(records) != 0 {
 				t.Fatalf("unexpected denied-write audit: %#v", records)
 			}
 			if strings.Contains(stdout.String()+stderr.String(), "denied-write-secret") || strings.Contains(fmt.Sprintf("%#v", records), "must not be written") {
 				t.Fatalf("denied-write secret or arguments leaked: stdout=%q stderr=%q audit=%#v", stdout.String(), stderr.String(), records)
+			}
+		})
+	}
+}
+
+func TestCoreToolsProviderMockE2EPermissionGrant(t *testing.T) {
+	for _, api := range []config.APIMode{config.APIResponses, config.APIChatCompletions} {
+		t.Run(string(api), func(t *testing.T) {
+			externalDirectory, err := os.MkdirTemp(".", ".permission-grant-e2e-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			externalDirectory, err = filepath.Abs(externalDirectory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(externalDirectory) })
+			target := filepath.Join(externalDirectory, "granted.txt")
+			patch := "*** Begin Patch\n*** Add File: " + target + "\n+created after permission grant\n*** End Patch"
+			steps := []providerToolStep{
+				{id: "outside-write", name: "apply_patch", arguments: map[string]any{"patch": patch}},
+				{id: "grant-write", name: "request_permissions", arguments: map[string]any{"writable_roots": []string{externalDirectory}, "reason": "create the requested file outside the workspace"}},
+				{id: "outside-write-retry", name: "apply_patch", arguments: map[string]any{"patch": patch}},
+			}
+
+			var mutex sync.Mutex
+			var bodies []map[string]any
+			requestIndex := 0
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+					t.Errorf("decode permission-grant Provider request: %v", err)
+				}
+				mutex.Lock()
+				bodies = append(bodies, body)
+				requestIndex++
+				currentRequest := requestIndex
+				mutex.Unlock()
+				writer.Header().Set("Content-Type", "text/event-stream")
+				if currentRequest <= len(steps) {
+					fmt.Fprint(writer, providerToolCallFixture(api, currentRequest, steps[currentRequest-1]))
+					return
+				}
+				if currentRequest == len(steps)+1 {
+					fmt.Fprint(writer, providerTextFixture(api, "permission grant workflow complete"))
+					return
+				}
+				t.Errorf("unexpected permission-grant Provider request %d", currentRequest)
+			}))
+			defer server.Close()
+
+			amadeusHome := t.TempDir()
+			projectDirectory := t.TempDir()
+			dialect := config.DialectStandard
+			if api == config.APIResponses {
+				dialect = config.DialectOpenAI
+			}
+			writeCommandConfig(t, filepath.Join(amadeusHome, "config.yaml"), fmt.Sprintf(`
+default_provider: mock
+providers:
+  mock:
+    api: %s
+    dialect: %s
+    api_key: permission-grant-secret
+    base_url: %s/v1
+    model: mock-model
+    max_retries: 0
+agent:
+  max_iterations: 6
+  max_tool_calls: 4
+  max_input_tokens: 100000
+  max_output_tokens: 10000
+  max_duration: 2m
+  max_parallel_tools: 1
+`, api, dialect, server.URL))
+
+			runtime := commandRuntime{
+				amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
+				terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
+				auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
+				runIDFactory:     func() string { return "permission-grant-" + string(api) },
+			}
+			command := newRootCommandWithRuntime(&configFlags{}, runtime)
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			command.SetIn(strings.NewReader("y\n"))
+			command.SetOut(&stdout)
+			command.SetErr(&stderr)
+			command.SetArgs([]string{"Create the requested file outside the workspace"})
+			if err := command.Execute(); err != nil {
+				t.Fatalf("execute %s permission-grant Agent: %v\nstderr=%s", api, err, stderr.String())
+			}
+
+			content, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatalf("read granted target: %v", err)
+			}
+			if string(content) != "created after permission grant\n" {
+				t.Fatalf("unexpected granted target content: %q", content)
+			}
+			mutex.Lock()
+			captured := append([]map[string]any(nil), bodies...)
+			mutex.Unlock()
+			if len(captured) != 4 || stdout.String() != "permission grant workflow complete\n" {
+				t.Fatalf("unexpected %s permission-grant trace: requests=%d stdout=%q stderr=%q", api, len(captured), stdout.String(), stderr.String())
+			}
+			permissionRequired, _ := json.Marshal(captured[1])
+			if !bytes.Contains(permissionRequired, []byte("permission_required")) || !bytes.Contains(permissionRequired, []byte(externalDirectory)) {
+				t.Fatalf("%s permission-required feedback is incomplete: %s", api, permissionRequired)
+			}
+			permissionGranted, _ := json.Marshal(captured[2])
+			if !bytes.Contains(permissionGranted, []byte("retry_original_tool")) || !bytes.Contains(permissionGranted, []byte(`\"scope\":\"run\"`)) {
+				t.Fatalf("%s permission-grant feedback is incomplete: %s", api, permissionGranted)
+			}
+			patchSucceeded, _ := json.Marshal(captured[3])
+			if !bytes.Contains(patchSucceeded, []byte("granted.txt")) {
+				t.Fatalf("%s retried patch result is incomplete: %s", api, patchSucceeded)
+			}
+			if strings.Contains(stdout.String()+stderr.String(), "permission-grant-secret") {
+				t.Fatalf("permission-grant secret leaked: stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+			if strings.Contains(stderr.String(), "diff attribution unavailable") {
+				t.Fatalf("permission-granted patch was not attributed by Run Diff: %s", stderr.String())
 			}
 		})
 	}
@@ -245,10 +361,7 @@ func coreToolsProviderFixture(api config.APIMode, requestIndex int, steps []prov
 		}
 		return chatTextFixture("core_tools_final", "core tools workflow complete")
 	}
-	if api == config.APIResponses {
-		return responsesTextFixture("core_tools_reflect", `{"scope":"task","verdict":"accept"}`)
-	}
-	return chatTextFixture("core_tools_reflect", `{"scope":"task","verdict":"accept"}`)
+	return providerTextFixture(api, "unexpected request")
 }
 
 func providerToolCallFixture(api config.APIMode, sequence int, step providerToolStep) string {
@@ -288,14 +401,14 @@ func assertCoreToolsProviderRequests(t *testing.T, api config.APIMode, captured 
 		request  int
 		contains string
 	}{
-		{request: 3, contains: "return left - right"},
-		{request: 4, contains: "calc.go"},
-		{request: 5, contains: "patch conflict"},
-		{request: 6, contains: "return left - right"},
-		{request: 7, contains: "applied 2 patch operation"},
-		{request: 8, contains: "generated.txt"},
-		{request: 9, contains: "tool execution denied"},
-		{request: 10, contains: "example.com/coretools"},
+		{request: 2, contains: "return left - right"},
+		{request: 3, contains: "calc.go"},
+		{request: 4, contains: "patch conflict"},
+		{request: 5, contains: "return left - right"},
+		{request: 6, contains: "applied 2 patch operation"},
+		{request: 7, contains: "generated.txt"},
+		{request: 8, contains: "tool execution denied"},
+		{request: 9, contains: "example.com/coretools"},
 	}
 	for _, check := range checks {
 		encoded, _ := json.Marshal(captured[check.request-1])
@@ -322,14 +435,19 @@ func assertCoreToolsProject(t *testing.T, projectDirectory string) {
 
 func assertCoreToolsAudit(t *testing.T, records []audit.Record) {
 	t.Helper()
-	if len(records) != 8 {
+	if len(records) != 7 {
 		t.Fatalf("unexpected core tools audit count: %#v", records)
 	}
-	blocked := records[6]
+	for _, record := range records {
+		if record.RequestID == "patch-conflict" {
+			t.Fatalf("prepare-failed patch unexpectedly reached authorization audit: %#v", record)
+		}
+	}
+	blocked := records[5]
 	if blocked.ToolName != "execute_command" || blocked.Outcome != audit.OutcomeDeny || blocked.Risk != "blocked" || blocked.ArgumentsSHA256 == "" {
 		t.Fatalf("dangerous Shell fallback was not blocked and hashed: %#v", blocked)
 	}
-	if records[7].ToolName != "execute_command" || records[7].Outcome != audit.OutcomeAllow || records[7].ArgumentsSHA256 == "" {
-		t.Fatalf("test command audit is invalid: %#v", records[7])
+	if records[6].ToolName != "execute_command" || records[6].Outcome != audit.OutcomeAllow || records[6].ArgumentsSHA256 == "" {
+		t.Fatalf("test command audit is invalid: %#v", records[6])
 	}
 }

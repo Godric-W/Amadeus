@@ -1,117 +1,108 @@
 package project
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func TestPathGuardResolvesExistingPathsInsideRoot(t *testing.T) {
-	rootPath := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(rootPath, "real"), 0o700); err != nil {
-		t.Fatalf("create real directory: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(rootPath, "real", "file.txt"), []byte("ok"), 0o600); err != nil {
-		t.Fatalf("write real file: %v", err)
-	}
-	if err := os.Symlink(filepath.Join(rootPath, "real"), filepath.Join(rootPath, "alias")); err != nil {
-		t.Fatalf("create internal symlink: %v", err)
-	}
-	guard := newTestPathGuard(t, rootPath)
-	file, err := guard.ResolveExisting("alias/file.txt", PathFile)
-	if err != nil || file != filepath.Join(rootPath, "real", "file.txt") {
-		t.Fatalf("unexpected guarded file: path=%q err=%v", file, err)
-	}
-	directory, err := guard.ResolveExisting("alias", PathDirectory)
-	if err != nil || directory != filepath.Join(rootPath, "real") {
-		t.Fatalf("unexpected guarded directory: path=%q err=%v", directory, err)
-	}
-}
-
-func TestPathGuardRejectsLexicalAndSymlinkEscapes(t *testing.T) {
-	rootPath := t.TempDir()
+func TestFileSystemPolicyReadHostAndPermissionStores(t *testing.T) {
+	workspace := t.TempDir()
 	external := t.TempDir()
-	if err := os.WriteFile(filepath.Join(external, "secret.txt"), []byte("secret"), 0o600); err != nil {
-		t.Fatalf("write external file: %v", err)
+	runStore := NewPermissionStore()
+	sessionStore := NewPermissionStore()
+	policy, err := NewFileSystemPolicy(FileSystemPolicyOptions{
+		CWD:            workspace,
+		Profile:        PermissionProfile{ReadHost: true, WorkspaceRoots: []string{workspace}},
+		RunPermissions: runStore, SessionPermissions: sessionStore,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := os.Symlink(external, filepath.Join(rootPath, "escape")); err != nil {
-		t.Fatalf("create escaping symlink: %v", err)
+	file := filepath.Join(external, "read.txt")
+	if err := os.WriteFile(file, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	guard := newTestPathGuard(t, rootPath)
-	for _, path := range []string{"../outside", filepath.Join(string(filepath.Separator), "tmp", "outside"), "escape/secret.txt"} {
-		if _, err := guard.ResolveExisting(path, PathAny); err == nil {
-			t.Fatalf("expected guarded existing path %q to fail", path)
-		}
+	if resolved, err := policy.ResolveExisting(file, PathFile); err != nil || resolved.RootSource != RootSourceHost {
+		t.Fatalf("host read: %#v %v", resolved, err)
 	}
-	if _, err := guard.ResolveForWrite("escape/new.txt"); err == nil || !strings.Contains(err.Error(), "outside project root") {
-		t.Fatalf("unexpected guarded write escape error: %v", err)
+	target := filepath.Join(external, "write.txt")
+	if _, err := policy.ResolveForWrite(target); !errors.Is(err, ErrPermissionRequired) {
+		t.Fatalf("expected permission_required, got %v", err)
 	}
-}
-
-func TestPathGuardValidatesWriteAncestorsAndTargets(t *testing.T) {
-	rootPath := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(rootPath, "real"), 0o700); err != nil {
-		t.Fatalf("create real directory: %v", err)
+	if err := runStore.GrantWritableRoots([]string{external}); err != nil {
+		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(rootPath, "real"), filepath.Join(rootPath, "alias")); err != nil {
-		t.Fatalf("create internal directory symlink: %v", err)
+	if resolved, err := policy.ResolveForWrite(target); err != nil || resolved.RootSource != RootSourceRun {
+		t.Fatalf("run grant: %#v %v", resolved, err)
 	}
-	guard := newTestPathGuard(t, rootPath)
-	path, err := guard.ResolveForWrite("alias/new/deep.txt")
-	if err != nil || path != filepath.Join(rootPath, "alias", "new", "deep.txt") {
-		t.Fatalf("unexpected guarded write path: path=%q err=%v", path, err)
+	runStore.Clear()
+	if err := sessionStore.GrantWritableRoots([]string{external}); err != nil {
+		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(rootPath, "target.txt"), []byte("old"), 0o600); err != nil {
-		t.Fatalf("write target file: %v", err)
-	}
-	if err := os.Symlink(filepath.Join(rootPath, "target.txt"), filepath.Join(rootPath, "link.txt")); err != nil {
-		t.Fatalf("create target symlink: %v", err)
-	}
-	if _, err := guard.ResolveForWrite("link.txt"); err == nil || !strings.Contains(err.Error(), "cannot be a symlink") {
-		t.Fatalf("unexpected write symlink error: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(rootPath, "parent"), []byte("file"), 0o600); err != nil {
-		t.Fatalf("write parent file: %v", err)
-	}
-	if _, err := guard.ResolveForWrite("parent/child.txt"); err == nil || !strings.Contains(err.Error(), "parent is not a directory") {
-		t.Fatalf("unexpected non-directory parent error: %v", err)
+	if resolved, err := policy.ResolveForWrite(target); err != nil || resolved.RootSource != RootSourceSession {
+		t.Fatalf("session grant: %#v %v", resolved, err)
 	}
 }
 
-func TestPathGuardValidatesTypesAndConstruction(t *testing.T) {
-	rootPath := t.TempDir()
-	if err := os.WriteFile(filepath.Join(rootPath, "file"), []byte("x"), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
+func TestFileSystemPolicyReadOnlyAndDeniedCannotBeGranted(t *testing.T) {
+	workspace := t.TempDir()
+	readOnly := filepath.Join(workspace, "readonly")
+	denied := filepath.Join(workspace, "denied")
+	if err := os.MkdirAll(readOnly, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	guard := newTestPathGuard(t, rootPath)
-	if _, err := guard.ResolveExisting("file", PathDirectory); err == nil || !strings.Contains(err.Error(), "not a directory") {
-		t.Fatalf("unexpected directory type error: %v", err)
+	if err := os.MkdirAll(denied, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := guard.ResolveExisting(".", PathFile); err == nil || !strings.Contains(err.Error(), "not a regular file") {
-		t.Fatalf("unexpected file type error: %v", err)
+	store := NewPermissionStore()
+	if err := store.GrantWritableRoots([]string{readOnly, denied}); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := guard.ResolveExisting("file", "socket"); err == nil || !strings.Contains(err.Error(), "expected type") {
-		t.Fatalf("unexpected invalid type error: %v", err)
+	policy, err := NewFileSystemPolicy(FileSystemPolicyOptions{
+		CWD:            workspace,
+		Profile:        PermissionProfile{ReadHost: true, WorkspaceRoots: []string{workspace}, ReadOnlyRoots: []string{readOnly}, DeniedRoots: []string{denied}},
+		RunPermissions: store,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := NewPathGuard(Root{}); err == nil {
-		t.Fatal("expected empty root guard construction to fail")
+	if _, err := policy.ResolveForWrite(filepath.Join(readOnly, "x")); !errors.Is(err, ErrPathDenied) {
+		t.Fatalf("read-only grant bypassed: %v", err)
 	}
-	var nilGuard *PathGuard
-	if _, err := nilGuard.ResolveExisting(".", PathAny); err == nil {
-		t.Fatal("expected nil path guard to fail")
+	if _, err := policy.ResolveExisting(denied, PathDirectory); !errors.Is(err, ErrPathDenied) {
+		t.Fatalf("denied read bypassed: %v", err)
+	}
+	if _, err := policy.ResolveGrantRoot(readOnly); !errors.Is(err, ErrPathDenied) {
+		t.Fatalf("read-only permission request accepted: %v", err)
 	}
 }
 
-func newTestPathGuard(t *testing.T, rootPath string) *PathGuard {
+func TestPathGuardCanonicalizesSymlinksAndWriteAncestors(t *testing.T) {
+	workspace := t.TempDir()
+	real := filepath.Join(workspace, "real")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(workspace, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := NewPathGuard(NewRootForTest(t, workspace))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := guard.ResolveForWrite("alias/new/file.txt")
+	if err != nil || resolved != filepath.Join(real, "new", "file.txt") {
+		t.Fatalf("canonical write: %q %v", resolved, err)
+	}
+}
+
+func NewRootForTest(t *testing.T, path string) Root {
 	t.Helper()
-	root, err := NewRoot(rootPath)
+	root, err := NewRoot(path)
 	if err != nil {
-		t.Fatalf("create project root: %v", err)
+		t.Fatal(err)
 	}
-	guard, err := NewPathGuard(root)
-	if err != nil {
-		t.Fatalf("create path guard: %v", err)
-	}
-	return guard
+	return root
 }

@@ -71,7 +71,7 @@ func openSessionCoordinator(ctx context.Context, runtime commandRuntime, project
 	return coordinator, closer, nil
 }
 
-func writeSessionList(output io.Writer, sessions []sessiondomain.ConversationSession) error {
+func writeSessionList(output io.Writer, sessions []sessiondomain.Session) error {
 	if output == nil {
 		return errors.New("session list output is nil")
 	}

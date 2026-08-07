@@ -34,7 +34,7 @@ PlanExecuteAgent.java
   └ ✔ 运行全量检查与竞态测试
     ✔ 逐项审计 M6R 验收要求
     ✔ 修复代码与测试残留
-    ✔ 同步架构审计和进度文档
+    ✔ 同步设计和进度文档
     ✔ 执行最终发布前验证
 
 • Working (40s • esc to interrupt)        //这里的"•"是实心与空心交替显示表示"Working"，同时Working有一个动态效果，像是一盏灯循环从左往右的照Working

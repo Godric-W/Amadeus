@@ -88,7 +88,7 @@ func (handler *TerminalApprovalHandler) interactiveDecision(ctx context.Context,
 			}
 			return policy.ApprovalDecision{}, fmt.Errorf("read terminal approval: %w", err)
 		}
-		if decision, ok := parseApprovalChoice(line); ok {
+		if decision, ok := parseApprovalChoiceForPurpose(line, request.Purpose); ok {
 			return decision, nil
 		}
 		if _, err := io.WriteString(handler.output, "Invalid choice. Enter y, s, or n: "); err != nil {
@@ -98,10 +98,14 @@ func (handler *TerminalApprovalHandler) interactiveDecision(ctx context.Context,
 }
 
 func writeApprovalPrompt(writer io.Writer, request policy.ApprovalRequest) error {
+	first := "once"
+	if request.Purpose == policy.ApprovalPurposePermission {
+		first = "this run"
+	}
 	_, err := fmt.Fprintf(writer,
-		"Approval required\n  request: %s\n  tool: %s\n  risk: %s\n  reason: %s\n  arguments_sha256: %s\nAllow? [y] once / [s] session / [n] deny: ",
+		"Approval required\n  request: %s\n  tool: %s\n  risk: %s\n  reason: %s\n  arguments_sha256: %s\nAllow? [y] %s / [s] session / [n] deny: ",
 		sanitizeApprovalText(request.ID), sanitizeApprovalText(request.ToolName), request.Risk,
-		sanitizeApprovalText(request.Reason), request.ArgumentsSHA256,
+		sanitizeApprovalText(request.Reason), request.ArgumentsSHA256, first,
 	)
 	if err != nil {
 		return fmt.Errorf("write terminal approval prompt: %w", err)
@@ -110,13 +114,21 @@ func writeApprovalPrompt(writer io.Writer, request policy.ApprovalRequest) error
 }
 
 func parseApprovalChoice(input string) (policy.ApprovalDecision, bool) {
+	return parseApprovalChoiceForPurpose(input, policy.ApprovalPurposeCommand)
+}
+
+func parseApprovalChoiceForPurpose(input string, purpose policy.ApprovalPurpose) (policy.ApprovalDecision, bool) {
+	firstScope, firstReason := policy.ApprovalOnce, "user approved once"
+	if purpose == policy.ApprovalPurposePermission {
+		firstScope, firstReason = policy.ApprovalRun, "user approved for the run"
+	}
 	switch strings.ToLower(strings.TrimSpace(input)) {
 	case "y", "yes":
-		return userApprovalDecision(policy.ApprovalAllow, policy.ApprovalOnce, "user approved once"), true
+		return userApprovalDecision(policy.ApprovalAllow, firstScope, firstReason), true
 	case "s", "session":
 		return userApprovalDecision(policy.ApprovalAllow, policy.ApprovalSession, "user approved for the session"), true
 	case "n", "no", "deny":
-		return userApprovalDecision(policy.ApprovalDeny, policy.ApprovalOnce, "user denied the request"), true
+		return userApprovalDecision(policy.ApprovalDeny, firstScope, "user denied the request"), true
 	default:
 		return policy.ApprovalDecision{}, false
 	}

@@ -52,8 +52,6 @@ func PresentCall(spec Spec, call Call) CallPresentation {
 		return CallPresentation{ActionSummary: joinAction("Read skill", value("name"))}
 	case "apply_patch":
 		return CallPresentation{ActionSummary: "Applied patch"}
-	case "revert_run":
-		return CallPresentation{ActionSummary: "Reverted changes"}
 	case "execute_command":
 		command := value("command")
 		if command == "" {

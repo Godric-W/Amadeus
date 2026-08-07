@@ -184,11 +184,8 @@ func validateSpec(spec Spec) error {
 	if !spec.SideEffect.Valid() {
 		return fmt.Errorf("%w: side effect %q is unsupported", ErrInvalidSpec, spec.SideEffect)
 	}
-	if !spec.ResourceStrategy.Mode.Valid() {
-		return fmt.Errorf("%w: resource mode %q is unsupported", ErrInvalidSpec, spec.ResourceStrategy.Mode)
-	}
-	if spec.ResourceStrategy.Mode == ResourceModeArguments && len(spec.ResourceStrategy.ArgumentPaths) == 0 {
-		return fmt.Errorf("%w: argument resource strategy has no paths", ErrInvalidSpec)
+	if !spec.Concurrency.Valid() {
+		return fmt.Errorf("%w: concurrency %q is unsupported", ErrInvalidSpec, spec.Concurrency)
 	}
 	return nil
 }

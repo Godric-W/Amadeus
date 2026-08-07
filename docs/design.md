@@ -1,9 +1,9 @@
 # Amadeus 架构设计
 
-> 状态：Draft v0.4
+> 状态：Draft v0.5
 > 创建日期：2026-07-29
-> 最近修订：2026-08-04
-> 输入依据：`docs/thought.md`、`../paicli-main` 当前代码、WeKnora ReAct 实现研究
+> 最近修订：2026-08-07
+> 输入依据：`docs/thought.md`、PaiCLI、WeKnora 与 `../codex-main` Agent Runtime 源码研究
 > 目标语言：Go
 > 产品形态：本地 Agent CLI，后续可复用同一运行时提供 Runtime API
 
@@ -24,9 +24,9 @@ Amadeus 的目标是实现面向真实软件工程任务的通用 Agent CLI。`.
 
 `paicli-main` 当前包含以下能力域：
 
-- 三条 Agent 路径：ReAct、Plan-and-Execute、Multi-Agent。
+- 历史能力包含 ReAct、Plan-and-Execute 与 Multi-Agent；目标架构只保留统一 Reactor，并把计划和委派收敛为 Tool/Runtime 能力。
 - OpenAI-compatible LLM 调用、流式输出、工具调用和多模态消息。
-- 文件、代码搜索、Shell、Web、Browser、Memory、Skill、Snapshot 等工具。
+- 文件、代码搜索、Shell、Web、Browser、Memory、Skill 与 Turn/Run Diff 等能力。
 - HITL 审批、路径围栏、命令快速拒绝和审计日志。
 - Prompt 分层覆盖、上下文压缩和长期记忆。
 - MCP stdio/streamable HTTP、资源与 `@mention`。
@@ -41,14 +41,14 @@ Amadeus 的目标是实现面向真实软件工程任务的通用 Agent CLI。`.
 | Plan | `agent/PlanExecuteAgent.java` | 生成计划、审阅计划、按任务依赖执行 |
 | Team | `agent/AgentOrchestrator.java` | 角色分工、子 Agent 执行、结果汇总 |
 
-三条路径共享 LLM、工具、记忆、Prompt、渲染、安全策略与取消机制。Go 版应将这些共享能力下沉到统一 Runtime，而不是在每种 Agent 中重复编排。
+这些历史路径共享 LLM、工具、记忆、Prompt、渲染、安全策略与取消机制。Go 版应将共享能力下沉到统一 Reactor、RunRuntime 与 Tool Runtime；原项目的 Plan-and-Execute 只作为历史分析，不进入目标主链。
 
 ### 2.3 原项目的主要结构问题
 
 1. `cli/Main.java` 同时承担依赖装配、启动、自检、交互循环、命令分发和模式切换。
 2. `tool/ToolRegistry.java` 同时承担工具声明、注册、参数解析、策略检查、并发执行以及大量具体工具实现。
 3. 多个 Provider Client 重复维护 OpenAI-compatible 请求逻辑。
-4. ReAct、Plan task executor 与 SubAgent 存在相似的“请求模型—执行工具—回灌结果”循环。
+4. ReAct、历史 Plan task executor 与 SubAgent 存在重复的“请求模型—执行工具—回灌结果”循环。
 5. 配置读取分散在 JSON、环境变量、`.env` 和系统属性中，优先级不够集中透明。
 6. 一些模块直接依赖控制台输出或全局环境，增加单元测试和 Runtime API 复用难度。
 
@@ -59,7 +59,7 @@ Amadeus 的目标是实现面向真实软件工程任务的通用 Agent CLI。`.
 - 提供名为 `amadeus` 的单二进制 CLI。
 - 使用 OpenAI 官方 Go SDK 作为主要模型访问实现。
 - 通过配置文件切换 `base_url`、`api_key`、`model` 和 API 模式。
-- 默认交付独立纯 ReAct 执行内核；用户显式输入 `/plan` 时，由外层 Plan-and-Execute 编排器拆分任务并复用同一个 Reactor，Multi-Agent 作为后续 placement 增强。
+- 默认交付统一 Plan-guided ReAct 执行内核；复杂任务由模型按需使用 `update_plan` 维护可见清单，`/plan` 进入只分析不实施的 Plan Mode，Multi-Agent 作为后续工具化委派增强。
 - 保持工具调用、流式输出、上下文取消、HITL 和审计能力。
 - 面向多语言、多构建系统的软件项目，不把 Go、`gopls` 或任何单一语言工具链设为核心前提。
 - 核心运行时不依赖具体 UI，可被 CLI、TUI 和 HTTP API 复用。
@@ -77,7 +77,7 @@ Amadeus 的目标是实现面向真实软件工程任务的通用 Agent CLI。`.
 
 - 第一阶段不追求与 Java TUI 像素级一致。
 - 第一阶段不同时迁移所有 Provider 专属特例。
-- 不把本地策略层描述为强隔离沙箱。
+- 不把未实现 OS 级强制的平台描述为强隔离 Sandbox；Linux Bubblewrap 可提供 Sandboxed 执行，其他平台只能明确标记为 Unsandboxed 执行。
 - 不在核心 Runtime 中硬编码某个模型名或供应商域名。
 - 不为保持类结构相似而牺牲 Go 的组合、接口和错误处理习惯。
 
@@ -104,8 +104,8 @@ Application Service
   │
   ├── Agent Engine ──────── LLM Adapter ───── OpenAI/OpenAI-compatible endpoint
   ├── Tool Executor ─────── Filesystem / Shell / Web / MCP / Browser
-  ├── Context Manager ───── Prompt / Instructions / Conversation / Skills
-  ├── Safety Pipeline ───── PathGuard / CommandGuard / HITL / Audit
+  ├── Context Manager ───── Prompt / Instructions / Canonical Rollout / Skills
+  ├── Safety Pipeline ───── PathResolver / FileSystemPolicy / Sandbox / HITL / Audit
   └── Typed EventHub ────── Renderer / API stream / Audit / Trace log
 ```
 
@@ -118,7 +118,7 @@ Application Service
 - `cmd/amadeus`：命令行入口；根命令直接启动 Coding Agent，不设置独立 `run` 子命令。
 - `internal/interface/cli`：交互循环、slash command、补全和 history。
 - `internal/interface/tui`：默认 Rich Inline TUI 与 Plain fallback。
-- `internal/interface/httpapi`：Conversation Session、Run 和事件流 API。
+- `internal/interface/httpapi`：Session、Run 和事件流 API。
 - `internal/render`：plain、inline、TUI/API event renderer。
 
 根命令语义固定为：
@@ -129,38 +129,39 @@ Application Service
 | `amadeus "<task>"` | 在当前工作目录执行一次性 Coding Agent 任务，完成后退出 |
 | `amadeus --project <path>` | 以显式项目目录进入交互模式 |
 | `amadeus --project <path> "<task>"` | 在显式项目目录执行一次性任务 |
-| `amadeus --continue` | 恢复当前项目最近活跃的 Conversation Session |
+| `amadeus --add-dir <path>` | 为当前进程增加一个附加 Workspace Root；可重复使用，不改变 Project.RootPath 或默认 CWD |
+| `amadeus --continue` | 恢复当前项目最近活跃的 Session |
 | `amadeus --resume` | 打开当前项目 Session 选择器；取消选择则返回当前对话或 Draft Session |
-| `amadeus --resume <session-id>` | 直接恢复当前项目内指定的 Conversation Session |
-| `amadeus sessions list` | 列出当前项目的 Conversation Session；首版不提供 `--all` |
+| `amadeus --resume <session-id>` | 直接恢复当前项目内指定的 Session |
+| `amadeus sessions list` | 列出当前项目的 Session；首版不提供 `--all` |
 | `printf '%s\n' '<task>' \| amadeus` | 非 TTY 时从 stdin 读取一次性任务 |
 
-`--help` 和已注册子命令继续按 CLI 语义处理；`version`、`config`、`tools`、`chat` 等管理/诊断入口不进入 Coding Agent。`amadeus chat` 保留为不装配工具和 Agent Engine 的纯聊天命令。无位置参数、stdin 非 TTY 且读取不到有效任务时返回明确错误。`AMADEUS_HOME` 只解析配置与用户级 `AGENTS.md`，目标项目默认来自启动工作目录，也可由 `--project` 覆盖。
+`--help` 和已注册子命令继续按 CLI 语义处理；`version`、`config`、`tools` 等管理/诊断入口不进入 Coding Agent。目标架构删除独立 `amadeus chat` 与 `ChatSession`；若未来需要纯聊天入口，也必须复用 SessionRuntime 与无状态 LLMRuntime，而不是恢复第二套历史。无位置参数、stdin 非 TTY 且读取不到有效任务时返回明确错误。`AMADEUS_HOME` 只解析配置与用户级 `AGENTS.md`，目标项目默认来自启动工作目录，也可由 `--project` 覆盖。
 
-交互模式使用 `/resume` 打开同一个当前项目 Session 选择器；用户按 `Esc` 时不切换 Session 并回到当前对话，因此首版不增加重复的 `/sessions` 命令。`--resume` 只表示恢复 Conversation Session，不接受 Run ID。`amadeus` 启动时只建立内存 Draft Session，`/help`、`/resume`、`/exit`、EOF 或未提交任何真实任务的进程不会写入空 Session；第一条真实用户消息到达时才原子创建 Project、Conversation Session、用户 Message 和 Run。
+交互模式使用 `/resume` 打开同一个当前项目 Session 选择器；用户按 `Esc` 时不切换 Session 并回到当前对话，因此首版不增加重复的 `/sessions` 命令。`--resume` 只表示恢复 Session，不接受 Run ID。`amadeus` 启动时只建立内存 Draft Session，`/help`、`/resume`、`/exit`、EOF 或未提交任何真实任务的进程不会写入空 Session；第一条真实用户消息到达时才原子创建 Project、Session、Run 与第一条 `user_message` RolloutItem。
 
-每条非空用户输入创建独立 Run，并为该 Run 创建可取消 Context。交互模式中的取消只终止当前 Run，父 Session 继续存在并重新接受输入；一次性模式中的取消映射为退出码 130。CLI/Application 只负责生命周期和结果映射，不以 `Turn`、`Task` 或 Provider Call 代称 Run。
+每条非空用户输入先交给 SessionRuntime；它通过 SessionCoordinator 原子创建 Run 与首条 user RolloutItem，再构造 RunContext 和可取消 RunRuntime。交互模式中的取消只终止当前 Run，父 SessionRuntime 继续存在并重新接受输入；一次性模式中的取消映射为退出码 130。CLI/Application 只负责生命周期和结果映射，不以 `Turn`、Plan Task 或 Provider Call 代称 Run。
 
 ### 6.2 Application 层
 
 负责用例编排和生命周期。
 
 - `internal/app/bootstrap`：加载配置并装配依赖。
-- `internal/app/session`：会话状态、slash command 和取消。
+- `internal/app/session`：SessionRuntime 生命周期、slash command、resume 和取消。
 - `internal/app/command`：本地命令处理。
-- `internal/app/task`：后台任务用例。
+- `internal/app/runtime`：RunRuntime 启动与结果映射；后台任务后置。
 
 ### 6.3 Domain/Runtime 层
 
 包含 Agent 的稳定业务模型。
 
 - `internal/agent/react`：独立 Reactor；按 Think、Analyze、Act、Observe 组织模型/工具循环，不依赖 Plan、Graph 或 Task Domain。
-- `internal/agent/plan`：显式 `/plan` 的外层编排；负责 Planner、宽容 Planning Protocol、ExecutionGraph、串行 ready-task 选择、Replanner 与 `ReActTaskExecutor`，不拥有第二套 Agent 循环。
-- `internal/agent/runtime`：Provider Call 与流式事件基础设施；不得用 Turn 语义表示用户 Run。
+- `internal/agent/plan`：轻量 `PlanState/PlanItem` 与 `update_plan` Tool；只维护模型可见清单和事件投影，不调度 Reactor。
+- `internal/agent/runtime`：`RunContext/RunRuntime/RunState/RequestContext`、取消/收尾与 `LLMRuntime`；不得用 Turn 或 Plan Task 代称用户 Run。
 - `internal/agent/event`：Runtime 强类型事件、Metadata Record、同步 Publisher、Fanout 与 UI/API channel subscription adapter。
 - `internal/agent/team`：把独立只读 Task 委派给最多两个临时 SubAgent；SubAgent 仍复用同一个 Reactor。
-- `internal/conversation`：消息、内容块和上下文压缩。
-- `internal/context`：为单次 LLM 请求构建受预算约束的 ContextView。
+- `internal/session`：持久化 Domain、SessionRuntime、SessionHistory、RolloutAppender 与 SQLite Store。
+- `internal/context`：为每次模型采样构建 RequestContext 和受预算约束的 RequestView。
 - `internal/instruction`：用户级、项目级和目录级 `AGENTS.md` 的发现、作用域、优先级与来源追踪。
 - `internal/prompt`：Prompt 分层装配。
 - `internal/tool`：工具协议、注册表和执行器。
@@ -172,16 +173,16 @@ Application Service
 - `internal/llm/openai`：官方 OpenAI Go SDK Adapter。
 - `internal/config`：配置文件、环境变量和 CLI override 合并。
 - `internal/logging`：结构化日志初始化、级别过滤和敏感属性脱敏。
-- `internal/store`：SQLite/JSONL/文件存储。
+- `internal/store`：SQLite canonical rollout、文件存储与独立 Audit JSONL Sink。
 - `internal/mcp`、`internal/websearch`、`internal/webfetch`、`internal/browser`。
-- `internal/skill`、`internal/snapshot`。
+- `internal/skill`、`internal/diff`。
 - `internal/policy`：路径、命令、审批和审计实现。
 
 ## 7. 建议目录结构
 
 ```text
 amadeus/
-├── cmd/amadeus/main.go
+├── cmd/amadeus/
 ├── configs/amadeus.example.yaml
 ├── docs/
 │   ├── thought.md
@@ -191,43 +192,41 @@ amadeus/
 │   ├── app/
 │   │   ├── bootstrap/
 │   │   ├── command/
-│   │   ├── session/
-│   │   └── task/
+│   │   └── runtime/
+│   ├── session/
+│   │   └── sqlite/
 │   ├── agent/
-│   │   ├── engine/
 │   │   ├── runtime/
 │   │   ├── react/
 │   │   ├── plan/
-│   │   ├── reflect/
+│   │   ├── event/
 │   │   └── team/
-│   ├── config/
-│   ├── conversation/
 │   ├── context/
+│   ├── instruction/
+│   ├── prompt/
 │   ├── llm/
 │   │   └── openai/
 │   ├── tool/
 │   │   ├── builtin/
-│   │   └── executor/
+│   │   └── patch/
+│   ├── process/
 │   ├── policy/
-│   ├── prompt/
-│   ├── instruction/
 │   ├── mcp/
 │   ├── skill/
-│   ├── snapshot/
-│   ├── runtimeapi/
-│   ├── render/
+│   ├── diff/
+│   ├── workspace/
 │   ├── websearch/
 │   ├── webfetch/
-│   ├── browser/
-│   ├── image/
-│   └── store/
+│   ├── interface/
+│   │   ├── cli/
+│   │   └── tui/
+│   └── render/
 ├── prompts/
-├── skills/
 ├── go.mod
 └── go.sum
 ```
 
-初期实现不应一次创建所有空包。目录随进度文档中的阶段逐步增加。
+初期实现不创建空包。`internal/session` 拥有持久化 Domain、SessionRuntime、SessionHistory 与 RolloutAppender，`internal/agent/runtime` 拥有 RunContext/RunRuntime/RunState/RequestContext 与 LLMRuntime，`internal/agent/react` 拥有唯一执行循环，`internal/agent/plan` 只保存 PlanState 与 `update_plan`。旧 `engine/reflect`、DAG Planner 和第二套执行器不进入目标目录。
 
 ## 8. 核心领域模型
 
@@ -302,28 +301,74 @@ llm.StreamChunk / llm.ToolCall
 ```go
 type Tool interface {
     Spec() Spec
-    Execute(ctx context.Context, input json.RawMessage) (Result, error)
+    Prepare(context.Context, ToolInvocation) (PreparedToolCall, error)
+    Execute(context.Context, PreparedToolCall) (ToolOutcome, error)
 }
 
-type Result struct {
-    Text     string
-    Parts    []ContentPart
-    Metadata map[string]any
-    Partial  bool
+type ToolInvocation struct {
+    SessionID SessionID
+    RunID     RunID
+    Call      ToolCall
+    Source    ToolCallSource
+    Workspace WorkspaceContext
+    Permissions EffectivePermissionProfile
+    Request   *RequestContext
+}
+
+type ToolOutcome struct {
+    CallID    string
+    ToolName  string
+    Status    ToolOutcomeStatus
+    Content   []ContentPart
+    Metadata  map[string]any
+    Error     *ToolError
+    Partial   bool
+    Duration  time.Duration
+    Artifacts []ArtifactRef
+}
+
+type PreparedToolCall struct {
+    invocation ToolInvocation
+    arguments  json.RawMessage
+    targets    []PreparedTarget
+    payload    PreparedPayload
+}
+
+type PreparedTarget struct {
+    Kind          TargetKind
+    RequestedPath string
+    CanonicalPath string
+    Access        FileSystemAccess
+    MatchedRoot   string
+    Source        PermissionSource
 }
 
 type Spec struct {
-    Name             string
-    Description      string
-    InputSchema      json.RawMessage
-    SideEffect       SideEffect
-    ParallelSafe     bool
-    Idempotent       bool
-    ResourceStrategy ResourceStrategy
+    Name        string
+    Description string
+    InputSchema json.RawMessage
+    SideEffect  SideEffect
+    Concurrency ToolConcurrency
+    Idempotent  bool
 }
 ```
 
-工具定义与工具实现分离；注册表只负责查找和快照，不实现具体业务。工具是否可以并行不能只由 Provider 的 `parallel_tool_calls` 决定，还必须考虑副作用、资源冲突和审批策略。例如多个只读搜索可以并行，写同一文件、写后执行命令或 Git 操作必须保持顺序。
+`ToolConcurrency` 只有 `shared/exclusive` 两种语义：Shared Tool 可以在 `max_parallel_tools` 范围内与其他 Shared Tool 并行；Exclusive Tool 必须等待之前的 Shared Tool 完成，并阻止后续 Tool 进入，直到自身结束。它是 Run 级 Tool admission gate，不是文件系统读写锁。
+
+`TargetStrategy` 从目标架构删除。它把文件路径、搜索 query、URL、Skill 名称和 Process ID 混为 `ArgumentPaths`，既没有成为权限事实源，也迫使 ToolAuthorizer 继续按 Tool 名称硬编码第二套 target 提取逻辑。目标信息改由 Tool 的 `Prepare` 阶段根据自身 schema 和领域语义产生：文件工具返回规范化 `PreparedTarget`，`execute_command` 返回已解析 cwd 与命令评估输入，MCP/Web/Process 使用各自明确的 Prepared Payload 和展示器，不再通过一个泛化字段猜测目标。
+
+`PreparedToolCall` 是 schema 校验之后、授权与执行之前的 Run-local 不可变对象。其字段不导出，通过只读 accessor 返回 clone，不能在 Approval 后被 Tool 或 Hook 改写；它只存在于当前调用内存中，不写入 canonical rollout。Rollout 仍持久化规范化 Tool Call 与最终 ToolOutcome，Prepared Payload 只缓存已解析 Patch Document、canonical path、cwd、MCP binding target 等可重复使用的执行数据，避免 Authorizer 和 Tool 各自重新解析原始参数。
+
+工具定义与可执行 Runtime 绑定注册；注册表/ToolRouter 负责发现、可见性、查找和调度，不实现具体业务。`ToolInvocation` 只暴露工具真正需要的受限 Run、Workspace、Effective Permission 与 Request 能力，不能让每个工具任意操作完整 SessionRuntime。Provider 的 `parallel_tool_calls` 只表示模型可能在同一响应产生多个调用，真正执行仍由 Tool Spec 的 Shared/Exclusive 声明、并发上限、审批和取消共同决定。首版读取、搜索、图片、Web 和明确只读的 MCP Tool 可声明 Shared；`apply_patch`、`execute_command`、`write_stdin`、未知 MCP Tool 和所有无法证明安全并行的调用统一 Exclusive。
+
+`ToolOutcome` 是一次工具执行的唯一结果事实，并投影为四个受控视图：
+
+1. Model Projection：转换为 `tool_result`，回灌模型并进入 canonical rollout；
+2. UI Projection：生成安全、有限的 Tool Action Summary 与专用事件；
+3. Audit Projection：记录参数摘要、审批、状态、时长和副作用；
+4. Hook Projection：为 PostToolUse、RunDiffTracker 或扩展提供稳定结构。
+
+普通参数错误、审批拒绝、命令非零退出、超时和用户中断都应返回结构化 ToolOutcome，只有无法安全转换为模型可见结果的内部故障才返回 fatal Go error。首版状态至少包括 `succeeded/failed/denied/interrupted`；`Partial` 单独表达失败或中断前可能已经发生部分副作用。
 
 M2-01～M2-03 已在 `internal/tool` 落地 Provider/UI 无关的 `Spec/Call/Result/Tool/Executor`，并实现并发安全 Registry。工具输入使用 JSON Schema Draft 2020-12 校验，禁止外部 `$ref`；当前受限 repair 已处理尾随逗号和字符串完整时缺失的 `}`/`]`，repair 后仍必须重新通过严格 JSON 解析和 Schema 校验。
 
@@ -341,7 +386,12 @@ invalid                              │
                     ↓
 normalized Tool Call
     ↓
-PathGuard / CommandGuard / Approval / Audit / Execute / Replay
+Tool.Prepare
+    ├── PathResolver / FileSystemPolicy
+    ├── domain parsing（Patch / Process / MCP / Web）
+    └── PreparedToolCall
+                    ↓
+ExecPolicy / Permission / Approval / Audit / Execute / Replay
 ```
 
 保守 repair 只允许可证明不改变业务结构的语法恢复：
@@ -358,525 +408,398 @@ PathGuard / CommandGuard / Approval / Audit / Execute / Replay
 - 猜测修复单引号、未引用 key 或 `key=value`；
 - string/number/array/object 之间的类型强制转换；
 - 补造必填字段、Tool 名称、Task 依赖或任何业务语义；
-- repair 后跳过 JSON Schema、PathGuard、CommandGuard 或 Approval。
+- repair 后跳过 JSON Schema、FileSystemPolicy、ExecPolicy、Sandbox、Permission 或 Approval。
 
-规范化后的 arguments 必须统一用于资源计算、审批、安全检查、审计、工具执行和 assistant Tool Call replay，不能执行修复后的参数却把原始非法 JSON 回灌给 Provider。严格解析、repair 或 Schema 校验失败时不得调用工具；Act/Observe 将结构化参数错误作为 Tool Error Observation 回灌模型，允许下一轮有限纠正，并由 ProgressMonitor 阻止相同错误无限重复。
+规范化后的 arguments 必须统一用于 `Prepare`、参数 hash、审计和持久化 Tool Call，不能执行修复后的参数却把原始非法 JSON 回灌给 Provider。授权、审批摘要与实际执行只能消费同一个 PreparedToolCall，不能回到 raw/normalized arguments 重新推导路径或领域目标。严格解析、repair、Schema 校验或 Prepare 失败时不得调用工具；Act 将错误转换为 `failed/denied` ToolOutcome 并回灌模型，允许下一轮有限纠正，并由 ProgressMonitor 阻止相同调用和相同结果无限重复。
 
-该 repair 仅属于 Tool/MCP 参数协议容错，不适用于 Planner 的业务语义。Plan-and-Execute 继续使用 `PLAN/COMPLETE` 宽容行协议和程序生成 DAG；JSON repair 不能修复错误依赖、循环图、错误 side effect 或缺失任务，因此不得作为恢复复杂 Planner JSON 的理由。
+该 repair 仅属于 Tool/MCP 参数协议容错，不适用于 PlanState、Plan Mode 文本或任何业务语义。目标架构不解析 Planner JSON，也不根据模型输出构建 DAG。
 
-### 8.4 Session、Message 与 Run
+### 8.4 Session、SessionRuntime、RunContext 与 RunRuntime
 
-产品和持久化语义只使用 `Project → ConversationSession → Message/Run`：
+Amadeus 不使用 `Turn` 作为核心业务语义。Codex 的一次用户 Turn 对应 Amadeus 的一个 Run；持久化层以 Project、Session、Run 与 append-only RolloutItem 为核心，活动执行层增加 SessionRuntime、RunContext、RunRuntime、RunState 与 RequestContext。`ChatSession` 直接删除；若未来保留纯聊天入口，也必须复用统一 `SessionRuntime + LLMRuntime`，不得再次维护独立内存历史。
 
 ```go
-type ConversationSession struct {
-    ID        SessionID
-    ProjectID ProjectID
-    Title     string
-    Status    SessionStatus
-}
+type SessionID string
+type RunID string
 
-type Message struct {
-    ID        MessageID
-    SessionID SessionID
-    RunID     RunID
-    Sequence  int64
-    Role      MessageRole
-    Content   string
+type Session struct {
+    ID              SessionID
+    ProjectID       ProjectID
+    Title           string
+    Status          SessionStatus
+    NextRunSequence int64
+    NextItemSequence int64
+    CreatedAt       time.Time
+    UpdatedAt       time.Time
+    LastActiveAt    time.Time
 }
 
 type Run struct {
-    ID               RunID
-    SessionID        SessionID
-    Sequence         int64
-    ContextFromRunID *RunID
-    Objective        string
-    ExecutionMode    ExecutionMode
-    Status           RunStatus
-    StopReason       string
-    Usage            Usage
+    ID         RunID
+    SessionID  SessionID
+    Sequence   int64
+    Mode       RunMode
+    Status     RunStatus
+    Provider   string
+    Model      string
+    StartedAt  time.Time
+    FinishedAt *time.Time
+}
+
+type RolloutItem struct {
+    ID         RolloutItemID
+    SessionID  SessionID
+    RunID      *RunID
+    Sequence   int64
+    Kind       RolloutItemKind
+    Payload    json.RawMessage
+    CreatedAt  time.Time
 }
 ```
 
-- `ConversationSession` 是可被 `/resume` 恢复和切换的长期对话；取消当前 Agent 不会结束 Session。
-- `Message` 是正式的用户可见对话记录。真实用户输入在执行前持久化；只有 Run 成功完成才持久化正式 assistant Message。
-- `Run` 是一条真实用户输入触发的一次完整 Agent 执行，从接收目标开始，到 `completed/interrupted/failed` 结束。
-- `Run` 不是一次 Provider 请求、工具调用、ReAct 循环或 DAG Task；一次 Session 可以包含多个 Run。
-- `Turn` 不再作为核心 Domain、数据库实体或生命周期使用。UI 可以说“本轮对话”，但代码和事件必须使用更具体的 `Run`、`LLMCall` 或 `Message`。
+`Session` 表示当前项目下可恢复的长期对话；`Run` 表示一次真实用户输入触发的完整工作；`RolloutItem` 表示 Session 中真实发生并按全局序号排列的一项历史事实。普通交互中，一条非空用户输入创建新 Run，并将该用户输入作为本 Run 的第一条 RolloutItem；用户中断后再次输入会创建新的 Run，不精确恢复旧调用栈。
 
-持久化 `Run` 与 Reactor 的内存执行状态属于不同层。前者记录可恢复、可审计的生命周期，后者记录当前执行的运行时进度；代码中应使用 `session.Run` 与 `react.RunState` 或更明确的名称区分，不能让两者共享含糊的 `RunState` 语义。
+RolloutItem 首版支持：
 
-### 8.5 Reactor Iteration、Observation 与 Evidence
+- `user_message`、`assistant_message`；
+- `tool_call`、`tool_result`；
+- `plan_update`；
+- `context_snapshot`；
+- `run_interrupted`、`run_failed`；
+- `context_compaction`。
 
-一次 `Think → Analyze → Act → Observe` 是 Reactor 主循环的一次迭代。它只属于 `internal/agent/react` 的内部运行时，不提升为持久化或跨模块核心实体：
+RolloutItem 使用 Amadeus Provider-neutral payload，不直接持久化 OpenAI Responses 或 Chat Completions SDK 对象。Provider Adapter 只在请求边界将有效历史转换为具体 API 方言。
+
+SessionRuntime 对应 Codex 的长生命周期 Session，拥有当前进程内的唯一 SessionHistory 镜像和 Rollout 追加入口：
+
+```go
+type SessionRuntime struct {
+    session Session
+    history *SessionHistory
+    rollout RolloutAppender
+    events  event.Sink
+    extensions *ExtensionRuntime
+    permissions SessionPermissionStore
+    approvals   SessionApprovalStore
+
+    activeRun *RunRuntime
+}
+```
+
+SessionRuntime 负责加载/replay Session、创建和取消当前 Run、分配 item sequence、追加并 flush Rollout，以及为 ContextManager 提供一致的 History View。建议唯一追加顺序为“分配 sequence → SQLite append → 更新内存 History → 发布事件”；任何失败都必须保持内存与持久层可判定一致。SessionRuntime 同时拥有进程内 SessionPermissionStore、SessionApprovalStore 与 ExtensionRuntime 的生命周期，但不实现 Permission/Approval 策略、MCP、Skill、Reactor、工具业务或 Provider 方言；三个 Session 级组件随活动 Session 创建并跨多个 Run 复用，在 SessionRuntime 关闭或切换 Session 时统一释放，权限与批准不写入 SQLite。SessionPermissionStore 保存当前活动 Session 已批准的 Additional Writable Roots；SessionApprovalStore 只缓存 Unsandboxed `execute_command` 的 `ApprovedForSession` 精确命令键。
+
+`RunMode` 只表达协作模式：
+
+```go
+type RunMode string
+
+const (
+    RunModeExecute RunMode = "execute"
+    RunModePlan    RunMode = "plan"
+)
+```
+
+`execute` 使用统一 Reactor，允许模型按需调用 `update_plan`，并按工具策略执行读写操作；`plan` 使用同一个 Reactor，但只暴露非修改型能力，最终输出可审核的自然语言计划。旧 `react/planned` 是算法模式混合语义：迁移时 `react` 与历史 `planned` 都映射为 `execute`，新的 `plan` 只表示不实施的 Plan Mode。
+
+SessionRuntime 在 Run 接纳完成后创建只读 RunContext：
+
+```go
+type RunContext struct {
+    Project Project
+    Session Session
+    Run     Run
+
+    Provider string
+    Model    string
+    Mode     RunMode
+    CWD      string
+    Permissions PermissionProfile
+
+    ContextProfile ContextProfile
+    Budget         react.Budget
+}
+```
+
+`RunContext` 对应 Codex `TurnContext`，只保存本 Run 开始时稳定的 Project、Session、Run、Provider、模型、模式、cwd、基础 PermissionProfile、ContextProfile 和 Budget。PermissionProfile 冻结 ReadHost、WorkspaceRoots、TemporaryRoots、ReadOnlyRoots 和 DeniedRoots；Run/Session Permission Grant 在每次 Tool Prepare 前派生 EffectivePermissionProfile，不回写 RunContext。RunContext 不持有 SessionHistory、取消函数、活动进程、Reactor 状态、PlanState 或可变 Usage；现有 `StartedRun` 应收敛并重命名为 `RunContext`。
+
+RunRuntime 接管 RunContext 的活动生命周期：
+
+```go
+type RunRuntime struct {
+    context *RunContext
+    state   *RunState
+    cancel  context.CancelCauseFunc
+    done    chan struct{}
+}
+
+type RunState struct {
+    Plan      PlanState
+    Usage     llm.Usage
+    ToolCalls int
+
+    Permissions     RunPermissionStore
+    PendingApprovals map[string]ApprovalWaiter
+    ActiveProcesses  map[string]ProcessHandle
+    Terminal         bool
+}
+```
+
+`RunRuntime` 对应 Codex `RunningTask`，只负责活动 Run 的取消、Done、资源清理、Reactor 驱动和 Finish Once；RunState 对应 Codex `TurnState`，持有 PlanState、Usage、RunPermissionStore、审批等待、活动进程和计数。RunPermissionStore 保存当前 Run 已批准的 Additional Writable Roots，Run 进入任意终态时销毁。模型完成的 assistant item、Tool Call、ToolOutcome、Plan Update 和中断 marker 都通过 SessionRuntime.Append 进入 canonical rollout，RunRuntime 不直接拥有 SessionHistory 或 SQLite Store。两者只在进程内存在，不建表、不精确恢复。
+
+每次模型调用前创建 RequestContext，对应 Codex `StepContext`，但使用更符合 Amadeus 语义的名称：
+
+```go
+type RequestContext struct {
+    Run          *RunContext
+    History      SessionHistoryView
+    Tools        *ToolRouter
+    Instructions instruction.Resolution
+    Workspace    WorkspaceSnapshot
+    Profile      ContextProfile
+    MCP          MCPBinding
+    Skills       SkillCatalogSnapshot
+    SkillInjections []SkillInjection
+}
+```
+
+RequestContext 是一次模型采样的动态快照，可随 Rollout、MCP/Skill Catalog、目录级 `AGENTS.md`、工作区和 Context Compaction 改变；同一次采样看到的 MCP Catalog、Skill Index 与显式 Skill 正文必须保持不可变，并由随后产生的 ToolInvocation 继续引用同一 Binding/Snapshot。RequestContext 不持久化，也不能反向成为新的历史事实源。
+
+### 8.5 Reactor Iteration、ToolOutcome 与 Progress
+
+独立 Reactor 的最小运行结构如下：
 
 ```go
 type Iteration struct {
-    Index        int
-    ModelCall    ModelCallSummary
-    ToolCalls    []ToolCall
-    Observations []Observation
-    Evidence     []Evidence
-    Status       IterationStatus
-}
-
-type Observation struct {
-    CallID   string
-    ToolName string
-    Result   ToolResult
-    Error    string
-    Blocking bool
-}
-
-type Evidence struct {
-    Kind     EvidenceKind
-    Source   string
-    Summary  string
-    Artifact *ArtifactRef
-    Verified bool
+    Index     int
+    Think     ThinkResult
+    Analysis  Analysis
+    Outcomes  []ToolOutcome
 }
 ```
 
-`Iteration` 取代旧的 `Step` 术语，避免与 Plan 步骤、DAG Task、工具步骤和开发进度混淆。包内可以使用 `react.Iteration/IterationResult`；Session、SQLite、ContextBuilder 和用户界面不依赖 Iteration ID，也不精确恢复某次 Iteration。
+`Iteration` 取代旧 ReAct `Step` 术语，表示一次 Think→Analyze→Act→Observe。Observe 仍作为清晰的语义阶段存在，但不再创建一份重复的 Observation/Evidence 数据树；它负责将 ToolOutcome 追加为 `tool_result` RolloutItem、更新 ProgressMonitor，并触发下一次 RequestContext/RequestView。
 
-`ToolCall` 是模型在某次 Iteration 中请求的一次工具调用；`Observation` 是工具执行后的标准化结果；`Evidence` 是从 Observation、文件状态、命令结果、测试、Diff 或诊断中提炼出的可用于判断任务状态的事实。中断恢复关心的是 `CompletedWork/Evidence/PendingWork`，不是完成了多少 Iteration。
+通用 Evidence 从 Reactor、ToolExecution 和 Result 主链删除。工具成功只表示调用完成，不表示用户任务、代码正确性或测试已经验证；旧 `Verified`、`CriterionIDs`、`EvidenceBefore/EvidenceAfter` 与 `NoEvidenceThreshold` 都属于含糊或 DAG 遗留语义。当前不新增独立 Verification Domain 或数据库表，测试、构建、Patch 与命令的事实直接由结构化 ToolOutcome 表达，模型根据 status、exit code、changes 和输出判断任务状态。
 
-### 8.6 ExecutionGraph、Task 与 Plan Ports
+ProgressMonitor 首版只检测重复 Tool Name+Arguments、重复 Outcome fingerprint、重复错误和预算耗尽，不再通过“已验证 Evidence 数量”判断进展。未来只有在 CI 自动验收、强制质量门或机器可判定 Workflow 成为真实需求后，才允许从 ToolOutcome 派生非持久化 `VerificationView`；它不能成为第二事实源。
 
-`ExecutionGraph` 与 `Task` 只属于显式 `/plan` 路径：
+### 8.6 PlanState、PlanItem 与 update_plan
+
+Plan-guided ReAct 使用轻量软状态，不使用 ExecutionGraph、TaskStatus、Scheduler 或 Replanner：
 
 ```go
-type ExecutionGraph struct {
-    Version int
-    Tasks   []Task
+type PlanState struct {
+    Explanation string
+    Items       []PlanItem
+    UpdatedAt   time.Time
 }
 
-type Task struct {
-    ID           TaskID
-    Objective    string
-    Dependencies []TaskID
-    Status       TaskStatus
-    Result       *TaskResult
+type PlanItem struct {
+    Text   string
+    Status PlanItemStatus
 }
 ```
 
-Planner 不输出完整 Domain JSON，只输出最小自然语言任务列表；GraphBuilder 为任务生成稳定 ID、顺序依赖和初始状态。普通 ReAct Run 不创建 Graph、Task 或 synthetic root Task。`Task` 表示 Plan 中可独立调度的目标单元，不表示用户输入、ReAct Iteration 或工具调用。
+`PlanItemStatus` 只有 `pending/in_progress/completed`。PlanItem 不包含 ID、依赖、资源、SideEffect、预算、尝试次数、验收标准或 TaskResult。`update_plan` 只校验清单、更新当前 RunState 的 PlanState、通过 SessionRuntime 追加 `plan_update`、发布 `PlanUpdated` Event，并向模型返回固定成功 ToolOutcome；它不选择下一项、不自动调用 Reactor、不检查模型是否真实完成某项，也不切换 Plan Mode。
 
-```go
-type Planner interface {
-    Decide(ctx context.Context, input PlanningRequest) (PlanningDecision, error)
-}
+PlanState 不建立独立表；每次用户可见 `update_plan` 作为 `plan_update` RolloutItem 追加到 canonical rollout。恢复时从有效历史中投影最近 PlanState，不依赖中断摘要或第二份 Plan Store。
 
-type ReActTaskExecutor interface {
-    Execute(ctx context.Context, task Task, base react.Request) (TaskResult, error)
-}
-```
+## 9. Plan-guided ReAct 与 Plan Mode
 
-Planner 和 Reactor 初期使用同一个 `llm.Client` 与模型，但保持独立边界。Planner 在 initial 阶段产生任务列表，在 review 阶段根据 ExecutionReport 判断完成或产生下一张图；`ReActTaskExecutor` 把 Planned Task 映射为 `react.Request`。额外质量模型、自动模式选择和独立答案合成不属于 MVP 必经主链。
+本节是当前 Agent Engine 的权威设计。Amadeus 只有一个真正执行模型/工具循环的 Reactor；执行中的计划是模型维护的可见清单，`/plan` 则是只规划不实施的协作模式。两者是正交能力，不再存在 `Planner → DAG → Scheduler → ReActTaskExecutor → Replanner` 主链。
 
-Reactor 只报告 `completed/stalled/blocked/failed/interrupted` 等自身终止原因，Replan 决策只存在于 Plan Controller。Provider 请求使用独立 `LLMCallID` 与 `llm_call.started/completed/failed` 事件；不得继续使用 `TurnID` 将一次模型调用伪装成用户对话轮次。
+### 9.1 两条产品流程
 
-## 9. 独立 ReAct 与外层 Plan-and-Execute
-
-本节是当前 Agent Engine 的权威设计。默认路径是独立、纯粹的 ReAct：普通输入经过 ContextBuilder 后直接进入 Reactor，不构造 ExecutionGraph，也不创建 synthetic root Task。只有用户输入 `/plan <task>` 时，Plan-and-Execute 才作为外层编排器出现，由 Planner 生成任务、Scheduler 选择任务，并通过 `ReActTaskExecutor` 调用同一个 Reactor。模式选择完全由用户显式决定，不调用额外 Router，也不进行 ReAct→Planned 自动升级。
-
-架构原则固定为：**采用 WeKnora 的 Think→Analyze→Act→Observe 语义分层，但保留 Amadeus 面向 Coding Agent 的参数校验、Project Root、PathGuard、CommandGuard、Approval、Audit、Snapshot、Evidence、Budget 和资源感知并行。** 不复制 WeKnora 的知识库耦合、`Data interface{}` Event payload、乐观 Final Answer 回撤或无资源约束的工具并行。
-
-### 9.1 两条显式主流程
-
-普通输入使用默认 ReAct：
+默认执行：
 
 ```text
 User Input
     ↓
-BaseContextBuilder
+SessionRuntime.BeginRun(mode=execute)
+    ↓
+RunContext
+    ↓
+RunRuntime
+    ↓
+ContextManager
     ↓
 Reactor
-    ├── ContextWindowManager → Think
+    ├── Think
+    ├── 可选 update_plan
     ├── Analyze
     ├── Act
     └── Observe
     ↓
-final answer
+Final Answer
+    ↓
+RunRuntime.finish
 ```
 
-显式 `/plan <task>` 使用规划路径：
+Plan Mode：
 
 ```text
 User /plan Input
     ↓
-BaseContextBuilder
+SessionRuntime.BeginRun(mode=plan)
     ↓
-Plan Controller → Planner → PlanParser / GraphBuilder
+RunContext → RunRuntime
     ↓
-Scheduler → ReActTaskExecutor → Reactor
+ContextManager
     ↓
-Planner.Decide(review)
-    ├── COMPLETE → final answer
-    └── PLAN     → next graph
+Reactor（只读工具集）
+    ├── 探索代码与配置
+    ├── 运行非修改型检查
+    ├── 必要时请求用户输入
+    └── 输出 Proposed Plan
+    ↓
+RunRuntime.finish
 ```
 
-默认 ReAct 不调用 Planner 或 Scheduler，也不知道 `/plan` 命令的存在。ProgressMonitor 只报告 repeated action、repeated error、no progress 或 stalled；Reactor 可以注入一次恢复提示、执行一次禁用工具的总结，或以 `stalled` 结束。若当前运行本来就是 Plan 模式，则由外层 Plan Controller 将 `stalled/blocked/failed` Task Result 交给同一个 Planner 的 review 阶段；普通 ReAct 只向用户解释当前停止原因。
+用户随后输入“按这个计划实现”时创建新的 `execute` Run；先前计划已经作为 Session Rollout 的 assistant/plan items 进入有效历史，执行阶段仍可使用 `update_plan` 跟踪或修订实际进度。
 
-### 9.2 组件边界
+### 9.2 Run 接纳与执行顺序
 
-MVP 保留以下核心组件：
-
-1. `BaseContextBuilder` / `ContextWindowManager`：前者组装 Run 级 Prompt、`AGENTS.md`、Conversation、当前 Goal、工具定义和最近中断上下文；后者在每次 Think 前结合 Runtime Messages、ContextProfile 和 Provider Usage 生成唯一 RequestView。
-2. `Reactor`：独立执行一个 Goal 的模型/工具循环；输入只包含 Goal、Messages、Tools、Budget 和可选 Execution Metadata，不依赖 Plan、Graph、TaskStatus 或 Scheduler。
-3. `Thinker` / `Analyzer` / `Actor` / `Observer`：分别负责一次模型交互、纯响应分类、工具安全执行和 Observation/消息回灌；`ReactLoop` 只负责编排四阶段与终止保护。
-4. `PlanController`：仅由 `/plan` 选择，持有统一 Planner、GraphBuilder、串行 Scheduler 和 Plan cycle 状态。
-5. `Planner`：通过 `Decide(PlanningRequest)` 同时承担初始 Plan 与执行后 Review；二者是同一能力在不同上下文阶段的语义调用，不维护两套 LLM 规划器。
-6. `PlanParser` / `GraphBuilder`：解析统一的 `PLAN/COMPLETE` 行协议，将任务目标转换为程序拥有的串行 DAG。
-7. `ReActTaskExecutor`：将 Planned Task 转换为 `react.Request`，并将 `react.Result` 映射回 Task Result；这是 Plan Domain 依赖 ReAct 的唯一边界。
-8. `Session Coordinator`：在第一条真实任务时创建 Session/Run，并记录 `react` 或 `planned` execution mode；Run 是持久化/取消边界，不要求 Reactor 内部存在 root Task。
-
-bootstrap 只创建一个共享 ToolExecutor、Policy、Context、Provider、Reactor 和 Planner。默认路径直接把 Reactor 的最终正文交给 UI；Plan 路径通过带 Execution Metadata 的事件 Filter 抑制子 Task 候选正文，只由 Planner 的 `COMPLETE` 决策发布最终答案。不能通过复制两套 Runner 或两个规划模型表达阶段差异，模式差异必须停留在外层编排、Planning Phase 和事件投影。
-
-统一规划接口为：
-
-```go
-type PlanningPhase string
-
-const (
-    PlanningInitial PlanningPhase = "initial"
-    PlanningReview  PlanningPhase = "review"
-)
-
-type PlanningRequest struct {
-    Phase         PlanningPhase
-    Goal          string
-    Messages      []llm.Message
-    Workspace     WorkspaceState
-    PreviousGraph *ExecutionGraph
-    TaskReports   []TaskReport
-    Evidence      []Evidence
-    LastError     string
-    Cycle         int
-    Budget        BudgetState
-}
-
-type PlanningDecision struct {
-    Action      PlanningAction // plan / complete
-    Tasks       []TaskDraft
-    FinalAnswer string
-    Usage       llm.Usage
-}
-
-type Planner interface {
-    Decide(context.Context, PlanningRequest) (PlanningDecision, error)
-}
-```
-
-第一次调用使用 `PlanningInitial`，只允许产生 `PLAN`；一张 DAG 执行完毕或提前停止后使用 `PlanningReview`，允许产生 `COMPLETE` 或下一轮 `PLAN`。代码可以保留 `plan()` / `replan()` 私有方法增强阅读语义，但二者必须委托同一个 `Planner.Decide`。
-
-### 9.3 统一 Planning 协议
-
-Planner 的 canonical 输出使用自然、稳定的行协议，而不是完整 `ExecutionGraph` JSON。初始 Plan 和后续 Replan 共用相同协议：
+参考 Codex 的 `Session → TurnContext → RunningTask → Agent Loop`，Amadeus 固定为：
 
 ```text
-PLAN
-- Inspect the target directory and relevant files
-- Summarize the discovered contents for the user
+SessionRuntime
+    → SessionCoordinator.BeginRun
+    → RunContext
+    → RunRuntime
+    → Reactor
+    → RunRuntime.finish
+    → SessionRuntime.finish
 ```
 
-Review 阶段确认目标已经完成时返回：
+SessionRuntime 在恢复或创建 Session 时先通过最新 `context_compaction + tail` replay SessionHistory；`BeginRun` 随后必须在任何模型调用和工具副作用前原子创建 Run、分配 Run/item sequence，并将当前 `user_message` 作为第一条 RolloutItem 持久化。这样 RunDiffTracker、Audit、Process、Approval 与 Tool Event 从第一刻起都有稳定 SessionID/RunID；不再关联 `context_from_run_id`，也不加载 Previous Work 摘要。
+
+### 9.3 RunContext 边界
+
+RunContext 只携带本 Run 开始时的稳定事实：Project、Session、Run、Provider、Model、RunMode、cwd、ContextProfile 与 Budget。SessionHistory 属于 SessionRuntime；Instructions、Skills、MCP Catalog 与工作区状态由 ContextManager 在每次模型采样前解析到 RequestContext。
+
+RunContext 不等同于 `context.Context`，也不包含每次 Think 的 RequestView；代码中建议使用 `runContext` 或 `runCtx` 变量避免混淆。
+
+### 9.4 RunRuntime 边界
+
+RunRuntime 对应 Codex `RunningTask`，RunState 对应 Codex `TurnState`；Amadeus 当前只有一个 Reactor 执行主链，因此暂不复制 `RegularTask/ReviewTask/CompactTask` 等多 TaskKind 抽象：
+
+1. 持有 RunContext 与取消树；
+2. 绑定 RunState、Event Metadata、RunDiffTracker 和 Process Owner；
+3. 根据 RunMode 配置同一个 Reactor 的工具能力与最终输出约束；
+4. 由 RunState 持有 PlanState、累计 Usage、审批等待和活动进程；
+5. 保证 Finish Once，统一映射 completed/interrupted/failed；
+6. 清理活动进程、审批等待和运行时资源；
+7. 通过 SessionRuntime.Append 追加 assistant、tool、plan 或 interruption item，并由 SessionRuntime/SessionCoordinator 更新 Run 终态。
+
+CLI/TUI 只负责接收输入、请求创建 RunContext、启动 RunRuntime、发送取消和渲染事件，不再直接编排 Reactor、ContextManager、RunDiffTracker、Usage、Rollout 持久化与 FinishRun 分支。
+
+### 9.5 独立 Reactor
+
+Reactor 输入只包含 RunRuntime 提供的 RequestView、AvailableTools、Budget 与可选 Execution Metadata，不直接依赖 RunStatus、SessionRuntime 或 Store。每次 Think 前由 ContextManager 基于 RequestContext 生成唯一 RequestView。
+
+一次循环固定为：
+
+1. `Think`：调用 LLMRuntime，获得文本、Tool Calls 和 Usage；
+2. `Analyze`：规范化响应和工具参数，判断 Final 或 Act；
+3. `Act`：经 Registry、Schema、ToolExecutionGate、PathResolver/FileSystemPolicy、ExecPolicy、Permission、Approval、Sandbox 和 Audit 执行工具，并把精确文件变化投影给 RunDiffTracker；
+4. `Observe`：将 ToolOutcome 追加为 `tool_result`、更新 ProgressMonitor，并进入下一轮 RequestContext/RequestView。
+
+模型输出 Final Assistant Message 且没有必须跟进的 Tool Call 时 Run 完成；工具调用、可纠正 Tool Error、用户 steer 或 Stop Hook 要求继续时进入下一 Iteration。
+
+### 9.6 Plan-guided 执行
+
+普通 `execute` Run 不强制创建计划。提示词根据任务规模引导模型：简单问答、单文件读取和明确小修改直接执行；长任务、跨文件修改、多阶段验证或存在明显依赖时调用 `update_plan`。
+
+`update_plan` 是非副作用 Runtime Tool：
 
 ```text
-COMPLETE
-<直接展示给用户的最终回答>
-```
-
-解析规则保持简单：
-
-- 第一个非空行只允许 `PLAN` 或 `COMPLETE`；`PlanningInitial` 阶段不接受没有执行事实支撑的 `COMPLETE`。
-- 接受 `-`、`*` 或数字编号列表。
-- 每个非空列表项只表示一个 Task Objective。
-- 程序生成 `task-1`、`task-2` 等稳定 ID。
-- 第一版默认 `task-N` 依赖 `task-(N-1)`，因此天然构成合法串行 DAG。
-- `PLAN` 后如果只有一段非空文本而没有列表，整段文本降级为一个 Task，而不是报复杂结构化解析错误。
-- `COMPLETE` 后的非空正文直接作为最终 assistant answer，不调用独立 Final Synthesizer。
-- 空响应或无法识别的首行只允许一次明确格式纠正请求；第二次仍失败则返回清晰协议错误。
-
-Planner 不再负责输出以下字段：
-
-- `acceptance_criteria`
-- `budget`
-- `side_effect`
-- `resources`
-- `status`
-- `attempts`
-- `result`
-
-这些字段要么由程序管理，要么在 MVP 中完全删除。模型输出的不确定性被限制在“任务目标文本”这一层，不再直接反序列化为复杂 Domain Struct。
-
-### 9.4 GraphBuilder 与 Scheduler
-
-`GraphBuilder` 将 PlanDraft 转成内部图：
-
-```go
-type PlanDraft struct {
-    Tasks []string
-}
-
-type ExecutionGraph struct {
-    Version int
-    Tasks   []Task
-}
-
-type Task struct {
-    ID           TaskID
-    Objective    string
-    Dependencies []TaskID
-    Status       TaskStatus
-    Result       *TaskResult
-}
-
-type TaskResult struct {
-    Status     TaskStatus
-    Summary    string
-    Evidence   []Evidence
-    Usage      llm.Usage
-    StopReason react.StopReason
-}
-```
-
-第一版 Scheduler 只做三件事：
-
-1. 按依赖找到下一个 ready Task。
-2. 串行调用 ReAct TaskExecutor。
-3. 将 completed/failed/blocked/interrupted 和结果写回图。
-
-不做 Task 级资源推断、`side_effect` 声明或并行调度。工具层已有副作用分类、审批与资源安全机制，Agent Engine 不重复建模。只有串行版本在真实任务中稳定后，才重新评估 DAG 并行。
-
-这里的“串行 Scheduler”只表示 **Task 之间串行**，不表示所有工具调用都串行。一个 ReAct 回合中，如果模型一次返回多个 Tool Call，现有 `internal/agent/react/resource_executor.go` 仍允许安全的 Tool 级并行：只有 `ParallelSafe=true` 且副作用为 `none/read`、资源策略不是 exclusive、参数资源不冲突的调用才进入并发批次；写文件、Patch、命令执行、网络调用和 exclusive 资源调用保持串行。并发上限由 `agent.max_parallel_tools` 控制，结果按原始 Tool Call 顺序回灌。
-
-### 9.5 独立 Reactor 与语义阶段
-
-Reactor 自身只理解一个 Goal，不理解默认模式、`/plan`、ExecutionGraph 或 Planned Task：
-
-```text
-Goal + Messages + Tools + Budget
+模型调用 update_plan
     ↓
-Think：调用 LLM 并聚合流式响应
+PlanState 校验
     ↓
-Analyze：纯函数判断 final / act / retry / fail
+RunRuntime 更新内存状态
     ↓
-Act：通过工具安全流水线执行 Tool Calls
+发布 PlanUpdated Event
     ↓
-Observe：生成 Observation/Evidence 并回灌消息
+返回 "Plan updated"
     ↓
-continue until completed / stalled / blocked / failed / interrupted
+同一 Reactor 继续执行
 ```
 
-目标接口为：
+模型可根据 ToolOutcome 重写、合并或调整 PlanItem。Runtime 不把 Plan 编译为 DAG，也不因某个 Item 状态自动触发工具；真实执行事实仍以 canonical Tool Call/Result、Workspace 状态与最终回答为准。
 
-```go
-type Request struct {
-    Goal      string
-    Messages  []llm.Message
-    Tools     []tool.Spec
-    Budget    Budget
-    Execution ExecutionContext
-}
+### 9.7 Plan Mode
 
-type ExecutionContext struct {
-    SessionID string
-    RunID     string
-    TaskID    string // 默认 ReAct 为空；Plan Task 执行时设置
-}
+`/plan` 表示进入 Plan Mode，而不是强制 Plan-and-Execute。Plan Mode 可以读取文件、搜索代码、检查配置、运行不会修改项目受跟踪文件的测试/构建和静态分析；禁止 `apply_patch`、写文件、修改型 Shell 及其他写工具。
 
-type Result struct {
-    FinalMessage llm.Message
-    Iterations   []Iteration
-    Evidence     []Evidence
-    Usage        llm.Usage
-    StopReason   StopReason
-}
+Plan Mode 最终输出结构清晰的自然语言 Proposed Plan，包含目标摘要、关键改动、测试方案和必要假设。首版 `/plan <task>` 只对当前 Run 生效；计划完成后自动回到默认 execute 语义，不写入全局配置。未来若需要多轮 Plan 会话，可增加 Session 级临时 CollaborationMode，但不得复活 DAG 执行器。
 
-type Reactor interface {
-    Run(context.Context, Request) (Result, error)
-}
-```
+Plan Mode 中不暴露 `update_plan`：前者产出供用户审核的实施方案，后者是执行阶段的 TODO/进度工具，语义不可混用。
 
-每轮进入 `Think` 前，ContextWindowManager 先基于 BaseEnvelope、当前 Runtime Messages、ContextProfile 和上一轮 Usage 生成 RequestView。`Think` 只消费该 RequestView，通过官方 SDK Adapter 聚合 text/reasoning/usage/tool-call fragments，并处理空响应/瞬时错误的有限重试；`Analyze` 不执行副作用，先把完整模型响应分类为 `final/act/retry/fail`，并将 Tool Calls 交给统一参数 Normalizer 执行 strict parse → conservative repair → strict parse → Schema validation；`Act` 只接收 normalized Tool Calls，并保留 Project Root、PathGuard、CommandGuard、Approval、Audit、Snapshot Hook、timeout 和资源感知并行；`Observe` 将结果或参数错误转换为结构化 Observation/Evidence、标准 assistant/tool replay 消息和 Progress Sample，供下一轮 RequestView 投影。
+### 9.8 完成、中断与停止
 
-Reactor 可以读取、搜索、修改文件和执行命令，但所有副作用仍必须经过工具安全流水线。语义分层只重组控制流，不放松任何 Coding Agent 能力。
+Reactor 可返回 `completed/stalled/blocked/failed/interrupted/budget_exhausted`。RunRuntime 负责将结果映射为持久化 RunStatus，并在所有路径执行资源清理和 FinishRun。
 
-默认 ReAct 不再使用 `TaskOutcomeCandidateComplete` 或 `TaskOutcomeNeedsPlan`。终止结果直接表达为 `completed/stalled/blocked/failed/interrupted/budget_exhausted`；“是否 Replan”只由 Plan Controller 根据 Task Result 决定。
+用户中断时不恢复旧 Reactor 调用栈。RunRuntime 补齐悬空 Tool Call、追加 `run_interrupted` marker 并 flush；下一条用户输入创建新 Run，模型根据真实 rollout、当前工作区和新输入重新判断和执行。
 
-默认路径的 final response 直接成为本次 Run 的最终 assistant message。Plan 路径通过 `ReActTaskExecutor` 将相同 Result 映射为 `TaskResult`；测试命令、文件 diff 和工具结果作为 Evidence 交给 Planner review 阶段，由 Planner 从整个用户目标角度决定是否完成。
+### 9.9 明确非目标
 
-### 9.6 ExecutionReport 与 Replan 语义
+当前主链不包含：
 
-一张 DAG 执行完毕，或某个 Task `failed/stalled/blocked` 后，Plan Controller 停止当前图并再次调用同一个 `Planner.Decide`，此时 `Phase=PlanningReview`。用户取消不触发 Replan，直接以 `interrupted` 结束当前 Run。
-
-Planner 不接收无限增长的原始 Tool Result 和完整消息重放，而是接收有界 `ExecutionReport`：
-
-```go
-type ExecutionReport struct {
-    Cycle       int
-    GraphStatus GraphStatus
-    Tasks       []TaskReport
-    Evidence    []EvidenceSummary
-    LastError   string
-    Workspace   WorkspaceState
-    Usage       llm.Usage
-}
-
-type TaskReport struct {
-    ID         TaskID
-    Objective  string
-    Status     TaskStatus
-    Summary    string
-    StopReason string
-}
-```
-
-报告至少包含：
-
-- 原始用户目标；
-- 本轮 DAG 和每个 Task Result；
-- 已执行 Task 的有界摘要与关键 Evidence；
-- 当前 Git status/diff 摘要；
-- 最近失败、卡死、阻塞信息；
-- 当前累计使用量和剩余 Run Budget。
-
-Review 阶段返回 `COMPLETE` 时正文直接成为最终回答；返回 `PLAN` 时按同一解析规则生成下一张 DAG。Replan 不在原 DAG 上做复杂局部合并。已执行历史、Evidence 和副作用保留在本次 Run 的内存状态及有界中断摘要中；下一张 DAG 只描述“从当前工作区状态开始还要做什么”。这样既不会重放旧工具调用，也不需要让随机模型精确复刻 completed Task ID。
-
-### 9.7 循环与终止
-
-Plan Controller 主循环可以直接表达为：
-
-```go
-decision := planner.Decide(initialRequest)
-for cycle := 1; cycle <= maxCycles; cycle++ {
-    graph := graphBuilder.Build(decision.Tasks, cycle)
-    execution := scheduler.Execute(graph, reactTaskExecutor)
-    decision = planner.Decide(reviewRequest(goal, execution, workspace))
-    if decision.Action == PlanningComplete {
-        return decision.FinalAnswer
-    }
-}
-return ErrMaxPlanCycles
-```
-
-Scheduler 正常执行完整张 DAG 后进入 review；任意 Task `failed/stalled/blocked` 时提前结束当前图并进入 review。Task `interrupted`、父 Context 取消或不可恢复的基础设施错误不继续调用 Planner。
-
-只保留必要的终止保护：
-
-- Context cancellation；
-- Run 总 iterations/tool calls/token/duration 预算；
-- 固定 `max_plan_cycles`，首版默认 8；
-- 空或非法 Planner 响应的一次格式纠正重试。
-
-这些保护用于防止无限循环，不用于追求最少模型调用。实现优先级是“任务能继续、错误可理解、流程可复现”。
-
-### 9.8 计划交互语义
-
-MVP 提供 `/plan <task>`，它只负责为本次 Run 选择 Plan-and-Execute，不表示计划审核，也不写入全局配置。Planner 生成任务列表后立即执行；Replan 生成下一张任务列表后也立即继续。普通输入始终使用默认 ReAct。
-
-`/plan` 不接受空目标。一次性命令可使用 `amadeus "/plan <task>"`；交互 TUI 和 Plain 模式均识别同一语义。计划审核如果未来需要，应设计为独立交互能力，不改变本次模式选择协议。
-
-### 9.9 明确非目标与延后能力
-
-当前主链明确不包含自动模式 Router、默认 ReAct 到 Planned 的动态升级、默认 ReAct synthetic root Task、复杂 Planner JSON、Task 级资源声明、Task 并行 Scheduler、强制 Verifier/Reflection 双质量门或独立 Final Synthesizer。它们不得以兼容代码为理由重新进入 bootstrap。
-
-保留的最小能力是：Plan 专属 ExecutionGraph、作为上下文事实的 Evidence、Reactor 与 Plan Controller 分层预算、显式 `/plan <task>`、以及中断时的有界 Previous Work。Plan、Task、Iteration 和 Evidence 只存在于当前 Run 内存，不建立 Checkpoint 或独立业务表。
+- 独立 Planner/Replanner Model Call；
+- ExecutionGraph、DAG、TaskStatus 或 Scheduler；
+- 自动 ReAct→Planned 模式升级；
+- synthetic root Task；
+- 强制 Verifier/Reflection 双质量门；
+- 独立 Final Synthesizer；
+- Plan/Iteration/Tool Call 独立业务表；
+- 精确恢复旧 Run 的工具位置或调用栈。
 
 ### 9.10 实现边界
 
-- `internal/agent/react` 独立拥有 Reactor、Iteration、Think/Analyze/Act/Observe、ProgressMonitor 和运行时消息；
-- `internal/agent/plan` 独立拥有 Planner、GraphBuilder、Scheduler、Task、ExecutionReport 和 Plan Controller；
-- `ReActTaskExecutor` 是 Plan 到 Reactor 的唯一适配边界；
-- `internal/context` 提供 BaseContextBuilder 与 Per-Think ContextWindowManager，不依赖 Plan/Task；
-- `internal/session` 只管理 Session、Message、Run、Summary 和 Previous Work，不依赖 Reactor Iteration；
-- `internal/agent/event` 使用 SessionID/RunID/TaskID/Iteration/LLMCallID 关联事件；
-- `internal/tool`、Policy、Approval、Audit、Snapshot 与 Provider Adapter 被两条执行路径共享。
+- `internal/session`：Session、Run、RolloutItem、SessionHistory、RunContext、Coordinator 与 Store；
+- `internal/agent/runtime`：RunRuntime、Executor Port、LLMRuntime、取消和统一收尾；
+- `internal/agent/react`：Reactor、Iteration、Think/Analyze/Act/Observe 与 ProgressMonitor；
+- `internal/agent/plan`：PlanState、PlanItem、`update_plan` Tool 与事件投影；
+- `internal/context`：StaticContextBuilder、HistoryReplayer、PromptProjector、ContextCompactor、ContextManager 与 RequestView；
+- `cmd/amadeus`：输入接纳、slash command、RunRuntime 启动和结果映射，不拥有 Agent 控制流。
 
-bootstrap 只装配一个 Reactor 和一个 Planner。默认输入直接调用 Reactor；`/plan` 调用 Plan Controller。兼容代码必须逐步迁移到这些边界，不能形成第二套生产执行循环。
+## 10. Multi-Agent 后续扩展
 
-## 10. 后续调度扩展与 Multi-Agent
+Multi-Agent 不进入首个可用版本主链。第一版验证时采用与 Codex 相近的 Tool-based Delegation：主 Agent 的 Reactor 通过 `spawn_agent/send_input/wait_agent/close_agent` 一类工具管理最多两个只读 SubAgent，而不是引入 Team Engine、共享 DAG 或中央 Scheduler。
 
-### 10.1 Multi-Agent
+### 10.1 MVP 边界
 
-Multi-Agent 第一版只解决一个明确问题：当 ExecutionGraph 同时存在多个互不依赖的只读调查 Task 时，主 Agent 最多并行派出两个临时 SubAgent 收集代码库信息；SubAgent 返回 Summary/Evidence 后，由主 Agent继续修改、测试和生成最终回复。
+- 仅主 Agent 拥有 Session Run、最终回答、写工具、Shell、RunDiffTracker 与 Approval；
+- SubAgent 拥有独立内存上下文和 Reactor，但共享只读 WorkspaceRoots 与基础 Instructions；
+- SubAgent 只做代码探索、定位、比较、审查和方案研究；
+- 主 Agent 明确分配边界清晰、可并行、不会阻塞当前关键路径的工作；
+- SubAgent 返回结构化摘要、证据和文件引用，不直接合并修改；
+- 主 Agent 不等待时继续处理非重叠工作，避免把 Multi-Agent 变成串行远程调用。
 
-```text
-Main Agent / Supervisor
-├── SubAgent 1: read-only investigation
-└── SubAgent 2: read-only investigation
-        ↓
-structured Summary + Evidence
-        ↓
-Main Agent continues normal Engine execution
-```
+### 10.2 DelegatedTask 语义
 
-Multi-Agent 不是新的 Agent Engine，也不创建 PaiCLI 式固定 Planner/Worker/Reviewer 主链。主 Agent 是唯一 Run/ExecutionGraph 所有者；SubAgent 只是 Scheduler 可选择的 Task placement，复用同一个 Reactor、`llm.Client`、Budget、Event 和只读 Tool Pipeline。第一版不创建独立 Reviewer Agent。
-
-#### 10.1.1 MVP 边界
-
-- 同一 Run 最多两个 SubAgent，固定 `max_delegation_depth = 1`；SubAgent 不能继续创建 SubAgent。
-- SubAgent 初期使用与主 Agent 相同的 Provider/model，不实现角色级模型选择。
-- SubAgent 只注册 `read_file`、`list_dir`、`glob_files`、`grep_code`，不注册 `apply_patch`、`write_file` 或 `execute_command`。
-- 所有文件修改、命令执行、审批和用户最终回答仍由主 Agent 完成。
-- SubAgent 彼此不能直接发消息，不存在 Agent Team 群聊、共享 scratchpad 或长期子会话。
-- SubAgent 内部消息不写正式 Conversation，只把 Task 状态、Summary、Evidence、Usage 和 stop reason 写回当前 Run 内存状态。
-- 第一版不实现 Git Worktree、并行写文件、Patch 合并、跨进程 Worker、后台 Agent 或精确恢复被中断的 SubAgent。
-
-#### 10.1.2 Task 与结果
-
-Planner/Scheduler 只把明确标记为 `read_only` 的 ready Task 委派给 SubAgent；`mutable` 或无法确定副作用的 Task 始终由主 Agent 执行：
+Multi-Agent 的 `DelegatedTask` 是主 Agent 发给 SubAgent 的临时工作单元，不等同于 Session Run、PlanItem 或 Reactor Iteration：
 
 ```go
-type ExecutionKind string
-
-const (
-    ExecutionReadOnly ExecutionKind = "read_only"
-    ExecutionMutable  ExecutionKind = "mutable"
-)
-
-type SubAgentTask struct {
-    ID        TaskID
-    Objective string
-    Context   string
-    Budget    Budget
-}
-
-type SubAgentResult struct {
-    TaskID   TaskID
-    Status   TaskStatus
-    Summary  string
-    Evidence []Evidence
-    Usage    Usage
+type DelegatedTask struct {
+    ID          string
+    ParentRunID RunID
+    Objective   string
+    Scope       []string
+    ReadOnly    bool
 }
 ```
 
-ContextBuilder 为 SubAgent 构造独立、最小必要 ContextView：内置 Prompt、当前 Task、适用 `AGENTS.md`、必要依赖 Evidence、Project Root 和只读工具定义。不得复制主 Agent 的完整临时 ReAct 消息链，也不得把其他无关 Task 或完整 Conversation 无预算注入。
+它只在 Multi-Agent Runtime 内存在；首版不建表，不参与 Session resume，也不作为 `update_plan` 的执行依据。主 Agent 将 SubAgent 结果规范化为 ToolOutcome，并通过 SessionRuntime 追加到自己的 canonical rollout。
 
-#### 10.1.3 Placement 规则
+### 10.3 失败与取消
 
-第一版不增加 Router LLM，只使用确定性条件：
+SubAgent 超时、失败或返回低质量结果时，主 Agent 可以重试一次、改写目标或回退为本地探索。父 Run 取消时所有 SubAgent 必须级联取消；主 Agent 结束前必须关闭活动 SubAgent。任何 SubAgent 失败都不得绕过主 Agent 的最终验证和责任边界。
 
-```text
-至少两个 ready Task
-AND Task 之间没有依赖
-AND Task.execution == read_only
-AND 当前 SubAgent 数量 < 2
-AND 剩余 Run/Task Budget 足够
-```
+### 10.4 延后能力
 
-满足条件时使用固定大小为 2 的 bounded executor 并行执行；否则由主 Agent 串行处理。初期只通过 `/team` 为本次 Run 设置 `prefer_subagents` PlacementPolicy，普通 Run 不自动创建 SubAgent；即使用户使用 `/team`，若没有值得并行的只读 Task，也安全退化为主 Agent 单独执行，而不是为了展示 Team 强行拆分。
-
-#### 10.1.4 返回、失败与取消
-
-SubAgent Result 以 Task ID 稳定写回 ExecutionGraph，并将 Evidence 提供给依赖 Task 和主 Agent。SubAgent 不决定整个 Run 完成，也不直接生成正式 assistant message。一个 SubAgent 失败不会自动创建替代 Agent；主 Agent 可以自行完成该 Task、触发 Replan、忽略非关键结果或请求用户输入。
-
-主 Run 取消时取消所有子 Context，等待有界退出并保留已经完成的 Summary/Evidence；旧 SubAgent 不恢复。用户之后输入“请继续”时仍创建新 Run，根据上一 Run 的中断摘要重新规划是否需要再次委派。
-
-#### 10.1.5 延后能力
-
-只有只读 SubAgent 的效果、成本和调度稳定后，才重新评估自动 placement、资源声明、隔离 Worktree、并行写任务、Reviewer SubAgent、不同模型和 Agent 间消息。这些都不属于第一版 Multi-Agent 的验收范围。
+以下能力继续后置：可写 SubAgent、共享 Workspace 修改、自动任务拆分、依赖图调度、远程 Worker、动态角色市场、长期驻留 Agent 与跨 Session Agent Memory。
 
 ## 11. OpenAI SDK 适配设计
 
@@ -1026,7 +949,7 @@ logging:
 
 `api_key` 等 YAML 字符串值支持 `${ENV_VAR}` 引用和字面值。变量在字段级 YAML 解码前展开；变量未设置时，错误包含字段路径与变量名。若使用字面 API key，配置加载器应检查文件权限并给出安全警告；打印有效配置时统一掩码。
 
-`agent` 不提供持久 `mode` 配置。普通输入默认使用 ReAct；`/plan <task>` 只为当前 Run 显式选择 Plan→Execute→Replan。该 slash command 是一次性执行策略选择，不是计划审核，也不会改变后续 Run 的默认行为。
+`agent` 不提供持久 `mode` 配置。普通输入创建 `execute` Run，并由统一 Reactor 按需使用 `update_plan`；`/plan <task>` 创建只分析不实施的 `plan` Run，计划完成后自动回到默认 execute 语义。
 
 配置文件不提供 `approval.enabled`、`approval.default` 或工具级 allow/deny 规则。审批属于内置安全机制，不能通过 YAML 关闭；TTY 中按固定规则询问，非 TTY 对需要审批的调用 fail closed。
 
@@ -1083,7 +1006,7 @@ CLI 不提供 `--api-key`，避免密钥进入 shell history、进程列表和 C
 - Provider 名称不能为空；`api` 只接受 `responses` 或 `chat_completions`；`dialect` 只接受 `standard/openai/deepseek/qwen/glm`。
 - `base_url` 必须是无 userinfo、无 fragment 的绝对 `http` 或 `https` URL。
 - Provider timeout 范围为 `(0, 30m]`，重试次数为 `[0, 10]`，temperature 为 `[0, 2]`，max output tokens 为 `[1, 1_000_000]`。
-- approval default 和 log level 必须属于已定义枚举；最大步骤为 `[1, 1000]`，并行工具数为 `[1, 64]`。
+- log level 必须属于已定义枚举；最大 Iteration 为 `[1, 1000]`，并行工具数为 `[1, 64]`。配置 schema 不包含 approval default/enabled 字段。
 - 未提供 API key 时允许启动配置诊断命令，但不允许开始模型回合。
 - 未配置 model 时返回明确错误，不静默选择可能变化的远端默认模型。
 
@@ -1091,54 +1014,72 @@ CLI 不提供 `--api-key`，避免密钥进入 shell history、进程列表和 C
 
 ## 13. Prompt 架构
 
-内置 Prompt 只定义 Amadeus 的稳定执行协议，不承载用户偏好或项目规范：
+Prompt 是 Agent Runtime 的内部实现资产，不是公共 Go API。顶层 `prompts/` package 迁移至 `internal/prompt/builtin`，Markdown 模板统一放在 `internal/prompt/builtin/templates`；`internal/prompt` 继续拥有 Repository、Assembler、变量渲染、来源 Hash、Bundle 与 Contract Validation。目标目录为：
 
 ```text
-base → engine_protocol → approval → runtime_context
-     → instructions → skills → context_management → handoff
+internal/prompt/
+├── assembler.go
+├── repository.go
+├── types.go
+└── builtin/
+    ├── builtin.go
+    └── templates/
+        ├── agent/
+        │   ├── base.md
+        │   ├── execution.md
+        │   └── handoff.md
+        ├── modes/
+        │   ├── execute.md
+        │   └── plan.md
+        ├── runtime/
+        │   ├── permissions.md
+        │   ├── workspace.md
+        │   ├── instructions.md
+        │   └── skills.md
+        ├── tools/
+        │   ├── general.md
+        │   ├── apply_patch.md
+        │   └── execute_command.md
+        └── context/
+            └── compaction.md
 ```
 
-首版内置资源固定在 `prompts/`，并由同目录的 Go catalog 嵌入二进制：
+`internal/agent/react` 不得导入内置 Prompt package，也不得在缺少 Prompt 时自行调用 `AgentSystem()` 兜底。唯一装配顺序是 Bootstrap 创建 Builtin Repository/Assembler，按当前配置、RunMode、Tool Exposure 和 RequestContext 生成 Prompt Bundle，再把稳定的 Agent Prompt 注入 Iterator。Reactor 只消费已经装配好的 Prompt 和 RequestView，不拥有文件路径、模板选择或 Prompt fallback。
 
-```text
-prompts/
-├── builtin.go
-├── base.md
-├── reactor_protocol.md
-├── planning_protocol.md
-├── approval.md
-├── runtime_context.md
-├── instructions.md
-├── skills.md
-├── context_management.md
-└── handoff.md
-```
+Prompt 使用稳定职责分层，而不是为不同 Agent 模式复制整套模板：
 
-默认 ReAct 使用 `reactor_protocol.md` 定义工具循环、停止条件和结果表达；显式 `/plan` 额外使用 `planning_protocol.md` 定义 `PLAN/COMPLETE` 文本协议。Prompt 不要求模型输出完整 Task JSON、Verification verdict、Reflection verdict 或隐藏 reasoning。若上层已经提供组装完成的 system message，Reactor 不重复注入默认协议。
+1. **Agent Base/System**：Amadeus 身份、Coding Agent 基本行为、证据优先、保护用户改动和不可覆盖的安全规则；
+2. **Mode/Developer**：当前 RunMode。Execute Mode 负责完成任务并可按需使用 `update_plan`；Plan Mode 只探索和规划，不修改、不执行命令；
+3. **Runtime/Developer**：当前 Workspace、Permission/Isolation、Session/Run、interruption marker、环境能力和预算等动态事实；
+4. **Instructions/Developer**：用户级、项目级和目录级 `AGENTS.md`，保持已有作用域与覆盖顺序；
+5. **Extensions/Developer**：当前 Skill Catalog 摘要、显式 SkillInjection 和 MCP Binding/Catalog Snapshot；
+6. **Tool Definitions**：当前 RunMode 实际暴露的 Tool Schema；只有复杂工具在暴露时追加 Tool-specific Guidance；
+7. **Conversation/User**：Canonical Rollout 经 ContextManager 投影出的 RequestView。
 
-M3-03 只提供不可变资产、稳定 ID、固定层顺序和嵌入完整性；M3-04 再由 `internal/prompt` 实现 Repository、Assembler、变量校验、来源清单和最终 hash，避免把资源 catalog 与运行期组装职责混在一起。
+基础 Prompt 只描述长期稳定的工作方式，不写死当前 cwd、Root、Sandbox 状态、可用 Tool、Skill/MCP 列表或权限授权结果。动态 Permission Instructions 必须从 EffectivePermissionProfile、IsolationMode 和 Session Approval Facts 投影，明确 `permission_required → request_permissions → 模型重新调用原 Tool`，但不能向模型承诺 Runtime 未实现的能力。Provider 不支持 developer role 时，由 Adapter 按 Dialect 降级到 system；Domain 仍保留 system/developer/user/assistant/tool 的清晰语义。
 
-`internal/prompt.Repository` 从只读 `fs.FS` 加载单个 Prompt 文档，统一执行路径合法性、空内容和受限变量语法检查。变量只接受 `{{variable_name}}`，名称必须为小写 snake case；不支持条件、循环、函数、文件包含或任意 Go template 执行，避免 Prompt 资产演变为隐式脚本系统。
+默认 Execute Mode 描述统一 Think→Analyze→Act→Observe/Tool-Use 循环，并建议复杂任务按需使用 `update_plan`；不要求简单任务先生成计划，不要求模型输出 DAG、Task JSON、Verification verdict、Reflection verdict 或隐藏 reasoning。Plan Mode 明确只进行可验证的探索和规划，最终输出自然语言 Proposed Plan；不加载 `update_plan`、`request_permissions` 或任何写入/执行 Tool，也不复用旧 Planner/Replanner Prompt。`update_plan` Tool Schema 只包含 `explanation` 和 `plan[{step,status}]`。
 
-`internal/prompt.Assembler` 接收显式有序层和变量 map，并遵循以下确定性契约：
+Tool Guidance 必须与真实 Tool Contract 一致，并避免在 Base、Runtime 和 Tool Description 中重复同一规则：
 
-1. 保持调用方给出的层顺序，拒绝空层和重复层。
-2. 一次性报告全部缺失层，而不是只暴露第一个文件错误。
-3. 汇总所有必需变量，同时拒绝缺失变量和未被任何层声明的未知变量。
-4. 使用两个换行连接渲染后的层，不递归解释变量值中的 `{{...}}`。
-5. 为每个来源记录 `kind/path/raw SHA-256/variables`，并对最终渲染内容计算独立 SHA-256。
+- `apply_patch.md` 说明 Patch Grammar、上下文匹配、冲突后重新读取和 partial/failure 语义；
+- `execute_command.md` 说明 cwd、`requested_permissions.writable_roots`、Sandboxed/Unsandboxed、持续 Process 与 `write_stdin`；
+- `general.md` 说明结构化探索、失败 ToolOutcome、验证和不得绕过 Permission/Approval；
+- Tool 不可见时不注入其专属 Guidance，防止模型尝试调用未暴露能力。
 
-最终 hash 会随层顺序或渲染值变化；来源 hash 只描述规范化后的原始 Prompt 文档。bootstrap 使用同一个 built-in Repository/Assembler 生成 Reactor 与 Planner 所需 Bundle。Repository/Assembler 不负责发现 `AGENTS.md`、拼接用户目标、保存 Conversation 或裁剪 Context，这些职责属于 Instruction Resolver、BaseContextBuilder 与 ContextWindowManager。
+Amadeus 选择性吸收 Codex 开源 Prompt 的成熟做法，包括任务持续执行、先探索再修改、进度沟通、计划使用边界、验证纪律、Apply Patch 指导、Permission 动态注入和最终交付格式；不整套复制 Codex Prompt。所有内容必须改写为 Amadeus 的 Reactor、Tool Schema、PermissionProfile、`request_permissions`、Provider Adapter、Plan Mode 和 TUI 语义。GPT/Codex 模型专属指令、Goal Runtime、Realtime、Memories、Review 和 Multi-Agent Orchestrator Prompt 不进入当前主链；未来只有对应能力真实实现并通过 E2E 后才能增加独立模板。
 
-用户和项目通过 `AGENTS.md` 提供明确、可编辑、可审查的持久指令，不开放任意内置 Prompt 覆盖。Instruction Resolver 负责指令发现、来源清单和作用域优先级；Context Envelope 再按稳定顺序组合 Prompt Bundle、适用指令和运行期内容。具体发现与优先级规则见 16.3、16.4。
+Context Compaction 使用独立 `context/compaction.md`，不与普通 Agent Base 混合。它只生成 Replacement History 所需的事实摘要，必须保留用户目标、重要决策、修改文件、ToolOutcome、失败、未完成项和验证结果，不生成新的任务决定或虚构状态。可选 Multi-Agent Delegation Prompt 留到 M10，不在当前 Prompt 优化中预埋。
+
+Prompt Repository 保留 ID、来源、SHA-256 和 Required Variables；新增 Contract Test 固定以下不变量：所有模板可读取且非空、变量完整无未知项、装配顺序稳定、Plan Mode 不暴露写/执行指令、动态 Permission 与实际 Policy 一致、不存在旧 Planner/Replanner/Verifier/Reflector 术语、Responses 与 Chat Completions 得到等价 Domain Message 语义。Prompt 文案变化不依赖逐字 Snapshot，而以关键行为 Contract、Provider mock E2E 和真实 Coding Agent smoke 验收。
 
 ## 14. 工具体系
 
 ### 14.1 设计原则
 
-Amadeus 采用“结构化高频工具 + 通用 Shell fallback”，不因为 Shell 可以运行 `cat`、`find`、`grep` 或重定向写文件，就删除专用文件工具。Codex 的 Shell-first 依赖成熟的 Sandbox、Permission Profile、PTY、持续 Process、权限升级和跨平台隔离；Amadeus 当前明确采用“只读结构化工具直接执行，写入/命令请求审批”的最小安全模型。在没有同等级 Sandbox 前只删除模型可见的读工具，会把几个简单 Tool 的维护成本转化为 Shell 副作用识别、频繁审批和宿主机安全问题：
+Amadeus 采用“结构化高频工具 + 通用 Shell fallback”，不因为 Shell 可以运行 `cat`、`find`、`grep` 或重定向写文件，就删除专用文件工具。Codex 的 Shell-first 依赖成熟的 Sandbox、Permission Profile、PTY、持续 Process、权限升级和跨平台隔离；Amadeus 向其学习“权限决定可访问范围、ExecPolicy 决定是否询问、Sandbox 负责真实强制”的分层，但不复制完整跨平台实现。在没有同等级 Sandbox 前只删除模型可见的读工具，会把几个简单 Tool 的维护成本转化为 Shell 副作用识别、频繁审批和宿主机安全问题：
 
-- 结构化工具是模型读取、搜索和修改项目的主路径，提供严格 schema、Project Root/PathGuard、稳定输出、预算元数据、Evidence 和跨平台语义。
+- 结构化工具是模型读取、搜索和修改工作区的主路径，提供严格 schema、PathResolver/FileSystemPolicy、稳定 ToolOutcome、预算元数据和跨平台语义；`Project.RootPath` 只表达持久化项目身份，CWD 与 WorkspaceRoots 表达运行上下文，均不兼任唯一文件系统权限边界。
 - `execute_command` 是构建、测试、Git、格式化、代码生成、项目脚本和未被专用工具覆盖操作的通用逃生舱，不作为绕过文件工具、安全策略或审批的捷径。
 - 工具数量保持克制；只有高频操作确实需要更稳定输出、更细权限或更强领域语义时，才从 Shell 提升为专用工具。
 - Tool 名称表达能力而非具体命令行程序；内部可以使用 ripgrep 或平台能力加速，但 fallback 必须保持同一领域结果。
@@ -1151,9 +1092,9 @@ Amadeus 采用“结构化高频工具 + 通用 Shell fallback”，不因为 Sh
 | 需求 | 首选能力 | Shell 的位置 | 原因 |
 |---|---|---|---|
 | 读取已知文件片段 | `read_file` | 仅处理专用工具不支持的格式或组合流水线 | 一基行号、截断和 Context 预算稳定，常规读取无需命令审批 |
-| 浏览目录与发现文件 | `list_dir` / `glob_files` | 复杂 `find`、项目专用脚本作为 fallback | PathGuard、ignore、排序和 partial 语义跨平台一致 |
+| 浏览目录与发现文件 | `list_dir` / `glob_files` | 复杂 `find`、项目专用脚本作为 fallback | FileSystemPolicy、ignore、排序和 partial 语义跨平台一致 |
 | 搜索代码或文本 | `grep_code` | `rg` 高级表达式、管道组合或一次性诊断作为 fallback | 返回稳定 file/line/column，而不是让模型解析任意 stdout |
-| 修改项目文件 | `apply_patch` | 不使用 `sed -i`、重定向或脚本绕过 Patch/Approval | 变更可预检、可审计、可生成 Evidence，并支持冲突诊断 |
+| 修改项目文件 | `apply_patch` | 不使用 `sed -i`、重定向或脚本绕过 Patch/Approval | 变更可预检、可审计、可生成结构化 changes，并支持冲突诊断 |
 | 构建、测试、Git、格式化、项目脚本 | `execute_command` + `write_stdin` | 主能力 | 这些操作本身属于 Process，而不是文件读取协议 |
 
 未来只有同时满足以下条件，才重新评估是否收缩 `list_dir/glob_files/grep_code` 并转向 Shell-first：
@@ -1161,12 +1102,183 @@ Amadeus 采用“结构化高频工具 + 通用 Shell fallback”，不因为 Sh
 1. Shell 已运行在真实、可验证且跨平台的 Sandbox 中，而不是直接继承 Amadeus 进程的宿主机权限；
 2. Permission Profile 能区分只读探索、workspace write、越界 write、网络和进程控制，并只在权限升级时询问用户；
 3. PTY、后台 Process、取消、超时、孤儿清理和输出预算已经稳定；
-4. Shell 输出可以生成与结构化工具等价的 Evidence、来源、截断和审计信息；
+4. Shell 输出必须生成与结构化工具等价的 ToolOutcome、来源、截断和审计信息；
 5. 真实基准证明缩小 Tool Set 能提高模型成功率，而不是只减少少量 Go Adapter 代码。
 
 即使未来采用 Shell-first，`apply_patch`、`view_image` 和必要的交互/扩展 gateway 仍保留专用语义；是否删除某个探索工具必须逐项用成功率、安全性和跨平台结果验证，不能一次性清空。
 
-### 14.2 内置工具分层
+### 14.2 Project、文件系统权限与 Sandbox
+
+Amadeus 对齐 Codex，将路径概念拆成“持久化项目身份”“执行上下文”和“文件系统权限”三层，不再使用 `PrimaryRoot` 同时表达所有含义：
+
+```text
+Project（持久化）
+└── RootPath              # 初始 CWD 的规范绝对路径，只用于 Project/Session 归属
+
+Execution Context
+├── CWD                   # 相对路径与默认命令工作目录锚点
+└── WorkspaceRoots        # [CWD] + --add-dir，用户主动交给 Agent 的项目目录
+
+FileSystemPolicy
+├── Host filesystem       # 默认 read
+├── WorkspaceRoots        # write
+├── TemporaryRoots        # /tmp + $TMPDIR 或 os.TempDir()，write
+├── Run writable roots    # 当前 Run Permission Grant，write
+├── Session writable roots# 当前 Session Permission Grant，write
+├── ReadOnlyRoots         # 最多 read
+└── DeniedRoots           # deny：根自身及其后代
+
+PathResolver
+└── 绝对化、规范化、软链接/父目录检查和访问决策
+
+SandboxRunner
+└── 仅对 Sandboxed Shell/子进程真实强制文件系统权限
+```
+
+`Project.RootPath` 由显式 `--project` 或 Amadeus 启动工作目录确定并持久化，只负责 Project ID、Session 列表过滤和 `--continue` 匹配，不决定配置来源，也不进入 Tool 权限模型。首版不实现 `/cd` 或动态 Session CWD，因此 RunContext.CWD 初始化为 Project.RootPath 并在当前 Session 中保持稳定；单次 `execute_command.cwd` 可以相对该 CWD 指向其他可读目录，但不会改变后续 Tool 的默认 CWD。
+
+`WorkspaceRoots` 是 `[CWD] + --add-dir roots` 的规范化去重派生视图，不单独建表。它表达用户主动交给 Agent 的项目集合，用于项目级/目录级 AGENTS.md 作用域、Sandbox symbolic project roots、路径展示与工作区元数据。首版项目级 MCP/Skill 仍只从 CWD 对应的默认 Workspace Root 加载，避免多个附加根之间出现隐式配置合并和同名扩展优先级；`--add-dir` 不自动加载其中的 `.amadeus/mcp.yaml` 或 `.amadeus/skills`。TemporaryRoots 与 Run/Session 动态授权目录都不是 Workspace Root。Amadeus 首版只有本地主机执行环境，不引入 Codex `environment_id`；未来只有支持多个本机/容器/远端 Environment 时才增加 EnvironmentID。
+
+`--add-dir` 因此不是泛化的“额外可写目录”，而是附加 Workspace Root：
+
+```text
+amadeus --project /workspace/backend --add-dir /workspace/frontend
+
+CWD = /workspace/backend
+WorkspaceRoots = [/workspace/backend, /workspace/frontend]
+```
+
+`--add-dir` 不改变 Project.RootPath、Session 项目 ID、配置来源或默认 CWD；它不写入 config.yaml 或 SQLite，恢复 Session 时需要重新传入。它作为 Workspace Root 加载目标相关的 AGENTS.md，但首版不加载其中的 MCP/Skill。`request_permissions` 产生的 Run/Session Additional Writable Root 只扩大写权限，不成为 Workspace Root，也不加载该目录的 AGENTS.md、Skill 或 MCP。
+
+默认文件系统策略直接对齐 Codex workspace-write：
+
+```text
+宿主文件系统                         read
+WorkspaceRoots                      write
+Unix /tmp 与 $TMPDIR                write
+Windows os.TempDir()                write
+Run/Session Additional Roots        write
+Workspace .git/.amadeus             read-only
+敏感凭证、系统敏感接口、AMADEUS_HOME 敏感子路径 deny
+```
+
+Unix 平台临时写路径为存在、可规范化并去重后的 `/tmp + $TMPDIR`，Windows 使用 `os.TempDir()`；它们是平台默认权限规则，不按 Run 创建、不随 Run 删除，也不作为独立项目概念暴露。Amadeus 不设计 Run 专属临时根。
+
+ReadOnlyRoots 与 DeniedRoots 必须分开。ReadOnlyRoots 用于父目录可写但特定子 Root 只能读取的场景，例如 Workspace 下的 `.git` 与 `.amadeus`；DeniedRoots 用于 SSH/GPG、常见云凭证、设备/内核接口和 `$AMADEUS_HOME` 中的配置、数据库、审计、用户指令与用户 Skill/MCP 等敏感 Root。不能把整个 AMADEUS_HOME 根目录一刀切 deny，否则当它与 Project.RootPath/Workspace Root 重合时会封死整个项目；规则必须落到具体文件或目录 Root。通用 Tool 与 Sandbox Command 不得读取 Denied Root，只有 Config、Instruction、Skill、MCP 和 Session 等专用内部 Loader 可以通过受控接口读取自身所需文件。DeniedRoots 同时比较规范路径和可得的 canonical target，覆盖规则 Root 自身及全部后代，防止软链接别名绕过。Codex 的 glob policy 不进入 Amadeus MVP。
+
+权限决策先应用不可扩权的限制，再判断可写范围：命中 DeniedRoots 时最终为 deny；未 deny 但命中 ReadOnlyRoots 时最多为 read；只有不受两类限制时，WorkspaceRoots、TemporaryRoots 或 Run/Session Additional Writable Roots 才能赋予 write，否则按 ReadHost 决定 read/deny。Run/Session Grant 不能覆盖 ReadOnlyRoots 或 DeniedRoots。`ReadHost=true` 表示宿主根文件系统默认可读，因此 Amadeus 不设计 AdditionalReadableRoots；普通项目外读取直接执行，DeniedRoots 仍最终拒绝。网络在 MVP 中默认允许，不建立 NetworkPermissionStore；Web 继续执行 SSRF/Redirect Guard，MCP 继续使用已配置 Server 边界，Unsandboxed Command 仍需要操作审批。
+
+建议领域模型：
+
+```go
+type FileSystemAccess string
+
+const (
+    FileSystemDeny  FileSystemAccess = "deny"
+    FileSystemRead  FileSystemAccess = "read"
+    FileSystemWrite FileSystemAccess = "write"
+)
+
+type WorkspaceContext struct {
+    CWD   string
+    Roots []string
+}
+
+type PermissionProfile struct {
+    ReadHost       bool
+    WorkspaceRoots []string
+    TemporaryRoots []string
+    ReadOnlyRoots  []string
+    DeniedRoots    []string
+}
+
+type AdditionalPermissions struct {
+    WritableRoots []string
+}
+
+type EffectivePermissionProfile struct {
+    Base    PermissionProfile
+    Run     AdditionalPermissions
+    Session AdditionalPermissions
+}
+
+type PathDecision struct {
+    RequestedPath string
+    ResolvedPath  string
+    Access        FileSystemAccess
+    MatchedPath   string
+    Source        PermissionSource
+    Disposition   PathDisposition
+}
+
+type RunPermissionStore interface {
+    Snapshot() AdditionalPermissions
+    GrantWritableRoots(context.Context, []string) error
+}
+
+type SessionPermissionStore interface {
+    Snapshot() AdditionalPermissions
+    GrantWritableRoots(context.Context, []string) error
+}
+```
+
+`PermissionProfile` 表示 Run 开始时冻结的基础权限；`EffectivePermissionProfile` 显式组合 Base、当前 Run Grant 与当前 Session Grant 快照，Effective Writable Roots 由 `WorkspaceRoots + TemporaryRoots + run grants + session grants` 派生。两个 Permission Store 都只保存规范化、去重后的 Additional Writable Roots：`Allow for this run` 写入 RunPermissionStore，`Allow for this session` 写入 SessionPermissionStore。任何 Grant 都不直接修改 config.yaml、Project.RootPath、RunContext、WorkspaceRoots 或已经生成的 PreparedToolCall；模型必须在 `request_permissions` 返回后重新发起原 Tool Call，由新的 EffectivePermissionProfile 重新 Prepare。
+
+结构化工具使用确定性 Prepare 流程：
+
+```text
+normalized Tool Call
+         → Tool.Prepare
+         → resolve path against RunContext.CWD
+         → lexical normalize + existing parent/symlink validation
+         → Effective FileSystemPolicy decision
+         → immutable PreparedToolCall
+         → ExecPolicy / Permission / Approval
+         → execute prepared payload → ToolOutcome
+```
+
+显式 Root 参数只在 Tool Prepare 中以 RunContext.CWD 为锚转为规范绝对 Root；没有文件系统目标的 Tool 不做无意义 Root 解析。`execute_command.cwd` 会规范化为存在、可读且未命中 DeniedRoots 的绝对目录，但不要求它位于 Effective Writable Roots：cwd 只决定进程从哪里启动，Writable Roots 决定 Sandboxed 进程可以修改哪里。command 字符串内部的 `../`、绝对路径、变量、脚本或子进程 Root 不由 Amadeus 预先猜测；模型必须通过 `requested_permissions.writable_roots` 明确声明已知的额外写 Root。运行时相对路径由 Shell 根据 canonical cwd 解释，Sandboxed 执行由 Bubblewrap 强制 EffectivePermissionProfile；Unsandboxed 执行无法强制声明范围，必须再经过完整命令 Operation Approval。
+
+读取在 `ReadHost=true` 且未命中 DeniedRoots 时直接执行；结构化写入位于 Effective Writable Roots 内时同样直接执行，不再因为 `SideEffectWrite` 固定询问。普通写 Root 未获授权时返回结构化 `permission_required` ToolOutcome，明确携带缺失的 Writable Roots 并提示模型调用 `request_permissions`；`request_permissions` 提供 `Allow for this run / Allow for this session / Deny`，分别写入 RunPermissionStore、SessionPermissionStore 或不写入。授权后模型重新调用原 Tool，第一次失败的 Prepare 不产生可执行 PreparedToolCall。ReadOnlyRoots、DeniedRoots、软链接逃逸和不可安全规范化 Root 直接返回 `permission_denied`，不能调用 `request_permissions` 绕过；用户拒绝和 Sandbox 拒绝分别形成 `approval_denied`、`sandbox_denied` ToolOutcome，不作为内部 Go error。
+
+PathResolver/FileSystemPolicy 只在 `Prepare` 阶段对用户请求路径执行一次权威解析；ToolAuthorizer、Approval、Audit、Grant Key、Tool Execute 和 RunDiffTracker 读取 PreparedToolCall 中同一份 canonical target。执行阶段不再重新解析 raw arguments 或再次 Parse Patch。为防止 Prepare 与系统调用之间发生 symlink/文件身份替换，写 Tool 在首次副作用前只执行基于 prepared canonical target 的轻量 staleness/identity revalidation；该复检只能确认准备结果仍有效，不能生成一组新的路径事实或改变已经审批的目标。复检失败返回 `target_stale/path_denied`，要求模型重新发起调用。
+
+旧 `CommandGuard` 的复杂路径推断与风险树不再作为目标组件；实现可保留同名轻量前置检查，但其职责必须收敛为参数健全性检查与极小灾难性命令拒绝集。是否跳过审批、需要审批或禁止执行统一由 `ExecPolicy` 输出 `skip / needs_approval / forbidden`，并结合当前 IsolationMode 与精确 Session Approval Key 决策。两者都不得扫描每个 Shell token 中的 `../`、`$HOME`、绝对 Root 或重定向来模拟文件系统 Sandbox。Shell、脚本、编译器和子进程只有在 `sandboxed` 模式下由 SandboxRunner 强制访问范围；`unsandboxed` 明确承认无法强制宿主 Root 边界。目标接口为：
+
+```go
+type SandboxProfile struct {
+    CWD           string
+    ReadHost      bool
+    WritableRoots []string
+    ReadOnlyRoots []string
+    DeniedRoots   []string
+}
+
+type IsolationMode string
+
+const (
+    IsolationSandboxed   IsolationMode = "sandboxed"
+    IsolationUnsandboxed IsolationMode = "unsandboxed"
+)
+
+type SandboxRunner interface {
+    Start(context.Context, process.Command, SandboxProfile) (process.Handle, error)
+}
+
+type ExecApprovalRequirement string
+
+const (
+    ExecApprovalSkip      ExecApprovalRequirement = "skip"
+    ExecApprovalRequired  ExecApprovalRequirement = "required"
+    ExecApprovalForbidden ExecApprovalRequirement = "forbidden"
+)
+```
+
+`workspace-write` 是 PermissionProfile/Sandbox Policy，表示宿主可读、WorkspaceRoots/TemporaryRoots/Run 与 Session 授权 Root 可写；Bubblewrap 是 Linux 上实施该 Policy 的 Sandbox 机制。二者组合形成 `sandboxed` 执行。没有可用 OS Sandbox 的平台使用 `unsandboxed` 执行，不再把 `degraded` 作为权限或执行模式；诊断信息可以说明 Sandbox unavailable。MVP 网络默认允许，不建立 NetworkPermissionStore，也不实现 Docker 或 macOS/Windows 原生 Sandbox。Sandboxed 普通命令在 Permission Check 通过且未命中极小 forbidden 集后直接执行；Unsandboxed 命令即使 Permission Check 已通过，仍必须经过 Operation Approval，并明确提示它可能访问声明范围之外的宿主资源。
+
+PreparedToolCall、Approval、Audit、ToolOutcome 和 RunDiffTracker 一律使用 Prepare 生成的规范绝对路径作为事实键；UI 可以同时显示相对 CWD 或最近 Workspace Root 的友好路径。每个 PreparedTarget 至少保留 requested_path、canonical_path、access、matched_path 和 permission_source，避免多个 Workspace Root 下同名相对路径发生权限、Diff 或审计歧义。规范路径不用于建立资源锁；首版 Exclusive 写入本身就是全局串行屏障。
+
+### 14.3 内置工具分层
 
 目标稳定核心工具面分为三组：
 
@@ -1186,21 +1298,21 @@ Execution
 └── write_stdin
 ```
 
-`write_file` 的迁移已经完成：`apply_patch` 覆盖 create/update/delete/move、整文件替换和稳定冲突诊断，Provider Prompt、E2E、Registry 与生产实现均不再包含 `write_file`。条件工具包括 `revert_run`、`read_skill`、`web_search/web_fetch`、MCP gateway 和未来 SubAgent；只有能力存在且配置有效时才暴露。交互和策略能力不强制伪装成 Provider Tool：`request_approval` 由 Tool Pipeline 调用 Approval Port；`request_user_input` 只有在后续证明“Run 内等待用户”明显优于 blocked 后新 Run 时再立项。LSP 不进入核心 Tool/Hook 基线。
+`write_file` 的迁移已经完成：`apply_patch` 覆盖 create/update/delete/move、整文件替换和稳定冲突诊断，Provider Prompt、E2E、Registry 与生产实现均不再包含 `write_file`。目标架构同时删除模型可见 `revert_run` 和全项目 Snapshot 主链；条件工具只保留 `read_skill`、`web_search/web_fetch`、MCP gateway 和未来 SubAgent。交互和策略能力不强制伪装成 Provider Tool：`request_approval` 由 Tool Pipeline 调用 Approval Port；`request_user_input` 只有在后续证明“Run 内等待用户”明显优于 blocked 后新 Run 时再立项。LSP 不进入核心 Tool/Hook 基线。
 
-### 14.3 探索工具
+### 14.4 探索工具
 
-- `read_file`：按一基行号局部读取 Project Root 内 UTF-8 regular file；大文件不能因为总大小超限而阻止小范围读取。输出带稳定 `L<line>:` 前缀、选区/总行数、下一起点、超长行截断和 byte/token budget。
+- `read_file`：按一基行号局部读取 FileSystemPolicy 可读范围内的 UTF-8 regular file；支持绝对路径和相对 CWD 的 `../`，大文件不能因为总大小超限而阻止小范围读取。输出带稳定 `L<line>:` 前缀、选区/总行数、下一起点、超长行截断和 byte/token budget。
 - `list_dir`：稳定列出一层目录，提供 file/dir/symlink、大小、hidden、entry budget 和截断语义；深层发现继续交给 `glob_files`，不新增重叠的 `tree` Tool。
-- `glob_files`：支持 `path + pattern`，优先通过 `rg --files` 获得 `.gitignore/.ignore` 语义，无 `rg` 时使用共享 IgnoreMatcher 的纯 Go fallback；两条 Backend 返回相同 project-relative 路径、排序和 partial metadata。
+- `glob_files`：支持 `path + pattern`，从指定可读目录开始，优先通过 `rg --files` 获得 `.gitignore/.ignore` 语义，无 `rg` 时使用共享 IgnoreMatcher 的纯 Go fallback；两条 Backend 返回相同的规范路径、友好展示路径、排序和 partial metadata。
 - `grep_code`：优先直接消费 `rg` 的结构化或稳定输出获得文件、行、列、上下文和匹配文本，不再先 `--files-with-matches` 后重新读取全部候选文件；支持 path/glob/type 过滤并保留纯 Go fallback。
-- `view_image`：只读取 Project Root 内受支持的 PNG/JPEG/WebP/静态 GIF，校验格式、大小和尺寸后返回真正的多模态 Content Part；必须先扩展 `llm.Message` 与 Responses/Chat Adapter，不能把 base64 图片包装成普通文本 Tool Result。
+- `view_image`：只读取 FileSystemPolicy 可读范围内受支持的 PNG/JPEG/WebP/静态 GIF，校验格式、大小和尺寸后返回真正的多模态 Content Part；必须先扩展 `llm.Message` 与 Responses/Chat Adapter，不能把 base64 图片包装成普通文本 Tool Result。
 
-这些工具与 Shell 有意重叠。区别不在“是否能完成”，而在专用工具可以严格限制读取范围、免去常规探索审批、提供可验证 metadata，并直接进入 Context Budget、Evidence 和 Previous Work 摘要。底层是否调用 ripgrep 是实现细节，模型不需要知道或拼接平台相关命令。
+这些工具与 Shell 有意重叠。区别不在“是否能完成”，而在专用工具可以严格限制读取范围、免去常规探索审批、提供稳定 metadata，并直接形成结构化 ToolOutcome 和 canonical rollout。底层是否调用 ripgrep 是实现细节，模型不需要知道或拼接平台相关命令。
 
-### 14.4 修改工具
+### 14.5 修改工具
 
-`apply_patch` 是唯一目标文件修改工具，并支持受控的 create/update/delete/move operation。JSON Function Tool 外壳继续只接收 `patch` 字符串，以兼容 Responses、Chat Completions、DeepSeek、Qwen 和 GLM；内部行协议对齐模型熟悉的 Codex Patch 语义，不依赖 OpenAI-only Freeform Grammar Tool。每个 update hunk 必须携带足够上下文并在当前文件唯一匹配；匹配只允许 exact → CRLF/LF 归一化 → 行尾空白归一化三层保守降级，仍不唯一时明确失败，不进行宽松猜测式替换。执行前解析并预检整个 Patch，所有源/目标路径都必须通过 PathGuard；跨文件中途失败必须返回明确 partial/已应用 operation，不得伪装成原子成功。
+`apply_patch` 是唯一目标文件修改工具，并支持受控的 create/update/delete/move operation。JSON Function Tool 外壳继续只接收 `patch` 字符串，以兼容 Responses、Chat Completions、DeepSeek、Qwen 和 GLM；内部行协议对齐模型熟悉的 Codex Patch 语义，不依赖 OpenAI-only Freeform Grammar Tool。每个 update hunk 必须携带足够上下文并在当前文件唯一匹配；匹配只允许 exact → CRLF/LF 归一化 → 行尾空白归一化三层保守降级，仍不唯一时明确失败，不进行宽松猜测式替换。Prepare 阶段只解析一次完整 Patch，将 Parsed Document、全部 operation 的 canonical source/destination target 和预计算执行输入放入 PreparedToolCall；源/目标路径可为绝对路径或相对 CWD 的路径，但都必须解析到某个已声明 Writable Root，并由同一 prepared target 进入审批、提交、Audit 和 RunDiffTracker。跨文件中途失败必须返回明确 partial/已应用 operation，不得伪装成原子成功。
 
 M4-01 将 Patch Document v1 固定为 UTF-8 行协议。历史规范头为 `*** Begin Patch v1`；目标 Prompt 和 Tool description 统一生成模型更熟悉的 `*** Begin Patch`，解析器继续接受 v1 兼容入口并拒绝未知版本。Add 正文行使用 `+`，Delete 不允许正文，Update 至少包含一个以 `@@` 开始的 hunk，hunk 行分别以空格、`+`、`-` 表示 context/add/delete，并且必须同时包含旧内容和真实变更。目标协议增加 `*** Move to:`，源路径与目标路径都进入预检、审批摘要和原子提交。解析错误除 line/column 外还应提供 error kind、path、hunk、期望上下文和有界 candidate lines，便于 Reactor 修正而不是盲目重试。
 
@@ -1217,9 +1329,9 @@ M4-01 将 Patch Document v1 固定为 UTF-8 行协议。历史规范头为 `*** 
 *** End Patch
 ```
 
-M4-02 的文件执行器采用“全 Patch 预检、逐 operation 提交”的边界：先验证 Document、解析并守卫全部路径、检查目标类型与大小、在内存中完成所有 hunk 的唯一匹配和新内容计算，再为 Add/Update 在目标同目录创建临时文件。首次修改前会重新校验全部目标，随后按文档顺序提交；Add/Update 通过临时文件 `Sync` 后原子 rename，Update 保留原权限和既有 CRLF/末尾换行风格，Delete 仅删除 regular file。预检冲突不会产生任何文件变化；若跨文件提交中途失败，则结果明确携带已应用 operation 和 `partial=true`，供 Tool Result、Evidence 与后续 Replan 使用。
+M4-02 的文件执行器采用“全 Patch 预检、逐 operation 提交”的边界：先验证 Document、解析并守卫全部路径、检查目标类型与大小、在内存中完成所有 hunk 的唯一匹配和新内容计算，再为 Add/Update 在目标同目录创建临时文件。首次修改前会重新校验全部目标，随后按文档顺序提交；Add/Update 通过临时文件 `Sync` 后原子 rename，Update 保留原权限和既有 CRLF/末尾换行风格，Delete 仅删除 regular file。预检冲突不会产生任何文件变化；若跨文件提交中途失败，则 ToolOutcome 明确携带已应用 operation、changes 和 `partial=true`，供模型重新检查现场。
 
-M4-03 将 `apply_patch` 作为第七个核心工具接入 Registry。Tool Spec 使用单一必填 `patch` 字符串、`SideEffectWrite`、`ParallelSafe=false`、`Idempotent=false` 和 `ResourceModeExclusive`：Patch 内嵌多条路径，在引入可靠的 operation-level resource extraction 前必须作为全局串行屏障。Policy 在请求高风险审批前再次解析 Patch 并对全部 operation 执行 PathGuard 预检；Approval 和 Audit 沿用规范化完整参数的 SHA-256，只展示/持久化哈希而不记录 Patch 正文。成功或失败结果都返回 operation metadata；中途失败保留 `partial=true` 和已应用 operation，Observation 标记失败，Evidence 明确为未验证且指出部分副作用，取消沿 ToolExecutor 传播且提交前取消不产生写入。
+M4-03 将 `apply_patch` 作为第七个核心工具接入 Registry。目标 Tool Spec 使用单一必填 `patch` 字符串、`SideEffectWrite`、`ConcurrencyExclusive` 和 `Idempotent=false`：任何 Patch 都作为 Run 级独占屏障，不尝试根据目标文件拆分并行写入。当前 Authorizer 再次 Parse Patch 的历史实现必须迁移到 `apply_patch.Prepare`：Prepare 一次完成 Document 解析和全部 operation 的 PathResolver/FileSystemPolicy 判定，Approval、Audit 和 Execute 共用 PreparedToolCall；Approval 和 Audit 沿用规范化完整参数的 SHA-256，只展示/持久化哈希而不记录 Patch 正文。成功或失败 ToolOutcome 都返回精确 operation delta；RunDiffTracker 只消费已经实际提交的 delta，中途失败保留 `partial=true`、已应用 operation 和明确错误状态，取消沿 Tool Runtime 传播且提交前取消不产生写入。
 
 `write_file` 的 M4 实现只作为历史兼容记录。M7 已按“`apply_patch` 补齐 Add/Move/整文件替换与失败诊断 → Provider/E2E 迁移 → 删除生产注册、实现和 Prompt”的顺序完成退场；Patch 冲突只能通过重新读取现场并构造新的唯一匹配 Patch 修正，不能回退到整文件写入逃生路径。
 
@@ -1227,7 +1339,7 @@ M4-04 将 `write_file` 的 `mode` 固定为必填枚举 `create|replace`。`crea
 
 不单独增加 `edit_file`、`delete_file`、`move_file`、`create_directory`、`create_project`、`git_status`、`git_diff`、`run_tests` 或 `format_code`：Patch 覆盖文件变更，Git/测试/格式化和项目脚本继续由命令工具处理。只有后续实际使用证明需要独立权限、结构化结果或可移植行为时再拆分。
 
-### 14.5 Shell 使用策略
+### 14.6 Shell 使用策略
 
 模型选择顺序固定为：
 
@@ -1235,74 +1347,79 @@ M4-04 将 `write_file` 的 `mode` 固定为必填枚举 `create|replace`。`crea
 2. 所有文件创建、更新、删除和移动优先使用 `apply_patch`；迁移期 `write_file` 不作为模型默认选择。
 3. 构建、测试、Git、格式化、生成器和项目自定义 CLI 使用 `execute_command`。
 4. 命令在 yield 时间内未结束时返回 `process_id`；后续通过 `write_stdin` 输入或空输入轮询，不因前台等待超时直接杀死正常长任务。
-5. 专用工具无法表达需求时允许 Shell fallback，但仍经过 CommandGuard、Approval、Audit、timeout、进程组取消和输出预算。
+5. 专用工具无法表达需求时允许 Shell fallback，但仍经过 ExecPolicy、Permission/Approval、Sandbox、Audit、timeout、进程组取消和输出预算。
 
-Shell 中的 `cat`、`sed`、`grep`、Python/Node 文件访问不会绕过 Project Root 和安全模型。CommandGuard 能确定性识别的只读命令可以使用只读策略；无法可靠判定的动态命令按更高风险处理，而不是假设无副作用。专用工具失败时，模型可以根据错误选择修正参数或使用 Shell，但不得为了绕过策略拒绝而改写成等价 Shell 命令。
+Shell 中的 `cat`、`sed`、`grep`、Python/Node 文件访问只有在 Sandboxed 执行时才能由 SandboxRunner 根据 EffectivePermissionProfile 真实约束，不能依赖 ExecPolicy 猜测 command 字符串中的所有 Root。Linux workspace-write 下，普通命令直接进入 Bubblewrap，越界访问形成 `sandbox_denied` Outcome；Unsandboxed 执行不扫描 `../`、绝对 Root、变量或重定向，而是在 Permission Check 之后对完整命令做 Operation Approval，并明确提示这是 unsandboxed host execution。专用工具失败时，模型可以根据错误选择修正参数或使用合法 Shell fallback，但不得为了绕过策略拒绝而改写成等价命令。
 
-M4-05 的 Tool Selection Prompt 是历史七工具基线；目标 Prompt 更新为 Exploration → Patch → Command/Process 的三层选择，不再引导 `write_file`。Shell 只在专用工具无法表达时 fallback，且不得通过重定向、脚本或等价命令绕过 Tool contract、PathGuard、策略拒绝或审批。失败工具调用本身是未完成 Evidence，模型必须修正或选择合法替代，不能静默宣称成功。
+M4-05 的 Tool Selection Prompt 是历史七工具基线；目标 Prompt 更新为 Exploration → Patch → Command/Process 的三层选择，不再引导 `write_file`。Shell 只在专用工具无法表达时 fallback，且不得通过重定向、脚本或等价命令绕过 Tool contract、FileSystemPolicy、Sandbox、策略拒绝或审批。失败 ToolOutcome 是 canonical 事实，模型必须修正或选择合法替代，不能静默宣称成功。
 
-`execute_command` 目标实现由 `ProcessManager` 支撑，参数增加 `tty`、`yield_time_ms` 和 `max_output_tokens`。命令在 yield 时间内结束则直接返回 completed；仍运行则返回 `process_id/status=running` 和当前增量输出。`write_stdin(process_id, chars, yield_time_ms)` 既可写入 stdin，也可用空 `chars` 轮询。Amadeus 使用 `process_id` 而不是 `session_id`，避免与 Conversation Session 混淆；原始命令审批覆盖该 Process 的后续输入/轮询，但每次调用仍审计，且不能操作其他 Run 创建的 Process。
+`execute_command` 目标实现由 `ProcessManager` 支撑，参数增加 `tty`、`yield_time_ms` 和 `max_output_tokens`。命令在 yield 时间内结束则直接返回 completed；仍运行则返回 `process_id/status=running` 和当前增量输出。`write_stdin(process_id, chars, yield_time_ms)` 既可写入 stdin，也可用空 `chars` 轮询。Amadeus 使用 `process_id` 而不是 `session_id`，避免与 Session 混淆；原始命令审批覆盖该 Process 的后续输入/轮询，但每次调用仍审计，且不能操作其他 Run 创建的 Process。
 
 命令输出采用有界 head+tail，而不是达到上限后只保留开头；结果同时报告 retained/total bytes、lines、truncated、exit code、duration 和 running/completed/cancelled/timed_out。Run 取消、Session 关闭和进程退出必须清理 Process/PTY，按 process ID 串行化 stdin 与 poll，避免并发读取破坏输出顺序。
 
-### 14.6 执行流水线
+### 14.7 执行流水线
 
 ```text
-lookup → schema validation → policy precheck → approval
-       → snapshot hook → execute → post-edit hook → audit → result normalization
+lookup → schema validation → ordered Shared/Exclusive admission
+       → policy precheck → approval
+       → sandbox/execute → diff projection → post-edit hook → audit → result normalization
 ```
 
-所有内置和动态工具共享该流水线。文件读取/搜索通常标记为只读且 `ParallelSafe`；Patch、整文件写入和 Shell 根据资源与副作用分类进入串行屏障。Audit 记录工具名、参数摘要/hash、目标资源、策略结论、审批结果、耗时、partial 和 outcome，不记录凭证或无限正文。
+所有内置和动态工具共享该流水线。文件读取/搜索、图片、Web 和明确只读的 MCP Tool 通常声明 Shared；Patch、Shell、Process 输入和未知副作用 Tool 声明 Exclusive。Audit 记录工具名、参数摘要/hash、目标资源、并发模式、策略结论、审批结果、耗时、partial 和 outcome，不记录凭证或无限正文。
 
-Registry 与模型可见 Tool Set 分离。Tool Exposure 至少支持 `Direct/Conditional/Deferred/Hidden`：核心探索、Patch 和命令工具 Direct；`view_image` 按模型图片 capability Conditional；Web/MCP/Skill 按配置与发现结果 Conditional；动态 MCP/SubAgent 可 Deferred；迁移期 `write_file` Hidden。ContextWindowManager 只计算当前 RequestView 实际可见 Tool Schema，不再默认把 Registry 全量快照发送给每次模型请求。`tool_search` 只有动态工具数量真实造成上下文或选择问题后再立项。
+Registry 与模型可见 Tool Set 分离。Tool Exposure 至少支持 `Direct/Conditional/Deferred/Hidden`：核心探索、Patch 和命令工具 Direct；`view_image` 按模型图片 capability Conditional；Web/MCP/Skill 按配置与发现结果 Conditional；动态 MCP/SubAgent 可 Deferred；迁移期 `write_file` Hidden。ContextManager 只计算当前 RequestView 实际可见 Tool Schema，不再默认把 Registry 全量快照发送给每次模型请求。`tool_search` 只有动态工具数量真实造成上下文或选择问题后再立项。
 
-### 14.7 并发规则
+### 14.8 并发规则
 
-- 默认只并行执行模型在同一响应中发起、且工具声明为 `ParallelSafe` 的调用。
-- `apply_patch`、`execute_command`、`write_stdin` 和 Snapshot 恢复默认不与其他有副作用工具并行；同一 `process_id` 的输入与轮询强制串行。
-- 使用固定大小 worker pool，不为每次调用创建无界 goroutine。
+- Tool 并发只使用 Run 级 Shared/Exclusive Gate，不建立文件、目录、Process 或参数级读写锁。
+- `Shared/Exclusive` 是 Tool 执行边界的完整并发语义：Shared–Shared 允许重叠，Shared–Exclusive、Exclusive–Shared 和 Exclusive–Exclusive 均由 Exclusive 屏障串行化。它已经覆盖读读、读写和写写关系，再叠加资源级锁只会形成第二套调度事实、增加死锁与取消复杂度。
+
+| 前序调用 | 后续调用 | 执行关系 | 首版语义 |
+|---|---|---|---|
+| Shared | Shared | 可在 `max_parallel_tools` 范围内重叠 | 读读并发 |
+| Shared | Exclusive | Exclusive 等待此前 Shared 完成 | 读写串行 |
+| Exclusive | Shared | Shared 等待 Exclusive 完成 | 写读串行 |
+| Exclusive | Exclusive | 严格按模型调用顺序执行 | 写写串行 |
+
+这张表已经完整覆盖首版需要裁决的并发关系。路径、目录、`process_id`、MCP target 等 canonical target 仍然需要被解析和记录，但它们属于策略、审批、授权、审计、Diff 与 UI 数据，不再生成第二层 Mutex，也不参与 Tool admission。该取舍与 Codex 式“先按调用副作用做保守 admission，而不是维护一套资源依赖图”的方向一致；如果未来需要不同文件并行写，必须用真实性能数据和新的安全设计单独立项，不能隐式扩展当前 Gate。
+
+- Shared Tool 可以在 `max_parallel_tools` 范围内并行；Exclusive Tool 等待此前 Shared 全部结束，并阻止后续调用进入，直到自身完成。
+- 首版 `apply_patch`、`execute_command`、`write_stdin` 和未知动态 Tool 一律 Exclusive；不会因为目标路径或 `process_id` 不同而尝试并行。
+- 使用固定大小 worker pool 或等价有界 admission，不为每次调用创建无界 goroutine；实现可以继续采用“连续 Shared 批次 → Exclusive 屏障 → 下一 Shared 批次”，不强制裸用无法被 `context.Context` 取消等待的 `sync.RWMutex`。
 - 一个调用失败不自动取消独立调用；上下文取消或策略拒绝除外。
 - 结果按原始 tool call 顺序回灌，保证行为可复现。
+- PreparedToolCall 中的 canonical target 只服务于 Path Policy、Approval、Grant、Audit、RunDiff 与 UI，不参与并发锁计算；Tool Spec 不再携带泛化 TargetStrategy。
+- 只有真实性能数据证明“不同文件的并行写入”具有显著收益后，才单独设计资源级锁；它不属于首个可用版本或当前目标架构。
 
 ## 15. 安全模型
 
-Amadeus 的本地安全模型是策略与人工审批，不宣称进程隔离。
+Amadeus 的本地安全模型由 PermissionProfile、Run/Session Permission Store、PathResolver/FileSystemPolicy、轻量 ExecPolicy、Linux Sandbox、SessionApprovalStore、人工审批和 Audit 共同组成。Permission Check 作用于所有访问文件系统资源的 Tool；Linux Bubblewrap 只强制 Sandboxed Shell/子进程，其他平台使用 Unsandboxed 执行并明确提示宿主 Shell 未被限制。
 
 ### 15.1 路径围栏
 
-- 所有文件工具先把路径解析为绝对、清理后的真实路径。
-- 拒绝 `..`、绝对路径外逃和符号链接逃逸。
-- 项目根目录在 session 创建时固定，不随工具参数变化。
-- 写入前后都验证目标，降低竞态窗口。
+- 所有文件工具先以 RunContext.CWD 为锚解析相对路径，接受规范绝对路径和 `../`，再生成 canonical absolute path。
+- PathResolver 负责词法规范化、现有祖先、软链接、对象类型和写目标检查；FileSystemPolicy 负责 read/write/deny 决策，二者不能继续由单 Project Root Guard 混合承担。
+- WorkspaceRoots 与 TemporaryRoots 形成基础 Writable Roots，不随模型参数或进程 `chdir` 隐式变化；`Allow for this run` 与 `Allow for this session` 分别将 Additional Writable Roots 写入 RunPermissionStore 与 SessionPermissionStore，并生成可审计的权限状态变化。
+- ReadOnlyRoots 禁止写入，DeniedRoots、软链接逃逸和非目录父 Root 直接拒绝；普通 WorkspaceRoots 外路径不再天然等于越界错误，因为 `ReadHost=true` 允许宿主文件系统读取。
+- Prepare 阶段完成 policy decision 并冻结 canonical target；实际系统调用前只做 prepared target 的 staleness/identity revalidation，不能重新解析成不同目标。SandboxRunner 只对 Sandboxed Shell 和子进程执行 OS 级强制，降低 TOCTOU 和字符串分析绕过风险。
 
-M2-21 已新增不可变 `project.Root`：构造时把传入目录转为绝对路径、解析根目录本身的符号链接并确认其为目录；之后所有相对路径均基于该固定根解析，不受进程后续 `chdir` 影响。Root 现阶段拒绝绝对路径和词法 `..` 外逃，并提供稳定的 project-relative 表示；针对路径内部 symlink 的真实路径围栏仍由 M3 PathGuard 完成。
+当前 `project.Root + PathGuard` 是单根历史实现基础，迁移时只保留真实路径解析、文件类型和软链接防逃逸代码，并拆分为 `PathResolver + FileSystemPolicy`；`project.Root` 的持久化身份职责迁移为 `Project.RootPath`，不再参与权限判断。`ErrPathOutsideRoot` 不再作为所有绝对路径、父目录或项目外读取的统一错误；目标 ToolOutcome 使用 `path_denied`、`path_not_found`、`path_type_mismatch`、`symlink_escape` 和 `sandbox_denied` 等明确类型。
 
-M3-09 已在 `internal/project` 增加统一 `PathGuard`，补足 Root 的真实路径边界。`ResolveExisting` 解析完整软链接链、验证真实路径仍在项目根，并可要求 regular file、directory 或任意现有对象；`ResolveForWrite` 逐段检查所有已存在祖先，拒绝外逃软链接、非目录祖先和最终 symlink 写目标，新路径只允许从最后一个已验证的项目内祖先继续创建。
+探索工具、Patch、cwd 校验、ripgrep/Go fallback、Approval、Audit 和 RunDiffTracker 必须使用同一解析结果。目标键从 project-relative path 改为 canonical absolute path；ToolOutcome/Audit 同时记录 requested path、resolved path、access、matched path 与 permission source。用户界面可以优先显示相对 CWD 或最近 Workspace Root 的友好路径，但不能丢弃绝对事实键。ToolExecutionGate 不读取这些路径，也不建立资源锁。
 
-M2 已实现的六个 MVP 工具共享该 Guard：read/list/execute cwd 使用现有路径解析，write 使用 write-target 解析，grep 校验入口、ripgrep 候选和 Go walk 软链接，glob 在返回软链接条目前验证真实目标。M4 新增的 `apply_patch` 必须复用同一 PathGuard，并在解析完整 Patch 后、任何写入前完成所有目标路径预检。项目内部目录软链接仍可正常读写；绝对路径、`..` 以及文件或目录软链接逃逸会在读取正文、启动命令或写入副作用之前失败。该实现降低但不宣称完全消除检查与系统调用之间的 TOCTOU 竞态，未来可按平台增加 descriptor-relative/openat 强化。
+Plan Mode 可读取 FileSystemPolicy 允许的跨目录内容，但不获得任何 Writable Root 的修改能力。execute Mode 的结构化写入允许基础 Writable Roots、Run Root Grants 和 Session Root Grants；ReadOnlyRoots 或 DeniedRoots 不能通过等价 Shell 绕过。
 
-M2-22～M2-25 已在 `internal/tool/builtin` 实现首批固定 Root 文件工具。`read_file` 只读取大小预算内的 UTF-8 regular file，支持零基 line offset/limit，并明确报告 partial/总行数；`write_file` 自动创建父目录，在目标同目录写临时文件并原子 rename，限制输入大小且保留已有权限；`list_dir` 按名称稳定排序，默认隐藏 dot entry，并受 entry budget 限制；`glob_files` 支持 slash glob 和 `**`，默认忽略 VCS、vendor、node_modules 和常见 build tree，输出稳定 project-relative 路径并标注截断。所有工具均使用严格 JSON 参数且不读取当前工作目录。
+### 15.2 ExecPolicy 与命令执行
 
-M2-26～M2-27 已实现 `grep_code` 的统一语义层。纯 Go fallback 稳定遍历项目文本文件，跳过 hidden/VCS/build tree、binary 和超大文件，支持 literal/regex、case sensitivity、行号、上下文和结果上限。若 `rg` 可用，则只用 `--files-with-matches` 快速筛候选文件，再由同一 Go scanner 生成最终结果，因此 fast path 与 fallback 的输出、行号、context 和 partial 语义一致；`rg` 不存在、失败或候选输出超限时自动回退，context 取消不会被回退掩盖。
+- ExecPolicy 只决定 `skip / needs_approval / forbidden`，不承担文件系统权限 Enforcement。
+- 命令仍进行空值、NUL、明显畸形输入和极小灾难性模式检查；不构建完整 Shell AST，不枚举命令内部路径。
+- Sandboxed 下，Permission Check 通过且未命中极小 forbidden 集的普通命令直接在 Bubblewrap 中执行。
+- Unsandboxed 下，Permission Check 通过后仍对完整命令执行 Operation Approval；`Allow once` 只执行当前调用，`Allow for session` 才写入 SessionApprovalStore。
+- `exec.CommandContext` 负责取消，输出按字节、行数和 token 限制。
 
-M2-28～M2-30 已实现 `execute_command`。命令通过固定 `project.Root` 下的 project-relative cwd 启动，stdout/stderr 写入同一个并发安全 writer，以实际到达顺序生成 combined output；非零退出同时返回结构化 exit code 和已产生输出。每次调用使用受全局上限约束的 timeout；Unix 平台为 shell 创建独立进程组，取消或超时时终止整组，其他平台明确退化为 `exec.CommandContext` 能力。输出同时受 byte/line budget 限制，仍统计原始总字节/行数，截断、timeout 和 cancel 均返回 partial Result，供 Observation/Evidence 保留。
+目标 ExecPolicy 不再维护 low/moderate/high 到 allow/deny 的复杂命令分类树。Risk 只作为 UI/Audit 展示；策略结论只有三态。`rm -rf /`、磁盘擦除、关机或其他能够广泛破坏宿主机且无法由当前 Sandbox/Profile 安全表达的极小集合可以 `forbidden`；普通构建、测试、Git、格式化、依赖安装、网络命令和复杂 Shell 在 Sandboxed 模式默认执行，在 Unsandboxed 模式统一 `needs_approval`。未来如有真实需求，可增加 Codex 风格显式 prefix rules，但当前不实现复杂 Policy DSL。
 
-M2-31 曾提供首版 `builtin.DefaultMVPOptions`、`RegisterMVP/NewMVPRegistry` 和 `MVPSpecs`。M7 后当前核心装配固定为 `apply_patch/read_file/list_dir/glob_files/grep_code/execute_command/write_stdin`；`amadeus tools list` 不需要读取 Provider 配置即可展示完整目标 Catalog 的 Exposure、Condition、状态和 Side Effect，供用户与 Bootstrap 检查工具面。
-
-M2-32 已把资源感知的有界并发执行器接入 ReActRunner。只有 SideEffect 为 none/read、声明 ParallelSafe 且非 exclusive 的连续调用组可以并行；argument resource strategy 从规范化 JSON pointer 提取资源键，同键调用串行，write/execute/network/unknown/exclusive 调用作为前后屏障。Worker 数受 MaxParallelTools 限制，取消后不启动剩余调用，Observation/Evidence 和 ToolResult 始终恢复为原始 model call 顺序。
-
-Project Root 越界属于不可恢复的当前执行边界错误。`project.Root` 使用 `ErrPathOutsideRoot` 标识绝对路径、父目录逃逸和项目外路径；ToolExecutor 将其转换为 Blocking Observation，Reactor 立即停止重复调用并以 `blocked` 返回。Plan 模式由外层 review 决定是否生成新 Task，默认 ReAct 直接向用户解释边界。
-
-### 15.2 命令策略
-
-- 命令经 tokenizer/保守规则检查，不只依赖字符串包含判断。
-- 明显破坏性命令在 HITL 前快速拒绝。
-- 所有 `execute_command` 调用都进入审批，不根据“看起来只读”自动放行。
-- `exec.CommandContext` 负责取消，输出按字节和行数限制。
-
-M3-10 在 `internal/policy` 增加 CommandGuard。Guard 使用受限 shell tokenizer 识别引号、转义、环境变量前缀、管道、条件连接、重定向和多命令边界，再按每个实际 program 聚合风险，而不是对原始字符串做单一关键词包含判断。风险分为 low、moderate、high、blocked；风险级别用于审批说明和拒绝判断，但 `execute_command` 最终均固定请求审批。
-
-只读检查命令可归为 low；构建和测试因可执行项目代码归为 moderate；文件修改、依赖安装、网络和嵌套 shell 归为 high。`sudo`/关机/磁盘工具、广泛 `rm -rf`、丢弃工作区的 git reset/clean/checkout/restore，以及 curl/wget 管道到 shell 会直接 blocked。命令替换、畸形引号、空 segment 和 NUL 均被显式识别。明显的 `../`、参数绝对路径、`~/`、`$HOME`/`${HOME}` 和项目外重定向也会在审批前拒绝；绝对程序路径及 `/tmp` 中的显式构建缓存变量仍可使用。该规则是保守的命令预检，不是 OS 级 Sandbox，脚本内部行为仍依赖用户审批与现有进程权限边界。
+ExecPolicy 不识别 command 字符串中的相对或绝对文件 Root。`execute_command.cwd` 在 Prepare 阶段相对 RunContext.CWD 解析并冻结为存在、可读且未命中 DeniedRoots 的 canonical absolute directory，不要求命中 Writable Roots；command 内部相对 Root 由 Shell 基于该 cwd 解释，变量、脚本、解释器和子进程访问只有在 Sandboxed 模式下由 Bubblewrap 决定。Unsandboxed 无法可靠限制这些访问，因此审批面板必须明确显示“unsandboxed host execution”，而不是用字符串扫描制造虚假的 Root 安全保证。
 
 ### 15.3 审批与审计
 
@@ -1311,37 +1428,78 @@ M3-10 在 `internal/policy` 增加 CommandGuard。Guard 使用受限 shell token
 - 审计为 JSONL，记录时间、会话、工具、策略/审批结果、审批范围和耗时。
 - API key、Authorization header、图片二进制和完整敏感正文必须脱敏或省略。
 
-MVP 直接采用 PaiCLI 风格的固定分类，不新增 Sandbox、ExecutionBoundary、Policy DSL 或可配置决策矩阵：
+Approval 向 Codex 的 Permission/Approval 分层靠拢，不再采用“读不询问、写/命令一律询问”的固定副作用分类，也不要求用户配置复杂 Policy DSL：
 
 ```text
-只读工具             → 直接执行
-写入/命令/网络/MCP   → 请求审批
-路径越界/明确危险命令 → 直接拒绝
+权限范围内的确定性结构化读写 → 直接执行
+缺少 Writable Root             → permission_required → request_permissions
+Sandboxed 普通命令             → Bubblewrap 直接执行
+Unsandboxed 新命令             → Operation Approval
+Web 网络                       → 默认允许并执行 SSRF/Redirect Guard
+Denied/ReadOnly 写入与极小灾难性命令 → 直接拒绝
 ```
 
 固定工具分类如下：
 
 | 工具/行为 | MVP 行为 |
 |---|---|
-| `read_file`、`list_dir`、`glob_files`、`grep_code`、`view_image` | PathGuard 通过后直接执行；`view_image` 还需模型 capability 与媒体预算通过 |
-| `apply_patch`、迁移期 `write_file`、`revert_run` | PathGuard 预检通过后请求审批 |
-| `execute_command` | CommandGuard 未 blocked 时仍请求审批；成功启动后建立当前 Run 所有的 Process |
+| `read_file`、`list_dir`、`glob_files`、`grep_code`、`view_image` | FileSystemPolicy 判定可读后直接执行；`view_image` 还需模型 capability 与媒体预算通过 |
+| `apply_patch` | 所有目标位于 Effective Writable Roots 时直接执行；缺少 Root 时返回 `permission_required`，由模型调用 `request_permissions` 后重新发起 Patch；成功变化投影给 RunDiffTracker |
+| `request_permissions` | 只接受规范化 Writable Roots；提供 `Allow for this run / Allow for this session / Deny`，分别写入 RunPermissionStore、SessionPermissionStore 或不写入 |
+| `execute_command`（Sandboxed） | 读取显式 `requested_permissions.writable_roots` 并执行统一 Permission Check；通过后普通命令直接进入 Bubblewrap，命令字符串内部 Root 不解析 |
+| `execute_command`（Unsandboxed） | 先执行相同 Permission Check，再对完整命令执行 Operation Approval；`Allow once` 不缓存，`Allow for session` 写入 SessionApprovalStore |
 | `write_stdin` | 只允许访问当前 Run 已审批 Process；空输入轮询或写 stdin 均审计，不重复扩大命令权限 |
-| network side effect、`mcp_list_tools`、`mcp_call`、MCP Resource 读取 | 默认请求审批 |
+| Web Search/Fetch | MVP 默认允许网络；继续执行 Provider 配置、SSRF、Redirect、timeout 与输出预算检查，不建立 NetworkPermissionStore |
+| MCP Tool/Resource | 使用已配置 Server、Binding 与既有 MCP 目标审批，不复用文件 Root Grant 代替远端能力判断 |
 | Skill 读取说明文件 | 按只读工具执行，不额外审批 |
 | Skill 引发写入、命令、网络或 MCP 调用 | 复用对应工具审批，不建立 Skill 专属审批系统 |
-| Project Root 外路径、软链接逃逸 | 直接拒绝，不提供扩大路径权限的审批 |
-| `sudo`、广泛 `rm -rf`、磁盘工具、远端脚本管道执行等 blocked 命令 | 直接拒绝，任何 grant 都不能绕过 |
+| 普通 WorkspaceRoots 外可读路径 | 直接读取，不因跨目录单独审批 |
+| 基础 Writable Roots 外的结构化写 Root | 返回 `permission_required`；模型调用 `request_permissions`，批准后重新发起原 Tool |
+| ReadOnly Root 写入、Denied Root、软链接逃逸 | 直接拒绝，任何 Permission Grant 都不能绕过 |
+| `rm -rf /`、磁盘擦除、关机等极小灾难性命令 | 直接拒绝，任何普通 grant 都不能绕过 |
 
-`ToolAuthorizer` 顺序固定为：参数 schema 校验 → PathGuard preflight → CommandGuard（命令工具）→ 固定工具分类 → ApprovalHandler（如需要）→ 工具内部副作用前复检 → Tool Execute → Audit。只读工具跳过 ApprovalHandler，但不跳过参数、路径、预算、取消和审计。
+Tool 执行顺序固定为：参数 schema 校验 → `Tool.Prepare`（领域解析 + PathResolver/EffectivePermissionProfile）→ immutable PreparedToolCall、`permission_required` 或 `permission_denied` → ExecPolicy/固定领域策略 → Unsandboxed Operation Approval（仅需要时）→ prepared target staleness/identity revalidation → Sandbox/Tool Execute → RunDiff 投影 → Audit。Permission 不足时当前调用终止；`request_permissions` 返回后由模型重新调用原 Tool，不暗中恢复旧 PreparedToolCall。ToolAuthorizer 只消费 PreparedToolCall 和明确 Policy Facts，不再按 Tool 名称重新提取 Root、Parse Patch 或扫描 Shell Root。
 
-TTY 审批只提供 `allow once`、`allow this target for current session` 和 `deny`。默认 Rich Inline TUI 使用 Codex 风格三项选择器：第一项默认选中，用户通过 `↑/↓`（兼容 `j/k`）移动，按 Enter 确认，Esc 直接拒绝；`y/s/n` 继续作为无提示兼容快捷键，但不再作为面板主交互说明。删除 `always`：当前实现没有持久化的永久 Grant Store，继续展示该选项会造成错误预期。普通内置工具的 Session Grant 默认按工具名缓存，例如批准本 Session 的 `apply_patch` 后，后续 `apply_patch` 不再询问，而 `execute_command` 仍独立询问；`write_stdin` 不创建新的 Session Grant，只继承原命令 Process 的授权边界。MCP gateway 必须使用目标感知 Key，至少细化为 `mcp_list_tools:<server>`、`mcp_call:<server>:<remote-tool>` 和 `mcp_read_resource:<server>:<uri-scope>`，禁止一次批准 `mcp_call` 后放行所有 server 和远端工具。每次调用仍先经过 PathGuard/CommandGuard/MCP target preflight，因此 Session Grant 不能绕过路径越界、blocked 命令、未配置 server 或未声明远端能力。
+TTY 使用两套语义明确的三项选择器。`request_permissions` 显示 `Allow for this run / Allow for this session / Deny`；前两项分别写入 RunPermissionStore 与 SessionPermissionStore。Unsandboxed Command Operation Approval 显示 `Allow once / Allow for session / Deny`；只有第二项写入 SessionApprovalStore。默认 Rich Inline TUI 第一项默认选中，用户通过 `↑/↓`（兼容 `j/k`）移动，按 Enter 确认，Esc 直接拒绝；`y/s/n` 继续作为无提示兼容快捷键。删除 `always` 和永久自动授权。
+
+文件 Permission 与命令 Operation Approval 使用三份互不替代的运行时状态：RunPermissionStore 保存当前 Run Additional Writable Roots，SessionPermissionStore 保存当前活动 Session Additional Writable Roots，SessionApprovalStore 只保存 Unsandboxed Command 的 `ApprovedForSession` 键。SessionApprovalStore 不生成、保存或扩大 Root Permission；任何缓存命中前都必须重新构造 EffectivePermissionProfile 并完成 Permission Check。
+
+```go
+type CommandApprovalKey struct {
+    Shell         string
+    Command       string
+    CWD           string
+    TTY           bool
+    IsolationMode IsolationMode
+}
+
+type SessionApprovalStore interface {
+    IsApproved(CommandApprovalKey) bool
+    Approve(CommandApprovalKey)
+}
+```
+
+Key 表达用户实际批准的完整执行语义：Shell 使用规范绝对可执行路径；Command 只拒绝 NUL 并统一 CRLF 为 LF，不做 `strings.Fields`、Shell AST、空格合并或 Root 提取；CWD 使用 PreparedToolCall 中的 canonical absolute cwd；TTY 与 `sandboxed/unsandboxed` 隔离模式必须参与身份。这里的 CWD 不保证恒等于 RunContext.CWD，因为 `execute_command` 可以显式传入另一个可读工作目录。timeout、yield、输出预算、requested permissions、EffectivePermissionProfile 和 Permission Store 内容不进入 Key，因为它们分别属于等待/展示或独立 Permission Check。
+
+SessionApprovalStore 是当前活动 Session 内存中的集合，而不是 `map[key]permission`：Key 本身就是完整批准事实，Value 只需要空结构体或布尔真值。推荐实现为 `map[CommandApprovalKey]struct{}`，并在并发访问时使用互斥锁保护。只有 Unsandboxed `execute_command` 的 `Allow for session` 写入集合；`Allow once` 表示本次调用继续执行但不写 Store，`Deny` 同样不写。命中 Store 只跳过本次 Command Operation Approval，不能跳过 Permission Check、ExecPolicy、Audit 或 PreparedToolCall 复检。
+
+例如，用户在当前 Session 批准：
+
+```text
+Shell         = /bin/bash
+Command       = go test ./...
+CWD           = /workspace/amadeus
+TTY           = false
+IsolationMode = unsandboxed
+```
+
+Store 中保存的就是这一个精确 Key。后续只有五个字段全部一致的命令调用可以复用批准；改成 `/bin/sh`、修改命令文本、切换到 `/workspace/other`、启用 TTY 或进入 `sandboxed` 模式都会形成新 Key。即使命中旧 Key，新的 `requested_permissions.writable_roots` 仍要重新参与 EffectivePermissionProfile 检查。Audit 单独记录时间、理由和用户决定。`write_stdin` 继承原 Process 的 Permission、IsolationMode 与 Operation Approval，不重新授权。任何 Store 都不能绕过 ReadOnlyRoots、DeniedRoots、forbidden ExecPolicy、未配置 MCP Server 或未声明远端能力。
 
 ApprovalRequest 除 canonical arguments hash 外，还必须携带或可派生脱敏后的 Action Summary。MCP 审批面板至少展示 server、远端 tool/resource、transport、脱敏 target 和配置来源；stdio server 需要展示将启动的 command/args 摘要，HTTP server 展示 host，不显示 env、headers 或凭证。项目 `.amadeus/mcp.yaml` 定义的 stdio server 不能只以泛化的“tool accesses external systems”提示用户。
 
 非 TTY 不读取 stdin，也不使用配置自动允许：所有需要审批的调用直接拒绝。配置文件删除 `approval.enabled` 与 `approval.default`，Approval 不能由用户关闭；未来若出现明确的自动化场景，再单独设计受限的非交互授权入口。
 
-M3 已有的 canonical ApprovalRequest、参数 hash、Terminal Handler、GrantCache、ToolAuthorizer、Audit 和事件主链继续复用。当前重构只删除不必要的配置和 `always` 语义，调整 Session Grant 粒度，并把 `execute_command` 收敛为“非 blocked 也一律审批”。不实现 Docker、容器沙箱、项目外路径授权或复杂 Policy DSL。
+M3 已有的 canonical ApprovalRequest、参数 hash、Terminal Handler、ToolAuthorizer、Audit 和事件主链继续复用；旧 Run-local 通用 `GrantCache` 拆分并提升为 SessionRuntime 所有的 SessionPermissionStore 与 SessionApprovalStore。当前收敛删除旧 CommandGuard 的路径 token 拒绝、按工具名宽泛授权和“所有写入/命令一律审批”，但不实现 Docker、macOS/Windows 原生 Sandbox 或复杂 Policy DSL。
 
 `OpenJSONLFile` 自动建立 0700 父目录、以 append 模式打开 0600 regular file，并拒绝最终 symlink；每条记录先独立编码，再在锁内单次写入，保证并发调用仍是一行一个合法 JSON object。ToolAuthorizer 对 policy allow、policy deny、用户/default/grant 决策和 preflight/handler error 统一记录耗时；配置了 Audit Sink 时，写入失败会在 `Tool.Execute` 前 fail closed，并与原始拒绝或策略错误保留完整 error chain。Agent bootstrap 同时强制注入 ApprovalHandler 与 Audit Sink，避免真实 MVP 链静默绕过审批或审计。
 
@@ -1374,66 +1532,75 @@ type ContextProfile struct {
 
 `CompressAt` 首版使用约 80%～85% 的保守阈值，为 Provider 差异、Tool Schema 编码和估算误差留出空间。Context Window 未知时不得退回 `agent.max_input_tokens`；显式配置缺失可以使用保守 Provider 默认值或拒绝启动，但必须在 `config explain` 中显示来源。
 
-### 16.1.1 BaseContextBuilder
+### 16.1.1 ContextManager 与唯一历史源
 
-当前 `ContextBuilder` 收敛为 Run 级 `BaseContextBuilder`，在用户提交真实任务后执行一次，负责组装稳定基础资产：
-
-- 内置 System Prompt；
-- 当前生效的用户级、项目级和目录级 `AGENTS.md`；
-- 最新有界 Conversation Rollup Summary 与最近完整 user/assistant Message Pairs；
-- 最近中断 Run 的有界摘要和重新验证结果；
-- 当前用户 Goal、显式 Plan Task metadata；
-- 核心 Tool Specs、Skill Index 和带来源的外部资源索引；
-- Source category、path/scope、SHA-256、顺序和最终 Envelope hash。
-
-```go
-type BaseContextBuilder interface {
-    Build(context.Context, BaseBuildRequest) (BaseEnvelope, error)
-}
-```
-
-BaseContextBuilder 不负责 Provider Usage 反馈、ReAct 每轮 Tool Result 压缩、Session/SQLite 写入、Summary 持久化或 Run Budget 累计。它只消费调用方已经解析的 Prompt、Instructions、Conversation、Summary、Interrupted Work、Tools 和 Skills，不直接扫描数据库、项目或 `AGENTS.md`。
-
-### 16.1.2 Per-Think ContextWindowManager
-
-真正发送给 LLM 的上下文必须在每次 `Think` 前重新投影，而不是只在 Run 开始时检查一次：
+目标架构不再由 `BaseContextBuilder`、持久化 Conversation Summary、Previous Work 和 Reactor Runtime Messages 分别维护上下文。统一使用：
 
 ```text
-BaseEnvelope
-  + Reactor Runtime Messages
-  + Current Task / Plan Cycle
-  + Previous Provider Usage
+SQLite append-only Rollout
+        ↓ replay
+SessionHistory
+        + Static Context
+        + Tool Specs
+        + Current Environment
         ↓
-ContextWindowManager.Prepare
+ContextManager.Prepare
         ↓
 RequestView
         ↓
-Provider
+Provider Adapter
 ```
 
+`SessionHistory` 是 canonical rollout 的内存镜像并由 SessionRuntime 独占；SQLite `rollout_items` 是持久化唯一事实源。模型完成一个 assistant item、Tool Call、ToolOutcome、Plan Update 或 interruption marker 后，由 RunRuntime/Reactor 请求 `SessionRuntime.Append`，统一更新持久层与内存历史。Reactor 不再维护独立完整 `RuntimeMessages`。
+
 ```go
-type WindowRequest struct {
-    Base          BaseEnvelope
-    Runtime       []llm.Message
-    Profile       ContextProfile
+type ContextRequest struct {
+    Request       RequestContext
     PreviousUsage *llm.Usage
-    LastSentCount int
 }
 
 type RequestView struct {
-    Messages   []llm.Message
-    Tools      []tool.Spec
-    Usage      ContextUsage
-    Compaction *CompactionReport
-    SHA256     string
+    Messages []llm.Message
+    Tools    []tool.Spec
+    Usage    ContextUsage
+    SHA256   string
 }
 
-type ContextWindowManager interface {
-    Prepare(context.Context, WindowRequest) (RequestView, error)
+type ContextManager interface {
+    Prepare(context.Context, ContextRequest) (RequestView, error)
 }
 ```
 
-`RequestView` 是本轮 LLM 请求的唯一真相。禁止像 PaiCLI 历史实现一样同时维护 ShortTermMemory 和另一套真正发送给模型的 conversation history，造成“内存已经压缩、请求却没有变”的双状态源。
+ContextManager 内部分为四个职责：
+
+1. `RequestContextFactory`：从 RunContext、SessionHistory View、当前环境、ToolRouter 和指令解析结果生成一次采样快照；
+2. `StaticContextBuilder`：组装 System Prompt、有效 `AGENTS.md`、cwd、日期时区、RunMode、Skill/MCP 索引与安全上下文；
+3. `HistoryReplayer`：SessionRuntime 初始化时从最近有效 `context_compaction` 加后续 tail items 重建有效历史；
+4. `PromptProjector`：将 Provider-neutral RolloutItem 规范化为 `[]llm.Message`，并保证 Tool Call/Result 配对；
+5. `ContextCompactor`：超过阈值时生成 Replacement History，通过 SessionRuntime.Append 持久化，然后重新 Prepare。
+
+`RequestView` 是本次模型请求的唯一视图，但不是持久化事实源。任何影响后续恢复的压缩都必须追加 `context_compaction` RolloutItem，禁止只在内存中静默丢弃历史。
+
+### 16.1.2 Per-Think RequestView
+
+每次 `Think` 前都基于 SessionRuntime 当前 History View 生成 RequestContext，再投影 RequestView：
+
+```text
+RunContext
+  + SessionHistory View
+  + Current Environment / Instructions
+  + ToolRouter
+        ↓
+RequestContext
+        ↓
+Static Context + Effective History + Plan Projection
+        ↓
+ContextManager.Prepare
+        ↓
+RequestView
+```
+
+当前用户消息已经是当前 Run 的第一条 RolloutItem，并始终保持为最近的真实用户指令；中断标记只是此前历史事实，不能覆盖当前用户意图。
 
 ### 16.1.3 Token 估算与 Usage Feedback
 
@@ -1457,30 +1624,30 @@ type TokenEstimator interface {
 
 ### 16.1.4 动态优先级与原子分组
 
-上下文不再使用不可借用的固定百分比硬分区。System、Instructions、History、Tools、Interrupted、Resources 等分类继续用于统计和诊断，但实际装配使用优先级：
+上下文不再使用不可借用的固定百分比硬分区。System、Instructions、History、Tools、Resources 等分类继续用于统计和诊断，但实际装配使用优先级：
 
 | 优先级 | 内容 | 行为 |
 |---|---|---|
-| Pinned | System Prompt、有效 `AGENTS.md`、当前 Goal/Task、当前未完成 Tool Call/Result 协议组 | 不静默裁剪；自身超限时明确报错并指出来源 |
-| High | 最近完整 Conversation Message Pairs、当前 Run 最近 Iterations/Evidence、Previous Work、当前 Plan Cycle | 优先保留 |
-| Medium | 较旧 Conversation、已完成 Task 明细、较旧 Tool Results | 超限时结构化摘要或投影 |
-| Low | 重复 Tool 输出、已由 Evidence 表达的日志、过时 workspace snapshot、非必要资源索引 | 首先删除或按需加载 |
+| Pinned | System Prompt、有效 `AGENTS.md`、当前用户消息、RunMode、当前未完成 Tool Call/Result 协议组 | 不静默裁剪；自身超限时明确报错并指出来源 |
+| High | 最近完整 Rollout Items、当前 Run 最近 Tool Results、interruption marker、当前 PlanState | 优先保留 |
+| Medium | 较旧有效历史、已完成 PlanItem 摘要、较旧 Tool Results | 超限时进入 Replacement History |
+| Low | 重复 Tool 输出、已由结构化 ToolOutcome metadata 表达的日志、过时 workspace snapshot、非必要资源索引 | 首先删除或按需加载 |
 
-未使用的分类预算可以借给其他分类；`BudgetUsage` 必须覆盖 current task、skill index、runtime replay、tool schemas、tool results 和 protocol overhead，而不只是记录 system/instructions/history/tools。
+未使用的分类预算可以借给其他分类；`BudgetUsage` 必须覆盖 current goal、plan state、skill index、runtime replay、tool schemas、tool results 和 protocol overhead，而不只是记录 system/instructions/history/tools。
 
 压缩单元不是单条 Message，而是原子 `MessageGroup`：
 
-- 一个完整 user/assistant Conversation Message Pair；
+- 一个完整 user/assistant 历史组；
 - assistant Tool Calls 与所有对应 Tool Results；
 - current user goal；
 - system/developer pinned source；
-- conversation summary 或 previous-work envelope。
+- context compaction replacement baseline。
 
-不得保留孤立 Tool Result，也不得删除 Tool Result 后留下待完成的 Tool Call。当前用户消息、当前 Tool 协议组和最近完整 Message Pairs 必须优先保留。
+不得保留孤立 Tool Result，也不得删除 Tool Result 后留下待完成的 Tool Call。当前用户消息、当前 Tool 协议组和最近完整 rollout groups 必须优先保留。
 
 ### 16.1.5 Tool Result Context Projection
 
-Tool 自身的分页、行数和字节上限是第一层保护；进入 LLM Context 前还需要统一的 `ToolResultContextProjector`。完整 Tool Result/Evidence 可以留在 Run 内存、Artifact 或审计摘要中，但 RequestView 只注入有界投影：
+Tool 自身的分页、行数和字节上限是第一层保护；进入 LLM Context 前还需要统一的 `ToolResultContextProjector`。完整 ToolOutcome 已进入 canonical rollout，并可按策略关联 Artifact 或 Audit；RequestView 只注入有界模型投影：
 
 ```text
 tool result
@@ -1492,31 +1659,34 @@ token-aware head/tail projection
 LLM tool-result message
 ```
 
-命令输出、日志和大文件片段优先保留开头的环境/标题与结尾的错误、结论、exit code，中间使用明确 omission marker。投影按 token 预算计算，不只按字符数；投影不得修改原始 Evidence，也不得隐藏 `partial/truncated/exit_code/error` metadata。
+命令输出、日志和大文件片段优先保留开头的环境/标题与结尾的错误、结论、exit code，中间使用明确 omission marker。投影按 token 预算计算，不只按字符数；投影不得修改 canonical ToolOutcome，也不得隐藏 `partial/truncated/exit_code/error` metadata。
 
-### 16.1.6 Conversation Rollup Summary
+### 16.1.6 Replacement History Compaction
 
-Conversation Compaction 只改变 ContextView，不删除 SQLite 中的正式 user/assistant Messages。压缩必须按完整 user/assistant Message Pair 进行，不能留下孤立 user 或 assistant 历史。
+Conversation 压缩采用 Codex 风格 Replacement History，而不是独立 `session_summaries` 表或内存字符串拼接：
 
-持久化 Summary 使用有界 Rollup，而不是把 `existing summary + new summary` 无限追加：
+- 原始 RolloutItem 永不因压缩被删除；
+- ContextCompactor 对当前有效历史生成一组新的 Provider-neutral history items；
+- 压缩结果作为 `context_compaction` RolloutItem 追加到同一个 `rollout_items` 表；
+- `context_compaction.payload_json` 保存摘要文本、完整 `replacement_history`、窗口序号、覆盖到的 item sequence、source hash 和创建模型；
+- 恢复时从后向前找到最新有效 compaction，以其中的 Replacement History 为基线，再顺序追加其后的 tail items；
+- Replacement History 必须保留当前目标、关键决策、已修改文件、验证结果、未解决问题、有效 PlanState 与必要 Tool 协议事实。
 
-```text
-previous bounded summary
-  + newly covered complete message pairs
-        ↓
-new bounded rollup summary
+```json
+{
+  "summary": "此前会话正在重构 Session Runtime……",
+  "replacement_history": [
+    {"role": "user", "content": "此前目标、约束与关键事实的结构化摘要"},
+    {"role": "assistant", "content": "已完成工作、当前状态与待处理事项"}
+  ],
+  "covered_through_sequence": 128,
+  "source_hash": "...",
+  "provider": "openai",
+  "model": "..."
+}
 ```
 
-目标 `ConversationSummaryV2` 至少保留：
-
-- 用户目标和明确约束；
-- 已确认决策；
-- 已修改/关注的路径；
-- 执行过的关键命令、测试和结果；
-- 已验证 Evidence；
-- 未解决问题和 Pending Work。
-
-摘要继续记录覆盖消息范围、source hash、summary hash、Provider/model/time，并明确标记为 derived data 而不是 instruction。首版可使用确定性结构化摘要；后续可增加可选 LLM summarizer，失败时回退确定性摘要或保留更多最近 Message Pairs，不能无语义保护地直接删除关键历史。
+Replacement History 是“下一次模型请求从哪里继续”的持久化替代基线，不是对原始历史的覆盖更新，也不是新的业务事实表。
 
 ### 16.2 数据生命周期边界
 
@@ -1526,20 +1696,21 @@ Amadeus 不采用 PaiCLI 式全能 `MemoryManager`，也不在近期版本实现
 
 | 数据 | 语义 | 所有者 | 持久化方式 |
 |---|---|---|---|
-| Conversation | 用户与 Assistant 的正式可见消息历史 | `internal/session` Conversation Store | SQLite `conversation_messages` |
-| Run Working State | Reactor Iterations、Observations、Evidence、Plan Graph/Task、Usage 和 Budget | `internal/agent/react` / `internal/agent/plan` | 当前 Run 内存；终态只保存 Run 结果或有界中断摘要 |
-| BaseEnvelope | 当前 Run 稳定的 Prompt、Instructions、Conversation、Summary、Interrupted Work、Tools 和来源清单 | `internal/context` BaseContextBuilder | 不单独持久化 |
-| RequestView | 当前一次 Think 实际发送给 LLM 的受预算动态投影 | `internal/context` ContextWindowManager | 不单独持久化；可记录 hash/compaction diagnostics |
-| ConversationSummary | 对已覆盖正式消息的有界派生 Rollup | `internal/session` Summary Store | SQLite `conversation_summaries` |
+| Canonical Rollout | 用户、Assistant、Tool、Plan、Context 与中断的有序事实 | `internal/session` RolloutStore | SQLite `rollout_items` append-only |
+| SessionHistory | Canonical Rollout 的当前进程内镜像 | `internal/session` / `internal/agent/runtime` | 从 Rollout replay；不作为第二持久化源 |
+| Run Working State | RunRuntime、RunState、Reactor Iterations、PlanState、Usage 和 Budget | `internal/agent/runtime` / `internal/agent/react` | 当前 Run 内存；需要恢复的事实及时追加为 RolloutItem |
+| Static Context | System Prompt、Instructions、Tools、Skills 与环境来源清单 | `internal/context` StaticContextBuilder | 不单独持久化；必要时只以 metadata/hash 形式写入 `context_snapshot` item |
+| RequestView | 当前一次 Think 实际发送给 LLM 的受预算动态投影 | `internal/context` ContextManager | 不单独持久化；可记录 hash/diagnostics |
+| Replacement History | 对旧有效历史的持久化替代基线 | `internal/context` ContextCompactor | `rollout_items.kind=context_compaction` 的 payload |
 | InstructionDocument | 用户和项目主动维护的长期指令 | `internal/instruction` | `AGENTS.md` 文件 |
 
 必须保持以下边界：
 
-- ToolResult 首先转为 Observation/Evidence，不自动生成长期偏好或项目规则。
+- Tool Call 与 ToolOutcome 投影出的 Tool Result 是正式 RolloutItem；Reactor 不再维护重复的 Observation/Evidence 事实树，也不自动生成长期偏好或项目规则。
 - Run Budget 与 Request Context Profile 属于不同 Policy；前者累计整个 Run，后者限制单次 LLM 请求，均不属于 Conversation 或 Instruction。
-- Conversation Compaction 只生成 Context Summary，不删除正式 Conversation 记录。
-- Summary、Interrupted Work 和 Tool Result Projection 都是 derived data，不得获得 `AGENTS.md` 或当前用户消息的指令优先级。
-- ContextWindowManager 只投影 RequestView，不修改 BaseEnvelope、正式 Conversation、Run Evidence 或指令文件。
+- Compaction 只追加 Replacement History，不删除或改写原始 RolloutItem。
+- Replacement History、interruption marker 和 Tool Result Projection 都不能获得 `AGENTS.md` 或当前用户消息的指令优先级。
+- ContextManager 只投影 RequestView；需要影响恢复语义的变化必须通过 RolloutStore append，不能只修改内存历史。
 - MCP resources、Skill 和 Web 内容属于带来源的外部上下文，不能获得 `AGENTS.md` 的指令优先级。
 
 ### 16.3 `AGENTS.md` 指令层级
@@ -1549,12 +1720,13 @@ Amadeus 使用明确、可编辑、可版本控制的 `AGENTS.md` 代替模型�
 | 层级 | 位置 | 作用域 |
 |---|---|---|
 | 用户级 | `$AMADEUS_HOME/AGENTS.md` | 所有 Amadeus 项目 |
-| 项目根级 | `<project-root>/AGENTS.md` | 整个目标项目 |
-| 目录级 | `<project-root>/<path>/AGENTS.md` | 该文件所在目录及其后代 |
+| 默认工作区根级 | `<cwd>/AGENTS.md` | CWD 对应 Workspace Root |
+| 附加工作区根级 | `<add-dir>/AGENTS.md` | 对应附加 Workspace Root |
+| 目录级 | `<workspace-root>/<path>/AGENTS.md` | 该文件所在目录及其后代 |
 
-`AMADEUS_HOME` 是 Amadeus 配置根，目标项目根是工具被允许操作的 `project.Root`，二者必须独立解析。默认配置和用户级指令来自前者；项目指令、代码搜索、文件修改和命令 cwd 来自后者。CLI 后续通过显式 `--project` 或启动工作目录确定目标项目，不得把 `AMADEUS_HOME` 隐式当作项目根。
+`AMADEUS_HOME` 是 Amadeus 配置根，`Project.RootPath` 是持久化项目身份，CWD 与 `--add-dir` 共同形成 WorkspaceRoots，三者必须独立解析。默认配置和用户级指令来自 AMADEUS_HOME；每个 Workspace Root 分别提供自己的根级/目录级指令。CLI 通过显式 `--project` 或启动工作目录确定初始 CWD 与 Project.RootPath，不得把 `AMADEUS_HOME` 或第一个 `--add-dir` 隐式当作默认工作区。
 
-每个 `AGENTS.md` 作为完整 InstructionDocument 读取，至少记录 `source/path/scope/hash/content`。文件必须是受大小预算约束的 UTF-8 文本；项目指令路径必须位于 `project.Root` 内，符号链接不得绕过路径围栏。指令中的命令示例只是上下文，不会自动执行，也不能绕过 Tool Policy、Approval 或审计。
+每个 `AGENTS.md` 作为完整 InstructionDocument 读取，至少记录 `source/path/workspace_root/scope/hash/content`。文件必须是受大小预算约束的 UTF-8 文本；项目指令路径必须位于声明的 WorkspaceRoots 内，符号链接不得绕过 PathResolver/FileSystemPolicy。修改某个 Workspace Root 下文件时，只应用用户级指令、该 Root 的根级指令和目标目录链指令，不能让 CWD 所在 Root 的目录级规则错误覆盖其他 Root。指令中的命令示例只是上下文，不会自动执行，也不能绕过 Tool Policy、Approval 或审计。
 
 M3-05 在 `internal/instruction` 固定首版 Domain 契约：
 
@@ -1577,15 +1749,15 @@ type Scope struct {
 
 M3-06 的 `UserLoader` 在构造时解析并规范化 Amadeus home，固定读取 `<amadeus-home>/AGENTS.md`。默认文件预算为 64 KiB，可由显式 options 收紧；读取使用 `limit + 1` 的有界 Reader，精确区分边界内文件和超预算文件。文件不存在返回 `nil` 且不报错，表示没有用户级指令；文件一旦存在，则目录、空正文、非法 UTF-8、读取失败和超预算都属于配置错误，不允许静默降级。用户可以显式使用 `AGENTS.md` 软链接，Document provenance 记录解析后的真实来源路径；用户级文件不套用项目围栏，项目 symlink 防护由 M3-07/M3-09 负责。
 
-M3-07 的 `ProjectLoader` 绑定单个 `project.Root`，接收规范化前的“目标目录”并生成 `.`、`pkg`、`pkg/service` 这类从根到目标的稳定目录链。每一级只查找该目录直属的 `AGENTS.md`，结果始终按项目根到最深目录排列；兄弟目录规则不会进入当前链。中间目录尚不存在时停止向下发现，但保留此前已经加载的上层指令，支持新文件所在父目录尚未完全创建的场景。
+M3-07 的历史 `ProjectLoader` 绑定单个 `project.Root`；目标架构将其收敛为按请求选择的 `WorkspaceLoader`。Resolver 先根据 canonical target 选择唯一覆盖它的 Workspace Root，再从该 Root 生成 `.`、`pkg`、`pkg/service` 这类稳定目录链。每一级只查找该目录直属的 `AGENTS.md`，结果始终按 Workspace Root 到最深目录排列；兄弟目录和其他 Workspace Root 的规则不会进入当前链。中间目录尚不存在时停止向下发现，但保留此前已经加载的上层指令，支持新文件所在父目录尚未完全创建的场景。
 
 目标目录语义保持显式：M3-08 通过 `TargetKind=file|directory|command_cwd` 区分目标，文件操作使用父目录，目录操作和命令使用目标目录或 cwd，避免发现器根据文件是否存在猜测 file/dir 类型。项目指令默认同样使用每文件 64 KiB 上限；缺失文件正常跳过，已存在的空文件、非法 UTF-8、非普通文件和超预算文件明确失败。
 
-发现器在读取前解析每一级目录和 `AGENTS.md` 的真实路径并验证仍位于 `project.Root`。指向项目外部的目录或文件软链接立即拒绝；指向项目内部的软链接允许读取，但 Document 保留项目内看到的逻辑路径和对应逻辑 Scope，使目录优先级、Resolution 校验和用户诊断保持稳定。M3-09 会把同类围栏规则扩展到所有项目文件和工具操作。
+发现器在读取前解析每一级目录和 `AGENTS.md` 的真实路径并验证仍位于本次选定的 Workspace Root。指向该 Root 外部的目录或文件软链接立即拒绝；指向 Root 内部的软链接允许读取，但 Document 保留工作区内看到的逻辑路径和对应逻辑 Scope，使目录优先级、Resolution 校验和用户诊断保持稳定。M3-09 的历史围栏代码可复用，但不能恢复单 Project Root 权限边界。
 
 ### 16.4 发现、作用域与优先级
 
-Instruction Resolver 先读取可选的 `$AMADEUS_HOME/AGENTS.md`，再从 `project.Root` 沿目标路径逐层发现 `AGENTS.md`。目录级文件的作用域是其所在目录树；操作某个文件或目录前，必须使用覆盖该目标的完整指令链，不能只加载启动目录后忽略更深层规则。对项目根执行的命令至少应用用户级与项目根级指令；若命令 cwd 位于子目录，则继续应用从项目根到该 cwd 的目录级指令。
+Instruction Resolver 先读取可选的 `$AMADEUS_HOME/AGENTS.md`，再从覆盖目标的 Workspace Root 沿目标路径逐层发现 `AGENTS.md`。目录级文件的作用域是其所在目录树；操作某个文件或目录前，必须使用覆盖该目标的完整指令链，不能只加载 CWD Root 后忽略更深层规则。对某个 Workspace Root 执行的命令至少应用用户级与该 Root 根级指令；若命令 cwd 位于子目录，则继续应用从该 Root 到 cwd 的目录级指令。
 
 冲突时从高到低为：
 
@@ -1596,158 +1768,161 @@ Instruction Resolver 先读取可选的 `$AMADEUS_HOME/AGENTS.md`，再从 `proj
 5. `$AMADEUS_HOME/AGENTS.md`。
 6. Amadeus 默认行为。
 
-Resolver Port 使用 `ResolveRequest{Project, TargetPath, TargetKind}`，其中目标路径必须是规范化、不可逃逸的项目相对路径，`.` 表示项目根。`TargetKind` 只接受 `file`、`directory` 和 `command_cwd`；Resolution 必须回显相同 target path/kind。`Resolution.Documents` 按“用户级 → 项目根 → 逐层目录级”从宽到窄排列；空列表是合法结果，表示当前目标没有持久指令。Resolution 校验每个 Scope 确实覆盖目标对应的有效目录、来源路径不重复、同一作用域不重复、顺序不倒置，并要求项目来源文档位于 `project.Root` 内且文件所在目录与 Scope 匹配。
+Resolver Port 目标使用 `ResolveRequest{WorkspaceRoots, TargetPath, TargetKind}`。TargetPath 先规范化为绝对路径并确定唯一 Workspace Root，再转换为该 Root 内不可逃逸的相对路径，`.` 表示工作区根。`TargetKind` 只接受 `file`、`directory` 和 `command_cwd`；Resolution 必须回显选中的 workspace root、target path 和 kind。`Resolution.Documents` 按“用户级 → Workspace Root → 逐层目录级”从宽到窄排列；空列表是合法结果，表示当前目标没有持久指令。Resolution 校验每个 Scope 确实覆盖目标对应的有效目录、来源路径不重复、同一作用域不重复、顺序不倒置，并要求工作区来源文档位于选中的 Workspace Root 内且文件所在目录与 Scope 匹配。
 
-M3-08 的 `LayeredResolver` 组合一个 UserLoader 和与请求同根的 ProjectLoader：先读取用户级文档，再发现项目链，最终保持 user → project root → deeper directory 的稳定顺序，因此越靠后的项目文档具有越高普通指令优先级。若 `AMADEUS_HOME` 与目标项目根恰好相同，同一路径不会作为 user/project 两份文档重复注入，而只保留更具体的项目来源。任一加载、围栏或 Domain 校验错误都会终止解析，不返回部分 Resolution。
+目标 `LayeredResolver` 组合一个 UserLoader 和本次选中 Workspace Root 的 WorkspaceLoader：先读取用户级文档，再发现工作区链，最终保持 user → workspace root → deeper directory 的稳定顺序，因此越靠后的工作区文档具有越高普通指令优先级。若 `AMADEUS_HOME` 与目标 Workspace Root 恰好相同，同一路径不会作为 user/workspace 两份文档重复注入，而只保留更具体的工作区来源。任一加载、围栏或 Domain 校验错误都会终止解析，不返回部分 Resolution。
 
-M3-05 只定义 `Resolver` 接口和领域不变量；M3-06 已实现用户级加载，M3-07 已实现项目根与目录发现，M3-08 已完成优先级与目标感知组合。整个 `internal/instruction` 仍不依赖 CLI/TUI、Provider/LLM、Conversation 或 Store。
+M3-05～M3-08 已交付单 Root Resolver 历史基础；目标架构需要把请求、Loader 与校验迁移到 WorkspaceRoots，但继续保持 `internal/instruction` 不依赖 CLI/TUI、Provider/LLM、Conversation 或 Store。
 
 项目级指令因此高于用户级指令，更深目录高于更浅目录；当前用户请求可以覆盖普通工程约定，但不能绕过安全和审批。Assembler 不把多层文件静默拼成无来源文本，而是使用独立结构化包络注入，并保留稳定顺序、路径、scope 和 hash，便于诊断、缓存和审计。无法确定冲突含义时应向用户提问，而不是让模型猜测。
 
-### 16.5 Session、Message 与 Run
+### 16.5 Session、Run 与 Canonical Rollout
 
-持久化会话只区分以下概念：
+Session 是项目内可恢复对话，Run 是一次真实用户输入的执行记录，RolloutItem 是模型与工具执行过程中真实发生的持久化事实。SessionRuntime 在加载 Session 时 replay 并持有 SessionHistory；SessionCoordinator 在任何模型或工具执行前原子创建 Run，并将用户输入作为第一条 RolloutItem，随后返回不含 History 的 RunContext。
 
-| 概念 | 语义 | 生命周期 |
-|---|---|---|
-| Conversation Session | 用户可查看、切换和跨进程恢复的项目对话 | SQLite 持久化 |
-| Terminal Session | 一次 `amadeus` 进程从启动到退出的交互生命周期 | 仅内存 |
-| Message | 正式、用户可见的 user/assistant 对话消息 | SQLite 持久化 |
-| Run | 一条真实用户输入触发的一次完整 Agent 执行 | SQLite 持久化 |
-| Iteration | Reactor 内部一次 Think→Analyze→Act→Observe 循环 | 当前 Run 内存 |
-| Task | `/plan` DAG 中可独立调度的目标单元 | 当前 Run 内存 |
-| LLM Call | 一次 Provider 请求 | 事件/审计关联，不作为会话实体 |
+completed、interrupted 与 failed Run 的真实 assistant/tool/plan 历史均已在执行过程中逐项持久化，不再等到 FinishRun 时只写最终 Message 或 Previous Work。`Turn` 不作为 Domain、表名、事件关联字段或恢复参数。
 
-`Turn` 不再作为核心 Domain 或数据库实体。产品文案可以使用“本轮对话”，但代码不能用 `TurnID` 同时表示用户输入、Run 或 LLM Call。一个真实用户 Message 对应一个新 Run；Run 完成后追加 assistant Message，中断或失败时不追加不完整 assistant Message。
+### 16.6 SessionHistory 与 RequestView
 
-Session 的恢复与 Run 的恢复是不同语义：`/resume` 和 `--resume <session-id>` 只切换 Conversation Session，不接受 Run ID。已终止 Run 永远不会重新变为 `running`；用户之后输入任何内容都会创建新 Run。
+SessionHistory 从最新有效 Replacement History 加其后 Rollout tail 重建，是 SessionRuntime 独占的 canonical history 镜像；RequestContext 是一次模型采样的动态环境快照，RequestView 是 ContextManager 基于它生成的临时模型输入。RequestView 可以做 Provider 方言映射、ToolOutcome 有界投影和静态上下文注入，但不能静默改变后续 resume 会看到的历史。
 
-### 16.6 Conversation 与 ContextView
+assistant Tool Calls 与对应 Tool Results 必须作为原子协议组；当前用户消息、有效 Instructions、未完成工具协议和最近错误不得静默裁剪。需要丢弃旧上下文时必须先追加 `context_compaction`，再基于 Replacement History 重建。
 
-```go
-type ConversationStore interface {
-    BeginRun(ctx context.Context, input BeginRunInput) (StartedRun, error)
-    FinishRun(ctx context.Context, input FinishRunInput) error
-    ListCompletedMessages(ctx context.Context, sessionID ConversationSessionID) ([]MessageRecord, error)
-}
+### 16.7 中断 Marker 与下一 Run
 
-type BaseContextBuilder interface {
-    Build(ctx context.Context, input BaseBuildRequest) (BaseEnvelope, error)
-}
+用户按 `Esc`、父 Context 取消或进程异常退出时，RunRuntime：
 
-type ContextWindowManager interface {
-    Prepare(ctx context.Context, input WindowRequest) (RequestView, error)
-}
-```
+1. 取消 Reactor 和活动工具，并给予短暂 graceful shutdown 窗口；
+2. 为已经持久化但尚无结果的 Tool Call 追加 `status=interrupted` 的合成 Tool Result，提示命令可能已部分执行；
+3. 追加 `run_interrupted` marker，说明中断事实和重新检查工作区的必要性；
+4. flush Rollout，再将 Run 更新为 `interrupted`。
 
-Conversation History 只重建完整的成功消息对：completed Run 对应的 user Message 与 assistant Message 进入历史；interrupted/failed Run 的孤立 user Message 不作为普通历史注入，而由 Previous Work Envelope 单独表达。这样避免同一个中断目标同时以孤立 user Message 和中断摘要重复出现。
+下一条用户输入始终创建新 Run，并作为新的 `user_message` 追加在 marker 之后。ContextManager 直接向模型提供真实历史、中断标记和当前用户输入，不做“继续/新任务”关键词分类，也不强制继续或 re-plan 旧目标，由模型结合当前请求判断。
 
-BaseContextBuilder 根据当前 Goal、完整 Conversation History、Conversation Summary、适用 `AGENTS.md`、最近 Previous Work、内置 Prompt、Tool Specs 和 Skill Index 构造 Run 级 BaseEnvelope。Reactor 每次 Think 前把 Runtime Messages 与 BaseEnvelope 交给 ContextWindowManager，得到唯一 RequestView。裁剪和压缩只改变 RequestView，不修改 SQLite 消息、Run Evidence 或指令文件。
-
-BaseEnvelope 与 RequestView 必须保留类别和来源，使模型能区分当前用户目标、有效指令、已完成历史、派生 Summary、Previous Work 和工具结果。Conversation Summary、Previous Work、MCP Resource、Skill 与 Web 内容不得伪装为 system、`AGENTS.md` 或当前用户请求。
-
-### 16.7 中断与 Previous Work
-
-MVP 不恢复旧调用栈，而采用“保存有界工作摘要、重新读取现场、创建新 Run、自然重新规划”的模型：
-
-```text
-old Run interrupted/failed
-  -> persist bounded previous-work summary
-  -> keep Conversation Session alive
-  -> receive next real user message
-  -> create new Run
-  -> load completed conversation pairs only
-  -> revalidate workspace and AGENTS.md
-  -> inject Previous Work envelope
-  -> append current user message last
-  -> run normal Reactor or explicit /plan path
-```
-
-Previous Work 至少包含：
-
-```go
-type PreviousWork struct {
-    SourceRunID  RunID
-    Objective    string
-    Status       RunStatus
-    StopReason   string
-    CompletedWork []string
-    Evidence       []string
-    RelevantPaths  []string
-    PendingWork    []string
-    LastError      string
-    Usage          UsageSummary
-    Plan            *InterruptedPlanSummary
-}
-```
-
-`Plan` 只在 `/plan` Run 中存在，可摘要当前 cycle、completed Tasks、pending Tasks 和 active Task。默认 ReAct 不创建 Task，也不以完成 Iteration 数量代替工作进度。旧字段 `CompletedSteps` 应迁移或映射为 `CompletedWork`。
-
-新 Run 不恢复旧 Go 调用栈、流式响应位置、未完成 Tool Call、Approval、Plan 指针或 Reactor Iteration，也不自动重放任何副作用。构建 Previous Work 时重新检查相关文件、Git status/diff、测试是否需要重跑以及当前 `AGENTS.md`；所有写入、命令和网络行为重新经过当前 Run 的 PathGuard、CommandGuard、Approval 与 Audit。
-
-`runs.context_from_run_id` 只表示新 Run 构建上下文时参考了哪个未完成 Run，不表示精确 continuation。Pending 生命周期保持简单：最近一个尚未被成功 Run 覆盖、且带有 Previous Work 摘要的 interrupted/failed Run 自动提供给下一 Run；下一 Run 成功后不再自动注入更早的 Pending Work。
-
-`继续`、`请继续`、`请你继续` 等文本不经过额外 Router、正则分类或第二次模型调用。Previous Work Envelope 明确说明它是历史状态而不是当前指令：当前用户要求继续时从现状重新规划；当前用户提出新任务时优先执行最新请求。
+进程启动时发现遗留 `running` Run，则将其恢复为 `interrupted`，为悬空 Tool Call 补齐合成结果，并追加 `process_terminated` 原因的 interruption marker。系统恢复历史事实，不恢复旧 Iteration、工具游标、Go 调用栈或活动 Future。
 
 ### 16.8 不持久化的运行时状态
 
-Plan、Task、Iteration、Tool Call、Observation、Evidence、Provider Call 和 Approval Grant 不建立独立业务表。完整 Tool Result 可以存在于当前 Run 内存、Artifact 或审计摘要中，但中断时只提炼继续工作需要的有界事实。
-
-不保存 API key、Authorization header、隐藏 reasoning、可绕过重新审批的授权状态，也不保存可自动 Replay 的调用栈。Conversation Summary 与 Previous Work 是派生历史数据，不能覆盖当前用户输入或当前有效 `AGENTS.md`。
+SessionRuntime、RunRuntime、RunState、RequestContext、Iteration、RequestView、活动 Process、审批等待、Tool Call Future 和流式聚合器都不建立独立业务表。PlanState 本身不建表，但每次用户可见 `update_plan` 作为 `plan_update` RolloutItem 持久化；模型流式 delta 只用于 UI，完成后的 assistant item 才进入 canonical rollout。
 
 ### 16.9 实施边界
 
-Session Coordinator 负责 BeginRun/FinishRun、正式消息事务、Pending Previous Work 查询和 Summary 持久化；Context 组件不直接写 SQLite；Reactor 不扫描 Session Store、数据库或 `AGENTS.md`。代码迁移时应将 `StartedTurn/BeginTask/FinishTask` 收敛为 `StartedRun/BeginRun/FinishRun`，将 LLM 层 `TurnStarted/TurnCompleted/TurnID` 收敛为 `LLMCallStarted/LLMCallCompleted/LLMCallID`。
-
-Durable Memory、自动偏好提取、MemoryRetriever、跨 Run Reflexion Lesson、Checkpoint 序列和精确 Run 恢复不进入当前路线图。只有真实使用证明 Conversation、`AGENTS.md`、Summary 与 Previous Work 无法满足明确需求时，才通过独立 ADR 重新评估。
+- SessionCoordinator 负责 Session/Run 数据事务与只读 RunContext；
+- SessionRuntime 负责 SessionHistory、活动 Run、Session 全局 item sequence、Rollout append/flush、SessionPermissionStore/SessionApprovalStore 生命周期与事件衔接；
+- RunRuntime/RunState 负责取消、Reactor 驱动、PlanState、Usage、审批/进程资源和 Finish Once；
+- ContextManager 每次 Think 先生成 RequestContext，再生成 RequestView；
+- Reactor 只消费 RequestView、Tools 与 Budget，不直接读写 SQLite。
 
 ## 17. MCP、Skill 与扩展
 
+MCP 与 Skill 都属于 Session 级扩展能力，但不能直接塞入 SessionRuntime 形成新的万能对象。目标结构固定为：
+
+```text
+SessionRuntime
+└── ExtensionRuntime
+    ├── MCPRuntime
+    │   ├── ConnectionManager
+    │   ├── ServerState
+    │   ├── CatalogCache
+    │   └── CatalogRevision
+    └── SkillService
+        ├── MetadataCatalog
+        ├── CatalogRevision
+        ├── ContentLoader
+        └── LoadWarnings
+
+每次模型采样：
+RequestContext
+├── MCPBinding
+├── SkillCatalogSnapshot
+└── SkillInjections
+```
+
+ExtensionRuntime 随活动 Session 创建，在同一交互 Session 的多个 Run 之间复用；恢复历史 Session 时从配置和文件系统重新构造，不将连接、Catalog 或 Skill 正文持久化到 SQLite。MCP/Skill 产生的用户可见结果仍统一进入 ToolInvocation → ToolOutcome → `tool_result` RolloutItem 主链，扩展层不能建立第二套执行器、历史或审批系统。
+
 ### 17.1 MCP
 
-- 用户级配置固定为 `$AMADEUS_HOME/mcp.yaml`，项目级配置固定为 `<project>/.amadeus/mcp.yaml`；项目同名 server 整体覆盖用户 server，不做 command/args/env/headers 字段级混合。
+- 用户级配置固定为 `$AMADEUS_HOME/mcp.yaml`，项目级配置固定为 `<cwd>/.amadeus/mcp.yaml`；首版只读取 CWD 对应默认 Workspace Root 的项目配置，不扫描 `--add-dir`。项目同名 server 整体覆盖用户 server，不做 command/args/env/headers 字段级混合。
 - 配置只定义 server name、transport、command/args/env 或 url/headers、timeout 和 enabled；字符串支持环境变量展开，凭证不进入日志、TUI、Audit、Trace 或 `config explain`。解析后的 server 必须保留 `user/project + config path` 来源元数据，供审批和诊断使用。
 - 协议层继续使用成熟 Go MCP Client Library 承担 transport、JSON-RPC 和协议兼容，借鉴 WeKnora 的 Client/Manager/Result Normalizer 边界，但不迁移其 GORM、Tenant、HTTP Handler、Redis、跨实例 Approval 和数据库服务层。PaiCLI Go 的自研 stdio/HTTP JSON-RPC 只作为行为参考，不复制为 Amadeus 协议核心。
 - CLI 产品必须保留 stdio 与 streamable HTTP：stdio 是本地 Coding Agent 生态的重要入口，不能照搬 WeKnora 服务端产品“禁用 stdio”的策略；但 stdio 启动属于本地进程执行风险，HTTP 属于外部网络风险，ToolAuthorizer 必须根据目标 server 配置生成不同的审批摘要。
-- server 默认懒启动：启动 Amadeus 和创建 Run 时只加载、合并和校验配置，第一次需要该 server 时才连接并 initialize；单 server 失败不阻止 Agent 或其他 server 工作。当前每个 Run 创建 MCP Manager、Run 内复用连接并在终态关闭；一次调用失败允许一次有界重连，不做无限后台重试。跨交互 Run 复用连接只有在默认 TUI 主链稳定后才提升到 Application 级 Extension Host。
+- MCPRuntime 是 Session 级长生命周期能力：创建 SessionRuntime 时只加载、合并和校验配置，第一次需要某个 server 时才连接并 initialize；同一 Session 的多个 Run 复用连接，SessionRuntime 关闭或切换 Session 时统一关闭。单 server 失败不阻止 Session、Agent 或其他 server 工作；一次 transport/protocol 调用失败只允许一次有界重连，不做无限后台重试。
 - 生产工具面继续采用稳定的 lazy gateway，而不是默认把所有远端工具动态展开进 Provider Tool Schema：首批固定 `mcp_list_tools(server)` 与 `mcp_call(server, name, arguments)`，后续增加 `mcp_list_resources(server)` 与 `mcp_read_resource(server, uri)`。这样避免启动延迟、远端 Tool 数量导致的 Schema 膨胀和不同 Provider 的 Tool 上限差异。
-- 每个已连接 server 维护有界 `ServerState`：Client、InitializeResult/Capabilities、Tool Catalog、Resource Catalog metadata 和连接代次。第一次 list/call 时加载 Tool Catalog；后续 `mcp_call` 从缓存验证远端 Tool，不得每次调用都重复执行 `tools/list`。重连时清空缓存；未来支持 `notifications/tools/list_changed` 后按通知失效，不实现无限后台刷新。
-- `mcp_list_tools` 返回清理、排序和有界的 name/description/input schema；`mcp_call` 只允许调用当前连接代次 Catalog 中已声明的 Tool。gateway 均为 `ParallelSafe=false`，并进入 Validation → MCP target preflight → Approval → Audit → Execute 主链。Session Grant 使用 server/tool 感知 Key，不能因为本地 gateway 名相同而共享全部授权。
-- MCP Tool Result 统一进入普通 Tool Observation，不进入 system/developer/`AGENTS.md`。所有正文增加“外部不可信数据”来源包络；`isError` 转为失败 Tool Result，超长结果标记 partial。第一阶段保留 bounded text 与 structured JSON；Resources 只自动回灌受限 UTF-8 文本，二进制返回 URI/MIME/size 元信息。图片等 Provider 主链支持多模态后，再借鉴 WeKnora 的 MIME 白名单、数量/大小限制和 Base64 日志脱敏接入。
+- 每个已连接 server 维护有界 `ServerState`：Client、InitializeResult/Capabilities、Tool Catalog、Resource Catalog metadata、ConnectionGeneration、CatalogRevision、状态和最近错误。第一次 list/call 时加载 Tool Catalog；后续 `mcp_call` 从缓存验证远端 Tool，不得每次调用都重复执行 `tools/list`。重连时增加 ConnectionGeneration 并清空旧缓存；显式 refresh 或未来 `notifications/tools/list_changed` 使 CatalogRevision 失效，不实现 TTL 轮询或无限后台刷新。
+- ContextManager 每次采样从 MCPRuntime 创建不可变 `MCPBinding`，冻结当前 server metadata、ConnectionGeneration、CatalogRevision 和已加载 Catalog。RequestView 广告的能力与随后 ToolInvocation 执行时使用的 Binding 必须一致，禁止模型看到 Catalog A、执行时静默切换到 Catalog B。由于默认生产面使用 lazy gateway，首版不复制 Codex 的 Prepared MCP Calls 和全量动态 Tool Schema，只实现 generation/revision/snapshot 的最小一致性边界。
+- `mcp_list_tools` 返回清理、排序和有界的 name/description/input schema；`mcp_call` 只允许调用当前 Binding/连接代次 Catalog 中已声明的 Tool。gateway 默认 Exclusive；只有当前 Binding 中的远端 Tool 明确声明只读且 server 支持并行时，具体调用才可投影为 Shared。所有调用进入 Validation → MCP target preflight → Approval → Audit → Execute 主链。审批目标和 Session Grant Key 必须使用 `mcp:<server>:tool:<name>` 或 `mcp:<server>:resource:<uri>`，不能因为本地 gateway 名同为 `mcp_call` 而共享全部授权；UI 同时展示脱敏目标和 user/project 配置来源。
+- MCP Tool Result 统一转换为普通 ToolOutcome，不进入 system/developer/`AGENTS.md`。所有正文增加“外部不可信数据”来源包络；远端 `isError=true` 表示调用已送达但业务工具失败，转换为 `status=failed + error_kind=remote_tool_error + external_context=true` 的 Outcome，不作为终止 Run 的 Go error。只有连接初始化失败、重连失败、协议损坏或内部状态不一致等基础设施致命故障才返回 Go error。超长结果标记 partial；第一阶段保留 bounded text 与 structured JSON，Resources 只自动回灌受限 UTF-8 文本，二进制返回 URI/MIME/size 元信息。
 - MCP Prompts、Sampling、Mentions 和完整 Notification 订阅不进入首个可用版本；Resources 是 Tool 稳定后的下一项能力。旧 `mcp__{server}__{tool}` Adapter 与原子 Registry 替换只保留为测试和未来小 Catalog 优化基础设施，不作为默认生产入口。
 - 增加用户可观察命令：`amadeus mcp list` 只展示脱敏后的合并配置与来源，不连接 server；`amadeus mcp check` 逐个执行连接/initialize/能力检查后关闭；`amadeus mcp tools <server>` 显式查询 Tool Catalog。TUI `/status` 只展示 configured/connected/error 摘要，不泄露凭证。
 
 ### 17.2 Skill
 
-- 用户级 Skill 固定放在 `$AMADEUS_HOME/skills/<name>/SKILL.md`，项目级 Skill 固定放在 `<project>/.amadeus/skills/<name>/SKILL.md`；项目同名 Skill 整体覆盖用户 Skill。MVP 不额外设计用户根目录，也不要求内置 Skill 层或模型推断式自动安装。
-- Skill 采用渐进披露：Level 1 为启动时可见的 `name + description + source` Index；Level 2 为按需读取的 `SKILL.md` 正文；Level 3 为按需读取的 `references/`。正文和 Reference 都必须通过普通只读 Tool Result 进入 Reactor，不能伪装成 system、developer、`AGENTS.md` 或当前 user message。
+- 用户级 Skill 固定放在 `$AMADEUS_HOME/skills/<name>/SKILL.md`，项目级 Skill 固定放在 `<cwd>/.amadeus/skills/<name>/SKILL.md`；首版只读取 CWD 对应默认 Workspace Root 的项目 Skill，不扫描 `--add-dir`。项目同名 Skill 整体覆盖用户 Skill。MVP 不额外设计用户根目录，也不要求内置 Skill 层或模型推断式自动安装。
+- SkillService 采用渐进披露，但启动时只缓存 metadata，不长期保存全部正文：Level 1 为 `name + description + source + path + size/revision` 的 Metadata Catalog；Level 2 为显式选择或模型调用时按需读取的 `SKILL.md` 正文；Level 3 为按需读取的 `references/`。完整正文加载时计算 ContentHash，用于本次 Request 固定内容和诊断文件变化。
 - `SKILL.md` 使用 YAML frontmatter，MVP 只接受必填 `name` 和 `description`；name 为小写字母、数字和连字符，正文、描述、Skill 数量和索引总大小均受预算限制。用户/项目扫描拒绝软链接目录逃逸、非 UTF-8、超限文件、重复名称和不完整 frontmatter；无效 Skill 产生带来源 warning 并跳过，不阻塞其他 Skill 或 Agent 启动。
-- 生产工具面收敛为 `read_skill(name, path?, offset?, limit?)`：省略 path 时直接返回有界 Skill 正文、description/source 和可用 Reference 文件列表；提供 path 时只读取该 Skill `references/` 下的相对路径。返回值是当前 Tool Call 的 Observation，不再使用 `load_skill → SkillContextBuffer → 下一次 developer message` 隐式注入链；目标实现删除 SkillContextBuffer、MarshalContext 和 Reactor AdditionalMessages 的 Skill 特例。
-- `references/` 继续使用 Skill Root 围栏与专用只读接口，拒绝绝对路径、`..`、软链接逃逸、binary、非 UTF-8 和超限文件；目录列表和正文均有数量/字节预算，不扫描或自动注入整个资料目录。Skill Index 可留在 BaseEnvelope 作为运行时能力元数据，但 Skill 正文只能作为 Tool Observation。
-- Skill 读取本身为 read side effect，不额外审批；Skill 指导模型调用写入、命令、网络或 MCP 时，复用目标工具现有 Approval/Audit，不建立 Skill 专属授权系统。Skill 文本不能关闭审批、绕过 PathGuard/CommandGuard/MCP target preflight、扩大 Project Root 或自动获得 Session Grant。
-- 项目级 Skill 的 `scripts/` 在首版不注册 `execute_skill_script`：因为文件位于 Project Root 内，Skill 可以指导模型通过普通 `execute_command` 显式运行 `.amadeus/skills/<name>/scripts/...`，自然复用 CommandGuard、Approval、Audit、timeout 和输出预算。用户级 Skill 位于 `$AMADEUS_HOME`、超出 Project Root，首版只允许说明和 References，禁止执行脚本。
+- Skill 有两条明确调用路径。第一条是用户显式选择：文本中的 `$skill-name` 或未来 TUI 结构化选择由入口解析，SkillService 解析唯一 Skill、加载正文并生成 `SkillInjection`，直接进入本次 RequestContext；第二条是模型自主发现：模型只看到 Metadata Index，认为相关时调用 `read_skill`，结果作为普通只读 ToolOutcome 回灌。首版不复制 Codex 的隐式命令路径检测，不根据模型或 Shell 命令猜测用户是否想调用 Skill。
+- 显式 SkillInjection 表示用户主动选择的本地扩展指令，使用 Provider-neutral 的 contextual user fragment 投影，不伪装成 system、developer 或 `AGENTS.md`。其优先级低于系统安全策略和适用的 `AGENTS.md`，与当前用户任务共同表达授权意图；Skill 文本不能扩大 WorkspaceRoots、关闭 Approval 或覆盖安全策略。模型自主调用 `read_skill` 得到的正文继续作为 Tool Observation，不能提升为指令层。
+- `SkillCatalogSnapshot` 在每次采样时冻结 Metadata Index、CatalogRevision 和本次显式 SkillInjection；同一次采样看到的 Index、路径和显式正文必须一致。Catalog、正文和 Injection 不写入独立数据库表；显式 Skill 名称与 ContentHash 可进入 context snapshot/trace，真正影响模型的投影由 RequestContext 生成。
+- 生产工具面保留 `read_skill(name, path?, line?, limit?)`：省略 path 时返回有界 Skill 正文、description/source 和可用 Reference 文件列表；提供 path 时只读取该 Skill `references/` 下的相对路径。返回值是当前 Tool Call 的 ToolOutcome，不使用 `load_skill → SkillContextBuffer → 下一次 developer message` 隐式注入链，也不允许 Reactor AdditionalMessages 建立 Skill 特例。
+- `references/` 继续使用 Skill Root 围栏与专用只读接口，拒绝绝对路径、`..`、软链接逃逸、binary、非 UTF-8 和超限文件；目录列表和正文均有数量/字节预算，不扫描或自动注入整个资料目录。
+- Skill 读取本身为 read side effect，不额外审批；Skill 指导模型调用写入、命令、网络或 MCP 时，复用目标工具现有 PermissionProfile、ExecPolicy、Sandbox、Approval 和 Audit，不建立 Skill 专属授权系统。Skill 文本不能关闭审批、绕过 ReadOnlyRoots/DeniedRoots/ExecPolicy/MCP target preflight、扩大 Writable Roots 或自动获得 Session Grant。
+- 项目级 Skill 的 `scripts/` 在首版不注册 `execute_skill_script`：因为文件位于 CWD 对应默认 Workspace Root 内，Skill 可以指导模型通过普通 `execute_command` 显式运行 `.amadeus/skills/<name>/scripts/...`，自然复用 PermissionProfile、ExecPolicy、Sandbox、Approval、Audit、timeout 和输出预算。用户级 Skill 位于 `$AMADEUS_HOME/skills`，该目录与 `config.yaml`、`mcp.yaml`、`data/` 一起进入 Amadeus DeniedRoots；首版只允许 ExtensionRuntime/`read_skill` 受控读取说明和 References，通用文件工具与 Sandbox Command 不得读取或执行其中脚本。
 - 只有独立 Sandbox 基础设施完成后，才重新评估用户级 `execute_skill_script(skill, path, args, stdin)`。该能力必须使用只读 Skill 挂载、独立临时可写目录、默认无网络、解释器与环境变量白名单、超时/输出限制、软链接防逃逸和每次显式审批；可借鉴 WeKnora 的 Tool/Manager/Sandbox 边界，但不复制其完整服务层。
+- Skill frontmatter 可在基础稳定后增加声明式 MCP 依赖，例如 server 与所需 tool 列表。首版只做缺失依赖诊断：说明 server 未配置、未启用或 Catalog 中缺少 Tool；不得自动修改 `mcp.yaml`、下载安装程序、发起 OAuth、连接网络或自动批准。依赖信息属于 Skill metadata，不建立 Skill 专属执行链。
 - MVP 不实现 enable/disable Store。增加用户可观察命令：`amadeus skills list` 展示 name/description/source，`amadeus skills check` 展示解析 warning，`amadeus skills show <name>` 展示正文和有界 Reference 列表。只有真实 Skill 数量和禁用需求出现后，再设计 `$AMADEUS_HOME` 下的 disabled 状态文件或交互开关。
 
 ### 17.3 实施顺序
 
-MCP 与 Skill 不再按“协议是否存在”判断完成，而按安全语义、用户可观察性和扩展能力三阶段落地：
+MCP 与 Skill 不再按“协议是否存在”判断完成，而按运行时一致性、安全语义和用户可观察性三阶段落地：
 
-1. **P0 正确性与安全收敛**：MCP Grant Key 改为 server/tool/resource 感知；Approval 展示脱敏目标和配置来源；`load_skill + SkillContextBuffer` 迁移为直接返回 Tool Observation 的 `read_skill`；Skill/MCP warning 可被 CLI/TUI 查看。
-2. **P1 可使用产品面**：增加 `amadeus mcp list/check/tools` 与 `amadeus skills list/check/show`；实现 MCP Tool Catalog Cache、连接代次失效和 Resources gateway；补充示例配置、Skill 目录示例、真实 stdio/HTTP fixture 与 Approval E2E。
-3. **P2 稳定后增强**：支持 structured content、Tool/Resource change notifications、Application 级连接复用和多模态结果；独立 Sandbox 成熟后再评估用户级 Skill scripts。MCP Prompts、Sampling、Mentions 和自动 Skill 安装必须有真实使用场景后再立项。
+1. **P0 运行时与正确性收敛**：MCP Manager 提升为 Session 级 MCPRuntime；增加最小 ConnectionGeneration/CatalogRevision/MCPBinding；Grant Key 改为 server/tool/resource 感知；远端 `isError` 转为 failed ToolOutcome；Skill Catalog 改为 metadata/正文分离；增加显式 `$skill-name` → SkillInjection 与模型自主 `read_skill` 双路径；Skill/MCP warning 可被 CLI/TUI 查看。
+2. **P1 可使用产品面**：增加 `amadeus mcp list/check/tools` 与 `amadeus skills list/check/show`；完善 Catalog refresh/失效、Resources gateway、SkillCatalogSnapshot 和声明式 MCP 依赖诊断；补充示例配置、Skill 目录示例、真实 stdio/HTTP fixture 与 Approval E2E。
+3. **P2 稳定后增强**：支持 structured content、Tool/Resource change notifications、多模态结果和 TUI Skill 自动补全；独立 Sandbox 成熟后再评估用户级 Skill scripts。MCP Prompts、Sampling、全量动态 Tool 展开、自动 MCP 安装/OAuth 和隐式 Skill 调用必须有真实使用场景后再立项。
 
-P0 完成前，不应把当前“代码中已有 MCP/Skill 包”视为最终产品完成：现有 lazy lifecycle、配置覆盖、PathGuard 和文本结果基础继续复用，但授权粒度与 Skill Role 语义属于发布前必须修正的问题。
+P0 完成前，不应把当前“代码中已有 MCP/Skill 包”视为最终产品完成：现有配置覆盖、懒连接、lazy gateway、PathResolver 基础和文本结果继续复用，但 Run 级生命周期、无 Binding 的可变 Catalog、远端错误映射、授权粒度和 Skill 调用语义都必须接入新的 SessionRuntime/RequestContext/ToolOutcome 主链。
 
-## 18. Snapshot、项目验证、Web、Browser 与图片
+## 18. Run Diff、项目验证、Web、Browser 与图片
 
-### 18.1 Snapshot
+### 18.1 RunDiffTracker
 
-每个 Run 使用 lazy tracker；只有首个已获授权的 write-side-effect 工具真正执行前才创建 before snapshot，一个 Run 最多创建一次。纯读取 Run 不扫描项目、不创建 snapshot；Run 完成时仅在已 Begin 的情况下记录 after manifest。当前首次写入仍使用有界的全项目 FileService snapshot，恢复操作按 Run/Snapshot ID 表达，增量快照后置。
+`RunDiffTracker` 是 Core/Run Runtime 内的 Run 级文件变化投影，用于回答“当前 Run 实际修改了哪些文件”，不是文件备份、恢复机制或新的持久化事实源。目标架构删除模型可见 `revert_run`、全项目 before/after Snapshot、`internal/snapshot` 和自动文件恢复主链，避免在多 Writable Root、Shell 副作用和用户后续修改下作出无法可靠兑现的撤销承诺。
+
+```go
+type RunDiffTracker struct {
+    Valid   bool
+    Changes map[string]FileDelta
+}
+
+type FileDelta struct {
+    Path        string
+    Kind        FileChangeKind
+    BeforeHash  string
+    AfterHash   string
+    UnifiedDiff string
+}
+```
+
+`RunRuntime` 持有或组合 `RunDiffTracker`。Tracker 以 canonical absolute path 为键，可覆盖 WorkspaceRoots、平台临时写路径和 Additional Writable Roots；UI 再按 CWD 或最近 Workspace Root 投影友好相对路径。`apply_patch` 在执行后返回实际提交的 exact operation delta，Tracker 只消费这些 delta，不根据模型意图或工具参数猜测变化。
+
+聚合语义如下：
+
+- add/update/delete/move 从 Run 初始状态折叠到当前状态，连续修改同一文件只展示最终统一 Diff；
+- add 后 delete 可以抵消，move 后 update 保留正确来源和最终目标；
+- 失败或 partial Patch 只记录已经提交的 operation，提交前失败或取消不产生变化；
+- 同一路径在多个 Root 中不会冲突，因为事实键始终是规范绝对路径；
+- Tracker 发布 `RunDiffUpdated`，TUI、App Server/API、Audit 和 Run 最终摘要消费同一事件，不各自重算文件变化。
+
+`execute_command`、MCP、Skill script 或外部进程可能修改文件，但通常无法提供可靠的 operation-level delta。检测到可能存在未归因文件变化时，Tracker 设为 `Valid=false` 并发布 `RunDiffInvalidated`，界面明确说明 Diff 可能不完整；后续可选用 Git/worktree diff 重建工作区视图，但不得把扫描结果伪装为对某个 Tool Call 的精确归因。若未来 Sandbox 或文件系统监控能够提供可靠 delta，再通过同一投影接口接入。
+
+原始 `tool_call`/`tool_result` RolloutItem 与其中的 ToolOutcome 是 canonical rollout 事实；`RunDiffTracker` 不建立独立 SQLite 表。活动 Run 中它是可丢弃内存状态；Resume 或历史展示需要 Diff 时，可以从持久化 ToolOutcome 重放 exact delta，无法重放时只展示已有工具变化事实，不伪造完整状态。
+
+目标架构不生成反向 Patch，也不自动恢复磁盘。用户需要撤销时优先使用 Git；也可以要求 Agent 根据当前工作区和已有 Diff 生成新的 `apply_patch`，该 Patch 仍走正常 PathResolver、Approval、执行和 Audit 主链。
+
+Codex 的 `ThreadRollback` 只回退对话上下文，不恢复本地文件；其 `TurnDiffTracker` 位于 Core，并把 Diff 事件投影给 App Server 与 TUI。Amadeus 学习这一边界：Run Diff 是可观察状态，不是恢复能力。Amadeus 当前不实现 ThreadRollback；未来如有明确需求，也只能通过 append-only rollback marker 改变 Context Projection，不删除 canonical rollout、不修改磁盘。
 
 ### 18.2 项目验证与 LSP 边界
 
-Amadeus 不内置或要求用户配置 Language Server。Reactor 在修改后通过项目原生 formatter、build、lint、typecheck 和 test 命令形成验证闭环，并把退出码、诊断文本和测试结果作为 Evidence 回灌。验证入口的发现优先级为有效 `AGENTS.md` → 项目脚本/Makefile/CI 配置 → 语言与构建系统常见约定；不得假定项目使用 Go，也不得在核心 Runtime 中硬编码单一语言命令。
+Amadeus 不内置或要求用户配置 Language Server。Reactor 在修改后通过项目原生 formatter、build、lint、typecheck 和 test 命令形成验证闭环，并将退出码、诊断文本和测试结果保存在结构化 ToolOutcome 中回灌模型。验证入口的发现优先级为有效 `AGENTS.md` → 项目脚本/Makefile/CI 配置 → 语言与构建系统常见约定；不得假定项目使用 Go，也不得在核心 Runtime 中硬编码单一语言命令。
 
 核心配置、Runtime 和写后 Hook 不承载 LSP Client。M7 已删除 `internal/lsp`、`lsp.*` 配置、CLI explain/validation 与生产接线；原写后单文件诊断只保留在历史记录中。未来只有在真实场景证明编译、测试和类型检查无法提供足够及时的局部反馈时，才以 MCP、插件或 Extension Tool 形式重新立项。
 
@@ -1839,14 +2014,14 @@ Snippet: <bounded snippet>
 
 首版工作流保持 `web_search → 选择 URL → web_fetch`，不立即复制 Codex 的完整 `open/click/find/ref_id` 浏览协议；后续可增加一次多 query、domain/recency filter 和 Run 内稳定引用。OpenAI Responses Hosted Web Search 只能作为 capability 驱动的未来 Adapter：必须由 Provider 明确声明支持，不能根据 `dialect=openai` 猜测，更不能让 DeepSeek、Qwen、GLM 等模型依赖 OpenAI 私有的 `alpha/search` 端点。
 
-未启用、配置不完整或没有可用 Provider 时不注册 `web_search` Tool。后续提供 `amadeus web check`，在不启动 Agent Run 的情况下验证配置、认证、连接、响应格式、耗时和脱敏错误。搜索请求彼此只读且资源独立，可标记为 `ParallelSafe`；是否继续要求网络审批仍由统一 Approval 策略决定，不在 Provider 内绕过。
+未启用、配置不完整或没有可用 Provider 时不注册 `web_search` Tool。后续提供 `amadeus web check`，在不启动 Agent Run 的情况下验证配置、认证、连接、响应格式、耗时和脱敏错误。搜索请求彼此只读，可声明 Shared；是否继续要求网络审批仍由统一 Approval 策略决定，不在 Provider 内绕过。
 
 ### 18.4 Browser 与图片
 
 - Browser：连接、会话、敏感页面策略和审计分离。
 - 图片：本地图片先校验类型、尺寸与上限，再压缩/缩放；历史轮次只保留文本元信息。
 
-这些能力通过 Tool、项目命令或有明确边界的扩展接口接入 Runtime，不能反向依赖 CLI。验证失败只表示需要继续观察和修复，不自动回滚已经成功的文件写入；是否恢复文件由 Agent 根据任务、Diff、测试结果和用户意图决定。
+这些能力通过 Tool、项目命令或有明确边界的扩展接口接入 Runtime，不能反向依赖 CLI。验证失败只表示需要继续观察和修复，不自动回滚已经成功的文件写入；若需要纠正，Agent 必须根据当前工作区、Diff、测试结果和用户意图生成新的正常 Patch。
 
 ## 19. 事件与渲染
 
@@ -1858,7 +2033,7 @@ Amadeus 使用强类型事件，不采用 `Event{Type, Data interface{}}`。事�
 type Metadata struct {
     SessionID string
     RunID     string
-    TaskID    string // 仅 /plan 或 SubAgent Task
+    TaskID    string // 仅未来 DelegatedTask/SubAgent
     Iteration int    // 仅 Reactor 内部事件
     LLMCallID string // 仅 Provider Call 事件
     Sequence  int64
@@ -1866,7 +2041,7 @@ type Metadata struct {
 }
 ```
 
-`TurnID` 不进入目标事件协议。一次用户执行使用 RunID，一次 Provider 请求使用 LLMCallID，Plan 子任务使用可选 TaskID，Reactor 内部循环使用可选 Iteration 序号。任何事件不得复用同一字段表达多个生命周期。
+`TurnID` 不进入目标事件协议。一次用户执行使用 RunID，一次 Provider 请求使用 LLMCallID，未来 SubAgent DelegatedTask 使用可选 TaskID，Reactor 内部循环使用可选 Iteration 序号。任何事件不得复用同一字段表达多个生命周期。
 
 核心事件分为：
 
@@ -1874,7 +2049,8 @@ type Metadata struct {
 - Reactor：`IterationStarted`、`IterationCompleted`、`TextDelta`、`ReasoningDelta`；
 - Provider：`LLMCallStarted`、`UsageUpdated`、`LLMCallCompleted`、`LLMCallFailed`；
 - Tool：`ToolCallStarted`、`ToolCallCompleted`；
-- Plan：`PlanUpdated`、`TaskStatusChanged`；
+- Workspace：`RunDiffUpdated`、`RunDiffInvalidated`；
+- Plan：`PlanUpdated`；
 - Safety：`ApprovalRequested`、`ApprovalResolved`、`DiagnosticPublished`、`ErrorOccurred`。
 
 Renderer、TUI、HTTP/SSE、Audit 和 Trace 订阅同一事件流。Channel 只作为 Subscriber Adapter；核心 Reactor、ToolExecutor 和 Approval 不直接以 channel 互相调用。Approval、Tool start/completed 和 Run terminal 等关键事件同步发布并传播错误，不能 fire-and-forget；TextDelta/ReasoningDelta 可以批量刷新，但不得改变最终顺序。
@@ -1907,10 +2083,10 @@ Renderer、TUI、HTTP/SSE、Audit 和 Trace 订阅同一事件流。Channel 只�
 
 | 操作 | 行为 |
 |---|---|
-| Enter | 空闲时提交当前输入；Run 执行中将下一条普通任务或 `/plan <task>` 加入串行队列；空行不创建 Run |
+| Enter | 空闲时提交当前输入；Run 执行中将下一条普通输入或 `/plan <task>` 加入串行队列；空行不创建 Run |
 | Up/Down | 浏览当前 Terminal Session 的输入历史 |
 | Tab | 补全 slash command；路径补全后置 |
-| Ctrl+C（Run 执行中） | 取消当前 Run，保留已产生 Evidence，回到输入状态 |
+| Ctrl+C（Run 执行中） | 取消当前 Run，保留已追加的 canonical Tool Call/Result 与中断 marker，回到输入状态 |
 | Ctrl+C（空闲） | 清空当前输入，不退出进程 |
 | Ctrl+D（空闲） | 退出交互循环 |
 | Esc | 关闭 slash palette 或当前选择器；不撤销已执行副作用 |
@@ -1924,13 +2100,13 @@ Bubble Tea 负责跨平台 raw mode、UTF-8 rune 输入、paste、resize 和退�
 
 交互 TUI 必须展示但不泄露内部 reasoning：
 
-- 计划块显示当前 Plan 轮次、Task ID、目标和 `pending/running/completed/failed/blocked` 状态；Replan 追加新轮次，不覆盖历史计划。
+- 计划块显示 `update_plan` 的 Explanation 与 PlanItem `pending/in_progress/completed` 状态；后续更新替换当前清单并保留必要历史 transcript。
 - 工具块显示工具名、开始/完成状态、耗时、截断标记和安全摘要，不展示完整密钥、Authorization、超长参数或隐藏 reasoning。
 - assistant 正文继续流式输出；状态事件到达时先结束当前文本行，避免正文与状态行交错。
-- 底部状态栏显示 `idle/planning/executing/replanning/awaiting_approval/cancelling/error`、可选当前 Task、Run iteration/tool 计数、最近 usage 和 project-relative cwd。
+- 底部状态栏显示 `idle/planning/executing/awaiting_approval/cancelling/error`、当前 RunMode、iteration/tool 计数、最近 usage、当前 CWD、WorkspaceRoots 和 Additional Writable Roots 摘要。
 - Approval、取消、错误和 Run 终态都使用事件驱动，不允许工具或 Engine 直接写 stdout/stderr。
 
-当前版本已经实现多行像素 `A` 品牌头部、version/provider/model/session 信息、主屏幕 Rich Inline 渲染、终端原生 scrollback 与文本选择、Markdown assistant 文本、多行 Unicode textarea 和运行中任务排队，但仍不实现文件树 Pane、可拖拽布局、Diff 折叠器或持久化输入历史。默认 `amadeus` 启动时显示 `draft session`，第一条任务创建正式 Session 后状态同步真实 ID；只有 `--continue`、`--resume` 或交互 `/resume` 才恢复旧 Session。输入历史只保留进程内；Session 对话历史仍由 Conversation Store 管理。FullscreenApplication、InlineRenderer 与 PlainRenderer 消费同一个 Typed EventHub，终端 UI 只能改变展示，不改变 Reactor、Plan Controller、Approval 或 Session 语义。
+当前版本已经实现多行像素 `A` 品牌头部、version/provider/model/session 信息、主屏幕 Rich Inline 渲染、终端原生 scrollback 与文本选择、Markdown assistant 文本、多行 Unicode textarea 和运行中任务排队，但仍不实现文件树 Pane、可拖拽布局、Diff 折叠器或持久化输入历史。默认 `amadeus` 启动时显示 `draft session`，第一条任务创建正式 Session 后状态同步真实 ID；只有 `--continue`、`--resume` 或交互 `/resume` 才恢复旧 Session。输入历史只保留进程内；Session canonical history 由 SessionRuntime/Session Store 管理。FullscreenApplication、InlineRenderer 与 PlainRenderer 消费同一个 Typed EventHub，终端 UI 只能改变展示，不改变 Reactor、RunRuntime、Approval 或 Session 语义。
 
 ### 19.2 目标 Rich Inline 产品形态
 
@@ -1952,12 +2128,12 @@ Bubble Tea 负责跨平台 raw mode、UTF-8 rune 输入、paste、resize 和退�
 • assistant 过程说明或最终回答
 
 • Explored
-  └ Read planner.go
-    Search createPlan|replan in plan_execute.go
+  └ Read runtime.go
+    Search RunRuntime|update_plan in internal/agent
 
 • Ran command
-  │ go test ./internal/agent/plan
-  └ ok github.com/.../internal/agent/plan
+  │ go test ./internal/agent/runtime ./internal/agent/react
+  └ ok github.com/.../internal/agent/runtime
 
 • Working (40s • esc to interrupt)
 
@@ -1979,7 +2155,7 @@ GPT-TOP · /project/root · main · Context 47% used · 128K window
 - `compactLogo`：终端无法容纳宽版时使用源图生成的紧凑点阵与紧凑 Braille `>_`，不允许文字占位；
 - 品牌区域使用终端默认前景色，不设置彩色 foreground 或 background；无颜色模式保持同一轮廓。
 
-启动面板显示 version、provider、model、project root 和 Session；Git branch 作为可选工作区信息，不在 `View()` 中执行 Git 命令。Branch 在 TUI 启动时通过有界 workspace metadata resolver 读取，不是 Agent Tool Call，也不进入 Conversation。
+启动面板显示 version、provider、model、CWD、WorkspaceRoots 摘要和 Session；Git branch 作为可选工作区信息，不在 `View()` 中执行 Git 命令。Branch 在 TUI 启动时通过有界 workspace metadata resolver 读取，不是 Agent Tool Call，也不进入 canonical rollout。
 
 启动信息栏在宽终端下必须保留 4 列右侧 margin，Lip Gloss 的内容宽度需要扣除 border 盒模型，不能让右边界贴住终端最右列。窄于 60 列时继续使用无边框降级布局。
 
@@ -2023,7 +2199,6 @@ type ToolActivity struct {
 | `read_skill`（正文） | `Read skill <name>` |
 | `read_skill`（Reference） | `Read skill reference <path>` |
 | `apply_patch` | `Applied patch` |
-| `revert_run` | `Reverted changes` |
 | `execute_command` | `Ran command` |
 | `write_stdin` | `Continued process` |
 | `view_image` | `Viewed <path>` |
@@ -2052,7 +2227,7 @@ type ToolCallStarted struct {
 
 摘要在 ToolExecutor 完成 strict parse、保守 repair、Schema validation 并得到 normalized call 后生成；生成器只读取白名单字段，例如 `path/pattern/query/command/name`，执行统一长度上限、换行规范化和凭证脱敏。MCP/网络参数默认不展开，未知字段不进入事件。TUI 不解析 raw JSON，也不负责安全判断。
 
-`ToolCallCompleted` 继续承载 success、partial、duration 和有界结果摘要。完整 Tool Result 仍只存在于 Reactor Observation/Evidence 和 Provider replay；TUI 摘要不是新的事实源。
+`ToolCallCompleted` 继续承载 status、partial、duration 和有界结果摘要。完整 ToolOutcome 进入 `tool_result` RolloutItem；TUI 摘要只是该 Outcome 的 UI Projection，不是新的事实源。
 
 #### 19.2.4 Iteration 聚合与提交时机
 
@@ -2111,7 +2286,7 @@ Reactor 在 Tool Call 前提交的 assistant think content 必须在批次末尾
 - Provider `context_window`：单次 LLM Request 的模型上下文窗口；
 - Agent `max_input_tokens/max_output_tokens`：整个 Run 的累计预算。
 
-为了准确显示 `Context 47% used`，在 ContextWindowManager 生成 RequestView 后发布 `ContextWindowUpdated`：
+为了准确显示 `Context 47% used`，在 ContextManager 生成 RequestView 后发布 `ContextWindowUpdated`：
 
 ```go
 type ContextWindowUpdated struct {
@@ -2137,7 +2312,7 @@ Rich Inline
 返回 Rich Inline 输入状态
 ```
 
-默认 transcript 只打印首尾摘要和 `… +N lines (ctrl+t to view transcript)`。完整详情保存在 bounded in-memory store：单项和单 Run 都有字节上限，超限时保留 head/tail 并标记 truncated；不得把完整详情写入 Conversation Message 或 SQLite。Viewer 可以暂时使用 viewport，但默认交互仍在 terminal main screen，退出 Viewer 后恢复原生 scrollback 和文本选择。
+默认 transcript 只打印首尾摘要和 `… +N lines (ctrl+t to view transcript)`。UI 详情保存在 bounded in-memory store：单项和单 Run 都有字节上限，超限时保留 head/tail 并标记 truncated；canonical ToolOutcome 按 Context/Audit 策略持久化，UI 专用展开状态不写入 SQLite。Viewer 可以暂时使用 viewport，但默认交互仍在 terminal main screen，退出 Viewer 后恢复原生 scrollback 和文本选择。
 
 首版 Viewer 只支持查看、上下滚动、PgUp/PgDn 和 Esc 返回；搜索、复制模式、文件树、Diff Pane 与持久化 transcript 后置。
 
@@ -2161,7 +2336,7 @@ M8T 按“先稳定外壳，再建立安全活动语义，最后增加详情能�
 |---|---|---|
 | 视觉外壳 | `internal/interface/tui/logo_generated.go`、`workspace.go`、`inline.go`、`application.go` | 只负责 Logo、启动面板、Transcript 前缀、Working 和状态栏；不得读取 Agent 内部状态或执行 Tool |
 | Action Summary | `internal/tool/presentation.go`、`internal/agent/event/*`、`internal/agent/react/tool_execution.go` | ToolExecutor 在参数校验与规范化后生成安全摘要；事件只传展示白名单，不把 raw arguments 下放给 UI |
-| Activity Presenter | `internal/interface/tui/activity.go`、`inline.go` | 按 CallID/Iteration 构建 UI 投影，读操作聚合、其他副作用逐项展示；不得成为 Tool Result 或 Conversation 的事实源 |
+| Activity Presenter | `internal/interface/tui/activity.go`、`inline.go` | 按 CallID/Iteration 构建 ToolOutcome UI Projection，读操作聚合、其他副作用逐项展示；不得成为 Rollout 的事实源 |
 | Context 状态 | `internal/context/window.go`、`internal/agent/event/context.go`、TUI 状态投影 | 每次 RequestView 构建后发布估算；Provider Usage 与 Context 估算并存但语义分离 |
 | Detail Viewer | `internal/interface/tui` 内 bounded detail store 与临时 viewport | 详情仅驻留有界内存；Viewer 关闭后回到 main-screen Rich Inline，不持久化到 SQLite |
 
@@ -2176,152 +2351,137 @@ M8T 按“先稳定外壳，再建立安全活动语义，最后增加详情能�
 
 ## 20. 持久化
 
-| 数据 | 默认实现 | 位置 |
-|---|---|---|
-| Amadeus 主配置 | YAML | `$AMADEUS_HOME/config.yaml` |
-| 用户级指令 | Markdown | `$AMADEUS_HOME/AGENTS.md` |
-| 项目/目录级指令 | Markdown | `<project-root>/**/AGENTS.md` |
-| 审计 | JSONL | `~/.local/state/amadeus/audit/` |
-| Conversation Session/Run/Message/Summary | SQLite | `$AMADEUS_HOME/data/amadeus.db` |
-| 用户 Skill | 文件 | `$AMADEUS_HOME/skills/<name>/` |
-| 用户 MCP | YAML | `$AMADEUS_HOME/mcp.yaml` |
-| 项目 Skill/MCP | 文件 | `<project>/.amadeus/` |
+SQLite 固定放在：
 
-`AMADEUS_HOME` 是唯一的用户级配置、指令、Skill、MCP 和运行数据根，不是目标项目根；文档和代码不再为同一目录引入第二个根目录术语。SQLite 固定放在 `$AMADEUS_HOME/data/amadeus.db`，由 `projects.canonical_path` 区分不同目标项目；不得在目标项目内生成数据库，也不得回退当前工作目录。`data` 目录权限为 `0700`，数据库文件权限为 `0600`。审计继续使用独立 JSONL，避免把 append-only 安全记录和可迁移的业务状态耦合。
+```text
+$AMADEUS_HOME/data/amadeus.db
+```
 
-SQLite 初始化使用 `foreign_keys=ON`、WAL、`busy_timeout=5000` 和 `synchronous=NORMAL`。同一数据库允许在单个事务内原子完成 Session/Run 状态与正式消息写入。调用方必须提供 clean absolute `AMADEUS_HOME`；数据库或 data 目录为 symlink/非预期类型时拒绝打开，并使用受限目录与文件权限。
+数据库不放进目标项目，避免污染仓库和在多项目之间拆散用户历史。
 
 ### 20.1 SQLite 表
 
-M5R 收敛后固定六张表：
+首个稳定版本收敛为四张核心业务表，加一张 schema 管理表：
 
-```text
-schema_migrations
-projects
-conversation_sessions
-runs
-conversation_messages
-conversation_summaries
-```
+1. `schema_migrations`
+2. `projects`
+3. `sessions`
+4. `runs`
+5. `rollout_items`
 
-明确不创建 `session_turns`、`run_checkpoints`、`checkpoint_instructions`、`plans`、`tasks`、`execution_graphs`、`tool_calls`、`observations`、`evidence`、`reflections`、`memories`、`user_preferences`、`embeddings`、`reflection_lessons`、`context_views`、`prompt_documents`、`persistent_grants` 或 `audit_records`。`Turn` 不属于目标持久化 Domain；Plan/Task/Iteration/Tool/Evidence 是单次 Run 的内存状态；ContextView/Prompt 动态重建，审批重新验证，审计写独立 JSONL。
-
-### 20.1.1 收敛原则与数据边界
-
-这次收敛不是为了减少表的数量本身，而是为了让持久化模型与新的固定 Agent 主链保持一致：
-
-1. **只持久化用户需要恢复和查看的事实**：项目、会话、Run、正式消息和历史摘要。
-2. **不把执行中间态当成对话事实**：Plan、Task、DAG、Tool Call、Observation、Evidence、Reflection 和预算只存在于当前 Run 的内存状态中；Run 结束时只提炼出最终消息或有界中断摘要。
-3. **不恢复旧调用栈**：中断后不保存可重放的 checkpoint 序列。下一次用户输入创建新的 Run，读取旧 Run 的 `interrupted_context_json`，重新检查工作区和 `AGENTS.md`，再由普通 Reactor 或显式 `/plan` 路径重新规划。
-4. **不把安全审计混入业务库**：Approval、授权结果和工具审计写独立 JSONL；Session Grant 只保存在当前进程内存中，进程退出后重新审批。
-5. **不提前实现长期记忆**：不创建 memory、preference、embedding 或 reflection lesson 表；用户级和项目级 `AGENTS.md` 是可编辑、可解释的持久指令来源。
-
-因此，六表是最终 MVP 业务模型，而不是把所有运行时对象都映射成表。后续若确有持久化后台任务、Multi-Agent 或可恢复工作流需求，应先新增独立 ADR 和迁移方案，不能直接向核心会话表追加临时字段。
+不建立 Turn、RunRuntime、Plan、PlanItem、Iteration、ApprovalGrant、LongTermMemory、独立 Message、独立 Summary 或独立 Previous Work 表。Tool Call 与 Tool Result 作为 RolloutItem 持久化，而不是拆成工具专用业务表。
 
 ### 20.2 `schema_migrations`
 
-| 字段 | 约束 | 语义 |
-|---|---|---|
-| `version` | PK integer | 单调迁移版本 |
-| `name` | not null | 迁移名称 |
-| `applied_at` | not null | UTC 应用时间 |
-
-迁移必须事务化、可重复检测且禁止跳过未知版本。
-
-迁移必须保留可映射的 Project/Session/Message/Run/Summary 数据，并移除旧的 Turn/Checkpoint/Instruction Snapshot 结构。无法可靠映射的旧 checkpoint 只能转换为有界 `interrupted_context_json`，不能继续作为可恢复调用栈；正式 user/assistant 消息不得静默丢失。
+记录数据库 schema 版本与应用时间。迁移必须前向、事务化和可重复检测。Amadeus 尚处于首个稳定版本之前，当前 canonical rollout 收敛允许使用一次明确的破坏性开发迁移：删除旧 `conversation_sessions/conversation_messages/conversation_summaries` 与旧 `runs`，再创建 `sessions/runs/rollout_items`，不为未发布的历史开发数据长期维护转换兼容层。迁移必须通过 schema version 明确执行，失败时原子回滚；用户若需要保留开发期会话，应在升级前备份 `$AMADEUS_HOME/data/amadeus.db`。首个稳定版本发布后，新增 schema 变更必须重新采用保留已发布用户数据的前向迁移策略。
 
 ### 20.3 `projects`
 
 | 字段 | 约束 | 语义 |
 |---|---|---|
 | `id` | PK text | Project ID |
-| `canonical_path` | unique, not null | 规范化目标项目根路径 |
+| `canonical_path` | unique, not null | 规范化绝对路径 |
 | `display_name` | not null | 展示名称 |
-| `created_at` | not null | 创建时间 |
-| `updated_at` | not null | 元数据更新时间 |
-| `last_opened_at` | not null | 最近打开时间 |
+| `created_at`/`updated_at` | not null | 生命周期时间 |
+| `last_opened_at` | indexed, not null | 最近打开时间 |
 
-首版以规范化真实路径作为项目身份。`--resume`、`--continue` 和 `sessions list` 默认只查询当前 Project，不能静默跨项目恢复。
-
-### 20.4 `conversation_sessions`
+### 20.4 `sessions`
 
 | 字段 | 约束 | 语义 |
 |---|---|---|
-| `id` | PK text | Conversation Session ID |
+| `id` | PK text | Session ID |
 | `project_id` | FK, not null | 所属 Project |
 | `title` | not null | 首条任务截断生成的标题 |
 | `status` | not null | `active` 或 `archived` |
 | `next_run_sequence` | not null | 下一个 Run 序号 |
-| `created_at` | not null | 创建时间 |
-| `updated_at` | not null | 更新时间 |
+| `next_item_sequence` | not null | 下一个 Session 全局 Rollout 序号 |
+| `created_at`/`updated_at` | not null | 生命周期时间 |
 | `last_active_at` | indexed, not null | 当前项目最近 Session 查询依据 |
 
-`amadeus` 启动得到 Draft Session，但数据库不保存 draft 状态；第一次真实任务才创建本表记录。Session 没有 `completed`，因为历史对话可以再次恢复。
+`amadeus` 启动只得到内存 Draft Session；第一条真实任务到达时才创建 Session。Session 没有 completed 状态，因为历史对话可以再次恢复。
 
 ### 20.5 `runs`
 
-一个真实用户输入对应一个 Run。Run 是一次默认 ReAct 或显式 Plan→Execute→Replan 生命周期；下一次用户输入创建新的 sequence/Run，不精确恢复旧 Run。
+一个真实用户输入对应一个 Run。RunMode 为 `execute` 或 `plan`；历史 `react/planned` 都迁移为 `execute`，因为旧 planned Run 已经实施过工作。
 
 | 字段 | 约束 | 语义 |
 |---|---|---|
 | `id` | PK text | Run ID |
 | `session_id` | FK, not null | 所属 Session |
 | `sequence` | unique per session | 用户输入/Run 顺序 |
-| `context_from_run_id` | self FK, nullable | 本 Run 使用的最近中断 Run |
-| `objective` | not null | 本轮目标/用户任务 |
 | `status` | not null | `running/completed/interrupted/failed` |
-| `stop_reason` | nullable | 用户取消、进程退出、工具失败等原因 |
+| `stop_reason` | nullable | 用户取消、Provider、工具或资源错误 |
 | `provider`/`model`/`api_mode`/`dialect` | nullable | 实际模型主链 |
-| `execution_mode` | not null | `react` 或 `planned`；旧数据库迁移默认 `react` |
-| `usage_json` | nullable | Run 实际使用量 |
-| `interrupted_context_json` | nullable | 中断/失败时写入的有界重新规划摘要 |
+| `run_mode` | not null | `execute` 或 `plan` |
+| `usage_json` | nullable | Run 累计实际使用量 |
 | `started_at` | not null | 开始时间 |
 | `finished_at` | nullable | 终态时间 |
 
-`interrupted_context_json` 只在 Run 中断或失败时保存一次，至少包含 objective、已完成任务摘要、Evidence、相关路径、pending work 和 last error；它不是可重放的调用栈。发现遗留 `running` Run 时，启动或下一次真实任务可将其视为 `interrupted/process_terminated`，随后重新检查工作区并规划，不恢复旧工具调用。
+用户目标不在 `runs.objective` 重复保存，而是本 Run 的第一条 `user_message` RolloutItem。中断关联不使用 `context_from_run_id`；Session 全局序列已经完整表达历史先后关系。
 
-MVP 不保存 `budget_json`、`latest_checkpoint_seq` 或独立 `continuation_of_run_id`。预算由当前配置和 RunState 动态构建；`context_from_run_id` 只表示新 Run 使用过哪个中断上下文。
+### 20.6 `rollout_items`
 
-### 20.6 `conversation_messages`
-
-| 字段 | 约束 | 语义 |
-|---|---|---|
-| `id` | PK text | Message ID |
-| `session_id` | FK, not null | 所属 Session |
-| `run_id` | FK, not null | 所属 Run |
-| `sequence` | unique per session | 正式消息顺序 |
-| `role` | not null | 首版仅 `user`/`assistant` |
-| `content` | not null | 用户可见正文 |
-| `created_at` | not null | 创建时间 |
-
-每个 Run 必须有一条 user、最多一条 assistant 正式消息。用户消息在真实任务开始时持久化；Run 成功完成后才写 assistant。中断或失败只保留 user，不写未完成 assistant。system/developer/tool、流式增量和 reasoning 不进入本表。
-
-### 20.7 `conversation_summaries`
+`rollout_items` 是 Session 历史、恢复和 Context 构建的唯一持久化事实源：
 
 | 字段 | 约束 | 语义 |
 |---|---|---|
-| `id` | PK text | Summary ID |
+| `id` | PK text | Rollout Item ID |
 | `session_id` | FK, not null | 所属 Session |
-| `from_message_sequence` | not null | 覆盖起始序号 |
-| `to_message_sequence` | not null | 覆盖结束序号 |
-| `content` | not null | 摘要正文 |
-| `source_hash` | not null | 原消息范围哈希 |
-| `summary_hash` | not null | 摘要哈希 |
-| `provider`/`model` | nullable | 生成来源 |
+| `run_id` | FK, nullable | 产生该 Item 的 Run；Session 级迁移/系统 Item 可为空 |
+| `sequence` | unique per session | Session 全局严格递增顺序 |
+| `kind` | not null | `user_message/assistant_message/tool_call/tool_result/plan_update/context_snapshot/run_interrupted/run_failed/context_compaction` |
+| `payload_json` | valid JSON, not null | Provider-neutral 结构化载荷 |
 | `created_at` | not null | 创建时间 |
 
-摘要是可重建派生数据，不删除或替换原始 Conversation Message，也不承担长期记忆职责。
+隐藏 Chain-of-Thought、模型流式 delta、TUI 动画与普通诊断 Event 不进入 canonical rollout。需要进入模型历史的 reasoning summary 可以作为 assistant item 的显式字段保存，但不得持久化 Provider 私有隐藏推理。
+
+首版关键 payload：
+
+```text
+user_message       {content}
+assistant_message  {response_id?, content}
+tool_call          {response_id?, call_id, name, arguments}
+tool_result        {call_id, name, status, output, metadata?}
+plan_update        {explanation, items}
+context_snapshot   {cwd, instruction_sources, instruction_hashes, model, capability_revision, workspace_metadata?}
+run_interrupted    {reason, guidance, active_calls?}
+run_failed         {reason, error_kind}
+context_compaction {summary, replacement_history, covered_through_sequence, source_hash, provider, model}
+```
+
+### 20.7 Replacement History 的存储与恢复
+
+Replacement History 不建立独立表，直接存放在 `rollout_items` 中：
+
+```text
+rollout_items.kind = 'context_compaction'
+rollout_items.payload_json.replacement_history = [...]
+```
+
+原因是 compaction 本身也是 Session 时间线中真实发生的一项历史事件。原始 items 保持 append-only，不做 UPDATE 或 DELETE；新的 compaction 只声明“从本窗口开始，模型有效历史以这组 replacement items 为基线”。
+
+恢复算法：
+
+1. 按 Session sequence 从后向前找到最新有效 `context_compaction`；
+2. 校验其 `covered_through_sequence`、`source_hash` 与 payload schema；
+3. 以 `replacement_history` 初始化 SessionHistory；
+4. 顺序追加该 compaction 之后的 model-visible tail items；
+5. 规范化 Tool Call/Result 配对并生成 RequestView；
+6. 没有 compaction 时从首条 RolloutItem 完整 replay。
+
+因此同一个 Session 可以拥有多条历史 compaction，但恢复只需要最新有效基线和其后的 tail；较早 compaction 与原始历史仍保留用于审计、调试和未来重新压缩。
 
 ### 20.8 事务边界
 
-- 首个真实任务：原子创建 Project（若不存在）、Conversation Session、Run sequence、user message 和 Run。
-- 后续任务：原子分配 Run sequence、创建 user message/Run，并更新 Session 活跃时间。
-- Run 成功：原子写 assistant message、完成 Run，并更新 Session。
-- Run 中断或失败：原子写 `interrupted_context_json`、完成 Run；保留 user message，不写未完成 assistant message。
-- Context Summary 作为独立派生数据事务写入；当前 AGENTS.md 每次新 Run 重新发现，不依赖旧指令快照。
-- 任何旧副作用在新 Run 中仍需重新发现、验证和审批；没有 Checkpoint 追加或工具重放事务。
+- 首次 `BeginRun`：原子创建 Project、Session、Run，并追加第一条 `user_message`；
+- 后续 `BeginRun`：原子分配 Run sequence 与 item sequence，创建 Run 并追加当前 `user_message`；
+- 正常执行：assistant、tool、plan 与 context items 按完成顺序逐项追加；Tool Call 必须在产生副作用前持久化，ToolOutcome 必须在执行完成后立即投影为 `tool_result` 并追加；
+- `FinishRun(completed)`：确认最终 assistant item 已持久化后更新 Run、Usage 与时间；
+- `FinishRun(interrupted/failed)`：先补齐悬空 Tool Result、追加 marker 并 flush，再更新 Run 终态；
+- Context Compaction：验证 source hash 后原子追加 `context_compaction`，不修改原始 RolloutItem；
+- SessionRuntime 必须在任何模型调用或工具副作用前获得已持久化 RunContext，并已将当前 user item 纳入 SessionHistory。
 
-Store 必须以事务保证 user Message 在执行前持久化、completed Run 与 assistant Message 原子完成、interrupted/failed Run 只写 Previous Work 摘要。Conversation 查询默认只返回 completed Run 的完整 Message Pairs；Pending 查询只返回最近尚未被成功 Run 覆盖的 interrupted/failed Run。Session Coordinator 对外使用 BeginRun/FinishRun 语义，并负责把 `context_from_run_id` 与有界 Previous Work 交给 ContextBuilder。
+SQLite 使用 WAL 模式和短事务。Amadeus 首版不复制 Codex 的 JSONL + SQLite 双存储；学习的是 append-only rollout、replacement history 和 replay 语义，避免创建第二持久化事实源。未来如需诊断，可提供只读 JSONL export。
 
 ## 21. 错误处理与可观测性
 
@@ -2340,7 +2500,9 @@ Store 必须以事务保证 user Message 在执行前持久化、completed Run �
 - 消息与 SDK 请求转换。
 - 流式 tool call 参数拼接。
 - Runtime 终止条件、取消、重复调用和预算。
-- PathGuard、CommandGuard、Approval 和 Audit。
+- PathResolver、FileSystemPolicy、rule precedence、WorkspaceRoots、TemporaryRoots、ReadOnlyRoots、DeniedRoots、Run/Session Permission Store、ExecPolicy、IsolationMode、SessionApprovalStore、ToolExecutionGate、RunDiffTracker 和 Audit。
+- Shared 批次、Exclusive 屏障、`max_parallel_tools` 限流、取消等待和原始 Tool Call 顺序回灌。
+- RunDiffTracker 的 add/update/delete/move 聚合、同文件连续 Patch 折叠、partial Patch 和 invalidation。
 - Tool schema、输出截断和并发顺序。
 - Prompt 覆盖和 hash。
 - Web Search Provider 请求转换、结果归一化、URL 去重、错误分类、超时和重试边界。
@@ -2349,11 +2511,13 @@ Store 必须以事务保证 user Message 在执行前持久化、completed Run �
 ### 22.2 集成测试
 
 - 使用 `httptest.Server` 模拟 Responses/Chat Completions 流。
-- 使用临时目录验证文件工具和符号链接逃逸。
+- 使用多个临时目录验证 CWD、WorkspaceRoots、重复 `--add-dir`、绝对/`../` 读取、跨 Root Patch、规范目标键和符号链接逃逸。
+- 使用平台 fixture 验证 Sandbox 内宿主可读、Workspace/Temporary/Run/Session Writable Roots 写入、ReadOnlyRoots、DeniedRoots、子进程继承和越界写 `sandbox_denied`；无 Sandbox 平台验证 Unsandboxed 提示、Permission Check 与 Command Approval 不可互相绕过。
+- 验证多 Root canonical path、exact Patch Delta 重放、未知 Shell 修改触发 `RunDiffInvalidated`，以及 TUI/API 对同一 Run Diff 事件的投影。
 - 使用假命令验证超时、取消和输出限制。
 - 使用进程 fixture 验证 MCP stdio JSON-RPC。
 - 使用 `httptest.Server` 分别模拟 DuckDuckGo HTML/API fallback、Tavily、SearXNG 与 Brave 的成功、空结果、认证、限流、5xx 和超时响应。
-- 使用 SQLite 临时库验证 Session 恢复、完整消息对加载和 Previous Work 生命周期。
+- 使用 SQLite 临时库验证 Session 恢复、Rollout replay、Replacement History 和中断 marker 生命周期。
 
 ### 22.3 兼容性测试
 
@@ -2385,32 +2549,26 @@ Store 必须以事务保证 user Message 在执行前持久化、completed Run �
 
 ## 23. 开发阶段
 
-| 阶段 | 交付目标 | 可执行出口 |
-|---|---|---|
-| M0 | 工程骨架与配置 | `amadeus version/config check` 可运行 |
-| M1 | OpenAI SDK + 基础会话 | 可流式完成纯文本问答 |
-| M2 | Provider、工具与首版 ReAct 基础能力 | 可在临时项目中完成模型—工具—观察闭环 |
-| M3 | 首个可用 Coding Agent CLI | 根命令可在真实项目中安全读、改、测，分层 `AGENTS.md` 生效 |
-| M4 | 核心工具增强、长上下文与 Session 持久化 | `apply_patch` 成为默认编辑路径；可跨进程恢复会话，中断后新 Run 重新规划 |
-| M5R | Agent 主链收敛 | 默认 ReAct 与显式 `/plan` 的产品语义、Session 持久化和 TUI 主链完成收敛 |
-| M6 | Coding Workflow 扩展 | Snapshot、Skill、MCP、Web 与项目原生验证闭环可选接入；移除核心 LSP |
-| M6R | 独立 Reactor 与 Typed EventHub 重构 | 默认路径直接执行 Think→Analyze→Act→Observe Iterations；`/plan` 通过适配器复用同一个 Reactor，事件统一使用 Run/Task/LLMCall 关联语义 |
-| M8T | Rich Inline TUI 产品化 | 完成品牌 Logo、Codex 风格 Activity、Working 动画、Context 状态和 bounded Transcript Viewer，同时保留终端原生 scrollback |
-| M7 | 核心工具链与 Process Runtime 收敛 | 保留薄型结构化探索，交付持续 Process、Patch Move、图片、Tool Exposure，并删除 `write_file` 与核心 LSP 历史实现 |
-| M8 | 兼容回归与发布 | 形成可发布二进制和迁移说明 |
-| M9 | Multi-Agent 与高级入口 | placement、TUI 多 Pane/高级 Diff、Runtime API 和后台任务复用统一 Runtime；首个发布不依赖 M9 |
+1. **Foundation**：CLI、配置、日志、Provider Adapter 与流式协议；
+2. **Canonical Persistence**：Session、Run、RolloutItem、Migration、Replay 与 Replacement History；
+3. **Session/Run Runtime**：SessionRuntime、SessionHistory、RunContext、RunRuntime/RunState、RequestContext 与中断；
+4. **Reactor 与 Context**：Think→Analyze→Act→Observe、ToolOutcome、ContextManager 与 Typed EventHub；
+5. **Plan-guided Execution**：`update_plan`、PlanState、TUI 进度投影与 Plan Mode；
+6. **Coding Workflow**：Shared/Exclusive Tool Gate、多 Root FileSystemPolicy、Patch、Process/Sandbox、RunDiffTracker、Skill、MCP、Web 与项目验证；
+7. **Productization**：Rich Inline TUI、Resume、发布前兼容与迁移；
+8. **Optional Enhancements**：只读 Multi-Agent、Browser、Runtime API 与后台任务。
 
-每个阶段的最小任务、依赖与验收见 `docs/development-progress.md`。
+历史 M0～M6 里程碑可能使用 Plan-and-Execute、ConversationSession、Task 或旧 Turn 术语；它们只记录当时实现，不构成当前目标架构。后续开发以本设计和 `docs/development-progress.md` 最新重构队列为准。
 
 ## 24. 兼容性策略
 
 ### 24.1 必须兼容
 
-- ReAct、显式 `/plan`、任务依赖和 SubAgent 协作的用户可见核心语义；内部不保留多套执行循环。
+- 默认 Coding Agent、Plan Mode、Session resume、工具调用和后续 SubAgent 协作的用户可见核心语义；内部只保留一个 Reactor 执行循环。
 - OpenAI-compatible base URL/model/key 切换。
 - 工具调用和图片工具结果回灌。
 - Prompt 用户级/项目级覆盖。
-- 路径围栏、HITL、审计与取消。
+- Project.RootPath/CWD/WorkspaceRoots/`--add-dir`、FileSystemPolicy、Sandbox、HITL、审计与取消。
 - MCP 动态工具命名和生命周期。
 
 ### 24.2 可有意识变化
@@ -2425,227 +2583,174 @@ Store 必须以事务保证 user Message 在执行前持久化、completed Run �
 
 | 风险 | 影响 | 缓解 |
 |---|---|---|
-| OpenAI-compatible 服务协议差异 | 工具或流解析失败 | API 模式显式配置，fixture 覆盖差异 |
-| 功能面过大 | 长期不可运行 | 严格按 M0-M8 保持每阶段可执行 |
-| Go SDK 版本变化 | Adapter 编译失败 | SDK 限于单包，锁定版本并做契约测试 |
-| Prompt 行为漂移 | Agent 能力退化 | Prompt golden test 与 Java 基线对比 |
-| 并发工具引入竞态 | 文件损坏、结果乱序 | 副作用分类、有界并发、顺序回灌 |
-| Plan/Replan 自循环 | 任务无法终止 | Context cancellation、Run 总预算和默认 8 次 plan cycle 上限 |
-| 用户误用 `/plan` 处理简单任务 | 增加 Planner/Replanner 延迟 | 默认普通输入走 ReAct；仅在确实需要任务拆分时使用 `/plan` |
-| 模型计划格式漂移 | 复杂 JSON 无法解析 | 使用宽容行协议；程序生成 ID、依赖、状态和 DAG，非列表文本降级为单 Task |
-| 模型过早声称完成 | 工作未完成 | Replanner 同时接收原目标、Task 结果、Evidence 与当前 workspace，再决定 COMPLETE/REPLAN |
-| 本地安全边界被误解 | 用户风险 | 明确 Amadeus 只有 PathGuard、CommandGuard、Approval 与审计，不宣称进程隔离沙箱 |
-| TUI 产品化范围膨胀 | 首个发布继续延迟 | M8T 只实现 Logo、Activity、Working、Context 与 bounded Viewer；文件树、多 Pane、Diff 交互和持久化 transcript 继续后置 |
+| 模型不调用或错误维护 `update_plan` | 进度展示不完整 | PlanState 只作为软状态，不驱动执行；最终事实以 canonical ToolOutcome、Workspace 和最终回答为准 |
+| 简单任务被过度规划 | 延迟和噪声增加 | 默认不强制计划，提示词只建议复杂任务使用 `update_plan` |
+| Plan Mode 意外修改项目 | 破坏用户审核预期 | 使用工具暴露和 ToolExecutor 双层限制，禁止写工具与修改型 Shell |
+| SessionRuntime 变成新的万能 Engine | 职责再次集中 | 只拥有 SessionHistory、Rollout append/flush、活动 Run及 SessionPermissionStore、SessionApprovalStore、ExtensionRuntime 生命周期，不实现策略判断、Reactor、MCP/Skill 业务、Tool 或 Provider |
+| RunRuntime 变成新的万能 Engine | 职责再次集中 | 限定为取消、RunState、资源所有权、Reactor 驱动和统一收尾；历史与持久化由 SessionRuntime 负责 |
+| RunContext、RequestContext 与 RequestView 重复 | 上下文多状态源 | RunContext 只保存 Run 稳定事实，RequestContext 是一次采样环境快照，RequestView 是 Provider-neutral 请求投影 |
+| 破坏性开发迁移导致旧会话丢失 | 首个稳定版前的开发期 Session 不可恢复 | 仅限当前未发布阶段；迁移事务化、升级前明确备份数据库、测试删除旧表并建立 canonical schema；稳定版发布后恢复数据保留型前向迁移 |
+| Rollout 追加不完整 | 恢复后 Tool 协议或中断事实缺失 | Tool Call 前置持久化、Result 后置持久化、Finish 前 flush，并为悬空调用生成合成结果 |
+| Tool 并发声明错误 | 有副作用调用重叠，造成文件、Process 或外部状态不一致 | 默认 Exclusive；只有内置只读 Tool 或具备可信只读元数据的动态 Tool 才能 Shared，并以并发/取消/E2E 守卫覆盖 |
+| Provider 方言差异 | 请求被拒或工具调用解析失败 | Adapter 能力矩阵、有限 repair、Schema 校验与 Provider 集成测试 |
+| Sandbox 尚未跨平台完成 | Unsandboxed Shell 可直接访问宿主机权限范围 | Linux 优先 SandboxRunner；其他平台明确 Unsandboxed，所有命令先做 Permission Check，再对未获 Session 精确批准的完整命令询问并明示 unsandboxed host execution，不把 requested permissions 或字符串扫描宣传为强隔离 |
+| Shell 修改无法精确归因 | RunDiffTracker 展示不完整或错误归因 | 只聚合 exact Patch Delta；未知修改触发 invalidation，可选 Git/worktree diff 重建工作区视图但不伪造 Tool 归因 |
+| Multi-Agent 过早复杂化 | 主链不稳定 | 首发不启用；后续只验证最多两个只读 SubAgent 的真实收益 |
 
 ## 26. 架构决策记录
 
 ### ADR-001：官方 SDK 隔离在 Adapter
 
-- 决策：Domain 不引用 OpenAI SDK 类型。
-- 原因：支持 base URL、兼容 API、测试替身和未来 SDK 升级。
+- 决策：业务层只依赖 Amadeus LLM Domain；OpenAI SDK 与 Provider 方言封装在 Adapter。
+- 原因：避免 SDK 类型污染 Agent、Context、Tool 和 Session 层。
 
 ### ADR-002：Responses 优先、Chat Completions 兼容
 
-- 决策：Provider 配置显式指定 API 模式。
-- 原因：兼顾 OpenAI 当前主接口和原项目多 Provider 兼容需求。
+- 决策：默认 OpenAI Responses；兼容 Chat Completions，并通过 Dialect 处理 DeepSeek、GLM、Qwen 等差异。
 
 ### ADR-004：结构化事件驱动 UI
 
-- 决策：Runtime 不直接打印终端。
-- 原因：同一运行时支持 CLI、TUI 和 HTTP event stream。
+- 决策：Agent Runtime 发布强类型 Event，CLI/TUI/API 只消费事件；禁止核心逻辑直接打印终端。
 
-### ADR-005：`AMADEUS_HOME` YAML 配置与明确优先级
+### ADR-005：`AMADEUS_HOME` 配置与数据根
 
-- 决策：默认读取 `$AMADEUS_HOME/config.yaml`，环境变量和 flags 覆盖文件配置；目标工作项目不承载 Provider 主配置。
-- 原因：满足自主切换 endpoint/key/model，并使最终结果可解释。
-
-### ADR-006：Go 工程与基础依赖基线
-
-- 决策：module path 使用 `github.com/Godric-W/Amadeus`，最低 Go 版本使用 `1.26.0`。
-- 决策：CLI 使用 `github.com/spf13/cobra`，首个锁定版本为 `v1.10.2`。
-- 决策：YAML 使用 `go.yaml.in/yaml/v3`，首个锁定版本为 `v3.0.5`。
-- 决策：OpenAI Adapter 使用官方 `github.com/openai/openai-go/v3`，M1 首次实现锁定 `v3.47.0`。
-- 决策：构建信息集中在 `internal/buildinfo`，开发构建默认使用 `dev / unknown / unknown`，发布构建通过 Go `-ldflags -X` 注入 version、commit 和 build time。
-- 决策：根目录 `Makefile` 作为本地开发和 CI 的统一质量入口，`make check` 覆盖格式检查、vet、测试和二进制构建。
-- 原因：Cobra 适合多级命令与后续补全；YAML v3 支持严格解码所需节点信息；OpenAI SDK 仅封装在 Adapter 中，后续升级不会污染 Domain。
-- 约束：依赖只在首次被代码引用时写入 `go.mod`，避免提前加入未使用依赖。
-
-### ADR-007：共享协议 Adapter 与显式 Provider Dialect
-
-- 决策：`openai.Adapter` 实现 Domain `llm.Client`；官方 OpenAI Go SDK 负责请求、HTTP 传输、SSE 解码和 typed events，Adapter 只在 SDK 之上聚合 text/reasoning/usage/tool fragments、规范化错误并转换为 Amadeus Domain，不自行维护原始 HTTP/SSE parser。
-- 决策：Responses、Chat Completions 共享 Tool Call fragment aggregator，但 aggregator 只验证调用身份、顺序和参数非空；Tool arguments 的严格 JSON 解析、保守 repair 和 JSON Schema 校验属于 Tool Call Normalizer，不在 Adapter 层重复实现。
-- 决策：Dialect 由配置显式选择，标准方言作为默认回退，不根据 URL、Provider 名称或模型名猜测。
-- 原因：避免复制完整 Provider Client，同时让工具调用、reasoning 和扩展字段差异可测试、可解释、可逐步增加。
+- 决策：`AMADEUS_HOME` 是配置、用户 AGENTS.md、Skill、MCP 和 SQLite 的唯一用户级根；不再引入独立 amadeus_root。
 
 ### ADR-009：显式指令取代自动长期记忆
 
-- 决策：不在当前路线图实现模型推断式 Durable Memory、MemoryStore/Retriever、自动偏好提取或跨 Run Reflexion Lesson；用户长期偏好写入 `$AMADEUS_HOME/AGENTS.md`，项目规范写入项目根和目录级 `AGENTS.md`。
-- 决策：项目指令高于用户指令，更深目录高于更浅目录；当前用户请求高于普通工程约定，内置安全与 Approval 始终最高。每次注入保留 source/path/scope/hash。
-- 决策：Conversation、ContextView 与 Previous Work 保持独立生命周期；每个新 Run 都重新解析当前 `AGENTS.md`，历史派生数据不能覆盖当前指令。
-- 原因：显式文件可编辑、可审查、可版本控制且行为可预测，避免为收益不稳定的自动记忆承担误判、冲突、过期、隐私和检索复杂度。
+- 决策：不实现用户偏好推断、RAG 或 LongTermMemory；使用用户级、项目级和目录级 `AGENTS.md` 与 Session canonical rollout。
 
-### ADR-011：Session 恢复与中断后重新规划
+### ADR-011：Session 恢复与中断后新 Run
 
-- 决策：用户级 `resume` 只恢复当前项目的 Conversation Session；`amadeus --continue` 恢复最近 Session，`amadeus --resume` 打开选择器，`amadeus --resume <session-id>` 直接恢复，交互 `/resume` 可切换并允许 `Esc` 取消。首版只实现 `amadeus sessions list`，不提供 `--session`、`/sessions` 或 `sessions list --all`。
-- 决策：`amadeus` 只创建内存 Draft Session，第一条真实用户消息才在 `$AMADEUS_HOME/data/amadeus.db` 原子创建 Session、user Message 和 Run。
-- 决策：被中断或失败的 Run 永久结束；下一次真实输入创建新 Run，只加载完整 completed Message Pairs，并注入最近 Previous Work 摘要。MVP 不恢复调用栈、不重放工具、不使用额外 Router，也不实现 `continuation_of_run_id`。
-- 原因：Session 恢复符合日常 CLI 习惯；重新规划比精确恢复未完成副作用更安全、更容易验证，并避免复杂自然语言继续意图识别。
+- 决策：`amadeus --continue` 恢复当前项目最近 Session，`--resume` 打开选择器，`--resume <session-id>` 直接恢复；不接受 Run ID。
+- 决策：中断后不恢复旧调用栈；RunRuntime 补齐悬空 Tool Result、追加 interruption marker 并 flush，下一输入创建新 Run，由模型根据真实历史和当前请求判断是否继续。
 
-### ADR-012：结构化读搜、Patch 修改与 Shell 执行
+### ADR-012：结构化探索、Patch 与持续 Process
 
-- 决策：保留 `read_file`、`list_dir`、`glob_files` 和 `grep_code` 作为高频结构化探索工具，即使 Shell 可以执行等价的 `cat/ls/find/grep`；专用工具负责 Project Root、稳定 schema、输出预算、Evidence 和跨平台语义。
-- 决策：新增 `apply_patch` 作为已有文件修改主路径，支持版本化 create/update/delete Patch Document、上下文冲突检测、全 Patch 预检和逐文件原子写；`write_file` 收窄为显式 create/replace，默认拒绝隐式覆盖。
-- 决策：`execute_command` 继续负责构建、测试、Git、格式化、生成器、项目脚本和专用工具无法表达的 fallback；Shell 不得绕过 PathGuard、CommandGuard、Approval、Audit 或输出预算。
-- 原因：完全 Shell 化会降低权限判定、结构化结果、可移植性和上下文预算质量；为每个命令建立专用工具又会扩大模型选择面和维护成本，混合方案在 Coding Agent 能力、安全和复杂度之间更平衡。
+- 决策：保留结构化读搜工具作为稳定能力，同时支持 `execute_command/write_stdin`、`apply_patch` 和 `view_image`；不恢复 `write_file` 或 `revert_run` 主链。
 
-### ADR-013：只读 SubAgent MVP
+### ADR-013：Tool-based 只读 Multi-Agent
 
-- 决策：第一版 Multi-Agent 不实现独立 Team Engine，只在 `/plan` 的 ExecutionGraph 上增加 SubAgent placement；主 Agent 是唯一 Run、Workspace 副作用和最终回答所有者。
-- 决策：同一 Run 最多两个 SubAgent、委派深度固定为 1，并使用相同 Provider/model；只有互不依赖且显式 `read_only` 的 ready Task 可委派，SubAgent 只获得 read/list/glob/grep 工具。
-- 决策：SubAgent 通过结构化 `SubAgentTask/Result` 接收最小 ContextView 并返回 Summary/Evidence/Usage；不写正式 Conversation，不写文件、不执行命令、不互相通信、不创建子 Agent。初期仅 `/team` 为本次 Run 设置 `prefer_subagents`，不自动 Router。
-- 原因：只读并行已经能覆盖大型代码库调查的主要收益，同时规避共享工作区写冲突、Worktree、Patch 合并、Reviewer Agent、递归委派和多模型路由的实现风险；后续增强必须以真实收益为依据。
+- 决策：后续最多两个只读 SubAgent，由主 Reactor 通过工具创建、通信、等待和关闭；不建立 Team Engine、共享 DAG 或可写并发 Workspace。
 
-### ADR-014：默认 ReAct 与显式 Plan-and-Execute
+### ADR-014：Plan-guided ReAct 与 Plan Mode
 
-- 决策：普通任务执行 `ContextBuilder → Reactor(Think→Analyze→Act→Observe)`，不创建 ExecutionGraph 或 synthetic root Task；只有 `/plan <task>` 执行 `ContextBuilder → PlanController → Planner.Decide(initial) → GraphBuilder → Scheduler → ReActTaskExecutor → Reactor → Planner.Decide(review)`。
-- 决策：模式由用户显式选择；删除 StrategySelector、LLM Router、Direct→Planned 动态升级、Task 级强制 Verifier/Reflection、独立 Final Synthesizer 和复杂 completed-task graph merge。
-- 决策：Reactor 不知道 `/plan`，也不返回 `needs_plan`；卡住只表达 `stalled/blocked/failed`，是否 Replan 由外层 Plan Controller 决定。
-- 决策：初始 Plan 与执行后 Replan 由同一个 `Planner.Decide` 实现，通过 `PlanningInitial/PlanningReview` 区分语义阶段；代码可保留 `plan()`/`replan()` 包装方法，但不维护两个 Planner、两套模型或两套解析器。
-- 决策：统一 Planning 协议只使用 `PLAN + task list` 或 `COMPLETE + final answer`；后续 review 返回新的 `PLAN` 即表示 Replan，不再增加单独的 `REPLAN` 输出关键字。
-- 决策：Planner 不输出完整 Domain JSON，只输出自然语言任务列表；程序生成 Task ID、顺序依赖、状态和串行 DAG。非列表非空 Plan 正文降级为单 Task，空或非法响应只允许一次格式纠正。
-- 决策：纯问候和简单查询默认不经过 Planner；显式 `/plan` 内仍要求 Planner 生成最小任务列表。
-- 决策：一张 DAG 正常执行完毕，或某个 Task `failed/stalled/blocked` 时生成有界 ExecutionReport 并进入 review；用户取消、父 Context 取消和不可恢复基础设施错误直接结束，不额外调用 Planner。
-- 决策：第一版 Scheduler 严格串行；资源推断、Task 并行和 Multi-Agent 均延后。Reactor 内资源安全的 Tool 级并行以及 PathGuard、CommandGuard、Approval、Audit、Evidence、取消和总 Run Budget 保持不变。
-- 决策：MVP 提供 `/plan <task>` 选择规划路径但不提供 PlanReviewer；进入规划路径后的 Plan 和 Replan 自动继续执行。
-- 原因：LLM 输出具有随机性，让所有任务强制规划会增加延迟和故障面；独立 Reactor 保证简单任务可用和代码边界清晰，显式规划作为外层编排器继续使用宽容文本协议处理复杂任务。
+- 决策：Amadeus 只有一个 Reactor 执行内核；复杂 execute Run 可按需调用 `update_plan` 维护 PlanState，Runtime 不把计划编译为 DAG 或调度 Task。
+- 决策：`/plan <task>` 创建只规划不实施的 `plan` Run，只暴露非修改型能力，最终输出 Proposed Plan；`update_plan` 不在 Plan Mode 暴露。
+- 决策：删除 Planner、Replanner、ExecutionGraph、Scheduler、ReActTaskExecutor 与旧 `planned` 主链；历史 `react/planned` RunMode 迁移为 `execute`。
+- 原因：模型驱动 Tool-Use 循环比强制结构化 DAG 更能容忍随机输出，计划作为软状态即可提供透明度和长任务方向感。
 
-### ADR-015：采用 PaiCLI 风格的最小 Approval 机制
+### ADR-015：最小 Approval 机制
 
-- 决策：MVP 不实现 Sandbox/ExecutionBoundary 抽象、Policy DSL、Docker/microVM 或项目外路径授权，只复用现有 PathGuard、CommandGuard、ApprovalHandler 和 Audit。
-- 决策：只读工具在路径预检通过后直接执行；`write_file`、`apply_patch`、所有 `execute_command`、network side effect、MCP Tool/Resource gateway 固定请求审批。
-- 决策：Project Root 外路径、软链接逃逸和 CommandGuard blocked 操作直接拒绝，不允许通过 Approval Grant 绕过。
-- 决策：配置文件删除 `approval.enabled/default`，TTY 固定询问，非 TTY 对需要审批的调用固定拒绝。
-- 决策：MVP 只提供 `once/session/deny`；删除未持久化的 `always`。普通内置工具的 Session Grant 按工具名缓存；MCP 使用 server/tool/resource 感知 Grant Key，每次调用仍先经过 PathGuard/CommandGuard/MCP target preflight。
-- 决策：Skill 不建立独立审批系统；读取 Skill 文档属于只读，Skill 引发的副作用复用对应工具审批。
-- 原因：现有 M3 已完成审批主链，固定分类最容易交付和测试；先接受写入与命令审批带来的交互频率，真实使用后再决定是否增加安全命令白名单或更细策略。
+- 决策：权限与审批分离。所有文件系统 Tool 先使用 EffectivePermissionProfile；结构化 Tool 在权限范围内直接执行，Unsandboxed `execute_command` 在 Permission Check 通过后仍做 Operation Approval。ReadOnlyRoots 写入、DeniedRoots 与 ExecPolicy `forbidden` 直接拒绝；MVP 网络默认允许，不建立 NetworkPermissionStore，也不在配置文件暴露复杂 Approval Policy DSL。
+- 决策：`request_permissions` 使用 `Allow for this run / Allow for this session / Deny`，分别写入 RunPermissionStore、SessionPermissionStore 或不写入；Unsandboxed Command 使用 `Allow once / Allow for session / Deny`，只有 Session 选项写入 SessionApprovalStore。三类 Store 都只存在于活动 Runtime 内存，不写入 SQLite 或配置文件。
 
-### ADR-016：Tool Observation Skill 与 Lazy MCP Gateway
+### ADR-016：Schema 前的有限 Tool Argument Repair
 
-- 决策：用户级 Skill/MCP 统一位于 `$AMADEUS_HOME/skills` 和 `$AMADEUS_HOME/mcp.yaml`；项目级位于 `<project>/.amadeus/skills` 和 `<project>/.amadeus/mcp.yaml`，项目同名定义整体覆盖用户定义。
-- 决策：Skill 采用 Progressive Disclosure，只把 metadata index 放入 BaseEnvelope；`read_skill(name, path?)` 直接以普通 Tool Observation 返回正文或有界 Reference，不再使用 SkillContextBuffer、下一轮 developer 注入或其他隐藏状态。
-- 决策：MVP 不实现 Skill enable/disable Store，发现且校验成功的 Skill 默认可用；真实需求出现后再增加状态持久化。
-- 决策：MCP 优先封装 `github.com/mark3labs/mcp-go`，第三方类型限制在基础设施 Adapter；不复制 WeKnora 的 Tenant/GORM/Handler/Redis/跨实例 Approval 层，也不从零维护完整 JSON-RPC 协议栈。
-- 决策：MCP 默认使用 lazy gateway，不在启动时连接全部 server 或动态展开全部远端 Tool；ServerState 缓存连接代次、能力与 Tool Catalog，重连后失效。`mcp_list_tools`、`mcp_call` 首先稳定，Resources 随后通过独立 gateway 接入。
-- 决策：MCP Session Grant 按 server + remote tool/resource 细化，Approval 显示脱敏目标、transport 和配置来源；项目 stdio 配置不能被泛化提示隐藏。
-- 决策：项目 Skill script 可通过现有 `execute_command` 在 Project Root 内运行；用户 Skill script 在独立 Sandbox 完成前禁止执行。Prompts、sampling、mentions、完整 notifications、图片和用户级 Skill Sandbox 后置。
-- 原因：WeKnora 的 Go Client/Manager、Result Normalizer、Progressive Disclosure 和 Sandbox 边界值得借鉴，但其 Web、多租户和数据库复杂度不适合本地 CLI；PaiCLI Go 的配置覆盖和 Resources 可作为产品行为参考，其自研 MCP JSON-RPC、启动即连接和 Skill 正文拼入 user message 不作为 Amadeus 目标实现。
+- 决策：仅修复尾随逗号、缺失容器闭合符和非法 escape 等有界语法问题；repair 后仍必须通过 Schema 和完整安全链。
 
-### ADR-017：持久化收敛为六表与 Run 摘要
+### ADR-017：Skill 与 MCP 渐进加载
 
-- 决策：业务持久化只保留 `projects`、`conversation_sessions`、`runs`、`conversation_messages` 和 `conversation_summaries`，另加 `schema_migrations`；`Turn` 不作为核心 Domain 或独立表。
-- 决策：一个真实用户输入对应一个 Run；completed Run 形成完整 user/assistant Message Pair，interrupted/failed Run 的孤立 user Message 只通过 Previous Work 表达未完成状态。
-- 决策：删除 `run_checkpoints` 与 `checkpoint_instructions`。中断或失败时在 `runs.interrupted_context_json` 一次保存有界摘要，下一 Run 重新检查工作区、当前 `AGENTS.md` 和工具状态后规划。
-- 决策：Run 状态只保留 `running/completed/interrupted/failed`；`needs_plan`、`partial`、`awaiting_user` 和精确恢复状态不落库。
-- 决策：MCP、Skill、TUI、Approval Grant、Plan、Task、Iteration、Tool Call、Evidence 和 Audit 不创建 SQLite 表，分别使用文件、内存运行态或独立 JSONL。
-- 原因：新 Engine 已放弃精确 Run 恢复和复杂图持久化；保留消息、会话、Run 结果和摘要足以支持 `resume`、中断后 Replan、审计和长上下文，同时降低 Store、迁移和测试复杂度。
+- 决策：MCP 与 Skill 由 Session 级 ExtensionRuntime 组合，跨同一 Session 的多个 Run 复用，但不持久化连接、Catalog 或正文；SessionRuntime 只管理其生命周期引用。
+- 决策：每次模型采样冻结 MCPBinding、SkillCatalogSnapshot 和显式 SkillInjection；MCP 继续使用 lazy gateway、generation/revision Catalog Cache 与目标感知 Approval，不默认动态展开全部远端 Tool。
+- 决策：Skill 使用 metadata/正文分离和双路径调用：用户显式 `$skill-name` 形成 contextual user SkillInjection，模型自主发现继续通过 `read_skill` 返回 ToolOutcome；不实现隐式命令检测、自动安装或专用脚本执行器。
+- 决策：用户级 MCP 与 Skill 资源统一位于 `AMADEUS_HOME`；MCP 业务错误进入 failed ToolOutcome，只有不可恢复的 transport/protocol/runtime 故障终止 Run。
 
-### ADR-018：语义化 Reactor 与 Typed EventHub
+### ADR-018：SessionRuntime、RunContext 与 RunRuntime
 
-- 决策：`internal/agent/react` 按 `Think/Analyze/Act/Observe` 组织，`ReactLoop` 只负责编排、预算和终止；保留现有 ToolExecutor、Approval、Snapshot、Evidence、Replay 和资源感知并行能力。
-- 决策：Reactor 输入输出改为独立 `react.Request/Result`，不依赖 `engine.TaskRunInput/TaskOutcome`、ExecutionGraph、TaskStatus 或 Scheduler；默认路径直接调用 Reactor，Plan 仅通过 `ReActTaskExecutor` 适配。
-- 决策：一次 Think→Analyze→Act→Observe 使用包内 `react.Iteration` 表达，不再使用跨层 `Step` Domain；Iteration 不持久化，也不精确恢复。
-- 决策：Think 消费 SDK Adapter 聚合后的 Domain stream；Analyze/Act 边界统一规范化 Tool Arguments。只允许尾随逗号、缺失容器闭合符和非法 escape 等有界语法 repair，禁止闭合截断字符串、空参数转对象、类型强转或字段猜测；修复后仍必须通过 Schema 和完整工具安全链。
-- 决策：参数规范化失败不执行工具，而是生成结构化 Tool Error Observation 供下一轮有限纠正；normalized arguments 必须同时用于资源判断、Approval、Audit、Execute 和 Replay，避免执行参数与回灌参数不一致。
-- 决策：现有强类型 `Event` 保留，在其上增加 metadata record、Fanout 和订阅能力；关联字段统一为 SessionID、RunID、可选 TaskID/Iteration 和 LLMCallID，目标协议不使用 TurnID。
-- 决策：不复制 WeKnora 的知识库 Engine、`Data interface{}` payload、全异步 EventBus、乐观 Final Answer 回撤和无资源冲突的工具并行；只吸收语义分层、空响应重试、有限 Provider 降级、长 Run context 管理和多消费者事件思想。
-- 原因：目录与控制流应能一目了然；ReAct 是可独立复用的执行内核，Plan-and-Execute 是外层编排能力，事件扩展不能牺牲类型安全、顺序和工具副作用前的失败边界。
+- 决策：旧 `ConversationSession/ConversationSessionID` 统一为 `Session/SessionID`；`StartedRun` 收敛为只读 RunContext。
+- 决策：SessionRuntime 对应 Codex 长生命周期 Session，独占 SessionHistory、Rollout append/flush、当前 Active Run 及 SessionPermissionStore/SessionApprovalStore/ExtensionRuntime 生命周期；SessionCoordinator 只负责数据事务，Runtime 不实现这些组件的领域策略。
+- 决策：RunContext 对应 Codex `TurnContext`，只保存稳定 Run 事实；RunRuntime 对应 `RunningTask`，RunState 对应 `TurnState`；RequestContext 对应每次采样的 `StepContext`。
+- 决策：当前只有一个 Reactor 主链，不提前复制 `RegularTask/ReviewTask/CompactTask` 多 TaskKind 抽象，也不把 PlanItem 称为 Task。
 
-### ADR-019：BaseContextBuilder 与 Per-Think ContextWindowManager
+### ADR-019：Canonical Rollout 与 ContextManager
 
-- 决策：现有一次性 ContextBuilder 收敛为 Run 级 BaseContextBuilder；它只组装稳定 Prompt、Instructions、completed Conversation Message Pairs/Summary、Previous Work、Goal、Tools、Skills 和 Source provenance，不管理 Reactor 每轮消息或写入 SQLite。
-- 决策：Reactor 每次 Think 前必须调用 ContextWindowManager，以当前 BaseEnvelope、Runtime Messages、Provider Usage 和 ContextProfile 生成本轮唯一 RequestView；禁止维护一套“Memory 已压缩”但实际 LLM Request 未同步的第二上下文状态源。
-- 决策：`agent.max_input_tokens/max_output_tokens` 继续表示整个 Run 的累计预算；单次请求必须使用独立 ContextProfile，明确区分 context window、output reserve、safety margin 和 compression threshold。未知模型窗口不得回退为 Run Budget。
-- 决策：Token 计算使用 Provider Usage 作为上一轮基线，Estimator 只负责首轮和新增消息 delta；压缩或替换后重新完整估算。Provider-specific tokenizer 可插拔，但任何估算都必须保留安全余量。
-- 决策：Context 装配采用 Pinned/High/Medium/Low 动态优先级和可借用预算；完整 user/assistant Message Pair 与 assistant Tool Calls/Tool Results 是不可拆分的 MessageGroup，Current Goal、有效 Instructions 和当前未完成工具协议不得静默裁剪。
-- 决策：Tool Result 在进入 RequestView 前经过 token-aware Context Projection，保留结构化 metadata、错误、exit code、partial/truncated 状态和 head/tail；投影不修改原始 Evidence 或审计事实。
-- 决策：Conversation Summary 使用覆盖范围和 hash 可验证的有界 Rollup，不无限追加旧摘要；首版使用确定性结构化摘要，可选 LLM summarizer 失败时必须安全回退，不启用 LongTermMemory、Retriever、RAG 或用户偏好推断。
-- 原因：Coding Agent 的上下文会在一个 Run 内因 Tool Calls/Results 快速增长，只在 Run 开始时压缩历史无法保证后续请求不溢出；分离基础资产和每轮 Request 投影既保留可追踪性，又避免 PaiCLI 双状态源和 WeKnora 简单滑动删除造成的事实丢失。
+- 决策：SQLite Rollout 是持久化唯一事实源，SessionHistory 是 SessionRuntime 独占的进程内镜像；ContextManager 每次 Think 先生成 RequestContext 再生成唯一 RequestView，持久压缩通过 `context_compaction` Replacement History 表达。
 
-### ADR-020：Codex 风格 Rich Inline 与 Tool Activity Presenter
+### ADR-020：Codex 风格 Rich Inline
 
-- 决策：默认 TUI 继续使用 Bubble Tea main-screen Rich Inline、`tea.Println` 和终端原生 scrollback，不恢复 alternate screen、mouse tracking 或永久 transcript viewport。
-- 决策：`docs/Amadeus_logo.webp` 只作为品牌源文件；首版使用构建期生成并静态嵌入的宽版/紧凑终端字符 Logo，不把 Kitty/iTerm/Sixel 图片协议设为默认依赖。
-- 决策：ToolExecutor 在 normalized arguments 之后生成有界脱敏的 Action Summary；Typed Event 传递 SideEffect/ActionSummary，TUI Activity Presenter 不接收或解析任意 raw Tool arguments。
-- 决策：读工具按 Reactor Iteration 聚合为 `Explored`，写入、命令、网络和 MCP 使用 `Ran/Called` 语义；started 状态只在底部活动区动态展示，completed/iteration terminal 后才持久提交 scrollback。
-- 决策：ContextWindowManager 发布 RequestView 使用量，状态栏显示 Provider context window 与最近 ContextView 百分比；Run token budget 与模型 context window 不混用。
-- 决策：`Ctrl+T` 使用 bounded in-memory Transcript Detail Viewer 临时查看完整输出，不尝试原位修改已提交的终端历史，也不把详情写入 Conversation SQLite。
-- 原因：目标交互需要接近 Codex 的可读运行轨迹，同时保留当前中文输入、运行中排队、原生滚轮和文本选择优势；把活动语义放在 Presenter、把安全摘要放在 ToolExecutor，可以避免 UI 解析业务参数或形成第二事实源。
+- 决策：默认 TUI 使用 Bubble Tea 主屏 Rich Inline、终端原生 scrollback 与文本选择；`--plain` 作为非 TTY 和调试降级，不支持 `AMADEUS_PLAIN`。
 
-### ADR-021：项目原生验证取代核心 LSP
+### ADR-021：无内置 LSP 核心依赖
 
-- 决策：Amadeus 是面向多语言、多构建系统的通用 Coding Agent，核心配置、Runtime、Tool Pipeline 和 PostWrite Hook 不包含 Language Server Client，也不要求用户安装或配置 `gopls`、`pyright`、`rust-analyzer` 等语言服务器。
-- 决策：代码修改后的主要验证链是项目原生 formatter、build、lint、typecheck 和 test。Reactor 优先读取有效 `AGENTS.md`、项目脚本、Makefile、CI 和语言配置来选择命令，再使用常见生态约定兜底；验证输出作为普通 Tool Observation/Evidence 进入后续 Iteration。
-- 决策：删除现有 `lsp.*` 配置、生产接线和 `internal/lsp` 历史实现，不为保留已完成代码而维持无产品承诺的死模块。删除动作进入开发进度单独跟踪，并与当前设计文档的目标状态区分。
-- 决策：未来如需毫秒级局部诊断、符号查询、引用或重命名能力，只能以可选 MCP Server、插件或 Extension Tool 重新接入；它不得成为启动必需项，也不得把核心 Agent 限定为某一种语言。
-- 原因：Codex 类 Coding Agent 可通过文件探索、Shell 和项目原生验证完成可靠闭环；当前 Amadeus LSP 只提供异步写后单文件诊断，却引入文档版本同步、进程生命周期、Server 自动发现、多语言管理和额外配置面，收益不足以抵消复杂度。
+- 决策：通过项目原生命令验证多语言项目；LSP 只允许未来以 MCP、插件或 Extension Tool 回归。
 
-### ADR-022：独立 Web Search Provider 与 Web Fetch
+### ADR-022：Web Search/Fetch Provider 分层
 
-- 决策：M7 已将历史 `internal/web` 拆分为 `internal/websearch` 与 `internal/webfetch`；Search Provider API 与任意网页抓取共享底层安全组件，但不共享业务 Fetcher、结果模型或配置生命周期。
-- 决策：首版 Search Provider 固定为 DuckDuckGo、Tavily、SearXNG 和 Brave。DuckDuckGo 采用 HTML-first/API-fallback 且只定位为 best-effort；Tavily、Brave 使用独立凭证；SearXNG 使用显式 Base URL。
-- 决策：Search Service 统一处理 Provider 选择、15 秒默认总超时、一次有界瞬时错误重试、URL 归一化/去重、结果裁剪、耗时与错误分类；Provider Adapter 不承载 Agent、Approval、TUI 或 Context 逻辑。
-- 决策：未启用或配置不完整时不注册 `web_search`；提供独立 `amadeus web check` 诊断配置、认证、网络和响应格式。LLM Provider 与 Search Provider 完全分离，搜索密钥不复用模型 API key。
-- 决策：首版保持 `web_search → web_fetch`，Codex 风格多 query、domain/recency、稳定 ref_id、open/find/click 和 OpenAI Hosted Web Search 后置；Hosted 能力必须显式声明，不能根据 Provider 名称或 Dialect 推断。
-- 原因：当前 DuckDuckGo Instant Answer API 不是通用 SERP，网络不可达时固定等待且缺少可诊断配置；WeKnora 的 Provider Registry/Service 值得复用，但其多租户、数据库、Redis 和 RAG 不适合本地 Coding Agent；Codex 的托管搜索语义值得借鉴，但 OpenAI `alpha/search` 不能作为跨 Provider 基线。
+- 决策：Web Search 与 Fetch 独立；Search Provider 首版支持 DuckDuckGo、Tavily、SearXNG 和 Brave，未配置时不暴露工具。
 
-### ADR-023：结构化探索与持续命令工具链
+### ADR-023：SQLite Canonical Rollout
 
-- 决策：在没有成熟跨平台 Sandbox 前保留 `read_file/list_dir/glob_files/grep_code`，不采用只删除读工具的半成品 Shell-first；四个 Tool 共享 Workspace 读取、Ignore、枚举、文本检测和输出预算基础设施。
-- 决策：`execute_command` 升级为 yield-aware 持续 Process Tool，并新增 `write_stdin`；使用 `process_id` 区分 Conversation Session，支持 PTY、轮询、增量输出、head+tail、取消和生命周期清理。
-- 决策：`apply_patch` 继续使用跨 Provider JSON Function 外壳，内部对齐 Codex Patch 的 Add/Update/Delete/Move 语义和保守唯一匹配；补齐后隐藏并删除 `write_file`，不新增独立 move/delete/mkdir/Git/test/format Tool。
-- 决策：打通 LLM 多模态 Content Part 后增加 capability-gated `view_image`；图片内容不能以 base64 JSON 文本冒充模型图片输入。
-- 决策：Registry 与模型可见 Tool Set 分离，使用 Direct/Conditional/Deferred/Hidden Exposure；`tool_search`、`request_user_input` 和完整 Sandbox 只有真实需求出现后再立项。
-- 原因：Codex 的小工具面建立在复杂 Sandbox/Process/Permission 基础上；Amadeus 当前安全模型下，结构化只读工具更容易交付且避免频繁审批，而持续命令、Patch 可靠性、图片和条件暴露是更高价值的复杂度投入。
-- 复审条件：只有 Sandbox、Permission Profile、Process 生命周期、Evidence 投影和跨平台行为全部达到 14.1 的门槛，并有真实任务基准证明收益后，才允许提出 Shell-first ADR；在此之前不得以“Shell 也能 cat/find/grep”为理由删除结构化探索工具。
+- 决策：最终核心表为 `schema_migrations/projects/sessions/runs/rollout_items`；Tool Call、Tool Result、Plan Update、中断 Marker 和 Replacement History 统一作为 RolloutItem。
+- 决策：首个稳定版本前允许一次事务化的破坏性开发迁移，直接删除旧 `conversation_*` 与旧 `runs` 后建立 canonical schema，不维护未发布历史数据的转换兼容层；稳定版发布后的 schema 变更必须保留已发布用户数据。
 
-## 27. 已确认与待确认的实现决策
+### ADR-024：ToolOutcome 取代通用 Evidence
 
-已确认：
+- 决策：ToolOutcome 是工具执行的唯一结果事实，统一投影为 Model、UI、Audit、Hook 与 `tool_result` RolloutItem；普通失败、拒绝、超时和中断返回结构化 Outcome，只有内部不可恢复故障终止 Run。
+- 决策：删除 Reactor 通用 Evidence、`Verified`、`CriterionIDs`、`EvidenceBefore/EvidenceAfter` 和 `NoEvidenceThreshold`；工具成功不等于用户任务已验证。
+- 决策：当前不引入独立 Verification Domain、数据库表或强制 Verifier；测试、构建、Patch 和命令事实直接由 ToolOutcome 的 status、exit code、changes、output 与 metadata 表达。
 
-1. 普通任务默认直接调用独立 Reactor；只有 `/plan <task>` 调用 Plan Controller、统一 Planner、GraphBuilder、Scheduler 和 review 循环，不进行自动模式选择。
-2. 默认 ReAct 与 Plan Task 共用一个 Reactor、模型和 ToolExecutor；Plan 子 Task 通过 Execution Metadata/Event Filter 抑制正文，不复制第二套 Runner。
-3. 初始 Plan 与执行后 Replan 是同一个 `Planner.Decide` 在 `initial/review` 阶段的语义调用；两阶段使用同一模型、实现和解析器。
-4. Planning 协议只保留 `PLAN/COMPLETE`；程序从自然语言任务列表生成串行 DAG，review 返回新的 `PLAN` 即生成下一张图继续执行，模型不输出复杂 Task Domain JSON。
-5. MVP 提供 `/plan <task>` 选择规划路径；Plan 和 Replan 仍直接执行，不引入人工审核分支。
-6. MVP 不增加强制的 Task 级额外质量模型或独立 Final Synthesizer；Evidence、测试结果、Diff 和诊断作为 Reactor 最终回答或 Planner review 的上下文。
-7. 不实现自动长期记忆；用户级、项目级和目录级 `AGENTS.md` 是跨 Run 指令的唯一基线来源。
-8. `agent.mode` 不属于持久配置；ReAct 是默认执行内核，Plan-and-Execute 是用户显式选择的外层编排，Team 是未来 placement 能力。
-9. Conversation Session、Terminal Session、Message 与 Run 使用独立语义；`Turn` 不作为核心实体，用户级 resume 不接受 Run ID，Task/Iteration 不持久化。
-10. SQLite 固定在 `$AMADEUS_HOME/data/amadeus.db`；目标项目只提供 Project 身份与工作区，不承载运行数据库。
-11. 中断后始终创建新 Run 并重新规划；只记录 `context_from_run_id`，不做精确 Run 恢复或继续意图分类。
-12. 内置工具采用结构化探索、`apply_patch` 修改和受约束持续命令执行；`write_file` 已从生产注册、实现、Prompt 与 Provider/E2E 删除。
-13. Multi-Agent 第一版只有主 Agent 与最多两个只读 SubAgent；只通过 `/team` 请求并行调查，所有修改、命令、验证和最终回答仍由主 Agent 完成。
-14. Approval 采用固定分类：只读直接执行，写入/命令/网络/MCP 请求审批，路径越界和 blocked 命令直接拒绝。
-15. 配置文件不提供 Approval 开关或默认决策；MVP 只支持 once/session/deny，非 TTY 对需要审批的调用固定拒绝。
-16. 默认交互 TUI 采用 Bubble Tea Rich Inline 主屏模式；Bubbles textarea 负责 Unicode 输入和 resize，终端负责原生 scrollback 与文本选择，Amadeus event/approval bridge 负责 Agent 集成。
-17. 默认 TUI 使用静态终端 Logo、安全 Tool Activity Presenter、Iteration 聚合、Working 动画与 ContextWindowUpdated；`Ctrl+T` 只打开 bounded 临时 Viewer，不原位修改 scrollback。
-18. `amadeus --plain`、非 TTY 和 `TERM=dumb` 使用逐行模式；不再支持 `AMADEUS_PLAIN`。文件树 Pane、多 Pane Diff 和持久化输入历史仍后置。
-19. 用户级 Skill/MCP 只使用 `$AMADEUS_HOME/skills` 与 `$AMADEUS_HOME/mcp.yaml`；项目级 `.amadeus` 同名定义整体覆盖用户定义。
-20. Skill 采用 metadata index + `read_skill` Tool Observation，不再使用一次性 developer 注入；项目 Skill script 复用受审批的 `execute_command`，用户 Skill script 等待 Sandbox。MCP 封装 mcp-go 并采用 lazy gateway、目标感知 Approval 与 Catalog Cache，Tools 稳定后补 Resources。
-21. SQLite 最终收敛为 `schema_migrations`、`projects`、`conversation_sessions`、`runs`、`conversation_messages`、`conversation_summaries` 六表；不单独持久化 Turn、Checkpoint、Plan、Task、Iteration、Tool Call 或 Approval Grant。
-22. 中断 Run 只保存有界 `interrupted_context_json`；下一 Run 只加载完整 completed Message Pairs，重新检查现场并注入 Previous Work，不恢复旧调用栈、工具位置或旧指令快照。
-23. Context 分为 Run 级 BaseEnvelope 与每次 Think 的 RequestView；BaseContextBuilder 只组装稳定来源，ContextWindowManager 负责每轮 token 计算、动态投影和压缩。
-24. Run 累计 token budget 与单次 Provider context window 使用不同类型和配置来源；不得用 `agent.max_input_tokens` 推导模型窗口。
-25. Conversation Summary 使用有界 Rollup；Tool Call/Result 与完整 user/assistant Message Pair 按原子组压缩，Tool Result 在进入 LLM 前使用 token-aware projection。
-26. Reactor 内部一次 Think→Analyze→Act→Observe 统一称为 Iteration；`Step` 不再作为跨层 Domain，Run Budget 使用 `max_iterations/iterations_used` 表达循环限制。
-27. Provider 请求使用 LLMCallID；事件协议不再使用 TurnID 混合表达用户对话和模型请求。
-28. Amadeus 不以内置 LSP 作为核心能力；代码修改通过项目原生 formatter/build/lint/typecheck/test 验证，LSP 只允许未来以可选 MCP、插件或 Extension Tool 回归。
-29. Web Search 与 Web Fetch 独立分层；首版搜索 Provider 为 DuckDuckGo、Tavily、SearXNG 和 Brave，未正确启用时不向模型暴露工具，当前 Instant Answer 单实现不属于目标基线。
-30. 在无成熟 Sandbox 时保留四个结构化探索 Tool；核心工具链增加持续 `execute_command/write_stdin` 与 capability-gated `view_image`，Patch 补齐后删除 `write_file`，Registry 使用条件/延迟暴露控制模型可见工具。
+### ADR-025：多 Root FileSystemPolicy、Sandbox 与 RunDiffTracker
 
-后续增强开始前仍需固定：
+- 决策：删除目标安全模型中的 PrimaryRoot。`Project.RootPath` 只持久化初始 CWD 对应的项目身份；RunContext.CWD 负责相对路径，WorkspaceRoots 是 `[CWD] + --add-dir` 的派生项目集合。结构化工具接受绝对路径及相对 CWD 的 `../`，由 PathResolver 与 FileSystemPolicy 判定 read/write/deny。
+- 决策：WorkspaceRoots 不单独建表；首版 CWD 固定等于 Project.RootPath，单次 Command cwd 可变化。`--add-dir` 是附加 Workspace Root，不是泛化 Permission Grant；Run/Session 授权只形成 Additional Writable Roots。Amadeus 只有本地主机执行环境，不引入 Codex EnvironmentID。
+- 决策：默认参考 Codex workspace-write，`ReadHost=true`，WorkspaceRoots、Unix `/tmp + $TMPDIR` 或 Windows `os.TempDir()` 形成的 TemporaryRoots、Run/Session Additional Writable Roots 可写；Workspace `.git/.amadeus` 由 ReadOnlyRoots 限制，敏感 Root 由 DeniedRoots 拒绝。MVP 不实现 AdditionalReadableRoots、DeniedGlobs、NetworkPermissionStore 或 Run 专属临时根；`--add-dir` 首版不持久化、不改变 Session 项目身份。
+- 决策：Shell 文件权限只有在 Sandboxed 模式下由 SandboxRunner 在 OS 层强制，ExecPolicy 只输出 `skip / needs_approval / forbidden`；Linux 使用 Bubblewrap，其他平台明确 Unsandboxed，不把 requested permissions 或 token 扫描视为强 Sandbox。
+- 决策：RunDiffTracker 是 Run 级内存投影，以 canonical absolute path 聚合 `apply_patch` 提供的 exact delta，并发布 `RunDiffUpdated`；原始 ToolOutcome 仍是 canonical rollout 事实，不增加独立事实表。
+- 决策：无法可靠归因的 Shell 或外部进程修改使 Tracker invalidated，并发布 `RunDiffInvalidated`；可选 Git/worktree diff 只能重建工作区视图，不能伪造 Tool 归因。
+- 决策：目标架构不实现文件 Snapshot/Revert；撤销依赖 Git 或新的正常 `apply_patch`。Codex ThreadRollback 只回退上下文，Amadeus 当前也不实现；未来只能通过 append-only marker 改变 Context Projection，不修改磁盘或删除 canonical rollout。
 
-1. 不同 Provider/model 的 ContextProfile 与 context window 来源。
-2. 当前全项目 FileService snapshot 何时升级为增量或 Side-Git 实现。
-3. Web 工具是否继续全部审批，还是为显式只读搜索增加受限白名单。
-4. Multi-Agent 只读 placement 的真实收益达到什么阈值后再进入生产主链。
+### ADR-026：Run 级 Shared/Exclusive Tool Gate
+
+- 决策：Tool 并发只采用 Run 级 Shared/Exclusive admission gate，并由 `max_parallel_tools` 提供有界并发；不建立文件、目录、参数或 Process 级读写锁。
+- 原因：Shared–Shared、Shared–Exclusive、Exclusive–Shared 和 Exclusive–Exclusive 四种组合已经完整表达首版所需的读读、读写和写写关系；资源级锁不会补充新的安全边界，反而会引入第二套调度状态、锁顺序、死锁、饥饿和取消恢复问题。
+- 决策：Shared 调用可并行；Exclusive 调用等待此前 Shared 完成并阻止后续调用进入。实现可以使用有序 Shared 批次与 Exclusive 屏障，不强制使用无法响应 `context.Context` 取消等待的裸 `sync.RWMutex`。
+- 决策：首版文件读取/搜索、图片、Web 和明确只读的 MCP Tool 可 Shared；Patch、Shell、Process 输入、未知动态 Tool 和所有无法证明安全的调用默认 Exclusive。
+- 决策：PreparedToolCall 中的 canonical target 仅服务于 Path Policy、Approval、Grant、Audit、RunDiff 和 UI，不参与锁计算。Tool Spec 删除 TargetStrategy；资源级并行写只有在真实测量证明收益后才重新立项。
+
+### ADR-027：PreparedToolCall 统一准备、授权与执行事实
+
+- 决策：删除 `TargetStrategy`。文件路径、URL、query、Skill 名称、MCP target 和 Process ID 不再塞入一个泛化 `ArgumentPaths` 模型；UI 展示继续由领域 Presentation Adapter 负责，权限目标由 Tool 自身 Prepare 阶段产生。
+- 决策：严格 JSON/repair/Schema 校验后必须调用 `Tool.Prepare`，生成 Run-local immutable `PreparedToolCall`。它持有规范化 arguments、canonical filesystem targets 和可选领域 Prepared Payload；字段不导出，只通过 clone/read-only accessor 暴露。
+- 决策：PathResolver/FileSystemPolicy、Patch Document 解析、`execute_command.cwd` 解析和其他领域 target binding 只在 Prepare 阶段产生一次权威结果。ToolAuthorizer、Approval、Grant、Audit、Execute 和 RunDiffTracker 必须消费同一 PreparedToolCall，禁止返回 raw arguments 建立第二套目标事实。
+- 决策：PreparedToolCall 不进入 canonical rollout；rollout 仍保存规范化 Tool Call 与 ToolOutcome。它是单次调用的运行时缓存和安全边界，Run 取消或调用完成后释放。
+- 决策：不可变 PreparedToolCall 不等于忽略 TOCTOU。写入和执行工具在首次副作用前必须对 prepared canonical target 做轻量 staleness/identity revalidation；复检只能确认原目标仍有效，不能静默重解析或扩大权限。失效时返回 `target_stale/path_denied` 并要求新调用。
+- 决策：Shared/Exclusive ToolExecutionGate 仍只依据 Tool Spec 的 Concurrency 排队；Prepare、Authorization 和 Execute 均位于该调用取得 admission 之后，不引入 target 级锁或第二调度器。
+
+### ADR-028：Permission、Approval 与 ExecPolicy 分层
+
+- 决策：PermissionProfile 表达 ReadHost、WorkspaceRoots、TemporaryRoots、ReadOnlyRoots 和 DeniedRoots；RunPermissionStore 与 SessionPermissionStore 分别保存当前 Run、当前活动 Session 的 Additional Writable Roots。EffectivePermissionProfile 只由 Base + Run + Session 三层构成，不存在 one-shot、AdditionalReadableRoots、DeniedGlobs 或 NetworkPermissionStore。
+- 决策：所有文件系统 Tool 都先做 Permission Check。普通写 Root 未授权时返回 `permission_required` 并提示模型调用 `request_permissions`；Permission UI 使用 `Allow for this run / Allow for this session / Deny`，授权后模型重新发起原 Tool，Runtime 不暗中恢复旧 PreparedToolCall。
+- 决策：SessionApprovalStore 只缓存 Unsandboxed `execute_command` 的 `ApprovedForSession`。CommandApprovalKey 精确包含 Shell、最小规范化 Command、canonical CWD、TTY 与 IsolationMode；requested permissions、EffectivePermissionProfile、timeout、yield 和输出预算不进入 Key，因为 Permission Check 每次独立重算且不能被 Approval 缓存跳过。
+- 决策：ExecPolicy 只输出 `skip / needs_approval / forbidden`。它维护极小的灾难性命令拒绝集并读取当前 Isolation/Approval Facts，不解析 command 内部 Root、不模拟文件系统 Sandbox，也不维护复杂风险等级树。
+- 决策：带显式 Root 参数的结构化 Tool 在 Prepare 中相对 RunContext.CWD 解析为 canonical absolute targets；`execute_command` 只规范化显式 cwd 和模型声明的 `requested_permissions.writable_roots`，不解析 command 字符串。Sandboxed 由 Bubblewrap 强制 EffectivePermissionProfile；Unsandboxed 在 Permission Check 后对完整命令询问 `Allow once / Allow for session / Deny`。
+- 决策：RunPermissionStore 随 Run 终态销毁；SessionPermissionStore 与 SessionApprovalStore 随 SessionRuntime 关闭销毁。三者均不写入 SQLite、不随 `--resume` 跨进程恢复；ReadOnlyRoots、DeniedRoots、ExecPolicy forbidden 和未声明远端能力不能被普通授权绕过。
+- 决策：删除 Shell path-token 扫描、复杂 CommandGuard 风险树、`AllowCommandFilesystemPaths`、按 Tool 名称宽泛授权和 Run-local 通用 GrantCache；只保留轻量参数检查与极小灾难性命令拒绝集，并保留可审计的 Permission Grant 与 Approval Decision 事件。
+
+### ADR-029：Prompt 资产内置化与 Codex 选择性借鉴
+
+- 决策：删除顶层 `prompts/` 公共 package，内置模板迁移到 `internal/prompt/builtin/templates`；`internal/prompt` 统一负责 Repository、Assembler、来源 Hash、变量和 Contract，Reactor 不直接依赖模板资产。
+- 决策：Prompt 按 Agent Base、Execute/Plan Mode、动态 Runtime/Permission、Instructions、Extensions、Tool Guidance、Compaction 分层装配；稳定规则和动态事实不得混写，同一规则必须有唯一所有者。
+- 决策：选择性借鉴 Codex 的任务执行、进度沟通、计划边界、工具纪律、权限上下文和交付格式，并全部改写为 Amadeus Runtime 语义；不整套复制模型专属、Goal、Realtime、Memories、Review 或 Multi-Agent Prompt。
+- 决策：Prompt 正确性由变量/层级 Contract、Tool Exposure、Permission 一致性、Responses/Chat Provider mock E2E 和 Coding Agent smoke 验收，不以长文本逐字 Snapshot 作为主要完成证据。
+
+## 27. 当前统一决策
+
+1. `Session` 是可恢复对话；`SessionRuntime` 拥有活动会话历史、当前 Run 和 Session 级 Permission/Approval/Extension 生命周期；`Run` 是一次真实用户输入；`RolloutItem` 是有序持久化事实。
+2. SessionRuntime 通过 SessionCoordinator 创建 Run、首条 user item 和只读 RunContext，再启动 RunRuntime/RunState；任何模型调用或工具副作用前必须已有持久化 RunID。
+3. RunContext 只保存稳定事实，RequestContext 表示一次采样的动态环境，RequestView 是模型请求投影；SessionHistory 不进入 RunContext 或 RunRuntime 所有权。
+4. Reactor 是唯一 Agent 执行内核；一次 Think→Analyze→Act→Observe 称为 Iteration，Observe 直接处理 ToolOutcome 而不复制 Evidence 数据树。
+5. 默认 `execute` Run 可按需调用 `update_plan`；PlanState 是软状态，不驱动 Scheduler。
+6. `/plan <task>` 创建只规划不实施的 `plan` Run，最终计划进入 Session Rollout，后续 execute Run 负责实施。
+7. 不保留 Planner、Replanner、DAG、Plan Task、TaskStatus、Scheduler、Verifier/Reflector 强制门或 Final Synthesizer 主链。
+8. 删除 `ChatSession`；Reactor、Plan Mode、Compactor 和可选纯聊天入口统一复用无状态 `LLMRuntime`，Provider 请求使用 LLMCallID。
+9. ToolOutcome 取代通用 Evidence；当前不单独建立 Verification，模型依据结构化 Tool Call/Result 与 Workspace 判断完成状态。
+10. Session、Run 与 canonical RolloutItem 持久化；SessionRuntime、RunRuntime、RunState、RequestContext、Iteration、RequestView 和 Tool Future 不建表，PlanState 通过 `plan_update` item 投影恢复。
+11. 中断时补齐工具协议并追加 marker；下一输入创建新 Run，不精确恢复旧执行位置，也不使用 Previous Work 摘要强制继续。
+12. Multi-Agent 后续采用最多两个只读 SubAgent 的 Tool-based Delegation，不依赖 Plan DAG。
+13. Project.RootPath 只负责持久化项目身份；CWD、WorkspaceRoots、TemporaryRoots、PathResolver、FileSystemPolicy、ReadOnlyRoots、DeniedRoots、Run/Session Permission Store、ExecPolicy、SandboxRunner、SessionApprovalStore、Audit、RunDiffTracker 和 ToolExecutionGate 共同形成 Tool 执行硬边界。ToolExecutionGate 只提供 Run 级 Shared/Exclusive admission，不建立资源级锁。
+14. 默认 Rich Inline TUI、ContextManager、AGENTS.md、Skill、MCP、Web 和收敛工具链继续复用同一 SessionRuntime/RunRuntime/Reactor 主链。
+15. SessionRuntime 持有 Session 级 ExtensionRuntime 生命周期；每次采样通过 RequestContext 冻结 MCPBinding、SkillCatalogSnapshot 和显式 SkillInjection，MCP/Skill 不建立第二套历史、审批或执行器。
+16. `ReadHost=true` 使结构化读取在未命中 DeniedRoots 时直接执行；写入 Effective Writable Roots 内直接执行，范围外返回 `permission_required` 并由 `request_permissions` 写入 Run/Session Permission Store。Sandboxed Shell 由 Bubblewrap 强制范围；Unsandboxed Shell 在相同 Permission Check 后使用 SessionApprovalStore 对完整命令做操作审批。文件变化由 RunDiffTracker 投影，目标架构不实现 Run 文件 Snapshot/Revert。
+17. Amadeus 当前不实现 ThreadRollback；未来若增加，只能追加 rollback marker 并改变 Context Projection，不修改磁盘、不删除 canonical rollout。
+18. Prompt 模板属于 `internal/prompt/builtin`，由 Bootstrap 按 Agent Base、RunMode、动态 Runtime/Permission、Instructions、Extensions、Tool Exposure 和 Compaction 职责分层装配；Reactor 不读取模板资产。Codex Prompt 只选择性改写为已实现的 Amadeus Runtime 语义，不预埋模型专属或尚未实现的能力。

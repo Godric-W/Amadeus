@@ -29,7 +29,7 @@ func TestReadSkillReturnsProjectBodyAndBoundedReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := reader.Execute(context.Background(), json.RawMessage(`{"name":"review"}`))
+	body, err := executePreparedTool(t, context.Background(), reader, json.RawMessage(`{"name":"review"}`))
 	if err != nil || body.ToolName != "read_skill" || !strings.Contains(body.Text, "PROJECT BODY") || strings.Contains(body.Text, "USER BODY") || body.Metadata["source"] != "project" {
 		t.Fatalf("unexpected Skill body: %#v err=%v", body, err)
 	}
@@ -37,11 +37,11 @@ func TestReadSkillReturnsProjectBodyAndBoundedReference(t *testing.T) {
 	if !ok || len(references) != 1 || references[0] != "guide.md" {
 		t.Fatalf("unexpected Skill references: %#v", body.Metadata)
 	}
-	reference, err := reader.Execute(context.Background(), json.RawMessage(`{"name":"review","path":"guide.md","line":2,"limit":1}`))
+	reference, err := executePreparedTool(t, context.Background(), reader, json.RawMessage(`{"name":"review","path":"guide.md","line":2,"limit":1}`))
 	if err != nil || reference.Text != "L2:two\n" || !reference.Partial || reference.Metadata["next_line"] != 3 {
 		t.Fatalf("unexpected Skill reference: %#v err=%v", reference, err)
 	}
-	if _, err := reader.Execute(context.Background(), json.RawMessage(`{"name":"review","path":"../SKILL.md"}`)); err == nil {
+	if _, err := executePreparedTool(t, context.Background(), reader, json.RawMessage(`{"name":"review","path":"../SKILL.md"}`)); err == nil {
 		t.Fatal("Skill reference path escape was accepted")
 	}
 }

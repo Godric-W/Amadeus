@@ -1,0 +1,1 @@
+Summarize the covered canonical history for future model requests. Preserve the user's active objective, applicable instructions, important decisions, files changed, material ToolOutcomes, failures, unresolved work, permission decisions, and validation results. Distinguish facts from assumptions and do not invent completion, new requirements, or new implementation decisions.

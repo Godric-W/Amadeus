@@ -28,8 +28,8 @@ func TestAllEventPayloadsExposeMetadataFields(t *testing.T) {
 		LLMCallStarted{}, LLMCallCompleted{}, TextDelta{}, ReasoningDelta{}, UsageUpdated{}, ContextWindowUpdated{},
 		IterationStarted{}, IterationCompleted{}, ToolCallStarted{}, ToolCallCompleted{},
 		ApprovalRequested{}, ApprovalResolved{}, StatusChanged{}, DiagnosticPublished{},
-		ErrorOccurred{}, RunStarted{}, RunStatusChanged{}, PlanUpdated{},
-		VerificationCompleted{}, ReflectionCompleted{}, RunCompleted{},
+		ErrorOccurred{}, RunStarted{}, RunStatusChanged{}, PlanUpdated{}, RunDiffUpdated{}, RunDiffInvalidated{},
+		RunCompleted{},
 	}
 	for _, runtimeEvent := range events {
 		if _, err := WithEventMetadata(runtimeEvent, Metadata{RunID: "run-1"}); err != nil {

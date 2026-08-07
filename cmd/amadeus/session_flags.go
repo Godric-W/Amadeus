@@ -34,7 +34,7 @@ func (flags *sessionFlags) bind(command *cobra.Command) {
 	command.Flags().Lookup(flagResume).NoOptDefVal = resumeSelectorFlag
 }
 
-func (flags *sessionFlags) resolve(command *cobra.Command) (sessionStartMode, sessiondomain.ConversationSessionID, error) {
+func (flags *sessionFlags) resolve(command *cobra.Command) (sessionStartMode, sessiondomain.SessionID, error) {
 	if command == nil {
 		return "", "", errors.New("session flags command is nil")
 	}
@@ -52,5 +52,5 @@ func (flags *sessionFlags) resolve(command *cobra.Command) (sessionStartMode, se
 	if value == resumeSelectorFlag || value == "" {
 		return sessionStartSelect, "", nil
 	}
-	return sessionStartResume, sessiondomain.ConversationSessionID(value), nil
+	return sessionStartResume, sessiondomain.SessionID(value), nil
 }

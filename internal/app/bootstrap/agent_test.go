@@ -11,18 +11,16 @@ import (
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
-	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/react"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
-	"github.com/Godric-W/Amadeus/internal/snapshot"
+	promptbuiltin "github.com/Godric-W/Amadeus/internal/prompt/builtin"
 	"github.com/Godric-W/Amadeus/internal/tool"
 	"github.com/Godric-W/Amadeus/internal/webfetch"
 	"github.com/Godric-W/Amadeus/internal/websearch"
-	"github.com/Godric-W/Amadeus/prompts"
 )
 
 type bootstrapClient struct {
@@ -60,42 +58,24 @@ func TestNewAgentBuildsDefaultComposition(t *testing.T) {
 	if agent.Project.Path() != root.Path() {
 		t.Fatalf("unexpected project root: got %q, want %q", agent.Project.Path(), root.Path())
 	}
-	if agent.Client == nil || agent.Events != sink || agent.Audit == nil || agent.ContextBuilder == nil || agent.PromptRepository == nil || agent.PromptAssembler == nil || agent.Registry == nil || agent.Validator == nil || agent.Grants == nil || agent.Authorizer == nil || agent.ToolExecutor == nil || agent.Iterator == nil || agent.Progress == nil || agent.Runner == nil || agent.Planner == nil || agent.Replanner == nil || agent.Snapshots == nil || agent.PlanController == nil {
+	if agent.Client == nil || agent.Events != sink || agent.Audit == nil || agent.ContextManager == nil || agent.PromptRepository == nil || agent.PromptAssembler == nil || agent.Registry == nil || agent.Validator == nil || agent.Authorizer == nil || agent.ToolExecutor == nil || agent.Iterator == nil || agent.Progress == nil || agent.Runner == nil {
 		t.Fatalf("Agent composition is incomplete: %#v", agent)
 	}
-	if agent.AgentPrompt.Content != prompts.AgentSystem() {
+	if !strings.Contains(agent.AgentPrompt.Content, "You are Amadeus") {
 		t.Fatalf("Agent composition contains an unexpected Agent Prompt bundle: %#v", agent.AgentPrompt)
 	}
-	if len(agent.AgentPrompt.Sources) != len(prompts.AgentLayers()) || len(agent.AgentPrompt.SHA256) != 64 {
+	if len(agent.AgentPrompt.Sources) != len(promptbuiltin.AgentSystemLayers()) || len(agent.AgentPrompt.SHA256) != 64 {
 		t.Fatalf("Agent Prompt metadata is incomplete: agent=%#v", agent.AgentPrompt)
-	}
-	if _, ok := agent.PlanController.(*plan.Controller); !ok {
-		t.Fatalf("Agent plan engine type = %T, want *plan.Controller", agent.PlanController)
 	}
 	if agent.Client.Model().Provider != configured.DefaultProvider || agent.Client.Model().Name != "test-model" {
 		t.Fatalf("unexpected composed client model: %#v", agent.Client.Model())
 	}
-	if agent.Registry.Len() != 9 {
-		t.Fatalf("unexpected Agent registry size: got %d, want 9", agent.Registry.Len())
+	if agent.Registry.Len() != 8 {
+		t.Fatalf("unexpected Agent registry size: got %d, want 8", agent.Registry.Len())
 	}
-	wantTools := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "revert_run", "view_image", "write_stdin"}
+	wantTools := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "view_image", "write_stdin"}
 	if got := toolNames(agent.AvailableTools()); !reflect.DeepEqual(got, wantTools) {
 		t.Fatalf("unexpected available tools: got %v, want %v", got, wantTools)
-	}
-}
-
-func TestNewAgentWithOptionsUsesInjectedSnapshotService(t *testing.T) {
-	root := newBootstrapProjectRoot(t)
-	fake := &bootstrapSnapshotService{}
-	agent, err := NewAgentWithOptions(validBootstrapConfig(), root, event.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink(), AgentOptions{
-		ClientFactory:   successfulBootstrapFactory,
-		SnapshotFactory: func(project.Root) (snapshot.Service, error) { return fake, nil },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if agent.Snapshots != fake {
-		t.Fatalf("Agent did not retain injected snapshot service: %#v", agent.Snapshots)
 	}
 }
 
@@ -111,7 +91,7 @@ func TestNewAgentRegistersOnlyEnabledWebTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "revert_run", "web_fetch", "web_search", "write_stdin"}
+	want := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "web_fetch", "web_search", "write_stdin"}
 	if got := toolNames(agent.AvailableTools()); !reflect.DeepEqual(got, want) {
 		t.Fatalf("configured Web tools = %v, want %v", got, want)
 	}
@@ -146,25 +126,11 @@ func TestNewAgentWithOptionsAttachesPostWriteHook(t *testing.T) {
 	}
 }
 
-type bootstrapSnapshotService struct{}
-
-func (*bootstrapSnapshotService) Begin(context.Context, string) (snapshot.Snapshot, error) {
-	return snapshot.Snapshot{}, nil
-}
-
-func (*bootstrapSnapshotService) Complete(context.Context, string) (snapshot.Snapshot, error) {
-	return snapshot.Snapshot{}, nil
-}
-
-func (*bootstrapSnapshotService) Revert(context.Context, string) (snapshot.RevertResult, error) {
-	return snapshot.RevertResult{}, nil
-}
-
 type bootstrapPostWriteHook struct{ calls int }
 
-func (hook *bootstrapPostWriteHook) After(context.Context, tool.Spec, tool.Call, tool.Result) ([]react.Evidence, error) {
+func (hook *bootstrapPostWriteHook) After(context.Context, tool.Spec, tool.Call, tool.Result) error {
 	hook.calls++
-	return nil, nil
+	return nil
 }
 
 func TestNewAgentUsesOneSelectedProviderClient(t *testing.T) {
@@ -197,7 +163,7 @@ func TestNewAgentUsesOneSelectedProviderClient(t *testing.T) {
 	}
 }
 
-func TestAgentCompositionDeniesToolBeforeSideEffect(t *testing.T) {
+func TestAgentCompositionExecutesStructuredWorkspaceWriteWithoutOperationApproval(t *testing.T) {
 	configured := validBootstrapConfig()
 	root := newBootstrapProjectRoot(t)
 	agent, err := newAgent(configured, root, event.NewMemorySink(), denyBootstrapApproval{}, audit.NewMemorySink(), successfulBootstrapFactory)
@@ -207,11 +173,11 @@ func TestAgentCompositionDeniesToolBeforeSideEffect(t *testing.T) {
 	execution, err := agent.ToolExecutor.Execute(context.Background(), tool.NewCall(
 		"write-denied", "apply_patch", json.RawMessage(`{"patch":"*** Begin Patch\n*** Add File: denied.txt\n+must not exist\n*** End Patch"}`),
 	))
-	if !errors.Is(err, policy.ErrToolDenied) || execution.Evidence.Verified {
-		t.Fatalf("unexpected denied write result: execution=%#v err=%v", execution, err)
+	if err != nil || execution.Status != react.ToolOutcomeSucceeded || execution.Error != nil {
+		t.Fatalf("unexpected structured write result: execution=%#v err=%v", execution, err)
 	}
-	if _, statErr := os.Stat(filepath.Join(root.Path(), "denied.txt")); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("denied write produced a filesystem side effect: %v", statErr)
+	if content, statErr := os.ReadFile(filepath.Join(root.Path(), "denied.txt")); statErr != nil || string(content) != "must not exist\n" {
+		t.Fatalf("structured write did not complete: %q %v", content, statErr)
 	}
 }
 
@@ -239,11 +205,11 @@ func TestAgentCompositionFailsClosedBeforeWriteWhenAuditFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build audited Agent composition: %v", err)
 	}
-	_, err = agent.ToolExecutor.Execute(context.Background(), tool.NewCall(
+	outcome, err := agent.ToolExecutor.Execute(context.Background(), tool.NewCall(
 		"write-audit-failed", "apply_patch", json.RawMessage(`{"patch":"*** Begin Patch\n*** Add File: unaudited.txt\n+must not exist\n*** End Patch"}`),
 	))
-	if !errors.Is(err, expected) {
-		t.Fatalf("unexpected audit write failure: %v", err)
+	if err != nil || outcome.Status != react.ToolOutcomeDenied || outcome.Error == nil || !strings.Contains(outcome.Error.Message, expected.Error()) {
+		t.Fatalf("unexpected audit write failure: outcome=%#v err=%v", outcome, err)
 	}
 	if _, statErr := os.Stat(filepath.Join(root.Path(), "unaudited.txt")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("audit failure produced a filesystem side effect: %v", statErr)

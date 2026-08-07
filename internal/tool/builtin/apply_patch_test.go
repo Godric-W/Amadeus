@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/project"
+	"github.com/Godric-W/Amadeus/internal/tool"
 	patchtool "github.com/Godric-W/Amadeus/internal/tool/patch"
 )
 
@@ -33,7 +34,7 @@ func TestApplyPatchExecutesDocumentAndReturnsStructuredResult(t *testing.T) {
 		t.Fatalf("encode arguments: %v", err)
 	}
 
-	result, err := candidate.Execute(context.Background(), input)
+	result, err := executePreparedTool(t, context.Background(), candidate, input)
 	if err != nil {
 		t.Fatalf("execute apply_patch: %v", err)
 	}
@@ -66,12 +67,15 @@ func TestApplyPatchPreservesPartialExecutorResult(t *testing.T) {
 	}
 	input := json.RawMessage(`{"patch":"*** Begin Patch v1\n*** Update File: first.txt\n@@\n-old\n+new\n*** Delete File: second.txt\n*** End Patch\n"}`)
 
-	result, err := candidate.Execute(context.Background(), input)
+	result, err := executePreparedTool(t, context.Background(), candidate, input)
 	if !errors.Is(err, expected) {
 		t.Fatalf("unexpected partial error: %v", err)
 	}
 	if !result.Partial || result.Text != "applied 1 of 2 patch operation(s) before failure" || result.Metadata["operation_count"] != 1 || result.Metadata["total_operations"] != 2 {
 		t.Fatalf("partial result was not preserved: %#v", result)
+	}
+	if applier.prepareCalls != 1 || applier.calls != 1 {
+		t.Fatalf("patch was not prepared and executed exactly once: prepare=%d execute=%d", applier.prepareCalls, applier.calls)
 	}
 }
 
@@ -81,13 +85,41 @@ func TestApplyPatchReportsMoveMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create fake apply_patch tool: %v", err)
 	}
-	result, err := candidate.Execute(context.Background(), json.RawMessage(`{"patch":"*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n*** End Patch"}`))
+	result, err := executePreparedTool(t, context.Background(), candidate, json.RawMessage(`{"patch":"*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n*** End Patch"}`))
 	if err != nil {
 		t.Fatalf("execute move patch: %v", err)
 	}
 	operations, ok := result.Metadata["operations"].([]map[string]any)
 	if !ok || len(operations) != 1 || operations[0]["destination"] != "new.txt" || operations[0]["moved"] != true {
 		t.Fatalf("unexpected move metadata: %#v", result.Metadata)
+	}
+}
+
+func TestApplyPatchPrepareRunsOnceAndIncludesMoveTargets(t *testing.T) {
+	rootPath := t.TempDir()
+	writeBuiltinPatchFile(t, rootPath, "old.txt", "old\n")
+	root, err := project.NewRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := NewApplyPatch(root, ApplyPatchOptions{Executor: patchtool.ExecutorOptions{MaxFileBytes: 1 << 20, FileMode: 0o644}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := tool.NewCall("move", "apply_patch", json.RawMessage(`{"patch":"*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n*** End Patch"}`))
+	prepared, err := candidate.Prepare(context.Background(), call)
+	if err != nil {
+		t.Fatalf("prepare move patch: %v", err)
+	}
+	targets := prepared.Targets()
+	if len(targets) != 2 || targets[0].RequestedPath != "old.txt" || targets[1].RequestedPath != "new.txt" || targets[0].CanonicalPath == targets[1].CanonicalPath {
+		t.Fatalf("unexpected prepared move targets: %#v", targets)
+	}
+	if _, err := candidate.Execute(context.Background(), prepared); err != nil {
+		t.Fatalf("execute prepared move patch: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootPath, "old.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("move source still exists: %v", err)
 	}
 }
 
@@ -99,7 +131,7 @@ func TestApplyPatchHonorsPreCancelledContext(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	result, err := candidate.Execute(ctx, json.RawMessage(`{"patch":"*** Begin Patch v1\n*** Add File: file.txt\n+x\n*** End Patch\n"}`))
+	result, err := executePreparedTool(t, ctx, candidate, json.RawMessage(`{"patch":"*** Begin Patch v1\n*** Add File: file.txt\n+x\n*** End Patch\n"}`))
 	if !errors.Is(err, context.Canceled) || applier.calls != 0 || result.CallID != "" || result.ToolName != "" || result.Text != "" || len(result.Parts) != 0 || result.Metadata != nil || result.Partial {
 		t.Fatalf("unexpected cancelled execution: result=%#v calls=%d err=%v", result, applier.calls, err)
 	}
@@ -111,18 +143,24 @@ func TestApplyPatchRejectsInvalidDocumentBeforeExecution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create fake apply_patch tool: %v", err)
 	}
-	if _, err := candidate.Execute(context.Background(), json.RawMessage(`{"patch":"not a patch"}`)); err == nil || applier.calls != 0 {
+	if _, err := executePreparedTool(t, context.Background(), candidate, json.RawMessage(`{"patch":"not a patch"}`)); err == nil || applier.calls != 0 {
 		t.Fatalf("invalid patch reached executor: calls=%d err=%v", applier.calls, err)
 	}
 }
 
 type fakePatchApplier struct {
-	result patchtool.ApplyResult
-	err    error
-	calls  int
+	result       patchtool.ApplyResult
+	err          error
+	prepareCalls int
+	calls        int
 }
 
-func (applier *fakePatchApplier) Apply(context.Context, patchtool.Document) (patchtool.ApplyResult, error) {
+func (applier *fakePatchApplier) Prepare(context.Context, patchtool.Document) (*patchtool.PreparedDocument, error) {
+	applier.prepareCalls++
+	return &patchtool.PreparedDocument{}, nil
+}
+
+func (applier *fakePatchApplier) ApplyPrepared(context.Context, *patchtool.PreparedDocument) (patchtool.ApplyResult, error) {
 	applier.calls++
 	return applier.result, applier.err
 }

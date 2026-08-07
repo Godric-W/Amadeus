@@ -30,7 +30,7 @@ func TestViewImageReturnsRealImagePartAndMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := viewer.Execute(context.Background(), json.RawMessage(`{"path":"image.png"}`))
+	result, err := executePreparedTool(t, context.Background(), viewer, json.RawMessage(`{"path":"image.png"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestViewImageRejectsAnimatedGIFAndEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, input := range []json.RawMessage{json.RawMessage(`{"path":"animated.gif"}`), json.RawMessage(`{"path":"../outside.png"}`)} {
-		if _, err := viewer.Execute(context.Background(), input); err == nil {
+		if _, err := executePreparedTool(t, context.Background(), viewer, input); err == nil {
 			t.Fatalf("expected rejection for %s", input)
 		}
 	}

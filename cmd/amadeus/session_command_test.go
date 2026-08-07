@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -150,9 +152,9 @@ func TestSessionPersistsAcrossRootCommandInstancesAndContinueReplaysHistory(t *t
 	if err != nil || len(sessions) != 1 {
 		t.Fatalf("unexpected durable sessions: %#v err=%v", sessions, err)
 	}
-	messages, err := store.ListCompletedMessages(context.Background(), sessions[0].ID)
-	if err != nil || len(messages) != 4 {
-		t.Fatalf("unexpected durable messages: %#v err=%v", messages, err)
+	items, err := store.ListItems(context.Background(), sessions[0].ID)
+	if err != nil || len(items) != 8 {
+		t.Fatalf("unexpected durable rollout: %#v err=%v", items, err)
 	}
 	if len(secondClient.streamRequests) == 0 {
 		t.Fatal("continued run did not call the provider")
@@ -165,6 +167,85 @@ func TestSessionPersistsAcrossRootCommandInstancesAndContinueReplaysHistory(t *t
 	}
 	if !foundFirst {
 		t.Fatalf("continued request did not replay first user task: %#v", secondClient.streamRequests[0].Messages)
+	}
+}
+
+func TestResumeBuildsRequestFromCanonicalReplacementHistory(t *testing.T) {
+	amadeusHome := t.TempDir()
+	projectDirectory := t.TempDir()
+	writeCodingCommandConfig(t, amadeusHome)
+	store := sessiondomain.NewMemoryStore()
+	startedAt := time.Date(2026, 8, 6, 1, 0, 0, 0, time.UTC)
+	started, err := store.BeginFirstRun(context.Background(), sessiondomain.BeginFirstRunInput{
+		ProjectID: "project-compact", CanonicalPath: projectDirectory, ProjectName: filepath.Base(projectDirectory),
+		SessionID: "session-compact", SessionTitle: "first task", RunID: "run-compact", UserItemID: "item-user",
+		UserContent: "RAW USER HISTORY", Provider: "mock", Model: "mock", APIMode: "responses", Dialect: "openai",
+		Mode: sessiondomain.RunModeExecute, StartedAt: startedAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistantPayload, err := sessiondomain.EncodePayload(sessiondomain.AssistantMessagePayload{Content: "RAW ASSISTANT HISTORY"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishRun(context.Background(), sessiondomain.FinishRunInput{
+		SessionID: started.Session.ID, RunID: started.Run.ID, RunStatus: sessiondomain.RunCompleted,
+		TerminalItems: []sessiondomain.AppendItem{{ID: "item-assistant", RunID: started.Run.ID, Kind: sessiondomain.RolloutAssistantMessage, Payload: assistantPayload, CreatedAt: startedAt.Add(time.Second)}},
+		FinishedAt:    startedAt.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ListItems(context.Background(), started.Session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := sessiondomain.ProjectMessages(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(projection.Messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(encoded)
+	compactionPayload, err := sessiondomain.EncodePayload(sessiondomain.ContextCompactionPayload{
+		Summary: "COMPACTED HISTORY", ReplacementHistory: []sessiondomain.CompactionHistoryItem{{Role: llm.RoleAssistant, Content: "COMPACTED HISTORY"}},
+		CoveredThroughSequence: items[len(items)-1].Sequence, SourceHash: hex.EncodeToString(digest[:]), Provider: "mock", Model: "mock",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendItems(context.Background(), sessiondomain.AppendItemsInput{
+		SessionID: started.Session.ID,
+		Items:     []sessiondomain.AppendItem{{ID: "item-compaction", RunID: started.Run.ID, Kind: sessiondomain.RolloutContextCompaction, Payload: compactionPayload, CreatedAt: startedAt.Add(2 * time.Second)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &finalOnlyCodingClient{content: "resumed"}
+	idSequence := 0
+	runtime := commandRuntime{
+		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
+		terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
+		sessionStoreFactory: func(context.Context, string) (sessiondomain.Store, io.Closer, error) { return store, nil, nil },
+		llmClientFactory:    func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
+		auditSinkFactory:    func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
+		persistentIDFactory: func(kind string) string { idSequence++; return fmt.Sprintf("new-%s-%d", kind, idSequence) },
+		runIDFactory:        func() string { return "run-resumed" },
+		now:                 func() time.Time { return startedAt.Add(3 * time.Second) },
+	}
+	command := newRootCommandWithRuntime(&configFlags{}, runtime)
+	var stdout, stderr bytes.Buffer
+	command.SetIn(strings.NewReader(""))
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+	command.SetArgs([]string{"--resume", string(started.Session.ID), "next task"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("resume compacted Session: %v\nstderr=%s", err, stderr.String())
+	}
+	if len(client.streamRequests) != 1 || !requestContains(client.streamRequests[0], "COMPACTED HISTORY") || requestContains(client.streamRequests[0], "RAW USER HISTORY") || requestContains(client.streamRequests[0], "RAW ASSISTANT HISTORY") {
+		t.Fatalf("Resume did not use canonical Replacement History: %#v", client.streamRequests)
 	}
 }
 
@@ -197,7 +278,7 @@ func (client *interruptThenCompleteClient) Capabilities() llm.Capabilities {
 	return client.delegate.Capabilities()
 }
 
-func TestInterruptedRunCreatesNewRunWithReplanEnvelope(t *testing.T) {
+func TestInterruptedRunCreatesNewRunFromCanonicalHistory(t *testing.T) {
 	amadeusHome := t.TempDir()
 	projectDirectory := t.TempDir()
 	writeCodingCommandConfig(t, amadeusHome)
@@ -245,28 +326,45 @@ func TestInterruptedRunCreatesNewRunWithReplanEnvelope(t *testing.T) {
 	if err != nil || len(sessions) != 1 {
 		t.Fatalf("unexpected sessions after interruption: %#v err=%v", sessions, err)
 	}
-	messages, err := store.ListCompletedMessages(context.Background(), sessions[0].ID)
-	if err != nil || len(messages) != 2 {
-		t.Fatalf("completed continuation message pair missing: %#v err=%v", messages, err)
+	items, err := store.ListItems(context.Background(), sessions[0].ID)
+	if err != nil || len(items) != 6 {
+		t.Fatalf("canonical interrupted continuation missing: %#v err=%v", items, err)
+	}
+	wantKinds := []sessiondomain.RolloutKind{
+		sessiondomain.RolloutUserMessage,
+		sessiondomain.RolloutRunInterrupted,
+		sessiondomain.RolloutUserMessage,
+		sessiondomain.RolloutToolCall,
+		sessiondomain.RolloutToolResult,
+		sessiondomain.RolloutAssistantMessage,
+	}
+	for index, want := range wantKinds {
+		if items[index].Kind != want {
+			t.Fatalf("rollout item %d kind = %q, want %q: %#v", index, items[index].Kind, want, items)
+		}
 	}
 	if len(first.requests) != 1 || len(second.streamRequests) == 0 {
 		t.Fatalf("unexpected provider requests: first=%d second=%d", len(first.requests), len(second.streamRequests))
 	}
-	foundInterrupted := false
+	foundInterruptedHistory := false
+	foundInterruptedMarker := false
 	for _, message := range second.streamRequests[0].Messages {
-		if strings.Contains(message.Content, "amadeus.previous_work.v1") {
-			foundInterrupted = true
+		if message.Role == llm.RoleUser && message.Content == "first task" {
+			foundInterruptedHistory = true
+		}
+		if message.Role == llm.RoleDeveloper && strings.Contains(message.Content, "Previous Run interrupted:") {
+			foundInterruptedMarker = true
 		}
 	}
-	if !foundInterrupted {
-		t.Fatalf("continuation request missing interrupted-work envelope: %#v", second.streamRequests[0].Messages)
+	if !foundInterruptedHistory {
+		t.Fatalf("continuation request missing canonical prior history: %#v", second.streamRequests[0].Messages)
 	}
-	if _, err := store.PendingInterruptedRun(context.Background(), sessions[0].ID); !errors.Is(err, sessiondomain.ErrNotFound) {
-		t.Fatalf("successful continuation left pending interruption: %v", err)
+	if !foundInterruptedMarker {
+		t.Fatalf("continuation request missing canonical interruption marker: %#v", second.streamRequests[0].Messages)
 	}
 }
 
-func TestNewTaskAfterInterruptionKeepsPreviousWorkAsBackground(t *testing.T) {
+func TestNewTaskAfterInterruptionKeepsCanonicalHistory(t *testing.T) {
 	amadeusHome := t.TempDir()
 	projectDirectory := t.TempDir()
 	writeCodingCommandConfig(t, amadeusHome)
@@ -313,14 +411,14 @@ func TestNewTaskAfterInterruptionKeepsPreviousWorkAsBackground(t *testing.T) {
 	if len(messages) == 0 || messages[len(messages)-1].Role != llm.RoleUser || messages[len(messages)-1].Content != "summarize README instead" {
 		t.Fatalf("new objective is not the final current user message: %#v", messages)
 	}
-	foundPreviousWork := false
+	foundPreviousUser := false
 	for _, message := range messages[:len(messages)-1] {
-		if strings.Contains(message.Content, "amadeus.previous_work.v1") && strings.Contains(message.Content, "unfinished old task") {
-			foundPreviousWork = true
+		if message.Role == llm.RoleUser && message.Content == "unfinished old task" {
+			foundPreviousUser = true
 		}
 	}
-	if !foundPreviousWork {
-		t.Fatalf("interrupted work was not retained as bounded background: %#v", messages)
+	if !foundPreviousUser {
+		t.Fatalf("interrupted user history was not replayed: %#v", messages)
 	}
 }
 
@@ -364,7 +462,8 @@ func TestContinueRecoversAbandonedRunningRun(t *testing.T) {
 		t.Fatalf("continue abandoned Run: %v\nstderr=%s", err, stderr.String())
 	}
 	recovered, err := store.GetRun(context.Background(), abandoned.Records.Run.ID)
-	if err != nil || recovered.Status != sessiondomain.RunInterrupted || len(recovered.InterruptedContextJSON) == 0 {
+	items, itemsErr := store.ListItems(context.Background(), abandoned.Records.Session.ID)
+	if err != nil || itemsErr != nil || recovered.Status != sessiondomain.RunInterrupted || len(items) < 2 || items[1].Kind != sessiondomain.RolloutRunInterrupted {
 		t.Fatalf("abandoned Run was not recovered: %#v err=%v", recovered, err)
 	}
 	if !strings.Contains(stdout.String(), "Task completed successfully.") || !strings.Contains(stderr.String(), "result: completed") {
@@ -388,7 +487,7 @@ func TestResumeSelectorEscReturnsToDraftConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := coordinator.FinishRun(context.Background(), started, sessiondomain.RunCompleted, "", "done", nil, nil); err != nil {
+	if _, err := coordinator.FinishRun(context.Background(), started, sessiondomain.RunCompleted, "", "done", nil); err != nil {
 		t.Fatal(err)
 	}
 	runtime := commandRuntime{

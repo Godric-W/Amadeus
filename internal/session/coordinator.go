@@ -19,17 +19,16 @@ type CoordinatorOptions struct {
 }
 
 type RunMetadata struct {
-	Provider      string
-	Model         string
-	APIMode       string
-	Dialect       string
-	ExecutionMode ExecutionMode
+	Provider string
+	Model    string
+	APIMode  string
+	Dialect  string
+	Mode     RunMode
 }
 
 type StartedRun struct {
-	Records       BeginRunResult
-	PriorMessages []Message
-	PreviousRun   *Run
+	Records    BeginRunResult
+	PriorItems []RolloutItem
 }
 
 type Coordinator struct {
@@ -38,7 +37,7 @@ type Coordinator struct {
 	projectName   string
 	idFactory     IDFactory
 	clock         Clock
-	current       ConversationSessionID
+	current       SessionID
 }
 
 func NewCoordinator(store Store, canonicalPath, projectName string, options CoordinatorOptions) (*Coordinator, error) {
@@ -59,51 +58,51 @@ func NewCoordinator(store Store, canonicalPath, projectName string, options Coor
 	return &Coordinator{store: store, canonicalPath: canonicalPath, projectName: projectName, idFactory: options.IDFactory, clock: options.Clock}, nil
 }
 
-func (coordinator *Coordinator) CurrentSessionID() ConversationSessionID {
+func (coordinator *Coordinator) CurrentSessionID() SessionID {
 	if coordinator == nil {
 		return ""
 	}
 	return coordinator.current
 }
 
-func (coordinator *Coordinator) ListSessions(ctx context.Context) ([]ConversationSession, error) {
+func (coordinator *Coordinator) ListSessions(ctx context.Context) ([]Session, error) {
 	project, err := coordinator.store.GetProjectByCanonicalPath(ctx, coordinator.canonicalPath)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return []ConversationSession{}, nil
+			return []Session{}, nil
 		}
 		return nil, err
 	}
 	return coordinator.store.ListSessions(ctx, project.ID)
 }
 
-func (coordinator *Coordinator) Continue(ctx context.Context) (ConversationSession, error) {
+func (coordinator *Coordinator) Continue(ctx context.Context) (Session, error) {
 	project, err := coordinator.store.GetProjectByCanonicalPath(ctx, coordinator.canonicalPath)
 	if err != nil {
-		return ConversationSession{}, err
+		return Session{}, err
 	}
-	conversation, err := coordinator.store.LatestSession(ctx, project.ID)
+	value, err := coordinator.store.LatestSession(ctx, project.ID)
 	if err != nil {
-		return ConversationSession{}, err
+		return Session{}, err
 	}
-	coordinator.current = conversation.ID
-	return conversation, nil
+	coordinator.current = value.ID
+	return value, nil
 }
 
-func (coordinator *Coordinator) Resume(ctx context.Context, id ConversationSessionID) (ConversationSession, error) {
-	conversation, err := coordinator.store.GetSession(ctx, id)
+func (coordinator *Coordinator) Resume(ctx context.Context, id SessionID) (Session, error) {
+	value, err := coordinator.store.GetSession(ctx, id)
 	if err != nil {
-		return ConversationSession{}, err
+		return Session{}, err
 	}
 	project, err := coordinator.store.GetProjectByCanonicalPath(ctx, coordinator.canonicalPath)
 	if err != nil {
-		return ConversationSession{}, err
+		return Session{}, err
 	}
-	if conversation.ProjectID != project.ID {
-		return ConversationSession{}, fmt.Errorf("%w: session %q belongs to another project", ErrConflict, id)
+	if value.ProjectID != project.ID {
+		return Session{}, fmt.Errorf("%w: session %q belongs to another project", ErrConflict, id)
 	}
-	coordinator.current = conversation.ID
-	return conversation, nil
+	coordinator.current = value.ID
+	return value, nil
 }
 
 func (coordinator *Coordinator) BeginRun(ctx context.Context, objective string, metadata RunMetadata) (StartedRun, error) {
@@ -111,15 +110,21 @@ func (coordinator *Coordinator) BeginRun(ctx context.Context, objective string, 
 	if objective == "" {
 		return StartedRun{}, errors.New("session run objective is empty")
 	}
+	if metadata.Mode == "" {
+		metadata.Mode = RunModeExecute
+	}
+	if !metadata.Mode.Valid() {
+		return StartedRun{}, fmt.Errorf("run mode %q is invalid", metadata.Mode)
+	}
 	now := coordinator.clock().UTC()
-	messageID := MessageID(coordinator.nextID("msg"))
+	itemID := RolloutItemID(coordinator.nextID("item"))
 	runID := RunID(coordinator.nextID("run"))
 	if coordinator.current == "" {
 		result, err := coordinator.store.BeginFirstRun(ctx, BeginFirstRunInput{
 			ProjectID: ProjectID(coordinator.nextID("project")), CanonicalPath: coordinator.canonicalPath, ProjectName: coordinator.projectName,
-			SessionID: ConversationSessionID(coordinator.nextID("session")), SessionTitle: sessionTitle(objective),
-			UserMessageID: messageID, RunID: runID, Objective: objective, UserContent: objective,
-			Provider: metadata.Provider, Model: metadata.Model, APIMode: metadata.APIMode, Dialect: metadata.Dialect, ExecutionMode: metadata.ExecutionMode,
+			SessionID: SessionID(coordinator.nextID("session")), SessionTitle: sessionTitle(objective),
+			RunID: runID, UserItemID: itemID, UserContent: objective,
+			Provider: metadata.Provider, Model: metadata.Model, APIMode: metadata.APIMode, Dialect: metadata.Dialect, Mode: metadata.Mode,
 			StartedAt: now,
 		})
 		if err != nil {
@@ -128,54 +133,77 @@ func (coordinator *Coordinator) BeginRun(ctx context.Context, objective string, 
 		coordinator.current = result.Session.ID
 		return StartedRun{Records: result}, nil
 	}
-	prior, err := coordinator.store.ListCompletedMessages(ctx, coordinator.current)
-	if err != nil {
-		return StartedRun{}, err
-	}
 	if err := coordinator.store.RecoverRunningRuns(ctx, coordinator.current, now); err != nil {
 		return StartedRun{}, err
 	}
-	var interrupted *Run
-	contextRun, err := coordinator.store.PendingInterruptedRun(ctx, coordinator.current)
-	if err == nil {
-		interrupted = &contextRun
-	} else if !errors.Is(err, ErrNotFound) {
-		return StartedRun{}, err
-	}
-	input := BeginRunInput{
-		SessionID: coordinator.current, UserMessageID: messageID, RunID: runID,
-		Objective: objective, UserContent: objective, Provider: metadata.Provider, Model: metadata.Model,
-		APIMode: metadata.APIMode, Dialect: metadata.Dialect, ExecutionMode: metadata.ExecutionMode, StartedAt: now,
-	}
-	if interrupted != nil {
-		input.ContextFromRunID = interrupted.ID
-	}
-	result, err := coordinator.store.BeginRun(ctx, input)
+	prior, err := coordinator.store.ListItems(ctx, coordinator.current)
 	if err != nil {
 		return StartedRun{}, err
 	}
-	return StartedRun{Records: result, PriorMessages: prior, PreviousRun: interrupted}, nil
+	result, err := coordinator.store.BeginRun(ctx, BeginRunInput{
+		SessionID: coordinator.current, RunID: runID, UserItemID: itemID, UserContent: objective,
+		Provider: metadata.Provider, Model: metadata.Model, APIMode: metadata.APIMode, Dialect: metadata.Dialect, Mode: metadata.Mode,
+		StartedAt: now,
+	})
+	if err != nil {
+		return StartedRun{}, err
+	}
+	return StartedRun{Records: result, PriorItems: prior}, nil
 }
 
-func (coordinator *Coordinator) FinishRun(ctx context.Context, started StartedRun, status RunStatus, stopReason, assistantContent string, usage, interruptedContext json.RawMessage) (FinishRunResult, error) {
-	messageID := MessageID("")
-	if status == RunCompleted {
-		messageID = MessageID(coordinator.nextID("msg"))
+func (coordinator *Coordinator) AppendItems(ctx context.Context, sessionID SessionID, drafts ...AppendItem) ([]RolloutItem, error) {
+	return coordinator.store.AppendItems(ctx, AppendItemsInput{SessionID: sessionID, Items: drafts})
+}
+
+func (coordinator *Coordinator) FinishRun(ctx context.Context, started StartedRun, status RunStatus, stopReason, assistantContent string, usage json.RawMessage) (FinishRunResult, error) {
+	now := coordinator.clock().UTC()
+	items := make([]AppendItem, 0, 1)
+	assistantContent = strings.TrimSpace(assistantContent)
+	switch status {
+	case RunCompleted:
+		if assistantContent == "" {
+			return FinishRunResult{}, errors.New("completed Run requires assistant content")
+		}
+		payload, err := EncodePayload(AssistantMessagePayload{Content: assistantContent})
+		if err != nil {
+			return FinishRunResult{}, err
+		}
+		items = append(items, AppendItem{ID: RolloutItemID(coordinator.nextID("item")), RunID: started.Records.Run.ID, Kind: RolloutAssistantMessage, Payload: payload, CreatedAt: now})
+	case RunInterrupted, RunFailed:
+		reason := strings.TrimSpace(stopReason)
+		current, err := coordinator.store.ListItems(ctx, started.Records.Session.ID)
+		if err != nil {
+			return FinishRunResult{}, err
+		}
+		pending, err := PendingToolCalls(current, started.Records.Run.ID)
+		if err != nil {
+			return FinishRunResult{}, err
+		}
+		activeCalls := make([]string, 0, len(pending))
+		for _, call := range pending {
+			draft, draftErr := InterruptedToolResultDraft(RolloutItemID(coordinator.nextID("item")), started.Records.Run.ID, call, now, reason, "run_terminated")
+			if draftErr != nil {
+				return FinishRunResult{}, draftErr
+			}
+			items = append(items, draft)
+			activeCalls = append(activeCalls, call.ID)
+		}
+		payload, err := EncodePayload(RunMarkerPayload{Reason: reason, Guidance: "Re-plan from the current workspace state.", ActiveCalls: activeCalls})
+		if err != nil {
+			return FinishRunResult{}, err
+		}
+		kind := RolloutRunInterrupted
+		if status == RunFailed {
+			kind = RolloutRunFailed
+		}
+		items = append(items, AppendItem{ID: RolloutItemID(coordinator.nextID("item")), RunID: started.Records.Run.ID, Kind: kind, Payload: payload, CreatedAt: now})
+	default:
+		return FinishRunResult{}, errors.New("FinishRun requires terminal status")
 	}
 	return coordinator.store.FinishRun(ctx, FinishRunInput{
-		SessionID: started.Records.Session.ID, RunID: started.Records.Run.ID,
-		RunStatus: status, StopReason: strings.TrimSpace(stopReason),
-		AssistantMessageID: messageID, AssistantContent: strings.TrimSpace(assistantContent), UsageJSON: usage, InterruptedContext: interruptedContext,
-		FinishedAt: coordinator.clock().UTC(),
+		SessionID: started.Records.Session.ID, RunID: started.Records.Run.ID, RunStatus: status,
+		StopReason: strings.TrimSpace(stopReason), UsageJSON: usage, TerminalItems: items, FinishedAt: now,
 	})
-}
-
-func (coordinator *Coordinator) LatestSummary(ctx context.Context, sessionID ConversationSessionID) (ConversationSummary, error) {
-	return coordinator.store.LatestSummary(ctx, sessionID)
-}
-
-func (coordinator *Coordinator) AppendSummary(ctx context.Context, summary ConversationSummary) (ConversationSummary, error) {
-	return coordinator.store.AppendSummary(ctx, summary)
 }
 
 func (coordinator *Coordinator) nextID(kind string) string {

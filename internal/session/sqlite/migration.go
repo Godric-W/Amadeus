@@ -235,6 +235,70 @@ var schemaMigrations = []migration{{
 	statements: []string{
 		`ALTER TABLE runs ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'react' CHECK (execution_mode IN ('react', 'planned'))`,
 	},
+}, {
+	version: 5,
+	name:    "canonical_rollout_schema",
+	statements: []string{
+		`DROP TABLE conversation_summaries`,
+		`DROP TABLE conversation_messages`,
+		`DROP TABLE runs`,
+		`DROP TABLE conversation_sessions`,
+		`CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('active', 'archived')),
+            next_run_sequence INTEGER NOT NULL CHECK (next_run_sequence >= 1),
+            next_item_sequence INTEGER NOT NULL CHECK (next_item_sequence >= 1),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_active_at TEXT NOT NULL,
+            CHECK (length(trim(id)) > 0),
+            CHECK (length(trim(title)) > 0)
+        )`,
+		`CREATE INDEX sessions_project_active_idx
+            ON sessions(project_id, status, last_active_at DESC, id)`,
+		`CREATE TABLE runs (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            sequence INTEGER NOT NULL CHECK (sequence >= 1),
+            status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'interrupted', 'failed')),
+            stop_reason TEXT,
+            provider TEXT,
+            model TEXT,
+            api_mode TEXT,
+            dialect TEXT,
+            run_mode TEXT NOT NULL CHECK (run_mode IN ('execute', 'plan')),
+            usage_json TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            UNIQUE (session_id, sequence),
+            CHECK (length(trim(id)) > 0),
+            CHECK ((status = 'running' AND finished_at IS NULL) OR (status <> 'running' AND finished_at IS NOT NULL)),
+            CHECK (status IN ('running', 'completed') OR length(trim(stop_reason)) > 0),
+            CHECK (usage_json IS NULL OR json_valid(usage_json))
+        )`,
+		`CREATE INDEX runs_session_status_finished_idx
+            ON runs(session_id, status, finished_at DESC, id)`,
+		`CREATE TABLE rollout_items (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            run_id TEXT REFERENCES runs(id) ON DELETE CASCADE,
+            sequence INTEGER NOT NULL CHECK (sequence >= 1),
+            kind TEXT NOT NULL CHECK (kind IN (
+                'user_message', 'assistant_message', 'tool_call', 'tool_result', 'plan_update',
+                'context_snapshot', 'run_interrupted', 'run_failed', 'context_compaction'
+            )),
+            payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+            created_at TEXT NOT NULL,
+            UNIQUE (session_id, sequence),
+            CHECK (length(trim(id)) > 0)
+        )`,
+		`CREATE INDEX rollout_items_session_sequence_idx
+            ON rollout_items(session_id, sequence)`,
+		`CREATE INDEX rollout_items_run_sequence_idx
+            ON rollout_items(run_id, sequence)`,
+	},
 }}
 
 func Migrate(ctx context.Context, database *Database) error {

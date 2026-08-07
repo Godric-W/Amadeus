@@ -26,6 +26,7 @@ type ViewImageOptions struct {
 	MaxBytes     int64
 	MaxDimension int
 	MaxPixels    int64
+	PathGuard    *project.PathGuard
 }
 
 type ViewImage struct {
@@ -35,6 +36,11 @@ type ViewImage struct {
 
 type viewImageArguments struct {
 	Path string `json:"path"`
+}
+
+type preparedViewImage struct {
+	arguments viewImageArguments
+	path      string
 }
 
 func NewViewImage(root project.Root, options ViewImageOptions) (*ViewImage, error) {
@@ -50,7 +56,10 @@ func NewViewImage(root project.Root, options ViewImageOptions) (*ViewImage, erro
 	if options.MaxPixels <= 0 {
 		options.MaxPixels = 64_000_000
 	}
-	reader, err := workspace.NewReader(root)
+	reader, err := workspace.NewReaderWithGuard(root, options.PathGuard)
+	if options.PathGuard == nil {
+		reader, err = workspace.NewReader(root)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -59,19 +68,28 @@ func NewViewImage(root project.Root, options ViewImageOptions) (*ViewImage, erro
 
 func (viewImage *ViewImage) Spec() tool.Spec { return viewImageSpec() }
 
-func (viewImage *ViewImage) Execute(ctx context.Context, input json.RawMessage) (tool.Result, error) {
+func (viewImage *ViewImage) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
 	var arguments viewImageArguments
-	if err := decodeArguments(input, &arguments); err != nil {
-		return tool.Result{}, err
+	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+		return tool.PreparedCall{}, err
 	}
 	if strings.TrimSpace(arguments.Path) == "" {
-		return tool.Result{}, errors.New("view_image path is empty")
+		return tool.PreparedCall{}, errors.New("view_image path is empty")
 	}
-	path, err := viewImage.reader.ResolveExisting(arguments.Path, project.PathFile)
+	resolved, err := viewImage.reader.ResolveExistingTarget(arguments.Path, project.PathFile)
+	if err != nil {
+		return tool.PreparedCall{}, err
+	}
+	return tool.NewPreparedCall(call, tool.PreparedOptions{Targets: []tool.PreparedTarget{preparedFilesystemTarget(resolved)}, Payload: preparedViewImage{arguments: arguments, path: resolved.Canonical}})
+}
+
+func (viewImage *ViewImage) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
+	payload, err := preparedPayload[preparedViewImage](prepared, "view_image")
 	if err != nil {
 		return tool.Result{}, err
 	}
-	file, err := os.Open(path)
+	arguments := payload.arguments
+	file, err := os.Open(payload.path)
 	if err != nil {
 		return tool.Result{}, fmt.Errorf("open image %q: %w", arguments.Path, err)
 	}
@@ -140,8 +158,7 @@ func viewImageSpec() tool.Spec {
 	return tool.Spec{
 		Name: "view_image", Description: "Read a bounded PNG, JPEG, WebP, or static GIF from the project and return it as a real image content part.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1}},"required":["path"],"additionalProperties":false}`),
-		SideEffect:  tool.SideEffectRead, ParallelSafe: true, Idempotent: true,
-		ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeArguments, ArgumentPaths: []string{"path"}},
+		SideEffect:  tool.SideEffectRead, Concurrency: tool.ToolConcurrencyShared, Idempotent: true,
 	}
 }
 

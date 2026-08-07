@@ -24,7 +24,6 @@ type InlineRenderer struct {
 	mutex        sync.Mutex
 	openText     bool
 	phase        string
-	currentTask  string
 	toolCalls    int
 	inputTokens  int64
 	outputTokens int64
@@ -66,20 +65,20 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent event.
 		return renderer.finishText()
 	case event.PlanUpdated:
 		renderer.phase = "planning"
-		if typed.Cycle > 1 {
+		if typed.Revision > 1 {
 			renderer.phase = "replanning"
 		}
 		return renderer.planBlock(typed)
+	case event.RunDiffUpdated:
+		return renderer.statusLine("diff updated: %d file(s)", len(typed.Changes))
+	case event.RunDiffInvalidated:
+		return renderer.statusLine("diff attribution unavailable: %s", typed.Reason)
 	case event.RunStarted:
 		renderer.phase = "starting"
-		renderer.currentTask = typed.TaskID
-		return renderer.statusLine("run started: %s (task=%s)", typed.RunID, typed.TaskID)
+		return renderer.statusLine("run started: %s", typed.RunID)
 	case event.RunStatusChanged:
 		if typed.Entity == "run" {
 			renderer.phase = inlinePhase(typed.To)
-		} else if typed.Entity == "task" {
-			renderer.currentTask = typed.EntityID
-			renderer.phase = "executing"
 		}
 		return renderer.statusLine("%s %s: %s -> %s", typed.Entity, typed.EntityID, typed.From, typed.To)
 	case event.ToolCallStarted:
@@ -110,13 +109,6 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent event.
 			total = typed.Usage.InputTokens + typed.Usage.OutputTokens
 		}
 		return renderer.statusLine("usage: input=%d output=%d total=%d", typed.Usage.InputTokens, typed.Usage.OutputTokens, total)
-	case event.VerificationCompleted:
-		if typed.Passed {
-			return renderer.statusLine("verification passed: %s", typed.TaskID)
-		}
-		return renderer.statusLine("verification failed: %s: %s", typed.TaskID, strings.Join(typed.EvidenceGaps, "; "))
-	case event.ReflectionCompleted:
-		return renderer.statusLine("reflection: %s (task=%s, scope=%s)", typed.Verdict, typed.TaskID, typed.Scope)
 	case event.RunCompleted:
 		renderer.phase = "idle"
 		return renderer.statusLine("run %s: %s", typed.Status, typed.Reason)
@@ -136,11 +128,11 @@ func (renderer *InlineRenderer) planBlock(plan event.PlanUpdated) error {
 	if err := renderer.finishText(); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(renderer.status, "plan %d:\n", plan.Cycle); err != nil {
+	if _, err := fmt.Fprintf(renderer.status, "plan %d:\n", plan.Revision); err != nil {
 		return fmt.Errorf("write inline plan heading: %w", err)
 	}
-	for _, task := range plan.Tasks {
-		if _, err := fmt.Fprintf(renderer.status, "  %s [%s]: %s\n", sanitizeInlineEventText(task.ID), sanitizeInlineEventText(task.Status), sanitizeInlineEventText(task.Objective)); err != nil {
+	for index, item := range plan.Items {
+		if _, err := fmt.Fprintf(renderer.status, "  plan-%d [%s]: %s\n", index+1, sanitizeInlineEventText(item.Status), sanitizeInlineEventText(item.Step)); err != nil {
 			return fmt.Errorf("write inline plan task: %w", err)
 		}
 	}
@@ -169,7 +161,7 @@ func (renderer *InlineRenderer) statusLine(format string, args ...any) error {
 }
 
 func (renderer *InlineRenderer) writeStatusBar() error {
-	if _, err := fmt.Fprintf(renderer.status, "status: phase=%s task=%s tools=%d usage=%d/%d\n", sanitizeInlineEventText(renderer.phase), sanitizeInlineEventText(renderer.currentTask), renderer.toolCalls, renderer.inputTokens, renderer.outputTokens); err != nil {
+	if _, err := fmt.Fprintf(renderer.status, "status: phase=%s tools=%d usage=%d/%d\n", sanitizeInlineEventText(renderer.phase), renderer.toolCalls, renderer.inputTokens, renderer.outputTokens); err != nil {
 		return fmt.Errorf("write inline status bar: %w", err)
 	}
 	return nil

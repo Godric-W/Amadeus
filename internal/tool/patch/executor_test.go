@@ -88,7 +88,7 @@ func TestExecutorDeletesBinaryRegularFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delete binary file: %v", err)
 	}
-	if len(result.Applied) != 1 || !result.Applied[0].Deleted {
+	if len(result.Applied) != 1 || !result.Applied[0].Deleted || !filepath.IsAbs(result.Applied[0].Path) {
 		t.Fatalf("unexpected delete result: %#v", result)
 	}
 	if _, err := os.Stat(filepath.Join(rootPath, "binary.bin")); !errors.Is(err, os.ErrNotExist) {
@@ -117,7 +117,7 @@ func TestExecutorMovesFileWithoutAndWithUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply move patch: %v", err)
 	}
-	if result.Partial || len(result.Applied) != 2 || !result.Applied[0].Moved || result.Applied[0].Destination != "moved/plain.txt" || !result.Applied[1].Moved || result.Applied[1].Destination != "moved/edit.txt" {
+	if result.Partial || len(result.Applied) != 2 || !result.Applied[0].Moved || result.Applied[0].Destination != filepath.Join(rootPath, "moved", "plain.txt") || !result.Applied[1].Moved || result.Applied[1].Destination != filepath.Join(rootPath, "moved", "edit.txt") {
 		t.Fatalf("unexpected move result: %#v", result)
 	}
 	assertFileContent(t, rootPath, "moved/plain.txt", "plain\n")
@@ -213,13 +213,37 @@ func TestExecutorReportsPartialCommit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected commit failure")
 	}
-	if !result.Partial || len(result.Applied) != 1 || result.Applied[0].Path != "first.txt" {
+	if !result.Partial || len(result.Applied) != 1 || result.Applied[0].Path != filepath.Join(rootPath, "first.txt") {
 		t.Fatalf("unexpected partial result: %#v", result)
 	}
 	assertFileContent(t, rootPath, "first.txt", "first\n")
 	if _, statErr := os.Stat(filepath.Join(rootPath, "second.txt")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("second file should not exist: %v", statErr)
 	}
+	assertNoPatchTemps(t, rootPath)
+}
+
+func TestExecutorReportsDestinationWhenMoveSourceRemovalFails(t *testing.T) {
+	rootPath := t.TempDir()
+	writeTestFile(t, rootPath, "source.txt", "source\n", 0o644)
+	commits := &failingCommitOperations{failRemove: true}
+	executor := newTestExecutor(t, rootPath, commits)
+	document := mustParse(t, "*** Begin Patch\n*** Update File: source.txt\n*** Move to: destination.txt\n*** End Patch")
+
+	result, err := executor.Apply(context.Background(), document)
+	if err == nil {
+		t.Fatal("expected move source removal failure")
+	}
+	destination := filepath.Join(rootPath, "destination.txt")
+	if !result.Partial || len(result.Applied) != 1 {
+		t.Fatalf("unexpected partial result: %#v", result)
+	}
+	applied := result.Applied[0]
+	if applied.Kind != OperationAdd || applied.Path != destination || !applied.Created || applied.Moved {
+		t.Fatalf("unexpected applied destination delta: %#v", applied)
+	}
+	assertFileContent(t, rootPath, "source.txt", "source\n")
+	assertFileContent(t, rootPath, "destination.txt", "source\n")
 	assertNoPatchTemps(t, rootPath)
 }
 
@@ -305,6 +329,7 @@ func TestExecutorRejectsInvalidDocument(t *testing.T) {
 type failingCommitOperations struct {
 	renames      int
 	failRenameAt int
+	failRemove   bool
 }
 
 func (operations *failingCommitOperations) Rename(oldPath, newPath string) error {
@@ -316,6 +341,9 @@ func (operations *failingCommitOperations) Rename(oldPath, newPath string) error
 }
 
 func (operations *failingCommitOperations) Remove(path string) error {
+	if operations.failRemove {
+		return errors.New("injected remove failure")
+	}
 	return os.Remove(path)
 }
 

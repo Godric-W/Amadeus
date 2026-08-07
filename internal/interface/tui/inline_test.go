@@ -36,8 +36,8 @@ func TestInlineRendererRendersPlanApprovalAndSafeToolSummary(t *testing.T) {
 	}
 	ctx := context.Background()
 	events := []event.Event{
-		event.PlanUpdated{RunID: "run-1", Cycle: 1, Tasks: []event.PlanTask{{ID: "task-1", Objective: "Read source", Status: "pending"}}},
-		event.RunStatusChanged{RunID: "run-1", Entity: "task", EntityID: "task-1", From: "pending", To: "running"},
+		event.PlanUpdated{RunID: "run-1", Revision: 1, Items: []event.PlanItem{{Step: "Read source", Status: "pending"}}},
+		event.RunStatusChanged{RunID: "run-1", Entity: "run", EntityID: "run-1", From: "starting", To: "running"},
 		event.ApprovalRequested{ToolName: "write_file", Risk: "high", Reason: "Authorization: Bearer should-not-leak"},
 		event.ApprovalResolved{ToolName: "write_file", Outcome: "allow", Scope: "once", Source: "user"},
 		event.ToolCallStarted{ToolName: "write_file"},
@@ -51,7 +51,7 @@ func TestInlineRendererRendersPlanApprovalAndSafeToolSummary(t *testing.T) {
 		}
 	}
 	output := status.String()
-	for _, fragment := range []string{"plan 1:", "task-1 [pending]: Read source", "approval required: write_file", "tool completed: write_file", "usage: input=3 output=5 total=8", "status: phase=idle"} {
+	for _, fragment := range []string{"plan 1:", "plan-1 [pending]: Read source", "approval required: write_file", "tool completed: write_file", "usage: input=3 output=5 total=8", "status: phase=idle"} {
 		if !strings.Contains(output, fragment) {
 			t.Fatalf("inline transcript omitted %q: %s", fragment, output)
 		}
@@ -69,9 +69,9 @@ func TestInlineRendererGoldenTranscript(t *testing.T) {
 	}
 	ctx := context.Background()
 	for _, runtimeEvent := range []event.Event{
-		event.RunStarted{RunID: "run-1", TaskID: "plan"},
-		event.PlanUpdated{RunID: "run-1", Cycle: 1, Tasks: []event.PlanTask{{ID: "task-1", Objective: "Read README", Status: "pending"}}},
-		event.RunStatusChanged{RunID: "run-1", Entity: "task", EntityID: "task-1", From: "pending", To: "running"},
+		event.RunStarted{RunID: "run-1"},
+		event.PlanUpdated{RunID: "run-1", Revision: 1, Items: []event.PlanItem{{Step: "Read README", Status: "pending"}}},
+		event.RunStatusChanged{RunID: "run-1", Entity: "run", EntityID: "run-1", From: "starting", To: "running"},
 		event.TextDelta{LLMCallID: "turn-1", Delta: "answer"},
 		event.ToolCallStarted{RunID: "run-1", CallID: "read-1", ToolName: "read_file"},
 		event.ToolCallCompleted{RunID: "run-1", CallID: "read-1", ToolName: "read_file", Success: true, Summary: "README contents"},
@@ -86,19 +86,19 @@ func TestInlineRendererGoldenTranscript(t *testing.T) {
 		t.Fatalf("unexpected golden text: %q", text.String())
 	}
 	want := "" +
-		"run started: run-1 (task=plan)\n" +
-		"status: phase=starting task=plan tools=0 usage=0/0\n" +
+		"run started: run-1\n" +
+		"status: phase=starting tools=0 usage=0/0\n" +
 		"plan 1:\n" +
-		"  task-1 [pending]: Read README\n" +
-		"status: phase=planning task=plan tools=0 usage=0/0\n" +
-		"task task-1: pending -> running\n" +
-		"status: phase=executing task=task-1 tools=0 usage=0/0\n" +
+		"  plan-1 [pending]: Read README\n" +
+		"status: phase=planning tools=0 usage=0/0\n" +
+		"run run-1: starting -> running\n" +
+		"status: phase=executing tools=0 usage=0/0\n" +
 		"tool started: read_file\n" +
-		"status: phase=executing task=task-1 tools=1 usage=0/0\n" +
+		"status: phase=executing tools=1 usage=0/0\n" +
 		"tool completed: read_file in 0s: README contents\n" +
-		"status: phase=executing task=task-1 tools=1 usage=0/0\n" +
+		"status: phase=executing tools=1 usage=0/0\n" +
 		"run completed: done\n" +
-		"status: phase=idle task=task-1 tools=1 usage=0/0\n"
+		"status: phase=idle tools=1 usage=0/0\n"
 	if status.String() != want {
 		t.Fatalf("unexpected golden status:\n%s", status.String())
 	}

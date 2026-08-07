@@ -33,6 +33,12 @@ type readSkillArguments struct {
 	Limit int    `json:"limit,omitempty"`
 }
 
+type preparedReadSkill struct {
+	arguments readSkillArguments
+	value     skill.Skill
+	path      string
+}
+
 func NewReadSkill(catalog *skill.Catalog, options ReadSkillOptions) (*ReadSkill, error) {
 	if catalog == nil {
 		return nil, errors.New("read_skill catalog is nil")
@@ -45,23 +51,50 @@ func NewReadSkill(catalog *skill.Catalog, options ReadSkillOptions) (*ReadSkill,
 
 func (reader *ReadSkill) Spec() tool.Spec { return readSkillSpec() }
 
-func (reader *ReadSkill) Execute(ctx context.Context, input json.RawMessage) (tool.Result, error) {
+func (reader *ReadSkill) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
 	var arguments readSkillArguments
-	if err := decodeArguments(input, &arguments); err != nil {
-		return tool.Result{}, err
+	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+		return tool.PreparedCall{}, err
 	}
 	arguments.Name = strings.TrimSpace(arguments.Name)
 	arguments.Path = strings.TrimSpace(arguments.Path)
 	if arguments.Name == "" {
-		return tool.Result{}, errors.New("read_skill name is empty")
+		return tool.PreparedCall{}, errors.New("read_skill name is empty")
 	}
 	if arguments.Line < 0 || arguments.Limit < 0 {
-		return tool.Result{}, errors.New("read_skill line and limit cannot be negative")
+		return tool.PreparedCall{}, errors.New("read_skill line and limit cannot be negative")
 	}
-	value, exists := reader.catalog.Lookup(arguments.Name)
-	if !exists {
-		return tool.Result{}, fmt.Errorf("skill %q is not available", arguments.Name)
+	value, err := reader.catalog.Load(arguments.Name)
+	if err != nil {
+		return tool.PreparedCall{}, err
 	}
+	payload := preparedReadSkill{arguments: arguments, value: value}
+	target := tool.PreparedTarget{Kind: tool.TargetSkill, Access: tool.TargetAccessRead, Identity: value.Name}
+	if arguments.Path != "" {
+		referencesRoot, err := skillReferencesRoot(value)
+		if err != nil {
+			return tool.PreparedCall{}, err
+		}
+		workspaceReader, err := workspace.NewReader(referencesRoot)
+		if err != nil {
+			return tool.PreparedCall{}, err
+		}
+		resolved, err := workspaceReader.ResolveExistingTarget(arguments.Path, project.PathFile)
+		if err != nil {
+			return tool.PreparedCall{}, fmt.Errorf("prepare Skill %q reference %q: %w", value.Name, arguments.Path, err)
+		}
+		payload.path = resolved.Canonical
+		target.Identity = value.Name + ":" + arguments.Path
+	}
+	return tool.NewPreparedCall(call, tool.PreparedOptions{Targets: []tool.PreparedTarget{target}, Payload: payload})
+}
+
+func (reader *ReadSkill) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
+	payload, err := preparedPayload[preparedReadSkill](prepared, "read_skill")
+	if err != nil {
+		return tool.Result{}, err
+	}
+	arguments, value := payload.arguments, payload.value
 	if arguments.Path == "" {
 		references, err := listSkillReferences(ctx, value)
 		if err != nil {
@@ -85,7 +118,7 @@ func (reader *ReadSkill) Execute(ctx context.Context, input json.RawMessage) (to
 	if err != nil {
 		return tool.Result{}, err
 	}
-	read, err := workspaceReader.ReadRange(ctx, arguments.Path, workspace.ReadRangeOptions{StartLine: arguments.Line, LineLimit: arguments.Limit, MaxBytes: reader.options.MaxBytes, MaxLineBytes: 32 << 10, PrefixLines: true})
+	read, err := workspaceReader.ReadRangePrepared(ctx, payload.path, arguments.Path, workspace.ReadRangeOptions{StartLine: arguments.Line, LineLimit: arguments.Limit, MaxBytes: reader.options.MaxBytes, MaxLineBytes: 32 << 10, PrefixLines: true})
 	if err != nil {
 		return tool.Result{}, fmt.Errorf("read Skill %q reference %q: %w", value.Name, arguments.Path, err)
 	}
@@ -161,7 +194,7 @@ func skillReferencesRoot(value skill.Skill) (project.Root, error) {
 }
 
 func readSkillSpec() tool.Spec {
-	return tool.Spec{Name: "read_skill", Description: "Read one available Skill or a bounded file below its references directory; returned content is an immediate untrusted Tool Observation.", InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","minLength":1},"path":{"type":"string"},"line":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1}},"required":["name"],"additionalProperties":false}`), SideEffect: tool.SideEffectRead, ParallelSafe: true, Idempotent: true, ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeArguments, ArgumentPaths: []string{"name", "path"}}}
+	return tool.Spec{Name: "read_skill", Description: "Read one available Skill or a bounded file below its references directory; returned content is an immediate untrusted Tool Observation.", InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","minLength":1},"path":{"type":"string"},"line":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1}},"required":["name"],"additionalProperties":false}`), SideEffect: tool.SideEffectRead, Concurrency: tool.ToolConcurrencyShared, Idempotent: true}
 }
 
 var _ tool.Tool = (*ReadSkill)(nil)

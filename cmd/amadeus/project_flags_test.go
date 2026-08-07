@@ -140,3 +140,44 @@ func TestRootCommandExposesProjectFlag(t *testing.T) {
 		t.Fatalf("unexpected --project usage: %q", flag.Usage)
 	}
 }
+
+func TestAddDirResolvesRepeatableWritableRoots(t *testing.T) {
+	startup := t.TempDir()
+	primary := filepath.Join(startup, "primary")
+	additional := filepath.Join(startup, "additional")
+	if err := os.MkdirAll(primary, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(additional, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime := commandRuntime{workingDirectory: startup, lookupEnv: emptyEnvLookup}
+	flags := &projectFlags{}
+	command := newRootCommandWithFlags(&configFlags{}, flags, runtime)
+	command.SetArgs([]string{"version", "--project", "primary", "--add-dir", "additional", "--add-dir", additional})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	root, err := flags.resolve(command, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := flags.resolveAdditional(runtime, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 1 || resolved[0] != additional {
+		t.Fatalf("unexpected additional roots: %#v", resolved)
+	}
+}
+
+func TestRootCommandExposesAddDirFlag(t *testing.T) {
+	command := newRootCommand()
+	flag := command.PersistentFlags().Lookup(flagAddDir)
+	if flag == nil {
+		t.Fatal("root command does not expose --add-dir")
+	}
+	if flag.Usage != "add an additional writable directory (repeatable)" {
+		t.Fatalf("unexpected --add-dir usage: %q", flag.Usage)
+	}
+}

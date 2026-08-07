@@ -20,6 +20,13 @@ type ReadResourceTool struct {
 	spec     tool.Spec
 	maxBytes int
 }
+type listResourcesArguments struct {
+	Server string `json:"server"`
+}
+type readResourceArguments struct {
+	Server string `json:"server"`
+	URI    string `json:"uri"`
+}
 
 func NewResourceTools(manager *Manager) (*ListResourcesTool, *ReadResourceTool, error) {
 	if manager == nil {
@@ -35,17 +42,25 @@ func NewResourceTools(manager *Manager) (*ListResourcesTool, *ReadResourceTool, 
 	}
 	listSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s}},"required":["server"],"additionalProperties":false}`, encoded))
 	readSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s},"uri":{"type":"string","minLength":1}},"required":["server","uri"],"additionalProperties":false}`, encoded))
-	list := &ListResourcesTool{manager: manager, spec: tool.Spec{Name: "mcp_list_resources", Description: "List untrusted resources exposed by one configured MCP server.", InputSchema: listSchema, SideEffect: tool.SideEffectNetwork, ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeExclusive}}}
-	read := &ReadResourceTool{manager: manager, maxBytes: defaultResultBytes, spec: tool.Spec{Name: "mcp_read_resource", Description: "Read one previously discovered MCP resource. Text and image blobs are returned as bounded untrusted content.", InputSchema: readSchema, SideEffect: tool.SideEffectNetwork, ResourceStrategy: tool.ResourceStrategy{Mode: tool.ResourceModeExclusive}}}
+	list := &ListResourcesTool{manager: manager, spec: tool.Spec{Name: "mcp_list_resources", Description: "List untrusted resources exposed by one configured MCP server.", InputSchema: listSchema, SideEffect: tool.SideEffectNetwork, Concurrency: tool.ToolConcurrencyShared, Idempotent: true}}
+	read := &ReadResourceTool{manager: manager, maxBytes: defaultResultBytes, spec: tool.Spec{Name: "mcp_read_resource", Description: "Read one previously discovered MCP resource. Text and image blobs are returned as bounded untrusted content.", InputSchema: readSchema, SideEffect: tool.SideEffectNetwork, Concurrency: tool.ToolConcurrencyShared, Idempotent: true}}
 	return list, read, nil
 }
 
 func (value *ListResourcesTool) Spec() tool.Spec { return value.spec.Clone() }
-func (value *ListResourcesTool) Execute(ctx context.Context, input json.RawMessage) (tool.Result, error) {
-	var arguments struct {
-		Server string `json:"server"`
+func (value *ListResourcesTool) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
+	var arguments listResourcesArguments
+	if err := json.Unmarshal(call.Arguments, &arguments); err != nil {
+		return tool.PreparedCall{}, err
 	}
-	if err := json.Unmarshal(input, &arguments); err != nil {
+	if err := validateSampleBinding(ctx, value.manager); err != nil {
+		return tool.PreparedCall{}, err
+	}
+	return prepareMCPCall(call, arguments.Server, arguments)
+}
+func (value *ListResourcesTool) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
+	arguments, err := preparedPayload[listResourcesArguments](prepared, "mcp_list_resources")
+	if err != nil {
 		return tool.Result{}, err
 	}
 	resources, err := value.manager.ListResources(ctx, arguments.Server)
@@ -63,17 +78,24 @@ func (value *ListResourcesTool) Execute(ctx context.Context, input json.RawMessa
 	return tool.Result{ToolName: "mcp_list_resources", Text: "Untrusted MCP resource catalog:\n" + text, Partial: partial, Metadata: map[string]any{"server": arguments.Server, "resource_count": len(resources)}}, nil
 }
 func (value *ReadResourceTool) Spec() tool.Spec { return value.spec.Clone() }
-func (value *ReadResourceTool) Execute(ctx context.Context, input json.RawMessage) (tool.Result, error) {
-	var arguments struct {
-		Server string `json:"server"`
-		URI    string `json:"uri"`
+func (value *ReadResourceTool) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
+	var arguments readResourceArguments
+	if err := json.Unmarshal(call.Arguments, &arguments); err != nil {
+		return tool.PreparedCall{}, err
 	}
-	if err := json.Unmarshal(input, &arguments); err != nil {
-		return tool.Result{}, err
+	if err := validateSampleBinding(ctx, value.manager); err != nil {
+		return tool.PreparedCall{}, err
 	}
 	arguments.URI = strings.TrimSpace(arguments.URI)
 	if arguments.URI == "" {
-		return tool.Result{}, errors.New("MCP resource URI is empty")
+		return tool.PreparedCall{}, errors.New("MCP resource URI is empty")
+	}
+	return prepareMCPCall(call, arguments.Server+":"+arguments.URI, arguments)
+}
+func (value *ReadResourceTool) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
+	arguments, err := preparedPayload[readResourceArguments](prepared, "mcp_read_resource")
+	if err != nil {
+		return tool.Result{}, err
 	}
 	contents, err := value.manager.ReadResource(ctx, arguments.Server, arguments.URI)
 	if err != nil {

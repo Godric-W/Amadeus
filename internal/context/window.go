@@ -70,11 +70,13 @@ type CompactionReport struct {
 }
 
 type RequestView struct {
-	Messages   []llm.Message
-	Tools      []tool.Spec
-	Usage      ContextUsage
-	Compaction *CompactionReport
-	SHA256     string
+	Messages           []llm.Message
+	Tools              []tool.Spec
+	Usage              ContextUsage
+	Compaction         *CompactionReport
+	Revisions          ContextRevisions
+	MCPBindingRevision string
+	SHA256             string
 }
 
 type ContextWindowManager interface {
@@ -144,15 +146,16 @@ func (manager *WindowManager) Prepare(ctx context.Context, request WindowRequest
 	if request.PreviousUsage != nil {
 		usage.ProviderInputTokens = request.PreviousUsage.InputTokens
 	}
-	view := RequestView{Messages: messages, Tools: tools, Usage: usage}
+	view := RequestView{Messages: messages, Tools: tools, Usage: usage, Revisions: request.Base.Revisions}
 	if report.DroppedMessagePairs > 0 || report.ProjectedToolResults > 0 {
 		view.Compaction = report
 	}
 	encoded, err := json.Marshal(struct {
-		Messages []llm.Message
-		Tools    []tool.Spec
-		Usage    ContextUsage
-	}{Messages: messages, Tools: tools, Usage: usage})
+		Messages  []llm.Message
+		Tools     []tool.Spec
+		Usage     ContextUsage
+		Revisions ContextRevisions
+	}{Messages: messages, Tools: tools, Usage: usage, Revisions: request.Base.Revisions})
 	if err != nil {
 		return RequestView{}, fmt.Errorf("hash context request view: %w", err)
 	}

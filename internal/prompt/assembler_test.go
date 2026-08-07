@@ -7,7 +7,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/Godric-W/Amadeus/prompts"
+	"github.com/Godric-W/Amadeus/internal/prompt/builtin"
 )
 
 func TestBuiltinAssemblerProducesStableAgentBundle(t *testing.T) {
@@ -19,7 +19,7 @@ func TestBuiltinAssemblerProducesStableAgentBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create prompt assembler: %v", err)
 	}
-	layers := promptPaths(prompts.AgentLayers())
+	layers := builtin.Paths(builtin.AgentSystemLayers())
 
 	first, err := assembler.Assemble(AssembleInput{Layers: layers})
 	if err != nil {
@@ -29,7 +29,7 @@ func TestBuiltinAssemblerProducesStableAgentBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reassemble built-in Agent prompt: %v", err)
 	}
-	if first.Content != prompts.AgentSystem() || first.SHA256 != second.SHA256 || len(first.SHA256) != 64 {
+	if first.SHA256 != second.SHA256 || len(first.SHA256) != 64 || !strings.Contains(first.Content, "You are Amadeus") {
 		t.Fatalf("built-in Agent bundle is unstable: first=%#v second=%#v", first, second)
 	}
 	if len(first.Sources) != len(layers) || len(first.RequiredVariables) != 0 {
@@ -151,12 +151,4 @@ func mustAssemble(t *testing.T, assembler *Assembler, input AssembleInput) Bundl
 		t.Fatalf("assemble prompt: %v", err)
 	}
 	return bundle
-}
-
-func promptPaths(ids []prompts.ID) []string {
-	paths := make([]string, len(ids))
-	for index, id := range ids {
-		paths[index] = string(id)
-	}
-	return paths
 }
