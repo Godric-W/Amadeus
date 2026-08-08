@@ -2,12 +2,11 @@ package diff
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
-	"github.com/Godric-W/Amadeus/internal/tool"
+	patchtool "github.com/Godric-W/Amadeus/internal/tool/patch"
 )
 
 func TestTrackerFoldsRepeatedPatchOperations(t *testing.T) {
@@ -17,12 +16,12 @@ func TestTrackerFoldsRepeatedPatchOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, result := range []tool.Output{
-		patchResult(operationMap("add", "a.txt", "", 3, true, false, false)),
-		patchResult(operationMap("update", "a.txt", "", 5, false, false, false)),
-		patchResult(operationMap("update", "a.txt", "b.txt", 5, false, false, true)),
+	for _, delta := range []patchtool.AppliedPatchDelta{
+		patchDelta(patchtool.OperationAdd, "a.txt", "", nil, []byte("one")),
+		patchDelta(patchtool.OperationUpdate, "a.txt", "", []byte("one"), []byte("three")),
+		patchDelta(patchtool.OperationMove, "a.txt", "b.txt", []byte("three"), []byte("three")),
 	} {
-		if err := tracker.ProjectPatch(context.Background(), result); err != nil {
+		if err := tracker.ProjectPatch(context.Background(), []patchtool.AppliedPatchDelta{delta}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -30,7 +29,7 @@ func TestTrackerFoldsRepeatedPatchOperations(t *testing.T) {
 	if len(snapshot.Changes) != 1 || snapshot.Changes[0].Kind != ChangeAdded || snapshot.Changes[0].Path != filepath.Join(root, "b.txt") {
 		t.Fatalf("unexpected folded add/move: %#v", snapshot)
 	}
-	if err := tracker.ProjectPatch(context.Background(), patchResult(operationMap("delete", "b.txt", "", 0, false, true, false))); err != nil {
+	if err := tracker.ProjectPatch(context.Background(), []patchtool.AppliedPatchDelta{patchDelta(patchtool.OperationDelete, "b.txt", "", []byte("three"), nil)}); err != nil {
 		t.Fatal(err)
 	}
 	if snapshot = tracker.Snapshot(); len(snapshot.Changes) != 0 {
@@ -41,10 +40,10 @@ func TestTrackerFoldsRepeatedPatchOperations(t *testing.T) {
 func TestTrackerFoldsMoveThenDeleteToOriginalDelete(t *testing.T) {
 	root := t.TempDir()
 	tracker, _ := NewProjector(root, event.NewMemorySink())
-	if err := tracker.ProjectPatch(context.Background(), patchResult(operationMap("update", "old.txt", "new.txt", 7, false, false, true))); err != nil {
+	if err := tracker.ProjectPatch(context.Background(), []patchtool.AppliedPatchDelta{patchDelta(patchtool.OperationMove, "old.txt", "new.txt", []byte("content"), []byte("content"))}); err != nil {
 		t.Fatal(err)
 	}
-	if err := tracker.ProjectPatch(context.Background(), patchResult(operationMap("delete", "new.txt", "", 0, false, true, false))); err != nil {
+	if err := tracker.ProjectPatch(context.Background(), []patchtool.AppliedPatchDelta{patchDelta(patchtool.OperationDelete, "new.txt", "", []byte("content"), nil)}); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := tracker.Snapshot()
@@ -61,7 +60,7 @@ func TestTrackerTracksAbsolutePathsAcrossWritableRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := filepath.Join(external, "granted.txt")
-	if err := tracker.ProjectPatch(context.Background(), patchResult(operationMap("add", target, "", 7, true, false, false))); err != nil {
+	if err := tracker.ProjectPatch(context.Background(), []patchtool.AppliedPatchDelta{patchDelta(patchtool.OperationAdd, target, "", nil, []byte("content"))}); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := tracker.Snapshot()
@@ -79,7 +78,7 @@ func TestTrackerTracksMoveAcrossWritableRoots(t *testing.T) {
 	}
 	source := filepath.Join(cwd, "source.txt")
 	destination := filepath.Join(external, "destination.txt")
-	if err := tracker.ProjectPatch(context.Background(), patchResult(operationMap("update", source, destination, 9, false, false, true))); err != nil {
+	if err := tracker.ProjectPatch(context.Background(), []patchtool.AppliedPatchDelta{patchDelta(patchtool.OperationMove, source, destination, []byte("content!!"), []byte("content!!"))}); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := tracker.Snapshot()
@@ -91,7 +90,7 @@ func TestTrackerTracksMoveAcrossWritableRoots(t *testing.T) {
 func TestProjectorOnlyConsumesExplicitPatchProjection(t *testing.T) {
 	events := event.NewMemorySink()
 	tracker, _ := NewProjector(t.TempDir(), events)
-	if err := tracker.ProjectPatch(context.Background(), tool.Output{ToolName: "apply_patch", Metadata: map[string]any{"operations": []map[string]any{}}}); err != nil {
+	if err := tracker.ProjectPatch(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := tracker.Snapshot()
@@ -103,21 +102,24 @@ func TestProjectorOnlyConsumesExplicitPatchProjection(t *testing.T) {
 	}
 }
 
-func TestTrackerInvalidatesMalformedPatchMetadata(t *testing.T) {
-	tracker, _ := NewProjector(t.TempDir(), event.NewMemorySink())
-	err := tracker.ProjectPatch(context.Background(), tool.Output{Metadata: map[string]any{"operations": "invalid"}})
-	if err != nil && !errors.Is(err, context.Canceled) {
+func TestTrackerInvalidatesInexactPatchDelta(t *testing.T) {
+	events := event.NewMemorySink()
+	tracker, _ := NewProjector(t.TempDir(), events)
+	delta := patchDelta(patchtool.OperationUpdate, "a.txt", "", []byte("before"), []byte("after"))
+	delta.Exact = false
+	if err := tracker.ProjectPatch(context.Background(), []patchtool.AppliedPatchDelta{delta}); err != nil {
 		t.Fatalf("event publication failed: %v", err)
 	}
-	if !tracker.Snapshot().Invalidated {
-		t.Fatal("malformed exact metadata did not invalidate tracker")
+	snapshot := tracker.Snapshot()
+	if !snapshot.Invalidated || len(snapshot.Changes) != 0 {
+		t.Fatalf("inexact Patch delta was not rejected: %#v", snapshot)
 	}
 }
 
-func patchResult(operations ...map[string]any) tool.Output {
-	return tool.Output{ToolName: "apply_patch", Metadata: map[string]any{"operations": operations}}
-}
-
-func operationMap(kind, path, destination string, bytes int, created, deleted, moved bool) map[string]any {
-	return map[string]any{"kind": kind, "path": path, "destination": destination, "bytes": bytes, "created": created, "deleted": deleted, "moved": moved}
+func patchDelta(operation patchtool.OperationKind, path, destination string, oldContent, newContent []byte) patchtool.AppliedPatchDelta {
+	return patchtool.AppliedPatchDelta{
+		Path: path, Destination: destination, Operation: operation,
+		OldContent: oldContent, NewContent: newContent,
+		UnifiedDiff: "--- old\n+++ new\n@@\n", Exact: true,
+	}
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/project"
 	promptbuiltin "github.com/Godric-W/Amadeus/internal/prompt/builtin"
 	"github.com/Godric-W/Amadeus/internal/tool"
+	patchtool "github.com/Godric-W/Amadeus/internal/tool/patch"
 	"github.com/Godric-W/Amadeus/internal/webfetch"
 	"github.com/Godric-W/Amadeus/internal/websearch"
 )
@@ -127,7 +128,7 @@ func TestNewAgentWithOptionsAttachesPatchProjector(t *testing.T) {
 
 type bootstrapPostWriteHook struct{ calls int }
 
-func (hook *bootstrapPostWriteHook) ProjectPatch(context.Context, tool.Output) error {
+func (hook *bootstrapPostWriteHook) ProjectPatch(context.Context, []patchtool.AppliedPatchDelta) error {
 	hook.calls++
 	return nil
 }

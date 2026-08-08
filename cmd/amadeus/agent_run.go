@@ -29,18 +29,29 @@ import (
 	sessiondomain "github.com/Godric-W/Amadeus/internal/session"
 	"github.com/Godric-W/Amadeus/internal/tool"
 	"github.com/Godric-W/Amadeus/internal/tool/builtin"
+	patchtool "github.com/Godric-W/Amadeus/internal/tool/patch"
 )
 
 type patchProjectorGroup []builtin.PatchProjector
 
-func (group patchProjectorGroup) ProjectPatch(ctx context.Context, output tool.Output) error {
+func (group patchProjectorGroup) ProjectPatch(ctx context.Context, deltas []patchtool.AppliedPatchDelta) error {
 	var combined error
 	for _, projector := range group {
 		if projector != nil {
-			combined = errors.Join(combined, projector.ProjectPatch(ctx, output.Clone()))
+			combined = errors.Join(combined, projector.ProjectPatch(ctx, clonePatchDeltas(deltas)))
 		}
 	}
 	return combined
+}
+
+func clonePatchDeltas(deltas []patchtool.AppliedPatchDelta) []patchtool.AppliedPatchDelta {
+	cloned := make([]patchtool.AppliedPatchDelta, len(deltas))
+	for index, delta := range deltas {
+		cloned[index] = delta
+		cloned[index].OldContent = append([]byte(nil), delta.OldContent...)
+		cloned[index].NewContent = append([]byte(nil), delta.NewContent...)
+	}
+	return cloned
 }
 
 func (runner *agentController) newRunContext(parent context.Context) (context.Context, context.CancelFunc, error) {

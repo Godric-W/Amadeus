@@ -1,6 +1,7 @@
 package patch
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -37,6 +38,9 @@ func TestExecutorAppliesAddUpdateDelete(t *testing.T) {
 	if result.Partial || len(result.Applied) != 3 {
 		t.Fatalf("unexpected result: %#v", result)
 	}
+	assertAppliedDelta(t, result.Applied[0].Delta, OperationAdd, filepath.Join(rootPath, "nested", "new.txt"), "", nil, []byte("created\n"), "--- /dev/null\n", "+++ "+filepath.Join(rootPath, "nested", "new.txt")+"\n")
+	assertAppliedDelta(t, result.Applied[1].Delta, OperationUpdate, filepath.Join(rootPath, "existing.txt"), "", []byte("first\nold\nlast\n"), []byte("first\nnew\nlast\n"), "--- "+filepath.Join(rootPath, "existing.txt")+"\n", "+++ "+filepath.Join(rootPath, "existing.txt")+"\n")
+	assertAppliedDelta(t, result.Applied[2].Delta, OperationDelete, filepath.Join(rootPath, "delete.txt"), "", []byte("remove me\n"), nil, "--- "+filepath.Join(rootPath, "delete.txt")+"\n", "+++ /dev/null\n")
 	assertFileContent(t, rootPath, "nested/new.txt", "created\n")
 	assertFileContent(t, rootPath, "existing.txt", "first\nnew\nlast\n")
 	if _, err := os.Stat(filepath.Join(rootPath, "delete.txt")); !errors.Is(err, os.ErrNotExist) {
@@ -91,8 +95,21 @@ func TestExecutorDeletesBinaryRegularFile(t *testing.T) {
 	if len(result.Applied) != 1 || !result.Applied[0].Deleted || !filepath.IsAbs(result.Applied[0].Path) {
 		t.Fatalf("unexpected delete result: %#v", result)
 	}
+	assertAppliedDelta(t, result.Applied[0].Delta, OperationDelete, filepath.Join(rootPath, "binary.bin"), "", []byte{0, 1, 2}, nil, "Binary files differ\n")
 	if _, err := os.Stat(filepath.Join(rootPath, "binary.bin")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("binary file still exists: %v", err)
+	}
+}
+
+func TestAppliedPatchDeltaUnifiedDiffPreservesEmptyAndFinalNewlineSemantics(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.txt")
+	delta := newAppliedPatchDelta(OperationUpdate, path, "", nil, []byte("value"))
+	for _, fragment := range []string{
+		"--- " + path + "\n", "+++ " + path + "\n", "@@ -0,0 +1,1 @@\n", "+value\n", "\\ No newline at end of file\n",
+	} {
+		if !strings.Contains(delta.UnifiedDiff, fragment) {
+			t.Fatalf("UnifiedDiff %q does not contain %q", delta.UnifiedDiff, fragment)
+		}
 	}
 }
 
@@ -120,6 +137,8 @@ func TestExecutorMovesFileWithoutAndWithUpdate(t *testing.T) {
 	if result.Partial || len(result.Applied) != 2 || !result.Applied[0].Moved || result.Applied[0].Destination != filepath.Join(rootPath, "moved", "plain.txt") || !result.Applied[1].Moved || result.Applied[1].Destination != filepath.Join(rootPath, "moved", "edit.txt") {
 		t.Fatalf("unexpected move result: %#v", result)
 	}
+	assertAppliedDelta(t, result.Applied[0].Delta, OperationMove, filepath.Join(rootPath, "plain.txt"), filepath.Join(rootPath, "moved", "plain.txt"), []byte("plain\n"), []byte("plain\n"), "--- "+filepath.Join(rootPath, "plain.txt")+"\n", "+++ "+filepath.Join(rootPath, "moved", "plain.txt")+"\n")
+	assertAppliedDelta(t, result.Applied[1].Delta, OperationMove, filepath.Join(rootPath, "edit.txt"), filepath.Join(rootPath, "moved", "edit.txt"), []byte("old\n"), []byte("new\n"), "--- "+filepath.Join(rootPath, "edit.txt")+"\n", "+++ "+filepath.Join(rootPath, "moved", "edit.txt")+"\n")
 	assertFileContent(t, rootPath, "moved/plain.txt", "plain\n")
 	assertFileContent(t, rootPath, "moved/edit.txt", "new\n")
 	for _, source := range []string{"plain.txt", "edit.txt"} {
@@ -207,7 +226,7 @@ func TestExecutorRejectsStaleBytesAndIdentityAfterPreflight(t *testing.T) {
 			}
 			result, err := executor.ApplyPrepared(context.Background(), prepared)
 			var conflict *ConflictError
-			if !errors.As(err, &conflict) || result.Partial || len(result.Applied) != 0 {
+			if !errors.As(err, &conflict) || conflict.ToolErrorKind() != "target_stale" || result.Partial || len(result.Applied) != 0 {
 				t.Fatalf("stale target was not rejected: result=%#v err=%v", result, err)
 			}
 			if content, readErr := os.ReadFile(filepath.Join(rootPath, "target.txt")); readErr != nil || string(content) == "new\n" {
@@ -274,6 +293,7 @@ func TestExecutorReportsPartialCommit(t *testing.T) {
 	if !result.Partial || len(result.Applied) != 1 || result.Applied[0].Path != filepath.Join(rootPath, "first.txt") {
 		t.Fatalf("unexpected partial result: %#v", result)
 	}
+	assertAppliedDelta(t, result.Applied[0].Delta, OperationAdd, filepath.Join(rootPath, "first.txt"), "", nil, []byte("first\n"), "--- /dev/null\n", "+++ "+filepath.Join(rootPath, "first.txt")+"\n")
 	assertFileContent(t, rootPath, "first.txt", "first\n")
 	if _, statErr := os.Stat(filepath.Join(rootPath, "second.txt")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("second file should not exist: %v", statErr)
@@ -300,6 +320,7 @@ func TestExecutorReportsDestinationWhenMoveSourceRemovalFails(t *testing.T) {
 	if applied.Kind != OperationAdd || applied.Path != destination || !applied.Created || applied.Moved {
 		t.Fatalf("unexpected applied destination delta: %#v", applied)
 	}
+	assertAppliedDelta(t, applied.Delta, OperationAdd, destination, "", nil, []byte("source\n"), "--- /dev/null\n", "+++ "+destination+"\n")
 	assertFileContent(t, rootPath, "source.txt", "source\n")
 	assertFileContent(t, rootPath, "destination.txt", "source\n")
 	assertNoPatchTemps(t, rootPath)
@@ -462,5 +483,17 @@ func assertNoPatchTemps(t *testing.T, root string) {
 	})
 	if err != nil {
 		t.Fatalf("walk root: %v", err)
+	}
+}
+
+func assertAppliedDelta(t *testing.T, delta AppliedPatchDelta, operation OperationKind, path, destination string, oldContent, newContent []byte, diffFragments ...string) {
+	t.Helper()
+	if !delta.Exact || delta.Operation != operation || delta.Path != path || delta.Destination != destination || !bytes.Equal(delta.OldContent, oldContent) || !bytes.Equal(delta.NewContent, newContent) {
+		t.Fatalf("unexpected applied Patch delta: %#v", delta)
+	}
+	for _, fragment := range diffFragments {
+		if !strings.Contains(delta.UnifiedDiff, fragment) {
+			t.Fatalf("Patch delta diff %q does not contain %q", delta.UnifiedDiff, fragment)
+		}
 	}
 }

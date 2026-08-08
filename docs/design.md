@@ -316,11 +316,13 @@ type ToolInvocation struct {
     RunID     RunID
     Call      ToolCall
     Source    ToolCallSource
-    Request   *RequestContext
 }
 
 type ToolOutput struct {
-    Content   []ContentPart
+    CallID    string
+    ToolName  ToolName
+    Text      string
+    Parts     []ContentPart
     Metadata  map[string]any
     Partial   bool
     Artifacts []ArtifactRef
@@ -330,6 +332,8 @@ type ToolCallOutcome struct {
     Status   ToolCallStatus
     Duration time.Duration
     Error    *ToolError
+    Blocking bool
+    Metadata map[string]any
 }
 
 type ToolExecution struct {
@@ -342,10 +346,12 @@ type ToolSpec struct {
     Name        ToolName
     Description string
     InputSchema json.RawMessage
+    SideEffect  SideEffect
+    Idempotent  bool
 }
 ```
 
-`ToolHandler` 对齐 Codex Handler/CoreToolRuntime 语义：Spec 与可执行实现绑定注册，`Handle` 是一个 Tool 的完整入口，复杂度留在具体 Handler 内部，而不是强迫所有 Tool 经过通用 `Prepare → PreparedToolCall → Authorizer → Execute`。简单 Tool 直接处理 Invocation；文件 Tool 调用 FileSystemPolicy；`apply_patch` 使用私有 PreparedPatch；`execute_command` 使用私有 ExecRequest 与 ToolOrchestrator。
+`ToolHandler` 对齐 Codex Handler/CoreToolRuntime 语义：Spec 与可执行实现绑定注册，`Handle` 是一个 Tool 的完整入口，复杂度留在具体 Handler 内部，而不是强迫所有 Tool 经过通用 `Prepare → PreparedToolCall → Authorizer → Execute`。简单 Tool 直接处理 Invocation；文件 Tool 调用 FileSystemPolicy；`apply_patch` 使用私有 PreparedPatch；`execute_command` 使用私有 ExecRequest 与轻量进程执行分支。首版只有这一类进程 Tool，因此不提前抽取或命名通用 ToolOrchestrator。
 
 `ToolRouter` 是唯一分发入口，负责把 Provider Tool Call 转为 ToolInvocation、查询 ToolRegistry、检查可见性、对 Function Payload 执行唯一一次 repair/parse/Schema validation、根据 Handler 的 `SupportsParallelToolCalls` 做有界调度、调用 Handler，并将 ToolOutput 投影给模型、UI、Audit 与 Rollout。目标架构不再同时维护 ToolDispatcher、ToolExecutor 和 ToolExecutionGate 三组相近语义。
 
@@ -363,6 +369,19 @@ type ToolSpec struct {
 `ToolCallOutcome` 只表达调用生命周期的 `completed/failed/denied/interrupted`、Duration 与 Error，用于事件、UI 和 Audit；它不是第二份工具内容。普通参数错误、Permission Required、审批拒绝、命令非零退出、超时和用户中断都必须转换为模型可见 ToolOutput 与对应 ToolCallOutcome，只有无法安全构造协议结果的内部故障才返回 fatal Go error。`Partial` 属于 ToolOutput，表达失败或中断前可能已经发生部分副作用。
 
 M2-01～M2-03 已有的 Tool/PreparedCall/Result/Executor 是历史实现基础；目标重构收敛为 ToolCall、ToolPayload、ToolInvocation、ToolSpec、ToolHandler、ToolRegistry、ToolRouter、ToolOutput 与 ToolCallOutcome。工具输入使用 JSON Schema Draft 2020-12 校验，禁止外部 `$ref`；受限 repair 处理尾随逗号和字符串完整时缺失的 `}`/`]`，repair 后仍必须重新通过严格 JSON 解析和 Schema 校验。参数 repair、严格解析和 Schema 校验只能在 ToolRouter 中执行一次；Reactor Analyze 只区分 final/tool-calls/provider-argument-error，不得再次校验同一参数，也不得因为同批一个调用非法而取消其他合法调用。
+
+M8H 的迁移与删除清单固定如下：
+
+| 历史模型 | M8H 目标 | 处理 |
+|---|---|---|
+| `Tool` / 分离的 Spec 注册 | `ToolHandler.Spec()` + `ToolRegistry` | Spec 与实现绑定注册 |
+| `Call` / `Result` | `ToolCall` / `ToolOutput` / `ToolExecution` | 统一 canonical 输入、内容结果和生命周期结果 |
+| `PreparedCall` / `PreparedToolCall` | Handler 私有领域对象 | 通用抽象删除；只保留 `PreparedPatch`、`ExecRequest` |
+| `ToolDispatcher` / `ToolExecutor` / `ToolExecutionGate` | `ToolRouter` | 查找、唯一参数校验、调度、调用与投影合并为唯一入口 |
+| `ToolAuthorizer` | `FileSystemPolicy` + `CommandAuthorizer` | 文件权限由资源 Handler 直接调用；命令审批只服务 `execute_command` |
+| `PathGuard` / `TargetStrategy` | `PathResolver` + `FileSystemPolicy` | 保留规范化、符号链接、类型与 Root 安全，删除包装层 |
+| Shared/Exclusive 枚举与资源锁 | `SupportsParallelToolCalls() bool` + Run 级读写闸门 | 删除公共锁策略和路径级锁 |
+| 通用 Pre/Post Hook | `LifecycleObserver` / `RunDiffProjector` 等显式接口 | 不建立可重写任意 Tool 的伪通用 Hook 主链 |
 
 目标 Tool 调用主链为：
 
@@ -383,7 +402,7 @@ ToolHandler.Handle
 ├── simple/internal → execute directly
 ├── filesystem → FileSystemPolicy → execute
 ├── apply_patch → private PreparedPatch → preflight/stage/revalidate/commit
-├── execute_command → private ExecRequest → ToolOrchestrator/Approval/Sandbox
+├── execute_command → private ExecRequest → Approval/Sandbox/process runtime
 └── MCP/Web → corresponding Manager/Provider boundary
         ↓
 ToolOutput + ToolCallOutcome
@@ -486,6 +505,7 @@ ApplyPatchOutput 应提供内容级 exact delta，而不只提供“可能修改
 ```go
 type AppliedPatchDelta struct {
     Path        string
+    Destination string
     Operation   PatchOperation
     OldContent  []byte
     NewContent  []byte
@@ -496,11 +516,11 @@ type AppliedPatchDelta struct {
 
 `OldContent/NewContent` 可在内存中用于 RunDiffProjector 和测试，但持久化与 UI 必须遵守大小预算和敏感信息规则；超大内容只持久化受控 unified diff、摘要和 hash。只有 `Exact=true` 且对应 operation 已提交的 delta 可以进入 RunDiffProjector。普通 Shell、MCP 或 Skill Script 的工作区变化不伪装成 Patch delta，也不触发归因警告。
 
-目标优化包括：支持 `*** End of File`、有限唯一匹配梯度、内容级 `AppliedPatchDelta`、流式参数阶段的 Patch Preview，以及更明确的 parse/permission/stale/partial 错误。暂不照搬 Codex 的 Add 覆盖、Move 覆盖和任意宽松 trim 匹配；这些行为只有在真实使用数据证明拒绝率明显影响可用性，并且能保持唯一目标与可审计性时再单独评估。
+M8H 已实现 `*** End of File`、有限唯一匹配梯度、内容级 `AppliedPatchDelta` 和明确的 parse/permission/`target_stale`/partial 错误。流式参数阶段的 Patch Preview 不进入 M8H：Provider Adapter 仍只聚合 fragment 身份与完整性，待未来建立独立、只读且不参与执行语义的 Preview Event 后再实现。暂不照搬 Codex 的 Add 覆盖、Move 覆盖和任意宽松 trim 匹配；这些行为只有在真实使用数据证明拒绝率明显影响可用性，并且能保持唯一目标与可审计性时再单独评估。
 
 #### 8.3.2 与 Codex Tool Runtime 的取舍
 
-Codex 的通用主链是 `ResponseItem → ToolRouter → ToolRegistry → ToolHandler`；每个 Handler 自己解析 payload 并构造领域 Request。Shell、`apply_patch` 等受保护操作再进入统一 ToolOrchestrator，由它集中处理 Approval Requirement、Sandbox 选择、首次执行、Sandbox Denied 后的审批与升级重试；普通 Tool 不强制经过同一个 Sandbox Orchestrator。Codex 不使用所有 Tool 共用的 PreparedToolCall，而是使用 `ExecCommandRequest`、`ApplyPatchRequest` 等专用请求。
+Codex 的通用主链是 `ResponseItem → ToolRouter → ToolRegistry → ToolHandler`；每个 Handler 自己解析 payload 并构造领域 Request。Shell、`apply_patch` 等受保护操作再进入统一 ToolOrchestrator，由它集中处理 Approval Requirement、Sandbox 选择、首次执行、Sandbox Denied 后的审批与升级重试；普通 Tool 不强制经过同一个 Sandbox Orchestrator。Codex 不使用所有 Tool 共用的 PreparedToolCall，而是使用 `ExecCommandRequest`、`ApplyPatchRequest` 等专用请求。Amadeus 首版只吸收其职责分层，不复制这个具名通用层。
 
 Amadeus 对齐这一语义：ToolRouter 负责路由、唯一参数校验、并行调度和结果投影；ToolHandler 是业务入口；复杂 Handler 使用私有领域 Request/Prepared 类型。目标架构删除通用 `Tool.Prepare/Execute`、PreparedToolCall、PreparedTarget、ToolDispatcher、ToolExecutionGate 与全工具 Authorizer，不构建比 Codex 更庞大的通用管道。
 
@@ -520,7 +540,7 @@ execute once
 explicit approval / unsandboxed retry
 ```
 
-结构化文件 Tool、Plan、读取、Web 和普通内部状态 Tool 不进入这套进程 Orchestrator；它们分别依赖 FileSystemPolicy、网络 Guard 或自身领域边界。`apply_patch` 是进程内结构化修改，通过 Permission、私有 PreparedPatch、staging 和 revalidation 获得安全性，不为了形式统一放入 OS Sandbox。未来只有出现第二类真实进程 Tool 时，才把现有 Shell 分支抽成独立 ToolOrchestrator，避免提前复制 Codex 的完整复杂度。
+结构化文件 Tool、Plan、读取、Web 和普通内部状态 Tool 不进入进程编排分支；它们分别依赖 FileSystemPolicy、网络 Guard 或自身领域边界。`apply_patch` 是进程内结构化修改，通过 Permission、私有 PreparedPatch、staging 和 revalidation 获得安全性，不为了形式统一放入 OS Sandbox。未来只有出现第二类真实进程 Tool 时，才评估把现有 Shell 分支抽成独立 ToolOrchestrator，避免提前复制 Codex 的完整复杂度。
 
 ### 8.4 Session、SessionRuntime、RunContext 与 RunRuntime
 
@@ -1409,7 +1429,7 @@ Execution
 └── write_stdin
 ```
 
-`write_file` 的迁移已经完成：`apply_patch` 覆盖 create/update/delete/move、整文件替换和稳定冲突诊断，Provider Prompt、E2E、Registry 与生产实现均不再包含 `write_file`。目标架构同时删除模型可见 `revert_run` 和全项目 Snapshot 主链；条件工具只保留 `read_skill`、`web_search/web_fetch`、MCP gateway 和未来 SubAgent。交互和策略能力不强制伪装成 Provider Tool：Command Approval 由 ExecuteCommandHandler 的 ToolOrchestrator 调用 Approval Port；`request_user_input` 只有在后续证明“Run 内等待用户”明显优于 blocked 后新 Run 时再立项。LSP 不进入核心 Tool/Hook 基线。
+`write_file` 的迁移已经完成：`apply_patch` 覆盖 create/update/delete/move、整文件替换和稳定冲突诊断，Provider Prompt、E2E、Registry 与生产实现均不再包含 `write_file`。目标架构同时删除模型可见 `revert_run` 和全项目 Snapshot 主链；条件工具只保留 `read_skill`、`web_search/web_fetch`、MCP gateway 和未来 SubAgent。交互和策略能力不强制伪装成 Provider Tool：Command Approval 由 ExecuteCommandHandler 的私有进程分支调用 Approval Port；`request_user_input` 只有在后续证明“Run 内等待用户”明显优于 blocked 后新 Run 时再立项。LSP 不进入核心 Tool/Hook 基线。
 
 ### 14.4 探索工具
 
@@ -1611,7 +1631,7 @@ ApprovalRequest 除 canonical arguments hash 外，还必须携带或可派生�
 
 非 TTY 不读取 stdin，也不使用配置自动允许：所有需要审批的调用直接拒绝。配置文件删除 `approval.enabled` 与 `approval.default`，Approval 不能由用户关闭；未来若出现明确的自动化场景，再单独设计受限的非交互授权入口。
 
-M3 已有的 canonical ApprovalRequest、参数 hash、Terminal Handler、Audit 和事件主链继续复用；删除全工具 ToolAuthorizer，审批逻辑进入 `ExecuteCommandHandler → ToolOrchestrator → ApprovalReviewer`，MCP stdio 启动使用同一 ApprovalReviewer 能力。旧 Run-local 通用 `GrantCache` 拆分并提升为 SessionRuntime 所有的 SessionPermissionStore 与 SessionApprovalStore。当前收敛删除旧 CommandGuard 的路径 token 拒绝、按工具名宽泛授权和“所有写入/命令一律审批”，但不实现 Docker、macOS/Windows 原生 Sandbox 或复杂 Policy DSL。
+M3 已有的 canonical ApprovalRequest、参数 hash、Terminal Handler、Audit 和事件主链继续复用；删除全工具 ToolAuthorizer，审批逻辑进入 `ExecuteCommandHandler → private ExecRequest/process runtime → ApprovalReviewer`，MCP stdio 启动使用同一 ApprovalReviewer 能力。旧 Run-local 通用 `GrantCache` 拆分并提升为 SessionRuntime 所有的 SessionPermissionStore 与 SessionApprovalStore。当前收敛删除旧 CommandGuard 的路径 token 拒绝、按工具名宽泛授权和“所有写入/命令一律审批”，但不实现 Docker、macOS/Windows 原生 Sandbox 或复杂 Policy DSL。
 
 `OpenJSONLFile` 自动建立 0700 父目录、以 append 模式打开 0600 regular file，并拒绝最终 symlink；每条记录先独立编码，再在锁内单次写入，保证并发调用仍是一行一个合法 JSON object。ToolRouter 与各领域 Handler 对 route/validation、policy allow/deny、用户/default/grant 决策和 handler error 统一记录耗时；配置了 Audit Sink 时，必须在副作用前 fail closed，并与原始拒绝或策略错误保留完整 error chain。Agent bootstrap 同时强制注入 ApprovalReviewer 与 Audit Sink，避免真实链路静默绕过审批或审计。
 
@@ -2869,7 +2889,7 @@ SQLite 使用 WAL 模式和短事务。Amadeus 首版不复制 Codex 的 JSONL +
 
 - 决策：目标核心模型为 ToolCall、ToolPayload、ToolInvocation、ToolSpec、ToolHandler、ToolRegistry、ToolRouter、ToolOutput、ToolCallOutcome 与 ToolExecution；删除通用 Tool.Prepare/Execute、PreparedToolCall、PreparedTarget、ToolDispatcher、ToolExecutor、ToolExecutionGate 和全工具 Authorizer。
 - 决策：ToolRouter 对每个调用独立完成且只完成一次 JSON repair/parse/Schema 校验；Reactor Analyze 不重复校验，不因同批一个非法调用取消其他合法调用。校验后 Router 调用对应 Handler.Handle。
-- 决策：简单 Handler 直接执行；文件 Handler 调用 FileSystemPolicy；ApplyPatchHandler 使用私有 PreparedPatch；ExecuteCommandHandler 使用私有 ExecRequest 与 ToolOrchestrator；MCP/Web 使用各自 Manager/Provider，不通过泛化 target/payload 模型。
+- 决策：简单 Handler 直接执行；文件 Handler 调用 FileSystemPolicy；ApplyPatchHandler 使用私有 PreparedPatch；ExecuteCommandHandler 使用私有 ExecRequest 与轻量进程执行分支；MCP/Web 使用各自 Manager/Provider，不通过泛化 target/payload 模型。
 - 决策：MVP 删除 PreExecutionHook、PostExecutionHook 与 PostWriteHooks。AuditRecorder、ToolEventPublisher 和 RunDiffProjector 是显式投影组件；未来真正实现 Hook 时再对齐 Codex PreToolUse/PostToolUse 语义。
 - 决策：TargetStrategy 与 PathGuard 从目标架构删除；PathResolver、FileSystemPolicy、PreparedPatch/ExecRequest 的一致性检查与写入前 TOCTOU revalidation 继续保留。
 
@@ -2900,10 +2920,10 @@ SQLite 使用 WAL 模式和短事务。Amadeus 首版不复制 Codex 的 JSONL +
 ### ADR-031：Handler 主链与确定性 Apply Patch
 
 - 决策：Tool 调用统一经过 ToolRouter 的 Registry/visibility、唯一一次 repair/parse/Schema 校验和 Handler 并行调度，再进入 ToolHandler.Handle；Reactor Analyze 不重复校验参数，同批调用独立成功或失败。
-- 决策：Permission、Operation Approval 与 Sandbox 是三层不同边界。文件 Permission 由对应 Handler 通过 FileSystemPolicy 完成；ExecuteCommandHandler 的 ToolOrchestrator 处理 Approval/Sandbox；Sandbox 只在 OS 层约束进程，不能替代 Tool Schema 或 Permission。
+- 决策：Permission、Operation Approval 与 Sandbox 是三层不同边界。文件 Permission 由对应 Handler 通过 FileSystemPolicy 完成；ExecuteCommandHandler 的私有进程分支处理 Approval/Sandbox；Sandbox 只在 OS 层约束进程，不能替代 Tool Schema 或 Permission。
 - 决策：删除目标架构中的 PathGuard、通用 PreparedToolCall 与全工具 Authorizer；保留 PathResolver、FileSystemPolicy、ApplyPatchHandler 私有 PreparedPatch、ExecuteCommandHandler 私有 ExecRequest 和执行前 staleness/identity revalidation。
-- 决策：`apply_patch` 保留完整 preflight、零/多匹配拒绝、Add/Move 不覆盖、staging、提交前 bytes/identity revalidation、partial commit metadata 与 exact delta；新增 End of File marker、每级唯一的有限匹配梯度、内容级 AppliedPatchDelta 和流式 Patch Preview。
-- 决策：选择性借鉴 Codex ToolOrchestrator，只为 `execute_command` 等真实进程操作建立专用进程 Runtime；结构化文件 Handler 不进入通用 OS Sandbox Orchestrator，不复制全工具审批/重试框架。
+- 决策：`apply_patch` 保留完整 preflight、零/多匹配拒绝、Add/Move 不覆盖、staging、提交前 bytes/identity revalidation、partial commit metadata 与 exact delta；M8H 新增 End of File marker、每级唯一的有限匹配梯度和内容级 AppliedPatchDelta。流式 Patch Preview 延后到独立只读 Preview Event，不进入 Provider 聚合或 M8H 执行语义。
+- 决策：选择性借鉴 Codex ToolOrchestrator 的职责分层，只为 `execute_command` 建立私有 ExecRequest 与轻量进程 Runtime；第二类真实进程 Tool 出现前不抽取具名通用 ToolOrchestrator，结构化文件 Handler 也不进入 OS Sandbox 编排层。
 
 ## 27. 当前统一决策
 
@@ -2926,5 +2946,5 @@ SQLite 使用 WAL 模式和短事务。Amadeus 首版不复制 Codex 的 JSONL +
 17. Amadeus 当前不实现 ThreadRollback；未来若增加，只能追加 rollback marker 并改变 Context Projection，不修改磁盘、不删除 canonical rollout。
 18. Prompt 模板属于 `internal/prompt/builtin`，由 Bootstrap 按 Agent Base、RunMode、动态 Runtime/Permission、Instructions、Extensions、Tool Exposure 和 Compaction 职责分层装配；Reactor 不读取模板资产。Codex Prompt 只选择性改写为已实现的 Amadeus Runtime 语义，不预埋模型专属或尚未实现的能力。
 19. 默认 Rich Inline 的交互层与视觉层分离：Composer/Slash/Selection 已由 M9 收敛，M9V 使用 TerminalPalette、Motion、TranscriptCell/ActiveCell 和内容边界 Separator 替换旧 `fullscreenEntry`/Iteration 排版链；UI 仍只消费 Typed Events，不拥有 Agent、Session 或 Tool 事实。
-20. ToolRouter 是唯一参数校验和分发入口；ToolHandler 是业务执行入口。普通 Handler 直接执行，文件 Handler 调用 FileSystemPolicy，ApplyPatchHandler 使用私有 PreparedPatch，ExecuteCommandHandler 使用私有 ExecRequest/ToolOrchestrator；目标架构不保留通用 PreparedCall、全工具 Authorizer 或伪通用 Hook。
+20. ToolRouter 是唯一参数校验和分发入口；ToolHandler 是业务执行入口。普通 Handler 直接执行，文件 Handler 调用 FileSystemPolicy，ApplyPatchHandler 使用私有 PreparedPatch，ExecuteCommandHandler 使用私有 ExecRequest 与轻量进程 Runtime；第二类进程 Tool 出现前不建立具名通用 ToolOrchestrator，目标架构也不保留通用 PreparedCall、全工具 Authorizer 或伪通用 Hook。
 21. `apply_patch` 是首选结构化写入能力，保留唯一匹配、无静默覆盖、全量 preflight、staging、identity revalidation、partial metadata 与 exact delta；匹配容错必须有界且每级唯一，普通 Shell 修改不伪装为 Patch 归因。

@@ -3,7 +3,7 @@
 > 创建日期：2026-07-29
 > 最近重排：2026-08-08
 > 唯一目标架构：`docs/design.md`
-> 当前状态：M8R、M8U、M8P、M9 与 M9V 已完成；M8H Tool Handler 主链与 `apply_patch` 收敛待实施，完成后进入 M10 正式发布，M11 Multi-Agent 不阻塞正式发布
+> 当前状态：M8R、M8U、M8P、M8H、M9 与 M9V 已完成；当前进入 M10 正式发布收尾，M11 Multi-Agent 不阻塞正式发布
 
 ## 1. 文档规则
 
@@ -49,7 +49,7 @@
 9. Tool 并发只保留 Run 级读写锁语义：Handler 通过 `SupportsParallelToolCalls() bool` 声明能力，`true` 获取 shared guard，`false` 获取 exclusive guard；不暴露 Shared/Exclusive 枚举，也不建立资源级路径锁。
 10. 支持并行的 Tool 受 `max_parallel_tools` 限流；非并行 Tool 等待此前并行调用完成并阻止后续调用，结果仍按模型原始调用顺序回灌。
 11. `ToolSpec` 只描述名称、说明和输入 Schema；目标架构删除通用 `Prepare/PreparedToolCall`、`TargetStrategy`、`PathGuard`、全工具 Authorizer 与伪通用 Pre/Post Hook。
-12. 文件 Handler 直接调用 `FileSystemPolicy`；`apply_patch` 私有使用 `PreparedPatch`，`execute_command` 私有使用 `ExecRequest + ToolOrchestrator`，这些领域对象不得扩展成所有 Tool 的公共流水线。
+12. 文件 Handler 直接调用 `FileSystemPolicy`；`apply_patch` 私有使用 `PreparedPatch`，`execute_command` 私有使用 `ExecRequest + 轻量进程 Runtime`；第二类进程 Tool 出现前不抽取具名通用 ToolOrchestrator，这些领域对象也不得扩展成所有 Tool 的公共流水线。
 13. `apply_patch` 保留唯一匹配、无静默覆盖、全量 preflight、staging、identity revalidation、partial metadata 与 exact delta；文件变化由 Run 级 `RunDiffProjector` 投影，不实现 Snapshot/Revert、`revert_run` 或 ThreadRollback。
 14. 中断 Run 补齐协议并追加 marker；下一次输入创建新 Run，不恢复旧调用栈，也不注入 Previous Work 第二摘要。
 15. AGENTS.md、Context Compaction、Skill、MCP、Web、TUI 和未来 SubAgent 都复用同一 SessionRuntime/RunRuntime/Reactor/Tool 主链。
@@ -81,7 +81,7 @@
 | M8S | Prepared Tool Pipeline 历史收敛 | SUPERSEDED | 曾统一 Prepare/PreparedToolCall；目标架构由 M8H 改为 Handler 私有领域准备对象 |
 | M8U | Permission/Isolation/Approval Runtime 收敛 | DONE | Codex 风格 Root/Policy 分层、Run/Session Permission Store、Sandboxed/Unsandboxed Shell、Session Command Approval 与安全回归已完成 |
 | M8P | Prompt Runtime 优化 | DONE | Prompt 资产内置化、Reactor 解耦、Coding Agent 文案重写与 Contract/E2E 已完成 |
-| M8H | Tool Handler 主链与 Apply Patch 收敛 | TODO | 对齐 Codex Handler/Registry/Router，删除通用 Prepared/Hook/Dispatcher 链并强化私有 PreparedPatch |
+| M8H | Tool Handler 主链与 Apply Patch 收敛 | DONE | Codex 风格 Handler/Registry/Router、私有 ExecRequest/PreparedPatch、typed exact delta 与 RunDiffProjector 已完成并通过发布门禁 |
 | M9 | TUI 交互与 Slash Command 重构 | DONE | Composer、Slash Popup、SelectionOverlay、十一个 Codex 对齐命令、Session 操作和交互门禁已完成；不代表视觉运行时已对齐 |
 | M9V | TUI Visual Runtime 重构 | DONE | TerminalPalette、Motion、TranscriptCell、ActiveCell、Tool History 和 Separator 状态模型已完成 |
 | M10 | 兼容回归与首个正式发布 | TODO | 依赖 M8H 完成；只负责冻结、回归、构建、文档和发布 |
@@ -107,11 +107,11 @@ M8R-A Canonical Persistence
 
 ## 4. 当前焦点
 
-- 当前阶段：`M9V` 与 `M10-00` 已完成；当前回到预发布 Tool 收敛阶段 `M8H`，完成后继续 M10。
-- 当前任务：无；下一项可领取任务为 `M8H-01`。
+- 当前阶段：`M8H` 已完成，进入 `M10` 兼容回归与首个正式发布阶段。
+- 当前任务：无；下一项可领取任务为 `M10-01`。
 - 当前阻塞：无。
-- 最近实施进展：M9V 已完成 TerminalPalette、Motion/Clock、TranscriptCell/ActiveCell、Exec/Explore/WebSearch、内容边界 Separator、Bottom Pane 与视觉矩阵测试；旧 fullscreenEntry、frame beam、Iteration Activity buffer、固定 pastel style 和 previous-kind 换行链已删除。
-- 发布约束：M8H 完成前不得冻结 Tool Contract；M10 完成前不得发布首个稳定版，也不得把 M11 Multi-Agent 接入默认主链。
+- 最近实施进展：M8H 已完成唯一 ToolRouter/ToolRegistry/ToolHandler 主链、唯一参数 Normalizer/Schema Validate、Run 级并发闸门、FileSystemPolicy 直连、私有 ExecRequest/PreparedPatch、内容级 AppliedPatchDelta 与 typed RunDiffProjector；旧 Prepared/Dispatcher/Executor/Gate/PathGuard/ToolAuthorizer/Hook 主链已删除。
+- 发布约束：M10 完成前不得发布首个稳定版，也不得把 M11 Multi-Agent 接入默认主链。
 
 ### 4.1 交付顺序
 
@@ -316,16 +316,16 @@ M8H 是首个正式发布前追加的 Tool 收敛阶段。它以 `docs/design.md
 
 | ID | 状态 | 依赖 | 最小任务 | 验收标准 |
 |---|---|---|---|---|
-| M8H-01 | TODO | M8P-04 | 冻结 Tool Handler Contract 与迁移清单 | 明确 ToolCall/Payload/Invocation/Spec/Handler/Registry/Router/Output/Outcome/Execution 的唯一职责；列出旧 Tool/PreparedCall/Dispatcher/Executor/Gate/Hook 到目标模型的逐项迁移与删除清单 |
-| M8H-02 | TODO | M8H-01 | 建立 ToolRegistry 与 ToolRouter 唯一入口 | Spec 与 Handler 绑定注册；Router 完成名称/可见性查找、Invocation 构造、Handler 调用和 fatal error 边界；生产代码不再绕过 Router 直接进入第二分发链 |
-| M8H-03 | TODO | M8H-02 | 集中 Tool Call Normalizer 与 Schema Validate | Provider Adapter 只保证 Tool Call fragment 身份与完整性；Router 对 Function Payload 唯一一次执行有界 JSON repair、parse 和 JSON Schema validation，参数错误稳定转换为模型可见 ToolOutput/Outcome |
-| M8H-04 | TODO | M8H-02 | 对齐 Handler 并发能力与 Run 级读写锁 | Handler 只暴露 `SupportsParallelToolCalls() bool`；`true` 调用在 `max_parallel_tools` 内获取 shared guard，`false` 获取 exclusive guard；等待可取消、结果按原调用顺序回灌；删除 Shared/Exclusive 枚举和资源级锁 |
-| M8H-05 | TODO | M8H-03,M8H-04 | 迁移简单与文件 Handler | 简单 Handler 直接执行；文件 Handler 在领域参数可用后调用统一 FileSystemPolicy；Handler 不复制 Root/Grant 判断，Router 不建立全工具 Authorizer；Permission Required/Deny 进入结构化 ToolOutput/Outcome |
-| M8H-06 | TODO | M8H-05 | 收敛 ExecuteCommandHandler 私有执行链 | `execute_command` 私有构造 ExecRequest 并调用 ToolOrchestrator；复用 EffectivePermissionProfile、Sandboxed/Unsandboxed、SessionApprovalStore、取消和进程收尾，不扩展成普通 Tool 的公共 Pipeline |
-| M8H-07 | TODO | M8H-05 | 实现 ApplyPatchHandler 私有 PreparedPatch | Patch Document 只解析一次；规范化 add/update/delete/move 与 source/destination target；唯一匹配、CRLF/上下文容错有界且每级唯一；禁止模糊歧义、路径逃逸和静默覆盖 |
-| M8H-08 | TODO | M8H-07 | 强化 Patch Preflight、Staging 与 Commit | 所有 target 在副作用前完成 FileSystemPolicy、存在性、类型、冲突和目标占用检查；staging 后在 commit 前执行 identity/staleness revalidation；失败/取消只报告真实 partial metadata，不把未提交变化记为成功 |
-| M8H-09 | TODO | M8H-08 | 接入 exact delta 与 RunDiffProjector | ApplyPatchHandler 对实际 add/update/delete/move 输出 exact delta；RunDiffProjector 只消费可信 Patch delta，Shell/write_stdin/MCP 不伪造归因；Model/UI/Audit/Rollout 使用受控投影且无内部归因警告 |
-| M8H-10 | TODO | M8H-06,M8H-09 | 删除旧 Tool 链并完成发布门禁 | 删除通用 Prepare/PreparedToolCall、ToolDispatcher、ToolExecutor、ToolExecutionGate、TargetStrategy、PathGuard、全工具 Authorizer 与 Pre/Post Hook；完成 Handler/Permission/Parallel/Patch/Command/Provider mock E2E、取消/partial/race、全仓测试、架构扫描、`make check` 与 `git diff --check` |
+| M8H-01 | DONE | M8P-04 | 冻结 Tool Handler Contract 与迁移清单 | 明确 ToolCall/Payload/Invocation/Spec/Handler/Registry/Router/Output/Outcome/Execution 的唯一职责；列出旧 Tool/PreparedCall/Dispatcher/Executor/Gate/Hook 到目标模型的逐项迁移与删除清单 |
+| M8H-02 | DONE | M8H-01 | 建立 ToolRegistry 与 ToolRouter 唯一入口 | Spec 与 Handler 绑定注册；Router 完成名称/可见性查找、Invocation 构造、Handler 调用和 fatal error 边界；生产代码不再绕过 Router 直接进入第二分发链 |
+| M8H-03 | DONE | M8H-02 | 集中 Tool Call Normalizer 与 Schema Validate | Provider Adapter 只保证 Tool Call fragment 身份与完整性；Router 对 Function Payload 唯一一次执行有界 JSON repair、parse 和 JSON Schema validation，参数错误稳定转换为模型可见 ToolOutput/Outcome |
+| M8H-04 | DONE | M8H-02 | 对齐 Handler 并发能力与 Run 级读写锁 | Handler 只暴露 `SupportsParallelToolCalls() bool`；`true` 调用在 `max_parallel_tools` 内获取 shared guard，`false` 获取 exclusive guard；等待可取消、结果按原调用顺序回灌；删除 Shared/Exclusive 枚举和资源级锁 |
+| M8H-05 | DONE | M8H-03,M8H-04 | 迁移简单与文件 Handler | 简单 Handler 直接执行；文件 Handler 在领域参数可用后调用统一 FileSystemPolicy；Handler 不复制 Root/Grant 判断，Router 不建立全工具 Authorizer；Permission Required/Deny 进入结构化 ToolOutput/Outcome |
+| M8H-06 | DONE | M8H-05 | 收敛 ExecuteCommandHandler 私有执行链 | `execute_command` 私有构造 ExecRequest 并进入轻量进程 Runtime；复用 EffectivePermissionProfile、Sandboxed/Unsandboxed、SessionApprovalStore、取消和进程收尾；第二类进程 Tool 出现前不抽取通用 ToolOrchestrator，也不扩展成普通 Tool 的公共 Pipeline |
+| M8H-07 | DONE | M8H-05 | 实现 ApplyPatchHandler 私有 PreparedPatch | Patch Document 只解析一次；规范化 add/update/delete/move 与 source/destination target；唯一匹配、CRLF/上下文容错有界且每级唯一；禁止模糊歧义、路径逃逸和静默覆盖 |
+| M8H-08 | DONE | M8H-07 | 强化 Patch Preflight、Staging 与 Commit | 所有 target 在副作用前完成 FileSystemPolicy、存在性、类型、冲突和目标占用检查；staging 后在 commit 前执行 identity/staleness revalidation；失败/取消只报告真实 partial metadata，不把未提交变化记为成功 |
+| M8H-09 | DONE | M8H-08 | 接入 exact delta 与 RunDiffProjector | ApplyPatchHandler 对实际 add/update/delete/move 输出 exact delta；RunDiffProjector 只消费可信 Patch delta，Shell/write_stdin/MCP 不伪造归因；Model/UI/Audit/Rollout 使用受控投影且无内部归因警告 |
+| M8H-10 | DONE | M8H-06,M8H-09 | 删除旧 Tool 链并完成发布门禁 | 删除通用 Prepare/PreparedToolCall、ToolDispatcher、ToolExecutor、ToolExecutionGate、TargetStrategy、PathGuard、全工具 Authorizer 与 Pre/Post Hook；完成 Handler/Permission/Parallel/Patch/Command/Provider mock E2E、取消/partial/race、全仓测试、架构扫描、`make check` 与 `git diff --check` |
 
 ### M8H 出口
 
@@ -333,8 +333,16 @@ M8H 是首个正式发布前追加的 Tool 收敛阶段。它以 `docs/design.md
 - Permission Check 规则只存在于 FileSystemPolicy；资源型 Handler 负责在正确时机调用，非资源 Tool 不经过伪通用权限层。
 - Run 级读写锁行为保留，但公共语义只暴露 `SupportsParallelToolCalls()`；不再维护 Shared/Exclusive 枚举、TargetStrategy 或资源级锁。
 - `apply_patch` 是首选结构化写入能力，私有 PreparedPatch 同时支撑唯一匹配、全量 preflight、staging、revalidation、partial metadata 与 exact delta，不建立通用 Prepared Call 框架。
-- `execute_command` 的 ExecRequest/ToolOrchestrator、`apply_patch` 的 PreparedPatch 都是 Handler 私有领域对象，不被抽象成所有 Tool 必须经过的公共层。
-- M8H 完成前 M10 不得冻结 Tool 暴露、Permission、并发、Patch 或 Tool 结果 Contract。
+- `execute_command` 的 ExecRequest/轻量进程 Runtime、`apply_patch` 的 PreparedPatch 都是 Handler 私有领域对象，不被抽象成所有 Tool 必须经过的公共层。
+- M8H 已解除 Tool Contract 冻结前置条件；M10 现在可以冻结 Tool 暴露、Permission、并发、Patch 与 Tool 结果 Contract。
+
+### M8H 完成证据（2026-08-08）
+
+- Contract/Router：`internal/tool`、`internal/agent/react`、`internal/app/bootstrap` 定向测试通过；架构守卫确认生产 Handler 只由 ToolRouter 调用，Router 独占参数 Normalize/Schema Validate。
+- Permission/Command：`internal/project`、`internal/policy`、`internal/tool/builtin` 覆盖 FileSystemPolicy、Permission Required/Deny、Sandboxed/Unsandboxed、SessionApprovalStore、取消与进程收尾。
+- Patch/RunDiff：`internal/tool/patch`、`internal/tool/builtin`、`internal/diff` 覆盖 add/update/delete/move、CRLF、EOF、唯一匹配、preflight、identity/staleness、partial commit、exact Old/New Content、合法 UnifiedDiff 与 typed RunDiffProjector。
+- Provider E2E：`TestCodingAgentProviderMockE2E` 与 `TestCoreToolsProviderMockE2E` 在 Responses、Chat Completions 两种协议下通过；malformed Tool arguments 延后到 Router 处理，且无内部 diff attribution warning。
+- 全仓门禁：`go test ./... -count=1`、`go test -race ./... -count=1`、`make check` 全部通过；架构扫描只在守卫字符串中保留被删除符号；旧 prepared/path_guard/tool_authorizer 文件名扫描为空；`git diff --check` 通过。
 
 ## 11. M9：TUI 交互与 Slash Command 重构
 

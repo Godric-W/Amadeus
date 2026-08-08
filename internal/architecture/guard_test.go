@@ -108,7 +108,7 @@ func TestToolRouterOwnsArgumentValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(router), "router.validator.Validate") {
+	if !strings.Contains(string(router), "router.validator.Normalize") {
 		t.Fatal("ToolRouter does not own Tool argument validation")
 	}
 	aggregatorPath := filepath.Join(root, "internal", "llm", "openai", "tool_call_aggregator.go")
@@ -118,6 +118,48 @@ func TestToolRouterOwnsArgumentValidation(t *testing.T) {
 	}
 	if strings.Contains(string(aggregator), "json.Valid") {
 		t.Fatal("Provider Tool Call aggregator rejects arguments before ToolRouter validation")
+	}
+}
+
+func TestToolHandlersOnlyExecuteThroughRouter(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, relative := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") || filepath.Base(path) == "router.go" {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			if strings.Contains(string(content), ".Handle(ctx, Invocation{") || strings.Contains(string(content), ".Handle(ctx, tool.Invocation{") {
+				t.Errorf("Tool Handler is invoked outside ToolRouter in %s", filepath.ToSlash(path[len(root)+1:]))
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan %s: %v", relative, err)
+		}
+	}
+}
+
+func TestRunDiffConsumesOnlyTypedPatchDeltas(t *testing.T) {
+	root := repositoryRoot(t)
+	tracker, err := os.ReadFile(filepath.Join(root, "internal", "diff", "tracker.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(tracker)
+	if !strings.Contains(content, "[]patchtool.AppliedPatchDelta") {
+		t.Fatal("RunDiff Projector does not consume typed AppliedPatchDelta values")
+	}
+	for _, forbidden := range []string{"tool.Output", `Metadata["operations"]`, "decodeOperations"} {
+		if strings.Contains(content, forbidden) {
+			t.Errorf("RunDiff Projector still depends on generic Tool metadata through %q", forbidden)
+		}
 	}
 }
 

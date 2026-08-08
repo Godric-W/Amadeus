@@ -79,6 +79,31 @@ func TestApplyPatchPreservesPartialExecutorResult(t *testing.T) {
 	}
 }
 
+func TestApplyPatchProjectsOnlyAppliedExactDeltas(t *testing.T) {
+	expected := errors.New("second commit failed")
+	delta := patchtool.AppliedPatchDelta{
+		Path: "first.txt", Operation: patchtool.OperationUpdate,
+		OldContent: []byte("old\n"), NewContent: []byte("new\n"),
+		UnifiedDiff: "--- first.txt\n+++ first.txt\n@@\n-old\n+new\n", Exact: true,
+	}
+	projector := &recordingPatchProjector{}
+	applier := &fakePatchApplier{result: patchtool.ApplyResult{
+		Applied: []patchtool.OperationResult{{Kind: patchtool.OperationUpdate, Path: "first.txt", Bytes: 4, Delta: delta}},
+		Partial: true,
+	}, err: expected}
+	candidate, err := newApplyPatch(ApplyPatchOptions{Projector: projector}, applier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := json.RawMessage(`{"patch":"*** Begin Patch\n*** Update File: first.txt\n@@\n-old\n+new\n*** Delete File: second.txt\n*** End Patch"}`)
+	if _, err := executePreparedTool(t, context.Background(), candidate, input); !errors.Is(err, expected) {
+		t.Fatalf("unexpected partial error: %v", err)
+	}
+	if projector.calls != 1 || len(projector.deltas) != 1 || !projector.deltas[0].Exact || projector.deltas[0].Path != "first.txt" {
+		t.Fatalf("unexpected projected deltas: calls=%d deltas=%#v", projector.calls, projector.deltas)
+	}
+}
+
 func TestApplyPatchReportsMoveMetadata(t *testing.T) {
 	applier := &fakePatchApplier{result: patchtool.ApplyResult{Applied: []patchtool.OperationResult{{Kind: patchtool.OperationMove, Path: "old.txt", Destination: "new.txt", Bytes: 4, Moved: true}}}}
 	candidate, err := newApplyPatch(ApplyPatchOptions{}, applier)
@@ -145,6 +170,17 @@ type fakePatchApplier struct {
 	err          error
 	prepareCalls int
 	calls        int
+}
+
+type recordingPatchProjector struct {
+	calls  int
+	deltas []patchtool.AppliedPatchDelta
+}
+
+func (projector *recordingPatchProjector) ProjectPatch(_ context.Context, deltas []patchtool.AppliedPatchDelta) error {
+	projector.calls++
+	projector.deltas = append(projector.deltas, deltas...)
+	return nil
 }
 
 func (applier *fakePatchApplier) PreparePatch(context.Context, patchtool.Document) (*patchtool.PreparedPatch, error) {

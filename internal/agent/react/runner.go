@@ -337,11 +337,6 @@ func (runner *Runner) publish(ctx context.Context, runtimeEvent event.Event) err
 	return runner.events.Publish(ctx, runtimeEvent)
 }
 
-func argumentFailureExecution(call tool.ToolCall, err error) ToolOutcome {
-	result := tool.Output{CallID: call.ID, ToolName: call.Name}
-	return ToolOutcome{CallID: call.ID, ToolName: call.Name, Status: ToolOutcomeFailed, Result: result, Error: &ToolError{Kind: "invalid_arguments", Message: err.Error()}}
-}
-
 func normalizedMessageToolCalls(original []llm.ToolCall, calls []tool.ToolCall) []llm.ToolCall {
 	byID := make(map[string]tool.ToolCall, len(calls))
 	for _, call := range calls {

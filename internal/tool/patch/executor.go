@@ -57,6 +57,7 @@ type ConflictError struct {
 	Matches    int
 	Candidates []int
 	Reason     string
+	Stale      bool
 }
 
 func (conflict *ConflictError) Error() string {
@@ -69,6 +70,13 @@ func (conflict *ConflictError) Error() string {
 		candidates = fmt.Sprintf("; candidate lines %v", conflict.Candidates)
 	}
 	return fmt.Sprintf("patch conflict for %q%s: %s%s", conflict.Path, location, conflict.Reason, candidates)
+}
+
+func (conflict *ConflictError) ToolErrorKind() string {
+	if conflict != nil && conflict.Stale {
+		return "target_stale"
+	}
+	return "patch_conflict"
 }
 
 type commitOperations interface {
@@ -424,21 +432,21 @@ func (executor *Executor) revalidate(prepared []preparedOperation) error {
 		switch candidate.operation.Kind {
 		case OperationAdd:
 			if _, err := os.Lstat(candidate.target); err == nil {
-				return &ConflictError{Path: candidate.operation.Path, Reason: "add target appeared after preflight"}
+				return &ConflictError{Path: candidate.operation.Path, Reason: "add target appeared after preflight", Stale: true}
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("revalidate apply_patch add target %q: %w", candidate.operation.Path, err)
 			}
 		case OperationUpdate, OperationDelete, OperationMove:
 			currentInfo, err := os.Lstat(candidate.source)
 			if err != nil || !currentInfo.Mode().IsRegular() || candidate.identity == nil || !os.SameFile(candidate.identity, currentInfo) {
-				return &ConflictError{Path: candidate.operation.Path, Reason: "target identity changed or disappeared after preflight"}
+				return &ConflictError{Path: candidate.operation.Path, Reason: "target identity changed or disappeared after preflight", Stale: true}
 			}
 			current, err := os.ReadFile(candidate.source)
 			if err != nil {
-				return &ConflictError{Path: candidate.operation.Path, Reason: "target changed or disappeared after preflight"}
+				return &ConflictError{Path: candidate.operation.Path, Reason: "target changed or disappeared after preflight", Stale: true}
 			}
 			if !bytes.Equal(current, candidate.original) {
-				return &ConflictError{Path: candidate.operation.Path, Reason: "target changed after preflight"}
+				return &ConflictError{Path: candidate.operation.Path, Reason: "target changed after preflight", Stale: true}
 			}
 		}
 	}
@@ -484,41 +492,63 @@ func newAppliedPatchDelta(operation OperationKind, path, destination string, old
 	return AppliedPatchDelta{
 		Path: path, Destination: destination, Operation: operation,
 		OldContent: append([]byte(nil), oldContent...), NewContent: append([]byte(nil), newContent...),
-		UnifiedDiff: unifiedContentDiff(path, destination, oldContent, newContent), Exact: true,
+		UnifiedDiff: unifiedContentDiff(operation, path, destination, oldContent, newContent), Exact: true,
 	}
 }
 
-func unifiedContentDiff(path, destination string, oldContent, newContent []byte) string {
+func unifiedContentDiff(operation OperationKind, path, destination string, oldContent, newContent []byte) string {
 	oldPath, newPath := path, path
-	if len(oldContent) == 0 {
+	if operation == OperationAdd {
 		oldPath = "/dev/null"
 	}
-	if len(newContent) == 0 {
+	if operation == OperationDelete {
 		newPath = "/dev/null"
 	}
 	if destination != "" {
 		newPath = destination
 	}
+	oldLines, oldFinalNewline := splitDiffLines(oldContent)
+	newLines, newFinalNewline := splitDiffLines(newContent)
+	oldStart, newStart := 1, 1
+	if len(oldLines) == 0 {
+		oldStart = 0
+	}
+	if len(newLines) == 0 {
+		newStart = 0
+	}
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "--- %s\n+++ %s\n@@\n", oldPath, newPath)
-	for _, line := range splitDiffLines(oldContent) {
-		builder.WriteByte('-')
-		builder.WriteString(line)
-		builder.WriteByte('\n')
+	fmt.Fprintf(&builder, "--- %s\n+++ %s\n", oldPath, newPath)
+	if !validText(oldContent) || !validText(newContent) {
+		builder.WriteString("Binary files differ\n")
+		return builder.String()
 	}
-	for _, line := range splitDiffLines(newContent) {
-		builder.WriteByte('+')
-		builder.WriteString(line)
-		builder.WriteByte('\n')
-	}
+	fmt.Fprintf(&builder, "@@ -%d,%d +%d,%d @@\n", oldStart, len(oldLines), newStart, len(newLines))
+	writeDiffLines(&builder, '-', oldLines, oldFinalNewline)
+	writeDiffLines(&builder, '+', newLines, newFinalNewline)
 	return builder.String()
 }
 
-func splitDiffLines(content []byte) []string {
-	if len(content) == 0 {
-		return nil
+func writeDiffLines(builder *strings.Builder, prefix byte, lines []string, finalNewline bool) {
+	for _, line := range lines {
+		builder.WriteByte(prefix)
+		builder.WriteString(line)
+		builder.WriteByte('\n')
 	}
-	return strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
+	if len(lines) > 0 && !finalNewline {
+		builder.WriteString("\\ No newline at end of file\n")
+	}
+}
+
+func splitDiffLines(content []byte) ([]string, bool) {
+	if len(content) == 0 {
+		return nil, false
+	}
+	finalNewline := content[len(content)-1] == '\n'
+	lines := strings.Split(string(content), "\n")
+	if finalNewline {
+		lines = lines[:len(lines)-1]
+	}
+	return lines, finalNewline
 }
 
 func cleanupPrepared(prepared []preparedOperation) {

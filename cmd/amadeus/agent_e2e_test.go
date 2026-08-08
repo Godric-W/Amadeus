@@ -16,8 +16,8 @@ import (
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/mcp"
-	"github.com/Godric-W/Amadeus/internal/tool"
 	"github.com/Godric-W/Amadeus/internal/tool/builtin"
+	patchtool "github.com/Godric-W/Amadeus/internal/tool/patch"
 	"github.com/Godric-W/Amadeus/internal/webfetch"
 )
 
@@ -462,7 +462,7 @@ func (*integratedWebFetcher) Fetch(context.Context, string) (webfetch.Document, 
 
 type integratedWriteHook struct{ calls int }
 
-func (hook *integratedWriteHook) ProjectPatch(_ context.Context, _ tool.Output) error {
+func (hook *integratedWriteHook) ProjectPatch(_ context.Context, _ []patchtool.AppliedPatchDelta) error {
 	hook.calls++
 	return nil
 }

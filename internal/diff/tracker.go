@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
-	"github.com/Godric-W/Amadeus/internal/tool"
+	patchtool "github.com/Godric-W/Amadeus/internal/tool/patch"
 )
 
 type ChangeKind string
@@ -57,20 +57,21 @@ func NewProjector(cwd string, events event.Sink) (*Projector, error) {
 	return &Projector{cwd: cwd, events: events, changes: make(map[string]Change)}, nil
 }
 
-func (tracker *Projector) ProjectPatch(ctx context.Context, result tool.Output) error {
+func (tracker *Projector) ProjectPatch(ctx context.Context, deltas []patchtool.AppliedPatchDelta) error {
 	if tracker == nil {
 		return errors.New("Run Diff Projector is nil")
 	}
-	operations, err := decodeOperations(result.Metadata["operations"])
-	if err != nil {
-		return tracker.invalidate(ctx, "apply_patch returned unreadable change metadata: "+err.Error())
-	}
-	if len(operations) == 0 {
+	if len(deltas) == 0 {
 		return nil
 	}
+	for _, delta := range deltas {
+		if err := tracker.validateDelta(delta); err != nil {
+			return tracker.invalidate(ctx, err.Error())
+		}
+	}
 	tracker.mutex.Lock()
-	for _, operation := range operations {
-		if err := tracker.applyOperation(operation); err != nil {
+	for _, delta := range deltas {
+		if err := tracker.applyDelta(delta); err != nil {
 			tracker.mutex.Unlock()
 			return tracker.invalidate(ctx, err.Error())
 		}
@@ -79,6 +80,31 @@ func (tracker *Projector) ProjectPatch(ctx context.Context, result tool.Output) 
 	snapshot := tracker.snapshotLocked()
 	tracker.mutex.Unlock()
 	return tracker.events.Publish(ctx, event.RunDiffUpdated{Revision: snapshot.Revision, Changes: eventChanges(snapshot.Changes)})
+}
+
+func (tracker *Projector) validateDelta(delta patchtool.AppliedPatchDelta) error {
+	if !delta.Exact {
+		return fmt.Errorf("apply_patch delta for %q is not exact", delta.Path)
+	}
+	if strings.TrimSpace(delta.UnifiedDiff) == "" {
+		return fmt.Errorf("apply_patch delta for %q has no unified diff", delta.Path)
+	}
+	if _, err := tracker.canonical(delta.Path); err != nil {
+		return err
+	}
+	switch delta.Operation {
+	case patchtool.OperationAdd, patchtool.OperationUpdate, patchtool.OperationDelete:
+		if strings.TrimSpace(delta.Destination) != "" {
+			return fmt.Errorf("apply_patch %s delta for %q has unexpected destination %q", delta.Operation, delta.Path, delta.Destination)
+		}
+	case patchtool.OperationMove:
+		if _, err := tracker.canonical(delta.Destination); err != nil {
+			return fmt.Errorf("apply_patch move destination: %w", err)
+		}
+	default:
+		return fmt.Errorf("apply_patch delta for %q has unsupported operation %q", delta.Path, delta.Operation)
+	}
+	return nil
 }
 
 func (tracker *Projector) Snapshot() Snapshot {
@@ -90,56 +116,14 @@ func (tracker *Projector) Snapshot() Snapshot {
 	return tracker.snapshotLocked()
 }
 
-type operation struct {
-	Kind        string
-	Path        string
-	Destination string
-	Bytes       int
-	Created     bool
-	Deleted     bool
-	Moved       bool
-}
-
-func decodeOperations(value any) ([]operation, error) {
-	if value == nil {
-		return nil, errors.New("operations are missing")
-	}
-	values, ok := value.([]map[string]any)
-	if !ok {
-		generic, genericOK := value.([]any)
-		if !genericOK {
-			return nil, fmt.Errorf("operations have type %T", value)
-		}
-		values = make([]map[string]any, 0, len(generic))
-		for index, item := range generic {
-			entry, entryOK := item.(map[string]any)
-			if !entryOK {
-				return nil, fmt.Errorf("operation %d has type %T", index, item)
-			}
-			values = append(values, entry)
-		}
-	}
-	result := make([]operation, 0, len(values))
-	for index, value := range values {
-		candidate := operation{
-			Kind: stringValue(value["kind"]), Path: stringValue(value["path"]), Destination: stringValue(value["destination"]),
-			Bytes: intValue(value["bytes"]), Created: boolValue(value["created"]), Deleted: boolValue(value["deleted"]), Moved: boolValue(value["moved"]),
-		}
-		if candidate.Path == "" {
-			return nil, fmt.Errorf("operation %d has no path", index)
-		}
-		result = append(result, candidate)
-	}
-	return result, nil
-}
-
-func (tracker *Projector) applyOperation(operation operation) error {
-	path, err := tracker.canonical(operation.Path)
+func (tracker *Projector) applyDelta(delta patchtool.AppliedPatchDelta) error {
+	path, err := tracker.canonical(delta.Path)
 	if err != nil {
 		return err
 	}
-	if operation.Moved {
-		destination, err := tracker.canonical(operation.Destination)
+	bytes := len(delta.NewContent)
+	if delta.Operation == patchtool.OperationMove {
+		destination, err := tracker.canonical(delta.Destination)
 		if err != nil {
 			return err
 		}
@@ -148,22 +132,22 @@ func (tracker *Projector) applyOperation(operation operation) error {
 		switch {
 		case exists && current.Kind == ChangeAdded:
 			current.Path = destination
-			current.Bytes = operation.Bytes
+			current.Bytes = bytes
 			tracker.changes[destination] = current
 		case exists && current.Kind == ChangeMoved:
 			current.Path = destination
-			current.Bytes = operation.Bytes
+			current.Bytes = bytes
 			tracker.changes[destination] = current
 		default:
-			tracker.changes[destination] = Change{Path: destination, PreviousPath: path, Kind: ChangeMoved, Bytes: operation.Bytes}
+			tracker.changes[destination] = Change{Path: destination, PreviousPath: path, Kind: ChangeMoved, Bytes: bytes}
 		}
 		return nil
 	}
 	current, exists := tracker.changes[path]
-	switch {
-	case operation.Created:
-		tracker.changes[path] = Change{Path: path, Kind: ChangeAdded, Bytes: operation.Bytes}
-	case operation.Deleted:
+	switch delta.Operation {
+	case patchtool.OperationAdd:
+		tracker.changes[path] = Change{Path: path, Kind: ChangeAdded, Bytes: bytes}
+	case patchtool.OperationDelete:
 		if exists && current.Kind == ChangeAdded {
 			delete(tracker.changes, path)
 		} else if exists && current.Kind == ChangeMoved {
@@ -172,13 +156,15 @@ func (tracker *Projector) applyOperation(operation operation) error {
 		} else {
 			tracker.changes[path] = Change{Path: path, Kind: ChangeDeleted}
 		}
-	default:
+	case patchtool.OperationUpdate:
 		if exists && (current.Kind == ChangeAdded || current.Kind == ChangeMoved) {
-			current.Bytes = operation.Bytes
+			current.Bytes = bytes
 			tracker.changes[path] = current
 		} else {
-			tracker.changes[path] = Change{Path: path, Kind: ChangeUpdated, Bytes: operation.Bytes}
+			tracker.changes[path] = Change{Path: path, Kind: ChangeUpdated, Bytes: bytes}
 		}
+	default:
+		return fmt.Errorf("apply_patch delta for %q has unsupported operation %q", delta.Path, delta.Operation)
 	}
 	return nil
 }
@@ -226,24 +212,6 @@ func eventChanges(changes []Change) []event.RunDiffChange {
 	return result
 }
 
-func stringValue(value any) string {
-	candidate, _ := value.(string)
-	return strings.TrimSpace(candidate)
-}
-func boolValue(value any) bool { candidate, _ := value.(bool); return candidate }
-func intValue(value any) int {
-	switch candidate := value.(type) {
-	case int:
-		return candidate
-	case int64:
-		return int(candidate)
-	case float64:
-		return int(candidate)
-	default:
-		return 0
-	}
-}
-
 var _ interface {
-	ProjectPatch(context.Context, tool.Output) error
+	ProjectPatch(context.Context, []patchtool.AppliedPatchDelta) error
 } = (*Projector)(nil)

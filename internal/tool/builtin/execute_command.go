@@ -78,10 +78,11 @@ type requestedCommandPermissions struct {
 }
 
 type ExecRequest struct {
-	arguments executeCommandArguments
-	cwd       string
-	display   string
-	launch    sandboxdomain.Launch
+	owner         string
+	displayCWD    string
+	yield         time.Duration
+	isolationMode sandboxdomain.IsolationMode
+	command       processdomain.Command
 }
 
 func NewExecuteCommand(root project.Root, options ExecuteCommandOptions) (*ExecuteCommand, error) {
@@ -137,14 +138,23 @@ func (executeCommand *ExecuteCommand) Handle(ctx context.Context, invocation too
 	if err := decodeArguments(call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
+	request, err := executeCommand.prepareExecRequest(ctx, invocation, arguments)
+	if err != nil {
+		return tool.Output{}, err
+	}
+	return executeCommand.executeExecRequest(ctx, request)
+}
+
+func (executeCommand *ExecuteCommand) prepareExecRequest(ctx context.Context, invocation tool.Invocation, arguments executeCommandArguments) (ExecRequest, error) {
+	call := invocation.Call
 	if strings.TrimSpace(arguments.Command) == "" {
-		return tool.Output{}, errors.New("execute_command command is empty")
+		return ExecRequest{}, errors.New("execute_command command is empty")
 	}
 	if strings.ContainsRune(arguments.Command, '\x00') {
-		return tool.Output{}, errors.New("execute_command command contains NUL")
+		return ExecRequest{}, errors.New("execute_command command contains NUL")
 	}
 	if arguments.TimeoutMS < 0 || arguments.YieldTimeMS < 0 || arguments.MaxOutputTokens < 0 {
-		return tool.Output{}, errors.New("execute_command timeout, yield and output limits cannot be negative")
+		return ExecRequest{}, errors.New("execute_command timeout, yield and output limits cannot be negative")
 	}
 	relativeCWD := strings.TrimSpace(arguments.CWD)
 	if relativeCWD == "" {
@@ -152,35 +162,33 @@ func (executeCommand *ExecuteCommand) Handle(ctx context.Context, invocation too
 	}
 	resolved, err := executeCommand.policy.ResolveExisting(relativeCWD, project.PathDirectory)
 	if err != nil {
-		return tool.Output{}, err
+		return ExecRequest{}, err
 	}
 	for _, requestedRoot := range arguments.RequestedPermissions.WritableRoots {
 		_, resolveErr := executeCommand.policy.ResolveWritableDirectory(requestedRoot)
 		if resolveErr != nil {
-			return tool.Output{}, resolveErr
+			return ExecRequest{}, resolveErr
 		}
 	}
 	shell, err := exec.LookPath(executeCommand.options.Shell)
 	if err != nil {
-		return tool.Output{}, fmt.Errorf("resolve execute_command shell: %w", err)
+		return ExecRequest{}, fmt.Errorf("resolve execute_command shell: %w", err)
 	}
 	launch := sandboxdomain.Launch{Executable: shell, Arguments: []string{"-c", arguments.Command}, Directory: resolved.Canonical, Mode: sandboxdomain.IsolationUnsandboxed}
 	if executeCommand.sandbox != nil {
 		launch, err = executeCommand.sandbox.Prepare(shell, arguments.Command, resolved.Canonical)
 		if err != nil {
-			return tool.Output{}, fmt.Errorf("prepare sandbox command: %w", err)
+			return ExecRequest{}, fmt.Errorf("prepare sandbox command: %w", err)
 		}
 	}
-	request := ExecRequest{arguments: arguments, cwd: resolved.Canonical, display: relativeCWD, launch: launch}
 	if executeCommand.options.Authorizer == nil && launch.Mode == sandboxdomain.IsolationUnsandboxed {
-		return tool.Output{}, errors.New("execute_command unsandboxed operation authorizer is nil")
+		return ExecRequest{}, errors.New("execute_command unsandboxed operation authorizer is nil")
 	}
 	if executeCommand.options.Authorizer != nil {
 		if err := executeCommand.options.Authorizer.Authorize(ctx, policy.CommandRequest{Call: call, Shell: shell, Command: arguments.Command, CWD: resolved.Canonical, TTY: arguments.TTY, IsolationMode: launch.Mode}); err != nil {
-			return tool.Output{}, err
+			return ExecRequest{}, err
 		}
 	}
-	arguments, relativeCWD, launch = request.arguments, request.display, request.launch
 	timeout := durationFromMilliseconds(arguments.TimeoutMS, executeCommand.options.DefaultTimeout, executeCommand.options.MaxTimeout)
 	yield := durationFromMilliseconds(arguments.YieldTimeMS, executeCommand.options.DefaultYield, executeCommand.options.MaxYield)
 	maxTokens := arguments.MaxOutputTokens
@@ -188,24 +196,35 @@ func (executeCommand *ExecuteCommand) Handle(ctx context.Context, invocation too
 		maxTokens = executeCommand.options.MaxOutputTokens
 	}
 	maxBytes := min(int(executeCommand.options.MaxOutputBytes), maxTokens*4)
-	owner := event.MetadataFromContext(ctx).RunID
+	owner := strings.TrimSpace(invocation.RunID)
+	if owner == "" {
+		owner = strings.TrimSpace(event.MetadataFromContext(ctx).RunID)
+	}
 	if owner == "" {
 		owner = "standalone"
 	}
+	return ExecRequest{
+		owner: owner, displayCWD: relativeCWD, yield: yield, isolationMode: launch.Mode,
+		command: processdomain.Command{
+			Shell: executeCommand.options.Shell, Command: arguments.Command,
+			Executable: launch.Executable, Arguments: launch.Arguments, Directory: launch.Directory,
+			Timeout: timeout, TTY: arguments.TTY, MaxOutputBytes: maxBytes,
+		},
+	}, nil
+}
+
+func (executeCommand *ExecuteCommand) executeExecRequest(ctx context.Context, request ExecRequest) (tool.Output, error) {
 	startedAt := time.Now()
-	processID, err := executeCommand.manager.Start(owner, processdomain.Command{
-		Shell: executeCommand.options.Shell, Command: arguments.Command, Executable: launch.Executable, Arguments: launch.Arguments, Directory: launch.Directory,
-		Timeout: timeout, TTY: arguments.TTY, MaxOutputBytes: maxBytes,
-	}, configureCommandProcess)
+	processID, err := executeCommand.manager.Start(request.owner, request.command, configureCommandProcess)
 	if err != nil {
 		return tool.Output{}, fmt.Errorf("start execute_command: %w", err)
 	}
-	snapshot, err := executeCommand.manager.SnapshotContext(ctx, processID, owner, yield)
+	snapshot, err := executeCommand.manager.SnapshotContext(ctx, processID, request.owner, request.yield)
 	if err != nil {
-		_ = executeCommand.manager.Cancel(processID, owner)
+		_ = executeCommand.manager.Cancel(processID, request.owner)
 		return tool.Output{}, err
 	}
-	return commandSnapshotResult("execute_command", relativeCWD, snapshot, time.Since(startedAt), launch.Mode)
+	return commandSnapshotResult("execute_command", request.displayCWD, snapshot, time.Since(startedAt), request.isolationMode)
 }
 
 var _ tool.Handler = (*ExecuteCommand)(nil)
