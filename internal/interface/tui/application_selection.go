@@ -167,53 +167,36 @@ func (model fullscreenModel) renderSelectionOverlay(width int) string {
 	if hint == "" {
 		hint = "↑/↓ select · Enter confirm · Esc cancel"
 	}
-	lines := []string{fullscreenResumeAccentStyle.Render(overlay.Title) + "  " + fullscreenMutedStyle.Render(hint)}
-	if overlay.Subtitle != "" {
-		lines = append(lines, fullscreenMutedStyle.Render(overlay.Subtitle))
-	}
+	visual := listVisual{Title: overlay.Title, Subtitle: overlay.Subtitle, Hint: hint}
 	if model.selectionKind == "approval" && model.approval != nil {
 		request := model.approval.request
-		lines = append(lines,
+		visual.Details = append(visual.Details,
 			"Tool: "+sanitizeInlineEventText(request.ToolName),
 			fmt.Sprintf("Risk: %s", request.Risk),
 			"Reason: "+sanitizeInlineEventText(request.Reason),
 		)
 	}
 	if overlay.Input || overlay.Search {
-		prefix := "> "
+		visual.InputLabel = "> "
 		if overlay.Search {
-			prefix = "Search: "
+			visual.InputLabel = "Search: "
 		}
-		lines = append(lines, prefix+overlay.Value)
+		visual.InputValue = overlay.Value
 	}
-	indices := overlay.filteredIndices()
-	if len(indices) == 0 && !overlay.Input {
-		lines = append(lines, fullscreenMutedStyle.Render("No matching items"))
+	filtered := overlay.filteredIndices()
+	selectedSource := -1
+	if overlay.Selected >= 0 && overlay.Selected < len(filtered) {
+		selectedSource = filtered[overlay.Selected]
 	}
-	for visibleIndex, itemIndex := range indices {
+	for _, itemIndex := range overlay.visibleIndices() {
 		item := overlay.Items[itemIndex]
-		prefix := "  "
-		if visibleIndex == overlay.Selected {
-			prefix = "› "
-		}
-		line := prefix + item.Name
-		if item.Description != "" {
-			line += "  " + item.Description
-		}
-		if item.Disabled {
-			reason := strings.TrimSpace(item.DisabledReason)
-			if reason == "" {
-				reason = "disabled"
-			}
-			line += "  (" + reason + ")"
-		}
-		line = truncateFullscreen(line, width)
-		if visibleIndex == overlay.Selected && !item.Disabled {
-			line = fullscreenResumeAccentStyle.Render(line)
-		} else if item.Disabled {
-			line = fullscreenMutedStyle.Render(line)
-		}
-		lines = append(lines, line)
+		visual.Items = append(visual.Items, listVisualItem{
+			Name: item.Name, Description: item.Description, Disabled: item.Disabled,
+			DisabledReason: item.DisabledReason, Selected: itemIndex == selectedSource,
+		})
 	}
-	return strings.Join(lines, "\n")
+	if len(filtered) == 0 && !overlay.Input {
+		visual.EmptyText = "No matching items"
+	}
+	return model.renderListVisual(visual, width)
 }

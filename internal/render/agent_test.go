@@ -88,6 +88,25 @@ func TestAgentRendererRendersSuccessPartialAndFallbacks(t *testing.T) {
 	}
 }
 
+func TestAgentRendererKeepsDiffStateOutOfPlainTranscript(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	renderer, err := NewAgentRenderer(&stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, runtimeEvent := range []event.Event{
+		event.RunDiffUpdated{Revision: 1, Changes: []event.RunDiffChange{{Path: "/work/a.go", Kind: "updated"}}},
+		event.RunDiffInvalidated{Revision: 2, Reason: "malformed Patch delta"},
+	} {
+		if err := renderer.Publish(context.Background(), runtimeEvent); err != nil {
+			t.Fatalf("publish %T: %v", runtimeEvent, err)
+		}
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("Diff state leaked into plain transcript: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestAgentRendererSanitizesAndBoundsStatusText(t *testing.T) {
 	var stderr bytes.Buffer
 	renderer, err := NewAgentRenderer(&bytes.Buffer{}, &stderr)

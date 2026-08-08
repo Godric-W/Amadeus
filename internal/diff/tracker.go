@@ -81,8 +81,6 @@ func (tracker *Tracker) After(ctx context.Context, spec tool.Spec, _ tool.Call, 
 		snapshot := tracker.snapshotLocked()
 		tracker.mutex.Unlock()
 		return tracker.events.Publish(ctx, event.RunDiffUpdated{Revision: snapshot.Revision, Changes: eventChanges(snapshot.Changes)})
-	case "execute_command", "write_stdin", "mcp_call":
-		return tracker.invalidate(ctx, fmt.Sprintf("%s may have modified files outside exact Patch attribution", spec.Name))
 	default:
 		return nil
 	}

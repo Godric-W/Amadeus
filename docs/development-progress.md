@@ -3,7 +3,7 @@
 > 创建日期：2026-07-29
 > 最近重排：2026-08-08
 > 唯一目标架构：`docs/design.md`
-> 当前状态：M8R、M8S、M8U、M8P 与 M9 已完成；当前进入 M10 兼容回归与首个正式发布，M11 Multi-Agent 不阻塞正式发布
+> 当前状态：M8R、M8U、M8P、M9 与 M9V 已完成；M8H Tool Handler 主链与 `apply_patch` 收敛待实施，完成后进入 M10 正式发布，M11 Multi-Agent 不阻塞正式发布
 
 ## 1. 文档规则
 
@@ -44,13 +44,13 @@
 4. Reactor 是唯一 Agent 执行内核；默认 execute Run 使用 Plan-guided ReAct，`update_plan` 是软计划工具，不引入 DAG/Scheduler。
 5. `/plan` 不接收任务文本，只切换当前 Composer 到 Plan Mode；后续普通输入创建只规划不实施的 `plan` Run，切回 `execute` 后根据 canonical rollout 实施计划。
 6. ToolOutcome 是工具执行唯一结果事实；普通失败、拒绝、超时和中断进入结构化结果，不复制通用 Evidence 树。
-7. Tool 并发只使用 Run 级 `Shared/Exclusive` Gate；不建立文件、目录、参数或 Process 级读写锁。
-8. Shared–Shared 可重叠，其余包含 Exclusive 的组合均由屏障串行化；该单层规则已经覆盖读读、读写和写写，不再维护第二套资源锁状态。
-9. Shared Tool 受 `max_parallel_tools` 限流；Exclusive Tool 等待此前 Shared 完成并阻止后续 Tool，结果仍按模型原始调用顺序回灌。
-10. Tool Spec 删除 `TargetStrategy`；schema 校验后由 Tool Prepare 一次生成 immutable `PreparedToolCall`，Path Policy、Approval、Grant、Audit、Execute 和 RunDiff 共用同一 canonical target。
-11. PreparedToolCall 只存在于当前调用内存中，不进入 canonical rollout；rollout 仍持久化规范化 Tool Call 与 ToolOutcome。
-12. `apply_patch`、`execute_command`、`write_stdin` 和未知动态 Tool 首版一律 Exclusive；结构化读取、图片、Web 和可信只读 MCP Tool 可 Shared。
-13. 文件变化使用 Run 级 `RunDiffTracker` 投影；不实现文件 Snapshot/Revert、`revert_run` 或 ThreadRollback。
+7. Tool 主链统一为 `ToolCall → ToolRouter → ToolRegistry → ToolHandler → ToolOutput → ToolCallOutcome/ToolExecution`；不并存 Dispatcher、Executor、ExecutionGate 或通用 Prepared Call 第二执行链。
+8. `ToolRouter` 是唯一 repair/parse/schema validation、可见性检查、并发调度和结果投影入口；`ToolHandler` 是领域执行入口，简单 Handler 直接执行，资源型 Handler 按需调用统一 Policy。
+9. Tool 并发只保留 Run 级读写锁语义：Handler 通过 `SupportsParallelToolCalls() bool` 声明能力，`true` 获取 shared guard，`false` 获取 exclusive guard；不暴露 Shared/Exclusive 枚举，也不建立资源级路径锁。
+10. 支持并行的 Tool 受 `max_parallel_tools` 限流；非并行 Tool 等待此前并行调用完成并阻止后续调用，结果仍按模型原始调用顺序回灌。
+11. `ToolSpec` 只描述名称、说明和输入 Schema；目标架构删除通用 `Prepare/PreparedToolCall`、`TargetStrategy`、`PathGuard`、全工具 Authorizer 与伪通用 Pre/Post Hook。
+12. 文件 Handler 直接调用 `FileSystemPolicy`；`apply_patch` 私有使用 `PreparedPatch`，`execute_command` 私有使用 `ExecRequest + ToolOrchestrator`，这些领域对象不得扩展成所有 Tool 的公共流水线。
+13. `apply_patch` 保留唯一匹配、无静默覆盖、全量 preflight、staging、identity revalidation、partial metadata 与 exact delta；文件变化由 Run 级 `RunDiffProjector` 投影，不实现 Snapshot/Revert、`revert_run` 或 ThreadRollback。
 14. 中断 Run 补齐协议并追加 marker；下一次输入创建新 Run，不恢复旧调用栈，也不注入 Previous Work 第二摘要。
 15. AGENTS.md、Context Compaction、Skill、MCP、Web、TUI 和未来 SubAgent 都复用同一 SessionRuntime/RunRuntime/Reactor/Tool 主链。
 16. `Project.RootPath` 只持久化初始 CWD 对应的项目身份；RunContext.CWD 负责相对路径，WorkspaceRoots 是 `[CWD] + --add-dir` 的派生项目集合，不再使用 PrimaryRoot 参与权限判断。
@@ -78,11 +78,13 @@
 | M6/M6R | Coding Workflow 与 Reactor/TUI 重构 | DONE | 已提供可用产品基线，但仍含旧语义 |
 | M7/M8T | Process、Web/MCP/Skill、Rich Inline TUI | DONE | 已交付能力，需接入新主链 |
 | M8R | 目标架构收敛 | DONE | canonical Runtime、Reactor、Context、Tool、Extension 与 TUI 已统一并通过发布门 |
-| M8S | Prepared Tool Pipeline 收敛 | DONE | TargetStrategy 已删除；Prepare、授权和执行统一消费 PreparedToolCall |
+| M8S | Prepared Tool Pipeline 历史收敛 | SUPERSEDED | 曾统一 Prepare/PreparedToolCall；目标架构由 M8H 改为 Handler 私有领域准备对象 |
 | M8U | Permission/Isolation/Approval Runtime 收敛 | DONE | Codex 风格 Root/Policy 分层、Run/Session Permission Store、Sandboxed/Unsandboxed Shell、Session Command Approval 与安全回归已完成 |
 | M8P | Prompt Runtime 优化 | DONE | Prompt 资产内置化、Reactor 解耦、Coding Agent 文案重写与 Contract/E2E 已完成 |
-| M9 | Codex 风格 TUI 与 Slash Command 重构 | DONE | Composer、Slash Popup、SelectionOverlay、十个命令、Session 操作和发布门禁已完成 |
-| M10 | 兼容回归与首个正式发布 | TODO | 依赖 M9 完成；只负责冻结、回归、构建、文档和发布 |
+| M8H | Tool Handler 主链与 Apply Patch 收敛 | TODO | 对齐 Codex Handler/Registry/Router，删除通用 Prepared/Hook/Dispatcher 链并强化私有 PreparedPatch |
+| M9 | TUI 交互与 Slash Command 重构 | DONE | Composer、Slash Popup、SelectionOverlay、十一个 Codex 对齐命令、Session 操作和交互门禁已完成；不代表视觉运行时已对齐 |
+| M9V | TUI Visual Runtime 重构 | DONE | TerminalPalette、Motion、TranscriptCell、ActiveCell、Tool History 和 Separator 状态模型已完成 |
+| M10 | 兼容回归与首个正式发布 | TODO | 依赖 M8H 完成；只负责冻结、回归、构建、文档和发布 |
 | M11 | 可选只读 Multi-Agent 与高级入口 | TODO | 不阻塞 M10 |
 
 当前关键路径：
@@ -98,16 +100,18 @@ M8R-A Canonical Persistence
 → M8U Workspace/Permission/Approval Runtime
 → M8P Prompt Runtime
 → M9 TUI/Slash Command
+→ M9V TUI Visual Runtime
+→ M8H Tool Handler/Apply Patch Convergence
 → M10 Release
 ```
 
 ## 4. 当前焦点
 
-- 当前阶段：`M9` 已完成；当前阶段为 `M10` 兼容回归与首个正式发布。
-- 当前任务：无；下一项可领取任务为 `M10-01`。
+- 当前阶段：`M9V` 与 `M10-00` 已完成；当前回到预发布 Tool 收敛阶段 `M8H`，完成后继续 M10。
+- 当前任务：无；下一项可领取任务为 `M8H-01`。
 - 当前阻塞：无。
-- 最近实施进展：M9 已完成共享 SlashCommandCatalog/Popup、统一 SelectionOverlay、Plan CollaborationMode、Resume/Clear/Rename/Delete、Status/Copy/MCP、Skill 权威启停、模型语义化 Compaction 和 Codex 风格启动面板；`go test ./... -count=1`、`go test -race ./... -count=1`、`make check` 与 `git diff --check` 均通过。
-- 发布约束：M10 完成前不得发布首个稳定版，也不得把 M11 Multi-Agent 接入默认主链。
+- 最近实施进展：M9V 已完成 TerminalPalette、Motion/Clock、TranscriptCell/ActiveCell、Exec/Explore/WebSearch、内容边界 Separator、Bottom Pane 与视觉矩阵测试；旧 fullscreenEntry、frame beam、Iteration Activity buffer、固定 pastel style 和 previous-kind 换行链已删除。
+- 发布约束：M8H 完成前不得冻结 Tool Contract；M10 完成前不得发布首个稳定版，也不得把 M11 Multi-Agent 接入默认主链。
 
 ### 4.1 交付顺序
 
@@ -116,14 +120,16 @@ M8R-A Canonical Persistence
 | 1 | M8R-01～06 | 完成 canonical persistence、Replacement History 与历史投影 |
 | 2 | M8R-07～11 | 收敛 SessionRuntime、RunRuntime、RequestContext 与中断语义 |
 | 3 | M8R-12～16 | 收敛唯一 Reactor、ContextManager、PlanState 与 Typed Events |
-| 4 | M8R-17～25 | 收敛 ToolOutcome、Shared/Exclusive Gate、安全边界与 RunDiffTracker |
+| 4 | M8R-17～25 | 交付历史 ToolOutcome、Run 级并发、安全边界与 Patch Diff 基线 |
 | 5 | M8R-26～29 | 让 Skill、MCP、Web 和 TUI 接入统一 Runtime |
 | 6 | M8R-30～34 | 删除旧链并完成全仓验收 |
-| 7 | M8S-01～08 | 收敛 Prepared Tool Call、权限目标与单次解析主链 |
+| 7 | M8S-01～08 | 历史 Prepared Tool Call 收敛；其公共流水线由 M8H 取代 |
 | 8 | M8U-01～11 | 收敛 Workspace、Permission、Approval、ExecPolicy 与 Sandbox 主链 |
 | 8P | M8P-01～04 | Prompt 资产、装配、文案和 Contract/E2E 收敛 |
-| 9 | M9-01～14 | 重构 TUI、Slash Popup、SelectionOverlay 与十个 Codex 对齐命令 |
-| 10 | M10-01～10 | 发布兼容、构建、文档和版本候选 |
+| 9 | M9-01～14 | 重构 Composer、Slash Popup、SelectionOverlay 与十一个 Codex 对齐命令 |
+| 9V | M9V-01～10 | 重构 TerminalPalette、Motion、TranscriptCell、Tool History 与 Separator Visual Runtime |
+| 8H | M8H-01～10 | 收敛 Handler/Registry/Router、权限接入、并发声明、PreparedPatch 与 RunDiffProjector |
+| 10 | M10-01～10 | 在 M8H 后完成发布兼容、构建、文档和版本候选 |
 | 11 | M11-01～07 | 发布后验证只读 Multi-Agent 的真实收益 |
 
 ## 5. 历史交付摘要
@@ -195,7 +201,7 @@ M8R-A Canonical Persistence
 | M8R-21 | DONE | M8R-17 | 拆分 PathResolver/FileSystemPolicy | canonical target、read/write/deny、PrimaryRoot、`--add-dir`、ProtectedRules 和 symlink 语义统一；路径策略拒绝映射为独立 `path_denied` |
 | M8R-22 | DONE | M8R-21 | 接入 SandboxRunner | Linux 优先真实 workspace-write；其他平台明确 degraded；降级原因通过 Typed Diagnostic Event 可见；CommandGuard 不冒充强 Sandbox |
 | M8R-23 | DONE | M8R-17,M8R-21 | 让 `apply_patch` 输出 exact delta | add/update/delete/move、partial 和取消只报告实际提交变化；Move 目标已创建但源删除失败时记录真实 Add delta |
-| M8R-24 | DONE | M8R-17 | 实现 `RunDiffTracker` | 聚合可用 exact delta，发布 Updated/Invalidated；不建表、不恢复文件；生产者完整接线由 M8R-23 负责 |
+| M8R-24 | DONE | M8R-17 | 实现 `RunDiffTracker` | 只聚合 `apply_patch` exact delta；普通 Shell/MCP 不更新也不 invalidate；Patch delta 不可靠时内部失效；不建表、不恢复文件 |
 | M8R-25 | DONE | M8R-24 | 删除 Snapshot/Revert 主链 | 删除模型 Tool、Runtime、Store、Approval、TUI、Prompt 和测试中的文件恢复语义 |
 
 ### M8R-E：Extension 与 TUI 接入
@@ -225,9 +231,9 @@ M8R-A Canonical Persistence
 - RunDiffTracker 取代 Snapshot/Revert；用户撤销依赖 Git 或新的正常 Patch。
 - 中断、Resume、Compaction、MCP、Skill、Web 和 TUI 全部从 canonical rollout 与 Typed Events 投影。
 
-## 7. M8S：Prepared Tool Pipeline 收敛
+## 7. M8S：Prepared Tool Pipeline 历史收敛（已被 M8H 取代）
 
-M8S 在冻结首个正式版 Tool API 前完成。目标不是增加新的安全策略或 Tool，而是删除 `TargetStrategy` 和 ToolAuthorizer 的重复 target 提取，让 schema 校验后的 PreparedToolCall 成为授权与执行之间唯一的 Run-local 事实。实施期间不改变 Shared/Exclusive 并发语义、不增加资源锁、不扩展 macOS/Windows Sandbox，也不切换 Shell-first。
+M8S 记录已经交付过的历史实现：它曾删除 `TargetStrategy` 和重复 target 提取，并让通用 PreparedToolCall 成为授权与执行之间的 Run-local 事实。该实现事实继续保留，但公共 Prepared Pipeline 已被当前 `ToolHandler + 私有 PreparedPatch/ExecRequest` 设计取代，不再作为后续任务的目标架构。
 
 | ID | 状态 | 依赖 | 最小任务 | 验收标准 |
 |---|---|---|---|---|
@@ -304,7 +310,33 @@ M8P 是独立的预发布能力里程碑，先于 M9 TUI/Slash Command 重构完
 | M8P-03 | DONE | M8P-02 | 重写 Coding Agent Prompt | 选择性吸收 Codex 的任务持续执行、进度沟通、计划边界、验证纪律、Apply Patch、动态 Permission 和最终交付规则，并全部改写为 Amadeus Tool/Runtime 语义 |
 | M8P-04 | DONE | M8P-03 | 完成 Prompt Contract 与 E2E | 覆盖模板/变量/层级、Plan Mode 无写指令、Tool Guidance 按 Exposure 注入、Permission 与 Policy 一致、Responses/Chat 等价语义和 Coding Agent smoke |
 
-## 10. M9：Codex 风格 TUI 与 Slash Command 重构
+## 10. M8H：Tool Handler 主链与 Apply Patch 收敛
+
+M8H 是首个正式发布前追加的 Tool 收敛阶段。它以 `docs/design.md` 的 Codex 风格 Handler 模型为唯一目标：生产主链统一为 `ToolCall → ToolRouter → ToolRegistry → ToolHandler → ToolOutput → ToolCallOutcome/ToolExecution`；Permission 规则集中在 `FileSystemPolicy`，资源型 Handler 按需调用；并发只由 Handler 声明 `SupportsParallelToolCalls()`，Router/Runtime 使用 Run 级读写锁实现 shared/exclusive 行为。M8H 不增加新能力，而是删除通用 Prepared/Dispatcher/Executor/Hook 叠层，并把 `apply_patch` 收敛为拥有私有 `PreparedPatch` 的可靠结构化写入 Handler。
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M8H-01 | TODO | M8P-04 | 冻结 Tool Handler Contract 与迁移清单 | 明确 ToolCall/Payload/Invocation/Spec/Handler/Registry/Router/Output/Outcome/Execution 的唯一职责；列出旧 Tool/PreparedCall/Dispatcher/Executor/Gate/Hook 到目标模型的逐项迁移与删除清单 |
+| M8H-02 | TODO | M8H-01 | 建立 ToolRegistry 与 ToolRouter 唯一入口 | Spec 与 Handler 绑定注册；Router 完成名称/可见性查找、Invocation 构造、Handler 调用和 fatal error 边界；生产代码不再绕过 Router 直接进入第二分发链 |
+| M8H-03 | TODO | M8H-02 | 集中 Tool Call Normalizer 与 Schema Validate | Provider Adapter 只保证 Tool Call fragment 身份与完整性；Router 对 Function Payload 唯一一次执行有界 JSON repair、parse 和 JSON Schema validation，参数错误稳定转换为模型可见 ToolOutput/Outcome |
+| M8H-04 | TODO | M8H-02 | 对齐 Handler 并发能力与 Run 级读写锁 | Handler 只暴露 `SupportsParallelToolCalls() bool`；`true` 调用在 `max_parallel_tools` 内获取 shared guard，`false` 获取 exclusive guard；等待可取消、结果按原调用顺序回灌；删除 Shared/Exclusive 枚举和资源级锁 |
+| M8H-05 | TODO | M8H-03,M8H-04 | 迁移简单与文件 Handler | 简单 Handler 直接执行；文件 Handler 在领域参数可用后调用统一 FileSystemPolicy；Handler 不复制 Root/Grant 判断，Router 不建立全工具 Authorizer；Permission Required/Deny 进入结构化 ToolOutput/Outcome |
+| M8H-06 | TODO | M8H-05 | 收敛 ExecuteCommandHandler 私有执行链 | `execute_command` 私有构造 ExecRequest 并调用 ToolOrchestrator；复用 EffectivePermissionProfile、Sandboxed/Unsandboxed、SessionApprovalStore、取消和进程收尾，不扩展成普通 Tool 的公共 Pipeline |
+| M8H-07 | TODO | M8H-05 | 实现 ApplyPatchHandler 私有 PreparedPatch | Patch Document 只解析一次；规范化 add/update/delete/move 与 source/destination target；唯一匹配、CRLF/上下文容错有界且每级唯一；禁止模糊歧义、路径逃逸和静默覆盖 |
+| M8H-08 | TODO | M8H-07 | 强化 Patch Preflight、Staging 与 Commit | 所有 target 在副作用前完成 FileSystemPolicy、存在性、类型、冲突和目标占用检查；staging 后在 commit 前执行 identity/staleness revalidation；失败/取消只报告真实 partial metadata，不把未提交变化记为成功 |
+| M8H-09 | TODO | M8H-08 | 接入 exact delta 与 RunDiffProjector | ApplyPatchHandler 对实际 add/update/delete/move 输出 exact delta；RunDiffProjector 只消费可信 Patch delta，Shell/write_stdin/MCP 不伪造归因；Model/UI/Audit/Rollout 使用受控投影且无内部归因警告 |
+| M8H-10 | TODO | M8H-06,M8H-09 | 删除旧 Tool 链并完成发布门禁 | 删除通用 Prepare/PreparedToolCall、ToolDispatcher、ToolExecutor、ToolExecutionGate、TargetStrategy、PathGuard、全工具 Authorizer 与 Pre/Post Hook；完成 Handler/Permission/Parallel/Patch/Command/Provider mock E2E、取消/partial/race、全仓测试、架构扫描、`make check` 与 `git diff --check` |
+
+### M8H 出口
+
+- 生产代码只有一条 Tool 分发主链；ToolSpec 只描述暴露 Contract，ToolHandler 承担领域执行，ToolRouter 统一输入校验、调度和结果投影。
+- Permission Check 规则只存在于 FileSystemPolicy；资源型 Handler 负责在正确时机调用，非资源 Tool 不经过伪通用权限层。
+- Run 级读写锁行为保留，但公共语义只暴露 `SupportsParallelToolCalls()`；不再维护 Shared/Exclusive 枚举、TargetStrategy 或资源级锁。
+- `apply_patch` 是首选结构化写入能力，私有 PreparedPatch 同时支撑唯一匹配、全量 preflight、staging、revalidation、partial metadata 与 exact delta，不建立通用 Prepared Call 框架。
+- `execute_command` 的 ExecRequest/ToolOrchestrator、`apply_patch` 的 PreparedPatch 都是 Handler 私有领域对象，不被抽象成所有 Tool 必须经过的公共层。
+- M8H 完成前 M10 不得冻结 Tool 暴露、Permission、并发、Patch 或 Tool 结果 Contract。
+
+## 11. M9：TUI 交互与 Slash Command 重构
 
 M9 在正式发布冻结前完成交互主链重构。它不改变 Reactor、Prepared Tool、Permission、Sandbox 或 Provider 的领域语义，而是把现有 Bubble Tea Rich Inline TUI 收敛为 Codex 风格的 Composer、Slash Popup、SelectionOverlay 和命令分发结构。现有 `Amadeus Logo + >_` Braille 品牌头部保持不变；启动信息面板、状态展示、Slash Command 文案和交互优先直接复用 Codex 用户可见设计，只做产品名、`thread → session` 与真实能力差异所需替换。
 
@@ -327,16 +359,40 @@ M9 在正式发布冻结前完成交互主链重构。它不改变 Reactor、Pre
 
 M9 出口证据：共享 Catalog、Popup、Selection、Session Store/Runtime、Skill settings 与 Compaction 均有针对性测试；Memory/SQLite 的 rename/delete/cascade、Draft 无空记录、Plan Mode 只读边界和 Provider mock E2E 通过。最终于 2026-08-08 执行 `go test ./... -count=1`、`go test -race ./... -count=1`、`make check` 和 `git diff --check`，全部成功。
 
-## 11. M10：兼容回归与首个正式发布
+## 12. M9V：TUI Visual Runtime 重构
 
-M10 只在 M9-14 完成后开始。M10 不再进行 Agent Engine、Prompt、Permission、Persistence、Tool、TUI 或 Slash Command 主链重构，只冻结已经完成的能力、执行发布级回归、构建各平台产物并准备正式版本。
+M9V 位于已完成的交互命令重构与正式发布冻结之间。M9 解决 Composer、Slash Popup、SelectionOverlay、Session Command 和交互状态机；M9V 专门解决用户实际看到的 Transcript、Tool History、Working、颜色、分隔线与间距。它保留 Go/Bubble Tea/Lip Gloss、Amadeus Logo、主屏 scrollback、原生鼠标滚动和现有 Slash 行为，不修改 Reactor、Session、Permission、ToolExecutor 或 Provider 的领域语义。
+
+M9V 以当前 `../codex-main/codex-rs/tui` 源码和快照为视觉事实源，移植行为与状态模型而不是直接复制 Rust 类型。旧 `fullscreenEntry{kind, content}`、frame 阶梯颜色、固定 pastel 状态栏、按 `IterationCompleted` 批量打印 Tool 和每轮无条件 separator 已从生产代码删除。
 
 | ID | 状态 | 依赖 | 最小任务 | 验收标准 |
 |---|---|---|---|---|
-| M10-01 | TODO | M9-14 | 冻结 CLI、配置、TUI 和 Tool 暴露基线 | 根命令、`--plain`、Slash Catalog、Resume/Clear、Plan Mode、Provider、Exposure、Prepared Tool、Workspace/Permission/Approval Contract 和错误语义固定 |
+| M9V-01 | DONE | M9-14 | 冻结 Codex Visual Contract | `docs/tui-visual-contract.md` 固定 Working、Palette、Cells、Tool History、Separator、Layout 与终端矩阵边界 |
+| M9V-02 | DONE | M9V-01 | 实现 TerminalPalette 与统一 Style | `palette.go` 检测 True Color/ANSI256/ANSI16/No Color 与明暗背景，集中派生语义 Style 和 Markdown accent |
+| M9V-03 | DONE | M9V-02 | 实现 Motion 与 Codex Shimmer | `motion.go` 使用可注入 Clock、32ms redraw、2s/10-padding/half-width-5 余弦光带、600ms marker fallback 与 Reduced Motion |
+| M9V-04 | DONE | M9V-03 | 引入 TranscriptCell 与统一 Layout | `transcript.go` 定义 StyledLine、TranscriptCell、ActiveCell、TranscriptState 与统一 commit spacing；旧 kind/content 和 previous-kind 特判已删除 |
+| M9V-05 | DONE | M9V-04 | 实现 ExecCell 活动生命周期 | Tool Started/Completed 原位更新；Running/Ran/You ran、命令/output 上限、omission、success/failure、partial 与 duration 均有测试 |
+| M9V-06 | DONE | M9V-05 | 实现 Explore 与 WebSearch Cell | Exploring/Explored、Read 去重、Read/List/Search accent、Searching/Searched 与 CallID/sequence 顺序已实现 |
+| M9V-07 | DONE | M9V-06 | 实现 Transcript Separator 状态 | HadWorkActivity/NeedsFinalMessageSeparator 驱动内容边界；Iteration 不再排版；短 Run dim rule、长 Run 零填充 Worked for 已测试 |
+| M9V-08 | DONE | M9V-07 | 接入 Bottom Pane 与既有交互 | Active Tool、流式 Assistant、Working、Approval/Selection、Composer、Status、排队输入、Ctrl+T、Logo 与 main-screen scrollback 已统一布局 |
+| M9V-09 | DONE | M9V-08 | 增加视觉与终端矩阵测试 | 固定 Clock/快照覆盖颜色能力、Reduced Motion、中文/窄终端、Tool、Separator、Approval、Resume、Plain 与控制序列 |
+| M9V-10 | DONE | M9V-09 | 删除旧视觉链并完成发布门禁 | 旧 frame/pastel/Iteration/kind-content 链已删除；全仓测试、race、`make check`、主屏 smoke 与 `git diff --check` 通过 |
+
+M9V 出口要求：用户在普通问候、只读探索、命令成功/失败、长输出、并行 Tool、长 Run、中断、Approval、Session 切换和 No Color/Plain 场景下，都能得到与 Codex 同一视觉语义且符合 Amadeus 能力边界的稳定输出。不能仅以 Slash Command 可用或字符串包含 `Working/Ran` 作为视觉验收。
+
+M9V 出口证据：`palette_test.go`、`motion_test.go`、`transcript_test.go`、`activity_test.go`、`application_test.go` 与 `visual_snapshot_test.go` 覆盖视觉状态和交互矩阵；2026-08-08 执行 `go test ./... -count=1`、`go test -race ./... -count=1`、`make check` 和 `git diff --check` 均通过。
+
+## 13. M10：兼容回归与首个正式发布
+
+M10 只在 M9V-10、M10-00 与 M8H-10 全部完成后继续。M10 不再进行 Agent Engine、Prompt、Permission、Persistence、Tool、TUI 或 Slash Command 主链重构，只冻结已经完成的能力、执行发布级回归、构建各平台产物并准备正式版本。
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M10-00 | DONE | M9V-10 | 对齐 Codex Diff 语义 | 历史实现已让 Patch exact delta 成为唯一归因来源；M8H-09 负责将其迁移到 RunDiffProjector 与最终 Handler 主链 |
+| M10-01 | TODO | M10-00,M8H-10 | 冻结 CLI、配置、TUI 和 Tool 暴露基线 | 根命令、`--plain`、Slash Catalog、Resume/Clear、Plan Mode、Provider、Exposure、Handler Tool Contract、Workspace/Permission/Approval、Visual Runtime 和错误语义固定 |
 | M10-02 | TODO | M10-01 | 冻结稳定版迁移策略 | 首个稳定版 schema 成为数据兼容起点；后续目标版本有保留数据的明确迁移，不支持版本给出可恢复错误且不静默丢数据 |
 | M10-03 | TODO | M10-02 | 执行安全回归 | Path、Sandbox、Command、Approval、Audit、MCP/Web、凭证脱敏和非 TTY fail-closed 通过 |
-| M10-04 | TODO | M10-03 | 执行可靠性与性能基线 | 长 Session、Compaction、Shared Tool 并发、Exclusive 屏障、取消和内存/token 指标有记录 |
+| M10-04 | TODO | M10-03 | 执行可靠性与性能基线 | 长 Session、Compaction、parallel Handler shared guard、non-parallel Handler exclusive guard、取消和内存/token 指标有记录 |
 | M10-05 | TODO | M10-04 | 完成 Linux amd64/arm64 构建 | 二进制启动和 Coding Agent smoke 通过 |
 | M10-06 | TODO | M10-05 | 完成 macOS amd64/arm64 构建 | 二进制启动和 Coding Agent smoke 通过 |
 | M10-07 | TODO | M10-06 | 评估 Windows 支持范围 | 支持则构建；否则明确 TTY、Process、Sandbox 和安装限制 |
@@ -344,7 +400,7 @@ M10 只在 M9-14 完成后开始。M10 不再进行 Agent Engine、Prompt、Perm
 | M10-09 | TODO | M10-08 | 生成版本说明与迁移说明 | 明确历史架构差异、数据库迁移、已知限制和 M11 状态 |
 | M10-10 | TODO | M10-09 | 生成首个正式版本候选 | version、commit、build time、checksums、changelog、已知问题和 smoke 结果齐全 |
 
-## 12. M11：可选 Multi-Agent 与高级入口
+## 14. M11：可选 Multi-Agent 与高级入口
 
 M11 不阻塞 M10。首版只验证最多两个只读 SubAgent，不建立 Team Engine、共享 DAG、可写并发 Workspace 或递归委派。
 
@@ -353,14 +409,14 @@ M11 不阻塞 M10。首版只验证最多两个只读 SubAgent，不建立 Team 
 | M11-01 | TODO | M10-10 | 定义 DelegatedTask/Result | objective、最小 context、budget、summary、usage、stop reason 和 TaskID 可表达 |
 | M11-02 | TODO | M11-01 | 实现只读 SubAgent Runtime | 独立内存 Context/Reactor；共享只读 WorkspaceRoots 与 Instructions 基线；没有写入、Shell、Approval 和继续委派能力 |
 | M11-03 | TODO | M11-02 | 增加 Agent Tool API | `spawn_agent/send_input/wait_agent/close_agent` 由主 Reactor 调用，最多两个、depth=1 |
-| M11-04 | TODO | M11-03 | 实现主 Agent 所有权边界 | 主 Agent 独占正式 Run、最终回答、写 Tool、Shell、RunDiffTracker 和 Approval |
+| M11-04 | TODO | M11-03 | 实现主 Agent 所有权边界 | 主 Agent 独占正式 Run、最终回答、写 Tool、Shell、RunDiffProjector 和 Approval |
 | M11-05 | TODO | M11-04 | 实现取消与失败收敛 | 主 Run 取消传播；子 Agent 失败形成结构化结果，不自动递归创建替代 Agent |
 | M11-06 | TODO | M11-05 | 增加 Multi-Agent E2E | 两个独立只读调查并行、主 Agent 汇总后修改/验证、单子失败和取消通过 |
 | M11-07 | TODO | M11-06 | 执行收益审计 | 记录延迟、token、完成质量和复杂度；收益不足则保持可选实验能力 |
 
 高级入口只有在 M11-07 后按真实需求单独立项：Browser、TUI 文件树/高级 Diff、Runtime API 和后台 Job。每项必须先补充独立设计与验收，不预先组成新的大里程碑。
 
-## 13. 架构验收矩阵
+## 15. 架构验收矩阵
 
 | 领域 | 必须成立的事实 | 主要验收 |
 |---|---|---|
@@ -369,14 +425,14 @@ M11 不阻塞 M10。首版只验证最多两个只读 SubAgent，不建立 Team 
 | Reactor | 只有 Think→Analyze→Act→Observe 一条循环 | 默认 execute、Plan Mode、旧 Engine guard |
 | Context | RequestContext 动态构建，compaction append-only | token、Replacement History、Resume |
 | Prompt | 内置模板只由 Bootstrap 分层装配，稳定规则与动态事实分离 | asset migration、变量/层级 contract、RunMode/Exposure、Permission developer message、双 API E2E |
-| Tool | PreparedToolCall 是授权/执行唯一中间事实，ToolOutcome 是唯一结果事实 | prepare once、无 raw reparse、failure/denied/partial/interrupted E2E |
-| Concurrency | Shared/Exclusive Gate 是唯一并发裁决，无第二层资源锁 | same-target shared overlap、exclusive barrier、cancel、order、race |
+| Tool | ToolRouter/Registry/Handler 是唯一调用主链，ToolOutput 是内容事实，ToolCallOutcome 是生命周期事实 | normalizer/schema、handler dispatch、failure/denied/partial/interrupted E2E、旧链架构守卫 |
+| Concurrency | Handler 只声明 `SupportsParallelToolCalls()`，Run 级读写锁实现 shared/exclusive 行为且无第二层资源锁 | parallel overlap、non-parallel barrier、cancel、order、race |
 | Safety | PermissionProfile、Run/Session Permission Store、Isolation、Session Command Approval、ExecPolicy 与 Audit 职责不重叠且不可绕过 | ReadHost、symlink、ReadOnly/Denied、request_permissions 重调用、Run/Session 生命周期、Linux Sandbox、Unsandboxed 精确 Command Key、非 TTY、resume 不恢复 Store |
-| Diff | RunDiffTracker 只投影 exact delta | add/update/delete/move、partial、invalidate |
+| Diff | RunDiffProjector 只投影可信 Patch exact delta；WorkspaceDiff 独立按需读取 Git 状态 | add/update/delete/move、partial、staging/revalidation、Shell/MCP ignore、无 transcript 警告 |
 | Extensions | MCP/Skill/Web 复用统一 Runtime | binding、approval、timeout、event projection |
-| TUI | UI 只消费事件，不拥有 Agent/Session 事实；Composer、Slash Popup、SelectionOverlay 与 Dispatcher 职责独立 | scrollback、Unicode、popup/filter/navigation、approval、resume/clear、plan mode、copy/status/MCP/Skill、interrupt、diff |
+| TUI | UI 只消费事件，不拥有 Agent/Session 事实；Composer/Slash/Selection 与 Visual Runtime 分层；TranscriptCell/ActiveCell、TerminalPalette、Motion 和 Separator 状态不依赖 Reactor Iteration 排版 | scrollback、Unicode、popup/filter/navigation、approval、resume/clear、plan mode、copy/status/MCP/Skill、Working 固定 Clock 快照、True Color/ANSI/No Color、Exec/Explore/WebSearch、separator、interrupt、diff |
 
-## 14. 决策日志
+## 16. 决策日志
 
 | 日期 | 决策 | 影响 |
 |---|---|---|
@@ -384,9 +440,9 @@ M11 不阻塞 M10。首版只验证最多两个只读 SubAgent，不建立 Team 
 | 2026-08-05 | 首个稳定版前采用一次破坏性 canonical schema 迁移 | 删除未发布旧表，不维护开发期数据转换层；稳定版后恢复数据保留型前向迁移 |
 | 2026-08-05 | Reactor 成为唯一 Agent 内核，计划收敛为 `update_plan` 与只规划 `/plan` | 删除 DAG、Scheduler 和外层 Plan Executor |
 | 2026-08-05 | ToolOutcome 取代通用 Evidence | Tool、Model、UI、Audit 和 Rollout 使用同一结果事实 |
-| 2026-08-05 | 删除 Snapshot/Revert 与 ThreadRollback 主链 | 使用 RunDiffTracker；撤销依赖 Git 或新 Patch |
-| 2026-08-06 | Tool 并发只保留 Run 级 Shared/Exclusive Gate | 四种 Shared/Exclusive 组合覆盖读读、读写和写写；删除资源级读写锁设计；目标提取从不参与并发，后续由 PreparedToolCall 取代 TargetStrategy |
-| 2026-08-06 | 删除 TargetStrategy 并引入 PreparedToolCall | Prepare 一次生成 canonical target/领域 payload；Authorization、Approval、Audit、Execute 和 RunDiff 共用，M9 前完成迁移 |
+| 2026-08-05 | 删除 Snapshot/Revert 与 ThreadRollback 主链 | 历史阶段使用 RunDiffTracker；当前目标由 RunDiffProjector 投影 exact Patch delta，撤销仍依赖 Git 或新 Patch |
+| 2026-08-06 | Tool 并发曾收敛为 Run 级 Shared/Exclusive Gate | 历史实现删除资源级锁；当前进一步由 `SupportsParallelToolCalls()` + Run 级读写锁取代公共 Shared/Exclusive 枚举 |
+| 2026-08-06 | 删除 TargetStrategy 并引入 PreparedToolCall | 历史 Prepared Pipeline 已完成；当前 M8H 仅为复杂 Handler 保留私有 PreparedPatch/ExecRequest，删除通用 PreparedToolCall |
 | 2026-08-06 | 删除 `architecture-audit.md` | `design.md` 为唯一架构事实源，完成度由测试和本进度文档跟踪 |
 | 2026-08-06 | ExtensionRuntime 提升为 Session 生命周期 | Skill Catalog 与 MCP Manager 跨 Run 复用，切换 Session 时重建；RequestContext 冻结 Skill/MCP/Tool revision，MCP 重连后重新验证 Catalog |
 | 2026-08-07 | Permission、Isolation、Operation Approval 与 ExecPolicy 分层 | 所有文件系统资源型 Tool 先做 Permission Check；结构化 Tool 通过后直接执行；Linux Shell 使用 Sandboxed，其他情况明确 Unsandboxed 并做完整 Command Approval |
@@ -399,9 +455,12 @@ M11 不阻塞 M10。首版只验证最多两个只读 SubAgent，不建立 Team 
 | 2026-08-07 | MVP 网络默认允许 | 不建立 NetworkPermissionStore；Web 保留 SSRF/Redirect Guard，MCP 受已配置 Server/Binding 边界约束 |
 | 2026-08-07 | M8U Permission/Approval Runtime 完成 | Permission Grant 重调用、Session Command Approval、多 Workspace AGENTS、Sandboxed/Unsandboxed 分流、Audit fail-closed 与多 Root RunDiff 全部接入统一 PreparedToolCall 主链并通过全仓/race/发布门禁 |
 | 2026-08-07 | Prompt 优化拆为独立 M8P | M8P-01～04 负责目录迁移、Reactor 解耦、Codex 成熟规则选择性改写和 Prompt Contract/E2E；Prompt 完成后再进入交互与发布阶段 |
-| 2026-08-07 | M9 重排为 Codex 风格 TUI 与 Slash Command | 保留 Amadeus Logo；统一 Composer/Popup/Selection/Dispatcher，加入 `/resume /skills /rename /delete /compact /plan /copy /status /mcp /clear`；原发布 M9 顺延 M10，Multi-Agent 顺延 M11 |
+| 2026-08-07 | M9 重排为 TUI 交互与 Slash Command | 保留 Amadeus Logo；统一 Composer/Popup/Selection/Dispatcher，最终加入 `/resume /skills /rename /delete /compact /plan /copy /status /mcp /clear /exit`；原发布 M9 顺延 M10，Multi-Agent 顺延 M11 |
+| 2026-08-08 | 在 M9 后新增 M9V TUI Visual Runtime | M9 只视为交互命令重构完成；M9V 移植 Codex TerminalPalette、Motion、TranscriptCell/ActiveCell、Exec/Explore/WebSearch 与内容边界 Separator，完成后 M10 才能冻结发布 |
+| 2026-08-08 | RunDiff 对齐 Codex 双层语义 | RunDiffProjector 只记录可信 Patch exact delta；普通 Shell/MCP 不触发失效或 transcript 警告；真实工作区变化留给独立 WorkspaceDiff `/diff` 按需读取 Git 状态且不做 Tool 归因 |
+| 2026-08-08 | 新增 M8H Tool Handler 与 Apply Patch 收敛 | ToolRouter/Registry/Handler 成为唯一主链；Permission 集中于 FileSystemPolicy；并发改为 Handler capability；ApplyPatchHandler 私有 PreparedPatch 负责 preflight、staging、revalidation、partial 与 exact delta |
 
-## 15. 每次更新模板
+## 17. 每次更新模板
 
 ```text
 日期：YYYY-MM-DD

@@ -61,6 +61,46 @@ func TestInlineRendererRendersPlanApprovalAndSafeToolSummary(t *testing.T) {
 	}
 }
 
+func TestInlineRendererSuppressesGenericUpdatePlanToolStatus(t *testing.T) {
+	var text, status bytes.Buffer
+	renderer, err := NewInlineRenderer(&text, &status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, runtimeEvent := range []event.Event{
+		event.ToolCallStarted{CallID: "plan-1", ToolName: "update_plan"},
+		event.PlanUpdated{Revision: 1, Items: []event.PlanItem{{Step: "Inspect", Status: "in_progress"}}},
+		event.ToolCallCompleted{CallID: "plan-1", ToolName: "update_plan", Success: true},
+	} {
+		if err := renderer.Publish(ctx, runtimeEvent); err != nil {
+			t.Fatalf("publish %T: %v", runtimeEvent, err)
+		}
+	}
+	if output := status.String(); !strings.Contains(output, "plan 1:") || strings.Contains(output, "tool started: update_plan") || strings.Contains(output, "tool completed: update_plan") {
+		t.Fatalf("unexpected inline update_plan output: %q", output)
+	}
+}
+
+func TestInlineRendererKeepsDiffStateOutOfTranscript(t *testing.T) {
+	var text, status bytes.Buffer
+	renderer, err := NewInlineRenderer(&text, &status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, runtimeEvent := range []event.Event{
+		event.RunDiffUpdated{Revision: 1, Changes: []event.RunDiffChange{{Path: "/work/a.go", Kind: "updated"}}},
+		event.RunDiffInvalidated{Revision: 2, Reason: "malformed Patch delta"},
+	} {
+		if err := renderer.Publish(context.Background(), runtimeEvent); err != nil {
+			t.Fatalf("publish %T: %v", runtimeEvent, err)
+		}
+	}
+	if text.Len() != 0 || status.Len() != 0 {
+		t.Fatalf("Diff state leaked into inline transcript: text=%q status=%q", text.String(), status.String())
+	}
+}
+
 func TestInlineRendererGoldenTranscript(t *testing.T) {
 	var text, status bytes.Buffer
 	renderer, err := NewInlineRenderer(&text, &status)

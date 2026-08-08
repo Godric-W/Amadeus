@@ -47,11 +47,11 @@ func TestAgentSystemLayerOrderIsStable(t *testing.T) {
 }
 
 func TestDeveloperLayersRespectModeAndToolExposure(t *testing.T) {
-	execute, err := DeveloperLayers("execute", []string{"read_file", "apply_patch", "execute_command"})
+	execute, err := DeveloperLayers("execute", []string{"read_file", "update_plan", "apply_patch", "execute_command"})
 	if err != nil {
 		t.Fatalf("compose execute layers: %v", err)
 	}
-	wantExecute := []ID{ModeExecute, RuntimeWorkspace, RuntimePermission, RuntimeInstructions, RuntimeSkills, ToolsGeneral, ToolApplyPatch, ToolExecuteCommand}
+	wantExecute := []ID{ModeExecute, RuntimeWorkspace, RuntimePermission, RuntimeInstructions, RuntimeSkills, ToolsGeneral, ToolUpdatePlan, ToolApplyPatch, ToolExecuteCommand}
 	if !reflect.DeepEqual(execute, wantExecute) {
 		t.Fatalf("unexpected execute layers: got %v, want %v", execute, wantExecute)
 	}
@@ -68,7 +68,7 @@ func TestDeveloperLayersRespectModeAndToolExposure(t *testing.T) {
 		t.Fatalf("compose read-only execute layers: %v", err)
 	}
 	for _, id := range withoutSpecialTools {
-		if id == ToolApplyPatch || id == ToolExecuteCommand {
+		if id == ToolUpdatePlan || id == ToolApplyPatch || id == ToolExecuteCommand {
 			t.Fatalf("unexposed Tool guidance was selected: %v", withoutSpecialTools)
 		}
 	}

@@ -57,8 +57,14 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent event.E
 	case event.LLMCallCompleted:
 		return renderer.closeTurn(typed.LLMCallID)
 	case event.ToolCallStarted:
+		if typed.ToolName == "update_plan" {
+			return nil
+		}
 		return renderer.writeStatus("tool: %s (%s) started", typed.ToolName, typed.CallID)
 	case event.ToolCallCompleted:
+		if typed.ToolName == "update_plan" {
+			return nil
+		}
 		status := "completed"
 		if !typed.Success {
 			status = "failed"
@@ -81,9 +87,11 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent event.E
 	case event.DiagnosticPublished:
 		return renderer.writeStatus("diagnostic[%s/%s]: %s", typed.Severity, typed.Code, typed.Message)
 	case event.RunDiffUpdated:
-		return renderer.writeStatus("diff: updated (%d files)", len(typed.Changes))
+		return nil
 	case event.RunDiffInvalidated:
-		return renderer.writeStatus("diff: attribution unavailable: %s", typed.Reason)
+		return nil
+	case event.PlanUpdated:
+		return renderer.writeStatus("plan: updated revision=%d items=%d", typed.Revision, len(typed.Items))
 	case event.RunStarted:
 		return renderer.writeStatus("run: started %s (task=%s)", typed.RunID, typed.TaskID)
 	case event.RunCompleted:

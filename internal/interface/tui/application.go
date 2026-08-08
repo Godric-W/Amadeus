@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -78,6 +77,7 @@ type FullscreenOptions struct {
 	ClipboardWrite      FullscreenClipboardWriter
 	OpenSessions        bool
 	NoColor             bool
+	DisableAnimations   bool
 	Width               int
 }
 
@@ -92,50 +92,44 @@ type FullscreenApplication struct {
 	cancelRun   context.CancelFunc
 }
 
-type fullscreenEntry struct {
-	kind       string
-	content    string
-	successful bool
-}
-
 type fullscreenModel struct {
-	app                   *FullscreenApplication
-	ctx                   context.Context
-	startup               FullscreenStartup
-	input                 textarea.Model
-	renderer              *glamour.TermRenderer
-	lastMouseEvent        time.Time
-	width                 int
-	height                int
-	entries               []fullscreenEntry
-	committed             int
-	draft                 string
-	running               bool
-	status                string
-	model                 string
-	inputUsage            int64
-	outputUsage           int64
-	contextUsage          int64
-	contextLimit          int64
-	history               []string
-	historyPos            int
-	queuedTasks           []TaskSubmission
-	runStartedAt          time.Time
-	workingFrame          int
-	activitySeq           int
-	iterations            map[int]*iterationActivity
-	activeTools           map[string]*toolActivity
-	details               *transcriptDetailStore
-	detailViewport        viewport.Model
-	viewingDetails        bool
-	approval              *fullscreenApproval
-	sessions              []SessionOption
-	slashPopup            slashCommandPopup
-	collaboration         CollaborationMode
-	lastAssistantMarkdown string
-	selection             *selectionOverlay
-	selectionKind         string
-	skills                []SkillOption
+	app             *FullscreenApplication
+	ctx             context.Context
+	startup         FullscreenStartup
+	input           textarea.Model
+	renderer        *glamour.TermRenderer
+	lastMouseEvent  time.Time
+	width           int
+	height          int
+	transcript      transcriptState
+	draft           string
+	running         bool
+	status          string
+	model           string
+	inputUsage      int64
+	outputUsage     int64
+	contextUsage    int64
+	contextLimit    int64
+	runDiffChanges  []event.RunDiffChange
+	runDiffExact    bool
+	history         []string
+	historyPos      int
+	queuedTasks     []TaskSubmission
+	runStartedAt    time.Time
+	palette         terminalPalette
+	clock           motionClock
+	motion          motionMode
+	motionStartedAt time.Time
+	details         *transcriptDetailStore
+	detailViewport  viewport.Model
+	viewingDetails  bool
+	approval        *fullscreenApproval
+	sessions        []SessionOption
+	slashPopup      slashCommandPopup
+	collaboration   CollaborationMode
+	selection       *selectionOverlay
+	selectionKind   string
+	skills          []SkillOption
 }
 
 type fullscreenApproval struct {
@@ -217,43 +211,11 @@ const (
 	fullscreenInputPlaceholder = "输入任务，或输入 / 查看命令"
 	fullscreenInputCharLimit   = 20000
 	fullscreenMaxInputRows     = 5
-	fullscreenWorkingInterval  = 36 * time.Millisecond
-	workingBeamSubframes       = 3
-	workingBeamPadding         = 2 * workingBeamSubframes
-	workingBeamPauseFrames     = 6
 )
 
 var (
-	fullscreenLogoStyle         = lipgloss.NewStyle()
-	fullscreenTitleStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
-	fullscreenSectionStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
-	fullscreenMutedStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	fullscreenPanelStyle        = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
-	fullscreenUserStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	fullscreenAssistantStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	fullscreenErrorStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
-	fullscreenInputFillStyle    = lipgloss.NewStyle()
-	fullscreenInputPromptStyle  = lipgloss.NewStyle()
-	fullscreenInputTextStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	fullscreenPlaceholderStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	fullscreenPhaseStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
-	fullscreenToolStyle         = lipgloss.NewStyle().Border(lipgloss.NormalBorder(), false, false, false, true).BorderForeground(lipgloss.Color("39")).PaddingLeft(1)
-	fullscreenResultStyle       = lipgloss.NewStyle().Border(lipgloss.NormalBorder(), false, false, false, true).BorderForeground(lipgloss.Color("244")).Foreground(lipgloss.Color("245")).PaddingLeft(1)
-	fullscreenPlanStyle         = lipgloss.NewStyle().Border(lipgloss.NormalBorder(), false, false, false, true).BorderForeground(lipgloss.Color("220")).PaddingLeft(1)
-	fullscreenApprovalStyle     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("220")).Padding(0, 1)
-	fullscreenSelectedStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
-	fullscreenWorkingInkStyle   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "16", Dark: "15"})
-	fullscreenWorkingMetaStyle  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#71717A", Dark: "#A1A1AA"})
-	fullscreenActivityVerbStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#0E7490", Dark: "#67E8F9"}).Bold(true)
-	fullscreenActivityOKStyle   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#15803D", Dark: "#86EFAC"}).Bold(true)
-	fullscreenResumeAccentStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#A16207", Dark: "#FDE68A"}).Bold(true)
-	fullscreenStatusModelStyle  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#0369A1", Dark: "#7DD3FC"})
-	fullscreenStatusPathStyle   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#1D4ED8", Dark: "#93C5FD"})
-	fullscreenStatusGitStyle    = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#7E22CE", Dark: "#C4B5FD"})
-	fullscreenStatusGoodStyle   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#15803D", Dark: "#86EFAC"})
-	fullscreenStatusWarnStyle   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#A16207", Dark: "#FDE68A"})
-	fullscreenStatusBadStyle    = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B91C1C", Dark: "#FCA5A5"})
-	fullscreenStatusMutedStyle  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#71717A", Dark: "#A1A1AA"})
+	fullscreenPanelStyle     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
+	fullscreenInputFillStyle = lipgloss.NewStyle()
 )
 
 func NewFullscreenApplication(options FullscreenOptions) (*FullscreenApplication, error) {
@@ -375,6 +337,7 @@ func (app *FullscreenApplication) cancelActiveRun() {
 }
 
 func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscreenModel {
+	palette := detectTerminalPalette(app.options.NoColor)
 	input := textarea.New()
 	input.Placeholder = fullscreenInputPlaceholder
 	input.Prompt = fullscreenInputPrompt
@@ -384,14 +347,14 @@ func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscr
 	input.MaxHeight = fullscreenMaxInputRows
 	input.FocusedStyle.Base = fullscreenInputFillStyle
 	input.FocusedStyle.CursorLine = fullscreenInputFillStyle
-	input.FocusedStyle.Prompt = fullscreenInputPromptStyle
-	input.FocusedStyle.Placeholder = fullscreenPlaceholderStyle
-	input.FocusedStyle.Text = fullscreenInputTextStyle
+	input.FocusedStyle.Prompt = palette.plain()
+	input.FocusedStyle.Placeholder = palette.dim()
+	input.FocusedStyle.Text = palette.plain()
 	input.FocusedStyle.EndOfBuffer = fullscreenInputFillStyle
 	input.SetWidth(80)
 	input.SetHeight(1)
 	input.Focus()
-	renderer, _ := newFullscreenMarkdownRenderer(94)
+	renderer, _ := newFullscreenMarkdownRenderer(94, palette)
 	startup := app.options.Startup
 	initialWidth := app.options.Width
 	if initialWidth < 20 {
@@ -400,18 +363,21 @@ func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscr
 	model := fullscreenModel{
 		app: app, ctx: ctx, startup: startup, input: input, renderer: renderer,
 		width: initialWidth, height: 30, status: "idle", model: startup.Model, historyPos: -1, collaboration: CollaborationExecute,
-		iterations: map[int]*iterationActivity{}, activeTools: map[string]*toolActivity{},
+		palette: palette, clock: systemMotionClock{}, motion: motionAnimated, motionStartedAt: time.Now(), runDiffExact: true,
 		details: newTranscriptDetailStore(0, 0), detailViewport: newTranscriptViewport(initialWidth, 30),
 	}
+	if app.options.DisableAnimations {
+		model.motion = motionReduced
+	}
 	model.updateInputLayout()
-	model.renderer, _ = newFullscreenMarkdownRenderer(maxInt(20, initialWidth-6))
+	model.renderer, _ = newFullscreenMarkdownRenderer(maxInt(20, initialWidth-6), palette)
 	return model
 }
 
 func (model fullscreenModel) Init() tea.Cmd {
 	header := model.banner()
-	if len(model.entries) > 0 {
-		header += "\n\n" + model.renderEntry(model.entries[0])
+	if len(model.transcript.Cells) > 0 {
+		header += "\n\n" + model.renderCell(model.transcript.Cells[0])
 	}
 	commands := []tea.Cmd{tea.Println(header), tea.HideCursor, model.input.Focus()}
 	if model.app.options.OpenSessions && model.app.options.Sessions != nil {
@@ -421,9 +387,16 @@ func (model fullscreenModel) Init() tea.Cmd {
 }
 
 func fullscreenWorkingTick() tea.Cmd {
-	return tea.Tick(fullscreenWorkingInterval, func(now time.Time) tea.Msg {
+	return tea.Tick(motionFrameInterval, func(now time.Time) tea.Msg {
 		return fullscreenWorkingTickMsg(now)
 	})
+}
+
+func (model fullscreenModel) workingTick() tea.Cmd {
+	if model.motion == motionReduced {
+		return nil
+	}
+	return fullscreenWorkingTick()
 }
 
 func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
@@ -432,7 +405,7 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.width = maxInt(40, message.Width)
 		model.height = maxInt(10, message.Height)
 		model.updateInputLayout()
-		model.renderer, _ = newFullscreenMarkdownRenderer(maxInt(20, model.width-6))
+		model.renderer, _ = newFullscreenMarkdownRenderer(maxInt(20, model.width-6), model.palette)
 		model.resizeTranscriptViewport()
 		return model, nil
 	case fullscreenEventMsg:
@@ -454,60 +427,65 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.input.Blur()
 		return model, nil
 	case fullscreenTaskDoneMsg:
-		runDuration := elapsedRunDuration(model.runStartedAt)
+		runDuration := model.runElapsed()
 		model.finishDraft()
+		model.transcript.flushActive()
 		if strings.TrimSpace(message.session) != "" {
 			model.startup.Session = strings.TrimSpace(message.session)
 		}
+		if model.transcript.HadWorkActivity && model.transcript.NeedsFinalMessageSeparator {
+			model.transcript.append(finalMessageSeparatorCell{elapsed: runDuration})
+			model.transcript.NeedsFinalMessageSeparator = false
+		}
 		if message.err != nil {
 			if errors.Is(message.err, context.Canceled) {
-				model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: "当前任务已取消。"})
+				model.appendCell(cellNotice, "当前任务已取消。")
 			} else {
-				model.entries = append(model.entries, fullscreenEntry{kind: "error", content: message.err.Error()})
+				model.appendCell(cellError, message.err.Error())
 			}
-		} else {
-			model.entries = append(model.entries, fullscreenEntry{kind: "worked", content: formatRunDuration(runDuration)})
 		}
+		model.transcript.HadWorkActivity = false
+		model.transcript.NeedsFinalMessageSeparator = false
 		if len(model.queuedTasks) > 0 {
 			next := model.queuedTasks[0]
 			model.queuedTasks = model.queuedTasks[1:]
 			model.details = newTranscriptDetailStore(0, 0)
 			model.running = true
 			model.runStartedAt = time.Now()
-			model.workingFrame = 0
+			model.motionStartedAt = model.runStartedAt
+			model.runDiffChanges = nil
+			model.runDiffExact = true
 			model.status = taskPhase(next)
 			model.draft = ""
-			return model, tea.Sequence(model.flushTranscript(), tea.Batch(model.runTask(next), fullscreenWorkingTick()))
+			return model, tea.Sequence(model.flushTranscript(), tea.Batch(model.runTask(next), model.workingTick()))
 		}
 		model.running = false
 		model.status = "idle"
 		return model, model.flushTranscript()
 	case fullscreenCommandDoneMsg:
 		if message.err != nil {
-			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: message.err.Error()})
+			model.appendCell(cellError, message.err.Error())
 		} else if strings.HasPrefix(strings.TrimSpace(message.command), "/clear") {
-			model.entries = nil
-			model.committed = 0
+			model.transcript.reset()
 			model.details = newTranscriptDetailStore(0, 0)
 			model.draft = ""
-			model.lastAssistantMarkdown = ""
 			model.collaboration = CollaborationExecute
 			model.refreshCurrentSession()
 			model.status = "idle"
 			return model, tea.Sequence(func() tea.Msg { return tea.ClearScreen() }, tea.Println(model.banner()))
 		} else if strings.TrimSpace(message.output) != "" {
-			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: message.output})
+			model.appendCell(cellNotice, message.output)
 		}
 		model.status = "idle"
 		return model, model.flushTranscript()
 	case fullscreenSessionsMsg:
 		model.status = "idle"
 		if message.err != nil {
-			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: message.err.Error()})
+			model.appendCell(cellError, message.err.Error())
 			return model, model.flushTranscript()
 		}
 		if len(message.sessions) == 0 {
-			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: "当前项目还没有可恢复的 Session。"})
+			model.appendCell(cellNotice, "当前项目还没有可恢复的 Session。")
 			return model, model.flushTranscript()
 		}
 		model.sessions = message.sessions
@@ -532,9 +510,9 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.sessions = nil
 		model.status = "idle"
 		if message.err != nil {
-			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: message.err.Error()})
+			model.appendCell(cellError, message.err.Error())
 		} else if strings.TrimSpace(message.message) != "" {
-			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: message.message})
+			model.appendCell(cellNotice, message.message)
 			model.refreshCurrentSession()
 			model.collaboration = CollaborationExecute
 		}
@@ -544,9 +522,9 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.selectionKind = ""
 		model.status = "idle"
 		if message.err != nil {
-			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: message.err.Error()})
+			model.appendCell(cellError, message.err.Error())
 		} else {
-			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: message.message})
+			model.appendCell(cellNotice, message.message)
 			model.refreshCurrentSession()
 		}
 		return model, model.flushTranscript()
@@ -555,28 +533,28 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.selectionKind = ""
 		model.status = "idle"
 		if message.err != nil {
-			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: message.err.Error()})
+			model.appendCell(cellError, message.err.Error())
 			return model, model.flushTranscript()
 		}
-		model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: message.message})
+		model.appendCell(cellNotice, message.message)
 		return model, tea.Sequence(model.flushTranscript(), tea.Quit)
 	case fullscreenCompactMsg:
 		model.status = "idle"
 		if message.err != nil {
-			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: message.err.Error()})
+			model.appendCell(cellError, message.err.Error())
 		} else {
-			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: message.message})
+			model.appendCell(cellNotice, message.message)
 		}
 		return model, model.flushTranscript()
 	case fullscreenSkillsMsg:
 		model.status = "idle"
 		if message.err != nil {
-			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: message.err.Error()})
+			model.appendCell(cellError, message.err.Error())
 			return model, model.flushTranscript()
 		}
 		model.skills = message.skills
 		if len(message.skills) == 0 {
-			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: "No skills available."})
+			model.appendCell(cellNotice, "No skills available.")
 			return model, model.flushTranscript()
 		}
 		items := make([]selectionItem, 0, len(message.skills))
@@ -592,7 +570,7 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return model, nil
 	case fullscreenSkillSetMsg:
 		if message.err != nil {
-			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: message.err.Error()})
+			model.appendCell(cellError, message.err.Error())
 			return model, model.flushTranscript()
 		}
 		for index := range model.skills {
@@ -612,8 +590,7 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if !model.running || model.approval != nil {
 			return model, nil
 		}
-		model.workingFrame++
-		return model, fullscreenWorkingTick()
+		return model, model.workingTick()
 	case tea.MouseMsg:
 		model.lastMouseEvent = time.Now()
 		return model, nil
@@ -641,17 +618,17 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 	switch key.String() {
 	case "shift+tab":
 		if model.running {
-			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: "Collaboration mode cannot change while a task is in progress."})
+			model.appendCell(cellNotice, "Collaboration mode cannot change while a task is in progress.")
 			return model, model.flushTranscript()
 		}
 		if model.collaboration == CollaborationPlan {
 			model.collaboration = CollaborationExecute
 			model.status = "idle"
-			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: "Switched to Execute mode"})
+			model.appendCell(cellNotice, "Switched to Execute mode")
 		} else {
 			model.collaboration = CollaborationPlan
 			model.status = "plan mode"
-			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: "Switched to Plan mode"})
+			model.appendCell(cellNotice, "Switched to Plan mode")
 		}
 		return model, model.flushTranscript()
 	case "ctrl+c":
@@ -742,7 +719,7 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 			if strings.HasPrefix(text, "/") {
 				spec, _, ok := ParseSlashCommand(text)
 				if !ok || !spec.AvailableDuringRun {
-					model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: "This command is disabled while a task is in progress."})
+					model.appendCell(cellNotice, "This command is disabled while a task is in progress.")
 					return model, model.flushTranscript()
 				}
 				return model.submitCommand(text)
@@ -750,7 +727,7 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 			if strings.HasPrefix(text, "/") {
 				return model, model.flushTranscript()
 			}
-			model.entries = append(model.entries, fullscreenEntry{kind: "user", content: text})
+			model.appendCell(cellUser, text)
 			model.queuedTasks = append(model.queuedTasks, TaskSubmission{Content: text, Mode: model.collaboration})
 			model.status = fmt.Sprintf("%s · %d queued", model.status, len(model.queuedTasks))
 			return model, model.flushTranscript()
@@ -758,15 +735,19 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		if strings.HasPrefix(text, "/") {
 			return model.submitCommand(text)
 		}
-		model.entries = append(model.entries, fullscreenEntry{kind: "user", content: text})
+		model.appendCell(cellUser, text)
 		model.details = newTranscriptDetailStore(0, 0)
 		model.running = true
 		model.runStartedAt = time.Now()
-		model.workingFrame = 0
+		model.motionStartedAt = model.runStartedAt
+		model.runDiffChanges = nil
+		model.runDiffExact = true
+		model.transcript.HadWorkActivity = false
+		model.transcript.NeedsFinalMessageSeparator = false
 		submission := TaskSubmission{Content: text, Mode: model.collaboration}
 		model.status = taskPhase(submission)
 		model.draft = ""
-		return model, tea.Sequence(model.flushTranscript(), tea.Batch(model.runTask(submission), fullscreenWorkingTick()))
+		return model, tea.Sequence(model.flushTranscript(), tea.Batch(model.runTask(submission), model.workingTick()))
 	}
 	var command tea.Cmd
 	model.input, command = model.input.Update(key)
@@ -783,10 +764,18 @@ func (model *fullscreenModel) applyEvent(item event.Event) {
 	}
 	switch item := item.(type) {
 	case event.LLMCallStarted:
+		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
+			model.transcript.flushActive()
+		}
 		if strings.TrimSpace(item.Model.Name) != "" {
 			model.model = item.Model.Name
 		}
 	case event.TextDelta:
+		if model.draft == "" && model.transcript.HadWorkActivity && model.transcript.NeedsFinalMessageSeparator {
+			model.transcript.flushActive()
+			model.transcript.append(finalMessageSeparatorCell{elapsed: model.runElapsed()})
+			model.transcript.NeedsFinalMessageSeparator = false
+		}
 		model.draft += item.Delta
 	case event.ReasoningDelta:
 		if strings.TrimSpace(item.Delta) != "" {
@@ -802,85 +791,63 @@ func (model *fullscreenModel) applyEvent(item event.Event) {
 		}
 	case event.PlanUpdated:
 		model.finishDraft()
-		var builder strings.Builder
-		fmt.Fprintf(&builder, "• Updated Plan · revision %d", item.Revision)
-		for index, planItem := range item.Items {
-			marker := "○"
-			if planItem.Status == "completed" {
-				marker = "✔"
-			} else if planItem.Status == "in_progress" {
-				marker = "◉"
-			}
-			prefix := "    "
-			if index == 0 {
-				prefix = "  └ "
-			}
-			fmt.Fprintf(&builder, "\n%s%s plan-%d · %s", prefix, marker, index+1, planItem.Step)
-		}
-		model.entries = append(model.entries, fullscreenEntry{kind: "plan", content: builder.String()})
+		model.transcript.append(newPlanUpdateCell(item))
 		model.status = "planning"
 	case event.RunDiffUpdated:
-		model.finishDraft()
-		var builder strings.Builder
-		fmt.Fprintf(&builder, "• Updated Diff · %d file(s)", len(item.Changes))
-		for _, change := range item.Changes {
-			fmt.Fprintf(&builder, "\n    %s · %s", change.Kind, change.Path)
-		}
-		model.entries = append(model.entries, fullscreenEntry{kind: "diff", content: builder.String()})
+		model.runDiffChanges = append([]event.RunDiffChange(nil), item.Changes...)
+		model.runDiffExact = true
 	case event.RunDiffInvalidated:
-		model.finishDraft()
-		model.entries = append(model.entries, fullscreenEntry{kind: "warning", content: "• Diff attribution unavailable · " + item.Reason})
-	case event.IterationStarted:
-		if _, exists := model.iterations[item.Iteration]; !exists {
-			model.iterations[item.Iteration] = newIterationActivity(item.Iteration)
-		}
+		model.runDiffChanges = nil
+		model.runDiffExact = false
+	case event.IterationStarted, event.IterationCompleted:
+		// Reactor iterations are diagnostic boundaries, not transcript layout boundaries.
 	case event.ToolCallStarted:
-		model.finishDraft()
-		iteration := model.iterations[item.Iteration]
-		if iteration == nil {
-			iteration = newIterationActivity(item.Iteration)
-			model.iterations[item.Iteration] = iteration
+		if item.ToolName == "update_plan" {
+			return
 		}
-		model.activitySeq++
-		activity := activityFromStarted(item, model.activitySeq)
-		iteration.CallIDs = append(iteration.CallIDs, item.CallID)
-		iteration.Tools[item.CallID] = activity
-		model.activeTools[item.CallID] = activity
+		model.finishDraft()
+		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
+			model.transcript.flushActive()
+		}
+		if model.transcript.ActiveCell == nil {
+			model.transcript.ActiveCell = newToolHistoryCell()
+		}
+		model.transcript.ActiveCell.Apply(item)
+		model.transcript.HadWorkActivity = true
+		model.transcript.NeedsFinalMessageSeparator = true
 		model.status = "executing"
 	case event.ToolCallCompleted:
-		model.finishDraft()
-		activity := model.activeTools[item.CallID]
-		if activity == nil {
-			iteration := model.iterations[item.Iteration]
-			if iteration == nil {
-				iteration = newIterationActivity(item.Iteration)
-				model.iterations[item.Iteration] = iteration
-			}
-			model.activitySeq++
-			activity = &toolActivity{CallID: item.CallID, Iteration: item.Iteration, Sequence: model.activitySeq, Kind: activityExplore, Title: item.ToolName}
-			iteration.CallIDs = append(iteration.CallIDs, item.CallID)
-			iteration.Tools[item.CallID] = activity
+		if item.ToolName == "update_plan" {
+			return
 		}
-		activity.Success, activity.Partial, activity.Result, activity.Duration, activity.Completed = item.Success, item.Partial, strings.TrimSpace(item.Summary), item.Duration, true
+		model.finishDraft()
+		if model.transcript.ActiveCell == nil {
+			cell := newToolHistoryCell()
+			cell.Apply(event.ToolCallStarted{CallID: item.CallID, ToolName: item.ToolName, Iteration: item.Iteration})
+			model.transcript.ActiveCell = cell
+		}
+		model.transcript.ActiveCell.Apply(item)
+		model.transcript.HadWorkActivity = true
+		model.transcript.NeedsFinalMessageSeparator = true
 		if model.details == nil {
 			model.details = newTranscriptDetailStore(0, 0)
 		}
-		detailContent := strings.TrimSpace(strings.Join([]string{activity.Detail, item.Summary}, "\n\n"))
-		if detail, ok := model.details.Add(item.CallID, activity.Title, detailContent); ok {
-			activity.ResultDetailID = detail.ID
-			activity.DetailAvailable = activity.Kind == activityExplore || detail.Truncated || strings.Count(item.Summary, "\n") >= 5 || len([]rune(item.Summary)) > 600
-			activity.Result = detail.Content
+		if cell, ok := model.transcript.ActiveCell.(*toolHistoryCell); ok {
+			activity := cell.byCallID[item.CallID]
+			if activity != nil {
+				detailContent := strings.TrimSpace(strings.Join([]string{activity.Detail, item.Summary}, "\n\n"))
+				if detail, ok := model.details.Add(item.CallID, activity.Title, detailContent); ok {
+					activity.ResultDetailID = detail.ID
+					activity.DetailAvailable = activity.Kind == activityExplore || detail.Truncated || strings.Count(item.Summary, "\n") >= 5 || len([]rune(item.Summary)) > 600
+					activity.Result = detail.Content
+				}
+			}
 		}
-		delete(model.activeTools, item.CallID)
-	case event.IterationCompleted:
-		model.finishDraft()
-		model.entries = append(model.entries, renderIterationActivities(model.iterations[item.Iteration])...)
-		delete(model.iterations, item.Iteration)
 	case event.ApprovalRequested:
 		model.status = "awaiting approval"
 	case event.ApprovalResolved:
 		model.finishDraft()
-		model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: fmt.Sprintf("Approval · %s · %s", item.ToolName, item.Outcome)})
+		model.appendCell(cellNotice, fmt.Sprintf("Approval · %s · %s", item.ToolName, item.Outcome))
 	case event.RunStatusChanged:
 		if strings.TrimSpace(item.To) != "" {
 			model.status = item.To
@@ -892,40 +859,55 @@ func (model *fullscreenModel) applyEvent(item event.Event) {
 	case event.DiagnosticPublished:
 		model.finishDraft()
 		content := strings.TrimSpace(strings.Join([]string{item.Severity, item.Code, item.Message}, " "))
-		model.entries = append(model.entries, fullscreenEntry{kind: "diagnostic", content: content})
+		model.appendCell(cellDiagnostic, content)
 	case event.ErrorOccurred:
 		model.finishDraft()
 		if strings.TrimSpace(item.Error.Message) != "" {
-			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: item.Error.Message})
+			model.appendCell(cellError, item.Error.Message)
 		}
 	case event.RunCompleted:
-		model.flushPendingActivities()
+		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
+			model.transcript.flushActive()
+		}
 		model.status = item.Status
 	}
 }
 
-func (model *fullscreenModel) flushPendingActivities() {
-	if model == nil || len(model.iterations) == 0 {
-		return
-	}
-	iterations := make([]int, 0, len(model.iterations))
-	for iteration := range model.iterations {
-		iterations = append(iterations, iteration)
-	}
-	slices.Sort(iterations)
-	for _, iteration := range iterations {
-		model.entries = append(model.entries, renderIterationActivities(model.iterations[iteration])...)
-		delete(model.iterations, iteration)
-	}
-	clear(model.activeTools)
-}
-
 func (model *fullscreenModel) finishDraft() {
 	if strings.TrimSpace(model.draft) != "" {
-		model.lastAssistantMarkdown = model.draft
-		model.entries = append(model.entries, fullscreenEntry{kind: "assistant", content: model.draft})
+		model.transcript.LastAssistantMarkdown = model.draft
+		model.appendCell(cellAssistant, model.draft)
 	}
 	model.draft = ""
+}
+
+func (model *fullscreenModel) appendCell(kind transcriptCellKind, content string) {
+	if model == nil || strings.TrimSpace(content) == "" {
+		return
+	}
+	model.transcript.append(newTextCell(kind, content))
+}
+
+func (model fullscreenModel) transcriptRenderContext() transcriptRenderContext {
+	now := time.Now()
+	if model.clock != nil {
+		now = model.clock.Now()
+	}
+	return transcriptRenderContext{
+		Width: maxInt(36, model.width-3), Palette: model.palette, Markdown: model.renderer,
+		Now: now, MotionStart: model.motionStartedAt, Motion: model.motion,
+	}
+}
+
+func (model fullscreenModel) renderCell(cell transcriptCell) (rendered string) {
+	if cell == nil {
+		return ""
+	}
+	rendered = cell.Render(model.transcriptRenderContext())
+	if model.app != nil && model.app.options.NoColor {
+		return xansi.Strip(rendered)
+	}
+	return rendered
 }
 
 func (model *fullscreenModel) recallHistory(direction int) bool {
@@ -984,17 +966,17 @@ func (model fullscreenModel) View() (rendered string) {
 	}
 	input := model.inputBox()
 	status := model.statusBar()
-	draft := model.renderActiveDraft()
-	working := model.workingLine()
-	activity := ""
-	switch {
-	case draft != "" && working != "":
-		activity = draft + "\n\n" + working
-	case draft != "":
-		activity = draft
-	case working != "":
-		activity = "\n" + working
+	parts := make([]string, 0, 3)
+	if active := model.renderActiveCell(); active != "" {
+		parts = append(parts, active)
 	}
+	if draft := model.renderActiveDraft(); draft != "" {
+		parts = append(parts, draft)
+	}
+	if working := model.workingLine(); working != "" {
+		parts = append(parts, working)
+	}
+	activity := strings.Join(parts, "\n\n")
 	inputRegion := input + "\n" + status
 	if activity == "" {
 		return "\n\n" + inputRegion
@@ -1040,8 +1022,8 @@ func (model fullscreenModel) handleDetailViewerKey(key tea.KeyMsg) (tea.Model, t
 }
 
 func (model fullscreenModel) renderTranscriptViewer() string {
-	header := fullscreenSectionStyle.Render("Transcript Details") + "  " + fullscreenMutedStyle.Render("↑/↓ · PgUp/PgDn · Esc return")
-	footer := fullscreenMutedStyle.Render(fmt.Sprintf("%d retained item(s) · bounded in memory", len(model.details.items)))
+	header := model.palette.accent().Bold(true).Render("Transcript Details") + "  " + model.palette.dim().Render("↑/↓ · PgUp/PgDn · Esc return")
+	footer := model.palette.dim().Render(fmt.Sprintf("%d retained item(s) · bounded in memory", len(model.details.items)))
 	return strings.Join([]string{header, model.detailViewport.View(), footer}, "\n")
 }
 
@@ -1052,12 +1034,12 @@ func (model fullscreenModel) banner() (rendered string) {
 		}
 	}()
 	width := maxInt(40, model.width)
-	logo := fullscreenLogoStyle.Render(strings.Trim(terminalLogo(width), "\r\n"))
+	logo := model.palette.plain().Render(strings.Trim(terminalLogo(width), "\r\n"))
 	version := strings.TrimSpace(model.startup.Version)
 	if version != "" {
 		version = " (" + version + ")"
 	}
-	title := fullscreenTitleStyle.Render("Amadeus") + fullscreenMutedStyle.Render(version)
+	title := model.palette.bold().Render("Amadeus") + model.palette.dim().Render(version)
 	modelName := strings.TrimSpace(model.model)
 	project := strings.TrimSpace(model.startup.Project)
 	rows := []string{title}
@@ -1075,7 +1057,7 @@ func (model fullscreenModel) banner() (rendered string) {
 		return logo + "\n" + strings.Join(rows, "\n")
 	}
 	panelWidth := maxInt(24, width-6)
-	panel := fullscreenPanelStyle.Width(panelWidth).Render(strings.Join(rows, "\n"))
+	panel := fullscreenPanelStyle.BorderForeground(model.palette.semantic(terminalRGB{90, 90, 90}, "238", "250")).Width(panelWidth).Render(strings.Join(rows, "\n"))
 	return logo + "\n\n" + panel
 }
 
@@ -1087,16 +1069,19 @@ func bannerMetadataRow(label, value string, width int) string {
 	return fmt.Sprintf("%-*s%s", labelWidth, label, truncateFullscreen(strings.TrimSpace(value), width-labelWidth))
 }
 
-func newFullscreenMarkdownRenderer(width int) (*glamour.TermRenderer, error) {
+func newFullscreenMarkdownRenderer(width int, palette terminalPalette) (*glamour.TermRenderer, error) {
 	style := styles.DarkStyleConfig
+	if !palette.Dark {
+		style = styles.LightStyleConfig
+	}
 	zero := uint(0)
-	cyan := "#67E8F9"
+	accent := palette.markdownAccent()
 	bold := true
 	style.Document.Margin = &zero
 	style.Document.Indent = &zero
 	style.Document.BlockPrefix = ""
 	style.Document.BlockSuffix = ""
-	style.Code.Color = &cyan
+	style.Code.Color = &accent
 	style.Code.BackgroundColor = nil
 	style.Code.Bold = &bold
 	return glamour.NewTermRenderer(glamour.WithStyles(style), glamour.WithWordWrap(width))
@@ -1139,7 +1124,6 @@ func (model *fullscreenModel) sanitizeInput() {
 var (
 	terminalControlResponseRE = regexp.MustCompile(`(?s)(?:\x1b\]|\])?(?:10|11|12);rgb:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}(?:\x1b\\|\\)?`)
 	terminalMouseResponseRE   = regexp.MustCompile(`(?:\x1b\[|\x{009b}|\[)?<\d{1,3};\d{1,4};\d{1,4}[mM]`)
-	activityVerbRE            = regexp.MustCompile(`\b(?:Read|Search)\b`)
 )
 
 const terminalControlFragmentWindow = 300 * time.Millisecond
@@ -1161,26 +1145,21 @@ func (model fullscreenModel) inputBox() string {
 	input := fullscreenInputFillStyle.Width(width).Render(strings.TrimRight(model.input.View(), "\n"))
 	if model.slashPopup.active() {
 		visible, start := model.slashPopup.visibleItems()
-		lines := make([]string, 0, len(visible))
-		commandWidth := 0
-		for _, spec := range visible {
-			commandWidth = maxInt(commandWidth, len([]rune(spec.Command))+1)
-		}
+		items := make([]listVisualItem, 0, len(visible))
 		for index, spec := range visible {
-			name := "/" + string(spec.Command)
-			line := fmt.Sprintf("  %-*s  %s", commandWidth, name, spec.Description)
-			if start+index == model.slashPopup.selected {
-				line = fullscreenResumeAccentStyle.Render("› " + strings.TrimPrefix(line, "  "))
-			} else {
-				line = fullscreenAssistantStyle.Render(line[:commandWidth+2]) + fullscreenMutedStyle.Render(line[commandWidth+2:])
-			}
-			lines = append(lines, truncateFullscreen(line, width))
+			items = append(items, listVisualItem{
+				Name: "/" + string(spec.Command), Description: spec.Description,
+				Selected: start+index == model.slashPopup.selected,
+			})
 		}
-		return input + "\n\n" + strings.Join(lines, "\n")
+		list := model.renderListVisual(listVisual{
+			Title: "Commands", Hint: "↑/↓ select · Enter insert · Esc dismiss", Items: items,
+		}, width)
+		return input + "\n\n" + list
 	}
 	if model.running {
 		hint := fmt.Sprintf("Agent 正在执行；Enter 排队下一条任务 · Esc/Ctrl+C 取消 · %d queued", len(model.queuedTasks))
-		return input + "\n" + fullscreenMutedStyle.Render(hint)
+		return input + "\n" + model.palette.dim().Render(xansi.Truncate(hint, width, "…"))
 	}
 	return input
 }
@@ -1189,18 +1168,18 @@ func (model fullscreenModel) statusBar() string {
 	width := maxInt(40, model.width)
 	parts := []statusBarPart{}
 	if modelName := strings.TrimSpace(model.model); modelName != "" {
-		parts = append(parts, statusBarPart{text: modelName, style: fullscreenStatusModelStyle})
+		parts = append(parts, statusBarPart{text: modelName, style: model.palette.accent()})
 	} else {
-		parts = append(parts, statusBarPart{text: "AMADEUS", style: fullscreenStatusModelStyle})
+		parts = append(parts, statusBarPart{text: "AMADEUS", style: model.palette.accent()})
 	}
 	if project := strings.TrimSpace(model.startup.Project); project != "" {
-		parts = append(parts, statusBarPart{text: project, style: fullscreenStatusPathStyle})
+		parts = append(parts, statusBarPart{text: project, style: model.palette.plain()})
 	}
 	if branch := strings.TrimSpace(model.startup.Branch); branch != "" {
-		parts = append(parts, statusBarPart{text: branch, style: fullscreenStatusGitStyle})
+		parts = append(parts, statusBarPart{text: branch, style: model.palette.warning()})
 	}
 	if model.collaboration == CollaborationPlan {
-		parts = append(parts, statusBarPart{text: "Plan", style: fullscreenStatusWarnStyle})
+		parts = append(parts, statusBarPart{text: "Plan", style: model.palette.warning()})
 	}
 	contextWindow := model.contextLimit
 	if contextWindow <= 0 {
@@ -1211,33 +1190,33 @@ func (model fullscreenModel) statusBar() string {
 		if model.contextUsage > 0 {
 			percent = minInt64(100, model.contextUsage*100/contextWindow)
 		}
-		contextStyle := statusContextStyle(percent)
+		contextStyle := statusContextStyle(model.palette, percent)
 		parts = append(parts,
 			statusBarPart{text: fmt.Sprintf("Context %d%% used", percent), style: contextStyle},
-			statusBarPart{text: compactTokenCount(contextWindow) + " window", style: fullscreenStatusMutedStyle},
+			statusBarPart{text: compactTokenCount(contextWindow) + " window", style: model.palette.dim()},
 		)
 	}
 	if len(parts) == 1 && strings.TrimSpace(model.startup.Project) == "" && strings.TrimSpace(model.startup.Branch) == "" && contextWindow <= 0 {
-		parts = append(parts, statusBarPart{text: model.status, style: fullscreenStatusMutedStyle})
+		parts = append(parts, statusBarPart{text: model.status, style: model.palette.dim()})
 	}
-	line := renderStatusBarParts(parts)
+	line := renderStatusBarParts(parts, model.palette)
 	if lipgloss.Width(line) > width {
-		for len(parts) > 1 && lipgloss.Width(renderStatusBarParts(parts)) > width {
+		for len(parts) > 1 && lipgloss.Width(renderStatusBarParts(parts, model.palette)) > width {
 			parts = append(parts[:1], parts[2:]...)
 		}
-		line = xansi.Truncate(renderStatusBarParts(parts), width, "")
+		line = xansi.Truncate(renderStatusBarParts(parts, model.palette), width, "")
 	}
 	return line
 }
 
-func statusContextStyle(percent int64) lipgloss.Style {
+func statusContextStyle(palette terminalPalette, percent int64) lipgloss.Style {
 	switch {
 	case percent >= 90:
-		return fullscreenStatusBadStyle
+		return palette.failure()
 	case percent >= 70:
-		return fullscreenStatusWarnStyle
+		return palette.warning()
 	default:
-		return fullscreenStatusGoodStyle
+		return palette.success()
 	}
 }
 
@@ -1246,9 +1225,9 @@ type statusBarPart struct {
 	style lipgloss.Style
 }
 
-func renderStatusBarParts(parts []statusBarPart) string {
+func renderStatusBarParts(parts []statusBarPart, palette terminalPalette) string {
 	var builder strings.Builder
-	separator := fullscreenStatusMutedStyle.Render(" · ")
+	separator := palette.dim().Render(" · ")
 	for index, part := range parts {
 		if index > 0 {
 			builder.WriteString(separator)
@@ -1259,87 +1238,37 @@ func renderStatusBarParts(parts []statusBarPart) string {
 }
 
 func (model fullscreenModel) workingLine() string {
-	if !model.running {
+	if !model.running || model.approval != nil {
 		return ""
 	}
-	elapsed := elapsedRunDuration(model.runStartedAt)
-	word := animatedWorkingWord(model.workingFrame)
-	return fullscreenWorkingInkStyle.Render(workingMarker(model.workingFrame)+" ") + word + fullscreenWorkingMetaStyle.Render(fmt.Sprintf(" (%s • esc to interrupt)", elapsed))
-}
-
-func workingMarker(frame int) string {
-	if (frame/8)%2 == 1 {
-		return "◦"
+	now := time.Now()
+	if model.clock != nil {
+		now = model.clock.Now()
 	}
-	return "•"
+	elapsed := elapsedRunDurationAt(model.runStartedAt, now)
+	marker := activityIndicator(now, model.motionStartedAt, model.motion, model.palette)
+	word := shimmerText("Working", now, model.motionStartedAt, model.motion, model.palette)
+	line := marker + " " + word + model.palette.dim().Render(fmt.Sprintf(" (%s • esc to interrupt)", formatElapsedCompact(elapsed)))
+	return xansi.Truncate(line, maxInt(12, model.width), "")
 }
 
-func animatedWorkingWord(frame int) string {
-	const word = "Working"
-	var builder strings.Builder
-	for index, character := range word {
-		builder.WriteString(lipgloss.NewStyle().Foreground(workingBeamColor(workingBeamDistance(frame, index, len(word)))).Render(string(character)))
+func (model fullscreenModel) runElapsed() time.Duration {
+	now := time.Now()
+	if model.clock != nil {
+		now = model.clock.Now()
 	}
-	return builder.String()
+	return elapsedRunDurationAt(model.runStartedAt, now)
 }
 
-func workingBeamDistance(frame, index, wordLength int) int {
-	scanFrames := wordLength*workingBeamSubframes + 2*workingBeamPadding
-	cycleFrame := frame % (scanFrames + workingBeamPauseFrames)
-	if cycleFrame >= scanFrames {
-		return scanFrames
-	}
-	beam := cycleFrame - workingBeamPadding
-	return absoluteInt(index*workingBeamSubframes - beam)
-}
-
-func elapsedRunDuration(startedAt time.Time) time.Duration {
+func elapsedRunDurationAt(startedAt, now time.Time) time.Duration {
 	if startedAt.IsZero() {
 		return 0
 	}
-	elapsed := time.Since(startedAt).Round(time.Second)
+	elapsed := now.Sub(startedAt).Round(time.Second)
 	if elapsed < 0 {
 		return 0
 	}
 	return elapsed
-}
-
-func formatRunDuration(duration time.Duration) string {
-	seconds := int64(duration.Round(time.Second) / time.Second)
-	if seconds < 0 {
-		seconds = 0
-	}
-	hours := seconds / 3600
-	minutes := seconds % 3600 / 60
-	seconds %= 60
-	switch {
-	case hours > 0:
-		return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
-	case minutes > 0:
-		return fmt.Sprintf("%dm %ds", minutes, seconds)
-	default:
-		return fmt.Sprintf("%ds", seconds)
-	}
-}
-
-func workingBeamColor(distance int) lipgloss.TerminalColor {
-	switch {
-	case distance <= 1:
-		return lipgloss.AdaptiveColor{Light: "16", Dark: "15"}
-	case distance <= 3:
-		return lipgloss.AdaptiveColor{Light: "237", Dark: "255"}
-	case distance <= 5:
-		return lipgloss.AdaptiveColor{Light: "240", Dark: "252"}
-	default:
-		return lipgloss.AdaptiveColor{Light: "246", Dark: "246"}
-	}
-}
-
-func absoluteInt(value int) int {
-	if value < 0 {
-		return -value
-	}
-	return value
 }
 
 func compactTokenCount(value int64) string {
@@ -1374,48 +1303,27 @@ func (model *fullscreenModel) updateInputLayout() {
 }
 
 func (model fullscreenModel) transcriptContent() string {
-	entries := append([]fullscreenEntry(nil), model.entries...)
+	cells := append([]transcriptCell(nil), model.transcript.Cells...)
 	if model.draft != "" {
-		entries = append(entries, fullscreenEntry{kind: "assistant", content: model.draft})
+		cells = append(cells, newTextCell(cellAssistant, model.draft))
 	}
-	parts := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		parts = append(parts, model.renderEntry(entry))
+	if model.transcript.ActiveCell != nil {
+		cells = append(cells, model.transcript.ActiveCell)
 	}
-	return strings.Join(parts, "\n\n")
+	return renderTranscriptCells(cells, model.transcriptRenderContext())
 }
 
 func (model *fullscreenModel) flushTranscript() tea.Cmd {
-	if model == nil || model.committed >= len(model.entries) {
+	if model == nil || model.transcript.Committed >= len(model.transcript.Cells) {
 		return nil
 	}
-	pending := model.entries[model.committed:]
-	previousKind := ""
-	if model.committed > 0 {
-		previousKind = model.entries[model.committed-1].kind
+	pending := model.transcript.Cells[model.transcript.Committed:]
+	output := renderTranscriptCells(pending, model.transcriptRenderContext())
+	model.transcript.Committed = len(model.transcript.Cells)
+	if output == "" {
+		return nil
 	}
-	output := model.renderCommittedEntries(pending, previousKind)
-	model.committed = len(model.entries)
-	return tea.Println(output)
-}
-
-func (model fullscreenModel) renderCommittedEntries(entries []fullscreenEntry, previousKind string) string {
-	parts := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		parts = append(parts, model.renderEntry(entry))
-	}
-	output := strings.Join(parts, "\n\n")
-	if len(entries) == 0 {
-		return output
-	}
-	if previousKind == "worked" && entries[0].kind == "user" {
-		output = "\n" + output
-	}
-	switch entries[len(entries)-1].kind {
-	case "assistant", "activity", "separator":
-		output += "\n"
-	}
-	return output
+	return tea.Println(output + "\n")
 }
 
 func (model fullscreenModel) renderActiveDraft() string {
@@ -1427,7 +1335,7 @@ func (model fullscreenModel) renderActiveDraft() string {
 	if len(sourceLines) > available {
 		sourceLines = sourceLines[len(sourceLines)-available:]
 	}
-	rendered := model.renderEntry(fullscreenEntry{kind: "assistant", content: strings.Join(sourceLines, "\n")})
+	rendered := model.renderCell(newTextCell(cellAssistant, strings.Join(sourceLines, "\n")))
 	lines := strings.Split(rendered, "\n")
 	if len(lines) > available {
 		lines = lines[len(lines)-available:]
@@ -1435,115 +1343,17 @@ func (model fullscreenModel) renderActiveDraft() string {
 	return strings.Join(lines, "\n")
 }
 
-func (model fullscreenModel) renderEntry(entry fullscreenEntry) (rendered string) {
-	defer func() {
-		if model.app != nil && model.app.options.NoColor {
-			rendered = xansi.Strip(rendered)
-		}
-	}()
-	width := maxInt(36, model.width-3)
-	content := sanitizeFullscreenContent(entry.content)
-	switch entry.kind {
-	case "user":
-		return fullscreenUserStyle.Width(width).Render("› " + content)
-	case "error":
-		return fullscreenErrorStyle.Render("Error: " + content)
-	case "tool":
-		return fullscreenToolStyle.Width(width).Render(content)
-	case "result", "diagnostic":
-		return fullscreenResultStyle.Width(width).Render(content)
-	case "plan":
-		return fullscreenPlanStyle.UnsetBorderStyle().UnsetPadding().Width(width).Render(content)
-	case "activity":
-		return renderActivityContent(content, width, entry.successful)
-	case "separator":
-		return fullscreenMutedStyle.Render(strings.Repeat("─", maxInt(12, width)))
-	case "worked":
-		return renderWorkedLine(content, width)
-	case "notice":
-		return fullscreenMutedStyle.Render(content)
-	default:
-		if model.renderer != nil {
-			if rendered, err := model.renderer.Render(content); err == nil {
-				return fullscreenAssistantStyle.Render(prefixRenderedBlock(rendered, "• "))
-			}
-		}
-		return fullscreenAssistantStyle.Render("• " + content)
+func (model fullscreenModel) renderActiveCell() string {
+	if model.transcript.ActiveCell == nil {
+		return ""
 	}
-}
-
-func renderActivityContent(content string, width int, successful bool) string {
-	wrapped := wrapActivityContent(content, width)
-	lines := strings.Split(wrapped, "\n")
-	for index, line := range lines {
-		if index == 0 && successful && strings.HasPrefix(line, "•") {
-			lines[index] = fullscreenActivityOKStyle.Render("•") + highlightActivityVerbs(line[len("•"):])
-			continue
-		}
-		lines[index] = highlightActivityVerbs(line)
+	rendered := model.renderCell(model.transcript.ActiveCell)
+	available := maxInt(1, model.height-lipgloss.Height(model.inputBox())-lipgloss.Height(model.statusBar())-4)
+	lines := strings.Split(rendered, "\n")
+	if len(lines) > available {
+		lines = lines[len(lines)-available:]
 	}
 	return strings.Join(lines, "\n")
-}
-
-func highlightActivityVerbs(line string) string {
-	matches := activityVerbRE.FindAllStringIndex(line, -1)
-	if len(matches) == 0 {
-		return fullscreenAssistantStyle.Render(line)
-	}
-	var builder strings.Builder
-	previous := 0
-	for _, match := range matches {
-		builder.WriteString(fullscreenAssistantStyle.Render(line[previous:match[0]]))
-		builder.WriteString(fullscreenActivityVerbStyle.Render(line[match[0]:match[1]]))
-		previous = match[1]
-	}
-	builder.WriteString(fullscreenAssistantStyle.Render(line[previous:]))
-	return builder.String()
-}
-
-func renderWorkedLine(duration string, width int) string {
-	prefix := "─Worked for " + strings.TrimSpace(duration)
-	line := prefix + strings.Repeat("─", maxInt(1, width-lipgloss.Width(prefix)))
-	return fullscreenWorkingMetaStyle.Render(xansi.Truncate(line, width, ""))
-}
-
-func wrapActivityContent(content string, width int) string {
-	if width <= 0 {
-		return content
-	}
-	var result []string
-	for _, line := range strings.Split(content, "\n") {
-		prefix, continuation, body := activityLineParts(line)
-		prefixWidth := maxInt(lipgloss.Width(prefix), lipgloss.Width(continuation))
-		available := maxInt(1, width-prefixWidth)
-		wrapped := strings.Split(xansi.Hardwrap(body, available, true), "\n")
-		for index, part := range wrapped {
-			linePrefix := prefix
-			if index > 0 {
-				linePrefix = continuation
-			}
-			result = append(result, linePrefix+part)
-		}
-	}
-	return strings.Join(result, "\n")
-}
-
-func activityLineParts(line string) (prefix, continuation, body string) {
-	for _, candidate := range []struct {
-		prefix       string
-		continuation string
-	}{
-		{prefix: "• ", continuation: "  │ "},
-		{prefix: "  │ ", continuation: "  │ "},
-		{prefix: "  └ ", continuation: "    "},
-		{prefix: "    └ ", continuation: "      "},
-		{prefix: "    ", continuation: "    "},
-	} {
-		if strings.HasPrefix(line, candidate.prefix) {
-			return candidate.prefix, candidate.continuation, strings.TrimPrefix(line, candidate.prefix)
-		}
-	}
-	return "", "", line
 }
 
 func prefixRenderedBlock(value, prefix string) string {

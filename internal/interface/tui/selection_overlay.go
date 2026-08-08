@@ -70,3 +70,18 @@ func (overlay *selectionOverlay) filteredIndices() []int {
 	}
 	return indices
 }
+
+func (overlay *selectionOverlay) visibleIndices() []int {
+	indices := overlay.filteredIndices()
+	if len(indices) <= commandListMaxVisible {
+		return indices
+	}
+	start := overlay.Selected - commandListMaxVisible/2
+	if start < 0 {
+		start = 0
+	}
+	if maximum := len(indices) - commandListMaxVisible; start > maximum {
+		start = maximum
+	}
+	return indices[start : start+commandListMaxVisible]
+}

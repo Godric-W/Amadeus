@@ -62,7 +62,7 @@ func ComposeDeveloper(assembler *Assembler, mode string, toolNames []string, fac
 	if strings.TrimSpace(mode) == "execute" {
 		toolLayers := []builtin.ID{builtin.ToolsGeneral}
 		for _, layer := range layers {
-			if layer == builtin.ToolApplyPatch || layer == builtin.ToolExecuteCommand {
+			if layer == builtin.ToolUpdatePlan || layer == builtin.ToolApplyPatch || layer == builtin.ToolExecuteCommand {
 				toolLayers = append(toolLayers, layer)
 			}
 		}

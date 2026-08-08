@@ -70,9 +70,9 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent event.
 		}
 		return renderer.planBlock(typed)
 	case event.RunDiffUpdated:
-		return renderer.statusLine("diff updated: %d file(s)", len(typed.Changes))
+		return nil
 	case event.RunDiffInvalidated:
-		return renderer.statusLine("diff attribution unavailable: %s", typed.Reason)
+		return nil
 	case event.RunStarted:
 		renderer.phase = "starting"
 		return renderer.statusLine("run started: %s", typed.RunID)
@@ -82,10 +82,16 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent event.
 		}
 		return renderer.statusLine("%s %s: %s -> %s", typed.Entity, typed.EntityID, typed.From, typed.To)
 	case event.ToolCallStarted:
+		if typed.ToolName == "update_plan" {
+			return nil
+		}
 		renderer.phase = "executing"
 		renderer.toolCalls++
 		return renderer.statusLine("tool started: %s", typed.ToolName)
 	case event.ToolCallCompleted:
+		if typed.ToolName == "update_plan" {
+			return nil
+		}
 		state := "completed"
 		if !typed.Success {
 			state = "failed"

@@ -33,16 +33,6 @@ type toolActivity struct {
 	ResultDetailID  string
 }
 
-type iterationActivity struct {
-	Iteration int
-	CallIDs   []string
-	Tools     map[string]*toolActivity
-}
-
-func newIterationActivity(iteration int) *iterationActivity {
-	return &iterationActivity{Iteration: iteration, Tools: map[string]*toolActivity{}}
-}
-
 func activityFromStarted(item event.ToolCallStarted, sequence int) *toolActivity {
 	title := strings.TrimSpace(item.ActionSummary)
 	if title == "" {
@@ -65,106 +55,8 @@ func activityKindFromSideEffect(sideEffect string) activityKind {
 	}
 }
 
-func renderIterationActivities(iteration *iterationActivity) []fullscreenEntry {
-	if iteration == nil {
-		return nil
-	}
-	activities := make([]*toolActivity, 0, len(iteration.CallIDs))
-	for _, callID := range iteration.CallIDs {
-		if candidate := iteration.Tools[callID]; candidate != nil {
-			activities = append(activities, candidate)
-		}
-	}
-	entries := make([]fullscreenEntry, 0, len(activities)+2)
-	var explored []*toolActivity
-	for _, activity := range activities {
-		if activity.Kind == activityExplore {
-			explored = append(explored, activity)
-			continue
-		}
-		entries = append(entries, fullscreenEntry{kind: "activity", content: renderActionActivity(activity), successful: activityCompletedSuccessfully(activity)})
-	}
-	if len(explored) > 0 {
-		entries = append([]fullscreenEntry{{kind: "activity", content: renderExploredActivities(explored), successful: activitiesCompletedSuccessfully(explored)}}, entries...)
-	}
-	if len(entries) > 0 {
-		entries = append(entries, fullscreenEntry{kind: "separator"})
-	}
-	return entries
-}
-
 func activityCompletedSuccessfully(activity *toolActivity) bool {
 	return activity != nil && activity.Completed && activity.Success && !activity.Partial
-}
-
-func activitiesCompletedSuccessfully(activities []*toolActivity) bool {
-	if len(activities) == 0 {
-		return false
-	}
-	for _, activity := range activities {
-		if !activityCompletedSuccessfully(activity) {
-			return false
-		}
-	}
-	return true
-}
-
-func renderExploredActivities(activities []*toolActivity) string {
-	lines := []string{"• Explored"}
-	for index, activity := range activities {
-		prefix := "    "
-		if index == 0 {
-			prefix = "  └ "
-		}
-		line := prefix + activity.Title
-		if !activity.Success && activity.Completed {
-			line += " · failed"
-		} else if activity.Partial {
-			line += " · partial"
-		}
-		lines = append(lines, line)
-		if !activity.Success && activity.Completed && activity.Result != "" {
-			lines = append(lines, "    └ "+summarizeActivityText(activity.Result, 180, 1))
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-func renderActionActivity(activity *toolActivity) string {
-	if activity == nil {
-		return ""
-	}
-	lines := []string{"• " + activity.Title}
-	if activity.Detail != "" {
-		lines = append(lines, "  │ "+activity.Detail)
-	}
-	result := summarizeActivityText(activity.Result, 600, 5)
-	if activity.DetailAvailable && result != "" && result != strings.TrimSpace(sanitizeFullscreenContent(activity.Result)) {
-		result = strings.TrimSpace(result) + " (ctrl + t to view transcript)"
-	}
-	if result != "" {
-		resultLines := strings.Split(result, "\n")
-		for index, line := range resultLines {
-			prefix := "  │ "
-			if index == len(resultLines)-1 {
-				prefix = "  └ "
-			}
-			lines = append(lines, prefix+line)
-		}
-	} else if activity.Completed {
-		state := "completed"
-		if !activity.Success {
-			state = "failed"
-		}
-		if activity.Partial {
-			state += " · partial"
-		}
-		if activity.Duration > 0 {
-			state += " · " + activity.Duration.Round(time.Millisecond).String()
-		}
-		lines = append(lines, "  └ "+state)
-	}
-	return strings.Join(lines, "\n")
 }
 
 func summarizeActivityText(value string, maximumRunes, maximumLines int) string {

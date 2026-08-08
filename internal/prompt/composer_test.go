@@ -9,7 +9,7 @@ import (
 func TestComposeDeveloperExecuteTracksExposureAndRuntimeFacts(t *testing.T) {
 	assembler := newBuiltinAssembler(t)
 	facts := testRuntimeFacts()
-	bundles, err := ComposeDeveloper(assembler, "execute", []string{"read_file", "apply_patch", "execute_command"}, facts)
+	bundles, err := ComposeDeveloper(assembler, "execute", []string{"read_file", "update_plan", "apply_patch", "execute_command"}, facts)
 	if err != nil {
 		t.Fatalf("compose execute Developer Prompts: %v", err)
 	}
@@ -18,14 +18,14 @@ func TestComposeDeveloperExecuteTracksExposureAndRuntimeFacts(t *testing.T) {
 		t.Fatalf("unexpected Developer bundle order: got %v, want %v", got, wantIDs)
 	}
 	combined := namedBundleContent(bundles)
-	for _, required := range []string{"## Execute Mode", "`/work/repo`", `["/tmp"]`, "request_permissions", "## `apply_patch`", "## `execute_command`"} {
+	for _, required := range []string{"## Execute Mode", "`/work/repo`", `["/tmp"]`, "request_permissions", "## `update_plan`", "multiple files or components", "## `apply_patch`", "## `execute_command`"} {
 		if !strings.Contains(combined, required) {
 			t.Fatalf("execute Developer Prompt omitted %q:\n%s", required, combined)
 		}
 	}
 
 	facts.RunWritableRoots = []string{"/outside/run"}
-	changed, err := ComposeDeveloper(assembler, "execute", []string{"read_file", "apply_patch", "execute_command"}, facts)
+	changed, err := ComposeDeveloper(assembler, "execute", []string{"read_file", "update_plan", "apply_patch", "execute_command"}, facts)
 	if err != nil {
 		t.Fatalf("recompose execute Developer Prompts: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestComposeDeveloperInjectsToolSpecificGuidanceOnlyWhenExposed(t *testing.T
 		t.Fatalf("compose Developer Prompts without complex tools: %v", err)
 	}
 	withoutContent := namedBundleContent(without)
-	for _, forbidden := range []string{"## `apply_patch`", "## `execute_command`", "requested_permissions.writable_roots"} {
+	for _, forbidden := range []string{"## `update_plan`", "## `apply_patch`", "## `execute_command`", "requested_permissions.writable_roots"} {
 		if strings.Contains(withoutContent, forbidden) {
 			t.Fatalf("unexposed Tool guidance %q was injected: %s", forbidden, withoutContent)
 		}
@@ -75,6 +75,13 @@ func TestComposeDeveloperInjectsToolSpecificGuidanceOnlyWhenExposed(t *testing.T
 	}
 	if !strings.Contains(namedBundleContent(withPatch), "## `apply_patch`") || strings.Contains(namedBundleContent(withPatch), "## `execute_command`") {
 		t.Fatalf("Tool-specific guidance did not follow exposure: %s", namedBundleContent(withPatch))
+	}
+	withPlan, err := ComposeDeveloper(assembler, "execute", []string{"read_file", "update_plan"}, testRuntimeFacts())
+	if err != nil {
+		t.Fatalf("compose Developer Prompts with update_plan: %v", err)
+	}
+	if !strings.Contains(namedBundleContent(withPlan), "## `update_plan`") || strings.Contains(namedBundleContent(withPlan), "## `apply_patch`") {
+		t.Fatalf("update_plan guidance did not follow exposure: %s", namedBundleContent(withPlan))
 	}
 }
 

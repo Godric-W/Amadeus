@@ -68,6 +68,103 @@ func (client *codingWorkflowClient) Capabilities() llm.Capabilities {
 	return llm.Capabilities{SupportsStreaming: true, SupportsDeveloperRole: true}
 }
 
+type planGuidedWorkflowClient struct {
+	requests []llm.Request
+	streams  int
+}
+
+func (client *planGuidedWorkflowClient) Complete(context.Context, llm.Request) (llm.Response, error) {
+	return llm.Response{}, errors.New("plan-guided workflow should not use non-streaming completion")
+}
+
+func (client *planGuidedWorkflowClient) Stream(_ context.Context, request llm.Request) (llm.Stream, error) {
+	client.requests = append(client.requests, request)
+	client.streams++
+	if client.streams == 1 {
+		return &codingCommandStream{chunks: []llm.StreamChunk{
+			{ID: "plan-guided-tool", ToolCalls: []llm.ToolCall{{
+				ID: "plan-1", Name: "update_plan", Arguments: json.RawMessage(`{"explanation":"Coordinate the multi-step change","items":[{"step":"Inspect implementation","status":"in_progress"},{"step":"Apply focused fix","status":"pending"},{"step":"Run verification","status":"pending"}]}`),
+			}}},
+			{ID: "plan-guided-tool", FinishReason: llm.FinishReasonToolCalls, ProviderFinishReason: "tool_calls"},
+		}}, nil
+	}
+	return &codingCommandStream{chunks: []llm.StreamChunk{
+		{ID: "plan-guided-final", ContentDelta: "plan-guided workflow complete"},
+		{ID: "plan-guided-final", FinishReason: llm.FinishReasonStop, ProviderFinishReason: "stop"},
+	}}, nil
+}
+
+func (*planGuidedWorkflowClient) Model() llm.ModelInfo {
+	return llm.ModelInfo{Provider: "mock", Name: "plan-guided"}
+}
+
+func (*planGuidedWorkflowClient) Capabilities() llm.Capabilities {
+	return llm.Capabilities{SupportsStreaming: true, SupportsDeveloperRole: true}
+}
+
+func TestCodingAgentExposesAndExecutesUpdatePlan(t *testing.T) {
+	amadeusHome, projectDirectory := t.TempDir(), t.TempDir()
+	writeCodingCommandConfig(t, amadeusHome)
+	client := &planGuidedWorkflowClient{}
+	runtime := commandRuntime{
+		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
+		terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
+		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
+		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
+		runIDFactory:     func() string { return "plan-guided-e2e" },
+	}
+	command := newRootCommandWithRuntime(&configFlags{}, runtime)
+	var stdout, stderr bytes.Buffer
+	command.SetIn(strings.NewReader(""))
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+	command.SetArgs([]string{"Inspect several components, make a focused change, and verify it"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("execute plan-guided workflow: %v\nstderr=%s", err, stderr.String())
+	}
+	if stdout.String() != "plan-guided workflow complete\n" || client.streams != 2 || len(client.requests) != 2 {
+		t.Fatalf("unexpected plan-guided trace: stdout=%q streams=%d requests=%d", stdout.String(), client.streams, len(client.requests))
+	}
+	if !requestHasTool(client.requests[0], "update_plan") {
+		t.Fatalf("execute request did not expose update_plan: %#v", client.requests[0].Tools)
+	}
+	if prompt := requestPromptText(client.requests[0]); !strings.Contains(prompt, "## `update_plan`") || !strings.Contains(prompt, "multiple files or components") {
+		t.Fatalf("execute request omitted plan guidance: %s", prompt)
+	}
+	if output := stderr.String(); !strings.Contains(output, "plan 1:") || !strings.Contains(output, "plan-1 [in_progress]: Inspect implementation") || strings.Contains(output, "tool started: update_plan") {
+		t.Fatalf("update_plan was not rendered as a dedicated plan update: %q", output)
+	}
+	if !requestContainsToolOutput(client.requests[1], "plan-1") {
+		t.Fatalf("follow-up request omitted update_plan result: %#v", client.requests[1].Messages)
+	}
+}
+
+func requestHasTool(request llm.Request, name string) bool {
+	for _, definition := range request.Tools {
+		if definition.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func requestPromptText(request llm.Request) string {
+	var content []string
+	for _, message := range request.Messages {
+		content = append(content, message.Content)
+	}
+	return strings.Join(content, "\n")
+}
+
+func requestContainsToolOutput(request llm.Request, callID string) bool {
+	for _, message := range request.Messages {
+		if message.Role == llm.RoleTool && message.ToolCallID == callID && strings.TrimSpace(message.Content) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCodingAgentCommandReadsFixesTestsAndCompletes(t *testing.T) {
 	amadeusHome := t.TempDir()
 	projectDirectory := t.TempDir()

@@ -21,6 +21,7 @@ const (
 	RuntimeInstructions ID = "templates/runtime/instructions.md"
 	RuntimeSkills       ID = "templates/runtime/skills.md"
 	ToolsGeneral        ID = "templates/tools/general.md"
+	ToolUpdatePlan      ID = "templates/tools/update_plan.md"
 	ToolApplyPatch      ID = "templates/tools/apply_patch.md"
 	ToolExecuteCommand  ID = "templates/tools/execute_command.md"
 	ContextCompaction   ID = "templates/context/compaction.md"
@@ -39,6 +40,7 @@ var all = []ID{
 	RuntimeInstructions,
 	RuntimeSkills,
 	ToolsGeneral,
+	ToolUpdatePlan,
 	ToolApplyPatch,
 	ToolExecuteCommand,
 	ContextCompaction,
@@ -81,6 +83,9 @@ func DeveloperLayers(mode string, toolNames []string) ([]ID, error) {
 		return append(layers, RuntimeInstructions, RuntimeSkills), nil
 	}
 	layers = append(layers, RuntimePermission, RuntimeInstructions, RuntimeSkills, ToolsGeneral)
+	if _, ok := visible["update_plan"]; ok {
+		layers = append(layers, ToolUpdatePlan)
+	}
 	if _, ok := visible["apply_patch"]; ok {
 		layers = append(layers, ToolApplyPatch)
 	}

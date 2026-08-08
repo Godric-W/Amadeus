@@ -90,26 +90,20 @@ func TestTrackerTracksMoveAcrossWritableRoots(t *testing.T) {
 	}
 }
 
-func TestTrackerInvalidatesUnknownCommandMutationOnce(t *testing.T) {
+func TestTrackerIgnoresToolsWithoutExactPatchDelta(t *testing.T) {
 	events := event.NewMemorySink()
 	tracker, _ := NewTracker(t.TempDir(), events)
-	spec := tool.Spec{Name: "execute_command"}
-	if err := tracker.After(context.Background(), spec, tool.Call{}, tool.Result{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := tracker.After(context.Background(), spec, tool.Call{}, tool.Result{}); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"execute_command", "write_stdin", "mcp_call", "read_file"} {
+		if err := tracker.After(context.Background(), tool.Spec{Name: name}, tool.Call{}, tool.Result{}); err != nil {
+			t.Fatalf("ignore %s: %v", name, err)
+		}
 	}
 	snapshot := tracker.Snapshot()
-	if !snapshot.Invalidated || snapshot.Revision != 1 {
-		t.Fatalf("unexpected invalidated snapshot: %#v", snapshot)
+	if snapshot.Invalidated || snapshot.Revision != 0 || len(snapshot.Changes) != 0 {
+		t.Fatalf("non-Patch Tool changed exact Patch projection: %#v", snapshot)
 	}
-	published := events.Snapshot()
-	if len(published) != 1 {
-		t.Fatalf("invalidation event was duplicated: %#v", published)
-	}
-	if _, ok := published[0].(event.RunDiffInvalidated); !ok {
-		t.Fatalf("unexpected invalidation event: %#v", published[0])
+	if published := events.Snapshot(); len(published) != 0 {
+		t.Fatalf("non-Patch Tool published Diff events: %#v", published)
 	}
 }
 

@@ -1,6 +1,6 @@
 package tui
 
-const slashPopupMaxVisible = 8
+const slashPopupMaxVisible = commandListMaxVisible
 
 type slashCommandPopup struct {
 	items     []SlashCommandSpec
