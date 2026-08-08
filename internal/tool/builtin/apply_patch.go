@@ -12,28 +12,28 @@ import (
 )
 
 type ApplyPatchOptions struct {
-	Parse    patchtool.ParseOptions
-	Executor patchtool.ExecutorOptions
+	Parse     patchtool.ParseOptions
+	Executor  patchtool.ExecutorOptions
+	Projector PatchProjector
 }
 
 type patchApplier interface {
-	Prepare(context.Context, patchtool.Document) (*patchtool.PreparedDocument, error)
-	ApplyPrepared(context.Context, *patchtool.PreparedDocument) (patchtool.ApplyResult, error)
+	PreparePatch(context.Context, patchtool.Document) (*patchtool.PreparedPatch, error)
+	ApplyPrepared(context.Context, *patchtool.PreparedPatch) (patchtool.ApplyResult, error)
+}
+
+type PatchProjector interface {
+	ProjectPatch(context.Context, tool.Output) error
 }
 
 type ApplyPatch struct {
 	parseOptions patchtool.ParseOptions
 	executor     patchApplier
+	projector    PatchProjector
 }
 
 type applyPatchArguments struct {
 	Patch string `json:"patch"`
-}
-
-type preparedApplyPatch struct {
-	arguments applyPatchArguments
-	document  patchtool.Document
-	prepared  *patchtool.PreparedDocument
 }
 
 func NewApplyPatch(root project.Root, options ApplyPatchOptions) (*ApplyPatch, error) {
@@ -48,50 +48,46 @@ func newApplyPatch(options ApplyPatchOptions, executor patchApplier) (*ApplyPatc
 	if executor == nil {
 		return nil, errors.New("apply_patch executor is nil")
 	}
-	return &ApplyPatch{parseOptions: options.Parse, executor: executor}, nil
+	return &ApplyPatch{parseOptions: options.Parse, executor: executor, projector: options.Projector}, nil
 }
 
 func (applyPatch *ApplyPatch) Spec() tool.Spec {
 	return applyPatchSpec()
 }
 
-func (applyPatch *ApplyPatch) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
+func (applyPatch *ApplyPatch) SupportsParallelToolCalls() bool { return false }
+
+func (applyPatch *ApplyPatch) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+	call := invocation.Call
 	if err := ctx.Err(); err != nil {
-		return tool.PreparedCall{}, err
+		return tool.Output{}, err
 	}
 	var arguments applyPatchArguments
 	if err := decodeArguments(call.Arguments, &arguments); err != nil {
-		return tool.PreparedCall{}, err
+		return tool.Output{}, err
 	}
 	if strings.TrimSpace(arguments.Patch) == "" {
-		return tool.PreparedCall{}, errors.New("apply_patch patch is empty")
+		return tool.Output{}, errors.New("apply_patch patch is empty")
 	}
 	document, err := patchtool.Parse([]byte(arguments.Patch), applyPatch.parseOptions)
 	if err != nil {
-		return tool.PreparedCall{}, err
+		return tool.Output{}, err
 	}
-	preparedDocument, err := applyPatch.executor.Prepare(ctx, document)
+	preparedPatch, err := applyPatch.executor.PreparePatch(ctx, document)
 	if err != nil {
-		return tool.PreparedCall{}, err
+		return tool.Output{}, err
 	}
-	targets := make([]tool.PreparedTarget, 0, len(preparedDocument.Targets()))
-	for _, target := range preparedDocument.Targets() {
-		targets = append(targets, tool.PreparedTarget{Kind: tool.TargetFilesystem, RequestedPath: target.Requested, CanonicalPath: target.Canonical, Access: tool.TargetAccessWrite})
+	applied, applyErr := applyPatch.executor.ApplyPrepared(ctx, preparedPatch)
+	result := patchToolResult(document, applied, applyErr)
+	if applyPatch.projector != nil && len(applied.Applied) > 0 {
+		if projectErr := applyPatch.projector.ProjectPatch(ctx, result); projectErr != nil {
+			applyErr = errors.Join(applyErr, fmt.Errorf("project apply_patch diff: %w", projectErr))
+		}
 	}
-	return tool.NewPreparedCall(call, tool.PreparedOptions{Targets: targets, Payload: preparedApplyPatch{arguments: arguments, document: document, prepared: preparedDocument}})
-}
-
-func (applyPatch *ApplyPatch) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
-	payload, err := preparedPayload[preparedApplyPatch](prepared, "apply_patch")
-	if err != nil {
-		return tool.Result{}, err
-	}
-	applied, applyErr := applyPatch.executor.ApplyPrepared(ctx, payload.prepared)
-	result := patchToolResult(payload.document, applied, applyErr)
 	return result, applyErr
 }
 
-func patchToolResult(document patchtool.Document, applied patchtool.ApplyResult, applyErr error) tool.Result {
+func patchToolResult(document patchtool.Document, applied patchtool.ApplyResult, applyErr error) tool.Output {
 	operations := make([]map[string]any, len(applied.Applied))
 	for index, operation := range applied.Applied {
 		operations[index] = map[string]any{
@@ -103,7 +99,7 @@ func patchToolResult(document patchtool.Document, applied patchtool.ApplyResult,
 	if applyErr != nil {
 		text = fmt.Sprintf("applied %d of %d patch operation(s) before failure", len(applied.Applied), len(document.Operations))
 	}
-	return tool.Result{
+	return tool.Output{
 		ToolName: "apply_patch", Text: text, Partial: applied.Partial,
 		Metadata: map[string]any{
 			"operations": operations, "operation_count": len(applied.Applied),
@@ -112,4 +108,4 @@ func patchToolResult(document patchtool.Document, applied patchtool.ApplyResult,
 	}
 }
 
-var _ tool.Tool = (*ApplyPatch)(nil)
+var _ tool.Handler = (*ApplyPatch)(nil)

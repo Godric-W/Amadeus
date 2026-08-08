@@ -121,7 +121,7 @@ type RunState struct {
 	toolCalls    int
 	processOwner string
 	terminal     bool
-	runDiff      *rundiff.Tracker
+	runDiff      *rundiff.Projector
 	permissions  *project.PermissionStore
 }
 
@@ -143,7 +143,7 @@ func (state *RunState) Plan() *plan.State {
 	return state.plan
 }
 
-func (state *RunState) AttachRunDiff(tracker *rundiff.Tracker) error {
+func (state *RunState) AttachRunDiff(tracker *rundiff.Projector) error {
 	if state == nil {
 		return errors.New("run state is nil")
 	}
@@ -159,7 +159,7 @@ func (state *RunState) AttachRunDiff(tracker *rundiff.Tracker) error {
 	return nil
 }
 
-func (state *RunState) RunDiff() *rundiff.Tracker {
+func (state *RunState) RunDiff() *rundiff.Projector {
 	if state == nil {
 		return nil
 	}

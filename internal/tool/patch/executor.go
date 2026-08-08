@@ -14,13 +14,13 @@ import (
 )
 
 type ExecutorOptions struct {
-	MaxFileBytes int64
-	FileMode     os.FileMode
-	PathGuard    *project.PathGuard
+	MaxFileBytes     int64
+	FileMode         os.FileMode
+	FileSystemPolicy *project.FileSystemPolicy
 }
 
 type Executor struct {
-	guard     *project.PathGuard
+	policy    *project.FileSystemPolicy
 	options   ExecutorOptions
 	commitOps commitOperations
 }
@@ -80,7 +80,7 @@ type preparedOperation struct {
 	source    string
 }
 
-type PreparedDocument struct {
+type PreparedPatch struct {
 	document   Document
 	operations []preparedOperation
 }
@@ -90,14 +90,14 @@ type PreparedTarget struct {
 	Canonical string
 }
 
-func (prepared *PreparedDocument) Document() Document {
+func (prepared *PreparedPatch) Document() Document {
 	if prepared == nil {
 		return Document{}
 	}
 	return prepared.document
 }
 
-func (prepared *PreparedDocument) Targets() []PreparedTarget {
+func (prepared *PreparedPatch) Targets() []PreparedTarget {
 	if prepared == nil {
 		return nil
 	}
@@ -128,27 +128,27 @@ func newExecutor(root project.Root, options ExecutorOptions, commitOps commitOpe
 	if commitOps == nil {
 		return nil, errors.New("apply_patch commit operations are nil")
 	}
-	guard := options.PathGuard
-	if guard == nil {
+	fileSystemPolicy := options.FileSystemPolicy
+	if fileSystemPolicy == nil {
 		var err error
-		guard, err = project.NewPathGuard(root)
+		fileSystemPolicy, err = project.NewFileSystemPolicy(project.FileSystemPolicyOptions{CWD: root.Path(), Profile: project.PermissionProfile{WorkspaceRoots: []string{root.Path()}}})
 		if err != nil {
 			return nil, err
 		}
 	}
-	return &Executor{guard: guard, options: options, commitOps: commitOps}, nil
+	return &Executor{policy: fileSystemPolicy, options: options, commitOps: commitOps}, nil
 }
 
 func (executor *Executor) Apply(ctx context.Context, document Document) (ApplyResult, error) {
-	prepared, err := executor.Prepare(ctx, document)
+	prepared, err := executor.PreparePatch(ctx, document)
 	if err != nil {
 		return ApplyResult{}, err
 	}
 	return executor.ApplyPrepared(ctx, prepared)
 }
 
-func (executor *Executor) Prepare(ctx context.Context, document Document) (*PreparedDocument, error) {
-	if executor == nil || executor.guard == nil {
+func (executor *Executor) PreparePatch(ctx context.Context, document Document) (*PreparedPatch, error) {
+	if executor == nil || executor.policy == nil {
 		return nil, errors.New("apply_patch executor is nil")
 	}
 	if err := ctx.Err(); err != nil {
@@ -169,10 +169,10 @@ func (executor *Executor) Prepare(ctx context.Context, document Document) (*Prep
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return &PreparedDocument{document: document, operations: prepared}, nil
+	return &PreparedPatch{document: document, operations: prepared}, nil
 }
 
-func (executor *Executor) ApplyPrepared(ctx context.Context, document *PreparedDocument) (ApplyResult, error) {
+func (executor *Executor) ApplyPrepared(ctx context.Context, document *PreparedPatch) (ApplyResult, error) {
 	if executor == nil || document == nil {
 		return ApplyResult{}, errors.New("apply_patch prepared document is nil")
 	}
@@ -304,16 +304,19 @@ func validateHunk(path string, hunk Hunk) error {
 }
 
 func (executor *Executor) prepare(operation Operation) (preparedOperation, error) {
-	source, err := executor.guard.ResolveForWrite(operation.Path)
+	sourceResolved, err := executor.policy.ResolveForWrite(operation.Path)
 	if err != nil {
 		return preparedOperation{}, fmt.Errorf("prepare %s %q: %w", operation.Kind, operation.Path, err)
 	}
+	source := sourceResolved.Canonical
 	target := source
 	if operation.Kind == OperationMove {
-		target, err = executor.guard.ResolveForWrite(operation.MovePath)
+		targetResolved, resolveErr := executor.policy.ResolveForWrite(operation.MovePath)
+		err = resolveErr
 		if err != nil {
 			return preparedOperation{}, fmt.Errorf("prepare move destination %q: %w", operation.MovePath, err)
 		}
+		target = targetResolved.Canonical
 	}
 	prepared := preparedOperation{operation: operation, source: source, target: target, mode: executor.options.FileMode}
 

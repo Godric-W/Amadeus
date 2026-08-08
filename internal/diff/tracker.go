@@ -36,7 +36,7 @@ type Snapshot struct {
 	Revision    int64    `json:"revision"`
 }
 
-type Tracker struct {
+type Projector struct {
 	mutex       sync.RWMutex
 	cwd         string
 	events      event.Sink
@@ -46,7 +46,7 @@ type Tracker struct {
 	revision    int64
 }
 
-func NewTracker(cwd string, events event.Sink) (*Tracker, error) {
+func NewProjector(cwd string, events event.Sink) (*Projector, error) {
 	cwd = filepath.Clean(strings.TrimSpace(cwd))
 	if cwd == "" || !filepath.IsAbs(cwd) {
 		return nil, errors.New("Run Diff Tracker cwd must be absolute")
@@ -54,39 +54,34 @@ func NewTracker(cwd string, events event.Sink) (*Tracker, error) {
 	if events == nil {
 		return nil, errors.New("Run Diff Tracker event sink is nil")
 	}
-	return &Tracker{cwd: cwd, events: events, changes: make(map[string]Change)}, nil
+	return &Projector{cwd: cwd, events: events, changes: make(map[string]Change)}, nil
 }
 
-func (tracker *Tracker) After(ctx context.Context, spec tool.Spec, _ tool.Call, result tool.Result) error {
+func (tracker *Projector) ProjectPatch(ctx context.Context, result tool.Output) error {
 	if tracker == nil {
-		return errors.New("Run Diff Tracker is nil")
+		return errors.New("Run Diff Projector is nil")
 	}
-	switch spec.Name {
-	case "apply_patch":
-		operations, err := decodeOperations(result.Metadata["operations"])
-		if err != nil {
-			return tracker.invalidate(ctx, "apply_patch returned unreadable change metadata: "+err.Error())
-		}
-		if len(operations) == 0 {
-			return nil
-		}
-		tracker.mutex.Lock()
-		for _, operation := range operations {
-			if err := tracker.applyOperation(operation); err != nil {
-				tracker.mutex.Unlock()
-				return tracker.invalidate(ctx, err.Error())
-			}
-		}
-		tracker.revision++
-		snapshot := tracker.snapshotLocked()
-		tracker.mutex.Unlock()
-		return tracker.events.Publish(ctx, event.RunDiffUpdated{Revision: snapshot.Revision, Changes: eventChanges(snapshot.Changes)})
-	default:
+	operations, err := decodeOperations(result.Metadata["operations"])
+	if err != nil {
+		return tracker.invalidate(ctx, "apply_patch returned unreadable change metadata: "+err.Error())
+	}
+	if len(operations) == 0 {
 		return nil
 	}
+	tracker.mutex.Lock()
+	for _, operation := range operations {
+		if err := tracker.applyOperation(operation); err != nil {
+			tracker.mutex.Unlock()
+			return tracker.invalidate(ctx, err.Error())
+		}
+	}
+	tracker.revision++
+	snapshot := tracker.snapshotLocked()
+	tracker.mutex.Unlock()
+	return tracker.events.Publish(ctx, event.RunDiffUpdated{Revision: snapshot.Revision, Changes: eventChanges(snapshot.Changes)})
 }
 
-func (tracker *Tracker) Snapshot() Snapshot {
+func (tracker *Projector) Snapshot() Snapshot {
 	if tracker == nil {
 		return Snapshot{}
 	}
@@ -138,7 +133,7 @@ func decodeOperations(value any) ([]operation, error) {
 	return result, nil
 }
 
-func (tracker *Tracker) applyOperation(operation operation) error {
+func (tracker *Projector) applyOperation(operation operation) error {
 	path, err := tracker.canonical(operation.Path)
 	if err != nil {
 		return err
@@ -188,7 +183,7 @@ func (tracker *Tracker) applyOperation(operation operation) error {
 	return nil
 }
 
-func (tracker *Tracker) canonical(value string) (string, error) {
+func (tracker *Projector) canonical(value string) (string, error) {
 	value = filepath.Clean(strings.TrimSpace(value))
 	if value == "" || value == "." {
 		return "", fmt.Errorf("Run Diff path %q is invalid", value)
@@ -199,7 +194,7 @@ func (tracker *Tracker) canonical(value string) (string, error) {
 	return filepath.Clean(filepath.Join(tracker.cwd, value)), nil
 }
 
-func (tracker *Tracker) invalidate(ctx context.Context, reason string) error {
+func (tracker *Projector) invalidate(ctx context.Context, reason string) error {
 	reason = strings.TrimSpace(reason)
 	tracker.mutex.Lock()
 	if tracker.invalidated {
@@ -214,7 +209,7 @@ func (tracker *Tracker) invalidate(ctx context.Context, reason string) error {
 	return tracker.events.Publish(ctx, event.RunDiffInvalidated{Revision: revision, Reason: reason})
 }
 
-func (tracker *Tracker) snapshotLocked() Snapshot {
+func (tracker *Projector) snapshotLocked() Snapshot {
 	changes := make([]Change, 0, len(tracker.changes))
 	for _, change := range tracker.changes {
 		changes = append(changes, change)
@@ -250,5 +245,5 @@ func intValue(value any) int {
 }
 
 var _ interface {
-	After(context.Context, tool.Spec, tool.Call, tool.Result) error
-} = (*Tracker)(nil)
+	ProjectPatch(context.Context, tool.Output) error
+} = (*Projector)(nil)

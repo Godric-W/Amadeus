@@ -25,7 +25,7 @@ type GrepCodeOptions struct {
 	RipgrepPath      string
 	DisableRipgrep   bool
 	MaxRGOutputBytes int64
-	PathGuard        *project.PathGuard
+	FileSystemPolicy *project.FileSystemPolicy
 }
 
 type GrepCode struct {
@@ -47,16 +47,6 @@ type grepCodeArguments struct {
 	Limit         int    `json:"limit,omitempty"`
 }
 
-type preparedGrepCode struct {
-	arguments     grepCodeArguments
-	searchPath    string
-	absolutePath  string
-	matcher       *regexp.Regexp
-	contextLines  int
-	limit         int
-	caseSensitive bool
-}
-
 type grepLine struct {
 	Path    string
 	Line    int
@@ -75,8 +65,8 @@ func NewGrepCode(root project.Root, options GrepCodeOptions) (*GrepCode, error) 
 	if options.MaxRGOutputBytes <= 0 {
 		options.MaxRGOutputBytes = 4 << 20
 	}
-	reader, err := workspace.NewReaderWithGuard(root, options.PathGuard)
-	if options.PathGuard == nil {
+	reader, err := workspace.NewReaderWithPolicy(root, options.FileSystemPolicy)
+	if options.FileSystemPolicy == nil {
 		reader, err = workspace.NewReader(root)
 	}
 	if err != nil {
@@ -86,8 +76,8 @@ func NewGrepCode(root project.Root, options GrepCodeOptions) (*GrepCode, error) 
 	if err != nil {
 		return nil, fmt.Errorf("load workspace ignores: %w", err)
 	}
-	enumerator, err := workspace.NewFileEnumeratorWithGuard(root, matcher, options.PathGuard)
-	if options.PathGuard == nil {
+	enumerator, err := workspace.NewFileEnumeratorWithPolicy(root, matcher, options.FileSystemPolicy)
+	if options.FileSystemPolicy == nil {
 		enumerator, err = workspace.NewFileEnumerator(root, matcher)
 	}
 	if err != nil {
@@ -106,20 +96,23 @@ func NewGrepCode(root project.Root, options GrepCodeOptions) (*GrepCode, error) 
 
 func (grepCode *GrepCode) Spec() tool.Spec { return grepCodeSpec() }
 
-func (grepCode *GrepCode) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
+func (grepCode *GrepCode) SupportsParallelToolCalls() bool { return true }
+
+func (grepCode *GrepCode) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+	call := invocation.Call
 	var arguments grepCodeArguments
 	if err := decodeArguments(call.Arguments, &arguments); err != nil {
-		return tool.PreparedCall{}, err
+		return tool.Output{}, err
 	}
 	if arguments.Query == "" {
-		return tool.PreparedCall{}, errors.New("grep_code query is empty")
+		return tool.Output{}, errors.New("grep_code query is empty")
 	}
 	if arguments.Context < 0 || arguments.Limit < 0 {
-		return tool.PreparedCall{}, errors.New("grep_code context and limit cannot be negative")
+		return tool.Output{}, errors.New("grep_code context and limit cannot be negative")
 	}
 	if arguments.Glob != "" {
 		if _, err := workspace.NormalizeGlob(arguments.Glob); err != nil {
-			return tool.PreparedCall{}, fmt.Errorf("grep_code glob is invalid: %w", err)
+			return tool.Output{}, fmt.Errorf("grep_code glob is invalid: %w", err)
 		}
 	}
 	contextLines := min(arguments.Context, grepCode.options.MaxContextLines)
@@ -133,7 +126,7 @@ func (grepCode *GrepCode) Prepare(ctx context.Context, call tool.Call) (tool.Pre
 	}
 	matcher, err := compileGrepMatcher(arguments.Query, arguments.Regex, caseSensitive)
 	if err != nil {
-		return tool.PreparedCall{}, err
+		return tool.Output{}, err
 	}
 	searchPath := strings.TrimSpace(arguments.Path)
 	if searchPath == "" {
@@ -141,29 +134,20 @@ func (grepCode *GrepCode) Prepare(ctx context.Context, call tool.Call) (tool.Pre
 	}
 	resolved, err := grepCode.reader.ResolveExistingTarget(searchPath, project.PathAny)
 	if err != nil {
-		return tool.PreparedCall{}, err
+		return tool.Output{}, err
 	}
-	return tool.NewPreparedCall(call, tool.PreparedOptions{Targets: []tool.PreparedTarget{preparedFilesystemTarget(resolved)}, Payload: preparedGrepCode{arguments: arguments, searchPath: searchPath, absolutePath: resolved.Canonical, matcher: matcher, contextLines: contextLines, limit: limit, caseSensitive: caseSensitive}})
-}
-
-func (grepCode *GrepCode) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
-	payload, err := preparedPayload[preparedGrepCode](prepared, "grep_code")
-	if err != nil {
-		return tool.Result{}, err
-	}
-	arguments, searchPath := payload.arguments, payload.searchPath
-	lines, matches, files, skipped, partial, backend, err := grepCode.ripgrepSearch(ctx, payload.absolutePath, arguments, payload.contextLines, payload.limit, payload.caseSensitive)
+	lines, matches, files, skipped, partial, backend, err := grepCode.ripgrepSearch(ctx, resolved.Canonical, arguments, contextLines, limit, caseSensitive)
 	if err != nil && ctx.Err() != nil {
-		return tool.Result{}, ctx.Err()
+		return tool.Output{}, ctx.Err()
 	}
 	if err != nil || grepCode.ripgrep == "" {
-		lines, matches, files, skipped, partial, err = grepCode.goSearch(ctx, payload.absolutePath, arguments, payload.matcher, payload.contextLines, payload.limit)
+		lines, matches, files, skipped, partial, err = grepCode.goSearch(ctx, resolved.Canonical, arguments, matcher, contextLines, limit)
 		backend = "go"
 		if err != nil {
-			return tool.Result{}, err
+			return tool.Output{}, err
 		}
 	}
-	return tool.Result{
+	return tool.Output{
 		ToolName: "grep_code", Text: formatGrepLines(lines), Partial: partial,
 		Metadata: map[string]any{
 			"query": arguments.Query, "path": searchPath, "glob": arguments.Glob, "type": arguments.Type,
@@ -171,6 +155,8 @@ func (grepCode *GrepCode) Execute(ctx context.Context, prepared tool.PreparedCal
 		},
 	}, nil
 }
+
+var _ tool.Handler = (*GrepCode)(nil)
 
 type rgJSONEvent struct {
 	Type string `json:"type"`
@@ -403,4 +389,4 @@ func (buffer *limitedCommandBuffer) Write(content []byte) (int, error) {
 func (buffer *limitedCommandBuffer) Bytes() []byte  { return buffer.buffer.Bytes() }
 func (buffer *limitedCommandBuffer) String() string { return buffer.buffer.String() }
 
-var _ tool.Tool = (*GrepCode)(nil)
+var _ tool.Handler = (*GrepCode)(nil)

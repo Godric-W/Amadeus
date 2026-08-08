@@ -69,8 +69,8 @@ func (aggregator *toolCallAggregator) finalize() ([]llm.ToolCall, error) {
 		if strings.TrimSpace(accumulator.call.Name) == "" {
 			return nil, protocolToolCallError(fmt.Sprintf("tool call %q has an empty name", accumulator.call.ID))
 		}
-		if arguments == "" || !json.Valid([]byte(arguments)) {
-			return nil, protocolToolCallError(fmt.Sprintf("tool call %q has invalid JSON arguments", accumulator.call.ID))
+		if strings.TrimSpace(arguments) == "" {
+			return nil, protocolToolCallError(fmt.Sprintf("tool call %q has empty arguments", accumulator.call.ID))
 		}
 		call := accumulator.call
 		call.Arguments = json.RawMessage(arguments)

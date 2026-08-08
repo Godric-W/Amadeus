@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/policy"
 	processdomain "github.com/Godric-W/Amadeus/internal/process"
 	"github.com/Godric-W/Amadeus/internal/project"
 	sandboxdomain "github.com/Godric-W/Amadeus/internal/sandbox"
@@ -40,22 +41,23 @@ func (err *SandboxDeniedError) Unwrap() error         { return ErrSandboxDenied 
 func (err *SandboxDeniedError) ToolErrorKind() string { return "sandbox_denied" }
 
 type ExecuteCommandOptions struct {
-	Shell           string
-	DefaultTimeout  time.Duration
-	MaxTimeout      time.Duration
-	DefaultYield    time.Duration
-	MaxYield        time.Duration
-	MaxOutputBytes  int64
-	MaxOutputLines  int
-	MaxOutputTokens int
-	ProcessManager  *processdomain.Manager
-	PathGuard       *project.PathGuard
-	Sandbox         *sandboxdomain.Runner
+	Shell            string
+	DefaultTimeout   time.Duration
+	MaxTimeout       time.Duration
+	DefaultYield     time.Duration
+	MaxYield         time.Duration
+	MaxOutputBytes   int64
+	MaxOutputLines   int
+	MaxOutputTokens  int
+	ProcessManager   *processdomain.Manager
+	FileSystemPolicy *project.FileSystemPolicy
+	Sandbox          *sandboxdomain.Runner
+	Authorizer       *policy.CommandAuthorizer
 }
 
 type ExecuteCommand struct {
 	root    project.Root
-	guard   *project.PathGuard
+	policy  *project.FileSystemPolicy
 	options ExecuteCommandOptions
 	manager *processdomain.Manager
 	sandbox *sandboxdomain.Runner
@@ -75,7 +77,7 @@ type requestedCommandPermissions struct {
 	WritableRoots []string `json:"writable_roots,omitempty"`
 }
 
-type preparedExecuteCommand struct {
+type ExecRequest struct {
 	arguments executeCommandArguments
 	cwd       string
 	display   string
@@ -107,10 +109,10 @@ func NewExecuteCommand(root project.Root, options ExecuteCommandOptions) (*Execu
 	if options.MaxOutputTokens <= 0 {
 		options.MaxOutputTokens = int(options.MaxOutputBytes / 4)
 	}
-	guard := options.PathGuard
-	if guard == nil {
+	fileSystemPolicy := options.FileSystemPolicy
+	if fileSystemPolicy == nil {
 		var err error
-		guard, err = project.NewPathGuard(root)
+		fileSystemPolicy, err = project.NewFileSystemPolicy(project.FileSystemPolicyOptions{CWD: root.Path(), Profile: project.PermissionProfile{WorkspaceRoots: []string{root.Path()}}})
 		if err != nil {
 			return nil, err
 		}
@@ -119,7 +121,7 @@ func NewExecuteCommand(root project.Root, options ExecuteCommandOptions) (*Execu
 	if manager == nil {
 		manager = processdomain.NewManager()
 	}
-	return &ExecuteCommand{root: root, guard: guard, options: options, manager: manager, sandbox: options.Sandbox}, nil
+	return &ExecuteCommand{root: root, policy: fileSystemPolicy, options: options, manager: manager, sandbox: options.Sandbox}, nil
 }
 
 func (executeCommand *ExecuteCommand) Spec() tool.Spec { return executeCommandSpec() }
@@ -127,59 +129,58 @@ func (executeCommand *ExecuteCommand) ProcessManager() *processdomain.Manager {
 	return executeCommand.manager
 }
 
-func (executeCommand *ExecuteCommand) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
+func (executeCommand *ExecuteCommand) SupportsParallelToolCalls() bool { return false }
+
+func (executeCommand *ExecuteCommand) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+	call := invocation.Call
 	var arguments executeCommandArguments
 	if err := decodeArguments(call.Arguments, &arguments); err != nil {
-		return tool.PreparedCall{}, err
+		return tool.Output{}, err
 	}
 	if strings.TrimSpace(arguments.Command) == "" {
-		return tool.PreparedCall{}, errors.New("execute_command command is empty")
+		return tool.Output{}, errors.New("execute_command command is empty")
 	}
 	if strings.ContainsRune(arguments.Command, '\x00') {
-		return tool.PreparedCall{}, errors.New("execute_command command contains NUL")
+		return tool.Output{}, errors.New("execute_command command contains NUL")
 	}
 	if arguments.TimeoutMS < 0 || arguments.YieldTimeMS < 0 || arguments.MaxOutputTokens < 0 {
-		return tool.PreparedCall{}, errors.New("execute_command timeout, yield and output limits cannot be negative")
+		return tool.Output{}, errors.New("execute_command timeout, yield and output limits cannot be negative")
 	}
 	relativeCWD := strings.TrimSpace(arguments.CWD)
 	if relativeCWD == "" {
 		relativeCWD = "."
 	}
-	resolved, err := executeCommand.guard.ResolveExistingTarget(relativeCWD, project.PathDirectory)
+	resolved, err := executeCommand.policy.ResolveExisting(relativeCWD, project.PathDirectory)
 	if err != nil {
-		return tool.PreparedCall{}, err
+		return tool.Output{}, err
 	}
-	targets := []tool.PreparedTarget{preparedFilesystemTarget(resolved)}
 	for _, requestedRoot := range arguments.RequestedPermissions.WritableRoots {
-		root, resolveErr := executeCommand.guard.ResolveWritableDirectoryTarget(requestedRoot)
+		_, resolveErr := executeCommand.policy.ResolveWritableDirectory(requestedRoot)
 		if resolveErr != nil {
-			return tool.PreparedCall{}, resolveErr
+			return tool.Output{}, resolveErr
 		}
-		targets = append(targets, preparedFilesystemTarget(root))
 	}
 	shell, err := exec.LookPath(executeCommand.options.Shell)
 	if err != nil {
-		return tool.PreparedCall{}, fmt.Errorf("resolve execute_command shell: %w", err)
+		return tool.Output{}, fmt.Errorf("resolve execute_command shell: %w", err)
 	}
 	launch := sandboxdomain.Launch{Executable: shell, Arguments: []string{"-c", arguments.Command}, Directory: resolved.Canonical, Mode: sandboxdomain.IsolationUnsandboxed}
 	if executeCommand.sandbox != nil {
 		launch, err = executeCommand.sandbox.Prepare(shell, arguments.Command, resolved.Canonical)
 		if err != nil {
-			return tool.PreparedCall{}, fmt.Errorf("prepare sandbox command: %w", err)
+			return tool.Output{}, fmt.Errorf("prepare sandbox command: %w", err)
 		}
 	}
-	return tool.NewPreparedCall(call, tool.PreparedOptions{
-		Targets: targets, Command: arguments.Command, Shell: shell, CWD: resolved.Canonical, TTY: arguments.TTY,
-		IsolationMode: string(launch.Mode), Payload: preparedExecuteCommand{arguments: arguments, cwd: resolved.Canonical, display: relativeCWD, launch: launch},
-	})
-}
-
-func (executeCommand *ExecuteCommand) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
-	payload, err := preparedPayload[preparedExecuteCommand](prepared, "execute_command")
-	if err != nil {
-		return tool.Result{}, err
+	request := ExecRequest{arguments: arguments, cwd: resolved.Canonical, display: relativeCWD, launch: launch}
+	if executeCommand.options.Authorizer == nil && launch.Mode == sandboxdomain.IsolationUnsandboxed {
+		return tool.Output{}, errors.New("execute_command unsandboxed operation authorizer is nil")
 	}
-	arguments, relativeCWD, launch := payload.arguments, payload.display, payload.launch
+	if executeCommand.options.Authorizer != nil {
+		if err := executeCommand.options.Authorizer.Authorize(ctx, policy.CommandRequest{Call: call, Shell: shell, Command: arguments.Command, CWD: resolved.Canonical, TTY: arguments.TTY, IsolationMode: launch.Mode}); err != nil {
+			return tool.Output{}, err
+		}
+	}
+	arguments, relativeCWD, launch = request.arguments, request.display, request.launch
 	timeout := durationFromMilliseconds(arguments.TimeoutMS, executeCommand.options.DefaultTimeout, executeCommand.options.MaxTimeout)
 	yield := durationFromMilliseconds(arguments.YieldTimeMS, executeCommand.options.DefaultYield, executeCommand.options.MaxYield)
 	maxTokens := arguments.MaxOutputTokens
@@ -197,15 +198,17 @@ func (executeCommand *ExecuteCommand) Execute(ctx context.Context, prepared tool
 		Timeout: timeout, TTY: arguments.TTY, MaxOutputBytes: maxBytes,
 	}, configureCommandProcess)
 	if err != nil {
-		return tool.Result{}, fmt.Errorf("start execute_command: %w", err)
+		return tool.Output{}, fmt.Errorf("start execute_command: %w", err)
 	}
 	snapshot, err := executeCommand.manager.SnapshotContext(ctx, processID, owner, yield)
 	if err != nil {
 		_ = executeCommand.manager.Cancel(processID, owner)
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
 	return commandSnapshotResult("execute_command", relativeCWD, snapshot, time.Since(startedAt), launch.Mode)
 }
+
+var _ tool.Handler = (*ExecuteCommand)(nil)
 
 func durationFromMilliseconds(value int64, fallback, maximum time.Duration) time.Duration {
 	if value <= 0 {
@@ -252,4 +255,4 @@ func sandboxFailureOutput(output string) bool {
 	return strings.Contains(value, "read-only file system") || strings.Contains(value, "permission denied") || strings.Contains(value, "operation not permitted")
 }
 
-var _ tool.Tool = (*ExecuteCommand)(nil)
+var _ tool.Handler = (*ExecuteCommand)(nil)

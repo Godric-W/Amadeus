@@ -13,7 +13,6 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/agent/plan"
-	"github.com/Godric-W/Amadeus/internal/agent/react"
 	agentruntime "github.com/Godric-W/Amadeus/internal/agent/runtime"
 	bootstrap "github.com/Godric-W/Amadeus/internal/app/bootstrap"
 	"github.com/Godric-W/Amadeus/internal/config"
@@ -28,7 +27,21 @@ import (
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/render"
 	sessiondomain "github.com/Godric-W/Amadeus/internal/session"
+	"github.com/Godric-W/Amadeus/internal/tool"
+	"github.com/Godric-W/Amadeus/internal/tool/builtin"
 )
+
+type patchProjectorGroup []builtin.PatchProjector
+
+func (group patchProjectorGroup) ProjectPatch(ctx context.Context, output tool.Output) error {
+	var combined error
+	for _, projector := range group {
+		if projector != nil {
+			combined = errors.Join(combined, projector.ProjectPatch(ctx, output.Clone()))
+		}
+	}
+	return combined
+}
 
 func (runner *agentController) newRunContext(parent context.Context) (context.Context, context.CancelFunc, error) {
 	factory := runner.runtime.agentContextFactory
@@ -206,15 +219,14 @@ func (runner *agentController) runOnce(ctx context.Context, invocation agentInvo
 			}
 		}()
 	}
-	postWriteHooks := append([]react.PostExecutionHook(nil), runner.runtime.postWriteHooks...)
-	runDiff, err := rundiff.NewTracker(invocation.Project.Path(), eventHub)
+	runDiff, err := rundiff.NewProjector(invocation.Project.Path(), eventHub)
 	if err != nil {
 		return err
 	}
 	if err := runRuntime.State().AttachRunDiff(runDiff); err != nil {
 		return err
 	}
-	postWriteHooks = append([]react.PostExecutionHook{runDiff}, postWriteHooks...)
+	patchProjectors := append(patchProjectorGroup{runDiff}, runner.runtime.patchProjectors...)
 
 	options := bootstrap.AgentOptions{
 		UserSkillRoot:    runner.runtime.amadeusRoot,
@@ -222,7 +234,7 @@ func (runner *agentController) runOnce(ctx context.Context, invocation agentInvo
 		MCPClientFactory: runner.runtime.mcpClientFactory,
 		WebFetcher:       runner.runtime.webFetcher,
 		WebSearch:        runner.runtime.webSearch,
-		PostWriteHooks:   postWriteHooks,
+		PatchProjector:   patchProjectors,
 		RolloutRecorder: &sessionRolloutRecorder{
 			runtime: sessionRuntime, runID: started.Records.Run.ID,
 			nextID: runner.runtimeID, clock: runner.runtimeNow,

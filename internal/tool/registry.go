@@ -17,7 +17,7 @@ var (
 
 type Entry struct {
 	Spec      Spec
-	Tool      Tool
+	Handler   Handler
 	Exposure  Exposure
 	Condition string
 }
@@ -32,11 +32,11 @@ func NewRegistry() *Registry {
 	return &Registry{tools: make(map[string]Entry), groups: make(map[string]map[string]struct{})}
 }
 
-func (registry *Registry) ReplaceGroup(group string, candidates []Tool) error {
+func (registry *Registry) ReplaceGroup(group string, candidates []Handler) error {
 	return registry.ReplaceGroupWithRegistration(group, candidates, DirectRegistration())
 }
 
-func (registry *Registry) ReplaceGroupWithRegistration(group string, candidates []Tool, registration Registration) error {
+func (registry *Registry) ReplaceGroupWithRegistration(group string, candidates []Handler, registration Registration) error {
 	group = strings.TrimSpace(group)
 	if group == "" {
 		return errors.New("tool registry group is empty")
@@ -48,7 +48,7 @@ func (registry *Registry) ReplaceGroupWithRegistration(group string, candidates 
 	entries := make([]Entry, 0, len(candidates))
 	seen := make(map[string]struct{}, len(candidates))
 	for _, candidate := range candidates {
-		if candidate == nil || isNilTool(candidate) {
+		if candidate == nil || isNilHandler(candidate) {
 			return ErrNilTool
 		}
 		spec := candidate.Spec().Clone()
@@ -59,7 +59,7 @@ func (registry *Registry) ReplaceGroupWithRegistration(group string, candidates 
 			return fmt.Errorf("%w: %s", ErrDuplicateTool, spec.Name)
 		}
 		seen[spec.Name] = struct{}{}
-		entries = append(entries, Entry{Spec: spec, Tool: candidate, Exposure: registration.Exposure, Condition: registration.Condition})
+		entries = append(entries, Entry{Spec: spec, Handler: candidate, Exposure: registration.Exposure, Condition: registration.Condition})
 	}
 
 	registry.mutex.Lock()
@@ -83,12 +83,12 @@ func (registry *Registry) ReplaceGroupWithRegistration(group string, candidates 
 	return nil
 }
 
-func (registry *Registry) Register(candidate Tool) error {
+func (registry *Registry) Register(candidate Handler) error {
 	return registry.RegisterWithRegistration(candidate, DirectRegistration())
 }
 
-func (registry *Registry) RegisterWithRegistration(candidate Tool, registration Registration) error {
-	if candidate == nil || isNilTool(candidate) {
+func (registry *Registry) RegisterWithRegistration(candidate Handler, registration Registration) error {
+	if candidate == nil || isNilHandler(candidate) {
 		return ErrNilTool
 	}
 	registration, err := normalizeRegistration(registration)
@@ -105,22 +105,22 @@ func (registry *Registry) RegisterWithRegistration(candidate Tool, registration 
 	if _, exists := registry.tools[spec.Name]; exists {
 		return fmt.Errorf("%w: %s", ErrDuplicateTool, spec.Name)
 	}
-	registry.tools[spec.Name] = Entry{Spec: spec, Tool: candidate, Exposure: registration.Exposure, Condition: registration.Condition}
+	registry.tools[spec.Name] = Entry{Spec: spec, Handler: candidate, Exposure: registration.Exposure, Condition: registration.Condition}
 	return nil
 }
 
-func (registry *Registry) Lookup(name string) (Tool, bool) {
+func (registry *Registry) Lookup(name string) (Handler, bool) {
 	registry.mutex.RLock()
 	entry, exists := registry.tools[strings.TrimSpace(name)]
 	registry.mutex.RUnlock()
-	return entry.Tool, exists
+	return entry.Handler, exists
 }
 
 func (registry *Registry) Snapshot() []Entry {
 	registry.mutex.RLock()
 	entries := make([]Entry, 0, len(registry.tools))
 	for _, entry := range registry.tools {
-		entries = append(entries, Entry{Spec: entry.Spec.Clone(), Tool: entry.Tool, Exposure: entry.Exposure, Condition: entry.Condition})
+		entries = append(entries, Entry{Spec: entry.Spec.Clone(), Handler: entry.Handler, Exposure: entry.Exposure, Condition: entry.Condition})
 	}
 	registry.mutex.RUnlock()
 	sort.Slice(entries, func(left, right int) bool {
@@ -184,9 +184,6 @@ func validateSpec(spec Spec) error {
 	if !spec.SideEffect.Valid() {
 		return fmt.Errorf("%w: side effect %q is unsupported", ErrInvalidSpec, spec.SideEffect)
 	}
-	if !spec.Concurrency.Valid() {
-		return fmt.Errorf("%w: concurrency %q is unsupported", ErrInvalidSpec, spec.Concurrency)
-	}
 	return nil
 }
 
@@ -194,7 +191,7 @@ func ValidateSpec(spec Spec) error {
 	return validateSpec(spec)
 }
 
-func isNilTool(candidate Tool) bool {
+func isNilHandler(candidate Handler) bool {
 	value := reflect.ValueOf(candidate)
 	switch value.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:

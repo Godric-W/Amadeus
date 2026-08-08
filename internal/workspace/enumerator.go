@@ -14,7 +14,7 @@ import (
 
 type FileEnumerator struct {
 	root    project.Root
-	guard   *project.PathGuard
+	policy  *project.FileSystemPolicy
 	ignored *IgnoreMatcher
 }
 
@@ -45,21 +45,21 @@ func NewFileEnumerator(root project.Root, matcher *IgnoreMatcher) (*FileEnumerat
 	if root.Path() == "" {
 		return nil, errors.New("file enumerator project root is empty")
 	}
-	guard, err := project.NewPathGuard(root)
+	policy, err := project.NewFileSystemPolicy(project.FileSystemPolicyOptions{CWD: root.Path(), Profile: project.PermissionProfile{WorkspaceRoots: []string{root.Path()}}})
 	if err != nil {
 		return nil, err
 	}
-	return &FileEnumerator{root: root, guard: guard, ignored: matcher}, nil
+	return &FileEnumerator{root: root, policy: policy, ignored: matcher}, nil
 }
 
-func NewFileEnumeratorWithGuard(root project.Root, matcher *IgnoreMatcher, guard *project.PathGuard) (*FileEnumerator, error) {
+func NewFileEnumeratorWithPolicy(root project.Root, matcher *IgnoreMatcher, policy *project.FileSystemPolicy) (*FileEnumerator, error) {
 	if root.Path() == "" {
 		return nil, errors.New("file enumerator project root is empty")
 	}
-	if guard == nil {
-		return nil, errors.New("file enumerator path guard is nil")
+	if policy == nil {
+		return nil, errors.New("file enumerator filesystem policy is nil")
 	}
-	return &FileEnumerator{root: root, guard: guard, ignored: matcher}, nil
+	return &FileEnumerator{root: root, policy: policy, ignored: matcher}, nil
 }
 
 func (enumerator *FileEnumerator) Enumerate(ctx context.Context, options EnumerateOptions) (EnumerateResult, error) {
@@ -67,11 +67,11 @@ func (enumerator *FileEnumerator) Enumerate(ctx context.Context, options Enumera
 	if base == "" {
 		base = "."
 	}
-	absolute, err := enumerator.guard.ResolveExisting(base, project.PathAny)
+	resolved, err := enumerator.policy.ResolveExisting(base, project.PathAny)
 	if err != nil {
 		return EnumerateResult{}, err
 	}
-	return enumerator.EnumeratePrepared(ctx, absolute, options)
+	return enumerator.EnumeratePrepared(ctx, resolved.Canonical, options)
 }
 
 func (enumerator *FileEnumerator) EnumeratePrepared(ctx context.Context, absolute string, options EnumerateOptions) (EnumerateResult, error) {
@@ -112,10 +112,12 @@ func (enumerator *FileEnumerator) EnumeratePrepared(ctx context.Context, absolut
 		resolved := filePath
 		symlink := entry.Type()&os.ModeSymlink != 0
 		if symlink {
-			resolved, err = enumerator.guard.ResolveExisting(filePath, project.PathAny)
+			resolvedPath, resolveErr := enumerator.policy.ResolveExisting(filePath, project.PathAny)
+			err = resolveErr
 			if err != nil {
 				return err
 			}
+			resolved = resolvedPath.Canonical
 		}
 		info, err := os.Stat(resolved)
 		if err != nil {

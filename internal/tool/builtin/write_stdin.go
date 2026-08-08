@@ -46,24 +46,19 @@ func NewWriteStdin(options WriteStdinOptions) (*WriteStdin, error) {
 
 func (writeStdin *WriteStdin) Spec() tool.Spec { return writeStdinSpec() }
 
-func (writeStdin *WriteStdin) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
+func (writeStdin *WriteStdin) SupportsParallelToolCalls() bool { return false }
+
+func (writeStdin *WriteStdin) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+	call := invocation.Call
 	var arguments writeStdinArguments
 	if err := decodeArguments(call.Arguments, &arguments); err != nil {
-		return tool.PreparedCall{}, err
+		return tool.Output{}, err
 	}
 	if strings.TrimSpace(arguments.ProcessID) == "" {
-		return tool.PreparedCall{}, errors.New("write_stdin process_id is empty")
+		return tool.Output{}, errors.New("write_stdin process_id is empty")
 	}
 	if arguments.YieldTimeMS < 0 {
-		return tool.PreparedCall{}, errors.New("write_stdin yield time cannot be negative")
-	}
-	return tool.NewPreparedCall(call, tool.PreparedOptions{Targets: []tool.PreparedTarget{{Kind: tool.TargetProcess, Access: tool.TargetAccessExecute, Identity: arguments.ProcessID}}, Payload: arguments})
-}
-
-func (writeStdin *WriteStdin) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
-	arguments, err := preparedPayload[writeStdinArguments](prepared, "write_stdin")
-	if err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, errors.New("write_stdin yield time cannot be negative")
 	}
 	chars := arguments.Chars
 	if arguments.Enter {
@@ -76,7 +71,7 @@ func (writeStdin *WriteStdin) Execute(ctx context.Context, prepared tool.Prepare
 	yield := durationFromMilliseconds(arguments.YieldTimeMS, writeStdin.options.DefaultYield, writeStdin.options.MaxYield)
 	snapshot, err := writeStdin.options.Manager.WriteContext(ctx, processdomain.ID(arguments.ProcessID), owner, chars, arguments.EOF, yield)
 	if err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
 	return commandSnapshotResult("write_stdin", "", snapshot, time.Since(snapshot.StartedAt), "")
 }
@@ -85,8 +80,8 @@ func writeStdinSpec() tool.Spec {
 	return tool.Spec{
 		Name: "write_stdin", Description: "Continue or poll a running process created by execute_command in the current Run; optionally write characters, Enter, or EOF.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"process_id":{"type":"string","minLength":1},"chars":{"type":"string"},"enter":{"type":"boolean"},"eof":{"type":"boolean"},"yield_time_ms":{"type":"integer","minimum":0}},"required":["process_id"],"additionalProperties":false}`),
-		SideEffect:  tool.SideEffectExecute, Concurrency: tool.ToolConcurrencyExclusive, Idempotent: false,
+		SideEffect:  tool.SideEffectExecute, Idempotent: false,
 	}
 }
 
-var _ tool.Tool = (*WriteStdin)(nil)
+var _ tool.Handler = (*WriteStdin)(nil)

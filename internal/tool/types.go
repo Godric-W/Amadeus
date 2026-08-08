@@ -3,9 +3,8 @@ package tool
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"strings"
+	"time"
 )
 
 type SideEffect string
@@ -54,28 +53,11 @@ func DirectRegistration() Registration {
 	return Registration{Exposure: ExposureDirect}
 }
 
-type ToolConcurrency string
-
-const (
-	ToolConcurrencyShared    ToolConcurrency = "shared"
-	ToolConcurrencyExclusive ToolConcurrency = "exclusive"
-)
-
-func (concurrency ToolConcurrency) Valid() bool {
-	switch concurrency {
-	case ToolConcurrencyShared, ToolConcurrencyExclusive:
-		return true
-	default:
-		return false
-	}
-}
-
 type Spec struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
 	SideEffect  SideEffect      `json:"side_effect"`
-	Concurrency ToolConcurrency `json:"concurrency"`
 	Idempotent  bool            `json:"idempotent"`
 }
 
@@ -84,10 +66,27 @@ func (spec Spec) Clone() Spec {
 	return spec
 }
 
-type Call struct {
+type ToolCall struct {
 	ID        string          `json:"id"`
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
+}
+
+type Call = ToolCall
+
+type ToolCallSource string
+
+const (
+	ToolCallSourceModel ToolCallSource = "model"
+	ToolCallSourceUser  ToolCallSource = "user"
+	ToolCallSourceMCP   ToolCallSource = "mcp"
+)
+
+type Invocation struct {
+	SessionID string
+	RunID     string
+	Call      ToolCall
+	Source    ToolCallSource
 }
 
 type RequestSnapshot struct {
@@ -110,111 +109,17 @@ func RequestSnapshotFromContext(ctx context.Context) (RequestSnapshot, bool) {
 	return snapshot, ok
 }
 
-func NewCall(id, name string, arguments json.RawMessage) Call {
-	return Call{
+func NewCall(id, name string, arguments json.RawMessage) ToolCall {
+	return ToolCall{
 		ID:        strings.TrimSpace(id),
 		Name:      strings.TrimSpace(name),
 		Arguments: append(json.RawMessage(nil), arguments...),
 	}
 }
 
-func (call Call) Clone() Call {
+func (call ToolCall) Clone() ToolCall {
 	call.Arguments = append(json.RawMessage(nil), call.Arguments...)
 	return call
-}
-
-type TargetKind string
-
-const (
-	TargetFilesystem TargetKind = "filesystem"
-	TargetProcess    TargetKind = "process"
-	TargetMCP        TargetKind = "mcp"
-	TargetWeb        TargetKind = "web"
-	TargetSkill      TargetKind = "skill"
-)
-
-type TargetAccess string
-
-const (
-	TargetAccessRead    TargetAccess = "read"
-	TargetAccessWrite   TargetAccess = "write"
-	TargetAccessExecute TargetAccess = "execute"
-	TargetAccessNetwork TargetAccess = "network"
-)
-
-type PreparedTarget struct {
-	Kind          TargetKind   `json:"kind"`
-	RequestedPath string       `json:"requested_path,omitempty"`
-	CanonicalPath string       `json:"canonical_path,omitempty"`
-	Access        TargetAccess `json:"access"`
-	MatchedRoot   string       `json:"matched_root,omitempty"`
-	RootSource    string       `json:"root_source,omitempty"`
-	Identity      string       `json:"identity,omitempty"`
-}
-
-type PreparedOptions struct {
-	Targets       []PreparedTarget
-	Command       string
-	Shell         string
-	CWD           string
-	TTY           bool
-	IsolationMode string
-	Payload       any
-}
-
-type PreparedCall struct {
-	call          Call
-	targets       []PreparedTarget
-	command       string
-	shell         string
-	cwd           string
-	tty           bool
-	isolationMode string
-	payload       any
-}
-
-func NewPreparedCall(call Call, options PreparedOptions) (PreparedCall, error) {
-	if strings.TrimSpace(call.ID) == "" {
-		return PreparedCall{}, errors.New("prepared tool call ID is empty")
-	}
-	if strings.TrimSpace(call.Name) == "" {
-		return PreparedCall{}, errors.New("prepared tool call name is empty")
-	}
-	targets := append([]PreparedTarget(nil), options.Targets...)
-	for index := range targets {
-		if targets[index].Kind == "" || targets[index].Access == "" {
-			return PreparedCall{}, fmt.Errorf("prepared target %d is incomplete", index)
-		}
-		if targets[index].Kind == TargetFilesystem && strings.TrimSpace(targets[index].CanonicalPath) == "" {
-			return PreparedCall{}, fmt.Errorf("prepared filesystem target %d has no canonical path", index)
-		}
-	}
-	return PreparedCall{
-		call: call.Clone(), targets: targets, command: options.Command,
-		shell: strings.TrimSpace(options.Shell), cwd: strings.TrimSpace(options.CWD), tty: options.TTY,
-		isolationMode: strings.TrimSpace(options.IsolationMode), payload: options.Payload,
-	}, nil
-}
-
-func PreparePassthrough(call Call, payload any) (PreparedCall, error) {
-	return NewPreparedCall(call, PreparedOptions{Payload: payload})
-}
-
-func (prepared PreparedCall) Call() Call { return prepared.call.Clone() }
-
-func (prepared PreparedCall) Targets() []PreparedTarget {
-	return append([]PreparedTarget(nil), prepared.targets...)
-}
-
-func (prepared PreparedCall) Command() string       { return prepared.command }
-func (prepared PreparedCall) Shell() string         { return prepared.shell }
-func (prepared PreparedCall) CWD() string           { return prepared.cwd }
-func (prepared PreparedCall) TTY() bool             { return prepared.tty }
-func (prepared PreparedCall) IsolationMode() string { return prepared.isolationMode }
-
-func PreparedPayloadAs[T any](prepared PreparedCall) (T, bool) {
-	value, ok := prepared.payload.(T)
-	return value, ok
 }
 
 type ContentKind string
@@ -231,7 +136,7 @@ type ContentPart struct {
 	Data      string      `json:"data,omitempty"`
 }
 
-type Result struct {
+type Output struct {
 	CallID   string         `json:"call_id"`
 	ToolName string         `json:"tool_name"`
 	Text     string         `json:"text,omitempty"`
@@ -240,11 +145,57 @@ type Result struct {
 	Partial  bool           `json:"partial,omitempty"`
 }
 
+type Result = Output
+
+type ToolCallStatus string
+
+const (
+	ToolCallCompleted   ToolCallStatus = "completed"
+	ToolCallFailed      ToolCallStatus = "failed"
+	ToolCallDenied      ToolCallStatus = "denied"
+	ToolCallInterrupted ToolCallStatus = "interrupted"
+)
+
+func (status ToolCallStatus) Valid() bool {
+	switch status {
+	case ToolCallCompleted, ToolCallFailed, ToolCallDenied, ToolCallInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
+type ToolError struct {
+	Kind    string `json:"kind"`
+	Message string `json:"message"`
+}
+
+type ArtifactRef struct {
+	Path   string `json:"path,omitempty"`
+	URI    string `json:"uri,omitempty"`
+	Digest string `json:"digest,omitempty"`
+}
+
+type ToolCallOutcome struct {
+	Status    ToolCallStatus `json:"status"`
+	Error     *ToolError     `json:"error,omitempty"`
+	Blocking  bool           `json:"blocking,omitempty"`
+	Duration  time.Duration  `json:"duration"`
+	Artifacts []ArtifactRef  `json:"artifacts,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
+type ToolExecution struct {
+	Call    ToolCall        `json:"call"`
+	Output  Output          `json:"output"`
+	Outcome ToolCallOutcome `json:"outcome"`
+}
+
 type ErrorKindProvider interface {
 	ToolErrorKind() string
 }
 
-func (result Result) Clone() Result {
+func (result Output) Clone() Output {
 	result.Parts = append([]ContentPart(nil), result.Parts...)
 	if result.Metadata != nil {
 		result.Metadata = cloneMetadata(result.Metadata)

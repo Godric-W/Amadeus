@@ -13,8 +13,8 @@ import (
 )
 
 type Reader struct {
-	root  project.Root
-	guard *project.PathGuard
+	root   project.Root
+	policy *project.FileSystemPolicy
 }
 
 type ReadRangeOptions struct {
@@ -43,35 +43,39 @@ func NewReader(root project.Root) (*Reader, error) {
 	if root.Path() == "" {
 		return nil, errors.New("workspace reader project root is empty")
 	}
-	guard, err := project.NewPathGuard(root)
+	policy, err := project.NewFileSystemPolicy(project.FileSystemPolicyOptions{CWD: root.Path(), Profile: project.PermissionProfile{WorkspaceRoots: []string{root.Path()}}})
 	if err != nil {
 		return nil, err
 	}
-	return &Reader{root: root, guard: guard}, nil
+	return &Reader{root: root, policy: policy}, nil
 }
 
-func NewReaderWithGuard(root project.Root, guard *project.PathGuard) (*Reader, error) {
+func NewReaderWithPolicy(root project.Root, policy *project.FileSystemPolicy) (*Reader, error) {
 	if root.Path() == "" {
 		return nil, errors.New("workspace reader project root is empty")
 	}
-	if guard == nil {
-		return nil, errors.New("workspace reader path guard is nil")
+	if policy == nil {
+		return nil, errors.New("workspace reader filesystem policy is nil")
 	}
-	return &Reader{root: root, guard: guard}, nil
+	return &Reader{root: root, policy: policy}, nil
 }
 
 func (reader *Reader) ResolveExisting(relative string, expected project.PathType) (string, error) {
-	if reader == nil || reader.guard == nil {
+	if reader == nil || reader.policy == nil {
 		return "", errors.New("workspace reader is nil")
 	}
-	return reader.guard.ResolveExisting(relative, expected)
+	resolved, err := reader.policy.ResolveExisting(relative, expected)
+	if err != nil {
+		return "", err
+	}
+	return resolved.Canonical, nil
 }
 
 func (reader *Reader) ResolveExistingTarget(relative string, expected project.PathType) (project.ResolvedPath, error) {
-	if reader == nil || reader.guard == nil {
+	if reader == nil || reader.policy == nil {
 		return project.ResolvedPath{}, errors.New("workspace reader is nil")
 	}
-	return reader.guard.ResolveExistingTarget(relative, expected)
+	return reader.policy.ResolveExisting(relative, expected)
 }
 
 func (reader *Reader) ReadRange(ctx context.Context, relative string, options ReadRangeOptions) (ReadRangeResult, error) {

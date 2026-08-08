@@ -191,6 +191,5 @@ func outcomeFingerprint(outcome ToolOutcome) string {
 func highImpact(spec tool.Spec) bool {
 	return spec.SideEffect == tool.SideEffectWrite ||
 		spec.SideEffect == tool.SideEffectExecute ||
-		spec.SideEffect == tool.SideEffectNetwork ||
-		spec.Concurrency == tool.ToolConcurrencyExclusive
+		spec.SideEffect == tool.SideEffectNetwork
 }

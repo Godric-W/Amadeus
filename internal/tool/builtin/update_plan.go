@@ -44,25 +44,20 @@ func NewUpdatePlan(state *plan.State, options UpdatePlanOptions) (*UpdatePlan, e
 
 func (updatePlan *UpdatePlan) Spec() tool.Spec { return updatePlanSpec() }
 
-func (updatePlan *UpdatePlan) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
+func (updatePlan *UpdatePlan) SupportsParallelToolCalls() bool { return false }
+
+func (updatePlan *UpdatePlan) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+	call := invocation.Call
 	var update plan.Update
 	if err := decodeArguments(call.Arguments, &update); err != nil {
-		return tool.PreparedCall{}, err
-	}
-	return tool.PreparePassthrough(call, update)
-}
-
-func (updatePlan *UpdatePlan) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
-	update, err := preparedPayload[plan.Update](prepared, "update_plan")
-	if err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
 	snapshot, err := updatePlan.state.Apply(update, updatePlan.options.Now().UTC())
 	if err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
 	if err := updatePlan.options.Recorder(ctx, snapshot); err != nil {
-		return tool.Result{}, fmt.Errorf("record plan update: %w", err)
+		return tool.Output{}, fmt.Errorf("record plan update: %w", err)
 	}
 	items := make([]event.PlanItem, 0, len(snapshot.Items))
 	for _, item := range snapshot.Items {
@@ -71,13 +66,13 @@ func (updatePlan *UpdatePlan) Execute(ctx context.Context, prepared tool.Prepare
 	if err := updatePlan.options.Events.Publish(ctx, event.PlanUpdated{
 		Explanation: snapshot.Explanation, Items: items, Revision: snapshot.Revision, UpdatedAt: snapshot.UpdatedAt,
 	}); err != nil {
-		return tool.Result{}, fmt.Errorf("publish plan update: %w", err)
+		return tool.Output{}, fmt.Errorf("publish plan update: %w", err)
 	}
 	encoded, err := json.Marshal(snapshot)
 	if err != nil {
-		return tool.Result{}, fmt.Errorf("encode plan update result: %w", err)
+		return tool.Output{}, fmt.Errorf("encode plan update result: %w", err)
 	}
-	return tool.Result{ToolName: "update_plan", Text: string(encoded), Metadata: map[string]any{
+	return tool.Output{ToolName: "update_plan", Text: string(encoded), Metadata: map[string]any{
 		"revision": snapshot.Revision, "items": len(snapshot.Items), "explanation": strings.TrimSpace(snapshot.Explanation),
 	}}, nil
 }
@@ -86,6 +81,8 @@ func updatePlanSpec() tool.Spec {
 	return tool.Spec{
 		Name: "update_plan", Description: "Create or replace the visible execution checklist for a complex task. Keep exactly one item in_progress while work remains; this is soft guidance and does not schedule tools.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"explanation":{"type":"string"},"items":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"object","properties":{"step":{"type":"string","minLength":1},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["step","status"],"additionalProperties":false}}},"required":["items"],"additionalProperties":false}`),
-		SideEffect:  tool.SideEffectNone, Concurrency: tool.ToolConcurrencyExclusive, Idempotent: false,
+		SideEffect:  tool.SideEffectNone, Idempotent: false,
 	}
 }
+
+var _ tool.Handler = (*UpdatePlan)(nil)

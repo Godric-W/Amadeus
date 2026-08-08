@@ -14,8 +14,8 @@ import (
 )
 
 type ListDirOptions struct {
-	MaxEntries int
-	PathGuard  *project.PathGuard
+	MaxEntries       int
+	FileSystemPolicy *project.FileSystemPolicy
 }
 
 type ListDir struct {
@@ -29,12 +29,6 @@ type listDirArguments struct {
 	Limit         int    `json:"limit,omitempty"`
 }
 
-type preparedListDir struct {
-	arguments listDirArguments
-	path      string
-	display   string
-}
-
 func NewListDir(root project.Root, options ListDirOptions) (*ListDir, error) {
 	if root.Path() == "" {
 		return nil, errors.New("list_dir project root is empty")
@@ -42,8 +36,8 @@ func NewListDir(root project.Root, options ListDirOptions) (*ListDir, error) {
 	if options.MaxEntries <= 0 {
 		return nil, errors.New("list_dir max entries must be greater than zero")
 	}
-	reader, err := workspace.NewReaderWithGuard(root, options.PathGuard)
-	if options.PathGuard == nil {
+	reader, err := workspace.NewReaderWithPolicy(root, options.FileSystemPolicy)
+	if options.FileSystemPolicy == nil {
 		reader, err = workspace.NewReader(root)
 	}
 	if err != nil {
@@ -56,13 +50,16 @@ func (listDir *ListDir) Spec() tool.Spec {
 	return listDirSpec()
 }
 
-func (listDir *ListDir) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
+func (listDir *ListDir) SupportsParallelToolCalls() bool { return true }
+
+func (listDir *ListDir) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+	call := invocation.Call
 	var arguments listDirArguments
 	if err := decodeArguments(call.Arguments, &arguments); err != nil {
-		return tool.PreparedCall{}, err
+		return tool.Output{}, err
 	}
 	if arguments.Limit < 0 {
-		return tool.PreparedCall{}, errors.New("list_dir limit cannot be negative")
+		return tool.Output{}, errors.New("list_dir limit cannot be negative")
 	}
 	relativePath := arguments.Path
 	if strings.TrimSpace(relativePath) == "" {
@@ -70,23 +67,14 @@ func (listDir *ListDir) Prepare(ctx context.Context, call tool.Call) (tool.Prepa
 	}
 	resolved, err := listDir.reader.ResolveExistingTarget(relativePath, project.PathDirectory)
 	if err != nil {
-		return tool.PreparedCall{}, err
-	}
-	return tool.NewPreparedCall(call, tool.PreparedOptions{Targets: []tool.PreparedTarget{preparedFilesystemTarget(resolved)}, Payload: preparedListDir{arguments: arguments, path: resolved.Canonical, display: relativePath}})
-}
-
-func (listDir *ListDir) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
-	payload, err := preparedPayload[preparedListDir](prepared, "list_dir")
-	if err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
 	if err := ctx.Err(); err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
-	arguments, relativePath := payload.arguments, payload.display
-	entries, err := os.ReadDir(payload.path)
+	entries, err := os.ReadDir(resolved.Canonical)
 	if err != nil {
-		return tool.Result{}, fmt.Errorf("list directory %q: %w", relativePath, err)
+		return tool.Output{}, fmt.Errorf("list directory %q: %w", relativePath, err)
 	}
 	sort.Slice(entries, func(left, right int) bool { return entries[left].Name() < entries[right].Name() })
 	limit := listDir.options.MaxEntries
@@ -98,7 +86,7 @@ func (listDir *ListDir) Execute(ctx context.Context, prepared tool.PreparedCall)
 	hiddenOmitted := 0
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
-			return tool.Result{}, err
+			return tool.Output{}, err
 		}
 		if !arguments.IncludeHidden && strings.HasPrefix(entry.Name(), ".") {
 			hiddenOmitted++
@@ -110,12 +98,12 @@ func (listDir *ListDir) Execute(ctx context.Context, prepared tool.PreparedCall)
 		}
 		line, err := directoryEntryLine(entry)
 		if err != nil {
-			return tool.Result{}, fmt.Errorf("inspect directory entry %q: %w", entry.Name(), err)
+			return tool.Output{}, fmt.Errorf("inspect directory entry %q: %w", entry.Name(), err)
 		}
 		lines = append(lines, line)
 	}
 	partial := totalVisible > len(lines)
-	return tool.Result{
+	return tool.Output{
 		ToolName: "list_dir", Text: strings.Join(lines, "\n"), Partial: partial,
 		Metadata: map[string]any{
 			"path": relativePath, "entries_returned": len(lines), "total_entries": totalVisible,
@@ -138,4 +126,4 @@ func directoryEntryLine(entry os.DirEntry) (string, error) {
 	return fmt.Sprintf("file\t%s\t%d", entry.Name(), info.Size()), nil
 }
 
-var _ tool.Tool = (*ListDir)(nil)
+var _ tool.Handler = (*ListDir)(nil)

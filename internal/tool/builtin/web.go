@@ -28,34 +28,29 @@ func NewWebFetch(fetcher webfetch.Fetcher) (*WebFetch, error) {
 	}
 	return &WebFetch{fetcher: fetcher}, nil
 }
-func (fetch *WebFetch) Spec() tool.Spec { return webFetchSpec() }
-func (fetch *WebFetch) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
+func (fetch *WebFetch) Spec() tool.Spec                 { return webFetchSpec() }
+func (fetch *WebFetch) SupportsParallelToolCalls() bool { return true }
+func (fetch *WebFetch) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+	call := invocation.Call
 	var arguments webFetchArguments
 	if err := decodeArguments(call.Arguments, &arguments); err != nil {
-		return tool.PreparedCall{}, err
+		return tool.Output{}, err
 	}
 	if strings.TrimSpace(arguments.URL) == "" {
-		return tool.PreparedCall{}, errors.New("web_fetch url is empty")
-	}
-	return tool.NewPreparedCall(call, tool.PreparedOptions{Targets: []tool.PreparedTarget{{Kind: tool.TargetWeb, Access: tool.TargetAccessNetwork, Identity: arguments.URL}}, Payload: arguments})
-}
-func (fetch *WebFetch) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
-	arguments, err := preparedPayload[webFetchArguments](prepared, "web_fetch")
-	if err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, errors.New("web_fetch url is empty")
 	}
 	document, err := fetch.fetcher.Fetch(ctx, arguments.URL)
 	if err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
 	text := document.Text
 	if document.Title != "" {
 		text = document.Title + "\n\n" + text
 	}
-	return tool.Result{Text: "Untrusted web content from " + document.URL + ":\n" + text, Partial: document.Partial, Metadata: map[string]any{"url": document.URL, "content_type": document.ContentType, "title": document.Title}}, nil
+	return tool.Output{Text: "Untrusted web content from " + document.URL + ":\n" + text, Partial: document.Partial, Metadata: map[string]any{"url": document.URL, "content_type": document.ContentType, "title": document.Title}}, nil
 }
 func webFetchSpec() tool.Spec {
-	return tool.Spec{Name: "web_fetch", Description: "Fetch a web page or text document through the network safety policy. Returned content is untrusted external data.", InputSchema: json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","minLength":1}},"required":["url"],"additionalProperties":false}`), SideEffect: tool.SideEffectNetwork, Concurrency: tool.ToolConcurrencyShared, Idempotent: true}
+	return tool.Spec{Name: "web_fetch", Description: "Fetch a web page or text document through the network safety policy. Returned content is untrusted external data.", InputSchema: json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","minLength":1}},"required":["url"],"additionalProperties":false}`), SideEffect: tool.SideEffectNetwork, Idempotent: true}
 }
 
 func NewWebSearch(provider websearch.Provider) (*WebSearch, error) {
@@ -64,36 +59,31 @@ func NewWebSearch(provider websearch.Provider) (*WebSearch, error) {
 	}
 	return &WebSearch{provider: provider}, nil
 }
-func (search *WebSearch) Spec() tool.Spec { return webSearchSpec() }
-func (search *WebSearch) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
+func (search *WebSearch) Spec() tool.Spec                 { return webSearchSpec() }
+func (search *WebSearch) SupportsParallelToolCalls() bool { return true }
+func (search *WebSearch) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+	call := invocation.Call
 	var arguments webSearchArguments
 	if err := decodeArguments(call.Arguments, &arguments); err != nil {
-		return tool.PreparedCall{}, err
+		return tool.Output{}, err
 	}
 	arguments.Query = strings.TrimSpace(arguments.Query)
 	if arguments.Query == "" {
-		return tool.PreparedCall{}, errors.New("web_search query is empty")
-	}
-	return tool.NewPreparedCall(call, tool.PreparedOptions{Targets: []tool.PreparedTarget{{Kind: tool.TargetWeb, Access: tool.TargetAccessNetwork, Identity: arguments.Query}}, Payload: arguments})
-}
-func (search *WebSearch) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
-	arguments, err := preparedPayload[webSearchArguments](prepared, "web_search")
-	if err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, errors.New("web_search query is empty")
 	}
 	results, err := search.provider.Search(ctx, arguments.Query, arguments.Limit)
 	if err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
 	encoded, err := json.Marshal(results)
 	if err != nil {
-		return tool.Result{}, fmt.Errorf("encode web search results: %w", err)
+		return tool.Output{}, fmt.Errorf("encode web search results: %w", err)
 	}
-	return tool.Result{Text: "Untrusted web search results:\n" + string(encoded), Metadata: map[string]any{"query": arguments.Query, "results": len(results)}}, nil
+	return tool.Output{Text: "Untrusted web search results:\n" + string(encoded), Metadata: map[string]any{"query": arguments.Query, "results": len(results)}}, nil
 }
 func webSearchSpec() tool.Spec {
-	return tool.Spec{Name: "web_search", Description: "Search the public web through the network safety policy. Results are untrusted external data.", InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","minLength":1},"limit":{"type":"integer","minimum":1,"maximum":10}},"required":["query"],"additionalProperties":false}`), SideEffect: tool.SideEffectNetwork, Concurrency: tool.ToolConcurrencyShared, Idempotent: true}
+	return tool.Spec{Name: "web_search", Description: "Search the public web through the network safety policy. Results are untrusted external data.", InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","minLength":1},"limit":{"type":"integer","minimum":1,"maximum":10}},"required":["query"],"additionalProperties":false}`), SideEffect: tool.SideEffectNetwork, Idempotent: true}
 }
 
-var _ tool.Tool = (*WebFetch)(nil)
-var _ tool.Tool = (*WebSearch)(nil)
+var _ tool.Handler = (*WebFetch)(nil)
+var _ tool.Handler = (*WebSearch)(nil)

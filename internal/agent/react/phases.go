@@ -135,13 +135,9 @@ func retryableThinkError(err error) bool {
 	}
 }
 
-type defaultAnalyzer struct {
-	validator *tool.ArgumentValidator
-}
+type defaultAnalyzer struct{}
 
-func newDefaultAnalyzer() *defaultAnalyzer {
-	return &defaultAnalyzer{validator: tool.NewArgumentValidator()}
-}
+func newDefaultAnalyzer() *defaultAnalyzer { return &defaultAnalyzer{} }
 
 func (analyzer *defaultAnalyzer) Analyze(input AnalyzeInput) (AnalyzeOutput, error) {
 	classified, err := classify(input.Think.Response)
@@ -155,81 +151,28 @@ func (analyzer *defaultAnalyzer) Analyze(input AnalyzeInput) (AnalyzeOutput, err
 		output.FinalMessage = classified.Candidate
 		return output, nil
 	case IterationToolCalls:
-		normalized, failures, err := analyzer.normalizeCalls(classified.ToolCalls, input.AvailableTools)
-		if err != nil {
-			output.Kind = AnalysisArgumentError
-			output.Calls = append([]tool.Call(nil), classified.ToolCalls...)
-			output.ArgumentFailures = failures
-			output.Response.Message.ToolCalls = argumentErrorMessageToolCalls(output.Response.Message.ToolCalls)
-			return output, nil
-		}
 		output.Kind = AnalysisAct
-		output.Calls = normalized
-		output.Response.Message.ToolCalls = normalizedMessageToolCalls(output.Response.Message.ToolCalls, normalized)
+		output.Calls = append([]tool.Call(nil), classified.ToolCalls...)
 		return output, nil
 	default:
 		return AnalyzeOutput{}, fmt.Errorf("unsupported analysis kind %q", classified.Kind)
 	}
 }
 
-func argumentErrorMessageToolCalls(calls []llm.ToolCall) []llm.ToolCall {
-	result := make([]llm.ToolCall, len(calls))
-	for index, call := range calls {
-		result[index] = call
-		result[index].Arguments = []byte(`{"_amadeus_argument_error":true}`)
-	}
-	return result
-}
-
-func (analyzer *defaultAnalyzer) normalizeCalls(calls []tool.Call, specs []tool.Spec) ([]tool.Call, []ToolOutcome, error) {
-	indexed := make(map[string]tool.Spec, len(specs))
-	for _, spec := range specs {
-		indexed[spec.Name] = spec
-	}
-	normalized := make([]tool.Call, len(calls))
-	failures := make([]ToolOutcome, len(calls))
-	var combined error
-	for index, call := range calls {
-		spec, ok := indexed[call.Name]
-		var arguments []byte
-		var err error
-		if !ok {
-			err = fmt.Errorf("tool %q is not available", call.Name)
-		} else {
-			arguments, err = analyzer.validator.Validate(spec, call.Arguments)
-		}
-		if err == nil {
-			normalized[index] = tool.NewCall(call.ID, call.Name, arguments)
-			continue
-		}
-		combined = errors.Join(combined, err)
-		failures[index] = argumentFailureExecution(call, err)
-	}
-	if combined == nil {
-		return normalized, nil, nil
-	}
-	for index, call := range calls {
-		if failures[index].CallID == "" {
-			failures[index] = argumentFailureExecution(call, errors.New("tool call was not executed because another call had invalid arguments"))
-		}
-	}
-	return nil, failures, combined
-}
-
 type defaultActor struct {
-	gate *toolExecutionGate
+	executor CallExecutor
 }
 
 func (actor *defaultActor) Act(ctx context.Context, input ActInput) (ActOutput, error) {
-	indexed, err := actor.gate.Execute(ctx, input.Calls, input.AvailableTools)
+	executions, err := actor.executor.ExecuteBatch(ctx, input.Calls)
 	if err != nil {
 		return ActOutput{}, err
 	}
-	outcomes := make([]ToolOutcome, 0, len(indexed))
-	for _, item := range indexed {
-		outcomes = append(outcomes, item.outcome)
+	outcomes := make([]ToolOutcome, 0, len(executions))
+	for _, execution := range executions {
+		outcomes = append(outcomes, projectToolExecution(execution))
 	}
-	return ActOutput{Outcomes: outcomes, Attempted: len(indexed)}, nil
+	return ActOutput{Outcomes: outcomes, Attempted: len(executions)}, nil
 }
 
 type defaultObserver struct {

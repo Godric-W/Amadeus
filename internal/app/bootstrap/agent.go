@@ -31,7 +31,7 @@ type ClientFactory func(string, config.ProviderConfig) (llm.Client, error)
 
 type AgentOptions struct {
 	ClientFactory      ClientFactory
-	PostWriteHooks     []react.PostExecutionHook
+	PatchProjector     builtin.PatchProjector
 	RolloutRecorder    react.RolloutRecorder
 	PlanState          *plan.State
 	PlanRecorder       builtin.PlanUpdateRecorder
@@ -60,9 +60,8 @@ type Agent struct {
 	PromptAssembler   *internalprompt.Assembler
 	AgentPrompt       internalprompt.Bundle
 	Registry          *tool.Registry
-	Validator         *tool.ArgumentValidator
-	Authorizer        *policy.ToolAuthorizer
-	ToolExecutor      *react.ToolExecutor
+	CommandAuthorizer *policy.CommandAuthorizer
+	ToolRouter        *tool.Router
 	Iterator          *react.Iterator
 	Progress          *react.ProgressMonitor
 	Runner            *react.Runner
@@ -89,7 +88,7 @@ func NewAgentWithOptions(configured config.Config, root project.Root, events eve
 	if createClient == nil {
 		createClient = defaultClientFactory
 	}
-	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, options.PostWriteHooks, options.RolloutRecorder, options.PlanState, options.PlanRecorder, options.UserSkillRoot, options.UserMCPRoot, options.MCPClientFactory, options.Skills, options.SkillWarnings, options.MCP, options.WebFetcher, options.WebSearch, options.FileSystemPolicy, options.RunPermissions, options.SessionPermissions, options.SessionApprovals)
+	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, options.PatchProjector, options.RolloutRecorder, options.PlanState, options.PlanRecorder, options.UserSkillRoot, options.UserMCPRoot, options.MCPClientFactory, options.Skills, options.SkillWarnings, options.MCP, options.WebFetcher, options.WebSearch, options.FileSystemPolicy, options.RunPermissions, options.SessionPermissions, options.SessionApprovals)
 }
 
 func (agent *Agent) AvailableTools() []tool.Spec {
@@ -108,7 +107,7 @@ func newAgent(configured config.Config, root project.Root, events event.Sink, ap
 	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, nil, nil, nil, nil, "", "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 }
 
-func newAgentWithOptions(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory, postWriteHooks []react.PostExecutionHook, rolloutRecorder react.RolloutRecorder, planState *plan.State, planRecorder builtin.PlanUpdateRecorder, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, externalSkills *skill.Catalog, externalSkillWarnings []error, externalMCP *mcp.Manager, webFetcher webfetch.Fetcher, webSearch websearch.Provider, fileSystemPolicy *project.FileSystemPolicy, runPermissions, sessionPermissions *project.PermissionStore, sessionApprovals *policy.SessionApprovalStore) (*Agent, error) {
+func newAgentWithOptions(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory, patchProjector builtin.PatchProjector, rolloutRecorder react.RolloutRecorder, planState *plan.State, planRecorder builtin.PlanUpdateRecorder, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, externalSkills *skill.Catalog, externalSkillWarnings []error, externalMCP *mcp.Manager, webFetcher webfetch.Fetcher, webSearch websearch.Provider, fileSystemPolicy *project.FileSystemPolicy, runPermissions, sessionPermissions *project.PermissionStore, sessionApprovals *policy.SessionApprovalStore) (*Agent, error) {
 	if err := config.Validate(configured); err != nil {
 		return nil, fmt.Errorf("validate Agent configuration: %w", err)
 	}
@@ -149,21 +148,32 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 		return nil, fmt.Errorf("assemble Agent Prompt: %w", err)
 	}
 	mvpOptions := builtin.DefaultMVPOptions()
-	var pathGuard *project.PathGuard
 	var sandboxRunner *sandboxdomain.Runner
-	if fileSystemPolicy != nil {
-		var guardErr error
-		pathGuard, guardErr = project.NewPathGuardWithPolicy(fileSystemPolicy)
-		if guardErr != nil {
-			return nil, fmt.Errorf("create filesystem path guard: %w", guardErr)
+	if fileSystemPolicy == nil {
+		fileSystemPolicy, err = project.NewFileSystemPolicy(project.FileSystemPolicyOptions{CWD: root.Path(), Profile: project.PermissionProfile{WorkspaceRoots: []string{root.Path()}}})
+		if err != nil {
+			return nil, fmt.Errorf("create default filesystem policy: %w", err)
 		}
-		mvpOptions.PathGuard = pathGuard
+	}
+	{
+		var guardErr error
+		mvpOptions.FileSystemPolicy = fileSystemPolicy
+		mvpOptions.ApplyPatch.Executor.FileSystemPolicy = fileSystemPolicy
+		mvpOptions.ApplyPatch.Projector = patchProjector
+		mvpOptions.ExecuteCommand.FileSystemPolicy = fileSystemPolicy
 		sandboxRunner, guardErr = sandboxdomain.NewRunner(fileSystemPolicy)
 		if guardErr != nil {
 			return nil, fmt.Errorf("create command sandbox: %w", guardErr)
 		}
 		mvpOptions.ExecuteCommand.Sandbox = sandboxRunner
 	}
+	commandAuthorizer, err := policy.NewCommandAuthorizerWithOptions(approvals, policy.CommandAuthorizerOptions{
+		SessionApprovals: sessionApprovals, Audit: auditSink, Events: events,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create command authorizer: %w", err)
+	}
+	mvpOptions.ExecuteCommand.Authorizer = commandAuthorizer
 	registry, err := builtin.NewMVPRegistry(root, mvpOptions)
 	if err != nil {
 		return nil, fmt.Errorf("create MVP tool registry: %w", err)
@@ -199,7 +209,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 	}
 	visibility := make(map[string]bool)
 	if client.Capabilities().SupportsImages {
-		viewImage, imageErr := builtin.NewViewImage(root, builtin.ViewImageOptions{PathGuard: pathGuard})
+		viewImage, imageErr := builtin.NewViewImage(root, builtin.ViewImageOptions{FileSystemPolicy: fileSystemPolicy})
 		if imageErr != nil {
 			return nil, fmt.Errorf("create view_image tool: %w", imageErr)
 		}
@@ -308,16 +318,11 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 		visibility["mcp.catalog"] = true
 		visibility["mcp.resources"] = true
 	}
-	validator := tool.NewArgumentValidator()
-	authorizer, err := policy.NewToolAuthorizerWithOptions(approvals, policy.ToolAuthorizerOptions{
-		SessionApprovals: sessionApprovals, Audit: auditSink, Events: events,
+	toolRouter, err := tool.NewRouter(registry, tool.NewArgumentValidator(), tool.RouterOptions{
+		Observer: react.NewToolEventObserver(events), MaxParallel: configured.Agent.MaxParallelTools,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create tool authorizer: %w", err)
-	}
-	toolExecutor, err := react.NewToolExecutorWithOptions(registry, validator, react.ToolExecutorOptions{Authorizer: authorizer, Events: events, Hooks: postWriteHooks})
-	if err != nil {
-		return nil, fmt.Errorf("create tool executor: %w", err)
+		return nil, fmt.Errorf("create tool router: %w", err)
 	}
 	iterator, err := react.NewIteratorWithOptions(client, events, react.IteratorOptions{SystemPrompt: agentPrompt.Content})
 	if err != nil {
@@ -325,7 +330,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 	}
 	progress := react.DefaultProgressMonitor()
 	contextManager := agentcontext.NewManager(nil)
-	runner, err := react.NewRunner(iterator, toolExecutor, progress, react.RunnerOptions{
+	runner, err := react.NewRunner(iterator, toolRouter, progress, react.RunnerOptions{
 		Temperature:      provider.Temperature,
 		MaxOutputTokens:  provider.MaxOutputTokens,
 		MaxParallelTools: configured.Agent.MaxParallelTools,
@@ -360,9 +365,8 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 		PromptAssembler:   promptAssembler,
 		AgentPrompt:       agentPrompt,
 		Registry:          registry,
-		Validator:         validator,
-		Authorizer:        authorizer,
-		ToolExecutor:      toolExecutor,
+		CommandAuthorizer: commandAuthorizer,
+		ToolRouter:        toolRouter,
 		Iterator:          iterator,
 		Progress:          progress,
 		Runner:            runner,
@@ -398,7 +402,7 @@ func (agent *Agent) RefreshMCP(ctx context.Context) []error {
 			warnings = append(warnings, fmt.Errorf("refresh MCP server %q: %w", server, err))
 			continue
 		}
-		values := make([]tool.Tool, len(tools))
+		values := make([]tool.Handler, len(tools))
 		for index, value := range tools {
 			values[index] = value
 		}

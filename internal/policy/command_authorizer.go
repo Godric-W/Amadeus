@@ -28,7 +28,16 @@ func (err *ToolDeniedError) Error() string {
 func (err *ToolDeniedError) Unwrap() error         { return ErrToolDenied }
 func (err *ToolDeniedError) ToolErrorKind() string { return "approval_denied" }
 
-type ToolAuthorizer struct {
+type CommandRequest struct {
+	Call          tool.ToolCall
+	Shell         string
+	Command       string
+	CWD           string
+	TTY           bool
+	IsolationMode sandboxdomain.IsolationMode
+}
+
+type CommandAuthorizer struct {
 	commandGuard *CommandGuard
 	approvals    ApprovalHandler
 	session      *SessionApprovalStore
@@ -38,7 +47,7 @@ type ToolAuthorizer struct {
 	now          func() time.Time
 }
 
-type ToolAuthorizerOptions struct {
+type CommandAuthorizerOptions struct {
 	SessionApprovals *SessionApprovalStore
 	Audit            audit.Sink
 	Events           event.Sink
@@ -46,13 +55,13 @@ type ToolAuthorizerOptions struct {
 	Now              func() time.Time
 }
 
-func NewToolAuthorizer(approvals ApprovalHandler, sessionApprovals *SessionApprovalStore) (*ToolAuthorizer, error) {
-	return NewToolAuthorizerWithOptions(approvals, ToolAuthorizerOptions{SessionApprovals: sessionApprovals})
+func NewCommandAuthorizer(approvals ApprovalHandler, sessionApprovals *SessionApprovalStore) (*CommandAuthorizer, error) {
+	return NewCommandAuthorizerWithOptions(approvals, CommandAuthorizerOptions{SessionApprovals: sessionApprovals})
 }
 
-func NewToolAuthorizerWithOptions(approvals ApprovalHandler, options ToolAuthorizerOptions) (*ToolAuthorizer, error) {
+func NewCommandAuthorizerWithOptions(approvals ApprovalHandler, options CommandAuthorizerOptions) (*CommandAuthorizer, error) {
 	if approvals == nil {
-		return nil, errors.New("tool authorizer approval handler is nil")
+		return nil, errors.New("command authorizer approval handler is nil")
 	}
 	if options.SessionApprovals == nil {
 		options.SessionApprovals = NewSessionApprovalStore()
@@ -60,32 +69,34 @@ func NewToolAuthorizerWithOptions(approvals ApprovalHandler, options ToolAuthori
 	if options.Now == nil {
 		options.Now = time.Now
 	}
-	return &ToolAuthorizer{
+	return &CommandAuthorizer{
 		commandGuard: NewCommandGuard(), approvals: approvals, session: options.SessionApprovals,
 		audit: options.Audit, events: options.Events, sessionID: strings.TrimSpace(options.SessionID), now: options.Now,
 	}, nil
 }
 
-func (authorizer *ToolAuthorizer) Authorize(ctx context.Context, spec tool.Spec, prepared tool.PreparedCall) (authorizationErr error) {
+func (authorizer *CommandAuthorizer) Authorize(ctx context.Context, request CommandRequest) (authorizationErr error) {
 	if authorizer == nil {
-		return errors.New("tool authorizer is nil")
+		return errors.New("command authorizer is nil")
 	}
 	if ctx == nil {
-		return errors.New("tool authorizer context is nil")
+		return errors.New("command authorizer context is nil")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if strings.TrimSpace(request.Call.ID) == "" || request.Call.Name != "execute_command" {
+		return errors.New("command authorizer call identity is invalid")
+	}
 	startedAt := authorizer.now()
-	call := prepared.Call()
 	record := audit.Record{
-		Timestamp: startedAt, SessionID: authorizer.sessionID, RequestID: call.ID, ToolName: call.Name,
-		Outcome: audit.OutcomeError, Source: string(ApprovalSourcePolicy), Reason: "tool authorization failed",
+		Timestamp: startedAt, SessionID: authorizer.sessionID, RequestID: request.Call.ID, ToolName: request.Call.Name,
+		Outcome: audit.OutcomeError, Source: string(ApprovalSourcePolicy), Reason: "command authorization failed",
 	}
 	if record.SessionID == "" {
 		record.SessionID = event.MetadataFromContext(ctx).SessionID
 	}
-	if canonical, err := canonicalArguments(call.Arguments); err == nil {
+	if canonical, err := canonicalArguments(request.Call.Arguments); err == nil {
 		record.ArgumentsSHA256 = approvalHash(canonical)
 	}
 	defer func() {
@@ -96,16 +107,16 @@ func (authorizer *ToolAuthorizer) Authorize(ctx context.Context, spec tool.Spec,
 			record.DurationMS = finishedAt.Sub(startedAt).Milliseconds()
 		}
 		if err := authorizer.audit.Write(ctx, record); err != nil {
-			err = fmt.Errorf("write tool authorization audit: %w", err)
+			auditErr := fmt.Errorf("write command authorization audit: %w", err)
 			if authorizationErr == nil {
-				authorizationErr = err
+				authorizationErr = auditErr
 			} else {
-				authorizationErr = errors.Join(authorizationErr, err)
+				authorizationErr = errors.Join(authorizationErr, auditErr)
 			}
 		}
 	}()
 
-	decision, risk, err := authorizer.authorize(ctx, spec, prepared)
+	decision, risk, err := authorizer.authorize(ctx, request)
 	record.Risk = string(risk)
 	record.Scope, record.Source, record.Reason = string(decision.Scope), string(decision.Source), decision.Reason
 	if err != nil {
@@ -116,41 +127,33 @@ func (authorizer *ToolAuthorizer) Authorize(ctx context.Context, spec tool.Spec,
 	return nil
 }
 
-func (authorizer *ToolAuthorizer) authorize(ctx context.Context, spec tool.Spec, prepared tool.PreparedCall) (ApprovalDecision, CommandRisk, error) {
-	call := prepared.Call()
-	if call.Name != spec.Name || strings.TrimSpace(call.ID) == "" {
-		return ApprovalDecision{}, "", errors.New("tool authorizer call identity is invalid")
-	}
-	if spec.Name == "write_stdin" || spec.Name != "execute_command" {
-		return ApprovalDecision{Outcome: ApprovalAllow, Scope: ApprovalOnce, Source: ApprovalSourcePolicy, Reason: "permission check completed during tool preparation"}, CommandRiskLow, nil
-	}
-	assessment, err := authorizer.commandGuard.Assess(prepared.Command())
+func (authorizer *CommandAuthorizer) authorize(ctx context.Context, request CommandRequest) (ApprovalDecision, CommandRisk, error) {
+	assessment, err := authorizer.commandGuard.Assess(request.Command)
 	if err != nil {
 		return ApprovalDecision{}, "", fmt.Errorf("command policy assessment failed: %w", err)
 	}
 	if assessment.Disposition == CommandDeny {
 		decision := ApprovalDecision{Outcome: ApprovalDeny, Scope: ApprovalOnce, Source: ApprovalSourcePolicy, Reason: assessment.Reason}
-		return decision, assessment.Risk, &ToolDeniedError{ToolName: call.Name, Risk: assessment.Risk, Source: decision.Source, Reason: decision.Reason}
+		return decision, assessment.Risk, &ToolDeniedError{ToolName: request.Call.Name, Risk: assessment.Risk, Source: decision.Source, Reason: decision.Reason}
 	}
-	isolation := sandboxdomain.IsolationMode(prepared.IsolationMode())
-	if isolation == sandboxdomain.IsolationSandboxed {
+	if request.IsolationMode == sandboxdomain.IsolationSandboxed {
 		return ApprovalDecision{Outcome: ApprovalAllow, Scope: ApprovalOnce, Source: ApprovalSourcePolicy, Reason: "command runs inside the filesystem sandbox"}, CommandRiskLow, nil
 	}
-	if isolation != sandboxdomain.IsolationUnsandboxed {
-		return ApprovalDecision{}, "", fmt.Errorf("execute_command isolation mode %q is invalid", isolation)
+	if request.IsolationMode != sandboxdomain.IsolationUnsandboxed {
+		return ApprovalDecision{}, "", fmt.Errorf("execute_command isolation mode %q is invalid", request.IsolationMode)
 	}
-	key, ok := NewCommandApprovalKey(prepared.Shell(), prepared.Command(), prepared.CWD(), prepared.TTY(), isolation)
+	key, ok := NewCommandApprovalKey(request.Shell, request.Command, request.CWD, request.TTY, request.IsolationMode)
 	if !ok {
-		return ApprovalDecision{}, "", errors.New("prepared execute_command approval key is invalid")
+		return ApprovalDecision{}, "", errors.New("execute_command approval key is invalid")
 	}
 	if authorizer.session.IsApproved(key) {
 		return ApprovalDecision{Outcome: ApprovalAllow, Scope: ApprovalSession, Source: ApprovalSourceGrant, Reason: "matching unsandboxed command was approved for this session"}, CommandRiskHigh, nil
 	}
-	request, err := NewApprovalRequestForPurpose(call.ID, call.Name, call.Arguments, ApprovalPurposeCommand, CommandRiskHigh, "unsandboxed host command may access resources outside declared permissions")
+	approval, err := NewApprovalRequestForPurpose(request.Call.ID, request.Call.Name, request.Call.Arguments, ApprovalPurposeCommand, CommandRiskHigh, "unsandboxed host command may access resources outside declared permissions")
 	if err != nil {
 		return ApprovalDecision{}, CommandRiskHigh, err
 	}
-	decision, err := authorizer.requestApproval(ctx, request)
+	decision, err := authorizer.requestApproval(ctx, approval)
 	if err != nil {
 		return ApprovalDecision{}, CommandRiskHigh, err
 	}
@@ -158,12 +161,12 @@ func (authorizer *ToolAuthorizer) authorize(ctx context.Context, spec tool.Spec,
 		authorizer.session.Approve(key)
 	}
 	if !decision.Allowed() {
-		return decision, CommandRiskHigh, &ToolDeniedError{ToolName: call.Name, Risk: CommandRiskHigh, Source: decision.Source, Reason: decision.Reason}
+		return decision, CommandRiskHigh, &ToolDeniedError{ToolName: request.Call.Name, Risk: CommandRiskHigh, Source: decision.Source, Reason: decision.Reason}
 	}
 	return decision, CommandRiskHigh, nil
 }
 
-func (authorizer *ToolAuthorizer) requestApproval(ctx context.Context, request ApprovalRequest) (ApprovalDecision, error) {
+func (authorizer *CommandAuthorizer) requestApproval(ctx context.Context, request ApprovalRequest) (ApprovalDecision, error) {
 	if authorizer.events != nil {
 		if err := authorizer.events.Publish(ctx, event.ApprovalRequested{RequestID: request.ID, ToolName: request.ToolName, Risk: string(request.Risk), Reason: request.Reason}); err != nil {
 			return ApprovalDecision{}, fmt.Errorf("publish tool approval requested: %w", err)
@@ -186,5 +189,3 @@ func (authorizer *ToolAuthorizer) requestApproval(ctx context.Context, request A
 	}
 	return decision, nil
 }
-
-var _ tool.Authorizer = (*ToolAuthorizer)(nil)

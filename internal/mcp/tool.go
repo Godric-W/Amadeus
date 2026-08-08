@@ -46,37 +46,29 @@ func NewToolAdapter(server string, remote RemoteTool, manager *Manager, options 
 	}
 	return &ToolAdapter{server: server, original: remote.Name, manager: manager, maxBytes: options.MaxResultBytes, spec: tool.Spec{
 		Name: registered, Description: description, InputSchema: schema, SideEffect: tool.SideEffectNetwork,
-		Concurrency: tool.ToolConcurrencyExclusive, Idempotent: false,
+		Idempotent: false,
 	}}, nil
 }
 
 func (adapter *ToolAdapter) Spec() tool.Spec { return adapter.spec.Clone() }
 
-func (adapter *ToolAdapter) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
-	if adapter == nil || adapter.manager == nil {
-		return tool.PreparedCall{}, errors.New("MCP tool adapter is nil")
-	}
-	return prepareMCPCall(call, adapter.server+":"+adapter.original, append(json.RawMessage(nil), call.Arguments...))
-}
+func (adapter *ToolAdapter) SupportsParallelToolCalls() bool { return false }
 
-func (adapter *ToolAdapter) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
+func (adapter *ToolAdapter) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	if adapter == nil || adapter.manager == nil {
-		return tool.Result{}, errors.New("MCP tool adapter is nil")
+		return tool.Output{}, errors.New("MCP tool adapter is nil")
 	}
-	input, err := preparedPayload[json.RawMessage](prepared, adapter.spec.Name)
-	if err != nil {
-		return tool.Result{}, err
-	}
+	input := append(json.RawMessage(nil), invocation.Call.Arguments...)
 	result, err := adapter.manager.CallTool(ctx, adapter.server, adapter.original, input)
 	if err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
 	text, partial := boundText(result.Text, adapter.maxBytes)
 	text = "Untrusted external MCP result from " + adapter.server + "/" + adapter.original + ":\n" + text
 	if result.IsError {
-		return tool.Result{Text: text, Partial: partial, Metadata: map[string]any{"server": adapter.server, "tool": adapter.original, "is_error": true}}, errors.New("MCP server returned tool error")
+		return tool.Output{Text: text, Partial: partial, Metadata: map[string]any{"server": adapter.server, "tool": adapter.original, "is_error": true}}, errors.New("MCP server returned tool error")
 	}
-	return tool.Result{Text: text, Partial: partial, Metadata: map[string]any{"server": adapter.server, "tool": adapter.original}}, nil
+	return tool.Output{Text: text, Partial: partial, Metadata: map[string]any{"server": adapter.server, "tool": adapter.original}}, nil
 }
 
 func sanitizeSchema(raw json.RawMessage) (json.RawMessage, error) {
@@ -138,4 +130,4 @@ func safeName(value string) bool {
 	return true
 }
 
-var _ tool.Tool = (*ToolAdapter)(nil)
+var _ tool.Handler = (*ToolAdapter)(nil)

@@ -32,7 +32,7 @@ type requestPermissionsArguments struct {
 	Reason        string   `json:"reason"`
 }
 
-type preparedRequestPermissions struct {
+type permissionRequest struct {
 	arguments requestPermissionsArguments
 	roots     []string
 }
@@ -55,23 +55,26 @@ func (request *RequestPermissions) Spec() tool.Spec {
 		Name:        "request_permissions",
 		Description: "Request additional writable directory roots after another tool returned permission_required. Ask only for the minimal roots needed, then retry the original tool after approval.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"writable_roots":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string","minLength":1},"uniqueItems":true},"reason":{"type":"string","minLength":1}},"required":["writable_roots","reason"],"additionalProperties":false}`),
-		SideEffect:  tool.SideEffectNone, Concurrency: tool.ToolConcurrencyExclusive, Idempotent: false,
+		SideEffect:  tool.SideEffectNone, Idempotent: false,
 	}
 }
 
-func (request *RequestPermissions) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
+func (request *RequestPermissions) SupportsParallelToolCalls() bool { return false }
+
+func (request *RequestPermissions) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+	call := invocation.Call
 	var arguments requestPermissionsArguments
 	if err := decodeArguments(call.Arguments, &arguments); err != nil {
-		return tool.PreparedCall{}, err
+		return tool.Output{}, err
 	}
 	if strings.TrimSpace(arguments.Reason) == "" {
-		return tool.PreparedCall{}, errors.New("request_permissions reason is empty")
+		return tool.Output{}, errors.New("request_permissions reason is empty")
 	}
 	roots := make([]string, 0, len(arguments.WritableRoots))
 	for _, candidate := range arguments.WritableRoots {
 		canonical, err := request.options.Policy.ResolveGrantRoot(candidate)
 		if err != nil {
-			return tool.PreparedCall{}, err
+			return tool.Output{}, err
 		}
 		unique := true
 		for _, root := range roots {
@@ -85,47 +88,35 @@ func (request *RequestPermissions) Prepare(ctx context.Context, call tool.Call) 
 		}
 	}
 	if len(roots) == 0 {
-		return tool.PreparedCall{}, errors.New("request_permissions has no writable roots")
+		return tool.Output{}, errors.New("request_permissions has no writable roots")
 	}
-	targets := make([]tool.PreparedTarget, 0, len(roots))
-	for _, root := range roots {
-		targets = append(targets, tool.PreparedTarget{Kind: tool.TargetFilesystem, RequestedPath: root, CanonicalPath: root, Access: tool.TargetAccessWrite})
-	}
-	return tool.NewPreparedCall(call, tool.PreparedOptions{Targets: targets, Payload: preparedRequestPermissions{arguments: arguments, roots: roots}})
-}
-
-func (request *RequestPermissions) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
-	payload, err := preparedPayload[preparedRequestPermissions](prepared, "request_permissions")
+	payload := permissionRequest{arguments: arguments, roots: roots}
+	encodedArguments, err := json.Marshal(map[string]any{"writable_roots": payload.roots, "reason": payload.arguments.Reason})
 	if err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
-	arguments, err := json.Marshal(map[string]any{"writable_roots": payload.roots, "reason": payload.arguments.Reason})
+	approval, err := policy.NewApprovalRequestForPurpose(call.ID, call.Name, encodedArguments, policy.ApprovalPurposePermission, policy.CommandRiskHigh, payload.arguments.Reason)
 	if err != nil {
-		return tool.Result{}, err
-	}
-	call := prepared.Call()
-	approval, err := policy.NewApprovalRequestForPurpose(call.ID, call.Name, arguments, policy.ApprovalPurposePermission, policy.CommandRiskHigh, payload.arguments.Reason)
-	if err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
 	if request.options.Events != nil {
 		if err := request.options.Events.Publish(ctx, event.ApprovalRequested{RequestID: approval.ID, ToolName: approval.ToolName, Risk: string(approval.Risk), Reason: approval.Reason}); err != nil {
-			return tool.Result{}, err
+			return tool.Output{}, err
 		}
 	}
 	decision, err := request.options.Approvals.Decide(ctx, approval)
 	if err != nil {
-		return tool.Result{}, fmt.Errorf("resolve permission request: %w", err)
+		return tool.Output{}, fmt.Errorf("resolve permission request: %w", err)
 	}
 	if err := decision.Validate(); err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
 	if decision.Scope == policy.ApprovalOnce {
-		return tool.Result{}, errors.New("filesystem permission decision cannot use once scope")
+		return tool.Output{}, errors.New("filesystem permission decision cannot use once scope")
 	}
 	if request.options.Events != nil {
 		if err := request.options.Events.Publish(ctx, event.ApprovalResolved{RequestID: approval.ID, ToolName: approval.ToolName, Outcome: string(decision.Outcome), Scope: string(decision.Scope), Source: string(decision.Source), Reason: decision.Reason}); err != nil {
-			return tool.Result{}, err
+			return tool.Output{}, err
 		}
 	}
 	if request.options.Audit != nil {
@@ -139,11 +130,11 @@ func (request *RequestPermissions) Execute(ctx context.Context, prepared tool.Pr
 			record.Outcome = audit.OutcomeAllow
 		}
 		if err := request.options.Audit.Write(ctx, record); err != nil {
-			return tool.Result{}, fmt.Errorf("write permission grant audit: %w", err)
+			return tool.Output{}, fmt.Errorf("write permission grant audit: %w", err)
 		}
 	}
 	if !decision.Allowed() {
-		return tool.Result{}, &policy.ToolDeniedError{ToolName: call.Name, Risk: policy.CommandRiskHigh, Source: decision.Source, Reason: decision.Reason}
+		return tool.Output{}, &policy.ToolDeniedError{ToolName: call.Name, Risk: policy.CommandRiskHigh, Source: decision.Source, Reason: decision.Reason}
 	}
 	switch decision.Scope {
 	case policy.ApprovalRun:
@@ -154,10 +145,10 @@ func (request *RequestPermissions) Execute(ctx context.Context, prepared tool.Pr
 		err = fmt.Errorf("permission approval scope %q is invalid", decision.Scope)
 	}
 	if err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
 	encoded, _ := json.Marshal(map[string]any{"granted": true, "scope": decision.Scope, "writable_roots": payload.roots, "retry_original_tool": true})
-	return tool.Result{ToolName: "request_permissions", Text: string(encoded), Metadata: map[string]any{"scope": string(decision.Scope), "writable_roots": payload.roots, "retry_original_tool": true}}, nil
+	return tool.Output{ToolName: "request_permissions", Text: string(encoded), Metadata: map[string]any{"scope": string(decision.Scope), "writable_roots": payload.roots, "retry_original_tool": true}}, nil
 }
 
-var _ tool.Tool = (*RequestPermissions)(nil)
+var _ tool.Handler = (*RequestPermissions)(nil)

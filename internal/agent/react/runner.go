@@ -13,7 +13,7 @@ import (
 )
 
 type CallExecutor interface {
-	Execute(context.Context, tool.Call) (ToolOutcome, error)
+	ExecuteBatch(context.Context, []tool.ToolCall) ([]tool.ToolExecution, error)
 }
 
 type ProgressObserver interface {
@@ -74,13 +74,9 @@ func NewRunner(iterator ModelIterator, executor CallExecutor, progress ProgressO
 	if options.MaxParallelTools <= 0 {
 		options.MaxParallelTools = 1
 	}
-	gate, err := newToolExecutionGate(executor, options.MaxParallelTools)
-	if err != nil {
-		return nil, err
-	}
 	return NewRunnerWithPhases(RunnerPhases{
 		Think: newModelThinker(iterator), Analyze: newDefaultAnalyzer(),
-		Act: &defaultActor{gate: gate}, Observe: &defaultObserver{progress: progress, now: time.Now},
+		Act: &defaultActor{executor: executor}, Observe: &defaultObserver{progress: progress, now: time.Now},
 	}, options)
 }
 

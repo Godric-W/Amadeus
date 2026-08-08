@@ -23,10 +23,10 @@ import (
 )
 
 type ViewImageOptions struct {
-	MaxBytes     int64
-	MaxDimension int
-	MaxPixels    int64
-	PathGuard    *project.PathGuard
+	MaxBytes         int64
+	MaxDimension     int
+	MaxPixels        int64
+	FileSystemPolicy *project.FileSystemPolicy
 }
 
 type ViewImage struct {
@@ -36,11 +36,6 @@ type ViewImage struct {
 
 type viewImageArguments struct {
 	Path string `json:"path"`
-}
-
-type preparedViewImage struct {
-	arguments viewImageArguments
-	path      string
 }
 
 func NewViewImage(root project.Root, options ViewImageOptions) (*ViewImage, error) {
@@ -56,8 +51,8 @@ func NewViewImage(root project.Root, options ViewImageOptions) (*ViewImage, erro
 	if options.MaxPixels <= 0 {
 		options.MaxPixels = 64_000_000
 	}
-	reader, err := workspace.NewReaderWithGuard(root, options.PathGuard)
-	if options.PathGuard == nil {
+	reader, err := workspace.NewReaderWithPolicy(root, options.FileSystemPolicy)
+	if options.FileSystemPolicy == nil {
 		reader, err = workspace.NewReader(root)
 	}
 	if err != nil {
@@ -68,71 +63,65 @@ func NewViewImage(root project.Root, options ViewImageOptions) (*ViewImage, erro
 
 func (viewImage *ViewImage) Spec() tool.Spec { return viewImageSpec() }
 
-func (viewImage *ViewImage) Prepare(ctx context.Context, call tool.Call) (tool.PreparedCall, error) {
+func (viewImage *ViewImage) SupportsParallelToolCalls() bool { return true }
+
+func (viewImage *ViewImage) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+	call := invocation.Call
 	var arguments viewImageArguments
 	if err := decodeArguments(call.Arguments, &arguments); err != nil {
-		return tool.PreparedCall{}, err
+		return tool.Output{}, err
 	}
 	if strings.TrimSpace(arguments.Path) == "" {
-		return tool.PreparedCall{}, errors.New("view_image path is empty")
+		return tool.Output{}, errors.New("view_image path is empty")
 	}
 	resolved, err := viewImage.reader.ResolveExistingTarget(arguments.Path, project.PathFile)
 	if err != nil {
-		return tool.PreparedCall{}, err
+		return tool.Output{}, err
 	}
-	return tool.NewPreparedCall(call, tool.PreparedOptions{Targets: []tool.PreparedTarget{preparedFilesystemTarget(resolved)}, Payload: preparedViewImage{arguments: arguments, path: resolved.Canonical}})
-}
-
-func (viewImage *ViewImage) Execute(ctx context.Context, prepared tool.PreparedCall) (tool.Result, error) {
-	payload, err := preparedPayload[preparedViewImage](prepared, "view_image")
+	file, err := os.Open(resolved.Canonical)
 	if err != nil {
-		return tool.Result{}, err
-	}
-	arguments := payload.arguments
-	file, err := os.Open(payload.path)
-	if err != nil {
-		return tool.Result{}, fmt.Errorf("open image %q: %w", arguments.Path, err)
+		return tool.Output{}, fmt.Errorf("open image %q: %w", arguments.Path, err)
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
 	if info.Size() > viewImage.options.MaxBytes {
-		return tool.Result{}, fmt.Errorf("view_image size %d exceeds limit %d", info.Size(), viewImage.options.MaxBytes)
+		return tool.Output{}, fmt.Errorf("view_image size %d exceeds limit %d", info.Size(), viewImage.options.MaxBytes)
 	}
 	content, err := io.ReadAll(io.LimitReader(file, viewImage.options.MaxBytes+1))
 	if err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
 	if int64(len(content)) > viewImage.options.MaxBytes {
-		return tool.Result{}, fmt.Errorf("view_image size exceeds limit %d", viewImage.options.MaxBytes)
+		return tool.Output{}, fmt.Errorf("view_image size exceeds limit %d", viewImage.options.MaxBytes)
 	}
 	if err := ctx.Err(); err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
 	configuration, format, err := image.DecodeConfig(bytes.NewReader(content))
 	if err != nil {
-		return tool.Result{}, fmt.Errorf("decode image %q: %w", arguments.Path, err)
+		return tool.Output{}, fmt.Errorf("decode image %q: %w", arguments.Path, err)
 	}
 	mediaType, err := supportedImageMediaType(format, filepath.Ext(arguments.Path))
 	if err != nil {
-		return tool.Result{}, err
+		return tool.Output{}, err
 	}
 	if configuration.Width <= 0 || configuration.Height <= 0 || configuration.Width > viewImage.options.MaxDimension || configuration.Height > viewImage.options.MaxDimension || int64(configuration.Width)*int64(configuration.Height) > viewImage.options.MaxPixels {
-		return tool.Result{}, fmt.Errorf("view_image dimensions %dx%d exceed limits", configuration.Width, configuration.Height)
+		return tool.Output{}, fmt.Errorf("view_image dimensions %dx%d exceed limits", configuration.Width, configuration.Height)
 	}
 	if format == "gif" {
 		decoded, err := gif.DecodeAll(bytes.NewReader(content))
 		if err != nil {
-			return tool.Result{}, fmt.Errorf("decode GIF %q: %w", arguments.Path, err)
+			return tool.Output{}, fmt.Errorf("decode GIF %q: %w", arguments.Path, err)
 		}
 		if len(decoded.Image) != 1 {
-			return tool.Result{}, fmt.Errorf("view_image only supports static GIF; %q has %d frames", arguments.Path, len(decoded.Image))
+			return tool.Output{}, fmt.Errorf("view_image only supports static GIF; %q has %d frames", arguments.Path, len(decoded.Image))
 		}
 	}
 	encoded := base64.StdEncoding.EncodeToString(content)
-	return tool.Result{
+	return tool.Output{
 		ToolName: "view_image", Text: fmt.Sprintf("viewed %s (%dx%d, %s)", arguments.Path, configuration.Width, configuration.Height, mediaType),
 		Parts:    []tool.ContentPart{{Kind: tool.ContentImage, MediaType: mediaType, Data: encoded}},
 		Metadata: map[string]any{"path": arguments.Path, "media_type": mediaType, "width": configuration.Width, "height": configuration.Height, "bytes": len(content)},
@@ -158,8 +147,8 @@ func viewImageSpec() tool.Spec {
 	return tool.Spec{
 		Name: "view_image", Description: "Read a bounded PNG, JPEG, WebP, or static GIF from the project and return it as a real image content part.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1}},"required":["path"],"additionalProperties":false}`),
-		SideEffect:  tool.SideEffectRead, Concurrency: tool.ToolConcurrencyShared, Idempotent: true,
+		SideEffect:  tool.SideEffectRead, Idempotent: true,
 	}
 }
 
-var _ tool.Tool = (*ViewImage)(nil)
+var _ tool.Handler = (*ViewImage)(nil)

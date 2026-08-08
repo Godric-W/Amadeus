@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/react"
 	"github.com/Godric-W/Amadeus/internal/buildinfo"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/mcp"
+	"github.com/Godric-W/Amadeus/internal/tool/builtin"
 	"github.com/Godric-W/Amadeus/internal/webfetch"
 	"github.com/Godric-W/Amadeus/internal/websearch"
 	"github.com/spf13/cobra"
@@ -29,7 +29,7 @@ type commandRuntime struct {
 	mcpClientFactory    mcp.ClientFactory
 	webFetcher          webfetch.Fetcher
 	webSearch           websearch.Provider
-	postWriteHooks      []react.PostExecutionHook
+	patchProjectors     []builtin.PatchProjector
 	agentContextFactory runContextFactory
 	agentCommand        agentCommand
 	agentCommandFactory agentCommandFactory
