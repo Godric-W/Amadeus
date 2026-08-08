@@ -32,7 +32,7 @@ func (reader *delayedReader) Read(buffer []byte) (int, error) {
 func TestFullscreenTextareaPreservesChineseInput(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +51,7 @@ func TestFullscreenTextareaPreservesChineseInput(t *testing.T) {
 func TestFullscreenTextareaBackspaceRemovesChineseRune(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +69,7 @@ func TestFullscreenTextareaBackspaceRemovesChineseRune(t *testing.T) {
 func TestFullscreenTextareaIgnoresMouseControlResponses(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -88,20 +88,25 @@ func TestFullscreenTextareaIgnoresMouseControlResponses(t *testing.T) {
 	}
 }
 
-func TestFullscreenBannerUsesPixelLogoAndDraftSession(t *testing.T) {
+func TestFullscreenBannerUsesPixelLogoAndRestrainedMetadata(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
 		Startup: FullscreenStartup{Version: "dev", Provider: "openai", Model: "test-model"},
-		Task:    func(context.Context, string) error { return nil },
+		Task:    func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := newFullscreenModel(context.Background(), app)
 	banner := model.banner()
-	for _, expected := range []string{"⠸⠿", "Amadeus", "draft session"} {
+	for _, expected := range []string{"⠸⠿", "Amadeus", "test-model"} {
 		if !strings.Contains(banner, expected) {
 			t.Fatalf("banner omitted %q: %q", expected, banner)
+		}
+	}
+	for _, omitted := range []string{"provider:", "branch:", "session:"} {
+		if strings.Contains(banner, omitted) {
+			t.Fatalf("banner retained %q: %q", omitted, banner)
 		}
 	}
 }
@@ -110,7 +115,7 @@ func TestFullscreenBannerKeepsRightTerminalMargin(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{}, Width: 100,
 		Startup: FullscreenStartup{Version: "dev", Provider: "openai", Model: "test-model"},
-		Task:    func(context.Context, string) error { return nil },
+		Task:    func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -131,7 +136,7 @@ func TestFullscreenBannerKeepsRightTerminalMargin(t *testing.T) {
 func TestFullscreenAcceptsAndQueuesInputWhileRunning(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -148,7 +153,7 @@ func TestFullscreenAcceptsAndQueuesInputWhileRunning(t *testing.T) {
 	}
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(fullscreenModel)
-	if len(model.queuedTasks) != 1 || model.queuedTasks[0] != "下一条任务" || model.input.Value() != "" {
+	if len(model.queuedTasks) != 1 || model.queuedTasks[0].Content != "下一条任务" || model.queuedTasks[0].Mode != CollaborationExecute || model.input.Value() != "" {
 		t.Fatalf("running input was not queued: %#v", model.queuedTasks)
 	}
 	if !strings.Contains(model.inputBox(), "Enter 排队下一条任务") {
@@ -156,32 +161,59 @@ func TestFullscreenAcceptsAndQueuesInputWhileRunning(t *testing.T) {
 	}
 }
 
-func TestFullscreenPlanCommandStartsPlannedTask(t *testing.T) {
-	var task string
+func TestFullscreenPlanCommandSwitchesNextTaskMode(t *testing.T) {
+	var task TaskSubmission
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(_ context.Context, value string) error { task = value; return nil },
+		Task: func(_ context.Context, value TaskSubmission) error { task = value; return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := newFullscreenModel(context.Background(), app)
-	model.input.SetValue("/plan 修改多个模块")
+	model.input.SetValue("/plan")
 	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(fullscreenModel)
-	if !model.running || model.status != "planning" || command == nil {
-		t.Fatalf("plan task was not started: %#v", model)
+	if model.running || model.collaboration != CollaborationPlan || command == nil {
+		t.Fatalf("plan mode was not selected: %#v", model)
 	}
-	message := model.runTask("/plan 修改多个模块")()
-	if _, ok := message.(fullscreenTaskDoneMsg); !ok || task != "/plan 修改多个模块" {
-		t.Fatalf("unexpected plan task dispatch: message=%T task=%q", message, task)
+	message := model.runTask(TaskSubmission{Content: "修改多个模块", Mode: CollaborationPlan})()
+	if _, ok := message.(fullscreenTaskDoneMsg); !ok || task.Content != "修改多个模块" || task.Mode != CollaborationPlan {
+		t.Fatalf("unexpected plan task dispatch: message=%T task=%#v", message, task)
+	}
+}
+
+func TestFullscreenShiftTabCyclesCollaborationMode(t *testing.T) {
+	app, err := NewFullscreenApplication(FullscreenOptions{
+		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
+		Task: func(context.Context, TaskSubmission) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newFullscreenModel(context.Background(), app)
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	model = updated.(fullscreenModel)
+	if model.collaboration != CollaborationPlan {
+		t.Fatalf("Shift+Tab mode = %q", model.collaboration)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	model = updated.(fullscreenModel)
+	if model.collaboration != CollaborationExecute {
+		t.Fatalf("second Shift+Tab mode = %q", model.collaboration)
+	}
+	model.running = true
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	model = updated.(fullscreenModel)
+	if model.collaboration != CollaborationExecute || !strings.Contains(model.entries[len(model.entries)-1].content, "cannot change") {
+		t.Fatalf("running Shift+Tab changed mode: mode=%q entries=%#v", model.collaboration, model.entries)
 	}
 }
 
 func TestFullscreenViewKeepsCommittedHistoryOutOfActiveRegion(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -201,7 +233,7 @@ func TestFullscreenViewKeepsCommittedHistoryOutOfActiveRegion(t *testing.T) {
 func TestFullscreenFlushCommitsEntriesOnce(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +256,7 @@ func TestFullscreenRunUsesTerminalMainScreen(t *testing.T) {
 	var output bytes.Buffer
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: input, Output: &output,
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -256,7 +288,7 @@ func TestFullscreenEscAndCtrlCCancelActiveRun(t *testing.T) {
 		t.Run(key.String(), func(t *testing.T) {
 			app, err := NewFullscreenApplication(FullscreenOptions{
 				Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-				Task: func(context.Context, string) error { return nil },
+				Task: func(context.Context, TaskSubmission) error { return nil },
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -282,7 +314,7 @@ func TestFullscreenEscAndCtrlCCancelActiveRun(t *testing.T) {
 func TestFullscreenWorkingTickChangesFrameWithoutAppendingHistory(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -341,7 +373,7 @@ func TestFullscreenWorkingUsesMonochromeBeamAndSafeMarker(t *testing.T) {
 
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -366,7 +398,7 @@ func TestFullscreenWorkingUsesMonochromeBeamAndSafeMarker(t *testing.T) {
 func TestFullscreenWorkingKeepsOneBlankLineFromAgentOutput(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -397,7 +429,7 @@ func TestFullscreenWorkingKeepsOneBlankLineFromAgentOutput(t *testing.T) {
 func TestFullscreenTaskCompletionCommitsWorkedDuration(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -422,7 +454,7 @@ func TestFullscreenTaskCompletionCommitsWorkedDuration(t *testing.T) {
 func TestFullscreenTranscriptSpacingForThinkAndWorked(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -453,7 +485,7 @@ func TestFullscreenTranscriptSpacingForThinkAndWorked(t *testing.T) {
 func TestFullscreenInputKeepsTwoBlankLinesFromContent(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -493,7 +525,7 @@ func TestFullscreenLogoAndInputPromptUseTerminalDefaultInk(t *testing.T) {
 func TestFullscreenActiveDraftShowsOnlyVisibleTail(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -510,7 +542,7 @@ func TestFullscreenActiveDraftShowsOnlyVisibleTail(t *testing.T) {
 func TestFullscreenModelRendersAgentEvents(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -553,7 +585,7 @@ func TestPrefixRenderedBlockSkipsANSIOnlyBlankLines(t *testing.T) {
 func TestFullscreenStatusUsesContextWindowUpdateInsteadOfProviderUsage(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{}, Startup: FullscreenStartup{Model: "test", ContextWindow: 100_000},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -590,7 +622,7 @@ func TestFullscreenStatusUsesSemanticAccentColors(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
 		Startup: FullscreenStartup{Model: "GPT-TOP", Project: "/workspace/amadeus", Branch: "main", ContextWindow: 128_000},
-		Task:    func(context.Context, string) error { return nil },
+		Task:    func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -608,7 +640,7 @@ func TestFullscreenStatusUsesSemanticAccentColors(t *testing.T) {
 func TestFullscreenCtrlTOpensAndClosesBoundedTranscriptViewer(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -630,7 +662,7 @@ func TestFullscreenCtrlTOpensAndClosesBoundedTranscriptViewer(t *testing.T) {
 func TestFullscreenTranscriptViewerSupportsPageNavigation(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{}, Width: 60,
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -660,7 +692,7 @@ func TestFullscreenResponsiveLayoutFitsWidthMatrix(t *testing.T) {
 			Project: "/非常长的项目目录/with/a/very/long/path/that/must/not/overflow/the/terminal",
 			Branch:  "feature/非常长的分支名称", Session: "draft", ContextWindow: 258_000,
 		},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -683,7 +715,7 @@ func TestFullscreenInitialBannerUsesDetectedWidthBeforeResize(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{}, Width: 40,
 		Startup: FullscreenStartup{Model: "test", Project: "/a/very/long/project/path", Session: "draft"},
-		Task:    func(context.Context, string) error { return nil },
+		Task:    func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -703,7 +735,7 @@ func TestFullscreenNoColorProjectionContainsNoANSI(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{}, NoColor: true,
 		Startup: FullscreenStartup{Version: "dev", Model: "GPT-TOP", Project: "/project"},
-		Task:    func(context.Context, string) error { return nil },
+		Task:    func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -740,7 +772,7 @@ func TestFullscreenMarkdownInlineCodeUsesCyanWithoutBackground(t *testing.T) {
 func TestFullscreenApprovalUsesKeyboardDecision(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -754,15 +786,15 @@ func TestFullscreenApprovalUsesKeyboardDecision(t *testing.T) {
 		t.Fatal("approval did not take exclusive input focus")
 	}
 	prompt := xansi.Strip(model.inputBox())
-	for _, expected := range []string{"› 1. Yes, allow once", "2. Yes, allow for this session", "3. No, deny", "↑/↓ select", "Enter confirm"} {
+	for _, expected := range []string{"› Yes, allow once", "Yes, allow for this session", "No, deny", "↑/↓ select", "Enter confirm"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("approval selector omitted %q: %q", expected, prompt)
 		}
 	}
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
 	model = updated.(fullscreenModel)
-	if model.approvalSelected != 1 || !strings.Contains(xansi.Strip(model.inputBox()), "› 2. Yes, allow for this session") {
-		t.Fatalf("approval selection did not move down: selected=%d prompt=%q", model.approvalSelected, xansi.Strip(model.inputBox()))
+	if model.selection == nil || model.selection.Selected != 1 || !strings.Contains(xansi.Strip(model.inputBox()), "› Yes, allow for this session") {
+		t.Fatalf("approval selection did not move down: selection=%#v prompt=%q", model.selection, xansi.Strip(model.inputBox()))
 	}
 	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(fullscreenModel)
@@ -781,7 +813,7 @@ func TestFullscreenApprovalUsesKeyboardDecision(t *testing.T) {
 func TestFullscreenApprovalPausesWorkingAnimation(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -811,7 +843,7 @@ func TestFullscreenProgramRoutesArrowAndEnterToApproval(t *testing.T) {
 	var app *FullscreenApplication
 	app, err = NewFullscreenApplication(FullscreenOptions{
 		Input: inputReader, Output: &output,
-		Task: func(ctx context.Context, _ string) error {
+		Task: func(ctx context.Context, _ TaskSubmission) error {
 			close(approvalStarted)
 			decision, decideErr := app.Decide(ctx, request)
 			if decideErr == nil {
@@ -863,17 +895,18 @@ func TestFullscreenProgramRoutesArrowAndEnterToApproval(t *testing.T) {
 func TestFullscreenResumeSelectorUsesBorderlessYellowList(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{}, Width: 80,
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := newFullscreenModel(context.Background(), app)
-	model.selecting = true
 	model.sessions = []SessionOption{
 		{ID: "session-1", Title: "first", Current: true},
 		{ID: "session-2", Title: "second"},
 	}
+	model.selection = &selectionOverlay{Title: "Resume Session", Items: []selectionItem{{Name: "session-1", Description: "first · current"}, {Name: "session-2", Description: "second"}}}
+	model.selectionKind = "resume"
 	prompt := xansi.Strip(model.inputBox())
 	if strings.ContainsAny(prompt, "╭╮╰╯│") || !strings.Contains(prompt, "› session-1") {
 		t.Fatalf("resume selector retained a box or omitted selection: %q", prompt)
@@ -884,27 +917,224 @@ func TestFullscreenResumeSelectorUsesBorderlessYellowList(t *testing.T) {
 	}
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
 	model = updated.(fullscreenModel)
-	if model.selected != 1 || !strings.Contains(xansi.Strip(model.inputBox()), "› session-2") {
-		t.Fatalf("resume selection did not move: selected=%d prompt=%q", model.selected, xansi.Strip(model.inputBox()))
+	if model.selection.Selected != 1 || !strings.Contains(xansi.Strip(model.inputBox()), "› session-2") {
+		t.Fatalf("resume selection did not move: selected=%d prompt=%q", model.selection.Selected, xansi.Strip(model.inputBox()))
 	}
 }
 
-func TestFullscreenModelCanExitFromCommand(t *testing.T) {
+func TestFullscreenExitQuits(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := newFullscreenModel(context.Background(), app)
 	model.input.SetValue("/exit")
-	_, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = updated.(fullscreenModel)
 	if command == nil {
 		t.Fatal("exit command did not return a quit command")
 	}
 	message := command()
 	if _, ok := message.(tea.QuitMsg); !ok {
 		t.Fatalf("exit command returned %T, want tea.QuitMsg", message)
+	}
+}
+
+func TestFullscreenCopyUsesInjectedClipboard(t *testing.T) {
+	var copied string
+	app, err := NewFullscreenApplication(FullscreenOptions{
+		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
+		Task:           func(context.Context, TaskSubmission) error { return nil },
+		ClipboardWrite: func(value string) error { copied = value; return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newFullscreenModel(context.Background(), app)
+	model.lastAssistantMarkdown = "**done**"
+	updated, _ := model.submitCommand("/copy")
+	model = updated.(fullscreenModel)
+	if copied != "**done**" || len(model.entries) != 1 || !strings.Contains(model.entries[0].content, "Copied") {
+		t.Fatalf("copy command result: copied=%q entries=%#v", copied, model.entries)
+	}
+}
+
+func TestFullscreenClearResetsTransientStateAndPlanMode(t *testing.T) {
+	app, err := NewFullscreenApplication(FullscreenOptions{
+		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
+		Task: func(context.Context, TaskSubmission) error { return nil },
+		Command: func(_ context.Context, command string) (string, error) {
+			if command != "/clear" {
+				t.Fatalf("clear command = %q", command)
+			}
+			return "Started a new chat", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newFullscreenModel(context.Background(), app)
+	model.entries = []fullscreenEntry{{kind: "assistant", content: "old"}}
+	model.committed = 1
+	model.draft = "streaming"
+	model.lastAssistantMarkdown = "old"
+	model.collaboration = CollaborationPlan
+	updated, command := model.submitCommand("/clear")
+	model = updated.(fullscreenModel)
+	if command == nil {
+		t.Fatal("clear command did not start async action")
+	}
+	updated, _ = model.Update(command())
+	model = updated.(fullscreenModel)
+	if len(model.entries) != 0 || model.committed != 0 || model.draft != "" || model.lastAssistantMarkdown != "" || model.collaboration != CollaborationExecute {
+		t.Fatalf("clear retained transient state: %#v", model)
+	}
+}
+
+func TestFullscreenResumeUsesSearchOverlayAndResetsPlanMode(t *testing.T) {
+	app, err := NewFullscreenApplication(FullscreenOptions{
+		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
+		Task: func(context.Context, TaskSubmission) error { return nil },
+		Sessions: func(context.Context) ([]SessionOption, error) {
+			return []SessionOption{{ID: "session-1", Title: "first"}, {ID: "session-2", Title: "second"}}, nil
+		},
+		Resume: func(_ context.Context, id string) (string, error) { return "resumed " + id, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newFullscreenModel(context.Background(), app)
+	model.collaboration = CollaborationPlan
+	updated, command := model.submitCommand("/resume")
+	model = updated.(fullscreenModel)
+	updated, _ = model.Update(command())
+	model = updated.(fullscreenModel)
+	if model.selection == nil || !model.selection.Search || model.selectionKind != "resume" {
+		t.Fatalf("resume did not open search overlay: %#v", model.selection)
+	}
+	for _, character := range []rune("second") {
+		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{character}})
+		model = updated.(fullscreenModel)
+	}
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(fullscreenModel)
+	updated, _ = model.Update(command())
+	model = updated.(fullscreenModel)
+	if model.collaboration != CollaborationExecute || model.selection != nil || !strings.Contains(model.entries[len(model.entries)-1].content, "session-2") {
+		t.Fatalf("resume result: collaboration=%q selection=%#v entries=%#v", model.collaboration, model.selection, model.entries)
+	}
+}
+
+func TestFullscreenRenameDeleteAndMCPCommands(t *testing.T) {
+	var renamed string
+	deleted := false
+	var delegated string
+	app, err := NewFullscreenApplication(FullscreenOptions{
+		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
+		Task:                func(context.Context, TaskSubmission) error { return nil },
+		CurrentSessionTitle: func() string { return "Current title" },
+		Rename:              func(_ context.Context, title string) (string, error) { renamed = title; return "renamed", nil },
+		Delete:              func(context.Context) (string, error) { deleted = true; return "deleted", nil },
+		Command:             func(_ context.Context, command string) (string, error) { delegated = command; return "mcp output", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newFullscreenModel(context.Background(), app)
+	updated, _ := model.submitCommand("/rename")
+	model = updated.(fullscreenModel)
+	if model.selection == nil || model.selection.Value != "Current title" {
+		t.Fatalf("rename prompt was not prefilled: %#v", model.selection)
+	}
+	model.selection.Value = "New title"
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(fullscreenModel)
+	updated, _ = model.Update(command())
+	model = updated.(fullscreenModel)
+	if renamed != "New title" {
+		t.Fatalf("renamed title = %q", renamed)
+	}
+	updated, _ = model.submitCommand("/delete")
+	model = updated.(fullscreenModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(fullscreenModel)
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(fullscreenModel)
+	updated, _ = model.Update(command())
+	model = updated.(fullscreenModel)
+	if !deleted {
+		t.Fatal("delete callback was not invoked")
+	}
+	model.selection = nil
+	updated, command = model.submitCommand("/mcp verbose")
+	model = updated.(fullscreenModel)
+	updated, _ = model.Update(command())
+	model = updated.(fullscreenModel)
+	if delegated != "/mcp verbose" || !strings.Contains(model.entries[len(model.entries)-1].content, "mcp output") {
+		t.Fatalf("MCP command was not delegated: delegated=%q entries=%#v", delegated, model.entries)
+	}
+}
+
+func TestFullscreenRunningCommandGatingAndSkillDisabledReason(t *testing.T) {
+	app, err := NewFullscreenApplication(FullscreenOptions{
+		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
+		Task:   func(context.Context, TaskSubmission) error { return nil },
+		Skills: func(context.Context) ([]SkillOption, error) { return nil, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newFullscreenModel(context.Background(), app)
+	model.running = true
+	updated, _ := model.submitCommand("/clear")
+	model = updated.(fullscreenModel)
+	if len(model.entries) == 0 || !strings.Contains(model.entries[len(model.entries)-1].content, "disabled") {
+		t.Fatalf("running clear was not rejected: %#v", model.entries)
+	}
+	updated, _ = model.submitCommand("/skills")
+	model = updated.(fullscreenModel)
+	if model.selection == nil || len(model.selection.Items) != 2 || !model.selection.Items[1].Disabled || model.selection.Items[1].DisabledReason == "" {
+		t.Fatalf("running Skill mutation was not disabled with reason: %#v", model.selection)
+	}
+}
+
+func TestFullscreenSkillsOverlayListsAndTogglesAuthoritativeState(t *testing.T) {
+	var toggledName string
+	var toggledEnabled bool
+	app, err := NewFullscreenApplication(FullscreenOptions{
+		Input: &bytes.Buffer{}, Output: &bytes.Buffer{},
+		Task: func(context.Context, TaskSubmission) error { return nil },
+		Skills: func(context.Context) ([]SkillOption, error) {
+			return []SkillOption{{Name: "review", Description: "Review code", Source: "project", Enabled: true}}, nil
+		},
+		SetSkill: func(_ context.Context, name string, enabled bool) error {
+			toggledName, toggledEnabled = name, enabled
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newFullscreenModel(context.Background(), app)
+	updated, _ := model.submitCommand("/skills")
+	model = updated.(fullscreenModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(fullscreenModel)
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(fullscreenModel)
+	updated, _ = model.Update(command())
+	model = updated.(fullscreenModel)
+	if model.selectionKind != "skills" || model.selection == nil || !model.selection.Search {
+		t.Fatalf("Skill toggle overlay was not opened: %#v", model.selection)
+	}
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(fullscreenModel)
+	updated, _ = model.Update(command())
+	model = updated.(fullscreenModel)
+	if toggledName != "review" || toggledEnabled || model.skills[0].Enabled {
+		t.Fatalf("Skill state was not toggled: name=%q enabled=%v skills=%#v", toggledName, toggledEnabled, model.skills)
 	}
 }

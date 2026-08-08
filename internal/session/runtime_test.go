@@ -58,6 +58,90 @@ func TestSessionRuntimeCancelsOnlyAttachedActiveRun(t *testing.T) {
 	}
 }
 
+func TestSessionRuntimeRenameClearResumeCompactAndDelete(t *testing.T) {
+	runtime := newTestSessionRuntime(t)
+	started, err := runtime.BeginRun(context.Background(), "inspect project", RunMetadata{Mode: RunModeExecute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.FinishRun(context.Background(), started, RunCompleted, "", "inspection complete", nil); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := started.Records.Session.ID
+	if renamedID, title, err := runtime.RenameCurrent(context.Background(), "  Project Review  "); err != nil || renamedID != sessionID || title != "Project Review" {
+		t.Fatalf("rename current: id=%q title=%q err=%v", renamedID, title, err)
+	}
+	if runtime.History().Session.Title != "Project Review" {
+		t.Fatalf("history title was not updated: %#v", runtime.History().Session)
+	}
+	if err := runtime.NewDraft(); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.CurrentSessionID() != "" || len(runtime.History().Items) != 0 {
+		t.Fatalf("new draft retained current state: session=%q history=%#v", runtime.CurrentSessionID(), runtime.History())
+	}
+	sessions, err := runtime.ListSessions(context.Background())
+	if err != nil || len(sessions) != 1 || sessions[0].ID != sessionID {
+		t.Fatalf("old Session was not resumable: sessions=%#v err=%v", sessions, err)
+	}
+	if _, err := runtime.Resume(context.Background(), sessionID); err != nil {
+		t.Fatal(err)
+	}
+	projection, err := ProjectMessages(runtime.History().Items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(projection.Messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(encoded)
+	payload, err := EncodePayload(ContextCompactionPayload{
+		Summary:                "Project inspection completed.",
+		ReplacementHistory:     []CompactionHistoryItem{{Role: llm.RoleAssistant, Content: "Project inspection completed."}},
+		CoveredThroughSequence: projection.SourceSequences[len(projection.SourceSequences)-1], SourceHash: hex.EncodeToString(digest[:]),
+		Provider: "mock", Model: "mock-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := runtime.AppendStandalone(context.Background(), AppendItem{ID: "item-compaction", Kind: RolloutContextCompaction, Payload: payload, CreatedAt: time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC)})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("append standalone compaction: items=%#v err=%v", items, err)
+	}
+	compacted, err := ProjectMessages(runtime.History().Items)
+	if err != nil || len(compacted.Messages) != 1 || compacted.Messages[0].Content != "Project inspection completed." {
+		t.Fatalf("compaction was not applied: projection=%#v err=%v", compacted, err)
+	}
+	deleted, err := runtime.DeleteCurrent(context.Background())
+	if err != nil || deleted != sessionID || runtime.CurrentSessionID() != "" {
+		t.Fatalf("delete current: deleted=%q current=%q err=%v", deleted, runtime.CurrentSessionID(), err)
+	}
+	sessions, err = runtime.ListSessions(context.Background())
+	if err != nil || len(sessions) != 0 {
+		t.Fatalf("deleted Session remained listed: sessions=%#v err=%v", sessions, err)
+	}
+}
+
+func TestSessionRuntimeRejectsMutationsDuringActiveRun(t *testing.T) {
+	runtime := newTestSessionRuntime(t)
+	if _, err := runtime.BeginRun(context.Background(), "active", RunMetadata{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runtime.RenameCurrent(context.Background(), "blocked"); err == nil {
+		t.Fatal("rename during active Run unexpectedly succeeded")
+	}
+	if _, err := runtime.DeleteCurrent(context.Background()); err == nil {
+		t.Fatal("delete during active Run unexpectedly succeeded")
+	}
+	if err := runtime.NewDraft(); err == nil {
+		t.Fatal("new Draft during active Run unexpectedly succeeded")
+	}
+	if _, err := runtime.AppendStandalone(context.Background(), AppendItem{}); err == nil {
+		t.Fatal("standalone append during active Run unexpectedly succeeded")
+	}
+}
+
 func TestSessionRuntimeOwnsExtensionLifecycle(t *testing.T) {
 	closer := &countingSessionCloser{}
 	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)

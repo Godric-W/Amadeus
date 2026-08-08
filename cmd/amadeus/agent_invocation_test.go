@@ -195,17 +195,16 @@ func TestReadRootTaskValidatesReader(t *testing.T) {
 	}
 }
 
-func TestParseAgentTaskSelectsExecutionMode(t *testing.T) {
-	mode, task, err := parseAgentTask("你好")
-	if err != nil || mode != agentExecutionReAct || task != "你好" {
-		t.Fatalf("parse default ReAct task: mode=%q task=%q err=%v", mode, task, err)
+func TestParseAgentTaskOnlyNormalizesTaskText(t *testing.T) {
+	task, err := parseAgentTask(" 你好 ")
+	if err != nil || task != "你好" {
+		t.Fatalf("parse task: task=%q err=%v", task, err)
 	}
-	mode, task, err = parseAgentTask("/plan  修改多个模块 ")
-	if err != nil || mode != agentExecutionPlanned || task != "修改多个模块" {
-		t.Fatalf("parse planned task: mode=%q task=%q err=%v", mode, task, err)
+	if task, err = parseAgentTask("/plan 修改多个模块"); err != nil || task != "/plan 修改多个模块" {
+		t.Fatalf("parse slash-prefixed task: task=%q err=%v", task, err)
 	}
-	if _, _, err := parseAgentTask("/plan"); err == nil {
-		t.Fatal("empty plan task unexpectedly parsed")
+	if _, err := parseAgentTask("   "); err == nil {
+		t.Fatal("empty task unexpectedly parsed")
 	}
 }
 

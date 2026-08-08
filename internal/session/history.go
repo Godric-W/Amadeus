@@ -50,6 +50,23 @@ func (history *SessionHistory) View() HistoryView {
 	return HistoryView{Session: history.session, Items: cloneItems(history.items), Revision: history.revision}
 }
 
+func (history *SessionHistory) UpdateSession(value Session) error {
+	if history == nil {
+		return errors.New("session history is nil")
+	}
+	if err := value.Validate(); err != nil {
+		return fmt.Errorf("update session history: %w", err)
+	}
+	history.mutex.Lock()
+	defer history.mutex.Unlock()
+	if history.session.ID != value.ID {
+		return errors.New("session history update ID does not match")
+	}
+	history.session = value
+	history.revision++
+	return nil
+}
+
 func (history *SessionHistory) ProjectMessages() (MessageProjection, error) {
 	if history == nil {
 		return MessageProjection{}, errors.New("session history is nil")

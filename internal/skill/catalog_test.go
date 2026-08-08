@@ -146,6 +146,39 @@ func TestCheckedInSkillExampleLoadsOnDemand(t *testing.T) {
 	}
 }
 
+func TestCatalogPersistsDisabledProjectSkill(t *testing.T) {
+	projectDirectory := t.TempDir()
+	writeSkill(t, filepath.Join(projectDirectory, ".amadeus", "skills", "review", "SKILL.md"), "review", "Review code", "Review instructions")
+	root, err := project.NewRoot(projectDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, warnings, err := Load("", root, DefaultLoadOptions())
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("load catalog: warnings=%v err=%v", warnings, err)
+	}
+	if err := catalog.SetEnabled("review", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.Load("review"); err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("disabled Skill loaded: %v", err)
+	}
+	reloaded, warnings, err := Load("", root, DefaultLoadOptions())
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("reload catalog: warnings=%v err=%v", warnings, err)
+	}
+	entries := reloaded.Index()
+	if len(entries) != 1 || entries[0].Enabled {
+		t.Fatalf("disabled state was not persisted: %#v", entries)
+	}
+	if err := reloaded.SetEnabled("review", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reloaded.Load("review"); err != nil {
+		t.Fatalf("re-enabled Skill did not load: %v", err)
+	}
+}
+
 func writeSkill(t *testing.T, path, name, description, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

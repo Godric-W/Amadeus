@@ -87,6 +87,50 @@ func (store *MemoryStore) LatestSession(ctx context.Context, projectID ProjectID
 	return Session{}, ErrNotFound
 }
 
+func (store *MemoryStore) RenameSession(ctx context.Context, input RenameSessionInput) (Session, error) {
+	if err := validateMemoryContext(ctx); err != nil {
+		return Session{}, err
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	value, ok := store.sessions[input.SessionID]
+	if !ok {
+		return Session{}, ErrNotFound
+	}
+	value.Title = strings.TrimSpace(input.Title)
+	value.UpdatedAt = input.UpdatedAt.UTC()
+	value.LastActiveAt = input.UpdatedAt.UTC()
+	if err := value.Validate(); err != nil {
+		return Session{}, err
+	}
+	store.sessions[value.ID] = value
+	return value, nil
+}
+
+func (store *MemoryStore) DeleteSession(ctx context.Context, id SessionID) error {
+	if err := validateMemoryContext(ctx); err != nil {
+		return err
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	if _, ok := store.sessions[id]; !ok {
+		return ErrNotFound
+	}
+	for _, run := range store.runs {
+		if run.SessionID == id && run.Status == RunRunning {
+			return ErrConflict
+		}
+	}
+	delete(store.sessions, id)
+	delete(store.items, id)
+	for runID, run := range store.runs {
+		if run.SessionID == id {
+			delete(store.runs, runID)
+		}
+	}
+	return nil
+}
+
 func (store *MemoryStore) BeginFirstRun(ctx context.Context, input BeginFirstRunInput) (BeginRunResult, error) {
 	if err := validateMemoryContext(ctx); err != nil {
 		return BeginRunResult{}, err

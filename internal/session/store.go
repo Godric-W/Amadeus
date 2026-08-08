@@ -78,11 +78,19 @@ type FinishRunResult struct {
 	Items   []RolloutItem
 }
 
+type RenameSessionInput struct {
+	SessionID SessionID
+	Title     string
+	UpdatedAt time.Time
+}
+
 type Store interface {
 	GetProjectByCanonicalPath(context.Context, string) (Project, error)
 	GetSession(context.Context, SessionID) (Session, error)
 	ListSessions(context.Context, ProjectID) ([]Session, error)
 	LatestSession(context.Context, ProjectID) (Session, error)
+	RenameSession(context.Context, RenameSessionInput) (Session, error)
+	DeleteSession(context.Context, SessionID) error
 
 	BeginFirstRun(context.Context, BeginFirstRunInput) (BeginRunResult, error)
 	BeginRun(context.Context, BeginRunInput) (BeginRunResult, error)

@@ -175,6 +175,40 @@ func (runtime *SessionRuntime) Append(ctx context.Context, runID RunID, drafts .
 	return cloneItems(items), nil
 }
 
+func (runtime *SessionRuntime) AppendStandalone(ctx context.Context, drafts ...AppendItem) ([]RolloutItem, error) {
+	if err := runtime.validateOpen(); err != nil {
+		return nil, err
+	}
+	runtime.mutex.RLock()
+	if runtime.activeRun != "" {
+		runtime.mutex.RUnlock()
+		return nil, errors.New("session runtime cannot append standalone items during an active Run")
+	}
+	history := runtime.history
+	runtime.mutex.RUnlock()
+	if history == nil || history.View().Session.ID == "" {
+		return nil, errors.New("session runtime has no persisted Session")
+	}
+	for index := range drafts {
+		if drafts[index].RunID != "" {
+			return nil, fmt.Errorf("standalone rollout item %d cannot reference a Run", index)
+		}
+	}
+	sessionID := history.View().Session.ID
+	items, err := runtime.coordinator.AppendItems(ctx, sessionID, drafts...)
+	if err != nil {
+		return nil, err
+	}
+	value, err := runtime.coordinator.store.GetSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := history.Append(value, items...); err != nil {
+		return nil, err
+	}
+	return cloneItems(items), nil
+}
+
 func (runtime *SessionRuntime) FinishRun(ctx context.Context, started StartedRun, status RunStatus, stopReason, assistantContent string, usage json.RawMessage) (FinishRunResult, error) {
 	runtime.mutex.RLock()
 	if runtime.closed || runtime.activeRun != started.Records.Run.ID || runtime.history == nil {
@@ -228,6 +262,82 @@ func (runtime *SessionRuntime) CurrentSessionID() SessionID {
 	return runtime.coordinator.CurrentSessionID()
 }
 
+func (runtime *SessionRuntime) RenameCurrent(ctx context.Context, title string) (SessionID, string, error) {
+	if err := runtime.validateOpen(); err != nil {
+		return "", "", err
+	}
+	runtime.mutex.RLock()
+	if runtime.activeRun != "" {
+		runtime.mutex.RUnlock()
+		return "", "", errors.New("cannot rename a session while a Run is active")
+	}
+	history := runtime.history
+	runtime.mutex.RUnlock()
+	id, renamed, err := runtime.coordinator.RenameCurrent(ctx, title)
+	if err != nil {
+		return "", "", err
+	}
+	if id != "" && history != nil {
+		value, getErr := runtime.coordinator.store.GetSession(ctx, id)
+		if getErr != nil {
+			return "", "", getErr
+		}
+		if err := history.UpdateSession(value); err != nil {
+			return "", "", err
+		}
+	}
+	return id, renamed, nil
+}
+
+func (runtime *SessionRuntime) DeleteCurrent(ctx context.Context) (SessionID, error) {
+	if err := runtime.validateOpen(); err != nil {
+		return "", err
+	}
+	runtime.mutex.RLock()
+	if runtime.activeRun != "" {
+		runtime.mutex.RUnlock()
+		return "", errors.New("cannot delete a session while a Run is active")
+	}
+	runtime.mutex.RUnlock()
+	deleted, err := runtime.coordinator.DeleteCurrent(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err := runtime.resetToDraft(); err != nil {
+		return "", err
+	}
+	return deleted, nil
+}
+
+func (runtime *SessionRuntime) NewDraft() error {
+	if err := runtime.validateOpen(); err != nil {
+		return err
+	}
+	runtime.mutex.RLock()
+	active := runtime.activeRun
+	runtime.mutex.RUnlock()
+	if active != "" {
+		return errors.New("cannot start a new draft while a Run is active")
+	}
+	runtime.coordinator.NewDraft()
+	return runtime.resetToDraft()
+}
+
+func (runtime *SessionRuntime) resetToDraft() error {
+	runtime.mutex.Lock()
+	previous := runtime.extensions
+	runtime.extensions = nil
+	runtime.extensionSession = ""
+	runtime.history = nil
+	runtime.mutex.Unlock()
+	runtime.permissions.Clear()
+	runtime.approvals.Clear()
+	if previous != nil {
+		return previous.Close()
+	}
+	return nil
+}
+
 func (runtime *SessionRuntime) PermissionStore() *project.PermissionStore {
 	if runtime == nil {
 		return nil
@@ -249,6 +359,16 @@ func (runtime *SessionRuntime) Extension() io.Closer {
 	runtime.mutex.RLock()
 	defer runtime.mutex.RUnlock()
 	return runtime.extensions
+}
+
+func (runtime *SessionRuntime) EnsureExtension() (io.Closer, error) {
+	if err := runtime.validateOpen(); err != nil {
+		return nil, err
+	}
+	if err := runtime.ensureExtensions(); err != nil {
+		return nil, err
+	}
+	return runtime.Extension(), nil
 }
 
 func (runtime *SessionRuntime) Close() error {

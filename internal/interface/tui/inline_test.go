@@ -107,11 +107,11 @@ func TestInlineRendererGoldenTranscript(t *testing.T) {
 func TestTerminalInteractionControllerDispatchesTasksAndCommands(t *testing.T) {
 	var tasks, commands []string
 	var status bytes.Buffer
-	controller, err := NewTerminalInteractionController(strings.NewReader("hello\n/help\n/exit\n"), &bytes.Buffer{}, &status, func(_ context.Context, command string) error {
+	controller, err := NewTerminalInteractionController(strings.NewReader("hello\n/status\n"), &bytes.Buffer{}, &status, func(_ context.Context, command string) error {
 		commands = append(commands, command)
 		return nil
-	}, func(_ context.Context, task string) error {
-		tasks = append(tasks, task)
+	}, func(_ context.Context, task TaskSubmission) error {
+		tasks = append(tasks, task.Content)
 		return nil
 	})
 	if err != nil {
@@ -120,16 +120,37 @@ func TestTerminalInteractionControllerDispatchesTasksAndCommands(t *testing.T) {
 	if err := controller.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(tasks) != 1 || tasks[0] != "hello" || len(commands) != 1 || commands[0] != "/help" || status.String() != "amadeus> amadeus> amadeus> " {
+	if len(tasks) != 1 || tasks[0] != "hello" || len(commands) != 1 || commands[0] != "/status" || status.String() != "amadeus> amadeus> amadeus> " {
 		t.Fatalf("unexpected dispatch: tasks=%v commands=%v", tasks, commands)
+	}
+}
+
+func TestTerminalInteractionControllerExitQuits(t *testing.T) {
+	var commands []string
+	controller, err := NewTerminalInteractionController(strings.NewReader("/exit\nignored\n"), &bytes.Buffer{}, &bytes.Buffer{}, func(_ context.Context, command string) error {
+		commands = append(commands, command)
+		return ErrQuit
+	}, func(_ context.Context, task TaskSubmission) error {
+		t.Fatalf("task executed after /exit: %#v", task)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller.WithPrompt("")
+	if err := controller.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 1 || commands[0] != "/exit" {
+		t.Fatalf("exit dispatch = %v", commands)
 	}
 }
 
 func TestTerminalInteractionControllerCreatesAndCancelsTaskContext(t *testing.T) {
 	var cancelled bool
-	controller, err := NewTerminalInteractionController(strings.NewReader("task\n"), &bytes.Buffer{}, &bytes.Buffer{}, nil, func(ctx context.Context, task string) error {
-		if task != "task" || ctx.Err() != nil {
-			t.Fatalf("unexpected task context: task=%q err=%v", task, ctx.Err())
+	controller, err := NewTerminalInteractionController(strings.NewReader("task\n"), &bytes.Buffer{}, &bytes.Buffer{}, nil, func(ctx context.Context, task TaskSubmission) error {
+		if task.Content != "task" || task.Mode != CollaborationExecute || ctx.Err() != nil {
+			t.Fatalf("unexpected task context: task=%#v err=%v", task, ctx.Err())
 		}
 		return nil
 	})
@@ -152,7 +173,7 @@ func TestTerminalInteractionControllerCreatesAndCancelsTaskContext(t *testing.T)
 }
 
 func TestSlashPaletteProvidesOnlySupportedCommands(t *testing.T) {
-	if matches := CompleteSlashCommand("/re"); len(matches) != 1 || matches[0] != "/resume" {
+	if matches := CompleteSlashCommand("/res"); len(matches) != 1 || matches[0] != "/resume" {
 		t.Fatalf("unexpected slash completion: %v", matches)
 	}
 	if matches := CompleteSlashCommand("/pl"); len(matches) != 1 || matches[0] != "/plan" {
@@ -163,13 +184,19 @@ func TestSlashPaletteProvidesOnlySupportedCommands(t *testing.T) {
 func TestTerminalInteractionControllerDispatchesPlanAsTask(t *testing.T) {
 	var task string
 	controller, err := NewTerminalInteractionController(
-		strings.NewReader("/plan inspect repository\n/exit\n"),
+		strings.NewReader("/plan\ninspect repository\n"),
 		&bytes.Buffer{}, &bytes.Buffer{},
 		func(context.Context, string) error {
 			t.Fatal("plan command was dispatched as a UI command")
 			return nil
 		},
-		func(_ context.Context, value string) error { task = value; return nil },
+		func(_ context.Context, value TaskSubmission) error {
+			if value.Mode != CollaborationPlan {
+				t.Fatalf("planned task mode = %q", value.Mode)
+			}
+			task = value.Content
+			return nil
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -178,13 +205,13 @@ func TestTerminalInteractionControllerDispatchesPlanAsTask(t *testing.T) {
 	if err := controller.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if task != "/plan inspect repository" {
+	if task != "inspect repository" {
 		t.Fatalf("unexpected planned task: %q", task)
 	}
 }
 
 func TestTerminalInteractionControllerNavigatesInMemoryHistory(t *testing.T) {
-	controller, err := NewTerminalInteractionController(strings.NewReader("first\nsecond\n"), &bytes.Buffer{}, &bytes.Buffer{}, nil, func(context.Context, string) error { return nil })
+	controller, err := NewTerminalInteractionController(strings.NewReader("first\nsecond\n"), &bytes.Buffer{}, &bytes.Buffer{}, nil, func(context.Context, TaskSubmission) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,8 +235,8 @@ func TestTerminalInteractionControllerNavigatesInMemoryHistory(t *testing.T) {
 
 func TestTerminalInteractionControllerIgnoresIdleControlKeys(t *testing.T) {
 	var tasks []string
-	controller, err := NewTerminalInteractionController(strings.NewReader("\x03\n\x1b\n/exit\n"), &bytes.Buffer{}, &bytes.Buffer{}, nil, func(_ context.Context, task string) error {
-		tasks = append(tasks, task)
+	controller, err := NewTerminalInteractionController(strings.NewReader("\x03\n\x1b\n"), &bytes.Buffer{}, &bytes.Buffer{}, nil, func(_ context.Context, task TaskSubmission) error {
+		tasks = append(tasks, task.Content)
 		return nil
 	})
 	if err != nil {
@@ -227,15 +254,15 @@ func TestTerminalInteractionControllerIgnoresIdleControlKeys(t *testing.T) {
 func TestRawInputSupportsHistoryCompletionAndCancel(t *testing.T) {
 	var tasks []string
 	var status bytes.Buffer
-	controller, err := NewTerminalInteractionController(strings.NewReader(""), &bytes.Buffer{}, &status, nil, func(_ context.Context, task string) error {
-		tasks = append(tasks, task)
+	controller, err := NewTerminalInteractionController(strings.NewReader(""), &bytes.Buffer{}, &status, nil, func(_ context.Context, task TaskSubmission) error {
+		tasks = append(tasks, task.Content)
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	controller.history = []string{"previous"}
-	line, action, err := controller.readRawLine(context.Background(), strings.NewReader("/re\t\n"))
+	line, action, err := controller.readRawLine(context.Background(), strings.NewReader("/res\t\n"))
 	if err != nil || action != rawActionSubmit || line != "/resume" {
 		t.Fatalf("unexpected completion input: line=%q action=%d err=%v", line, action, err)
 	}

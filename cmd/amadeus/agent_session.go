@@ -93,8 +93,42 @@ func (runner *agentController) writeInteractiveStatus(ctx context.Context, invoc
 	if current == "" {
 		current = "draft"
 	}
-	_, err = fmt.Fprintf(invocation.ErrorOutput, "status: project=%s session=%s\n", invocation.Project.Path(), current)
+	configured, _, configErr := loadEffectiveConfig(runner.command, runner.flags, runner.runtime)
+	if configErr != nil {
+		return configErr
+	}
+	provider := configured.Providers[configured.DefaultProvider]
+	history := sessionRuntime.History()
+	title := "draft"
+	if history.Session.Title != "" {
+		title = history.Session.Title
+	}
+	sessionWritableRoots := 0
+	if snapshot := sessionRuntime.PermissionStore().Snapshot(); snapshot.WritableRoots != nil {
+		sessionWritableRoots = len(snapshot.WritableRoots)
+	}
+	skillRevision := "unloaded"
+	mcpRevision := "unloaded"
+	if extension, extensionErr := sessionRuntime.EnsureExtension(); extensionErr == nil {
+		if runtime, ok := extension.(*extensionruntime.Runtime); ok {
+			skillRevision = shortRevision(runtime.SkillRevision())
+			mcpRevision = shortRevision(runtime.MCPRevision())
+		}
+	}
+	_, err = fmt.Fprintf(invocation.ErrorOutput,
+		"project: %s\nsession: %s\ntitle: %s\nprovider: %s\nmodel: %s\nrollout items: %d\nsession writable roots: %d\nsession approvals: %d\nskills revision: %s\nmcp revision: %s\n",
+		invocation.Project.Path(), current, title, configured.DefaultProvider, provider.Model, len(history.Items), sessionWritableRoots,
+		sessionRuntime.ApprovalStore().Count(), skillRevision, mcpRevision,
+	)
 	return err
+}
+
+func shortRevision(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 12 {
+		return value
+	}
+	return value[:12]
 }
 
 func (runner *agentController) prepareSession(ctx context.Context, invocation agentInvocation, reader *bufio.Reader) error {

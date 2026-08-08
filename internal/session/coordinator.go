@@ -38,6 +38,7 @@ type Coordinator struct {
 	idFactory     IDFactory
 	clock         Clock
 	current       SessionID
+	pendingTitle  string
 }
 
 func NewCoordinator(store Store, canonicalPath, projectName string, options CoordinatorOptions) (*Coordinator, error) {
@@ -102,7 +103,68 @@ func (coordinator *Coordinator) Resume(ctx context.Context, id SessionID) (Sessi
 		return Session{}, fmt.Errorf("%w: session %q belongs to another project", ErrConflict, id)
 	}
 	coordinator.current = value.ID
+	coordinator.pendingTitle = ""
 	return value, nil
+}
+
+func (coordinator *Coordinator) RenameCurrent(ctx context.Context, title string) (SessionID, string, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return "", "", errors.New("session title is empty")
+	}
+	if coordinator.current == "" {
+		coordinator.pendingTitle = title
+		return "", title, nil
+	}
+	project, err := coordinator.store.GetProjectByCanonicalPath(ctx, coordinator.canonicalPath)
+	if err != nil {
+		return "", "", err
+	}
+	current, err := coordinator.store.GetSession(ctx, coordinator.current)
+	if err != nil {
+		return "", "", err
+	}
+	if current.ProjectID != project.ID {
+		return "", "", fmt.Errorf("%w: session %q belongs to another project", ErrConflict, current.ID)
+	}
+	updated, err := coordinator.store.RenameSession(ctx, RenameSessionInput{SessionID: current.ID, Title: title, UpdatedAt: coordinator.clock().UTC()})
+	if err != nil {
+		return "", "", err
+	}
+	return updated.ID, updated.Title, nil
+}
+
+func (coordinator *Coordinator) DeleteCurrent(ctx context.Context) (SessionID, error) {
+	if coordinator.current == "" {
+		coordinator.pendingTitle = ""
+		return "", nil
+	}
+	project, err := coordinator.store.GetProjectByCanonicalPath(ctx, coordinator.canonicalPath)
+	if err != nil {
+		return "", err
+	}
+	current, err := coordinator.store.GetSession(ctx, coordinator.current)
+	if err != nil {
+		return "", err
+	}
+	if current.ProjectID != project.ID {
+		return "", fmt.Errorf("%w: session %q belongs to another project", ErrConflict, current.ID)
+	}
+	if err := coordinator.store.DeleteSession(ctx, current.ID); err != nil {
+		return "", err
+	}
+	deleted := coordinator.current
+	coordinator.current = ""
+	coordinator.pendingTitle = ""
+	return deleted, nil
+}
+
+func (coordinator *Coordinator) NewDraft() {
+	if coordinator == nil {
+		return
+	}
+	coordinator.current = ""
+	coordinator.pendingTitle = ""
 }
 
 func (coordinator *Coordinator) BeginRun(ctx context.Context, objective string, metadata RunMetadata) (StartedRun, error) {
@@ -120,9 +182,13 @@ func (coordinator *Coordinator) BeginRun(ctx context.Context, objective string, 
 	itemID := RolloutItemID(coordinator.nextID("item"))
 	runID := RunID(coordinator.nextID("run"))
 	if coordinator.current == "" {
+		title := coordinator.pendingTitle
+		if title == "" {
+			title = sessionTitle(objective)
+		}
 		result, err := coordinator.store.BeginFirstRun(ctx, BeginFirstRunInput{
 			ProjectID: ProjectID(coordinator.nextID("project")), CanonicalPath: coordinator.canonicalPath, ProjectName: coordinator.projectName,
-			SessionID: SessionID(coordinator.nextID("session")), SessionTitle: sessionTitle(objective),
+			SessionID: SessionID(coordinator.nextID("session")), SessionTitle: title,
 			RunID: runID, UserItemID: itemID, UserContent: objective,
 			Provider: metadata.Provider, Model: metadata.Model, APIMode: metadata.APIMode, Dialect: metadata.Dialect, Mode: metadata.Mode,
 			StartedAt: now,
@@ -131,6 +197,7 @@ func (coordinator *Coordinator) BeginRun(ctx context.Context, objective string, 
 			return StartedRun{}, err
 		}
 		coordinator.current = result.Session.ID
+		coordinator.pendingTitle = ""
 		return StartedRun{Records: result}, nil
 	}
 	if err := coordinator.store.RecoverRunningRuns(ctx, coordinator.current, now); err != nil {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/Godric-W/Amadeus/internal/project"
@@ -40,6 +41,7 @@ type Skill struct {
 	Path        string
 	Size        int64
 	Revision    string
+	Enabled     bool
 }
 
 type IndexEntry struct {
@@ -49,11 +51,16 @@ type IndexEntry struct {
 	Path        string `json:"path"`
 	Size        int64  `json:"size"`
 	Revision    string `json:"revision"`
+	Enabled     bool   `json:"enabled"`
 }
 
 type Catalog struct {
-	values  map[string]catalogEntry
-	options LoadOptions
+	mutex       sync.RWMutex
+	values      map[string]catalogEntry
+	disabled    map[Source]map[string]bool
+	userRoot    string
+	projectRoot string
+	options     LoadOptions
 }
 
 type catalogEntry struct {
@@ -76,8 +83,13 @@ func Load(userRoot string, root project.Root, options LoadOptions) (*Catalog, []
 		return nil, nil, errors.New("skill project root is empty")
 	}
 	options = normalizeOptions(options)
-	catalog := &Catalog{values: make(map[string]catalogEntry), options: options}
+	disabled, settingsWarnings := loadSettings(userRoot, root.Path())
+	catalog := &Catalog{
+		values: make(map[string]catalogEntry), disabled: disabled, userRoot: strings.TrimSpace(userRoot),
+		projectRoot: root.Path(), options: options,
+	}
 	warnings := make([]error, 0)
+	warnings = append(warnings, settingsWarnings...)
 	if strings.TrimSpace(userRoot) != "" {
 		values, sourceWarnings := scan(filepath.Join(userRoot, "skills"), SourceUser, options)
 		warnings = append(warnings, sourceWarnings...)
@@ -90,6 +102,7 @@ func Load(userRoot string, root project.Root, options LoadOptions) (*Catalog, []
 	for name, value := range values {
 		catalog.values[name] = value
 	}
+	catalog.applyEnabledState()
 	if len(catalog.values) > options.MaxSkills {
 		return nil, warnings, fmt.Errorf("skill catalog exceeds maximum skill count %d", options.MaxSkills)
 	}
@@ -103,6 +116,8 @@ func (catalog *Catalog) Lookup(name string) (Skill, bool) {
 	if catalog == nil {
 		return Skill{}, false
 	}
+	catalog.mutex.RLock()
+	defer catalog.mutex.RUnlock()
 	entry, ok := catalog.values[strings.TrimSpace(name)]
 	return entry.metadata, ok
 }
@@ -111,9 +126,14 @@ func (catalog *Catalog) Load(name string) (Skill, error) {
 	if catalog == nil {
 		return Skill{}, errors.New("skill catalog is nil")
 	}
+	catalog.mutex.RLock()
 	entry, ok := catalog.values[strings.TrimSpace(name)]
+	catalog.mutex.RUnlock()
 	if !ok {
 		return Skill{}, fmt.Errorf("skill %q is not available", strings.TrimSpace(name))
+	}
+	if !entry.metadata.Enabled {
+		return Skill{}, fmt.Errorf("skill %q is disabled", entry.metadata.Name)
 	}
 	value, err := parse(entry.metadata.Path, entry.metadata.Source, entry.metadata.Root, catalog.options)
 	if err != nil {
@@ -122,6 +142,7 @@ func (catalog *Catalog) Load(name string) (Skill, error) {
 	if value.Name != entry.metadata.Name || value.Source != entry.metadata.Source || value.Root != entry.metadata.Root {
 		return Skill{}, fmt.Errorf("Skill %q metadata changed since catalog discovery", entry.metadata.Name)
 	}
+	value.Enabled = true
 	return value, nil
 }
 
@@ -129,10 +150,12 @@ func (catalog *Catalog) Index() []IndexEntry {
 	if catalog == nil {
 		return nil
 	}
+	catalog.mutex.RLock()
+	defer catalog.mutex.RUnlock()
 	entries := make([]IndexEntry, 0, len(catalog.values))
 	for _, entry := range catalog.values {
 		value := entry.metadata
-		entries = append(entries, IndexEntry{Name: value.Name, Description: value.Description, Source: value.Source, Path: value.Path, Size: value.Size, Revision: value.Revision})
+		entries = append(entries, IndexEntry{Name: value.Name, Description: value.Description, Source: value.Source, Path: value.Path, Size: value.Size, Revision: value.Revision, Enabled: value.Enabled})
 	}
 	sort.Slice(entries, func(left, right int) bool { return entries[left].Name < entries[right].Name })
 	return entries
@@ -144,6 +167,9 @@ func (catalog *Catalog) Revision() (string, error) {
 	}
 	entries := catalog.Index()
 	for index := range entries {
+		if !entries[index].Enabled {
+			continue
+		}
 		value, err := catalog.Load(entries[index].Name)
 		if err != nil {
 			return "", err
@@ -163,7 +189,47 @@ func (catalog *Catalog) Len() int {
 	if catalog == nil {
 		return 0
 	}
+	catalog.mutex.RLock()
+	defer catalog.mutex.RUnlock()
 	return len(catalog.values)
+}
+
+func (catalog *Catalog) SetEnabled(name string, enabled bool) error {
+	if catalog == nil {
+		return errors.New("skill catalog is nil")
+	}
+	name = strings.TrimSpace(name)
+	catalog.mutex.Lock()
+	defer catalog.mutex.Unlock()
+	entry, ok := catalog.values[name]
+	if !ok {
+		return fmt.Errorf("skill %q is not available", name)
+	}
+	disabled := make(map[string]bool, len(catalog.disabled[entry.metadata.Source])+1)
+	for existing, value := range catalog.disabled[entry.metadata.Source] {
+		disabled[existing] = value
+	}
+	if enabled {
+		delete(disabled, name)
+	} else {
+		disabled[name] = true
+	}
+	path := settingsPath(catalog.userRoot, catalog.projectRoot, entry.metadata.Source)
+	names := sortedDisabled(disabled)
+	if err := writeSettings(path, names); err != nil {
+		return err
+	}
+	catalog.disabled[entry.metadata.Source] = disabled
+	entry.metadata.Enabled = enabled
+	catalog.values[name] = entry
+	return nil
+}
+
+func (catalog *Catalog) applyEnabledState() {
+	for name, entry := range catalog.values {
+		entry.metadata.Enabled = !catalog.disabled[entry.metadata.Source][name]
+		catalog.values[name] = entry
+	}
 }
 
 func scan(root string, source Source, options LoadOptions) (map[string]catalogEntry, []error) {
@@ -259,7 +325,7 @@ func parse(path string, source Source, root string, options LoadOptions) (Skill,
 	digest := sha256.Sum256([]byte(body))
 	return Skill{
 		Name: header.Name, Description: header.Description, Content: body, Source: source, Root: root,
-		Path: filepath.Clean(path), Size: info.Size(), Revision: hex.EncodeToString(digest[:]),
+		Path: filepath.Clean(path), Size: info.Size(), Revision: hex.EncodeToString(digest[:]), Enabled: true,
 	}, nil
 }
 

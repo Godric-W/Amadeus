@@ -23,8 +23,8 @@ func WriteIdleScreen(output io.Writer, projectRoot string, width int) error {
 	lines := []string{
 		"Amadeus · Ready",
 		"Project: " + inlineIdleText(projectRoot),
-		"Describe a task below, or type /help for commands.",
-		"/resume  /status  /tools  /clear  /exit",
+		"Describe a task below, or type / to list commands.",
+		"/resume  /plan  /skills  /status  /mcp  /clear",
 	}
 	if _, err := fmt.Fprintf(output, "╭%s╮\n", strings.Repeat("─", innerWidth)); err != nil {
 		return fmt.Errorf("write inline idle screen header: %w", err)

@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -115,5 +116,42 @@ func sqliteFirstRunInput(projectPath string, projectID sessiondomain.ProjectID, 
 	return sessiondomain.BeginFirstRunInput{
 		ProjectID: projectID, CanonicalPath: projectPath, ProjectName: "project", SessionID: sessionID, SessionTitle: "Fix tests",
 		RunID: runID, UserItemID: itemID, UserContent: "Fix tests", Mode: sessiondomain.RunModeExecute, StartedAt: startedAt,
+	}
+}
+
+func TestSQLiteStoreRenamesAndCascadesSessionDelete(t *testing.T) {
+	store, database := newSQLiteStore(t)
+	defer database.Close()
+	startedAt := time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC)
+	started, err := store.BeginFirstRun(context.Background(), sqliteFirstRunInput(t.TempDir(), "project-rename", "session-rename", "item-rename", "run-rename", startedAt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistant, err := sessiondomain.EncodePayload(sessiondomain.AssistantMessagePayload{Content: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishRun(context.Background(), sessiondomain.FinishRunInput{
+		SessionID: started.Session.ID, RunID: started.Run.ID, RunStatus: sessiondomain.RunCompleted, FinishedAt: startedAt.Add(time.Second),
+		TerminalItems: []sessiondomain.AppendItem{{ID: "item-finished", RunID: started.Run.ID, Kind: sessiondomain.RolloutAssistantMessage, Payload: assistant, CreatedAt: startedAt.Add(time.Second)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	renamed, err := store.RenameSession(context.Background(), sessiondomain.RenameSessionInput{SessionID: started.Session.ID, Title: "Renamed Session", UpdatedAt: startedAt.Add(2 * time.Second)})
+	if err != nil || renamed.Title != "Renamed Session" {
+		t.Fatalf("rename Session: value=%#v err=%v", renamed, err)
+	}
+	if err := store.DeleteSession(context.Background(), started.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetSession(context.Background(), started.Session.ID); !errors.Is(err, sessiondomain.ErrNotFound) {
+		t.Fatalf("deleted Session lookup error = %v", err)
+	}
+	if _, err := store.GetRun(context.Background(), started.Run.ID); !errors.Is(err, sessiondomain.ErrNotFound) {
+		t.Fatalf("cascaded Run lookup error = %v", err)
+	}
+	items, err := store.ListItems(context.Background(), started.Session.ID)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("cascaded rollout items = %#v, err=%v", items, err)
 	}
 }

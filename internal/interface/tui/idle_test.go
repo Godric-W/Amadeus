@@ -14,7 +14,7 @@ func TestWriteIdleScreenShowsProjectCommandsAndStatus(t *testing.T) {
 	for _, required := range []string{
 		"Amadeus · Ready",
 		"Project: /workspace/project",
-		"/resume  /status  /tools  /clear  /exit",
+		"/resume  /plan  /skills  /status  /mcp  /clear",
 		"status: phase=idle task=- tools=0 usage=0/0",
 	} {
 		if !strings.Contains(output.String(), required) {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/policy"
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -37,6 +38,13 @@ type FullscreenCommandHandler func(context.Context, string) (string, error)
 type FullscreenSessionLister func(context.Context) ([]SessionOption, error)
 type FullscreenSessionResumer func(context.Context, string) (string, error)
 type FullscreenCurrentSession func() string
+type FullscreenCurrentSessionTitle func() string
+type FullscreenSessionRenamer func(context.Context, string) (string, error)
+type FullscreenSessionDeleter func(context.Context) (string, error)
+type FullscreenCompactor func(context.Context) (string, error)
+type FullscreenSkillLister func(context.Context) ([]SkillOption, error)
+type FullscreenSkillSetter func(context.Context, string, bool) error
+type FullscreenClipboardWriter func(string) error
 
 type SessionOption struct {
 	ID      string
@@ -44,19 +52,33 @@ type SessionOption struct {
 	Current bool
 }
 
+type SkillOption struct {
+	Name        string
+	Description string
+	Source      string
+	Enabled     bool
+}
+
 type FullscreenOptions struct {
-	Input          io.Reader
-	Output         io.Writer
-	Startup        FullscreenStartup
-	Task           TaskHandler
-	NewTask        TaskContextFactory
-	Command        FullscreenCommandHandler
-	Sessions       FullscreenSessionLister
-	Resume         FullscreenSessionResumer
-	CurrentSession FullscreenCurrentSession
-	OpenSessions   bool
-	NoColor        bool
-	Width          int
+	Input               io.Reader
+	Output              io.Writer
+	Startup             FullscreenStartup
+	Task                TaskHandler
+	NewTask             TaskContextFactory
+	Command             FullscreenCommandHandler
+	Sessions            FullscreenSessionLister
+	Resume              FullscreenSessionResumer
+	CurrentSession      FullscreenCurrentSession
+	CurrentSessionTitle FullscreenCurrentSessionTitle
+	Rename              FullscreenSessionRenamer
+	Delete              FullscreenSessionDeleter
+	Compact             FullscreenCompactor
+	Skills              FullscreenSkillLister
+	SetSkill            FullscreenSkillSetter
+	ClipboardWrite      FullscreenClipboardWriter
+	OpenSessions        bool
+	NoColor             bool
+	Width               int
 }
 
 type FullscreenApplication struct {
@@ -77,40 +99,43 @@ type fullscreenEntry struct {
 }
 
 type fullscreenModel struct {
-	app              *FullscreenApplication
-	ctx              context.Context
-	startup          FullscreenStartup
-	input            textarea.Model
-	renderer         *glamour.TermRenderer
-	lastMouseEvent   time.Time
-	width            int
-	height           int
-	entries          []fullscreenEntry
-	committed        int
-	draft            string
-	running          bool
-	status           string
-	model            string
-	inputUsage       int64
-	outputUsage      int64
-	contextUsage     int64
-	contextLimit     int64
-	history          []string
-	historyPos       int
-	queuedTasks      []string
-	runStartedAt     time.Time
-	workingFrame     int
-	activitySeq      int
-	iterations       map[int]*iterationActivity
-	activeTools      map[string]*toolActivity
-	details          *transcriptDetailStore
-	detailViewport   viewport.Model
-	viewingDetails   bool
-	approval         *fullscreenApproval
-	approvalSelected int
-	sessions         []SessionOption
-	selecting        bool
-	selected         int
+	app                   *FullscreenApplication
+	ctx                   context.Context
+	startup               FullscreenStartup
+	input                 textarea.Model
+	renderer              *glamour.TermRenderer
+	lastMouseEvent        time.Time
+	width                 int
+	height                int
+	entries               []fullscreenEntry
+	committed             int
+	draft                 string
+	running               bool
+	status                string
+	model                 string
+	inputUsage            int64
+	outputUsage           int64
+	contextUsage          int64
+	contextLimit          int64
+	history               []string
+	historyPos            int
+	queuedTasks           []TaskSubmission
+	runStartedAt          time.Time
+	workingFrame          int
+	activitySeq           int
+	iterations            map[int]*iterationActivity
+	activeTools           map[string]*toolActivity
+	details               *transcriptDetailStore
+	detailViewport        viewport.Model
+	viewingDetails        bool
+	approval              *fullscreenApproval
+	sessions              []SessionOption
+	slashPopup            slashCommandPopup
+	collaboration         CollaborationMode
+	lastAssistantMarkdown string
+	selection             *selectionOverlay
+	selectionKind         string
+	skills                []SkillOption
 }
 
 type fullscreenApproval struct {
@@ -164,11 +189,32 @@ type fullscreenResumeMsg struct {
 	message string
 	err     error
 }
+type fullscreenRenameMsg struct {
+	message string
+	err     error
+}
+type fullscreenDeleteMsg struct {
+	message string
+	err     error
+}
+type fullscreenCompactMsg struct {
+	message string
+	err     error
+}
+type fullscreenSkillsMsg struct {
+	skills []SkillOption
+	err    error
+}
+type fullscreenSkillSetMsg struct {
+	name    string
+	enabled bool
+	err     error
+}
 type fullscreenWorkingTickMsg time.Time
 
 const (
 	fullscreenInputPrompt      = "> "
-	fullscreenInputPlaceholder = "输入任务，或输入 /help 查看命令"
+	fullscreenInputPlaceholder = "输入任务，或输入 / 查看命令"
 	fullscreenInputCharLimit   = 20000
 	fullscreenMaxInputRows     = 5
 	fullscreenWorkingInterval  = 36 * time.Millisecond
@@ -219,6 +265,9 @@ func NewFullscreenApplication(options FullscreenOptions) (*FullscreenApplication
 	}
 	if options.NewTask == nil {
 		options.NewTask = defaultTaskContext
+	}
+	if options.ClipboardWrite == nil {
+		options.ClipboardWrite = clipboard.WriteAll
 	}
 	return &FullscreenApplication{options: options, done: make(chan struct{})}, nil
 }
@@ -350,7 +399,7 @@ func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscr
 	}
 	model := fullscreenModel{
 		app: app, ctx: ctx, startup: startup, input: input, renderer: renderer,
-		width: initialWidth, height: 30, status: "idle", model: startup.Model, historyPos: -1,
+		width: initialWidth, height: 30, status: "idle", model: startup.Model, historyPos: -1, collaboration: CollaborationExecute,
 		iterations: map[int]*iterationActivity{}, activeTools: map[string]*toolActivity{},
 		details: newTranscriptDetailStore(0, 0), detailViewport: newTranscriptViewport(initialWidth, 30),
 	}
@@ -394,7 +443,13 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return model, model.flushTranscript()
 	case fullscreenApprovalMsg:
 		model.approval = message.prompt
-		model.approvalSelected = 0
+		choices := approvalChoices(message.prompt.request)
+		items := make([]selectionItem, 0, len(choices))
+		for _, choice := range choices {
+			items = append(items, selectionItem{Name: choice.label})
+		}
+		model.selection = &selectionOverlay{Title: "Approval required", Subtitle: "Choose an option", Items: items}
+		model.selectionKind = "approval"
 		model.status = "awaiting approval"
 		model.input.Blur()
 		return model, nil
@@ -430,6 +485,16 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case fullscreenCommandDoneMsg:
 		if message.err != nil {
 			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: message.err.Error()})
+		} else if strings.HasPrefix(strings.TrimSpace(message.command), "/clear") {
+			model.entries = nil
+			model.committed = 0
+			model.details = newTranscriptDetailStore(0, 0)
+			model.draft = ""
+			model.lastAssistantMarkdown = ""
+			model.collaboration = CollaborationExecute
+			model.refreshCurrentSession()
+			model.status = "idle"
+			return model, tea.Sequence(func() tea.Msg { return tea.ClearScreen() }, tea.Println(model.banner()))
 		} else if strings.TrimSpace(message.output) != "" {
 			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: message.output})
 		}
@@ -446,17 +511,24 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return model, model.flushTranscript()
 		}
 		model.sessions = message.sessions
-		model.selecting = true
-		model.selected = 0
+		selected := 0
+		items := make([]selectionItem, 0, len(message.sessions))
 		for index, session := range model.sessions {
+			description := session.Title
 			if session.Current {
-				model.selected = index
-				break
+				description += " · current"
+			}
+			items = append(items, selectionItem{Name: session.ID, Description: description})
+			if session.Current {
+				selected = index
 			}
 		}
+		model.selection = &selectionOverlay{Title: "Resume Session", Subtitle: "Select a saved chat", Items: items, Selected: selected, Search: true, Hint: "Type to search · Esc cancel"}
+		model.selectionKind = "resume"
 		return model, nil
 	case fullscreenResumeMsg:
-		model.selecting = false
+		model.selection = nil
+		model.selectionKind = ""
 		model.sessions = nil
 		model.status = "idle"
 		if message.err != nil {
@@ -464,8 +536,78 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else if strings.TrimSpace(message.message) != "" {
 			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: message.message})
 			model.refreshCurrentSession()
+			model.collaboration = CollaborationExecute
 		}
 		return model, model.flushTranscript()
+	case fullscreenRenameMsg:
+		model.selection = nil
+		model.selectionKind = ""
+		model.status = "idle"
+		if message.err != nil {
+			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: message.err.Error()})
+		} else {
+			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: message.message})
+			model.refreshCurrentSession()
+		}
+		return model, model.flushTranscript()
+	case fullscreenDeleteMsg:
+		model.selection = nil
+		model.selectionKind = ""
+		model.status = "idle"
+		if message.err != nil {
+			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: message.err.Error()})
+			return model, model.flushTranscript()
+		}
+		model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: message.message})
+		return model, tea.Sequence(model.flushTranscript(), tea.Quit)
+	case fullscreenCompactMsg:
+		model.status = "idle"
+		if message.err != nil {
+			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: message.err.Error()})
+		} else {
+			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: message.message})
+		}
+		return model, model.flushTranscript()
+	case fullscreenSkillsMsg:
+		model.status = "idle"
+		if message.err != nil {
+			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: message.err.Error()})
+			return model, model.flushTranscript()
+		}
+		model.skills = message.skills
+		if len(message.skills) == 0 {
+			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: "No skills available."})
+			return model, model.flushTranscript()
+		}
+		items := make([]selectionItem, 0, len(message.skills))
+		for _, skill := range message.skills {
+			state := "enabled"
+			if !skill.Enabled {
+				state = "disabled"
+			}
+			items = append(items, selectionItem{Name: skill.Name, Description: skill.Description + " · " + skill.Source + " · " + state})
+		}
+		model.selection = &selectionOverlay{Title: "Skills", Subtitle: "Enter toggles the selected skill", Items: items, Search: true, Hint: "Type to search · Enter toggle · Esc cancel"}
+		model.selectionKind = "skills"
+		return model, nil
+	case fullscreenSkillSetMsg:
+		if message.err != nil {
+			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: message.err.Error()})
+			return model, model.flushTranscript()
+		}
+		for index := range model.skills {
+			if model.skills[index].Name == message.name {
+				model.skills[index].Enabled = message.enabled
+				if model.selection != nil && index < len(model.selection.Items) {
+					state := "enabled"
+					if !message.enabled {
+						state = "disabled"
+					}
+					model.selection.Items[index].Description = model.skills[index].Description + " · " + model.skills[index].Source + " · " + state
+				}
+			}
+		}
+		return model, nil
 	case fullscreenWorkingTickMsg:
 		if !model.running || model.approval != nil {
 			return model, nil
@@ -486,11 +628,8 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if model.viewingDetails {
 			return model.handleDetailViewerKey(message)
 		}
-		if model.approval != nil {
-			return model.handleApprovalKey(message)
-		}
-		if model.selecting {
-			return model.handleSessionKey(message)
+		if model.selection != nil {
+			return model.handleSelectionKey(message)
 		}
 		return model.handleInputKey(message)
 	}
@@ -498,7 +637,23 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	model.slashPopup.sync(model.input.Value(), model.running)
 	switch key.String() {
+	case "shift+tab":
+		if model.running {
+			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: "Collaboration mode cannot change while a task is in progress."})
+			return model, model.flushTranscript()
+		}
+		if model.collaboration == CollaborationPlan {
+			model.collaboration = CollaborationExecute
+			model.status = "idle"
+			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: "Switched to Execute mode"})
+		} else {
+			model.collaboration = CollaborationPlan
+			model.status = "plan mode"
+			model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: "Switched to Plan mode"})
+		}
+		return model, model.flushTranscript()
 	case "ctrl+c":
 		if model.running {
 			model.status = "cancelling"
@@ -522,6 +677,10 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		model.refreshTranscriptViewport()
 		return model, nil
 	case "esc":
+		if model.slashPopup.active() {
+			model.slashPopup.dismiss(model.input.Value())
+			return model, nil
+		}
 		if model.running && strings.TrimSpace(model.input.Value()) == "" {
 			model.status = "cancelling"
 			model.app.cancelActiveRun()
@@ -534,18 +693,43 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 	case "pgup", "pgdown":
 		return model, nil
 	case "up":
+		if model.slashPopup.active() {
+			model.slashPopup.move(-1)
+			return model, nil
+		}
 		if !model.running && model.recallHistory(-1) {
 			return model, nil
 		}
 	case "down":
+		if model.slashPopup.active() {
+			model.slashPopup.move(1)
+			return model, nil
+		}
 		if !model.running && model.recallHistory(1) {
 			return model, nil
 		}
 	case "tab":
-		if !model.running && model.completeSlashCommand() {
+		if selected, ok := model.slashPopup.selectedItem(); ok {
+			value := "/" + string(selected.Command)
+			if selected.SupportsInlineArgs {
+				value += " "
+			}
+			model.input.SetValue(value)
+			model.input.CursorEnd()
+			model.slashPopup.dismiss(value)
+			model.updateInputLayout()
 			return model, nil
 		}
 	case "enter":
+		if selected, ok := model.slashPopup.selectedItem(); ok {
+			command := "/" + string(selected.Command)
+			model.input.Reset()
+			model.slashPopup.dismiss("")
+			model.updateInputLayout()
+			model.history = append(model.history, command)
+			model.historyPos = -1
+			return model.submitCommand(command)
+		}
 		text := strings.TrimSpace(model.input.Value())
 		if text == "" {
 			return model, nil
@@ -555,12 +739,19 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		model.history = append(model.history, text)
 		model.historyPos = -1
 		if model.running {
-			if strings.HasPrefix(text, "/") && !isPlanTask(text) {
-				model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: "Agent 执行期间只能排队普通任务或 /plan <task>。"})
+			if strings.HasPrefix(text, "/") {
+				spec, _, ok := ParseSlashCommand(text)
+				if !ok || !spec.AvailableDuringRun {
+					model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: "This command is disabled while a task is in progress."})
+					return model, model.flushTranscript()
+				}
+				return model.submitCommand(text)
+			}
+			if strings.HasPrefix(text, "/") {
 				return model, model.flushTranscript()
 			}
 			model.entries = append(model.entries, fullscreenEntry{kind: "user", content: text})
-			model.queuedTasks = append(model.queuedTasks, text)
+			model.queuedTasks = append(model.queuedTasks, TaskSubmission{Content: text, Mode: model.collaboration})
 			model.status = fmt.Sprintf("%s · %d queued", model.status, len(model.queuedTasks))
 			return model, model.flushTranscript()
 		}
@@ -572,175 +763,18 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		model.running = true
 		model.runStartedAt = time.Now()
 		model.workingFrame = 0
-		model.status = taskPhase(text)
+		submission := TaskSubmission{Content: text, Mode: model.collaboration}
+		model.status = taskPhase(submission)
 		model.draft = ""
-		return model, tea.Sequence(model.flushTranscript(), tea.Batch(model.runTask(text), fullscreenWorkingTick()))
+		return model, tea.Sequence(model.flushTranscript(), tea.Batch(model.runTask(submission), fullscreenWorkingTick()))
 	}
 	var command tea.Cmd
 	model.input, command = model.input.Update(key)
 	model.sanitizeInput()
+	model.slashPopup.resetDismissal(model.input.Value())
+	model.slashPopup.sync(model.input.Value(), model.running)
 	model.updateInputLayout()
 	return model, command
-}
-
-func (model fullscreenModel) submitCommand(command string) (tea.Model, tea.Cmd) {
-	name := strings.Fields(command)[0]
-	switch name {
-	case "/plan":
-		if !isPlanTask(command) {
-			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: "用法：/plan <task>"})
-			return model, model.flushTranscript()
-		}
-		model.entries = append(model.entries, fullscreenEntry{kind: "user", content: command})
-		model.details = newTranscriptDetailStore(0, 0)
-		model.running = true
-		model.runStartedAt = time.Now()
-		model.workingFrame = 0
-		model.status = "planning"
-		model.draft = ""
-		return model, tea.Sequence(model.flushTranscript(), tea.Batch(model.runTask(command), fullscreenWorkingTick()))
-	case "/exit":
-		return model, tea.Quit
-	case "/clear":
-		model.entries = nil
-		model.committed = 0
-		model.details = newTranscriptDetailStore(0, 0)
-		model.draft = ""
-		return model, tea.Sequence(func() tea.Msg { return tea.ClearScreen() }, tea.Println(model.banner()))
-	case "/help":
-		model.entries = append(model.entries, fullscreenEntry{kind: "notice", content: fullscreenSlashHelp()})
-		return model, model.flushTranscript()
-	case "/resume":
-		if model.app.options.Sessions == nil || model.app.options.Resume == nil {
-			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: "Session 选择器不可用。"})
-			return model, model.flushTranscript()
-		}
-		model.status = "loading sessions"
-		return model, model.loadSessions()
-	default:
-		if model.app.options.Command == nil {
-			model.entries = append(model.entries, fullscreenEntry{kind: "error", content: fmt.Sprintf("未知命令 %q", name)})
-			return model, model.flushTranscript()
-		}
-		model.status = "running command"
-		return model, func() tea.Msg {
-			output, err := model.app.options.Command(model.ctx, command)
-			return fullscreenCommandDoneMsg{command: command, output: output, err: err}
-		}
-	}
-}
-
-func taskPhase(task string) string {
-	if isPlanTask(strings.TrimSpace(task)) {
-		return "planning"
-	}
-	return "executing"
-}
-
-func (model fullscreenModel) loadSessions() tea.Cmd {
-	return func() tea.Msg {
-		sessions, err := model.app.options.Sessions(model.ctx)
-		return fullscreenSessionsMsg{sessions: sessions, err: err}
-	}
-}
-
-func (model fullscreenModel) runTask(task string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel, err := model.app.options.NewTask(model.ctx)
-		if err != nil {
-			return fullscreenTaskDoneMsg{err: err}
-		}
-		model.app.setActiveRun(cancel)
-		defer func() {
-			cancel()
-			model.app.clearActiveRun(cancel)
-		}()
-		taskErr := model.app.options.Task(ctx, task)
-		session := ""
-		if model.app.options.CurrentSession != nil {
-			session = model.app.options.CurrentSession()
-		}
-		return fullscreenTaskDoneMsg{err: taskErr, session: session}
-	}
-}
-
-func (model *fullscreenModel) refreshCurrentSession() {
-	if model != nil && model.app.options.CurrentSession != nil {
-		if session := strings.TrimSpace(model.app.options.CurrentSession()); session != "" {
-			model.startup.Session = session
-		}
-	}
-}
-
-func (model fullscreenModel) handleApprovalKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	choices := approvalChoices(model.approval.request)
-	switch key.String() {
-	case "up", "k":
-		if model.approvalSelected > 0 {
-			model.approvalSelected--
-		}
-		return model, nil
-	case "down", "j":
-		if model.approvalSelected+1 < len(choices) {
-			model.approvalSelected++
-		}
-		return model, nil
-	case "enter":
-		return model.resolveApproval(choices[model.approvalSelected].decision)
-	case "y", "Y":
-		return model.resolveApproval(choices[0].decision)
-	case "s", "S":
-		return model.resolveApproval(choices[1].decision)
-	case "n", "N", "esc":
-		return model.resolveApproval(choices[2].decision)
-	case "ctrl+c":
-		model.app.cancelActiveRun()
-		decision := choices[2].decision
-		decision.Reason = "user cancelled the run"
-		return model.resolveApproval(decision)
-	}
-	return model, nil
-}
-
-func (model fullscreenModel) resolveApproval(decision policy.ApprovalDecision) (tea.Model, tea.Cmd) {
-	prompt := model.approval
-	model.approval = nil
-	model.approvalSelected = 0
-	model.status = "executing"
-	prompt.response <- fullscreenApprovalResult{decision: decision}
-	commands := []tea.Cmd{model.input.Focus()}
-	if model.running {
-		commands = append(commands, fullscreenWorkingTick())
-	}
-	return model, tea.Batch(commands...)
-}
-
-func (model fullscreenModel) handleSessionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch key.String() {
-	case "esc", "ctrl+c":
-		model.selecting = false
-		model.sessions = nil
-		return model, nil
-	case "up", "k":
-		if model.selected > 0 {
-			model.selected--
-		}
-	case "down", "j":
-		if model.selected+1 < len(model.sessions) {
-			model.selected++
-		}
-	case "enter":
-		if len(model.sessions) == 0 {
-			return model, nil
-		}
-		selected := model.sessions[model.selected]
-		model.status = "resuming session"
-		return model, func() tea.Msg {
-			message, err := model.app.options.Resume(model.ctx, selected.ID)
-			return fullscreenResumeMsg{message: message, err: err}
-		}
-	}
-	return model, nil
 }
 
 func (model *fullscreenModel) applyEvent(item event.Event) {
@@ -888,6 +922,7 @@ func (model *fullscreenModel) flushPendingActivities() {
 
 func (model *fullscreenModel) finishDraft() {
 	if strings.TrimSpace(model.draft) != "" {
+		model.lastAssistantMarkdown = model.draft
 		model.entries = append(model.entries, fullscreenEntry{kind: "assistant", content: model.draft})
 	}
 	model.draft = ""
@@ -1023,13 +1058,8 @@ func (model fullscreenModel) banner() (rendered string) {
 		version = " (" + version + ")"
 	}
 	title := fullscreenTitleStyle.Render("Amadeus") + fullscreenMutedStyle.Render(version)
-	provider := strings.TrimSpace(model.startup.Provider)
 	modelName := strings.TrimSpace(model.model)
 	project := strings.TrimSpace(model.startup.Project)
-	session := strings.TrimSpace(model.startup.Session)
-	if session == "" || session == "draft" {
-		session = "draft session"
-	}
 	rows := []string{title}
 	rowWidth := width
 	if width >= 60 {
@@ -1038,16 +1068,9 @@ func (model fullscreenModel) banner() (rendered string) {
 	if modelName != "" {
 		rows = append(rows, bannerMetadataRow("model:", modelName, rowWidth))
 	}
-	if provider != "" {
-		rows = append(rows, bannerMetadataRow("provider:", provider, rowWidth))
-	}
 	if project != "" {
 		rows = append(rows, bannerMetadataRow("directory:", project, rowWidth))
 	}
-	if branch := strings.TrimSpace(model.startup.Branch); branch != "" {
-		rows = append(rows, bannerMetadataRow("branch:", branch, rowWidth))
-	}
-	rows = append(rows, bannerMetadataRow("session:", session, rowWidth))
 	if width < 60 {
 		return logo + "\n" + strings.Join(rows, "\n")
 	}
@@ -1132,48 +1155,29 @@ func stripTerminalControlResponses(value string) string {
 
 func (model fullscreenModel) inputBox() string {
 	width := maxInt(40, model.width)
-	if model.approval != nil {
-		request := model.approval.request
-		choices := approvalChoices(request)
-		lines := []string{
-			fullscreenSectionStyle.Render("Approval required") + "  " + fullscreenMutedStyle.Render("↑/↓ select · Enter confirm · Esc deny"),
-			"Tool: " + sanitizeInlineEventText(request.ToolName),
-			fmt.Sprintf("Risk: %s", request.Risk),
-			"Reason: " + sanitizeInlineEventText(request.Reason),
-		}
-		for index, choice := range choices {
-			prefix := "  "
-			if index == model.approvalSelected {
-				prefix = "› "
-			}
-			line := fmt.Sprintf("%s%d. %s", prefix, index+1, choice.label)
-			if index == model.approvalSelected {
-				line = fullscreenSelectedStyle.Render(line)
-			}
-			lines = append(lines, line)
-		}
-		return fullscreenApprovalStyle.Width(maxInt(20, width-6)).Render(strings.Join(lines, "\n"))
-	}
-	if model.selecting {
-		lines := []string{fullscreenResumeAccentStyle.Render("Resume Session") + "  " + fullscreenMutedStyle.Render("↑/↓ select · Enter resume · Esc cancel")}
-		for index, session := range model.sessions {
-			prefix := "  "
-			if index == model.selected {
-				prefix = "› "
-			}
-			current := ""
-			if session.Current {
-				current = " · current"
-			}
-			line := truncateFullscreen(fmt.Sprintf("%s%s  %s%s", prefix, session.ID, session.Title, current), width)
-			if index == model.selected {
-				line = fullscreenResumeAccentStyle.Render(line)
-			}
-			lines = append(lines, line)
-		}
-		return strings.Join(lines, "\n")
+	if model.selection != nil {
+		return model.renderSelectionOverlay(width)
 	}
 	input := fullscreenInputFillStyle.Width(width).Render(strings.TrimRight(model.input.View(), "\n"))
+	if model.slashPopup.active() {
+		visible, start := model.slashPopup.visibleItems()
+		lines := make([]string, 0, len(visible))
+		commandWidth := 0
+		for _, spec := range visible {
+			commandWidth = maxInt(commandWidth, len([]rune(spec.Command))+1)
+		}
+		for index, spec := range visible {
+			name := "/" + string(spec.Command)
+			line := fmt.Sprintf("  %-*s  %s", commandWidth, name, spec.Description)
+			if start+index == model.slashPopup.selected {
+				line = fullscreenResumeAccentStyle.Render("› " + strings.TrimPrefix(line, "  "))
+			} else {
+				line = fullscreenAssistantStyle.Render(line[:commandWidth+2]) + fullscreenMutedStyle.Render(line[commandWidth+2:])
+			}
+			lines = append(lines, truncateFullscreen(line, width))
+		}
+		return input + "\n\n" + strings.Join(lines, "\n")
+	}
 	if model.running {
 		hint := fmt.Sprintf("Agent 正在执行；Enter 排队下一条任务 · Esc/Ctrl+C 取消 · %d queued", len(model.queuedTasks))
 		return input + "\n" + fullscreenMutedStyle.Render(hint)
@@ -1194,6 +1198,9 @@ func (model fullscreenModel) statusBar() string {
 	}
 	if branch := strings.TrimSpace(model.startup.Branch); branch != "" {
 		parts = append(parts, statusBarPart{text: branch, style: fullscreenStatusGitStyle})
+	}
+	if model.collaboration == CollaborationPlan {
+		parts = append(parts, statusBarPart{text: "Plan", style: fullscreenStatusWarnStyle})
 	}
 	contextWindow := model.contextLimit
 	if contextWindow <= 0 {
@@ -1570,18 +1577,6 @@ func truncateFullscreen(value string, width int) string {
 		return value
 	}
 	return xansi.Truncate(value, width, "…")
-}
-
-func fullscreenSlashHelp() string {
-	return strings.TrimSpace(`Amadeus commands:
-
-- /resume   切换当前项目的 Session
-- /plan     对指定任务启用 Plan → ReAct → Replan
-- /status   显示项目和 Session 状态
-- /tools    显示当前核心工具
-- /clear    清空当前 TUI transcript
-- /help     显示帮助
-- /exit     退出 Amadeus`)
 }
 
 func maxInt(left, right int) int {

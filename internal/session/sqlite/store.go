@@ -242,6 +242,54 @@ func (store *Store) LatestSession(ctx context.Context, projectID sessiondomain.P
 	return scanSession(store.database.db.QueryRowContext(ctx, sessionSelect+` WHERE project_id = ? AND status = 'active' ORDER BY last_active_at DESC, id LIMIT 1`, projectID))
 }
 
+func (store *Store) RenameSession(ctx context.Context, input sessiondomain.RenameSessionInput) (sessiondomain.Session, error) {
+	if err := store.validateContext(ctx); err != nil {
+		return sessiondomain.Session{}, err
+	}
+	title := strings.TrimSpace(input.Title)
+	if title == "" {
+		return sessiondomain.Session{}, errors.New("session title is empty")
+	}
+	updatedAt := input.UpdatedAt.UTC()
+	result, err := store.database.db.ExecContext(ctx, `UPDATE sessions SET title = ?, updated_at = ?, last_active_at = ? WHERE id = ?`, title, formatTime(updatedAt), formatTime(updatedAt), input.SessionID)
+	if err != nil {
+		return sessiondomain.Session{}, sqliteStoreError("rename session", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return sessiondomain.Session{}, sqliteStoreError("rename session rows", err)
+	}
+	if changed == 0 {
+		return sessiondomain.Session{}, sessiondomain.ErrNotFound
+	}
+	return store.GetSession(ctx, input.SessionID)
+}
+
+func (store *Store) DeleteSession(ctx context.Context, id sessiondomain.SessionID) error {
+	if err := store.validateContext(ctx); err != nil {
+		return err
+	}
+	var running int
+	if err := store.database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE session_id = ? AND status = 'running'`, id).Scan(&running); err != nil {
+		return sqliteStoreError("check running session", err)
+	}
+	if running > 0 {
+		return sessiondomain.ErrConflict
+	}
+	result, err := store.database.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
+	if err != nil {
+		return sqliteStoreError("delete session", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return sqliteStoreError("delete session rows", err)
+	}
+	if changed == 0 {
+		return sessiondomain.ErrNotFound
+	}
+	return nil
+}
+
 func (store *Store) GetRun(ctx context.Context, id sessiondomain.RunID) (sessiondomain.Run, error) {
 	if err := store.validateContext(ctx); err != nil {
 		return sessiondomain.Run{}, err

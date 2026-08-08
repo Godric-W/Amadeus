@@ -19,13 +19,9 @@ const maxRootTaskBytes = 1 << 20
 
 type agentInvocationMode string
 
-type agentExecutionMode string
-
 const (
 	agentInvocationOnce        agentInvocationMode = "once"
 	agentInvocationInteractive agentInvocationMode = "interactive"
-	agentExecutionReAct        agentExecutionMode  = "react"
-	agentExecutionPlanned      agentExecutionMode  = "planned"
 )
 
 type agentInvocation struct {
@@ -33,6 +29,7 @@ type agentInvocation struct {
 	Project        project.Root
 	WorkspaceRoots []string
 	Task           string
+	RunMode        sessiondomain.RunMode
 	SessionMode    sessionStartMode
 	SessionID      sessiondomain.SessionID
 	Interactive    bool
@@ -44,22 +41,12 @@ type agentInvocation struct {
 	ErrorOutput    io.Writer
 }
 
-func parseAgentTask(value string) (agentExecutionMode, string, error) {
+func parseAgentTask(value string) (string, error) {
 	task := strings.TrimSpace(value)
 	if task == "" {
-		return "", "", errors.New("Coding Agent task is empty")
+		return "", errors.New("Coding Agent task is empty")
 	}
-	if task == "/plan" {
-		return "", "", errors.New("usage: /plan <task>")
-	}
-	if strings.HasPrefix(task, "/plan ") || strings.HasPrefix(task, "/plan\t") || strings.HasPrefix(task, "/plan\n") {
-		objective := strings.TrimSpace(task[len("/plan"):])
-		if objective == "" {
-			return "", "", errors.New("usage: /plan <task>")
-		}
-		return agentExecutionPlanned, objective, nil
-	}
-	return agentExecutionReAct, task, nil
+	return task, nil
 }
 
 type agentCommand interface {

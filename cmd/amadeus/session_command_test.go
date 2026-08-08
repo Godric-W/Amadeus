@@ -37,7 +37,7 @@ func TestInteractiveDraftCommandsDoNotCreateSession(t *testing.T) {
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stderr bytes.Buffer
-	command.SetIn(strings.NewReader("/help\n/resume\n/exit\n"))
+	command.SetIn(strings.NewReader("/\n/status\n/skills\n/mcp\n/copy\n/clear\n/resume\n"))
 	command.SetOut(io.Discard)
 	command.SetErr(&stderr)
 	command.SetArgs([]string{"--plain"})
@@ -45,13 +45,48 @@ func TestInteractiveDraftCommandsDoNotCreateSession(t *testing.T) {
 		t.Fatalf("execute draft commands: %v", err)
 	}
 	if factoryCalls != 1 {
-		t.Fatalf("expected only /resume to open the store, got %d calls", factoryCalls)
+		t.Fatalf("expected Slash commands to share one lazy store, got %d calls", factoryCalls)
 	}
 	if sessions, err := store.ListSessions(context.Background(), "missing"); err != nil || len(sessions) != 0 {
 		t.Fatalf("draft commands created a session: sessions=%v err=%v", sessions, err)
 	}
 	if !strings.Contains(stderr.String(), "no previous sessions") {
 		t.Fatalf("resume command did not remain a draft: %s", stderr.String())
+	}
+	for _, expected := range []string{"session: draft", "No skills available.", "No MCP servers configured.", "No agent response to copy", "\x1b[2J\x1b[H"} {
+		if !strings.Contains(stderr.String(), expected) {
+			t.Fatalf("draft Slash output omitted %q: %s", expected, stderr.String())
+		}
+	}
+}
+
+func TestPlainDeleteDraftConfirmsAndExitsWithoutPersistence(t *testing.T) {
+	projectDirectory := t.TempDir()
+	store := sessiondomain.NewMemoryStore()
+	runtime := commandRuntime{
+		amadeusRoot:         t.TempDir(),
+		workingDirectory:    projectDirectory,
+		lookupEnv:           emptyEnvLookup,
+		terminalDetector:    func(io.Reader) bool { return true },
+		agentCommandFactory: defaultAgentCommandFactory,
+		sessionStoreFactory: func(context.Context, string) (sessiondomain.Store, io.Closer, error) { return store, nil, nil },
+	}
+	command := newRootCommandWithRuntime(&configFlags{}, runtime)
+	var stderr bytes.Buffer
+	command.SetIn(strings.NewReader("/delete\ny\n"))
+	command.SetOut(io.Discard)
+	command.SetErr(&stderr)
+	command.SetArgs([]string{"--plain"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("delete Draft: %v\nstderr=%s", err, stderr.String())
+	}
+	for _, expected := range []string{"Permanently delete this session and exit?", "Draft session discarded", "session: closed"} {
+		if !strings.Contains(stderr.String(), expected) {
+			t.Fatalf("delete Draft output omitted %q: %s", expected, stderr.String())
+		}
+	}
+	if sessions, err := store.ListSessions(context.Background(), "missing"); err != nil || len(sessions) != 0 {
+		t.Fatalf("delete Draft created persistence: sessions=%#v err=%v", sessions, err)
 	}
 }
 
@@ -70,7 +105,7 @@ func TestContinueWithoutHistoryKeepsDraft(t *testing.T) {
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stderr bytes.Buffer
-	command.SetIn(strings.NewReader("/exit\n"))
+	command.SetIn(strings.NewReader(""))
 	command.SetOut(io.Discard)
 	command.SetErr(&stderr)
 	command.SetArgs([]string{"--plain", "--continue"})
@@ -311,7 +346,7 @@ func TestInterruptedRunCreatesNewRunFromCanonicalHistory(t *testing.T) {
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stderr bytes.Buffer
-	command.SetIn(strings.NewReader("first task\n请继续\n/exit\n"))
+	command.SetIn(strings.NewReader("first task\n请继续\n"))
 	command.SetOut(io.Discard)
 	command.SetErr(&stderr)
 	command.SetArgs([]string{"--plain"})
@@ -397,7 +432,7 @@ func TestNewTaskAfterInterruptionKeepsCanonicalHistory(t *testing.T) {
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stderr bytes.Buffer
-	command.SetIn(strings.NewReader("unfinished old task\nsummarize README instead\n/exit\n"))
+	command.SetIn(strings.NewReader("unfinished old task\nsummarize README instead\n"))
 	command.SetOut(io.Discard)
 	command.SetErr(&stderr)
 	command.SetArgs([]string{"--plain"})
@@ -454,7 +489,7 @@ func TestContinueRecoversAbandonedRunningRun(t *testing.T) {
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	command.SetIn(strings.NewReader("finish safely\n/exit\n"))
+	command.SetIn(strings.NewReader("finish safely\n"))
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)
 	command.SetArgs([]string{"--plain", "--continue"})
@@ -497,7 +532,7 @@ func TestResumeSelectorEscReturnsToDraftConversation(t *testing.T) {
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stderr bytes.Buffer
-	command.SetIn(strings.NewReader("\x1b\n/exit\n"))
+	command.SetIn(strings.NewReader("\x1b\n"))
 	command.SetOut(io.Discard)
 	command.SetErr(&stderr)
 	command.SetArgs([]string{"--plain", "--resume"})

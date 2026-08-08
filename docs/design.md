@@ -138,7 +138,7 @@ Application Service
 
 `--help` 和已注册子命令继续按 CLI 语义处理；`version`、`config`、`tools` 等管理/诊断入口不进入 Coding Agent。目标架构删除独立 `amadeus chat` 与 `ChatSession`；若未来需要纯聊天入口，也必须复用 SessionRuntime 与无状态 LLMRuntime，而不是恢复第二套历史。无位置参数、stdin 非 TTY 且读取不到有效任务时返回明确错误。`AMADEUS_HOME` 只解析配置与用户级 `AGENTS.md`，目标项目默认来自启动工作目录，也可由 `--project` 覆盖。
 
-交互模式使用 `/resume` 打开同一个当前项目 Session 选择器；用户按 `Esc` 时不切换 Session 并回到当前对话，因此首版不增加重复的 `/sessions` 命令。`--resume` 只表示恢复 Session，不接受 Run ID。`amadeus` 启动时只建立内存 Draft Session，`/help`、`/resume`、`/exit`、EOF 或未提交任何真实任务的进程不会写入空 Session；第一条真实用户消息到达时才原子创建 Project、Session、Run 与第一条 `user_message` RolloutItem。
+交互模式使用 `/resume` 打开同一个当前项目 Session 选择器；用户按 `Esc` 时不切换 Session 并回到当前对话，因此首版不增加重复的 `/sessions` 命令。`--resume` 只表示恢复 Session，不接受 Run ID。`amadeus` 启动时只建立内存 Draft Session，打开 slash command palette、执行 `/resume`、`/status`、`/skills`、`/mcp`、`/copy`、`/clear`、EOF 或未提交任何真实任务的进程不会写入空 Session；第一条真实用户消息到达时才原子创建 Project、Session、Run 与第一条 `user_message` RolloutItem。`/clear` 对已有 Session 执行 Codex 语义：清空终端和瞬态 UI 后切换到新的 Draft Session，旧 Session 不删除且仍可通过 `/resume` 恢复。
 
 每条非空用户输入先交给 SessionRuntime；它通过 SessionCoordinator 原子创建 Run 与首条 user RolloutItem，再构造 RunContext 和可取消 RunRuntime。交互模式中的取消只终止当前 Run，父 SessionRuntime 继续存在并重新接受输入；一次性模式中的取消映射为退出码 130。CLI/Application 只负责生命周期和结果映射，不以 `Turn`、Plan Task 或 Provider Call 代称 Run。
 
@@ -638,7 +638,11 @@ RunRuntime.finish
 Plan Mode：
 
 ```text
-User /plan Input
+User selects /plan
+    ↓
+Composer CollaborationMode = plan
+    ↓
+User Input
     ↓
 SessionRuntime.BeginRun(mode=plan)
     ↓
@@ -732,7 +736,7 @@ RunRuntime 更新内存状态
 
 `/plan` 表示进入 Plan Mode，而不是强制 Plan-and-Execute。Plan Mode 可以读取文件、搜索代码、检查配置、运行不会修改项目受跟踪文件的测试/构建和静态分析；禁止 `apply_patch`、写文件、修改型 Shell 及其他写工具。
 
-Plan Mode 最终输出结构清晰的自然语言 Proposed Plan，包含目标摘要、关键改动、测试方案和必要假设。首版 `/plan <task>` 只对当前 Run 生效；计划完成后自动回到默认 execute 语义，不写入全局配置。未来若需要多轮 Plan 会话，可增加 Session 级临时 CollaborationMode，但不得复活 DAG 执行器。
+Plan Mode 最终输出结构清晰的自然语言 Proposed Plan，包含目标摘要、关键改动、测试方案和必要假设。对齐 Codex，`/plan` 本身不接收任务，而是把当前 Composer 的临时 CollaborationMode 切换为 `plan`；用户随后提交的普通输入创建 `mode=plan` Run。当前模式必须在输入框 Footer/Status 中明确展示，并通过统一模式切换快捷键返回默认 `execute`。该状态只属于当前交互 Runtime，不写入 YAML 或 SQLite；重新启动或切换 Session 时默认回到 `execute`，不得复活 DAG 执行器。
 
 Plan Mode 中不暴露 `update_plan`：前者产出供用户审核的实施方案，后者是执行阶段的 TODO/进度工具，语义不可混用。
 
@@ -949,7 +953,7 @@ logging:
 
 `api_key` 等 YAML 字符串值支持 `${ENV_VAR}` 引用和字面值。变量在字段级 YAML 解码前展开；变量未设置时，错误包含字段路径与变量名。若使用字面 API key，配置加载器应检查文件权限并给出安全警告；打印有效配置时统一掩码。
 
-`agent` 不提供持久 `mode` 配置。普通输入创建 `execute` Run，并由统一 Reactor 按需使用 `update_plan`；`/plan <task>` 创建只分析不实施的 `plan` Run，计划完成后自动回到默认 execute 语义。
+`agent` 不提供持久 `mode` 配置。默认 Composer CollaborationMode 为 `execute`，普通输入创建 `execute` Run，并由统一 Reactor 按需使用 `update_plan`；`/plan` 只切换当前交互 Runtime 的 Composer 到 Plan Mode，随后普通输入创建只分析不实施的 `plan` Run。模式不写入配置或 SQLite，重新启动或切换 Session 时回到 `execute`。
 
 配置文件不提供 `approval.enabled`、`approval.default` 或工具级 allow/deny 规则。审批属于内置安全机制，不能通过 YAML 关闭；TTY 中按固定规则询问，非 TTY 对需要审批的调用 fail closed。
 
@@ -2074,29 +2078,57 @@ Renderer、TUI、HTTP/SSE、Audit 和 Trace 订阅同一事件流。Channel 只�
 当前组件边界：
 
 - `FullscreenApplication`：名称为早期全屏实现遗留，实际承载 Rich Inline Bubble Tea Program，同时实现 `event.Sink` 和 `policy.ApprovalHandler`；通过线程安全 message bridge 接收 Agent 事件，并让工具审批阻塞在 response channel 上，不允许后台 Tool goroutine 直接读取终端。
-- `fullscreenModel`：维护 Bubbles textarea、待提交 transcript entry、提交游标、当前 assistant draft、usage、phase、输入历史、Approval modal 和 Session selector；它只保存 UI 投影，不成为 Agent 或 Conversation 的事实源。完成 entry 使用 `tea.Println` 写入终端历史，活动区不重复渲染已经提交的 entry。
+- `fullscreenModel`：维护 Bubbles textarea、待提交 transcript entry、提交游标、当前 assistant draft、usage、phase、输入历史、Slash Popup 与 SelectionOverlay 投影；它只保存 UI 投影，不成为 Agent 或 Session 的事实源。完成 entry 使用 `tea.Println` 写入终端历史，活动区不重复渲染已经提交的 entry。命令动作位于 `application_commands.go`，统一选择交互位于 `application_selection.go`，Catalog、Popup 和 Overlay 状态各自独立文件。
 - `TerminalCapabilities`：检测 TTY、颜色、终端宽度和 dumb terminal；`--plain`、非 TTY 或 `TERM=dumb` 使用逐行模式。`AMADEUS_PLAIN` 已删除；`TERM` 为空只关闭颜色，不把真实 TTY 降级为 Plain。
-- `SlashPalette`：提供 `/help`、`/exit`、`/clear`、`/resume`、`/status`、`/tools` 和 `/plan`；Tab 对唯一前缀补全，不注册已删除的 `/sessions`。
-- `FullscreenApproval`：在全屏模型内显示 tool/risk/reason，使用 `y=once`、`s=session`、`n=deny`；Ctrl+C 取消当前 Run，Esc 拒绝本次调用。
+- `SlashCommandCatalog`：集中保存命令名称、Codex 对齐的英文说明、展示顺序、参数规则、运行中可用性和破坏性标记；Rich TUI 与 Plain fallback 共用同一目录，不再分别维护字符串和 switch，也不注册 `/help`、`/sessions`、`/tools`。
+- `SlashCommandPopup`：输入第一行以 `/` 开头且光标仍位于命令 token 时自动出现；显示命令与说明，完全匹配优先、前缀匹配其次，并保持 Catalog 展示顺序。`↑/↓` 循环选择、Enter 执行、Tab 补全、Esc 关闭但保留草稿；Popup 激活时方向键不得触发输入历史。
+- `SelectionOverlay`：为 `/resume`、`/skills`、`/rename`、`/delete` 和 Approval 提供统一的无边框选择/输入交互，避免每个命令维护独立键盘状态机。
+- `FullscreenApproval`：复用 `SelectionOverlay` 显示 tool/risk/reason 与 Codex 风格选项，使用 `↑/↓` 选择、Enter 确认、Esc 拒绝本次调用；Ctrl+C 取消当前 Run。
 
 第一版交互语义：
 
 | 操作 | 行为 |
 |---|---|
-| Enter | 空闲时提交当前输入；Run 执行中将下一条普通输入或 `/plan <task>` 加入串行队列；空行不创建 Run |
-| Up/Down | 浏览当前 Terminal Session 的输入历史 |
-| Tab | 补全 slash command；路径补全后置 |
+| Enter | Slash Popup 激活时执行当前选中命令；否则空闲时提交当前输入，Run 执行中将下一条普通输入加入串行队列；空行不创建 Run |
+| Up/Down | Slash Popup 或 SelectionOverlay 激活时循环选择；否则浏览当前 Terminal Session 的输入历史 |
+| Tab | 补全 Slash Popup 当前选中命令；路径补全后置 |
+| Shift+Tab | 空闲时在 execute 与 Plan CollaborationMode 间切换；Run 执行中拒绝改变当前能力边界 |
 | Ctrl+C（Run 执行中） | 取消当前 Run，保留已追加的 canonical Tool Call/Result 与中断 marker，回到输入状态 |
 | Ctrl+C（空闲） | 清空当前输入，不退出进程 |
 | Ctrl+D（空闲） | 退出交互循环 |
-| Esc | 关闭 slash palette 或当前选择器；不撤销已执行副作用 |
+| Esc | 关闭 Slash Popup 或当前选择器并保留必要草稿；不撤销已执行副作用 |
+| `/exit` | 在空闲状态退出交互循环；不删除当前 Session 或 canonical rollout |
 | `/resume` | 打开当前 Project 的 Session 选择器；Esc 返回原会话 |
+| `/clear` | 清空终端与瞬态 UI，结束当前前台 Session 绑定并进入新的 Draft Session；旧 Session 保持可恢复，不删除 canonical rollout |
 | 鼠标滚轮 | 由终端滚动原生 scrollback，不向 Bubble Tea 注册 mouse tracking |
 | 鼠标拖拽 | 使用终端原生文本选择，不要求 Shift 修饰键 |
 
 `/resume` 选择器使用 main-screen 内联无边框列表，不使用 RoundedBorder 或 modal 方框。标题、当前选中项和 `›` 指示符使用与状态栏 amber 一致的自适应黄色（light `#A16207` / dark `#FDE68A`），未选中项保持普通前景色，辅助按键提示使用 muted gray。用户通过 `↑/↓` 或 `j/k` 移动，Enter 恢复，Esc 取消并返回当前对话。
 
-Bubble Tea 负责跨平台 raw mode、UTF-8 rune 输入、paste、resize 和退出恢复；Bubbles textarea 直接维护 Unicode 文本，因此中文输入不再被旧的单字节 reader 拆坏。默认不启用 Bubble Tea mouse tracking，也不启用 alternate screen，滚轮和拖拽选择均由终端原生处理。流式 assistant 草稿只显示适合当前终端高度的尾部，完成后再以完整 Markdown 写入 scrollback，避免长回答挤掉输入框。输入边界仍过滤残留的 terminal control response，但必须按 Unicode 控制码点识别 C1 响应，不能按原始 `0x9d/0x9b` 字节匹配，否则会误吞 UTF-8 汉字。真实程序级回归覆盖中文 rune 退格、运行中输入排队、控制片段过滤、Ctrl+C 清空、`/exit`、主屏幕模式和启动历史提交。逐行 Plain fallback 仍共享同一个 buffered reader，避免工具审批读取丢失。
+#### 19.1.1 Codex 对齐的 Slash Command
+
+Amadeus 首版只实现 Codex 中与当前能力相符的命令子集。命令名称、默认英文说明、列表布局、键盘提示、确认文案、空状态和成功/失败反馈优先直接复用 Codex TUI 的用户可见文本，只做 `Codex → Amadeus`、`thread → session` 以及实际能力差异所必需的替换，避免另行设计一套近义文案。未来同步 Codex 文本时必须通过集中 Catalog/文案常量更新，不允许散落在 TUI handler 中。
+
+| Command | Codex-aligned description | Amadeus 语义 |
+|---|---|---|
+| `/resume` | `resume a saved chat` | 打开当前 Project 的 Session 选择器；支持 Esc 取消并返回原 Session/Draft |
+| `/skills` | `use skills to improve how Amadeus performs specific tasks` | 打开 `List skills` 与 `Enable/Disable Skills` 二级菜单；状态写入权威配置而非只存在于 TUI |
+| `/rename` | `rename the current session` | 输入并持久化当前 Session Title；Draft Session 尚未落库时保存待创建标题 |
+| `/delete` | `permanently delete this session and exit` | 二次确认后事务删除当前 Session 及从属数据并退出；Draft Session 不访问数据库 |
+| `/compact` | `summarize conversation to prevent hitting the context limit` | 主动执行语义化上下文压缩并追加 `context_compaction`；不得覆盖或删除原始 rollout |
+| `/plan` | `switch to Plan mode` | 不接收任务文本；把 Composer CollaborationMode 切换为只规划不实施的 `plan` |
+| `/copy` | `copy last response as markdown` | 复制最后一条完整 assistant 原始 Markdown，不复制 ANSI/Glamour 渲染结果 |
+| `/status` | `show current session configuration and token usage` | 输出当前 Session、model、mode、usage、cwd、permission、Skill/MCP 摘要 |
+| `/mcp` | `list configured MCP tools; use /mcp verbose for details` | 默认显示配置、连接和工具摘要；`/mcp verbose` 懒加载完整详情 |
+| `/clear` | `clear the terminal and start a new chat` | 先清空终端和 transcript/overlay/draft 等瞬态 UI，再进入新的 Draft Session；旧 Session 仍可恢复 |
+
+Slash Popup 使用 Codex 的无边框两列形式：命令名为普通前景/统一 accent，匹配字符加粗或 accent，说明使用 muted gray，选中行使用共享自适应 accent，不使用荧光绿或每个命令独立配色。列表最多显示固定数量的可见行并维护滚动位置；输入 `/` 展示全部命令，输入 `/re` 等 token 后实时过滤。因为 Popup 已经承担可发现性和帮助功能，Rich TUI 删除 `/help`；Plain fallback 输入单独的 `/` 时打印同一 Catalog，未知命令也基于 Catalog 返回提示。
+
+命令分发必须产生明确的 UI/Application Action，而不是让 Popup 直接操作 Store：本地动作如 `/copy`、状态投影如 `/status`、异步查询如 `/mcp`、Session 动作如 `/resume`/`/rename`/`/delete`/`/clear` 和模式动作如 `/plan` 分别交给对应 Controller/Runtime。Run 执行期间只允许不会切换 Session、删除历史或改变当前 Run 能力的命令；不可用项从 Popup 隐藏或显示 disabled reason，并由 Dispatcher 再次校验，不能只依赖 UI 过滤。
+
+`/clear` 与 Codex 保持同一产品语义，但遵守 Amadeus 的惰性 Session 创建：已有持久 Session 时，先解除当前前台 SessionRuntime 绑定、清空终端及 UI 投影，再建立未落库的新 Draft Session；原 Session、Run 和 RolloutItem 完整保留，可从 `/resume` 恢复。当前本来就是未提交任务的 Draft 时，只重置终端/UI 并生成新的内存 Draft，不创建空 Session。`/clear` 不是简单 ANSI 清屏，也不等于 `/delete`。
+
+Bubble Tea 负责跨平台 raw mode、UTF-8 rune 输入、paste、resize 和退出恢复；Bubbles textarea 直接维护 Unicode 文本，因此中文输入不再被旧的单字节 reader 拆坏。默认不启用 Bubble Tea mouse tracking，也不启用 alternate screen，滚轮和拖拽选择均由终端原生处理。流式 assistant 草稿只显示适合当前终端高度的尾部，完成后再以完整 Markdown 写入 scrollback，避免长回答挤掉输入框。输入边界仍过滤残留的 terminal control response，但必须按 Unicode 控制码点识别 C1 响应，不能按原始 `0x9d/0x9b` 字节匹配，否则会误吞 UTF-8 汉字。真实程序级回归覆盖中文 rune 退格、运行中输入排队、控制片段过滤、Ctrl+C 清空、Ctrl+D/EOF 退出、主屏幕模式和启动历史提交。逐行 Plain fallback 仍共享同一个 buffered reader，避免工具审批读取丢失。
 
 交互 TUI 必须展示但不泄露内部 reasoning：
 
@@ -2106,21 +2138,19 @@ Bubble Tea 负责跨平台 raw mode、UTF-8 rune 输入、paste、resize 和退�
 - 底部状态栏显示 `idle/planning/executing/awaiting_approval/cancelling/error`、当前 RunMode、iteration/tool 计数、最近 usage、当前 CWD、WorkspaceRoots 和 Additional Writable Roots 摘要。
 - Approval、取消、错误和 Run 终态都使用事件驱动，不允许工具或 Engine 直接写 stdout/stderr。
 
-当前版本已经实现多行像素 `A` 品牌头部、version/provider/model/session 信息、主屏幕 Rich Inline 渲染、终端原生 scrollback 与文本选择、Markdown assistant 文本、多行 Unicode textarea 和运行中任务排队，但仍不实现文件树 Pane、可拖拽布局、Diff 折叠器或持久化输入历史。默认 `amadeus` 启动时显示 `draft session`，第一条任务创建正式 Session 后状态同步真实 ID；只有 `--continue`、`--resume` 或交互 `/resume` 才恢复旧 Session。输入历史只保留进程内；Session canonical history 由 SessionRuntime/Session Store 管理。FullscreenApplication、InlineRenderer 与 PlainRenderer 消费同一个 Typed EventHub，终端 UI 只能改变展示，不改变 Reactor、RunRuntime、Approval 或 Session 语义。
+当前版本已经实现 Amadeus Logo 与 Braille `>_` 品牌头部、只含 product/version、model、directory 的启动面板、主屏幕 Rich Inline 渲染、终端原生 scrollback 与文本选择、Markdown assistant 文本、多行 Unicode textarea、运行中任务排队、Slash Popup 和统一 SelectionOverlay，但仍不实现文件树 Pane、可拖拽布局、Diff 折叠器或持久化输入历史。默认 `amadeus` 只建立内存 Draft，不在启动面板展示伪 Session；第一条任务才创建正式 Session。只有 `--continue`、`--resume` 或交互 `/resume` 恢复旧 Session。输入历史只保留进程内；Session canonical history 由 SessionRuntime/Session Store 管理。FullscreenApplication、InlineRenderer 与 PlainRenderer 消费同一个 Typed EventHub，终端 UI 只能改变展示，不改变 Reactor、RunRuntime、Approval 或 Session 语义。
 
 ### 19.2 目标 Rich Inline 产品形态
 
 首个发布前将默认 TUI 收敛为 `docs/tui.md` 所示的 Codex 风格主屏交互，但继续遵守 19.1 的终端原生 scrollback 约束，不退回 alternate screen、全屏 transcript viewport 或 mouse tracking。目标布局为：
 
 ```text
-大型 Amadeus 终端 Logo
+大型 Amadeus 终端 Logo + Braille `>_`
 
 ╭───────────────────────────────────────────────────╮
 │ Amadeus (dev)                                     │
 │ model:     GPT-TOP                                │
-│ provider:  openai                                 │
 │ directory: /project/root                          │
-│ session:   draft                                  │
 ╰───────────────────────────────────────────────────╯
 
 › 用户输入
@@ -2143,6 +2173,8 @@ Bubble Tea 负责跨平台 raw mode、UTF-8 rune 输入、paste、resize 和退�
 GPT-TOP · /project/root · main · Context 47% used · 128K window
 ```
 
+启动品牌头部继续使用现有 `Amadeus Logo + >_` Braille 点阵设计，不改为 Codex 字标，也不删除 `>_`。Logo 下方启动信息面板则对齐 Codex 的克制展示，默认只显示产品/version、`model` 与 `directory`；Provider、Session ID、Branch、CollaborationMode、Context Usage 和 Permission 摘要进入底部状态栏或 `/status`，不在启动面板重复堆叠。面板边距、右边界和响应式断点继续使用 Amadeus 既有设计。
+
 这一形态只改变事件到终端的投影，不改变 Reactor、Plan、ToolExecutor、Session 或 Approval 的业务语义。
 
 #### 19.2.1 Logo 与启动面板
@@ -2155,7 +2187,7 @@ GPT-TOP · /project/root · main · Context 47% used · 128K window
 - `compactLogo`：终端无法容纳宽版时使用源图生成的紧凑点阵与紧凑 Braille `>_`，不允许文字占位；
 - 品牌区域使用终端默认前景色，不设置彩色 foreground 或 background；无颜色模式保持同一轮廓。
 
-启动面板显示 version、provider、model、CWD、WorkspaceRoots 摘要和 Session；Git branch 作为可选工作区信息，不在 `View()` 中执行 Git 命令。Branch 在 TUI 启动时通过有界 workspace metadata resolver 读取，不是 Agent Tool Call，也不进入 canonical rollout。
+启动面板对齐 Codex，只显示产品/version、model 和 directory；现有 Amadeus Logo 与 Braille `>_` 保持不变。Provider、Session、Git branch、WorkspaceRoots 与 Context/Permission 摘要不在启动面板重复展示，而进入底部状态栏或 `/status`。Git branch 仍由有界 workspace metadata resolver 读取，不在 `View()` 中执行 Git 命令，不是 Agent Tool Call，也不进入 canonical rollout。
 
 启动信息栏在宽终端下必须保留 4 列右侧 margin，Lip Gloss 的内容宽度需要扣除 border 盒模型，不能让右边界贴住终端最右列。窄于 60 列时继续使用无边框降级布局。
 
@@ -2636,7 +2668,7 @@ SQLite 使用 WAL 模式和短事务。Amadeus 首版不复制 Codex 的 JSONL +
 ### ADR-014：Plan-guided ReAct 与 Plan Mode
 
 - 决策：Amadeus 只有一个 Reactor 执行内核；复杂 execute Run 可按需调用 `update_plan` 维护 PlanState，Runtime 不把计划编译为 DAG 或调度 Task。
-- 决策：`/plan <task>` 创建只规划不实施的 `plan` Run，只暴露非修改型能力，最终输出 Proposed Plan；`update_plan` 不在 Plan Mode 暴露。
+- 决策：对齐 Codex，`/plan` 不接收任务文本，而是切换当前 Composer CollaborationMode；之后的普通输入创建只规划不实施的 `plan` Run，只暴露非修改型能力并输出 Proposed Plan。模式只存在于当前交互 Runtime，切换 Session 或重启后恢复 `execute`；`update_plan` 不在 Plan Mode 暴露。
 - 决策：删除 Planner、Replanner、ExecutionGraph、Scheduler、ReActTaskExecutor 与旧 `planned` 主链；历史 `react/planned` RunMode 迁移为 `execute`。
 - 原因：模型驱动 Tool-Use 循环比强制结构化 DAG 更能容忍随机输出，计划作为软状态即可提供透明度和长任务方向感。
 
@@ -2741,7 +2773,7 @@ SQLite 使用 WAL 模式和短事务。Amadeus 首版不复制 Codex 的 JSONL +
 3. RunContext 只保存稳定事实，RequestContext 表示一次采样的动态环境，RequestView 是模型请求投影；SessionHistory 不进入 RunContext 或 RunRuntime 所有权。
 4. Reactor 是唯一 Agent 执行内核；一次 Think→Analyze→Act→Observe 称为 Iteration，Observe 直接处理 ToolOutcome 而不复制 Evidence 数据树。
 5. 默认 `execute` Run 可按需调用 `update_plan`；PlanState 是软状态，不驱动 Scheduler。
-6. `/plan <task>` 创建只规划不实施的 `plan` Run，最终计划进入 Session Rollout，后续 execute Run 负责实施。
+6. `/plan` 切换当前 Composer 到只规划不实施的 Plan Mode；后续普通输入创建 `plan` Run，最终计划进入 Session Rollout，再切回 `execute` 后由新的 Run 负责实施。
 7. 不保留 Planner、Replanner、DAG、Plan Task、TaskStatus、Scheduler、Verifier/Reflector 强制门或 Final Synthesizer 主链。
 8. 删除 `ChatSession`；Reactor、Plan Mode、Compactor 和可选纯聊天入口统一复用无状态 `LLMRuntime`，Provider 请求使用 LLMCallID。
 9. ToolOutcome 取代通用 Evidence；当前不单独建立 Verification，模型依据结构化 Tool Call/Result 与 Workspace 判断完成状态。

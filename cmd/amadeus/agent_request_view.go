@@ -17,7 +17,6 @@ import (
 
 type requestViewOptions struct {
 	Task             string
-	ExecutionMode    agentExecutionMode
 	RunMode          sessiondomain.RunMode
 	ProviderName     string
 	Model            string
@@ -39,7 +38,7 @@ func (runner *agentController) newRequestViewProvider(options requestViewOptions
 			return agentcontext.RequestView{}, err
 		}
 		tools := options.Agent.AvailableTools()
-		if options.ExecutionMode == agentExecutionPlanned {
+		if options.RunMode == sessiondomain.RunModePlan {
 			tools = planModeTools(tools)
 		}
 		effectivePermissions := options.FileSystemPolicy.EffectiveProfile()

@@ -35,7 +35,7 @@ func TestRenderIterationActivitiesGroupsReadsAndKeepsActions(t *testing.T) {
 func TestCompletedActivityBatchKeepsSeparatorNewlineAndHighlightsReadSearch(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: strings.NewReader(""), Output: &strings.Builder{},
-		Task: func(context.Context, string) error { return nil },
+		Task: func(context.Context, TaskSubmission) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)

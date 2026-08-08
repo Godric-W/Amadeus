@@ -1,9 +1,9 @@
 # Amadeus 开发进度
 
 > 创建日期：2026-07-29
-> 最近重排：2026-08-07
+> 最近重排：2026-08-08
 > 唯一目标架构：`docs/design.md`
-> 当前状态：M8R、M8S、M8U 与 M8P 已完成；当前进入 M9 兼容回归与首个正式发布，M10 Multi-Agent 不阻塞正式发布
+> 当前状态：M8R、M8S、M8U、M8P 与 M9 已完成；当前进入 M10 兼容回归与首个正式发布，M11 Multi-Agent 不阻塞正式发布
 
 ## 1. 文档规则
 
@@ -42,7 +42,7 @@
 2. SQLite 最终只保留 `schema_migrations/projects/sessions/runs/rollout_items` 五类核心表，不保留 Conversation 第二事实源。
 3. `SessionRuntime` 管理 SessionHistory、Rollout append/flush、活动 Run 和 ExtensionRuntime 生命周期；`RunRuntime` 管理当前 Run 的取消、状态、资源所有权和统一收尾。
 4. Reactor 是唯一 Agent 执行内核；默认 execute Run 使用 Plan-guided ReAct，`update_plan` 是软计划工具，不引入 DAG/Scheduler。
-5. `/plan <task>` 只规划不实施；后续普通 execute Run 根据 canonical rollout 实施计划。
+5. `/plan` 不接收任务文本，只切换当前 Composer 到 Plan Mode；后续普通输入创建只规划不实施的 `plan` Run，切回 `execute` 后根据 canonical rollout 实施计划。
 6. ToolOutcome 是工具执行唯一结果事实；普通失败、拒绝、超时和中断进入结构化结果，不复制通用 Evidence 树。
 7. Tool 并发只使用 Run 级 `Shared/Exclusive` Gate；不建立文件、目录、参数或 Process 级读写锁。
 8. Shared–Shared 可重叠，其余包含 Exclusive 的组合均由屏障串行化；该单层规则已经覆盖读读、读写和写写，不再维护第二套资源锁状态。
@@ -81,8 +81,9 @@
 | M8S | Prepared Tool Pipeline 收敛 | DONE | TargetStrategy 已删除；Prepare、授权和执行统一消费 PreparedToolCall |
 | M8U | Permission/Isolation/Approval Runtime 收敛 | DONE | Codex 风格 Root/Policy 分层、Run/Session Permission Store、Sandboxed/Unsandboxed Shell、Session Command Approval 与安全回归已完成 |
 | M8P | Prompt Runtime 优化 | DONE | Prompt 资产内置化、Reactor 解耦、Coding Agent 文案重写与 Contract/E2E 已完成 |
-| M9 | 兼容回归与首个正式发布 | TODO | 依赖 M8P 完成；只负责冻结、回归、构建、文档和发布 |
-| M10 | 可选只读 Multi-Agent 与高级入口 | TODO | 不阻塞 M9 |
+| M9 | Codex 风格 TUI 与 Slash Command 重构 | DONE | Composer、Slash Popup、SelectionOverlay、十个命令、Session 操作和发布门禁已完成 |
+| M10 | 兼容回归与首个正式发布 | TODO | 依赖 M9 完成；只负责冻结、回归、构建、文档和发布 |
+| M11 | 可选只读 Multi-Agent 与高级入口 | TODO | 不阻塞 M10 |
 
 当前关键路径：
 
@@ -96,16 +97,17 @@ M8R-A Canonical Persistence
 → M8S Prepared Tool Pipeline
 → M8U Workspace/Permission/Approval Runtime
 → M8P Prompt Runtime
-→ M9 Release
+→ M9 TUI/Slash Command
+→ M10 Release
 ```
 
 ## 4. 当前焦点
 
-- 当前阶段：`M8P` 已完成；当前阶段为 `M9`。
-- 当前任务：无；下一项可领取任务为 `M9-01`。
+- 当前阶段：`M9` 已完成；当前阶段为 `M10` 兼容回归与首个正式发布。
+- 当前任务：无；下一项可领取任务为 `M10-01`。
 - 当前阻塞：无。
-- 最近实施进展：M8P 已删除顶层 `prompts/` package，将模板内置到 `internal/prompt/builtin/templates`；Bootstrap 显式注入稳定 System Prompt，每次 RequestContext 按 RunMode、Tool Exposure 和 EffectivePermissionProfile 动态装配 Developer Prompt；Prompt Contract、Responses/Chat Provider mock E2E、Coding Agent smoke、全仓测试、race 与 `make check` 均通过。
-- 发布约束：M9 完成前不得发布首个稳定版，也不得把 M10 Multi-Agent 接入默认主链。
+- 最近实施进展：M9 已完成共享 SlashCommandCatalog/Popup、统一 SelectionOverlay、Plan CollaborationMode、Resume/Clear/Rename/Delete、Status/Copy/MCP、Skill 权威启停、模型语义化 Compaction 和 Codex 风格启动面板；`go test ./... -count=1`、`go test -race ./... -count=1`、`make check` 与 `git diff --check` 均通过。
+- 发布约束：M10 完成前不得发布首个稳定版，也不得把 M11 Multi-Agent 接入默认主链。
 
 ### 4.1 交付顺序
 
@@ -120,8 +122,9 @@ M8R-A Canonical Persistence
 | 7 | M8S-01～08 | 收敛 Prepared Tool Call、权限目标与单次解析主链 |
 | 8 | M8U-01～11 | 收敛 Workspace、Permission、Approval、ExecPolicy 与 Sandbox 主链 |
 | 8P | M8P-01～04 | Prompt 资产、装配、文案和 Contract/E2E 收敛 |
-| 9 | M9-01～10 | 发布兼容、构建、文档和版本候选 |
-| 10 | M10-01～07 | 发布后验证只读 Multi-Agent 的真实收益 |
+| 9 | M9-01～14 | 重构 TUI、Slash Popup、SelectionOverlay 与十个 Codex 对齐命令 |
+| 10 | M10-01～10 | 发布兼容、构建、文档和版本候选 |
+| 11 | M11-01～07 | 发布后验证只读 Multi-Agent 的真实收益 |
 
 ## 5. 历史交付摘要
 
@@ -292,7 +295,7 @@ M8U 在 M8S 的 PreparedToolCall 单一事实之上重构 Workspace、权限、�
 
 ## 9. M8P：Prompt Runtime 优化
 
-M8P 是独立的预发布能力里程碑，不属于 M9 发布流程。它只优化 Prompt 资产归属、装配边界、Coding Agent 指令质量和行为 Contract，不修改 Session/Run/Reactor/Permission 的既有领域语义，也不提前实现 Multi-Agent、Goal、Realtime、Memory 或 Review Runtime。
+M8P 是独立的预发布能力里程碑，先于 M9 TUI/Slash Command 重构完成。它只优化 Prompt 资产归属、装配边界、Coding Agent 指令质量和行为 Contract，不修改 Session/Run/Reactor/Permission 的既有领域语义，也不提前实现 Multi-Agent、Goal、Realtime、Memory 或 Review Runtime。
 
 | ID | 状态 | 依赖 | 最小任务 | 验收标准 |
 |---|---|---|---|---|
@@ -301,40 +304,63 @@ M8P 是独立的预发布能力里程碑，不属于 M9 发布流程。它只优
 | M8P-03 | DONE | M8P-02 | 重写 Coding Agent Prompt | 选择性吸收 Codex 的任务持续执行、进度沟通、计划边界、验证纪律、Apply Patch、动态 Permission 和最终交付规则，并全部改写为 Amadeus Tool/Runtime 语义 |
 | M8P-04 | DONE | M8P-03 | 完成 Prompt Contract 与 E2E | 覆盖模板/变量/层级、Plan Mode 无写指令、Tool Guidance 按 Exposure 注入、Permission 与 Policy 一致、Responses/Chat 等价语义和 Coding Agent smoke |
 
-## 10. M9：兼容回归与首个正式发布
+## 10. M9：Codex 风格 TUI 与 Slash Command 重构
 
-M9 只在 M8P-04 完成后开始。M9 不再进行 Agent Engine、Prompt、Permission、Persistence 或 Tool 主链重构，只冻结已经完成的能力、执行发布级回归、构建各平台产物并准备正式版本。
-
-| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
-|---|---|---|---|---|
-| M9-01 | TODO | M8P-04 | 冻结 CLI、配置和 Tool 暴露基线 | 根命令、`--plain`、Resume、Plan Mode、Provider、Exposure、Prepared Tool、Workspace/Permission/Approval Contract 和错误语义固定 |
-| M9-02 | TODO | M9-01 | 冻结稳定版迁移策略 | 首个稳定版 schema 成为数据兼容起点；后续目标版本有保留数据的明确迁移，不支持版本给出可恢复错误且不静默丢数据 |
-| M9-03 | TODO | M9-02 | 执行安全回归 | Path、Sandbox、Command、Approval、Audit、MCP/Web、凭证脱敏和非 TTY fail-closed 通过 |
-| M9-04 | TODO | M9-03 | 执行可靠性与性能基线 | 长 Session、Compaction、Shared Tool 并发、Exclusive 屏障、取消和内存/token 指标有记录 |
-| M9-05 | TODO | M9-04 | 完成 Linux amd64/arm64 构建 | 二进制启动和 Coding Agent smoke 通过 |
-| M9-06 | TODO | M9-05 | 完成 macOS amd64/arm64 构建 | 二进制启动和 Coding Agent smoke 通过 |
-| M9-07 | TODO | M9-06 | 评估 Windows 支持范围 | 支持则构建；否则明确 TTY、Process、Sandbox 和安装限制 |
-| M9-08 | TODO | M9-05 | 完成安装、配置和故障排查文档 | 新用户可从零完成配置、编码任务、中断、Resume 和 Plan Mode |
-| M9-09 | TODO | M9-08 | 生成版本说明与迁移说明 | 明确历史架构差异、数据库迁移、已知限制和 M10 状态 |
-| M9-10 | TODO | M9-09 | 生成首个正式版本候选 | version、commit、build time、checksums、changelog、已知问题和 smoke 结果齐全 |
-
-## 11. M10：可选 Multi-Agent 与高级入口
-
-M10 不阻塞 M9。首版只验证最多两个只读 SubAgent，不建立 Team Engine、共享 DAG、可写并发 Workspace 或递归委派。
+M9 在正式发布冻结前完成交互主链重构。它不改变 Reactor、Prepared Tool、Permission、Sandbox 或 Provider 的领域语义，而是把现有 Bubble Tea Rich Inline TUI 收敛为 Codex 风格的 Composer、Slash Popup、SelectionOverlay 和命令分发结构。现有 `Amadeus Logo + >_` Braille 品牌头部保持不变；启动信息面板、状态展示、Slash Command 文案和交互优先直接复用 Codex 用户可见设计，只做产品名、`thread → session` 与真实能力差异所需替换。
 
 | ID | 状态 | 依赖 | 最小任务 | 验收标准 |
 |---|---|---|---|---|
-| M10-01 | TODO | M9-10 | 定义 DelegatedTask/Result | objective、最小 context、budget、summary、usage、stop reason 和 TaskID 可表达 |
-| M10-02 | TODO | M10-01 | 实现只读 SubAgent Runtime | 独立内存 Context/Reactor；共享只读 WorkspaceRoots 与 Instructions 基线；没有写入、Shell、Approval 和继续委派能力 |
-| M10-03 | TODO | M10-02 | 增加 Agent Tool API | `spawn_agent/send_input/wait_agent/close_agent` 由主 Reactor 调用，最多两个、depth=1 |
-| M10-04 | TODO | M10-03 | 实现主 Agent 所有权边界 | 主 Agent 独占正式 Run、最终回答、写 Tool、Shell、RunDiffTracker 和 Approval |
-| M10-05 | TODO | M10-04 | 实现取消与失败收敛 | 主 Run 取消传播；子 Agent 失败形成结构化结果，不自动递归创建替代 Agent |
-| M10-06 | TODO | M10-05 | 增加 Multi-Agent E2E | 两个独立只读调查并行、主 Agent 汇总后修改/验证、单子失败和取消通过 |
-| M10-07 | TODO | M10-06 | 执行收益审计 | 记录延迟、token、完成质量和复杂度；收益不足则保持可选实验能力 |
+| M9-01 | DONE | M8P-04 | 冻结 Codex 对齐交互 Contract | 明确 Composer、SlashCommandCatalog、SlashCommandPopup、SelectionOverlay、Dispatcher、运行中可用性和十一个命令的名称/说明/参数规则；`docs/design.md` 为唯一事实源 |
+| M9-02 | DONE | M9-01 | 拆分 Rich TUI 组件职责 | 将输入草稿、Popup、Selection、Transcript、Activity、Status 与异步 Command Action 从单体 `fullscreenModel/application.go` 拆到职责清晰文件；UI 不拥有 Session/Agent 事实 |
+| M9-03 | DONE | M9-02 | 实现共享 SlashCommandCatalog | Rich TUI 与 Plain fallback 共用名称、Codex 英文说明、展示顺序、参数规则和可用性；删除 `/help`、`/sessions`、`/tools` 的重复注册与分散 switch |
+| M9-04 | DONE | M9-03 | 实现 SlashCommandPopup 与 Composer 状态机 | 输入 `/` 自动显示无边框两列列表；完全/前缀过滤、`↑/↓` 循环选择、Enter 执行、Tab 补全、Esc 保留草稿关闭、Unicode/IME/Backspace 和 Popup/History 优先级通过 |
+| M9-05 | DONE | M9-04 | 统一 SelectionOverlay | Resume、Skills、Rename、Delete 与 Approval 共用无边框选择/输入框架；方向键、Enter、Esc、搜索、空状态、disabled reason 和异步结果行为一致 |
+| M9-06 | DONE | M9-05 | 收敛 `/resume` 与实现 Codex `/clear` | `/resume` 迁入统一 Overlay；`/clear` 清空终端及瞬态 UI、解除当前前台 Session、进入新 Draft，旧 Session/rollout 保留且可恢复，Draft 不写空记录 |
+| M9-07 | DONE | M9-06 | 重做 `/plan` 模式切换 | `/plan` 不接收任务；切换 Composer CollaborationMode，Footer/Status 显示 Plan，后续输入创建 `plan` Run；切换 Session/重启恢复 execute，Plan Mode 写能力继续 fail closed |
+| M9-08 | DONE | M9-07 | 实现 `/status`、`/copy` 与 `/mcp` | `/status` 展示 Session 配置与 token/permission/extension 摘要；`/copy` 复制最后一条原始 assistant Markdown；`/mcp` 和 `/mcp verbose` 使用现有 Manager 懒加载状态/工具详情 |
+| M9-09 | DONE | M9-08 | 实现 `/skills` 浏览与管理 | 提供 `List skills`、`Enable/Disable Skills`、搜索和状态切换；启用状态写入权威用户/项目配置并使 ExtensionRuntime revision 正确失效，不只保存在 TUI |
+| M9-10 | DONE | M9-09 | 增加 Session Rename/Delete Store API | Memory/SQLite Store、Coordinator 与 SessionRuntime 支持规范化重命名和事务删除；从属 Run/Rollout 一致清理，活动 Run 与跨 Project 操作拒绝，Draft Title 可延迟到首次创建 |
+| M9-11 | DONE | M9-10 | 实现 `/rename` 与 `/delete` | Rename Prompt 预填当前标题并同步状态/Resume 列表；Delete 使用 Codex 确认文案，永久删除后退出，Draft 无持久记录时不给数据库制造副作用 |
+| M9-12 | DONE | M9-11 | 实现手动 `/compact` | 主动生成语义化会话摘要并 append `context_compaction`，校验 covered sequence/source hash/replacement history；不 UPDATE/DELETE 原 rollout，失败保持旧历史可用 |
+| M9-13 | DONE | M9-12 | 对齐启动面板、状态和用户文案 | 保留现有 Amadeus Logo 与 Braille `>_`；启动面板只显示产品/version、model、directory；命令说明、确认、空状态和结果提示优先复用 Codex 文本并集中管理 |
+| M9-14 | DONE | M9-13 | 完成 TUI/Slash 发布门禁 | 覆盖 Popup/Overlay 快照、中文输入、运行中命令 gating、Plain `/` Catalog、Resume/Clear/Plan/Skill/MCP/Compact/Rename/Delete/Copy/Exit E2E、无空 Session、race、全仓测试和 `make check` |
 
-高级入口只有在 M10-07 后按真实需求单独立项：Browser、TUI 文件树/高级 Diff、Runtime API 和后台 Job。每项必须先补充独立设计与验收，不预先组成新的大里程碑。
+M9 出口证据：共享 Catalog、Popup、Selection、Session Store/Runtime、Skill settings 与 Compaction 均有针对性测试；Memory/SQLite 的 rename/delete/cascade、Draft 无空记录、Plan Mode 只读边界和 Provider mock E2E 通过。最终于 2026-08-08 执行 `go test ./... -count=1`、`go test -race ./... -count=1`、`make check` 和 `git diff --check`，全部成功。
 
-## 12. 架构验收矩阵
+## 11. M10：兼容回归与首个正式发布
+
+M10 只在 M9-14 完成后开始。M10 不再进行 Agent Engine、Prompt、Permission、Persistence、Tool、TUI 或 Slash Command 主链重构，只冻结已经完成的能力、执行发布级回归、构建各平台产物并准备正式版本。
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M10-01 | TODO | M9-14 | 冻结 CLI、配置、TUI 和 Tool 暴露基线 | 根命令、`--plain`、Slash Catalog、Resume/Clear、Plan Mode、Provider、Exposure、Prepared Tool、Workspace/Permission/Approval Contract 和错误语义固定 |
+| M10-02 | TODO | M10-01 | 冻结稳定版迁移策略 | 首个稳定版 schema 成为数据兼容起点；后续目标版本有保留数据的明确迁移，不支持版本给出可恢复错误且不静默丢数据 |
+| M10-03 | TODO | M10-02 | 执行安全回归 | Path、Sandbox、Command、Approval、Audit、MCP/Web、凭证脱敏和非 TTY fail-closed 通过 |
+| M10-04 | TODO | M10-03 | 执行可靠性与性能基线 | 长 Session、Compaction、Shared Tool 并发、Exclusive 屏障、取消和内存/token 指标有记录 |
+| M10-05 | TODO | M10-04 | 完成 Linux amd64/arm64 构建 | 二进制启动和 Coding Agent smoke 通过 |
+| M10-06 | TODO | M10-05 | 完成 macOS amd64/arm64 构建 | 二进制启动和 Coding Agent smoke 通过 |
+| M10-07 | TODO | M10-06 | 评估 Windows 支持范围 | 支持则构建；否则明确 TTY、Process、Sandbox 和安装限制 |
+| M10-08 | TODO | M10-05 | 完成安装、配置和故障排查文档 | 新用户可从零完成配置、编码任务、中断、Resume/Clear、Slash Popup 和 Plan Mode |
+| M10-09 | TODO | M10-08 | 生成版本说明与迁移说明 | 明确历史架构差异、数据库迁移、已知限制和 M11 状态 |
+| M10-10 | TODO | M10-09 | 生成首个正式版本候选 | version、commit、build time、checksums、changelog、已知问题和 smoke 结果齐全 |
+
+## 12. M11：可选 Multi-Agent 与高级入口
+
+M11 不阻塞 M10。首版只验证最多两个只读 SubAgent，不建立 Team Engine、共享 DAG、可写并发 Workspace 或递归委派。
+
+| ID | 状态 | 依赖 | 最小任务 | 验收标准 |
+|---|---|---|---|---|
+| M11-01 | TODO | M10-10 | 定义 DelegatedTask/Result | objective、最小 context、budget、summary、usage、stop reason 和 TaskID 可表达 |
+| M11-02 | TODO | M11-01 | 实现只读 SubAgent Runtime | 独立内存 Context/Reactor；共享只读 WorkspaceRoots 与 Instructions 基线；没有写入、Shell、Approval 和继续委派能力 |
+| M11-03 | TODO | M11-02 | 增加 Agent Tool API | `spawn_agent/send_input/wait_agent/close_agent` 由主 Reactor 调用，最多两个、depth=1 |
+| M11-04 | TODO | M11-03 | 实现主 Agent 所有权边界 | 主 Agent 独占正式 Run、最终回答、写 Tool、Shell、RunDiffTracker 和 Approval |
+| M11-05 | TODO | M11-04 | 实现取消与失败收敛 | 主 Run 取消传播；子 Agent 失败形成结构化结果，不自动递归创建替代 Agent |
+| M11-06 | TODO | M11-05 | 增加 Multi-Agent E2E | 两个独立只读调查并行、主 Agent 汇总后修改/验证、单子失败和取消通过 |
+| M11-07 | TODO | M11-06 | 执行收益审计 | 记录延迟、token、完成质量和复杂度；收益不足则保持可选实验能力 |
+
+高级入口只有在 M11-07 后按真实需求单独立项：Browser、TUI 文件树/高级 Diff、Runtime API 和后台 Job。每项必须先补充独立设计与验收，不预先组成新的大里程碑。
+
+## 13. 架构验收矩阵
 
 | 领域 | 必须成立的事实 | 主要验收 |
 |---|---|---|
@@ -348,9 +374,9 @@ M10 不阻塞 M9。首版只验证最多两个只读 SubAgent，不建立 Team E
 | Safety | PermissionProfile、Run/Session Permission Store、Isolation、Session Command Approval、ExecPolicy 与 Audit 职责不重叠且不可绕过 | ReadHost、symlink、ReadOnly/Denied、request_permissions 重调用、Run/Session 生命周期、Linux Sandbox、Unsandboxed 精确 Command Key、非 TTY、resume 不恢复 Store |
 | Diff | RunDiffTracker 只投影 exact delta | add/update/delete/move、partial、invalidate |
 | Extensions | MCP/Skill/Web 复用统一 Runtime | binding、approval、timeout、event projection |
-| TUI | UI 只消费事件，不拥有 Agent 状态 | scrollback、approval、resume、interrupt、diff |
+| TUI | UI 只消费事件，不拥有 Agent/Session 事实；Composer、Slash Popup、SelectionOverlay 与 Dispatcher 职责独立 | scrollback、Unicode、popup/filter/navigation、approval、resume/clear、plan mode、copy/status/MCP/Skill、interrupt、diff |
 
-## 13. 决策日志
+## 14. 决策日志
 
 | 日期 | 决策 | 影响 |
 |---|---|---|
@@ -372,9 +398,10 @@ M10 不阻塞 M9。首版只验证最多两个只读 SubAgent，不建立 Team E
 | 2026-08-07 | SessionApprovalStore 只服务 Unsandboxed Command | Allow once 不缓存，Allow for session 使用 Shell/Command/CWD/TTY/IsolationMode 精确 Key；Approval 命中永远不能跳过 Permission Check，不建立 RunApprovalStore |
 | 2026-08-07 | MVP 网络默认允许 | 不建立 NetworkPermissionStore；Web 保留 SSRF/Redirect Guard，MCP 受已配置 Server/Binding 边界约束 |
 | 2026-08-07 | M8U Permission/Approval Runtime 完成 | Permission Grant 重调用、Session Command Approval、多 Workspace AGENTS、Sandboxed/Unsandboxed 分流、Audit fail-closed 与多 Root RunDiff 全部接入统一 PreparedToolCall 主链并通过全仓/race/发布门禁 |
-| 2026-08-07 | Prompt 优化拆为独立 M8P | M8P-01～04 负责目录迁移、Reactor 解耦、Codex 成熟规则选择性改写和 Prompt Contract/E2E；M9 恢复为纯冻结、回归、构建、文档和发布阶段 |
+| 2026-08-07 | Prompt 优化拆为独立 M8P | M8P-01～04 负责目录迁移、Reactor 解耦、Codex 成熟规则选择性改写和 Prompt Contract/E2E；Prompt 完成后再进入交互与发布阶段 |
+| 2026-08-07 | M9 重排为 Codex 风格 TUI 与 Slash Command | 保留 Amadeus Logo；统一 Composer/Popup/Selection/Dispatcher，加入 `/resume /skills /rename /delete /compact /plan /copy /status /mcp /clear`；原发布 M9 顺延 M10，Multi-Agent 顺延 M11 |
 
-## 14. 每次更新模板
+## 15. 每次更新模板
 
 ```text
 日期：YYYY-MM-DD

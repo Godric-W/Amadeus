@@ -75,6 +75,13 @@ func (runtime *Runtime) Skills() *skill.Catalog {
 	return runtime.skills
 }
 
+func (runtime *Runtime) SetSkillEnabled(name string, enabled bool) error {
+	if runtime == nil || runtime.skills == nil {
+		return errors.New("Skill catalog is unavailable")
+	}
+	return runtime.skills.SetEnabled(name, enabled)
+}
+
 func (runtime *Runtime) SkillWarnings() []error {
 	if runtime == nil {
 		return nil

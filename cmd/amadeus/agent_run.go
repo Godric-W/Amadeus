@@ -46,7 +46,7 @@ func (runner *agentController) newRunContext(parent context.Context) (context.Co
 }
 
 func (runner *agentController) runOnce(ctx context.Context, invocation agentInvocation) (runErr error) {
-	executionMode, objective, err := parseAgentTask(invocation.Task)
+	objective, err := parseAgentTask(invocation.Task)
 	if err != nil {
 		return err
 	}
@@ -68,8 +68,8 @@ func (runner *agentController) runOnce(ctx context.Context, invocation agentInvo
 	readOnlyRoots := workspaceReadOnlyRoots(workspaceRoots)
 	temporaryRoots := project.DefaultTemporaryRoots()
 	runMode := sessiondomain.RunModeExecute
-	if executionMode == agentExecutionPlanned {
-		runMode = sessiondomain.RunModePlan
+	if invocation.RunMode != "" {
+		runMode = invocation.RunMode
 	}
 	started, err := sessionRuntime.BeginRun(context.WithoutCancel(ctx), invocation.Task, sessiondomain.RunMetadata{
 		Provider: configured.DefaultProvider, Model: provider.Model, APIMode: string(provider.API), Dialect: string(provider.Dialect),
@@ -311,7 +311,7 @@ func (runner *agentController) runOnce(ctx context.Context, invocation agentInvo
 		return err
 	}
 	requestViewProvider := runner.newRequestViewProvider(requestViewOptions{
-		Task: invocation.Task, ExecutionMode: executionMode, RunMode: runMode,
+		Task: invocation.Task, RunMode: runMode,
 		ProviderName: configured.DefaultProvider, Model: provider.Model,
 		Budget:       agentcontext.DefaultBudget(configured.Agent.MaxInputTokens, configured.Agent.MaxOutputTokens),
 		WorkspaceCWD: invocation.Project.Path(), RunContext: runContext,

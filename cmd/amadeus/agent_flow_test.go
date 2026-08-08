@@ -427,7 +427,7 @@ func TestRootCommandRunsIndependentInteractiveTasksUntilExit(t *testing.T) {
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	command.SetIn(strings.NewReader("first task\n\nsecond task\n/exit\n"))
+	command.SetIn(strings.NewReader("first task\n\nsecond task\n"))
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)
 	command.SetArgs([]string{"--plain"})
@@ -464,7 +464,7 @@ func TestPlainInteractiveWorkspaceWriteDoesNotPrompt(t *testing.T) {
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	command.SetIn(strings.NewReader("create a file\n/exit\n"))
+	command.SetIn(strings.NewReader("create a file\n"))
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)
 	command.SetArgs([]string{"--plain"})
@@ -488,7 +488,7 @@ func TestPlainInteractiveWorkspaceWriteDoesNotPrompt(t *testing.T) {
 	}
 }
 
-func TestInteractivePaletteCommandsExposeStatusAndTools(t *testing.T) {
+func TestInteractivePaletteCommandsExposeCatalogAndStatus(t *testing.T) {
 	amadeusHome := t.TempDir()
 	projectDirectory := t.TempDir()
 	runtime := commandRuntime{
@@ -501,7 +501,7 @@ func TestInteractivePaletteCommandsExposeStatusAndTools(t *testing.T) {
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	command.SetIn(strings.NewReader("/help\n/status\n/tools\n/clear\n/exit\n"))
+	command.SetIn(strings.NewReader("/\n/status\n/clear\n"))
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)
 	command.SetArgs([]string{"--plain"})
@@ -509,9 +509,10 @@ func TestInteractivePaletteCommandsExposeStatusAndTools(t *testing.T) {
 		t.Fatalf("execute palette commands: %v\nstderr=%s", err, stderr.String())
 	}
 	for _, fragment := range []string{
-		"commands: /help, /plan, /exit, /clear, /resume, /status, /tools",
-		"status: project=" + projectDirectory + " session=draft",
-		"apply_patch (write)",
+		"/resume  resume a saved chat",
+		"/clear  clear the terminal and start a new chat",
+		"project: " + projectDirectory,
+		"session: draft",
 		"\x1b[2J\x1b[H",
 		"session: closed",
 	} {
@@ -547,7 +548,7 @@ func TestInteractiveDumbTerminalUsesPlainRenderer(t *testing.T) {
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	command.SetIn(strings.NewReader("finish task\n/exit\n"))
+	command.SetIn(strings.NewReader("finish task\n"))
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)
 	command.SetArgs([]string{"--plain"})
@@ -593,7 +594,7 @@ func TestInteractiveInterruptCancelsCurrentRunAndContinues(t *testing.T) {
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	command.SetIn(strings.NewReader("cancel this\nthen finish\n/exit\n"))
+	command.SetIn(strings.NewReader("cancel this\nthen finish\n"))
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)
 	command.SetArgs([]string{"--plain"})
@@ -758,7 +759,7 @@ func TestInteractivePlanCommandUsesReadOnlyReactor(t *testing.T) {
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout, stderr bytes.Buffer
-	command.SetIn(strings.NewReader("/plan inspect repository\n/exit\n"))
+	command.SetIn(strings.NewReader("/plan\ninspect repository\n"))
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)
 	command.SetArgs([]string{"--plain"})

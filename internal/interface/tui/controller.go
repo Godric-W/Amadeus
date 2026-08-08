@@ -11,20 +11,12 @@ import (
 )
 
 type CommandHandler func(context.Context, string) error
-type TaskHandler func(context.Context, string) error
+type TaskHandler func(context.Context, TaskSubmission) error
 type TaskContextFactory func(context.Context) (context.Context, context.CancelFunc, error)
 
-const defaultPrompt = "amadeus> "
+var ErrQuit = errors.New("quit terminal interaction")
 
-var slashCommands = []string{
-	"/help",
-	"/plan",
-	"/exit",
-	"/clear",
-	"/resume",
-	"/status",
-	"/tools",
-}
+const defaultPrompt = "amadeus> "
 
 type TerminalInteractionController struct {
 	input        io.Reader
@@ -37,6 +29,7 @@ type TerminalInteractionController struct {
 	prompt       string
 	newTask      TaskContextFactory
 	capabilities TerminalCapabilities
+	mode         CollaborationMode
 }
 
 func NewTerminalInteractionController(input io.Reader, output, status io.Writer, commands CommandHandler, task TaskHandler) (*TerminalInteractionController, error) {
@@ -48,7 +41,7 @@ func NewTerminalInteractionController(input io.Reader, output, status io.Writer,
 	}
 	return &TerminalInteractionController{
 		input: input, output: output, status: status, commands: commands, task: task,
-		prompt: defaultPrompt, newTask: defaultTaskContext,
+		prompt: defaultPrompt, newTask: defaultTaskContext, mode: CollaborationExecute,
 	}, nil
 }
 
@@ -71,24 +64,6 @@ func (controller *TerminalInteractionController) WithCapabilities(capabilities T
 		controller.capabilities = capabilities
 	}
 	return controller
-}
-
-func SlashCommands() []string {
-	return append([]string(nil), slashCommands...)
-}
-
-func CompleteSlashCommand(prefix string) []string {
-	prefix = strings.ToLower(strings.TrimSpace(prefix))
-	if prefix == "" || prefix[0] != '/' {
-		return nil
-	}
-	var matches []string
-	for _, command := range slashCommands {
-		if strings.HasPrefix(command, prefix) {
-			matches = append(matches, command)
-		}
-	}
-	return matches
 }
 
 func (controller *TerminalInteractionController) History() []string {
@@ -312,16 +287,35 @@ func (controller *TerminalInteractionController) dispatchLine(ctx context.Contex
 	if line == "" || line == "\x03" || line == "\x1b" {
 		return false, nil
 	}
-	if line == "/exit" {
-		return true, nil
-	}
 	controller.history = append(controller.history, line)
 	controller.historyIndex = len(controller.history)
-	if line == "/plan" {
-		return false, errors.New("usage: /plan <task>")
+	if line == "/" {
+		_, err := fmt.Fprintln(controller.status, FormatSlashCatalog())
+		return false, err
 	}
-	if strings.HasPrefix(line, "/") && !isPlanTask(line) && controller.commands != nil {
-		return false, controller.commands(ctx, line)
+	if spec, arguments, ok := ParseSlashCommand(line); ok {
+		if err := ValidateSlashCommandArguments(spec, arguments); err != nil {
+			return false, err
+		}
+		if spec.Command == SlashPlan {
+			controller.mode = CollaborationPlan
+			_, err := fmt.Fprintln(controller.status, "Switched to Plan mode")
+			return false, err
+		}
+		if controller.commands == nil {
+			return false, fmt.Errorf("command /%s is unavailable", spec.Command)
+		}
+		err := controller.commands(ctx, line)
+		if errors.Is(err, ErrQuit) {
+			return true, nil
+		}
+		if err == nil && (spec.Command == SlashClear || spec.Command == SlashResume) {
+			controller.mode = CollaborationExecute
+		}
+		return false, err
+	}
+	if strings.HasPrefix(line, "/") {
+		return false, fmt.Errorf("unknown command %q", strings.Fields(line)[0])
 	}
 	taskCtx, cancel, err := controller.newTask(ctx)
 	if err != nil {
@@ -334,11 +328,7 @@ func (controller *TerminalInteractionController) dispatchLine(ctx context.Contex
 		return false, errors.New("terminal interaction task context factory returned nil")
 	}
 	defer cancel()
-	return false, controller.task(taskCtx, line)
-}
-
-func isPlanTask(value string) bool {
-	return strings.HasPrefix(value, "/plan ") || strings.HasPrefix(value, "/plan\t")
+	return false, controller.task(taskCtx, TaskSubmission{Content: line, Mode: controller.mode})
 }
 
 func (controller *TerminalInteractionController) writePrompt() error {
