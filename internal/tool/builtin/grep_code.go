@@ -101,7 +101,7 @@ func (grepCode *GrepCode) SupportsParallelToolCalls() bool { return true }
 func (grepCode *GrepCode) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	call := invocation.Call
 	var arguments grepCodeArguments
-	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+	if err := decodeArguments(call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
 	if arguments.Query == "" {

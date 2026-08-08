@@ -179,6 +179,45 @@ func TestExecutorPreflightFailureLeavesAllFilesUnchanged(t *testing.T) {
 	}
 }
 
+func TestExecutorRejectsStaleBytesAndIdentityAfterPreflight(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(string) error
+	}{
+		{name: "bytes", mutate: func(path string) error { return os.WriteFile(path, []byte("changed\n"), 0o640) }},
+		{name: "identity", mutate: func(path string) error {
+			replacement := path + ".replacement"
+			if err := os.WriteFile(replacement, []byte("old\n"), 0o640); err != nil {
+				return err
+			}
+			return os.Rename(replacement, path)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rootPath := t.TempDir()
+			writeTestFile(t, rootPath, "target.txt", "old\n", 0o640)
+			executor := newTestExecutor(t, rootPath, osCommitOperations{})
+			document := mustParse(t, "*** Begin Patch\n*** Update File: target.txt\n@@\n-old\n+new\n*** End Patch")
+			prepared, err := executor.PreparePatch(context.Background(), document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := test.mutate(filepath.Join(rootPath, "target.txt")); err != nil {
+				t.Fatal(err)
+			}
+			result, err := executor.ApplyPrepared(context.Background(), prepared)
+			var conflict *ConflictError
+			if !errors.As(err, &conflict) || result.Partial || len(result.Applied) != 0 {
+				t.Fatalf("stale target was not rejected: result=%#v err=%v", result, err)
+			}
+			if content, readErr := os.ReadFile(filepath.Join(rootPath, "target.txt")); readErr != nil || string(content) == "new\n" {
+				t.Fatalf("stale target was modified: content=%q err=%v", content, readErr)
+			}
+			assertNoPatchTemps(t, rootPath)
+		})
+	}
+}
+
 func TestExecutorRejectsAmbiguousHunk(t *testing.T) {
 	rootPath := t.TempDir()
 	writeTestFile(t, rootPath, "duplicate.txt", "same\nold\nsame\nold\n", 0o644)
@@ -194,6 +233,25 @@ func TestExecutorRejectsAmbiguousHunk(t *testing.T) {
 		t.Fatalf("unexpected conflict candidates: %#v", conflict.Candidates)
 	}
 	assertFileContent(t, rootPath, "duplicate.txt", "same\nold\nsame\nold\n")
+}
+
+func TestExecutorEndOfFileAndEquivalentPunctuationMatching(t *testing.T) {
+	rootPath := t.TempDir()
+	writeTestFile(t, rootPath, "tail.txt", "old\nkeep\nold\n", 0o644)
+	writeTestFile(t, rootPath, "punctuation.txt", "message: “old”—value\n", 0o644)
+	executor := newTestExecutor(t, rootPath, osCommitOperations{})
+
+	tail := mustParse(t, "*** Begin Patch\n*** Update File: tail.txt\n@@\n-old\n+new\n*** End of File\n*** End Patch")
+	if _, err := executor.Apply(context.Background(), tail); err != nil {
+		t.Fatal(err)
+	}
+	assertFileContent(t, rootPath, "tail.txt", "old\nkeep\nnew\n")
+
+	punctuation := mustParse(t, "*** Begin Patch\n*** Update File: punctuation.txt\n@@\n-message: \"old\"-value\n+message: \"new\"-value\n*** End Patch")
+	if _, err := executor.Apply(context.Background(), punctuation); err != nil {
+		t.Fatal(err)
+	}
+	assertFileContent(t, rootPath, "punctuation.txt", "message: \"new\"-value\n")
 }
 
 func TestExecutorReportsPartialCommit(t *testing.T) {

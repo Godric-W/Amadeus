@@ -117,7 +117,7 @@ func TestChatCompletionsStreamAggregatesToolCallFragments(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsStreamRejectsInvalidToolArguments(t *testing.T) {
+func TestChatCompletionsStreamDefersMalformedToolArgumentsToRouter(t *testing.T) {
 	fixture := "data: {\"id\":\"chatcmpl_bad\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\"}}]},\"finish_reason\":null}]}\n\n" +
 		"data: {\"id\":\"chatcmpl_bad\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
 	stream, err := openChatCompletionsStream(context.Background(), chatCompletionsFixtureClient(t, fixture), validChatCompletionsDomainRequest())
@@ -126,10 +126,12 @@ func TestChatCompletionsStreamRejectsInvalidToolArguments(t *testing.T) {
 	}
 	defer stream.Close()
 
-	_, err = stream.Recv()
-	var providerError *llm.ProviderError
-	if !errors.As(err, &providerError) || providerError.Kind != llm.ProviderErrorProtocol || !strings.Contains(providerError.Message, "invalid JSON") {
-		t.Fatalf("unexpected malformed tool call error: %v", err)
+	completed, err := stream.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.FinishReason != llm.FinishReasonToolCalls || len(completed.ToolCalls) != 1 || string(completed.ToolCalls[0].Arguments) != `{` {
+		t.Fatalf("malformed arguments were not preserved for Router validation: %#v", completed)
 	}
 }
 

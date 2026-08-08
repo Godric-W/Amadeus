@@ -84,8 +84,8 @@ func projectToolExecution(execution tool.ToolExecution) ToolOutcome {
 	if execution.Outcome.Error != nil {
 		toolError = &ToolError{Kind: execution.Outcome.Error.Kind, Message: execution.Outcome.Error.Message}
 	}
-	artifacts := make([]ArtifactRef, 0, len(execution.Outcome.Artifacts))
-	for _, artifact := range execution.Outcome.Artifacts {
+	artifacts := make([]ArtifactRef, 0, len(execution.Output.Artifacts))
+	for _, artifact := range execution.Output.Artifacts {
 		artifacts = append(artifacts, ArtifactRef{Path: artifact.Path, URI: artifact.URI, Digest: artifact.Digest})
 	}
 	return ToolOutcome{

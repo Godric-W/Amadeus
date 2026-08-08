@@ -38,6 +38,17 @@ type OperationResult struct {
 	Created     bool
 	Deleted     bool
 	Moved       bool
+	Delta       AppliedPatchDelta
+}
+
+type AppliedPatchDelta struct {
+	Path        string
+	Destination string
+	Operation   OperationKind
+	OldContent  []byte
+	NewContent  []byte
+	UnifiedDiff string
+	Exact       bool
 }
 
 type ConflictError struct {
@@ -73,6 +84,7 @@ func (osCommitOperations) Remove(path string) error             { return os.Remo
 type preparedOperation struct {
 	operation Operation
 	target    string
+	identity  os.FileInfo
 	original  []byte
 	content   []byte
 	mode      os.FileMode
@@ -345,6 +357,7 @@ func (executor *Executor) prepare(operation Operation) (preparedOperation, error
 			return preparedOperation{}, fmt.Errorf("read apply_patch target %q: %w", operation.Path, err)
 		}
 		prepared.mode = info.Mode().Perm()
+		prepared.identity = info
 		if operation.Kind == OperationMove {
 			if _, err := os.Lstat(target); err == nil {
 				return preparedOperation{}, fmt.Errorf("apply_patch move destination already exists: %q", operation.MovePath)
@@ -416,6 +429,10 @@ func (executor *Executor) revalidate(prepared []preparedOperation) error {
 				return fmt.Errorf("revalidate apply_patch add target %q: %w", candidate.operation.Path, err)
 			}
 		case OperationUpdate, OperationDelete, OperationMove:
+			currentInfo, err := os.Lstat(candidate.source)
+			if err != nil || !currentInfo.Mode().IsRegular() || candidate.identity == nil || !os.SameFile(candidate.identity, currentInfo) {
+				return &ConflictError{Path: candidate.operation.Path, Reason: "target identity changed or disappeared after preflight"}
+			}
 			current, err := os.ReadFile(candidate.source)
 			if err != nil {
 				return &ConflictError{Path: candidate.operation.Path, Reason: "target changed or disappeared after preflight"}
@@ -439,24 +456,69 @@ func (executor *Executor) commit(candidate *preparedOperation) (OperationResult,
 		candidate.temporary = ""
 		result.Bytes = len(candidate.content)
 		result.Created = operation.Kind == OperationAdd
+		result.Delta = newAppliedPatchDelta(operation.Kind, candidate.target, "", candidate.original, candidate.content)
 	case OperationDelete:
 		if err := executor.commitOps.Remove(candidate.target); err != nil {
 			return OperationResult{}, false, fmt.Errorf("commit apply_patch delete %q: %w", operation.Path, err)
 		}
 		result.Deleted = true
+		result.Delta = newAppliedPatchDelta(OperationDelete, candidate.source, "", candidate.original, nil)
 	case OperationMove:
 		if err := executor.commitOps.Rename(candidate.temporary, candidate.target); err != nil {
 			return OperationResult{}, false, fmt.Errorf("commit apply_patch move destination %q: %w", operation.MovePath, err)
 		}
 		candidate.temporary = ""
 		if err := executor.commitOps.Remove(candidate.source); err != nil {
-			partial := OperationResult{Kind: OperationAdd, Path: candidate.target, Bytes: len(candidate.content), Created: true}
+			partial := OperationResult{Kind: OperationAdd, Path: candidate.target, Bytes: len(candidate.content), Created: true,
+				Delta: newAppliedPatchDelta(OperationAdd, candidate.target, "", nil, candidate.content)}
 			return partial, true, fmt.Errorf("remove apply_patch move source %q after creating destination %q: %w", operation.Path, operation.MovePath, err)
 		}
 		result.Bytes = len(candidate.content)
 		result.Moved = true
+		result.Delta = newAppliedPatchDelta(OperationMove, candidate.source, candidate.target, candidate.original, candidate.content)
 	}
 	return result, true, nil
+}
+
+func newAppliedPatchDelta(operation OperationKind, path, destination string, oldContent, newContent []byte) AppliedPatchDelta {
+	return AppliedPatchDelta{
+		Path: path, Destination: destination, Operation: operation,
+		OldContent: append([]byte(nil), oldContent...), NewContent: append([]byte(nil), newContent...),
+		UnifiedDiff: unifiedContentDiff(path, destination, oldContent, newContent), Exact: true,
+	}
+}
+
+func unifiedContentDiff(path, destination string, oldContent, newContent []byte) string {
+	oldPath, newPath := path, path
+	if len(oldContent) == 0 {
+		oldPath = "/dev/null"
+	}
+	if len(newContent) == 0 {
+		newPath = "/dev/null"
+	}
+	if destination != "" {
+		newPath = destination
+	}
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "--- %s\n+++ %s\n@@\n", oldPath, newPath)
+	for _, line := range splitDiffLines(oldContent) {
+		builder.WriteByte('-')
+		builder.WriteString(line)
+		builder.WriteByte('\n')
+	}
+	for _, line := range splitDiffLines(newContent) {
+		builder.WriteByte('+')
+		builder.WriteString(line)
+		builder.WriteByte('\n')
+	}
+	return builder.String()
+}
+
+func splitDiffLines(content []byte) []string {
+	if len(content) == 0 {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
 }
 
 func cleanupPrepared(prepared []preparedOperation) {
@@ -496,7 +558,7 @@ func applyHunks(path string, original []byte, hunks []Hunk) ([]byte, error) {
 
 	for _, hunk := range hunks {
 		oldLines, newLines := hunkSequences(hunk)
-		matches := findSequence(lines, oldLines)
+		matches := findSequence(lines, oldLines, hunk.EndOfFile)
 		if len(matches) == 0 {
 			return nil, &ConflictError{Path: path, Line: hunk.Line, Matches: 0,
 				Reason: "hunk context does not match current file"}
@@ -534,20 +596,27 @@ func hunkSequences(hunk Hunk) ([]string, []string) {
 	return oldLines, newLines
 }
 
-func findSequence(lines, sequence []string) []int {
-	matches := findSequenceWith(lines, sequence, func(value string) string { return value })
+func findSequence(lines, sequence []string, endOfFile bool) []int {
+	matches := findSequenceWith(lines, sequence, endOfFile, func(value string) string { return value })
 	if len(matches) > 0 {
 		return matches
 	}
-	return findSequenceWith(lines, sequence, func(value string) string { return strings.TrimRight(value, " \t\r") })
+	matches = findSequenceWith(lines, sequence, endOfFile, func(value string) string { return strings.TrimRight(value, " \t\r") })
+	if len(matches) > 0 {
+		return matches
+	}
+	return findSequenceWith(lines, sequence, endOfFile, normalizeEquivalentPunctuation)
 }
 
-func findSequenceWith(lines, sequence []string, normalize func(string) string) []int {
+func findSequenceWith(lines, sequence []string, endOfFile bool, normalize func(string) string) []int {
 	if len(sequence) == 0 || len(sequence) > len(lines) {
 		return nil
 	}
 	matches := make([]int, 0, 1)
 	for start := 0; start+len(sequence) <= len(lines); start++ {
+		if endOfFile && start+len(sequence) != len(lines) {
+			continue
+		}
 		matched := true
 		for offset := range sequence {
 			if normalize(lines[start+offset]) != normalize(sequence[offset]) {
@@ -560,6 +629,15 @@ func findSequenceWith(lines, sequence []string, normalize func(string) string) [
 		}
 	}
 	return matches
+}
+
+var equivalentPunctuation = strings.NewReplacer(
+	"‘", "'", "’", "'", "“", `"`, "”", `"`,
+	"–", "-", "—", "-", "−", "-", " ", " ",
+)
+
+func normalizeEquivalentPunctuation(value string) string {
+	return equivalentPunctuation.Replace(strings.TrimRight(value, " \t\r"))
 }
 
 func oneBased(values []int) []int {

@@ -51,7 +51,7 @@ func (writeStdin *WriteStdin) SupportsParallelToolCalls() bool { return false }
 func (writeStdin *WriteStdin) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	call := invocation.Call
 	var arguments writeStdinArguments
-	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+	if err := decodeArguments(call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
 	if strings.TrimSpace(arguments.ProcessID) == "" {

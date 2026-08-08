@@ -28,12 +28,8 @@ func TestMVPToolsReadHostAndWriteOnlyDeclaredRoots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guard, err := project.NewPathGuardWithPolicy(policy)
-	if err != nil {
-		t.Fatal(err)
-	}
 	options := DefaultMVPOptions()
-	options.PathGuard = guard
+	options.FileSystemPolicy = policy
 	registry, err := NewMVPRegistry(root, options)
 	if err != nil {
 		t.Fatal(err)

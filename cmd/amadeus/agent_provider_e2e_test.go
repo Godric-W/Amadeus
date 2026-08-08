@@ -97,7 +97,7 @@ agent:
 			mutex.Lock()
 			captured := append([]map[string]any(nil), bodies...)
 			mutex.Unlock()
-			if len(captured) != 2 || stdout.String() != "provider mock complete\n" || len(auditSink.Snapshot()) != 1 {
+			if len(captured) != 2 || stdout.String() != "provider mock complete\n" || len(auditSink.Snapshot()) != 0 {
 				t.Fatalf("unexpected %s Provider trace: requests=%d stdout=%q audit=%d", api, len(captured), stdout.String(), len(auditSink.Snapshot()))
 			}
 			if !providerRequestContainsToolResult(api, captured[1]) {

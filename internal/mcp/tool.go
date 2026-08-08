@@ -58,7 +58,7 @@ func (adapter *ToolAdapter) Handle(ctx context.Context, invocation tool.Invocati
 	if adapter == nil || adapter.manager == nil {
 		return tool.Output{}, errors.New("MCP tool adapter is nil")
 	}
-	input := append(json.RawMessage(nil), invocation.Call.Arguments...)
+	input := append(json.RawMessage(nil), invocation.Call.Payload...)
 	result, err := adapter.manager.CallTool(ctx, adapter.server, adapter.original, input)
 	if err != nil {
 		return tool.Output{}, err

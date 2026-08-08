@@ -22,6 +22,7 @@ const (
 	updatePrefix      = "*** Update File:"
 	deletePrefix      = "*** Delete File:"
 	moveToPrefix      = "*** Move to:"
+	endOfFileMarker   = "*** End of File"
 )
 
 type ParseOptions struct {
@@ -274,6 +275,10 @@ func (parser *documentParser) parseHunk() (Hunk, error) {
 		hunk.Lines = append(hunk.Lines, line)
 		parser.index++
 	}
+	if parser.index < len(parser.lines) && parser.lines[parser.index] == endOfFileMarker {
+		hunk.EndOfFile = true
+		parser.index++
+	}
 
 	if len(hunk.Lines) == 0 {
 		return Hunk{}, parser.errorAt(lineIndex, 1, "update hunk is empty")
@@ -298,7 +303,7 @@ func (parser *documentParser) errorAt(lineIndex int, column int, message string)
 }
 
 func isBoundary(line string) bool {
-	return isOperationOrEnd(line) || strings.HasPrefix(line, moveToPrefix) || line == "@@" || strings.HasPrefix(line, "@@ ")
+	return isOperationOrEnd(line) || line == endOfFileMarker || strings.HasPrefix(line, moveToPrefix) || line == "@@" || strings.HasPrefix(line, "@@ ")
 }
 
 func isOperationOrEnd(line string) bool {

@@ -14,8 +14,8 @@ func TestToolCallAndSpecCloneIsolateMutableFields(t *testing.T) {
 	}
 	call := NewCall("call-1", "read_file", json.RawMessage(`{"path":"a"}`))
 	clonedCall := call.Clone()
-	clonedCall.Arguments[0] = '['
-	if call.Arguments[0] == '[' {
+	clonedCall.Payload[0] = '['
+	if call.Payload[0] == '[' {
 		t.Fatal("call clone shares arguments")
 	}
 }

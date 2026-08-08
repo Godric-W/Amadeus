@@ -13,17 +13,16 @@ import (
 func TestTrackerFoldsRepeatedPatchOperations(t *testing.T) {
 	root := t.TempDir()
 	events := event.NewMemorySink()
-	tracker, err := NewTracker(root, events)
+	tracker, err := NewProjector(root, events)
 	if err != nil {
 		t.Fatal(err)
 	}
-	apply := tool.Spec{Name: "apply_patch"}
-	for _, result := range []tool.Result{
+	for _, result := range []tool.Output{
 		patchResult(operationMap("add", "a.txt", "", 3, true, false, false)),
 		patchResult(operationMap("update", "a.txt", "", 5, false, false, false)),
 		patchResult(operationMap("update", "a.txt", "b.txt", 5, false, false, true)),
 	} {
-		if err := tracker.After(context.Background(), apply, tool.Call{}, result); err != nil {
+		if err := tracker.ProjectPatch(context.Background(), result); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -31,7 +30,7 @@ func TestTrackerFoldsRepeatedPatchOperations(t *testing.T) {
 	if len(snapshot.Changes) != 1 || snapshot.Changes[0].Kind != ChangeAdded || snapshot.Changes[0].Path != filepath.Join(root, "b.txt") {
 		t.Fatalf("unexpected folded add/move: %#v", snapshot)
 	}
-	if err := tracker.After(context.Background(), apply, tool.Call{}, patchResult(operationMap("delete", "b.txt", "", 0, false, true, false))); err != nil {
+	if err := tracker.ProjectPatch(context.Background(), patchResult(operationMap("delete", "b.txt", "", 0, false, true, false))); err != nil {
 		t.Fatal(err)
 	}
 	if snapshot = tracker.Snapshot(); len(snapshot.Changes) != 0 {
@@ -41,12 +40,11 @@ func TestTrackerFoldsRepeatedPatchOperations(t *testing.T) {
 
 func TestTrackerFoldsMoveThenDeleteToOriginalDelete(t *testing.T) {
 	root := t.TempDir()
-	tracker, _ := NewTracker(root, event.NewMemorySink())
-	apply := tool.Spec{Name: "apply_patch"}
-	if err := tracker.After(context.Background(), apply, tool.Call{}, patchResult(operationMap("update", "old.txt", "new.txt", 7, false, false, true))); err != nil {
+	tracker, _ := NewProjector(root, event.NewMemorySink())
+	if err := tracker.ProjectPatch(context.Background(), patchResult(operationMap("update", "old.txt", "new.txt", 7, false, false, true))); err != nil {
 		t.Fatal(err)
 	}
-	if err := tracker.After(context.Background(), apply, tool.Call{}, patchResult(operationMap("delete", "new.txt", "", 0, false, true, false))); err != nil {
+	if err := tracker.ProjectPatch(context.Background(), patchResult(operationMap("delete", "new.txt", "", 0, false, true, false))); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := tracker.Snapshot()
@@ -58,12 +56,12 @@ func TestTrackerFoldsMoveThenDeleteToOriginalDelete(t *testing.T) {
 func TestTrackerTracksAbsolutePathsAcrossWritableRoots(t *testing.T) {
 	cwd := t.TempDir()
 	external := t.TempDir()
-	tracker, err := NewTracker(cwd, event.NewMemorySink())
+	tracker, err := NewProjector(cwd, event.NewMemorySink())
 	if err != nil {
 		t.Fatal(err)
 	}
 	target := filepath.Join(external, "granted.txt")
-	if err := tracker.After(context.Background(), tool.Spec{Name: "apply_patch"}, tool.Call{}, patchResult(operationMap("add", target, "", 7, true, false, false))); err != nil {
+	if err := tracker.ProjectPatch(context.Background(), patchResult(operationMap("add", target, "", 7, true, false, false))); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := tracker.Snapshot()
@@ -75,13 +73,13 @@ func TestTrackerTracksAbsolutePathsAcrossWritableRoots(t *testing.T) {
 func TestTrackerTracksMoveAcrossWritableRoots(t *testing.T) {
 	cwd := t.TempDir()
 	external := t.TempDir()
-	tracker, err := NewTracker(cwd, event.NewMemorySink())
+	tracker, err := NewProjector(cwd, event.NewMemorySink())
 	if err != nil {
 		t.Fatal(err)
 	}
 	source := filepath.Join(cwd, "source.txt")
 	destination := filepath.Join(external, "destination.txt")
-	if err := tracker.After(context.Background(), tool.Spec{Name: "apply_patch"}, tool.Call{}, patchResult(operationMap("update", source, destination, 9, false, false, true))); err != nil {
+	if err := tracker.ProjectPatch(context.Background(), patchResult(operationMap("update", source, destination, 9, false, false, true))); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := tracker.Snapshot()
@@ -90,13 +88,11 @@ func TestTrackerTracksMoveAcrossWritableRoots(t *testing.T) {
 	}
 }
 
-func TestTrackerIgnoresToolsWithoutExactPatchDelta(t *testing.T) {
+func TestProjectorOnlyConsumesExplicitPatchProjection(t *testing.T) {
 	events := event.NewMemorySink()
-	tracker, _ := NewTracker(t.TempDir(), events)
-	for _, name := range []string{"execute_command", "write_stdin", "mcp_call", "read_file"} {
-		if err := tracker.After(context.Background(), tool.Spec{Name: name}, tool.Call{}, tool.Result{}); err != nil {
-			t.Fatalf("ignore %s: %v", name, err)
-		}
+	tracker, _ := NewProjector(t.TempDir(), events)
+	if err := tracker.ProjectPatch(context.Background(), tool.Output{ToolName: "apply_patch", Metadata: map[string]any{"operations": []map[string]any{}}}); err != nil {
+		t.Fatal(err)
 	}
 	snapshot := tracker.Snapshot()
 	if snapshot.Invalidated || snapshot.Revision != 0 || len(snapshot.Changes) != 0 {
@@ -108,8 +104,8 @@ func TestTrackerIgnoresToolsWithoutExactPatchDelta(t *testing.T) {
 }
 
 func TestTrackerInvalidatesMalformedPatchMetadata(t *testing.T) {
-	tracker, _ := NewTracker(t.TempDir(), event.NewMemorySink())
-	err := tracker.After(context.Background(), tool.Spec{Name: "apply_patch"}, tool.Call{}, tool.Result{Metadata: map[string]any{"operations": "invalid"}})
+	tracker, _ := NewProjector(t.TempDir(), event.NewMemorySink())
+	err := tracker.ProjectPatch(context.Background(), tool.Output{Metadata: map[string]any{"operations": "invalid"}})
 	if err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatalf("event publication failed: %v", err)
 	}
@@ -118,8 +114,8 @@ func TestTrackerInvalidatesMalformedPatchMetadata(t *testing.T) {
 	}
 }
 
-func patchResult(operations ...map[string]any) tool.Result {
-	return tool.Result{ToolName: "apply_patch", Metadata: map[string]any{"operations": operations}}
+func patchResult(operations ...map[string]any) tool.Output {
+	return tool.Output{ToolName: "apply_patch", Metadata: map[string]any{"operations": operations}}
 }
 
 func operationMap(kind, path, destination string, bytes int, created, deleted, moved bool) map[string]any {

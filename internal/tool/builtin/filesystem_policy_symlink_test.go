@@ -29,7 +29,7 @@ func TestMVPToolsRejectSymlinkEscapes(t *testing.T) {
 	options.GrepCode.DisableRipgrep = true
 	tools := []struct {
 		name      string
-		tool      tool.Tool
+		tool      tool.Handler
 		input     string
 		wantError string
 	}{

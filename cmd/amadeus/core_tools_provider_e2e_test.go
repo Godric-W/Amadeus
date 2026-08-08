@@ -435,7 +435,7 @@ func assertCoreToolsProject(t *testing.T, projectDirectory string) {
 
 func assertCoreToolsAudit(t *testing.T, records []audit.Record) {
 	t.Helper()
-	if len(records) != 7 {
+	if len(records) != 2 {
 		t.Fatalf("unexpected core tools audit count: %#v", records)
 	}
 	for _, record := range records {
@@ -443,11 +443,11 @@ func assertCoreToolsAudit(t *testing.T, records []audit.Record) {
 			t.Fatalf("prepare-failed patch unexpectedly reached authorization audit: %#v", record)
 		}
 	}
-	blocked := records[5]
+	blocked := records[0]
 	if blocked.ToolName != "execute_command" || blocked.Outcome != audit.OutcomeDeny || blocked.Risk != "blocked" || blocked.ArgumentsSHA256 == "" {
 		t.Fatalf("dangerous Shell fallback was not blocked and hashed: %#v", blocked)
 	}
-	if records[6].ToolName != "execute_command" || records[6].Outcome != audit.OutcomeAllow || records[6].ArgumentsSHA256 == "" {
-		t.Fatalf("test command audit is invalid: %#v", records[6])
+	if records[1].ToolName != "execute_command" || records[1].Outcome != audit.OutcomeAllow || records[1].ArgumentsSHA256 == "" {
+		t.Fatalf("test command audit is invalid: %#v", records[1])
 	}
 }

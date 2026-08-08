@@ -9,6 +9,22 @@ import (
 	"syscall"
 )
 
+type PathType string
+
+const (
+	PathAny       PathType = "any"
+	PathFile      PathType = "file"
+	PathDirectory PathType = "directory"
+)
+
+func (pathType PathType) valid() bool {
+	return pathType == PathAny || pathType == PathFile || pathType == PathDirectory
+}
+
+func invalidPathType(expected PathType) error {
+	return fmt.Errorf("filesystem policy expected type %q is invalid", expected)
+}
+
 type PathResolver struct {
 	cwd string
 }

@@ -33,20 +33,16 @@ func TestRequestPermissionsGrantsRunThenRequiresOriginalToolRetry(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	guard, err := project.NewPathGuardWithPolicy(policyValue)
-	if err != nil {
-		t.Fatal(err)
-	}
 	root, _ := project.NewRoot(workspace)
 	patchOptions := patchExecutorDefaults()
-	patchOptions.PathGuard = guard
+	patchOptions.FileSystemPolicy = policyValue
 	patchTool, err := NewApplyPatch(root, ApplyPatchOptions{Executor: patchOptions})
 	if err != nil {
 		t.Fatal(err)
 	}
 	target := filepath.Join(external, "created.txt")
 	patchCall := tool.NewCall("patch-1", "apply_patch", permissionJSON(t, map[string]any{"patch": "*** Begin Patch\n*** Add File: " + target + "\n+created\n*** End Patch"}))
-	if _, err := patchTool.Prepare(context.Background(), patchCall); err == nil {
+	if _, err := patchTool.Handle(context.Background(), tool.Invocation{Call: patchCall, Source: tool.ToolCallSourceModel}); err == nil {
 		t.Fatal("outside write did not require permission")
 	}
 	handler := &permissionApprovalHandler{decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalRun, Source: policy.ApprovalSourceUser, Reason: "approved"}}
@@ -55,22 +51,14 @@ func TestRequestPermissionsGrantsRunThenRequiresOriginalToolRetry(t *testing.T) 
 		t.Fatal(err)
 	}
 	requestCall := tool.NewCall("permission-1", "request_permissions", permissionJSON(t, map[string]any{"writable_roots": []string{external}, "reason": "create requested output"}))
-	prepared, err := requestTool.Prepare(context.Background(), requestCall)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := requestTool.Execute(context.Background(), prepared); err != nil {
+	if _, err := requestTool.Handle(context.Background(), tool.Invocation{Call: requestCall, Source: tool.ToolCallSourceModel}); err != nil {
 		t.Fatal(err)
 	}
 	if len(handler.requests) != 1 || handler.requests[0].Purpose != policy.ApprovalPurposePermission {
 		t.Fatalf("unexpected permission request: %#v", handler.requests)
 	}
-	preparedPatch, err := patchTool.Prepare(context.Background(), patchCall)
-	if err != nil {
+	if _, err := patchTool.Handle(context.Background(), tool.Invocation{Call: patchCall, Source: tool.ToolCallSourceModel}); err != nil {
 		t.Fatalf("new original call was not authorized: %v", err)
-	}
-	if _, err := patchTool.Execute(context.Background(), preparedPatch); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -94,11 +82,7 @@ func TestRequestPermissionsAuditFailureDoesNotGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	requestCall := tool.NewCall("permission-audit", "request_permissions", permissionJSON(t, map[string]any{"writable_roots": []string{external}, "reason": "create requested output"}))
-	prepared, err := requestTool.Prepare(context.Background(), requestCall)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := requestTool.Execute(context.Background(), prepared); !errors.Is(err, want) {
+	if _, err := requestTool.Handle(context.Background(), tool.Invocation{Call: requestCall, Source: tool.ToolCallSourceModel}); !errors.Is(err, want) {
 		t.Fatalf("unexpected audit failure: %v", err)
 	}
 	if roots := runStore.Snapshot().WritableRoots; len(roots) != 0 {

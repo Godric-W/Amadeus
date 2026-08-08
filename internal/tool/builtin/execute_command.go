@@ -134,7 +134,7 @@ func (executeCommand *ExecuteCommand) SupportsParallelToolCalls() bool { return 
 func (executeCommand *ExecuteCommand) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	call := invocation.Call
 	var arguments executeCommandArguments
-	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+	if err := decodeArguments(call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
 	if strings.TrimSpace(arguments.Command) == "" {
@@ -221,8 +221,8 @@ func durationFromMilliseconds(value int64, fallback, maximum time.Duration) time
 	return result
 }
 
-func commandSnapshotResult(toolName, cwd string, snapshot processdomain.Snapshot, duration time.Duration, sandboxMode sandboxdomain.IsolationMode) (tool.Result, error) {
-	result := tool.Result{
+func commandSnapshotResult(toolName, cwd string, snapshot processdomain.Snapshot, duration time.Duration, sandboxMode sandboxdomain.IsolationMode) (tool.Output, error) {
+	result := tool.Output{
 		ToolName: toolName, Text: snapshot.Output,
 		Partial: snapshot.OutputTruncated || snapshot.State == processdomain.StateRunning || snapshot.State == processdomain.StateTimedOut || snapshot.State == processdomain.StateCancelled,
 		Metadata: map[string]any{

@@ -99,7 +99,7 @@ type ToolOutcome struct {
 	CallID    string            `json:"call_id"`
 	ToolName  string            `json:"tool_name"`
 	Status    ToolOutcomeStatus `json:"status"`
-	Result    tool.Result       `json:"result"`
+	Result    tool.Output       `json:"result"`
 	Error     *ToolError        `json:"error,omitempty"`
 	Blocking  bool              `json:"blocking,omitempty"`
 	Partial   bool              `json:"partial,omitempty"`
@@ -130,7 +130,7 @@ type Iteration struct {
 	Index       int
 	LLMCallID   string
 	Intent      string
-	ToolCalls   []tool.Call
+	ToolCalls   []tool.ToolCall
 	Outcomes    []ToolOutcome
 	Status      IterationStatus
 	StartedAt   time.Time

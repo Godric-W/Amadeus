@@ -31,7 +31,7 @@ type ProgressSignal struct {
 }
 
 type ProgressSample struct {
-	Calls    []tool.Call
+	Calls    []tool.ToolCall
 	Outcomes []ToolOutcome
 	Specs    []tool.Spec
 }
@@ -155,11 +155,11 @@ func indexProgressSpecs(specs []tool.Spec) (map[string]tool.Spec, error) {
 	return indexed, nil
 }
 
-func toolCallSignature(call tool.Call) (string, error) {
+func toolCallSignature(call tool.ToolCall) (string, error) {
 	if strings.TrimSpace(call.Name) == "" {
 		return "", errors.New("tool call name is empty")
 	}
-	decoder := json.NewDecoder(bytes.NewReader(call.Arguments))
+	decoder := json.NewDecoder(bytes.NewReader(call.Payload))
 	decoder.UseNumber()
 	var arguments any
 	if err := decoder.Decode(&arguments); err != nil {

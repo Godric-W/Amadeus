@@ -42,49 +42,70 @@ type ArgumentValidator struct {
 	maxRepairBytes int
 }
 
+type ArgumentRepairKind string
+
+const (
+	ArgumentRepairInvalidEscape ArgumentRepairKind = "invalid_escape"
+	ArgumentRepairMissingCloser ArgumentRepairKind = "missing_closer"
+	ArgumentRepairTrailingComma ArgumentRepairKind = "trailing_comma"
+)
+
+type NormalizedArguments struct {
+	Payload     json.RawMessage
+	RepairKinds []ArgumentRepairKind
+}
+
 func NewArgumentValidator() *ArgumentValidator {
 	return &ArgumentValidator{maxRepairBytes: defaultMaxRepairBytes}
 }
 
 func (validator *ArgumentValidator) Validate(spec Spec, arguments json.RawMessage) (json.RawMessage, error) {
-	schema, err := compileInputSchema(spec)
+	normalized, err := validator.Normalize(spec, arguments)
 	if err != nil {
 		return nil, err
 	}
+	return normalized.Payload, nil
+}
 
-	normalized, err := validator.parseArguments(arguments)
+func (validator *ArgumentValidator) Normalize(spec Spec, arguments json.RawMessage) (NormalizedArguments, error) {
+	schema, err := compileInputSchema(spec)
 	if err != nil {
-		return nil, err
+		return NormalizedArguments{}, err
+	}
+
+	normalized, repairs, err := validator.parseArguments(arguments)
+	if err != nil {
+		return NormalizedArguments{}, err
 	}
 	instance, err := jsonschema.UnmarshalJSON(bytes.NewReader(normalized))
 	if err != nil {
-		return nil, &ArgumentError{Kind: ArgumentErrorParse, Message: "arguments are not valid JSON", Cause: err}
+		return NormalizedArguments{}, &ArgumentError{Kind: ArgumentErrorParse, Message: "arguments are not valid JSON", Cause: err}
 	}
 	if _, ok := instance.(map[string]any); !ok {
-		return nil, &ArgumentError{Kind: ArgumentErrorValidation, Path: "/", Message: "arguments must be a JSON object"}
+		return NormalizedArguments{}, &ArgumentError{Kind: ArgumentErrorValidation, Path: "/", Message: "arguments must be a JSON object"}
 	}
 	if err := schema.Validate(instance); err != nil {
-		return nil, validationArgumentError(err)
+		return NormalizedArguments{}, validationArgumentError(err)
 	}
-	return append(json.RawMessage(nil), normalized...), nil
+	return NormalizedArguments{Payload: append(json.RawMessage(nil), normalized...), RepairKinds: append([]ArgumentRepairKind(nil), repairs...)}, nil
 }
 
-func (validator *ArgumentValidator) parseArguments(arguments json.RawMessage) (json.RawMessage, error) {
+func (validator *ArgumentValidator) parseArguments(arguments json.RawMessage) (json.RawMessage, []ArgumentRepairKind, error) {
 	trimmed := bytes.TrimSpace(arguments)
 	if len(trimmed) == 0 {
-		return nil, &ArgumentError{Kind: ArgumentErrorParse, Message: "arguments are empty"}
+		return nil, nil, &ArgumentError{Kind: ArgumentErrorParse, Message: "arguments are empty"}
 	}
 	if json.Valid(trimmed) {
-		return append(json.RawMessage(nil), trimmed...), nil
+		return append(json.RawMessage(nil), trimmed...), nil, nil
 	}
 	if len(trimmed) > validator.maxRepairBytes {
-		return nil, &ArgumentError{Kind: ArgumentErrorParse, Message: "invalid JSON exceeds repair limit"}
+		return nil, nil, &ArgumentError{Kind: ArgumentErrorParse, Message: "invalid JSON exceeds repair limit"}
 	}
-	repaired, ok := repairJSON(trimmed)
+	repaired, repairs, ok := repairJSON(trimmed)
 	if !ok || !json.Valid(repaired) {
-		return nil, &ArgumentError{Kind: ArgumentErrorParse, Message: "arguments are not valid JSON"}
+		return nil, nil, &ArgumentError{Kind: ArgumentErrorParse, Message: "arguments are not valid JSON"}
 	}
-	return repaired, nil
+	return repaired, repairs, nil
 }
 
 func compileInputSchema(spec Spec) (*jsonschema.Schema, error) {
@@ -161,16 +182,70 @@ func (denyExternalSchemaLoader) Load(url string) (any, error) {
 	return nil, fmt.Errorf("external schema reference is disabled: %s", url)
 }
 
-func repairJSON(input []byte) (json.RawMessage, bool) {
-	closed, ok := appendMissingClosers(input)
+func repairJSON(input []byte) (json.RawMessage, []ArgumentRepairKind, bool) {
+	repaired, escaped := escapeInvalidStringEscapes(input)
+	closed, ok := appendMissingClosers(repaired)
 	if !ok {
-		return nil, false
+		return nil, nil, false
 	}
-	repaired := removeTrailingCommas(closed)
-	if bytes.Equal(repaired, input) {
-		return nil, false
+	withoutCommas := removeTrailingCommas(closed)
+	repairs := make([]ArgumentRepairKind, 0, 3)
+	if escaped {
+		repairs = append(repairs, ArgumentRepairInvalidEscape)
 	}
-	return json.RawMessage(repaired), true
+	if !bytes.Equal(closed, repaired) {
+		repairs = append(repairs, ArgumentRepairMissingCloser)
+	}
+	if !bytes.Equal(withoutCommas, closed) {
+		repairs = append(repairs, ArgumentRepairTrailingComma)
+	}
+	if len(repairs) == 0 {
+		return nil, nil, false
+	}
+	return json.RawMessage(withoutCommas), repairs, true
+}
+
+func escapeInvalidStringEscapes(input []byte) ([]byte, bool) {
+	output := make([]byte, 0, len(input)+8)
+	inString := false
+	changed := false
+	for index := 0; index < len(input); index++ {
+		current := input[index]
+		if current == '"' {
+			inString = !inString
+			output = append(output, current)
+			continue
+		}
+		if !inString || current != '\\' || index+1 >= len(input) {
+			output = append(output, current)
+			continue
+		}
+		next := input[index+1]
+		if validSimpleJSONEscape(next) || next == 'u' && validUnicodeEscape(input[index+1:]) {
+			output = append(output, current, next)
+			index++
+			continue
+		}
+		output = append(output, '\\', '\\')
+		changed = true
+	}
+	return output, changed
+}
+
+func validSimpleJSONEscape(value byte) bool {
+	return strings.ContainsRune(`"\\/bfnrt`, rune(value))
+}
+
+func validUnicodeEscape(value []byte) bool {
+	if len(value) < 5 || value[0] != 'u' {
+		return false
+	}
+	for _, digit := range value[1:5] {
+		if !(digit >= '0' && digit <= '9' || digit >= 'a' && digit <= 'f' || digit >= 'A' && digit <= 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func removeTrailingCommas(input []byte) []byte {

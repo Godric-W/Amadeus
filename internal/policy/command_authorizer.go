@@ -96,7 +96,7 @@ func (authorizer *CommandAuthorizer) Authorize(ctx context.Context, request Comm
 	if record.SessionID == "" {
 		record.SessionID = event.MetadataFromContext(ctx).SessionID
 	}
-	if canonical, err := canonicalArguments(request.Call.Arguments); err == nil {
+	if canonical, err := canonicalArguments(request.Call.Payload); err == nil {
 		record.ArgumentsSHA256 = approvalHash(canonical)
 	}
 	defer func() {
@@ -149,7 +149,7 @@ func (authorizer *CommandAuthorizer) authorize(ctx context.Context, request Comm
 	if authorizer.session.IsApproved(key) {
 		return ApprovalDecision{Outcome: ApprovalAllow, Scope: ApprovalSession, Source: ApprovalSourceGrant, Reason: "matching unsandboxed command was approved for this session"}, CommandRiskHigh, nil
 	}
-	approval, err := NewApprovalRequestForPurpose(request.Call.ID, request.Call.Name, request.Call.Arguments, ApprovalPurposeCommand, CommandRiskHigh, "unsandboxed host command may access resources outside declared permissions")
+	approval, err := NewApprovalRequestForPurpose(request.Call.ID, request.Call.Name, request.Call.Payload, ApprovalPurposeCommand, CommandRiskHigh, "unsandboxed host command may access resources outside declared permissions")
 	if err != nil {
 		return ApprovalDecision{}, CommandRiskHigh, err
 	}

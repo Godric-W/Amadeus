@@ -27,7 +27,7 @@ func TestMVPRegistryContainsSevenStableTools(t *testing.T) {
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("unexpected MVP tools: got %v, want %v", names, want)
 	}
-	if entries[0].Spec.SideEffect != tool.SideEffectWrite || entries[0].Spec.Concurrency != tool.ToolConcurrencyExclusive || entries[0].Spec.Idempotent || entries[1].Spec.SideEffect != tool.SideEffectExecute || entries[5].Spec.SideEffect != tool.SideEffectRead || entries[5].Spec.Concurrency != tool.ToolConcurrencyShared {
+	if entries[0].Spec.SideEffect != tool.SideEffectWrite || entries[0].Handler.SupportsParallelToolCalls() || entries[0].Spec.Idempotent || entries[1].Spec.SideEffect != tool.SideEffectExecute || entries[5].Spec.SideEffect != tool.SideEffectRead || !entries[5].Handler.SupportsParallelToolCalls() {
 		t.Fatalf("unexpected MVP metadata: %#v", entries)
 	}
 }

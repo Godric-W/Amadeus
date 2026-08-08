@@ -21,9 +21,9 @@ type CallPresentation struct {
 	Detail        string
 }
 
-func PresentCall(spec Spec, call Call) CallPresentation {
+func PresentCall(spec Spec, call ToolCall) CallPresentation {
 	arguments := map[string]any{}
-	_ = json.Unmarshal(call.Arguments, &arguments)
+	_ = json.Unmarshal(call.Payload, &arguments)
 	value := func(key string) string {
 		candidate, _ := arguments[key].(string)
 		return sanitizeActionText(candidate)

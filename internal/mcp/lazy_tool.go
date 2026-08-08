@@ -63,7 +63,7 @@ func (value *LazyListTool) Handle(ctx context.Context, invocation tool.Invocatio
 		return tool.Output{}, errors.New("lazy MCP list tool is nil")
 	}
 	var arguments lazyListArguments
-	if err := json.Unmarshal(invocation.Call.Arguments, &arguments); err != nil {
+	if err := json.Unmarshal(invocation.Call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
 	if err := validateSampleBinding(ctx, value.manager); err != nil {
@@ -105,7 +105,7 @@ func (value *LazyCallTool) Handle(ctx context.Context, invocation tool.Invocatio
 		return tool.Output{}, errors.New("lazy MCP call tool is nil")
 	}
 	var arguments lazyCallArguments
-	if err := json.Unmarshal(invocation.Call.Arguments, &arguments); err != nil {
+	if err := json.Unmarshal(invocation.Call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
 	if err := validateSampleBinding(ctx, value.manager); err != nil {

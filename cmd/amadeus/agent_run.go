@@ -137,6 +137,11 @@ func (runner *agentController) runOnce(ctx context.Context, invocation agentInvo
 		SessionID: string(started.Records.Session.ID),
 		RunID:     string(started.Records.Run.ID),
 	})
+	ctx = tool.WithInvocationMetadata(ctx, tool.InvocationMetadata{
+		SessionID: string(started.Records.Session.ID),
+		RunID:     string(started.Records.Run.ID),
+		Source:    tool.ToolCallSourceModel,
+	})
 	finished := false
 	defer func() {
 		if finished {

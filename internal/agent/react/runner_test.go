@@ -34,12 +34,33 @@ func (iterator *scriptedIterator) Run(_ context.Context, input IterationInput) (
 type scriptedCallExecutor struct {
 	executions map[string]ToolOutcome
 	errors     map[string]error
-	calls      []tool.Call
+	canonical  map[string]tool.ToolCall
+	calls      []tool.ToolCall
 }
 
-func (executor *scriptedCallExecutor) Execute(_ context.Context, call tool.Call) (ToolOutcome, error) {
-	executor.calls = append(executor.calls, call)
-	return executor.executions[call.ID], executor.errors[call.ID]
+func (executor *scriptedCallExecutor) ExecuteBatch(ctx context.Context, calls []tool.ToolCall, recorder tool.NormalizedCallRecorder) ([]tool.ToolExecution, error) {
+	executions := make([]tool.ToolExecution, 0, len(calls))
+	for _, call := range calls {
+		executor.calls = append(executor.calls, call)
+		if err := executor.errors[call.ID]; err != nil {
+			return nil, err
+		}
+		canonical := call
+		if replacement, ok := executor.canonical[call.ID]; ok {
+			canonical = replacement
+		}
+		executions = append(executions, executionFromOutcome(canonical, executor.executions[call.ID]))
+	}
+	if recorder != nil {
+		canonical := make([]tool.ToolCall, len(executions))
+		for index, execution := range executions {
+			canonical[index] = execution.Call
+		}
+		if err := recorder(ctx, canonical); err != nil {
+			return nil, err
+		}
+	}
+	return executions, nil
 }
 
 type scriptedProgress struct {
@@ -93,18 +114,27 @@ type orderingExecutor struct {
 	recorder *orderingRolloutRecorder
 }
 
-func (executor orderingExecutor) Execute(_ context.Context, call tool.Call) (ToolOutcome, error) {
-	executor.recorder.mutex.Lock()
-	if !executor.recorder.callsSaved {
+func (executor orderingExecutor) ExecuteBatch(ctx context.Context, calls []tool.ToolCall, recorder tool.NormalizedCallRecorder) ([]tool.ToolExecution, error) {
+	if recorder != nil {
+		if err := recorder(ctx, calls); err != nil {
+			return nil, err
+		}
+	}
+	executions := make([]tool.ToolExecution, 0, len(calls))
+	for _, call := range calls {
+		executor.recorder.mutex.Lock()
+		if !executor.recorder.callsSaved {
+			executor.recorder.mutex.Unlock()
+			return nil, errors.New("Tool Call executed before rollout persistence")
+		}
+		executor.recorder.executed = append(executor.recorder.executed, call.ID)
 		executor.recorder.mutex.Unlock()
-		return ToolOutcome{}, errors.New("Tool Call executed before rollout persistence")
+		if call.ID == "first" {
+			time.Sleep(20 * time.Millisecond)
+		}
+		executions = append(executions, executionFromOutcome(call, successfulExecution(call, call.ID)))
 	}
-	executor.recorder.executed = append(executor.recorder.executed, call.ID)
-	executor.recorder.mutex.Unlock()
-	if call.ID == "first" {
-		time.Sleep(20 * time.Millisecond)
-	}
-	return successfulExecution(call, call.ID), nil
+	return executions, nil
 }
 
 func (manager fixedContextWindowManager) Prepare(context.Context, agentcontext.WindowRequest) (agentcontext.RequestView, error) {
@@ -204,34 +234,37 @@ func TestRunnerPersistsToolCallsBeforeExecutionAndOutcomesInModelOrder(t *testin
 	}
 }
 
-func TestRunnerNormalizesToolArgumentsBeforeExecutionAndReplay(t *testing.T) {
+func TestRunnerReplaysCanonicalToolArgumentsReturnedByExecutor(t *testing.T) {
 	call := tool.NewCall("call-1", "read_file", []byte(`{"path":"README.md",`))
+	canonical := tool.NewCall("call-1", "read_file", []byte(`{"path":"README.md"}`))
 	iterator := &scriptedIterator{results: []IterationResult{toolIteration(call), candidateIteration("done")}}
-	executor := &scriptedCallExecutor{executions: map[string]ToolOutcome{"call-1": successfulExecution(call, "contents")}, errors: map[string]error{}}
+	executor := &scriptedCallExecutor{executions: map[string]ToolOutcome{"call-1": successfulExecution(canonical, "contents")}, errors: map[string]error{}, canonical: map[string]tool.ToolCall{"call-1": canonical}}
 	runner := newTestRunner(t, iterator, executor, &scriptedProgress{})
 	result, err := runner.Run(context.Background(), validRequest())
 	if err != nil || result.StopReason != StopCompleted {
 		t.Fatalf("normalize call: result=%#v err=%v", result, err)
 	}
-	if len(executor.calls) != 1 || string(executor.calls[0].Arguments) != `{"path":"README.md"}` {
-		t.Fatalf("executor did not receive normalized arguments: %#v", executor.calls)
+	if len(executor.calls) != 1 || string(executor.calls[0].Payload) != `{"path":"README.md",` {
+		t.Fatalf("Reactor changed arguments before the Tool Router: %#v", executor.calls)
 	}
 	if got := string(iterator.inputs[1].Messages[1].ToolCalls[0].Arguments); got != `{"path":"README.md"}` {
 		t.Fatalf("assistant replay did not use normalized arguments: %s", got)
 	}
 }
 
-func TestRunnerReturnsArgumentErrorObservationWithoutExecutingTool(t *testing.T) {
+func TestRunnerReplaysArgumentFailureReturnedByExecutor(t *testing.T) {
 	call := tool.NewCall("call-1", "read_file", []byte(`{"path":`))
+	canonical := tool.NewCall("call-1", "read_file", []byte(`{}`))
 	iterator := &scriptedIterator{results: []IterationResult{toolIteration(call), candidateIteration("recovered")}}
-	executor := &scriptedCallExecutor{executions: map[string]ToolOutcome{}, errors: map[string]error{}}
+	failure := ToolOutcome{CallID: call.ID, ToolName: call.Name, Status: ToolOutcomeFailed, Error: &ToolError{Kind: "invalid_arguments", Message: "arguments are not valid JSON"}}
+	executor := &scriptedCallExecutor{executions: map[string]ToolOutcome{call.ID: failure}, errors: map[string]error{}, canonical: map[string]tool.ToolCall{call.ID: canonical}}
 	runner := newTestRunner(t, iterator, executor, &scriptedProgress{})
 	result, err := runner.Run(context.Background(), validRequest())
 	if err != nil || result.StopReason != StopCompleted {
 		t.Fatalf("argument recovery: result=%#v err=%v", result, err)
 	}
-	if len(executor.calls) != 0 || len(result.Iterations) != 2 || result.Iterations[0].Intent != "tool_argument_error" {
-		t.Fatalf("invalid call reached executor or observation missing: calls=%#v result=%#v", executor.calls, result)
+	if len(executor.calls) != 1 || len(result.Iterations) != 2 || result.Iterations[0].Intent != "tool_calls" || result.Iterations[0].Outcomes[0].Error.Kind != "invalid_arguments" {
+		t.Fatalf("argument failure observation missing: calls=%#v result=%#v", executor.calls, result)
 	}
 	if len(iterator.inputs[1].Messages) != 3 || iterator.inputs[1].Messages[2].Role != llm.RoleTool {
 		t.Fatalf("argument error was not replayed: %#v", iterator.inputs[1].Messages)
@@ -398,7 +431,7 @@ func newTestRunner(t *testing.T, iterator ModelIterator, executor CallExecutor, 
 func validRequest() Request {
 	return Request{
 		RunID: "run-1", Goal: "inspect repository", Messages: []llm.Message{llm.UserMessage("inspect repository")},
-		AvailableTools: []tool.Spec{{Name: "read_file", Description: "read", InputSchema: []byte(`{"type":"object"}`), SideEffect: tool.SideEffectRead, Concurrency: tool.ToolConcurrencyShared, Idempotent: true}},
+		AvailableTools: []tool.Spec{{Name: "read_file", Description: "read", InputSchema: []byte(`{"type":"object"}`), SideEffect: tool.SideEffectRead, Idempotent: true}},
 		Budget:         BudgetState{Budget: Budget{MaxIterations: 8, MaxToolCalls: 8, MaxInputTokens: 1000, MaxOutputTokens: 1000, MaxDuration: time.Minute}},
 	}
 }
@@ -409,17 +442,41 @@ func candidateIteration(content string) IterationResult {
 	return IterationResult{Kind: IterationCandidate, Response: response, Candidate: &candidate}
 }
 
-func toolIteration(calls ...tool.Call) IterationResult {
+func toolIteration(calls ...tool.ToolCall) IterationResult {
 	message := llm.AssistantMessage("")
 	for _, call := range calls {
-		message.ToolCalls = append(message.ToolCalls, llm.ToolCall{ID: call.ID, Name: call.Name, Arguments: append([]byte(nil), call.Arguments...)})
+		message.ToolCalls = append(message.ToolCalls, llm.ToolCall{ID: call.ID, Name: call.Name, Arguments: append([]byte(nil), call.Payload...)})
 	}
 	return IterationResult{Kind: IterationToolCalls, Response: llm.Response{Message: message, FinishReason: llm.FinishReasonToolCalls}, ToolCalls: calls}
 }
 
-func successfulExecution(call tool.Call, text string) ToolOutcome {
-	result := tool.Result{CallID: call.ID, ToolName: call.Name, Text: text}
+func successfulExecution(call tool.ToolCall, text string) ToolOutcome {
+	result := tool.Output{CallID: call.ID, ToolName: call.Name, Text: text}
 	return ToolOutcome{CallID: call.ID, ToolName: call.Name, Status: ToolOutcomeSucceeded,
 		Result: result,
+	}
+}
+
+func executionFromOutcome(call tool.ToolCall, outcome ToolOutcome) tool.ToolExecution {
+	status := tool.ToolCallFailed
+	switch outcome.Status {
+	case ToolOutcomeSucceeded:
+		status = tool.ToolCallCompleted
+	case ToolOutcomeDenied:
+		status = tool.ToolCallDenied
+	case ToolOutcomeInterrupted:
+		status = tool.ToolCallInterrupted
+	}
+	var executionError *tool.ToolError
+	if outcome.Error != nil {
+		executionError = &tool.ToolError{Kind: outcome.Error.Kind, Message: outcome.Error.Message}
+	}
+	return tool.ToolExecution{
+		Call:   call,
+		Output: outcome.Result,
+		Outcome: tool.ToolCallOutcome{
+			Status: status, Error: executionError, Blocking: outcome.Blocking,
+			Duration: outcome.Duration, Metadata: outcome.Metadata,
+		},
 	}
 }

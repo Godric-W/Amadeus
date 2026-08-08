@@ -37,9 +37,10 @@ type Operation struct {
 }
 
 type Hunk struct {
-	Header string
-	Lines  []Line
-	Line   int
+	Header    string
+	Lines     []Line
+	Line      int
+	EndOfFile bool
 }
 
 type Line struct {

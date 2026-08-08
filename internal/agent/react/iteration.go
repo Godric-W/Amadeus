@@ -47,7 +47,7 @@ func (input IterationInput) Validate() error {
 type IterationResult struct {
 	Kind      IterationKind
 	Response  llm.Response
-	ToolCalls []tool.Call
+	ToolCalls []tool.ToolCall
 	Candidate *llm.Message
 }
 
@@ -185,7 +185,7 @@ func (iterator *Iterator) consume(ctx context.Context, iterationID string, strea
 
 func classify(response llm.Response) (IterationResult, error) {
 	if len(response.Message.ToolCalls) != 0 {
-		calls := make([]tool.Call, len(response.Message.ToolCalls))
+		calls := make([]tool.ToolCall, len(response.Message.ToolCalls))
 		for index, call := range response.Message.ToolCalls {
 			calls[index] = tool.NewCall(call.ID, call.Name, call.Arguments)
 		}

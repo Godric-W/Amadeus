@@ -23,7 +23,7 @@ type patchApplier interface {
 }
 
 type PatchProjector interface {
-	ProjectPatch(context.Context, tool.Output) error
+	ProjectPatch(context.Context, []patchtool.AppliedPatchDelta) error
 }
 
 type ApplyPatch struct {
@@ -63,7 +63,7 @@ func (applyPatch *ApplyPatch) Handle(ctx context.Context, invocation tool.Invoca
 		return tool.Output{}, err
 	}
 	var arguments applyPatchArguments
-	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+	if err := decodeArguments(call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
 	if strings.TrimSpace(arguments.Patch) == "" {
@@ -80,7 +80,11 @@ func (applyPatch *ApplyPatch) Handle(ctx context.Context, invocation tool.Invoca
 	applied, applyErr := applyPatch.executor.ApplyPrepared(ctx, preparedPatch)
 	result := patchToolResult(document, applied, applyErr)
 	if applyPatch.projector != nil && len(applied.Applied) > 0 {
-		if projectErr := applyPatch.projector.ProjectPatch(ctx, result); projectErr != nil {
+		deltas := make([]patchtool.AppliedPatchDelta, 0, len(applied.Applied))
+		for _, operation := range applied.Applied {
+			deltas = append(deltas, operation.Delta)
+		}
+		if projectErr := applyPatch.projector.ProjectPatch(ctx, deltas); projectErr != nil {
 			applyErr = errors.Join(applyErr, fmt.Errorf("project apply_patch diff: %w", projectErr))
 		}
 	}

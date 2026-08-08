@@ -18,6 +18,9 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 		"TargetStrategy", "ArgumentPaths", "preflightPaths",
 		"PrimaryRoot", "ProtectedRoots", "ModeDegraded", "ModeWorkspaceWrite", "GrantCache",
 		"AllowCommandFilesystemPaths", "RunApprovalStore", "DeniedGlobs", "TemporaryWritePaths",
+		"PreparedCall", "PreparedToolCall", "ToolDispatcher", "ToolExecutor", "ToolExecutionGate",
+		"ToolAuthorizer", "PostExecutionHook", "PreExecutionHook", "PathGuard",
+		"ToolConcurrencyShared", "ToolConcurrencyExclusive",
 	}
 	for _, relative := range []string{"cmd", "internal"} {
 		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
@@ -98,17 +101,23 @@ func TestPromptArchitectureKeepsAssetsInternalAndReactorDecoupled(t *testing.T) 
 	}
 }
 
-func TestToolAuthorizerDoesNotReparsePreparedArguments(t *testing.T) {
+func TestToolRouterOwnsArgumentValidation(t *testing.T) {
 	root := repositoryRoot(t)
-	path := filepath.Join(root, "internal", "policy", "tool_authorizer.go")
-	content, err := os.ReadFile(path)
+	routerPath := filepath.Join(root, "internal", "tool", "router.go")
+	router, err := os.ReadFile(routerPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"json.Unmarshal", "patch.Parse", "PresentCall", "requiredStringArgument", "optionalStringArgument"} {
-		if strings.Contains(string(content), forbidden) {
-			t.Errorf("ToolAuthorizer reparses prepared arguments through %q", forbidden)
-		}
+	if !strings.Contains(string(router), "router.validator.Validate") {
+		t.Fatal("ToolRouter does not own Tool argument validation")
+	}
+	aggregatorPath := filepath.Join(root, "internal", "llm", "openai", "tool_call_aggregator.go")
+	aggregator, err := os.ReadFile(aggregatorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(aggregator), "json.Valid") {
+		t.Fatal("Provider Tool Call aggregator rejects arguments before ToolRouter validation")
 	}
 }
 

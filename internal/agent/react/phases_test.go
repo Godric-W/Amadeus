@@ -56,7 +56,7 @@ func TestRunnerPhasesAreIndependentlyInjectableAndOrdered(t *testing.T) {
 	}
 }
 
-func TestDefaultAnalyzerNormalizesBeforeAct(t *testing.T) {
+func TestDefaultAnalyzerLeavesToolArgumentsForRouter(t *testing.T) {
 	response := llm.Response{Message: llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"README.md",`)}), FinishReason: llm.FinishReasonToolCalls}
 	analysis, err := newDefaultAnalyzer().Analyze(AnalyzeInput{
 		Think:          ThinkOutput{LLMCallID: "llm-1", Response: response},
@@ -65,8 +65,8 @@ func TestDefaultAnalyzerNormalizesBeforeAct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if analysis.Kind != AnalysisAct || len(analysis.Calls) != 1 || string(analysis.Calls[0].Arguments) != `{"path":"README.md"}` {
-		t.Fatalf("unexpected normalized analysis: %#v", analysis)
+	if analysis.Kind != AnalysisAct || len(analysis.Calls) != 1 || string(analysis.Calls[0].Payload) != `{"path":"README.md",` {
+		t.Fatalf("Analyzer changed Tool arguments before Router validation: %#v", analysis)
 	}
 }
 

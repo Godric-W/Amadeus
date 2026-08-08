@@ -57,7 +57,7 @@ func (readFile *ReadFile) SupportsParallelToolCalls() bool { return true }
 func (readFile *ReadFile) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	call := invocation.Call
 	var arguments readFileArguments
-	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+	if err := decodeArguments(call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
 	if strings.TrimSpace(arguments.Path) == "" {

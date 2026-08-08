@@ -134,7 +134,7 @@ func TestResponsesStreamAggregatesFunctionCallArguments(t *testing.T) {
 	}
 }
 
-func TestResponsesStreamRejectsInvalidFunctionCallArguments(t *testing.T) {
+func TestResponsesStreamDefersMalformedFunctionCallArgumentsToRouter(t *testing.T) {
 	fixture := strings.Join([]string{
 		`event: response.output_item.added`,
 		`data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"item_1","type":"function_call","call_id":"call_1","name":"read_file","arguments":"","status":"in_progress"}}`,
@@ -149,10 +149,12 @@ func TestResponsesStreamRejectsInvalidFunctionCallArguments(t *testing.T) {
 	stream := responsesEventFixtureStream(t, fixture)
 	defer stream.Close()
 
-	_, err := stream.Recv()
-	var providerError *llm.ProviderError
-	if !errors.As(err, &providerError) || providerError.Kind != llm.ProviderErrorProtocol || !strings.Contains(providerError.Message, "invalid JSON") {
-		t.Fatalf("unexpected malformed tool call error: %v", err)
+	completed, err := stream.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.FinishReason != llm.FinishReasonToolCalls || len(completed.ToolCalls) != 1 || string(completed.ToolCalls[0].Arguments) != `{` {
+		t.Fatalf("malformed arguments were not preserved for Router validation: %#v", completed)
 	}
 }
 

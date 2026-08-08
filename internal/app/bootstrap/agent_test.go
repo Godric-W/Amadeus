@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
-	"github.com/Godric-W/Amadeus/internal/agent/react"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
@@ -58,7 +57,7 @@ func TestNewAgentBuildsDefaultComposition(t *testing.T) {
 	if agent.Project.Path() != root.Path() {
 		t.Fatalf("unexpected project root: got %q, want %q", agent.Project.Path(), root.Path())
 	}
-	if agent.Client == nil || agent.Events != sink || agent.Audit == nil || agent.ContextManager == nil || agent.PromptRepository == nil || agent.PromptAssembler == nil || agent.Registry == nil || agent.Validator == nil || agent.Authorizer == nil || agent.ToolExecutor == nil || agent.Iterator == nil || agent.Progress == nil || agent.Runner == nil {
+	if agent.Client == nil || agent.Events != sink || agent.Audit == nil || agent.ContextManager == nil || agent.PromptRepository == nil || agent.PromptAssembler == nil || agent.Registry == nil || agent.CommandAuthorizer == nil || agent.ToolRouter == nil || agent.Iterator == nil || agent.Progress == nil || agent.Runner == nil {
 		t.Fatalf("Agent composition is incomplete: %#v", agent)
 	}
 	if !strings.Contains(agent.AgentPrompt.Content, "You are Amadeus") {
@@ -109,26 +108,26 @@ func (provider bootstrapWebSearch) Search(context.Context, string, int) ([]webse
 	return append([]websearch.Result(nil), provider.results...), nil
 }
 
-func TestNewAgentWithOptionsAttachesPostWriteHook(t *testing.T) {
+func TestNewAgentWithOptionsAttachesPatchProjector(t *testing.T) {
 	root := newBootstrapProjectRoot(t)
 	hook := &bootstrapPostWriteHook{}
 	agent, err := NewAgentWithOptions(validBootstrapConfig(), root, event.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink(), AgentOptions{
-		ClientFactory: successfulBootstrapFactory, PostWriteHooks: []react.PostExecutionHook{hook},
+		ClientFactory: successfulBootstrapFactory, PatchProjector: hook,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agent.ToolExecutor.Execute(context.Background(), tool.NewCall("write-1", "apply_patch", json.RawMessage(`{"patch":"*** Begin Patch\n*** Add File: hook.txt\n+value\n*** End Patch"}`))); err != nil {
+	if _, err := agent.ToolRouter.Execute(context.Background(), tool.NewCall("write-1", "apply_patch", json.RawMessage(`{"patch":"*** Begin Patch\n*** Add File: hook.txt\n+value\n*** End Patch"}`))); err != nil {
 		t.Fatal(err)
 	}
 	if hook.calls != 1 {
-		t.Fatalf("post-write hook calls = %d, want 1", hook.calls)
+		t.Fatalf("Patch Projector calls = %d, want 1", hook.calls)
 	}
 }
 
 type bootstrapPostWriteHook struct{ calls int }
 
-func (hook *bootstrapPostWriteHook) After(context.Context, tool.Spec, tool.Call, tool.Result) error {
+func (hook *bootstrapPostWriteHook) ProjectPatch(context.Context, tool.Output) error {
 	hook.calls++
 	return nil
 }
@@ -170,10 +169,10 @@ func TestAgentCompositionExecutesStructuredWorkspaceWriteWithoutOperationApprova
 	if err != nil {
 		t.Fatalf("build secured Agent composition: %v", err)
 	}
-	execution, err := agent.ToolExecutor.Execute(context.Background(), tool.NewCall(
+	execution, err := agent.ToolRouter.Execute(context.Background(), tool.NewCall(
 		"write-denied", "apply_patch", json.RawMessage(`{"patch":"*** Begin Patch\n*** Add File: denied.txt\n+must not exist\n*** End Patch"}`),
 	))
-	if err != nil || execution.Status != react.ToolOutcomeSucceeded || execution.Error != nil {
+	if err != nil || execution.Outcome.Status != tool.ToolCallCompleted || execution.Outcome.Error != nil {
 		t.Fatalf("unexpected structured write result: execution=%#v err=%v", execution, err)
 	}
 	if content, statErr := os.ReadFile(filepath.Join(root.Path(), "denied.txt")); statErr != nil || string(content) != "must not exist\n" {
@@ -195,7 +194,7 @@ func TestAgentCompositionRequiresAuditSink(t *testing.T) {
 	}
 }
 
-func TestAgentCompositionFailsClosedBeforeWriteWhenAuditFails(t *testing.T) {
+func TestAgentCompositionFailsClosedBeforeCommandWhenAuditFails(t *testing.T) {
 	configured := validBootstrapConfig()
 	root := newBootstrapProjectRoot(t)
 	auditSink := audit.NewMemorySink()
@@ -205,10 +204,10 @@ func TestAgentCompositionFailsClosedBeforeWriteWhenAuditFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build audited Agent composition: %v", err)
 	}
-	outcome, err := agent.ToolExecutor.Execute(context.Background(), tool.NewCall(
-		"write-audit-failed", "apply_patch", json.RawMessage(`{"patch":"*** Begin Patch\n*** Add File: unaudited.txt\n+must not exist\n*** End Patch"}`),
+	outcome, err := agent.ToolRouter.Execute(context.Background(), tool.NewCall(
+		"command-audit-failed", "execute_command", json.RawMessage(`{"command":"printf 'must not exist' > unaudited.txt"}`),
 	))
-	if err != nil || outcome.Status != react.ToolOutcomeDenied || outcome.Error == nil || !strings.Contains(outcome.Error.Message, expected.Error()) {
+	if err != nil || outcome.Outcome.Status != tool.ToolCallFailed || outcome.Outcome.Error == nil || !strings.Contains(outcome.Outcome.Error.Message, expected.Error()) {
 		t.Fatalf("unexpected audit write failure: outcome=%#v err=%v", outcome, err)
 	}
 	if _, statErr := os.Stat(filepath.Join(root.Path(), "unaudited.txt")); !errors.Is(statErr, os.ErrNotExist) {

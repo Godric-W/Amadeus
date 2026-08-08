@@ -24,7 +24,7 @@ func TestWriteStdinContinuesOwnedProcessAndPollsCompletion(t *testing.T) {
 		DefaultTimeout: 5 * time.Second, MaxTimeout: 5 * time.Second,
 		DefaultYield: time.Millisecond, MaxYield: time.Second,
 		MaxOutputBytes: 1 << 20, MaxOutputLines: 1_000, MaxOutputTokens: 8_000,
-		ProcessManager: manager,
+		ProcessManager: manager, Authorizer: newTestCommandAuthorizer(t),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestWriteStdinRejectsAnotherRunOwner(t *testing.T) {
 		DefaultTimeout: 5 * time.Second, MaxTimeout: 5 * time.Second,
 		DefaultYield: time.Millisecond, MaxYield: time.Second,
 		MaxOutputBytes: 1 << 20, MaxOutputLines: 1_000, MaxOutputTokens: 8_000,
-		ProcessManager: manager,
+		ProcessManager: manager, Authorizer: newTestCommandAuthorizer(t),
 	})
 	if err != nil {
 		t.Fatal(err)

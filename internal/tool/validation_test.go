@@ -68,6 +68,30 @@ func TestArgumentValidatorRepairsOnlyLimitedSyntax(t *testing.T) {
 	}
 }
 
+func TestArgumentValidatorRepairsInvalidStringEscapeAndReportsKinds(t *testing.T) {
+	validator := NewArgumentValidator()
+	normalized, err := validator.Normalize(validationSpec(false), json.RawMessage(`{"path":"src\d+",`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(normalized.Payload) != `{"path":"src\\d+"}` {
+		t.Fatalf("unexpected invalid escape repair: %s", normalized.Payload)
+	}
+	want := []ArgumentRepairKind{ArgumentRepairInvalidEscape, ArgumentRepairMissingCloser, ArgumentRepairTrailingComma}
+	if len(normalized.RepairKinds) != len(want) {
+		t.Fatalf("unexpected repair diagnostics: %#v", normalized.RepairKinds)
+	}
+	for index := range want {
+		if normalized.RepairKinds[index] != want[index] {
+			t.Fatalf("repair diagnostics = %#v, want %#v", normalized.RepairKinds, want)
+		}
+	}
+	second, err := validator.Normalize(validationSpec(false), normalized.Payload)
+	if err != nil || len(second.RepairKinds) != 0 || string(second.Payload) != string(normalized.Payload) {
+		t.Fatalf("repair is not idempotent: %#v err=%v", second, err)
+	}
+}
+
 func TestArgumentValidatorValidatesAfterRepair(t *testing.T) {
 	validator := NewArgumentValidator()
 	_, err := validator.Validate(validationSpec(false), json.RawMessage(`{"limit":10,`))

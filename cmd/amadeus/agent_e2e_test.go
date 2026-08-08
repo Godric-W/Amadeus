@@ -12,12 +12,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/react"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/mcp"
 	"github.com/Godric-W/Amadeus/internal/tool"
+	"github.com/Godric-W/Amadeus/internal/tool/builtin"
 	"github.com/Godric-W/Amadeus/internal/webfetch"
 )
 
@@ -212,7 +212,7 @@ func TestCodingAgentCommandReadsFixesTestsAndCompletes(t *testing.T) {
 			t.Fatalf("workflow stderr missing %q: %s", fragment, stderr.String())
 		}
 	}
-	if len(auditSink.Snapshot()) != 3 || client.streamIndex != 4 || client.completeIndex != 0 {
+	if len(auditSink.Snapshot()) != 1 || client.streamIndex != 4 || client.completeIndex != 0 {
 		t.Fatalf("unexpected workflow trace: audit=%d streams=%d completions=%d", len(auditSink.Snapshot()), client.streamIndex, client.completeIndex)
 	}
 }
@@ -462,10 +462,7 @@ func (*integratedWebFetcher) Fetch(context.Context, string) (webfetch.Document, 
 
 type integratedWriteHook struct{ calls int }
 
-func (hook *integratedWriteHook) After(_ context.Context, spec tool.Spec, _ tool.Call, _ tool.Result) error {
-	if spec.SideEffect != tool.SideEffectWrite {
-		return nil
-	}
+func (hook *integratedWriteHook) ProjectPatch(_ context.Context, _ tool.Output) error {
 	hook.calls++
 	return nil
 }
@@ -493,7 +490,7 @@ func TestCodingWorkflowIntegratesSkillMCPWebAndDiagnosticHook(t *testing.T) {
 	client, remote, hook := &integratedWorkflowClient{}, &integratedMCPClient{}, &integratedWriteHook{}
 	auditSink := audit.NewMemorySink()
 	runtime := commandRuntime{amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup, terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil }, mcpClientFactory: func(context.Context, mcp.ServerConfig) (mcp.Client, error) { return remote, nil }, webFetcher: &integratedWebFetcher{}, postWriteHooks: []react.PostExecutionHook{hook}, auditSinkFactory: func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil }, runIDFactory: func() string { return "integrated-m6" }}
+		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil }, mcpClientFactory: func(context.Context, mcp.ServerConfig) (mcp.Client, error) { return remote, nil }, webFetcher: &integratedWebFetcher{}, patchProjectors: []builtin.PatchProjector{hook}, auditSinkFactory: func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil }, runIDFactory: func() string { return "integrated-m6" }}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout, stderr bytes.Buffer
 	command.SetIn(strings.NewReader("s\ns\ns\ns\n"))
@@ -509,8 +506,8 @@ func TestCodingWorkflowIntegratesSkillMCPWebAndDiagnosticHook(t *testing.T) {
 	if content, err := os.ReadFile(filepath.Join(projectDirectory, "report.txt")); err != nil || string(content) != "integrated\n" {
 		t.Fatalf("write did not complete: content=%q err=%v", content, err)
 	}
-	if len(auditSink.Snapshot()) != 5 {
-		t.Fatalf("network/write approval audit missing: %#v", auditSink.Snapshot())
+	if len(auditSink.Snapshot()) != 0 {
+		t.Fatalf("structured integrations unexpectedly entered command approval audit: %#v", auditSink.Snapshot())
 	}
 }
 

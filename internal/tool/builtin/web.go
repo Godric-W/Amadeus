@@ -33,7 +33,7 @@ func (fetch *WebFetch) SupportsParallelToolCalls() bool { return true }
 func (fetch *WebFetch) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	call := invocation.Call
 	var arguments webFetchArguments
-	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+	if err := decodeArguments(call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
 	if strings.TrimSpace(arguments.URL) == "" {
@@ -64,7 +64,7 @@ func (search *WebSearch) SupportsParallelToolCalls() bool { return true }
 func (search *WebSearch) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	call := invocation.Call
 	var arguments webSearchArguments
-	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+	if err := decodeArguments(call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
 	arguments.Query = strings.TrimSpace(arguments.Query)

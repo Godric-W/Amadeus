@@ -45,7 +45,7 @@ type AnalyzeOutput struct {
 	LLMCallID        string
 	Response         llm.Response
 	FinalMessage     *llm.Message
-	Calls            []tool.Call
+	Calls            []tool.ToolCall
 	ArgumentFailures []ToolOutcome
 }
 
@@ -54,11 +54,13 @@ type AnalyzePort interface {
 }
 
 type ActInput struct {
-	Calls          []tool.Call
+	Calls          []tool.ToolCall
 	AvailableTools []tool.Spec
+	RecordCalls    tool.NormalizedCallRecorder
 }
 
 type ActOutput struct {
+	Calls     []tool.ToolCall
 	Outcomes  []ToolOutcome
 	Attempted int
 }
@@ -152,7 +154,7 @@ func (analyzer *defaultAnalyzer) Analyze(input AnalyzeInput) (AnalyzeOutput, err
 		return output, nil
 	case IterationToolCalls:
 		output.Kind = AnalysisAct
-		output.Calls = append([]tool.Call(nil), classified.ToolCalls...)
+		output.Calls = append([]tool.ToolCall(nil), classified.ToolCalls...)
 		return output, nil
 	default:
 		return AnalyzeOutput{}, fmt.Errorf("unsupported analysis kind %q", classified.Kind)
@@ -164,15 +166,17 @@ type defaultActor struct {
 }
 
 func (actor *defaultActor) Act(ctx context.Context, input ActInput) (ActOutput, error) {
-	executions, err := actor.executor.ExecuteBatch(ctx, input.Calls)
+	executions, err := actor.executor.ExecuteBatch(ctx, input.Calls, input.RecordCalls)
 	if err != nil {
 		return ActOutput{}, err
 	}
 	outcomes := make([]ToolOutcome, 0, len(executions))
+	calls := make([]tool.ToolCall, 0, len(executions))
 	for _, execution := range executions {
+		calls = append(calls, execution.Call.Clone())
 		outcomes = append(outcomes, projectToolExecution(execution))
 	}
-	return ActOutput{Outcomes: outcomes, Attempted: len(executions)}, nil
+	return ActOutput{Calls: calls, Outcomes: outcomes, Attempted: len(executions)}, nil
 }
 
 type defaultObserver struct {
@@ -182,8 +186,18 @@ type defaultObserver struct {
 
 func (observer *defaultObserver) Observe(input ObserveInput) (ObserveOutput, error) {
 	startedAt := observer.now()
+	calls := input.Analysis.Calls
+	response := input.Analysis.Response.Message
+	response.Parts = append([]llm.ContentPart(nil), response.Parts...)
+	if input.Analysis.Kind == AnalysisAct && len(input.Act.Calls) == len(input.Analysis.Calls) {
+		calls = input.Act.Calls
+		response.ToolCalls = make([]llm.ToolCall, 0, len(calls))
+		for _, call := range calls {
+			response.ToolCalls = append(response.ToolCalls, llm.ToolCall{ID: call.ID, Name: call.Name, Arguments: append([]byte(nil), call.Payload...)})
+		}
+	}
 	iteration := Iteration{
-		Index: input.Index, LLMCallID: input.Analysis.LLMCallID, ToolCalls: append([]tool.Call(nil), input.Analysis.Calls...),
+		Index: input.Index, LLMCallID: input.Analysis.LLMCallID, ToolCalls: append([]tool.ToolCall(nil), calls...),
 		Status: IterationRunning, StartedAt: startedAt,
 	}
 	var outcomes []ToolOutcome
@@ -214,7 +228,7 @@ func (observer *defaultObserver) Observe(input ObserveInput) (ObserveOutput, err
 	}
 	if input.Analysis.Kind == AnalysisAct {
 		signals, err := observer.progress.Observe(ProgressSample{
-			Calls: input.Analysis.Calls, Outcomes: output.Iteration.Outcomes, Specs: input.AvailableTools,
+			Calls: calls, Outcomes: output.Iteration.Outcomes, Specs: input.AvailableTools,
 		})
 		if err != nil {
 			return ObserveOutput{}, err
@@ -223,7 +237,7 @@ func (observer *defaultObserver) Observe(input ObserveInput) (ObserveOutput, err
 			output.StalledReason = signal.Reason
 		}
 	}
-	replay, err := ReplayToolResults(input.Analysis.Response.Message, outcomes)
+	replay, err := ReplayToolResults(response, outcomes)
 	if err != nil {
 		return ObserveOutput{}, err
 	}

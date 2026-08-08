@@ -102,6 +102,16 @@ func TestParseMoveWithOptionalUpdate(t *testing.T) {
 	}
 }
 
+func TestParseEndOfFileMarker(t *testing.T) {
+	document, err := Parse([]byte("*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** End of File\n*** End Patch"), ParseOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(document.Operations) != 1 || len(document.Operations[0].Hunks) != 1 || !document.Operations[0].Hunks[0].EndOfFile {
+		t.Fatalf("End of File marker was not preserved: %#v", document)
+	}
+}
+
 func TestParseRejectsInvalidDocuments(t *testing.T) {
 	tests := []struct {
 		name    string

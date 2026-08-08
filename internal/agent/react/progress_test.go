@@ -10,8 +10,8 @@ import (
 
 func TestProgressMonitorDetectsRepeatedCanonicalAction(t *testing.T) {
 	monitor := DefaultProgressMonitor()
-	first := ProgressSample{Calls: []tool.Call{tool.NewCall("call_1", "read_file", json.RawMessage(`{"path":"README.md","offset":0}`))}}
-	second := ProgressSample{Calls: []tool.Call{tool.NewCall("call_2", "read_file", json.RawMessage(`{"offset":0,"path":"README.md"}`))}}
+	first := ProgressSample{Calls: []tool.ToolCall{tool.NewCall("call_1", "read_file", json.RawMessage(`{"path":"README.md","offset":0}`))}}
+	second := ProgressSample{Calls: []tool.ToolCall{tool.NewCall("call_2", "read_file", json.RawMessage(`{"offset":0,"path":"README.md"}`))}}
 	if signals, err := monitor.Observe(first); err != nil || hasSignal(signals, ProgressRepeatedAction) {
 		t.Fatalf("unexpected first action signals=%#v err=%v", signals, err)
 	}
@@ -43,12 +43,12 @@ func TestProgressMonitorDetectsRepeatedErrorAndOutcome(t *testing.T) {
 func TestProgressMonitorDoesNotTreatDifferentCallsWithSameOutputAsRepeated(t *testing.T) {
 	monitor := DefaultProgressMonitor()
 	first := ProgressSample{
-		Calls:    []tool.Call{tool.NewCall("first", "read_file", json.RawMessage(`{"path":"a.go"}`))},
-		Outcomes: []ToolOutcome{{CallID: "first", ToolName: "read_file", Status: ToolOutcomeSucceeded, Result: tool.Result{Text: "same"}}},
+		Calls:    []tool.ToolCall{tool.NewCall("first", "read_file", json.RawMessage(`{"path":"a.go"}`))},
+		Outcomes: []ToolOutcome{{CallID: "first", ToolName: "read_file", Status: ToolOutcomeSucceeded, Result: tool.Output{Text: "same"}}},
 	}
 	second := ProgressSample{
-		Calls:    []tool.Call{tool.NewCall("second", "read_file", json.RawMessage(`{"path":"b.go"}`))},
-		Outcomes: []ToolOutcome{{CallID: "second", ToolName: "read_file", Status: ToolOutcomeSucceeded, Result: tool.Result{Text: "same"}}},
+		Calls:    []tool.ToolCall{tool.NewCall("second", "read_file", json.RawMessage(`{"path":"b.go"}`))},
+		Outcomes: []ToolOutcome{{CallID: "second", ToolName: "read_file", Status: ToolOutcomeSucceeded, Result: tool.Output{Text: "same"}}},
 	}
 	if _, err := monitor.Observe(first); err != nil {
 		t.Fatal(err)
@@ -66,7 +66,7 @@ func TestProgressMonitorAllowsPermissionRequiredCallToBeRetried(t *testing.T) {
 	monitor := DefaultProgressMonitor()
 	first := tool.NewCall("patch-1", "apply_patch", json.RawMessage(`{"patch":"same"}`))
 	signals, err := monitor.Observe(ProgressSample{
-		Calls: []tool.Call{first},
+		Calls: []tool.ToolCall{first},
 		Outcomes: []ToolOutcome{{
 			CallID: first.ID, ToolName: first.Name, Status: ToolOutcomeDenied,
 			Error: &ToolError{Kind: "permission_required", Message: "request write access"},
@@ -75,13 +75,13 @@ func TestProgressMonitorAllowsPermissionRequiredCallToBeRetried(t *testing.T) {
 	if err != nil || hasSignal(signals, ProgressRepeatedAction) {
 		t.Fatalf("permission preflight counted as an attempted action: signals=%#v err=%v", signals, err)
 	}
-	if _, err := monitor.Observe(ProgressSample{Calls: []tool.Call{tool.NewCall("grant-1", "request_permissions", json.RawMessage(`{"writable_roots":["/outside"]}`))}}); err != nil {
+	if _, err := monitor.Observe(ProgressSample{Calls: []tool.ToolCall{tool.NewCall("grant-1", "request_permissions", json.RawMessage(`{"writable_roots":["/outside"]}`))}}); err != nil {
 		t.Fatal(err)
 	}
 	retry := tool.NewCall("patch-2", "apply_patch", json.RawMessage(`{"patch":"same"}`))
 	signals, err = monitor.Observe(ProgressSample{
-		Calls:    []tool.Call{retry},
-		Outcomes: []ToolOutcome{{CallID: retry.ID, ToolName: retry.Name, Status: ToolOutcomeSucceeded, Result: tool.Result{Text: "applied"}}},
+		Calls:    []tool.ToolCall{retry},
+		Outcomes: []ToolOutcome{{CallID: retry.ID, ToolName: retry.Name, Status: ToolOutcomeSucceeded, Result: tool.Output{Text: "applied"}}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -95,8 +95,8 @@ func TestProgressMonitorDetectsHighImpactCalls(t *testing.T) {
 	monitor := DefaultProgressMonitor()
 	call := tool.NewCall("call_write", "write_file", json.RawMessage(`{"path":"main.go"}`))
 	signals, err := monitor.Observe(ProgressSample{
-		Calls: []tool.Call{call},
-		Specs: []tool.Spec{{Name: "write_file", SideEffect: tool.SideEffectWrite, Concurrency: tool.ToolConcurrencyExclusive}},
+		Calls: []tool.ToolCall{call},
+		Specs: []tool.Spec{{Name: "write_file", SideEffect: tool.SideEffectWrite}},
 	})
 	if err != nil {
 		t.Fatalf("observe high-impact call: %v", err)
@@ -113,7 +113,7 @@ func TestProgressMonitorIsConcurrentSafe(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			_, _ = monitor.Observe(ProgressSample{Calls: []tool.Call{tool.NewCall("call", "read_file", json.RawMessage(`{"path":"README.md"}`))}})
+			_, _ = monitor.Observe(ProgressSample{Calls: []tool.ToolCall{tool.NewCall("call", "read_file", json.RawMessage(`{"path":"README.md"}`))}})
 		}()
 	}
 	wait.Wait()

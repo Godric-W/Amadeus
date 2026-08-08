@@ -55,7 +55,7 @@ func (listDir *ListDir) SupportsParallelToolCalls() bool { return true }
 func (listDir *ListDir) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	call := invocation.Call
 	var arguments listDirArguments
-	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+	if err := decodeArguments(call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
 	if arguments.Limit < 0 {

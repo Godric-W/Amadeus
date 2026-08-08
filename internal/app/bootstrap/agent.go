@@ -319,7 +319,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 		visibility["mcp.resources"] = true
 	}
 	toolRouter, err := tool.NewRouter(registry, tool.NewArgumentValidator(), tool.RouterOptions{
-		Observer: react.NewToolEventObserver(events), MaxParallel: configured.Agent.MaxParallelTools,
+		Observer: react.NewToolEventObserver(events), MaxParallel: configured.Agent.MaxParallelTools, Visibility: visibility,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create tool router: %w", err)

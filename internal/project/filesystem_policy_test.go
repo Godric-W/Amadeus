@@ -79,7 +79,7 @@ func TestFileSystemPolicyReadOnlyAndDeniedCannotBeGranted(t *testing.T) {
 	}
 }
 
-func TestPathGuardCanonicalizesSymlinksAndWriteAncestors(t *testing.T) {
+func TestFileSystemPolicyCanonicalizesSymlinksAndWriteAncestors(t *testing.T) {
 	workspace := t.TempDir()
 	real := filepath.Join(workspace, "real")
 	if err := os.Mkdir(real, 0o700); err != nil {
@@ -88,13 +88,13 @@ func TestPathGuardCanonicalizesSymlinksAndWriteAncestors(t *testing.T) {
 	if err := os.Symlink(real, filepath.Join(workspace, "alias")); err != nil {
 		t.Fatal(err)
 	}
-	guard, err := NewPathGuard(NewRootForTest(t, workspace))
+	policy, err := NewFileSystemPolicy(FileSystemPolicyOptions{CWD: workspace, Profile: PermissionProfile{WorkspaceRoots: []string{workspace}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := guard.ResolveForWrite("alias/new/file.txt")
-	if err != nil || resolved != filepath.Join(real, "new", "file.txt") {
-		t.Fatalf("canonical write: %q %v", resolved, err)
+	resolved, err := policy.ResolveForWrite("alias/new/file.txt")
+	if err != nil || resolved.Canonical != filepath.Join(real, "new", "file.txt") {
+		t.Fatalf("canonical write: %#v %v", resolved, err)
 	}
 }
 

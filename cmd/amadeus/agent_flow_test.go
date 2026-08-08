@@ -383,8 +383,8 @@ func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 		t.Fatalf("tool result was not replayed into the second request: %#v", second.Messages)
 	}
 	records := auditSink.Snapshot()
-	if len(records) != 1 || records[0].ToolName != "read_file" || records[0].Outcome != audit.OutcomeAllow || records[0].Source != "policy" {
-		t.Fatalf("unexpected authorization audit: %#v", records)
+	if len(records) != 0 {
+		t.Fatalf("read-only Tool unexpectedly entered command approval audit: %#v", records)
 	}
 }
 

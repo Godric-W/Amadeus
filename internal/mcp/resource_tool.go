@@ -51,7 +51,7 @@ func (value *ListResourcesTool) Spec() tool.Spec                 { return value.
 func (value *ListResourcesTool) SupportsParallelToolCalls() bool { return true }
 func (value *ListResourcesTool) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	var arguments listResourcesArguments
-	if err := json.Unmarshal(invocation.Call.Arguments, &arguments); err != nil {
+	if err := json.Unmarshal(invocation.Call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
 	if err := validateSampleBinding(ctx, value.manager); err != nil {
@@ -75,7 +75,7 @@ func (value *ReadResourceTool) Spec() tool.Spec                 { return value.s
 func (value *ReadResourceTool) SupportsParallelToolCalls() bool { return true }
 func (value *ReadResourceTool) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	var arguments readResourceArguments
-	if err := json.Unmarshal(invocation.Call.Arguments, &arguments); err != nil {
+	if err := json.Unmarshal(invocation.Call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
 	if err := validateSampleBinding(ctx, value.manager); err != nil {

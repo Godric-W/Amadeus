@@ -13,7 +13,7 @@ import (
 )
 
 type CallExecutor interface {
-	ExecuteBatch(context.Context, []tool.ToolCall) ([]tool.ToolExecution, error)
+	ExecuteBatch(context.Context, []tool.ToolCall, tool.NormalizedCallRecorder) ([]tool.ToolExecution, error)
 }
 
 type ProgressObserver interface {
@@ -221,14 +221,6 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 			}
 			return finish(Result{Iterations: state.Iterations, Usage: state.Usage, StopReason: StopFailed, Reason: err.Error()})
 		}
-		if analysis.Kind != AnalysisFinal && runner.options.Rollout != nil {
-			if err := runner.options.Rollout.RecordToolCalls(iterationCtx, analysis.Response.Message); err != nil {
-				if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
-					err = errors.Join(err, publishErr)
-				}
-				return finish(Result{Iterations: state.Iterations, Usage: state.Usage, StopReason: StopFailed, Reason: err.Error()})
-			}
-		}
 		var act ActOutput
 		if analysis.Kind == AnalysisAct {
 			if state.Budget.Budget.MaxToolCalls > 0 && state.Budget.ToolCallsUsed+len(analysis.Calls) > state.Budget.Budget.MaxToolCalls {
@@ -245,7 +237,15 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 				SkillRevision:      view.Revisions.SkillCatalog,
 				ToolRevision:       view.Revisions.ToolExposure,
 			})
-			act, err = runner.act.Act(toolCtx, ActInput{Calls: analysis.Calls, AvailableTools: view.Tools})
+			var recorder tool.NormalizedCallRecorder
+			if runner.options.Rollout != nil {
+				message := analysis.Response.Message
+				recorder = func(recordCtx context.Context, calls []tool.ToolCall) error {
+					message.ToolCalls = normalizedMessageToolCalls(message.ToolCalls, calls)
+					return runner.options.Rollout.RecordToolCalls(recordCtx, message)
+				}
+			}
+			act, err = runner.act.Act(toolCtx, ActInput{Calls: analysis.Calls, AvailableTools: view.Tools, RecordCalls: recorder})
 			if err != nil {
 				if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
 					err = errors.Join(err, publishErr)
@@ -337,13 +337,13 @@ func (runner *Runner) publish(ctx context.Context, runtimeEvent event.Event) err
 	return runner.events.Publish(ctx, runtimeEvent)
 }
 
-func argumentFailureExecution(call tool.Call, err error) ToolOutcome {
-	result := tool.Result{CallID: call.ID, ToolName: call.Name}
+func argumentFailureExecution(call tool.ToolCall, err error) ToolOutcome {
+	result := tool.Output{CallID: call.ID, ToolName: call.Name}
 	return ToolOutcome{CallID: call.ID, ToolName: call.Name, Status: ToolOutcomeFailed, Result: result, Error: &ToolError{Kind: "invalid_arguments", Message: err.Error()}}
 }
 
-func normalizedMessageToolCalls(original []llm.ToolCall, calls []tool.Call) []llm.ToolCall {
-	byID := make(map[string]tool.Call, len(calls))
+func normalizedMessageToolCalls(original []llm.ToolCall, calls []tool.ToolCall) []llm.ToolCall {
+	byID := make(map[string]tool.ToolCall, len(calls))
 	for _, call := range calls {
 		byID[call.ID] = call
 	}
@@ -351,7 +351,7 @@ func normalizedMessageToolCalls(original []llm.ToolCall, calls []tool.Call) []ll
 	for index, call := range original {
 		result[index] = call
 		if normalized, ok := byID[call.ID]; ok {
-			result[index].Arguments = append([]byte(nil), normalized.Arguments...)
+			result[index].Arguments = append([]byte(nil), normalized.Payload...)
 		}
 	}
 	return result
@@ -360,7 +360,7 @@ func normalizedMessageToolCalls(original []llm.ToolCall, calls []tool.Call) []ll
 func (runner *Runner) rejectedToolIteration(index int, analysis AnalyzeOutput) Iteration {
 	startedAt := runner.now()
 	completedAt := runner.now()
-	return Iteration{Index: index, LLMCallID: analysis.LLMCallID, Intent: "tool_calls_budget_rejected", ToolCalls: append([]tool.Call(nil), analysis.Calls...), Status: IterationFailed, StartedAt: startedAt, CompletedAt: &completedAt}
+	return Iteration{Index: index, LLMCallID: analysis.LLMCallID, Intent: "tool_calls_budget_rejected", ToolCalls: append([]tool.ToolCall(nil), analysis.Calls...), Status: IterationFailed, StartedAt: startedAt, CompletedAt: &completedAt}
 }
 
 func (runner *Runner) durationSince(startedAt time.Time) time.Duration {

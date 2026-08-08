@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
 	sandboxdomain "github.com/Godric-W/Amadeus/internal/sandbox"
 )
@@ -75,11 +76,8 @@ func TestExecuteCommandAllowsReadableExternalCWD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guard, err := project.NewPathGuardWithPolicy(policy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	executeCommand, err := NewExecuteCommand(root, ExecuteCommandOptions{DefaultTimeout: 5 * time.Second, MaxTimeout: 5 * time.Second, MaxOutputBytes: 1024, MaxOutputLines: 100, PathGuard: guard})
+	authorizer := newTestCommandAuthorizer(t)
+	executeCommand, err := NewExecuteCommand(root, ExecuteCommandOptions{DefaultTimeout: 5 * time.Second, MaxTimeout: 5 * time.Second, MaxOutputBytes: 1024, MaxOutputLines: 100, FileSystemPolicy: policy, Authorizer: authorizer})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,13 +108,9 @@ func TestExecuteCommandWorkspaceWriteSandboxReadsHostAndDeniesUndeclaredWrites(t
 	if runner.Mode() != sandboxdomain.IsolationSandboxed {
 		t.Skip("workspace-write sandbox unavailable: " + runner.Diagnostic())
 	}
-	guard, err := project.NewPathGuardWithPolicy(policy)
-	if err != nil {
-		t.Fatal(err)
-	}
 	executeCommand, err := NewExecuteCommand(root, ExecuteCommandOptions{
 		DefaultTimeout: 5 * time.Second, MaxTimeout: 5 * time.Second, MaxOutputBytes: 4096, MaxOutputLines: 100,
-		PathGuard: guard, Sandbox: runner,
+		FileSystemPolicy: policy, Sandbox: runner,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -153,9 +147,24 @@ func newTestExecuteCommand(t *testing.T, rootPath string, maxTimeout time.Durati
 	}
 	executeCommand, err := NewExecuteCommand(root, ExecuteCommandOptions{
 		DefaultTimeout: maxTimeout, MaxTimeout: maxTimeout, MaxOutputBytes: maxBytes, MaxOutputLines: maxLines,
+		Authorizer: newTestCommandAuthorizer(t),
 	})
 	if err != nil {
 		t.Fatalf("create execute_command: %v", err)
 	}
 	return executeCommand
+}
+
+func newTestCommandAuthorizer(t *testing.T) *policy.CommandAuthorizer {
+	t.Helper()
+	authorizer, err := policy.NewCommandAuthorizer(&permissionApprovalHandler{decision: policy.ApprovalDecision{
+		Outcome: policy.ApprovalAllow,
+		Scope:   policy.ApprovalOnce,
+		Source:  policy.ApprovalSourceUser,
+		Reason:  "test command approved",
+	}}, policy.NewSessionApprovalStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return authorizer
 }

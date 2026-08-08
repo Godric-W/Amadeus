@@ -120,6 +120,12 @@ func TestRegistryStoresExposureMetadata(t *testing.T) {
 	if len(entries) != 1 || entries[0].Exposure != ExposureConditional || entries[0].Condition != "provider.images" {
 		t.Fatalf("unexpected registry metadata: %#v", entries)
 	}
+	if _, ok := registry.LookupVisible("view_image", nil); ok {
+		t.Fatal("conditional Handler was visible without its condition")
+	}
+	if handler, ok := registry.LookupVisible("view_image", map[string]bool{"provider.images": true}); !ok || handler.Spec().Name != "view_image" {
+		t.Fatalf("conditional Handler was not visible: %#v, %v", handler, ok)
+	}
 }
 
 func newFakeHandler(name string, parallel bool) *fakeHandler {

@@ -90,7 +90,7 @@ func (globFiles *GlobFiles) SupportsParallelToolCalls() bool { return true }
 func (globFiles *GlobFiles) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	call := invocation.Call
 	var arguments globFilesArguments
-	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+	if err := decodeArguments(call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
 	pattern, err := workspace.NormalizeGlob(arguments.Pattern)

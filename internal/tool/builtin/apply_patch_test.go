@@ -95,7 +95,7 @@ func TestApplyPatchReportsMoveMetadata(t *testing.T) {
 	}
 }
 
-func TestApplyPatchPrepareRunsOnceAndIncludesMoveTargets(t *testing.T) {
+func TestApplyPatchHandlesMoveThroughPrivatePreparedPatch(t *testing.T) {
 	rootPath := t.TempDir()
 	writeBuiltinPatchFile(t, rootPath, "old.txt", "old\n")
 	root, err := project.NewRoot(rootPath)
@@ -107,16 +107,8 @@ func TestApplyPatchPrepareRunsOnceAndIncludesMoveTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := tool.NewCall("move", "apply_patch", json.RawMessage(`{"patch":"*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n*** End Patch"}`))
-	prepared, err := candidate.Prepare(context.Background(), call)
-	if err != nil {
-		t.Fatalf("prepare move patch: %v", err)
-	}
-	targets := prepared.Targets()
-	if len(targets) != 2 || targets[0].RequestedPath != "old.txt" || targets[1].RequestedPath != "new.txt" || targets[0].CanonicalPath == targets[1].CanonicalPath {
-		t.Fatalf("unexpected prepared move targets: %#v", targets)
-	}
-	if _, err := candidate.Execute(context.Background(), prepared); err != nil {
-		t.Fatalf("execute prepared move patch: %v", err)
+	if _, err := candidate.Handle(context.Background(), tool.Invocation{Call: call, Source: tool.ToolCallSourceModel}); err != nil {
+		t.Fatalf("handle move patch: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(rootPath, "old.txt")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("move source still exists: %v", err)
@@ -155,12 +147,12 @@ type fakePatchApplier struct {
 	calls        int
 }
 
-func (applier *fakePatchApplier) Prepare(context.Context, patchtool.Document) (*patchtool.PreparedDocument, error) {
+func (applier *fakePatchApplier) PreparePatch(context.Context, patchtool.Document) (*patchtool.PreparedPatch, error) {
 	applier.prepareCalls++
-	return &patchtool.PreparedDocument{}, nil
+	return &patchtool.PreparedPatch{}, nil
 }
 
-func (applier *fakePatchApplier) ApplyPrepared(context.Context, *patchtool.PreparedDocument) (patchtool.ApplyResult, error) {
+func (applier *fakePatchApplier) ApplyPrepared(context.Context, *patchtool.PreparedPatch) (patchtool.ApplyResult, error) {
 	applier.calls++
 	return applier.result, applier.err
 }

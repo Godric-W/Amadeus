@@ -116,6 +116,16 @@ func (registry *Registry) Lookup(name string) (Handler, bool) {
 	return entry.Handler, exists
 }
 
+func (registry *Registry) LookupVisible(name string, conditions map[string]bool) (Handler, bool) {
+	registry.mutex.RLock()
+	entry, exists := registry.tools[strings.TrimSpace(name)]
+	registry.mutex.RUnlock()
+	if !exists || !entryVisible(entry, conditions) {
+		return nil, false
+	}
+	return entry.Handler, true
+}
+
 func (registry *Registry) Snapshot() []Entry {
 	registry.mutex.RLock()
 	entries := make([]Entry, 0, len(registry.tools))
@@ -133,21 +143,24 @@ func (registry *Registry) VisibleSnapshot(conditions map[string]bool) []Entry {
 	entries := registry.Snapshot()
 	visible := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
-		switch entry.Exposure {
-		case ExposureDirect:
+		if entryVisible(entry, conditions) {
 			visible = append(visible, entry)
-		case ExposureConditional:
-			if conditions != nil && conditions[entry.Condition] {
-				visible = append(visible, entry)
-			}
-		case ExposureDeferred:
-			if conditions != nil && conditions[entry.Condition] {
-				visible = append(visible, entry)
-			}
-		case ExposureHidden:
 		}
 	}
 	return visible
+}
+
+func entryVisible(entry Entry, conditions map[string]bool) bool {
+	switch entry.Exposure {
+	case ExposureDirect:
+		return true
+	case ExposureConditional, ExposureDeferred:
+		return conditions != nil && conditions[entry.Condition]
+	case ExposureHidden:
+		return false
+	default:
+		return false
+	}
 }
 
 func normalizeRegistration(registration Registration) (Registration, error) {

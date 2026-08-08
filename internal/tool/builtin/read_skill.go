@@ -50,7 +50,7 @@ func (reader *ReadSkill) SupportsParallelToolCalls() bool { return true }
 func (reader *ReadSkill) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	call := invocation.Call
 	var arguments readSkillArguments
-	if err := decodeArguments(call.Arguments, &arguments); err != nil {
+	if err := decodeArguments(call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
 	arguments.Name = strings.TrimSpace(arguments.Name)

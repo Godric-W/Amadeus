@@ -305,10 +305,7 @@ func mustContextInstruction(t *testing.T, source instruction.Source, path string
 func contextToolSpec(name string, sideEffect tool.SideEffect) tool.Spec {
 	spec := tool.Spec{
 		Name: name, Description: name + " test tool", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`),
-		SideEffect: sideEffect, Concurrency: tool.ToolConcurrencyExclusive, Idempotent: true,
-	}
-	if sideEffect == tool.SideEffectRead {
-		spec.Concurrency = tool.ToolConcurrencyShared
+		SideEffect: sideEffect, Idempotent: true,
 	}
 	return spec
 }

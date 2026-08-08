@@ -66,13 +66,13 @@ func (spec Spec) Clone() Spec {
 	return spec
 }
 
-type ToolCall struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
-}
+type ToolPayload = json.RawMessage
 
-type Call = ToolCall
+type ToolCall struct {
+	ID      string      `json:"id"`
+	Name    string      `json:"name"`
+	Payload ToolPayload `json:"payload"`
+}
 
 type ToolCallSource string
 
@@ -87,6 +87,26 @@ type Invocation struct {
 	RunID     string
 	Call      ToolCall
 	Source    ToolCallSource
+}
+
+type InvocationMetadata struct {
+	SessionID string
+	RunID     string
+	Source    ToolCallSource
+}
+
+type invocationMetadataContextKey struct{}
+
+func WithInvocationMetadata(ctx context.Context, metadata InvocationMetadata) context.Context {
+	return context.WithValue(ctx, invocationMetadataContextKey{}, metadata)
+}
+
+func InvocationMetadataFromContext(ctx context.Context) InvocationMetadata {
+	if ctx == nil {
+		return InvocationMetadata{}
+	}
+	metadata, _ := ctx.Value(invocationMetadataContextKey{}).(InvocationMetadata)
+	return metadata
 }
 
 type RequestSnapshot struct {
@@ -111,14 +131,14 @@ func RequestSnapshotFromContext(ctx context.Context) (RequestSnapshot, bool) {
 
 func NewCall(id, name string, arguments json.RawMessage) ToolCall {
 	return ToolCall{
-		ID:        strings.TrimSpace(id),
-		Name:      strings.TrimSpace(name),
-		Arguments: append(json.RawMessage(nil), arguments...),
+		ID:      strings.TrimSpace(id),
+		Name:    strings.TrimSpace(name),
+		Payload: append(json.RawMessage(nil), arguments...),
 	}
 }
 
 func (call ToolCall) Clone() ToolCall {
-	call.Arguments = append(json.RawMessage(nil), call.Arguments...)
+	call.Payload = append(json.RawMessage(nil), call.Payload...)
 	return call
 }
 
@@ -137,15 +157,14 @@ type ContentPart struct {
 }
 
 type Output struct {
-	CallID   string         `json:"call_id"`
-	ToolName string         `json:"tool_name"`
-	Text     string         `json:"text,omitempty"`
-	Parts    []ContentPart  `json:"parts,omitempty"`
-	Metadata map[string]any `json:"metadata,omitempty"`
-	Partial  bool           `json:"partial,omitempty"`
+	CallID    string         `json:"call_id"`
+	ToolName  string         `json:"tool_name"`
+	Text      string         `json:"text,omitempty"`
+	Parts     []ContentPart  `json:"parts,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+	Partial   bool           `json:"partial,omitempty"`
+	Artifacts []ArtifactRef  `json:"artifacts,omitempty"`
 }
-
-type Result = Output
 
 type ToolCallStatus string
 
@@ -177,12 +196,11 @@ type ArtifactRef struct {
 }
 
 type ToolCallOutcome struct {
-	Status    ToolCallStatus `json:"status"`
-	Error     *ToolError     `json:"error,omitempty"`
-	Blocking  bool           `json:"blocking,omitempty"`
-	Duration  time.Duration  `json:"duration"`
-	Artifacts []ArtifactRef  `json:"artifacts,omitempty"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
+	Status   ToolCallStatus `json:"status"`
+	Error    *ToolError     `json:"error,omitempty"`
+	Blocking bool           `json:"blocking,omitempty"`
+	Duration time.Duration  `json:"duration"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type ToolExecution struct {
@@ -197,6 +215,7 @@ type ErrorKindProvider interface {
 
 func (result Output) Clone() Output {
 	result.Parts = append([]ContentPart(nil), result.Parts...)
+	result.Artifacts = append([]ArtifactRef(nil), result.Artifacts...)
 	if result.Metadata != nil {
 		result.Metadata = cloneMetadata(result.Metadata)
 	}

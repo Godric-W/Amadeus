@@ -49,7 +49,7 @@ func (updatePlan *UpdatePlan) SupportsParallelToolCalls() bool { return false }
 func (updatePlan *UpdatePlan) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	call := invocation.Call
 	var update plan.Update
-	if err := decodeArguments(call.Arguments, &update); err != nil {
+	if err := decodeArguments(call.Payload, &update); err != nil {
 		return tool.Output{}, err
 	}
 	snapshot, err := updatePlan.state.Apply(update, updatePlan.options.Now().UTC())
