@@ -16,12 +16,12 @@ func TestDetectTerminalCapabilitiesDowngradesNonTTY(t *testing.T) {
 	}
 }
 
-func TestDetectTerminalCapabilitiesHonorsTerminalEnvironment(t *testing.T) {
+func TestDetectTerminalCapabilitiesKeepsRichTUIColorDespiteInheritedNoColor(t *testing.T) {
 	capabilities := DetectTerminalCapabilitiesWithOptions(bytes.NewBufferString("input"), &bytes.Buffer{}, TerminalCapabilityOptions{
 		IsTerminal: func(io.Reader) bool { return true },
 		LookupEnv:  testTerminalEnv(map[string]string{"TERM": "xterm-256color", "NO_COLOR": "1", "COLUMNS": "120"}),
 	})
-	if !capabilities.TTY || capabilities.Plain || capabilities.Color || capabilities.Width != 120 {
+	if !capabilities.TTY || capabilities.Plain || !capabilities.Color || capabilities.Width != 120 {
 		t.Fatalf("unexpected terminal capabilities: %#v", capabilities)
 	}
 

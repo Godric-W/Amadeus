@@ -29,10 +29,10 @@ func TestVisualRuntimeNoColorSnapshots(t *testing.T) {
 
 	for name, test := range map[string]struct{ got, want string }{
 		"working":   {got: activityIndicator(ctx.Now, ctx.MotionStart, ctx.Motion, ctx.Palette) + " " + shimmerText("Working", ctx.Now, ctx.MotionStart, ctx.Motion, ctx.Palette) + " (1m 05s • esc to interrupt)", want: "• Working (1m 05s • esc to interrupt)"},
-		"exec":      {got: xansi.Strip(exec.Render(ctx)), want: "• Ran go test ./...\n  └ ok"},
-		"explore":   {got: xansi.Strip(explore.Render(ctx)), want: "• Explored\n  └ Read docs/design.md"},
-		"web":       {got: xansi.Strip(search.Render(ctx)), want: "• Searched the web\n  └ Amadeus TUI"},
-		"separator": {got: xansi.Strip((finalMessageSeparatorCell{elapsed: 65 * time.Second}).Render(ctx)), want: "─ Worked for 1m 05s ────────────────────────────"},
+		"exec":      {got: xansi.Strip(renderHistoryCellForTest(exec, ctx)), want: "• Ran go test ./...\n  └ ok"},
+		"explore":   {got: xansi.Strip(renderHistoryCellForTest(explore, ctx)), want: "• Explored\n  └ Read docs/design.md"},
+		"web":       {got: xansi.Strip(renderHistoryCellForTest(search, ctx)), want: "• Searched the web\n  └ Amadeus TUI"},
+		"separator": {got: xansi.Strip(renderHistoryCellForTest(FinalMessageSeparator{Elapsed: 65 * time.Second}, ctx)), want: "─ Worked for 1m 05s ────────────────────────────"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if test.got != test.want {

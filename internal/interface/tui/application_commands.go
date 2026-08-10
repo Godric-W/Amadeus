@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -10,23 +11,23 @@ import (
 func (model fullscreenModel) submitCommand(command string) (tea.Model, tea.Cmd) {
 	spec, arguments, ok := ParseSlashCommand(command)
 	if !ok {
-		model.appendCell(cellError, fmt.Sprintf("Unknown command %q", strings.Fields(command)[0]))
-		return model, model.flushTranscript()
+		model.insertHistoryCell(NewErrorHistoryCell(fmt.Sprintf("Unknown command %q", strings.Fields(command)[0])))
+		return model, model.flushHistory()
 	}
 	if err := ValidateSlashCommandArguments(spec, arguments); err != nil {
-		model.appendCell(cellError, err.Error())
-		return model, model.flushTranscript()
+		model.insertHistoryCell(NewErrorHistoryCell(err.Error()))
+		return model, model.flushHistory()
 	}
 	if model.running && !spec.AvailableDuringRun {
-		model.appendCell(cellError, fmt.Sprintf("'/%s' is disabled while a task is in progress.", spec.Command))
-		return model, model.flushTranscript()
+		model.insertHistoryCell(NewErrorHistoryCell(fmt.Sprintf("'/%s' is disabled while a task is in progress.", spec.Command)))
+		return model, model.flushHistory()
 	}
 	switch spec.Command {
 	case SlashStatus:
 		localStatus := model.commandStatus()
 		if model.app.options.Command == nil {
-			model.appendCell(cellNotice, localStatus)
-			return model, model.flushTranscript()
+			model.insertHistoryCell(NewNoticeHistoryCell(localStatus))
+			return model, model.flushHistory()
 		}
 		return model, func() tea.Msg {
 			output, err := model.app.options.Command(model.ctx, command)
@@ -40,25 +41,25 @@ func (model fullscreenModel) submitCommand(command string) (tea.Model, tea.Cmd) 
 	case SlashPlan:
 		model.collaboration = CollaborationPlan
 		model.status = "plan mode"
-		model.appendCell(cellNotice, "Switched to Plan mode")
-		return model, model.flushTranscript()
+		model.insertHistoryCell(NewNoticeHistoryCell("Switched to Plan mode"))
+		return model, model.flushHistory()
 	case SlashExit:
 		return model, tea.Quit
 	case SlashCopy:
-		if strings.TrimSpace(model.transcript.LastAssistantMarkdown) == "" {
-			model.appendCell(cellError, "No agent response to copy")
-			return model, model.flushTranscript()
+		if strings.TrimSpace(model.transcript.LastAgentMarkdown) == "" {
+			model.insertHistoryCell(NewErrorHistoryCell("No agent response to copy"))
+			return model, model.flushHistory()
 		}
-		if err := model.app.options.ClipboardWrite(model.transcript.LastAssistantMarkdown); err != nil {
-			model.appendCell(cellError, "Copy failed: "+err.Error())
+		if err := model.app.options.ClipboardWrite(model.transcript.LastAgentMarkdown); err != nil {
+			model.insertHistoryCell(NewErrorHistoryCell("Copy failed: " + err.Error()))
 		} else {
-			model.appendCell(cellNotice, "Copied last response to clipboard")
+			model.insertHistoryCell(NewNoticeHistoryCell("Copied last response to clipboard"))
 		}
-		return model, model.flushTranscript()
+		return model, model.flushHistory()
 	case SlashResume:
 		if model.app.options.Sessions == nil || model.app.options.Resume == nil {
-			model.appendCell(cellError, "Session picker is unavailable")
-			return model, model.flushTranscript()
+			model.insertHistoryCell(NewErrorHistoryCell("Session picker is unavailable"))
+			return model, model.flushHistory()
 		}
 		if arguments != "" {
 			model.status = "resuming session"
@@ -71,8 +72,8 @@ func (model fullscreenModel) submitCommand(command string) (tea.Model, tea.Cmd) 
 		return model, model.loadSessions()
 	case SlashRename:
 		if model.app.options.Rename == nil {
-			model.appendCell(cellError, "Session rename is unavailable")
-			return model, model.flushTranscript()
+			model.insertHistoryCell(NewErrorHistoryCell("Session rename is unavailable"))
+			return model, model.flushHistory()
 		}
 		if arguments != "" {
 			model.status = "renaming session"
@@ -91,8 +92,8 @@ func (model fullscreenModel) submitCommand(command string) (tea.Model, tea.Cmd) 
 		return model, nil
 	case SlashDelete:
 		if model.app.options.Delete == nil {
-			model.appendCell(cellError, "Session deletion is unavailable")
-			return model, model.flushTranscript()
+			model.insertHistoryCell(NewErrorHistoryCell("Session deletion is unavailable"))
+			return model, model.flushHistory()
 		}
 		model.selection = &selectionOverlay{Title: "Delete this session?", Subtitle: "Cannot be undone.", Items: []selectionItem{
 			{Name: "No, keep this session", Description: "Return to the current session"},
@@ -102,8 +103,8 @@ func (model fullscreenModel) submitCommand(command string) (tea.Model, tea.Cmd) 
 		return model, nil
 	case SlashCompact:
 		if model.app.options.Compact == nil {
-			model.appendCell(cellError, "Conversation compaction is unavailable")
-			return model, model.flushTranscript()
+			model.insertHistoryCell(NewErrorHistoryCell("Conversation compaction is unavailable"))
+			return model, model.flushHistory()
 		}
 		model.status = "compacting"
 		return model, func() tea.Msg {
@@ -112,8 +113,8 @@ func (model fullscreenModel) submitCommand(command string) (tea.Model, tea.Cmd) 
 		}
 	case SlashSkills:
 		if model.app.options.Skills == nil {
-			model.appendCell(cellError, "Skills are unavailable")
-			return model, model.flushTranscript()
+			model.insertHistoryCell(NewErrorHistoryCell("Skills are unavailable"))
+			return model, model.flushHistory()
 		}
 		model.selection = &selectionOverlay{Title: "Skills", Subtitle: "Choose an action", Items: []selectionItem{
 			{Name: "List skills", Description: "Browse available skills"},
@@ -123,8 +124,8 @@ func (model fullscreenModel) submitCommand(command string) (tea.Model, tea.Cmd) 
 		return model, nil
 	default:
 		if model.app.options.Command == nil {
-			model.appendCell(cellError, fmt.Sprintf("Command /%s is unavailable", spec.Command))
-			return model, model.flushTranscript()
+			model.insertHistoryCell(NewErrorHistoryCell(fmt.Sprintf("Command /%s is unavailable", spec.Command)))
+			return model, model.flushHistory()
 		}
 		model.status = "running command"
 		return model, func() tea.Msg {
@@ -163,9 +164,10 @@ func (model fullscreenModel) loadSessions() tea.Cmd {
 
 func (model fullscreenModel) runTask(task TaskSubmission) tea.Cmd {
 	return func() tea.Msg {
+		startedAt := time.Now()
 		ctx, cancel, err := model.app.options.NewTask(model.ctx)
 		if err != nil {
-			return fullscreenTaskDoneMsg{err: err}
+			return fullscreenTaskDoneMsg{err: err, elapsed: time.Since(startedAt)}
 		}
 		model.app.setActiveRun(cancel)
 		defer func() {
@@ -177,7 +179,7 @@ func (model fullscreenModel) runTask(task TaskSubmission) tea.Cmd {
 		if model.app.options.CurrentSession != nil {
 			session = model.app.options.CurrentSession()
 		}
-		return fullscreenTaskDoneMsg{err: taskErr, session: session}
+		return fullscreenTaskDoneMsg{err: taskErr, session: session, elapsed: time.Since(startedAt)}
 	}
 }
 

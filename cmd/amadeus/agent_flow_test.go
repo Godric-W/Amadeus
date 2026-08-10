@@ -666,17 +666,15 @@ func TestResolveAuditPathUsesXDGThenHome(t *testing.T) {
 	}
 }
 
-func TestConfiguredAgentBudgetMapsEveryRunLimit(t *testing.T) {
+func TestConfiguredAgentBudgetMapsStructuralRunLimits(t *testing.T) {
 	budget := configuredReactorBudget(config.AgentConfig{
 		MaxIterations:    7,
 		MaxToolCalls:     11,
-		MaxInputTokens:   13_000,
-		MaxOutputTokens:  17_000,
 		MaxDuration:      19 * time.Minute,
 		MaxParallelTools: 3,
 	})
 
-	if budget.Budget.MaxIterations != 7 || budget.Budget.MaxToolCalls != 11 || budget.Budget.MaxInputTokens != 13_000 || budget.Budget.MaxOutputTokens != 17_000 || budget.Budget.MaxDuration != 19*time.Minute {
+	if budget.Budget.MaxIterations != 7 || budget.Budget.MaxToolCalls != 11 || budget.Budget.MaxDuration != 19*time.Minute {
 		t.Fatalf("unexpected configured Agent budget: %#v", budget)
 	}
 }
@@ -699,8 +697,6 @@ providers:
 agent:
   max_iterations: 8
   max_tool_calls: 12
-  max_input_tokens: 10000
-  max_output_tokens: 2000
   max_duration: 1m
   max_parallel_tools: 2
 logging:

@@ -16,35 +16,38 @@ import (
 type BaseEnvelope = Envelope
 
 type ContextProfile struct {
-	ContextWindow int64
-	OutputReserve int64
-	SafetyMargin  int64
-	CompressAt    float64
+	ContextWindow                 int64
+	EffectiveContextWindowPercent int64
+	AutoCompactTokenLimit         int64
 }
 
 func (profile ContextProfile) Validate() error {
 	if profile.ContextWindow <= 0 {
 		return errors.New("context window must be greater than zero")
 	}
-	if profile.OutputReserve <= 0 || profile.SafetyMargin < 0 || profile.OutputReserve+profile.SafetyMargin >= profile.ContextWindow {
-		return errors.New("context output reserve and safety margin are invalid")
+	if profile.EffectiveContextWindowPercent < 50 || profile.EffectiveContextWindowPercent > 100 {
+		return errors.New("effective context window percent must be between 50 and 100")
 	}
-	if profile.CompressAt < 0.5 || profile.CompressAt > 0.95 {
-		return errors.New("context compression threshold must be between 0.5 and 0.95")
+	effective := profile.EffectiveInputLimit()
+	if profile.AutoCompactTokenLimit <= 0 || profile.AutoCompactTokenLimit > effective {
+		return errors.New("auto compact token limit must be greater than zero and at most the effective input limit")
 	}
 	return nil
 }
 
-func DefaultContextProfile(contextWindow int64, outputReserve int) ContextProfile {
-	reserve := int64(outputReserve)
-	if reserve <= 0 {
-		reserve = 4096
+func DefaultContextProfile(contextWindow int64) ContextProfile {
+	return ContextProfile{
+		ContextWindow:                 contextWindow,
+		EffectiveContextWindowPercent: 95,
+		AutoCompactTokenLimit:         contextWindow * 90 / 100,
 	}
-	safety := contextWindow / 20
-	if safety < 1024 {
-		safety = 1024
+}
+
+func (profile ContextProfile) EffectiveInputLimit() int64 {
+	if profile.ContextWindow <= 0 || profile.EffectiveContextWindowPercent <= 0 {
+		return 0
 	}
-	return ContextProfile{ContextWindow: contextWindow, OutputReserve: reserve, SafetyMargin: safety, CompressAt: 0.82}
+	return profile.ContextWindow * profile.EffectiveContextWindowPercent / 100
 }
 
 type WindowRequest struct {
@@ -111,24 +114,16 @@ func (manager *WindowManager) Prepare(ctx context.Context, request WindowRequest
 	runtime := cloneMessages(request.Runtime)
 	additional := cloneMessages(request.Additional)
 	tools := cloneSpecs(request.Base.AvailableTools)
-	effective := request.Profile.ContextWindow - request.Profile.OutputReserve - request.Profile.SafetyMargin
-	target := int64(float64(effective) * request.Profile.CompressAt)
+	effective := request.Profile.EffectiveInputLimit()
+	target := request.Profile.AutoCompactTokenLimit
 	toolTokens := estimateTools(tools, manager.estimator)
 	report := &CompactionReport{}
 
 	messages := joinWindowMessages(base, additional, runtime)
 	estimated := estimateMessages(messages, manager.estimator) + toolTokens
 	if estimated > target {
-		for index := range runtime {
-			if runtime[index].Role != llm.RoleTool {
-				continue
-			}
-			projected, changed := projectToolResult(runtime[index].Content, 2048, manager.estimator)
-			if changed {
-				runtime[index].Content = projected
-				report.ProjectedToolResults++
-			}
-		}
+		report.ProjectedToolResults += projectToolResults(base, 2048, manager.estimator)
+		report.ProjectedToolResults += projectToolResults(runtime, 2048, manager.estimator)
 		messages = joinWindowMessages(base, additional, runtime)
 		estimated = estimateMessages(messages, manager.estimator) + toolTokens
 	}
@@ -162,6 +157,21 @@ func (manager *WindowManager) Prepare(ctx context.Context, request WindowRequest
 	digest := sha256.Sum256(encoded)
 	view.SHA256 = hex.EncodeToString(digest[:])
 	return view, nil
+}
+
+func projectToolResults(messages []llm.Message, maximumTokens int64, estimator Estimator) int {
+	projectedCount := 0
+	for index := range messages {
+		if messages[index].Role != llm.RoleTool {
+			continue
+		}
+		projected, changed := projectToolResult(messages[index].Content, maximumTokens, estimator)
+		if changed {
+			messages[index].Content = projected
+			projectedCount++
+		}
+	}
+	return projectedCount
 }
 
 func joinWindowMessages(base, additional, runtime []llm.Message) []llm.Message {

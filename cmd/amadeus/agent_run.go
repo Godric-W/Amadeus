@@ -113,7 +113,7 @@ func (runner *agentController) runOnce(ctx context.Context, invocation agentInvo
 			ReadHost: true, WorkspaceRoots: workspaceRoots, TemporaryRoots: temporaryRoots,
 			ReadOnlyRoots: readOnlyRoots, DeniedRoots: deniedRoots,
 		},
-		ContextProfile: agentcontext.DefaultContextProfile(provider.ContextWindow, provider.MaxOutputTokens),
+		ContextProfile: agentcontext.DefaultContextProfile(provider.ContextWindow),
 		Budget:         configuredReactorBudget(configured.Agent).Budget,
 	})
 	if err != nil {
@@ -341,7 +341,7 @@ func (runner *agentController) runOnce(ctx context.Context, invocation agentInvo
 	requestViewProvider := runner.newRequestViewProvider(requestViewOptions{
 		Task: invocation.Task, RunMode: runMode,
 		ProviderName: configured.DefaultProvider, Model: provider.Model,
-		Budget:       agentcontext.DefaultBudget(configured.Agent.MaxInputTokens, configured.Agent.MaxOutputTokens),
+		Budget:       agentcontext.DefaultBudget(runContext.ContextProfile.EffectiveInputLimit()),
 		WorkspaceCWD: invocation.Project.Path(), RunContext: runContext,
 		SessionRuntime: sessionRuntime, Started: started, Agent: agent,
 		Extensions: extensions, FileSystemPolicy: fileSystemPolicy, Instructions: resolver,

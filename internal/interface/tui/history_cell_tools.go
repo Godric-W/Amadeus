@@ -3,50 +3,48 @@ package tui
 import (
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
 )
 
-type toolHistoryCell struct {
+type ToolHistoryCell struct {
 	activities []*toolActivity
 	byCallID   map[string]*toolActivity
 	sequence   int
 }
 
-type execCell struct{ activity *toolActivity }
-type exploreCell struct{ activities []*toolActivity }
-type webSearchCell struct{ activity *toolActivity }
+type ExecCell struct{ activity *toolActivity }
+type ExploreCell struct{ activities []*toolActivity }
+type WebSearchCell struct{ activity *toolActivity }
 
-func (execCell) Kind() transcriptCellKind      { return cellTool }
-func (exploreCell) Kind() transcriptCellKind   { return cellTool }
-func (webSearchCell) Kind() transcriptCellKind { return cellTool }
-
-func (cell execCell) Render(ctx transcriptRenderContext) string {
-	return renderStyledToolLines(renderExecLines(cell.activity, ctx), ctx)
+func (cell ExecCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
+	return renderExecLines(cell.activity, ctx)
 }
-func (cell exploreCell) Render(ctx transcriptRenderContext) string {
-	return renderStyledToolLines(renderExploreLines(cell.activities, ctx), ctx)
+func (cell ExploreCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
+	return renderExploreLines(cell.activities, ctx)
 }
-func (cell webSearchCell) Render(ctx transcriptRenderContext) string {
-	return renderStyledToolLines(renderWebSearchLines(cell.activity, ctx), ctx)
+func (cell WebSearchCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
+	return renderWebSearchLines(cell.activity, ctx)
 }
 
-func (cell execCell) RawLines() []string {
-	return strings.Split(cell.Render(noColorToolContext()), "\n")
+func (cell ExecCell) RawLines() []string {
+	return rawStyledLines(renderExecLines(cell.activity, rawToolContext()))
 }
-func (cell exploreCell) RawLines() []string {
-	return strings.Split(cell.Render(noColorToolContext()), "\n")
+func (cell ExploreCell) RawLines() []string {
+	return rawStyledLines(renderExploreLines(cell.activities, rawToolContext()))
 }
-func (cell webSearchCell) RawLines() []string {
-	return strings.Split(cell.Render(noColorToolContext()), "\n")
+func (cell WebSearchCell) RawLines() []string {
+	return rawStyledLines(renderWebSearchLines(cell.activity, rawToolContext()))
 }
 
-func newToolHistoryCell() *toolHistoryCell {
-	return &toolHistoryCell{byCallID: map[string]*toolActivity{}}
+func (ExecCell) IsStreamContinuation() bool      { return false }
+func (ExploreCell) IsStreamContinuation() bool   { return false }
+func (WebSearchCell) IsStreamContinuation() bool { return false }
+
+func newToolHistoryCell() *ToolHistoryCell {
+	return &ToolHistoryCell{byCallID: map[string]*toolActivity{}}
 }
-func (*toolHistoryCell) Kind() transcriptCellKind { return cellTool }
-func (cell *toolHistoryCell) IsComplete() bool {
+func (cell *ToolHistoryCell) IsComplete() bool {
 	if cell == nil || len(cell.activities) == 0 {
 		return false
 	}
@@ -57,7 +55,7 @@ func (cell *toolHistoryCell) IsComplete() bool {
 	}
 	return true
 }
-func (cell *toolHistoryCell) Apply(item event.Event) bool {
+func (cell *ToolHistoryCell) Apply(item event.Event) bool {
 	if cell == nil {
 		return false
 	}
@@ -86,36 +84,37 @@ func (cell *toolHistoryCell) Apply(item event.Event) bool {
 		return false
 	}
 }
-func (cell *toolHistoryCell) Complete() transcriptCell {
+func (cell *ToolHistoryCell) Complete() HistoryCell {
 	if cell == nil {
 		return nil
 	}
-	copyCell := &toolHistoryCell{activities: append([]*toolActivity(nil), cell.activities...), byCallID: map[string]*toolActivity{}, sequence: cell.sequence}
+	copyCell := &ToolHistoryCell{activities: cloneToolActivities(cell.activities), byCallID: map[string]*toolActivity{}, sequence: cell.sequence}
 	return copyCell
 }
-func (cell *toolHistoryCell) RawLines() []string {
+func (cell *ToolHistoryCell) RawLines() []string {
 	if cell == nil {
 		return nil
 	}
-	return strings.Split(cell.renderPlain(), "\n")
+	return rawStyledLines(cell.linesForMode(HistoryRenderRaw, rawToolContext()))
 }
-func (cell *toolHistoryCell) Render(ctx transcriptRenderContext) string {
+func (cell *ToolHistoryCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
 	if cell == nil {
-		return ""
+		return nil
 	}
-	return renderTranscriptCells(cell.projections(), ctx)
+	return cell.linesForMode(HistoryRenderRich, ctx)
 }
+func (*ToolHistoryCell) IsStreamContinuation() bool { return false }
 
-func (cell *toolHistoryCell) projections() []transcriptCell {
+func (cell *ToolHistoryCell) projections() []HistoryCell {
 	activities := append([]*toolActivity(nil), cell.activities...)
 	sort.SliceStable(activities, func(i, j int) bool { return activities[i].Sequence < activities[j].Sequence })
-	var projections []transcriptCell
+	var projections []HistoryCell
 	var explored []*toolActivity
 	flushExplored := func() {
 		if len(explored) == 0 {
 			return
 		}
-		projections = append(projections, exploreCell{activities: append([]*toolActivity(nil), explored...)})
+		projections = append(projections, ExploreCell{activities: append([]*toolActivity(nil), explored...)})
 		explored = nil
 	}
 	for _, activity := range activities {
@@ -125,25 +124,37 @@ func (cell *toolHistoryCell) projections() []transcriptCell {
 		}
 		flushExplored()
 		if activity.Kind == activityNetwork {
-			projections = append(projections, webSearchCell{activity: activity})
+			projections = append(projections, WebSearchCell{activity: activity})
 			continue
 		}
-		projections = append(projections, execCell{activity: activity})
+		projections = append(projections, ExecCell{activity: activity})
 	}
 	flushExplored()
 	return projections
 }
 
-func (cell *toolHistoryCell) renderPlain() string {
-	return cell.Render(noColorToolContext())
+func (cell *ToolHistoryCell) linesForMode(mode HistoryRenderMode, ctx HistoryRenderContext) []styledLine {
+	var lines []styledLine
+	hasVisible := false
+	for _, projection := range cell.projections() {
+		projectionLines := historyLinesForMode(projection, mode, ctx)
+		if len(projectionLines) == 0 {
+			continue
+		}
+		if hasVisible {
+			lines = append(lines, styledLine{})
+		}
+		lines = append(lines, projectionLines...)
+		hasVisible = true
+	}
+	return lines
 }
 
-func noColorToolContext() transcriptRenderContext {
-	now := time.Now()
-	return transcriptRenderContext{Width: 120, Palette: terminalPalette{NoColor: true, Level: colorLevelNone}, Now: now, MotionStart: now, Motion: motionReduced}
+func rawToolContext() HistoryRenderContext {
+	return HistoryRenderContext{Width: 120, Palette: terminalPalette{NoColor: true, Level: colorLevelNone}, Motion: motionReduced}
 }
 
-func renderExploreLines(activities []*toolActivity, ctx transcriptRenderContext) []styledLine {
+func renderExploreLines(activities []*toolActivity, ctx HistoryRenderContext) []styledLine {
 	complete := true
 	success := true
 	for _, activity := range activities {
@@ -199,7 +210,7 @@ func exploreVerbAndDetail(activity *toolActivity) (string, string) {
 	return "Read", value
 }
 
-func renderExecLines(activity *toolActivity, ctx transcriptRenderContext) []styledLine {
+func renderExecLines(activity *toolActivity, ctx HistoryRenderContext) []styledLine {
 	complete := activity.Completed
 	markerStyle := styleDim
 	if complete && activityCompletedSuccessfully(activity) {
@@ -220,11 +231,11 @@ func renderExecLines(activity *toolActivity, ctx transcriptRenderContext) []styl
 	}
 	header := styledLine{markerSpan(complete, activityCompletedSuccessfully(activity), ctx, markerStyle), {Text: " "}, {Text: title, Style: styleBold}}
 	if len(commandLines) > 0 && commandLines[0] != "" {
-		header = append(header, styledSpan{Text: " " + commandLines[0], Style: styleAccent})
+		header = append(header, styledSpan{Text: " " + commandLines[0], Style: stylePlain})
 	}
 	lines := []styledLine{header}
 	for _, command := range commandLines[1:] {
-		lines = append(lines, styledLine{{Text: "  │ ", Style: styleDim}, {Text: command, Style: styleAccent}})
+		lines = append(lines, styledLine{{Text: "  │ ", Style: styleDim}, {Text: command, Style: stylePlain}})
 	}
 	result := summarizeActivityText(activity.Result, 1200, 5)
 	if complete && result == "" {
@@ -236,7 +247,7 @@ func renderExecLines(activity *toolActivity, ctx transcriptRenderContext) []styl
 			if index == 0 {
 				prefix = "  └ "
 			}
-			style := stylePlain
+			style := styleDim
 			if output == "(no output)" || strings.HasPrefix(output, "… +") {
 				style = styleDim
 			}
@@ -246,7 +257,7 @@ func renderExecLines(activity *toolActivity, ctx transcriptRenderContext) []styl
 	return lines
 }
 
-func renderWebSearchLines(activity *toolActivity, ctx transcriptRenderContext) []styledLine {
+func renderWebSearchLines(activity *toolActivity, ctx HistoryRenderContext) []styledLine {
 	complete := activity.Completed
 	success := activityCompletedSuccessfully(activity)
 	markerStyle := styleDim
@@ -267,16 +278,11 @@ func renderWebSearchLines(activity *toolActivity, ctx transcriptRenderContext) [
 	return lines
 }
 
-func markerSpan(complete, success bool, ctx transcriptRenderContext, completedStyle semanticStyle) styledSpan {
+func markerSpan(complete, success bool, ctx HistoryRenderContext, completedStyle semanticStyle) styledSpan {
 	if !complete {
 		return styledSpan{Text: activityIndicator(ctx.Now, ctx.MotionStart, ctx.Motion, ctx.Palette), Style: stylePlain}
 	}
 	return styledSpan{Text: "•", Style: completedStyle}
-}
-
-func renderStyledToolLines(lines []styledLine, ctx transcriptRenderContext) string {
-	cell := styledTranscriptCell{kind: cellTool, lines: lines}
-	return cell.Render(ctx)
 }
 
 func firstNonEmpty(values ...string) string {
@@ -286,4 +292,16 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func cloneToolActivities(activities []*toolActivity) []*toolActivity {
+	result := make([]*toolActivity, 0, len(activities))
+	for _, activity := range activities {
+		if activity == nil {
+			continue
+		}
+		copyActivity := *activity
+		result = append(result, &copyActivity)
+	}
+	return result
 }

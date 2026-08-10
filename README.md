@@ -86,8 +86,6 @@ providers:
 agent:
   max_iterations: 30
   max_tool_calls: 120
-  max_input_tokens: 1000000
-  max_output_tokens: 245760
   max_duration: 30m
   max_parallel_tools: 4
 
@@ -110,7 +108,7 @@ providers:
 
 如果厂商需要特定扩展，可将 `dialect` 设置为 `deepseek`、`qwen` 或 `glm`。不支持 `developer` role 的 Chat Provider 会由 Adapter 自动降级为 `system` role。
 
-`providers.<name>.max_output_tokens` 是单次模型调用限制；`agent.max_input_tokens` 和 `agent.max_output_tokens` 是整次 Run 的累计限制。
+`providers.<name>.max_output_tokens` 只限制单次模型调用。Run 仍累计 input/output usage 用于状态、持久化和审计，但稳定配置不再提供 `agent.max_input_tokens` 或 `agent.max_output_tokens` 终止预算；Run 的结构和时间边界由 iteration、tool call 与 duration 控制。
 
 旧配置中的 `agent.mode` 已删除。普通任务默认执行；输入 `/plan` 后，下一条普通输入只分析并输出计划，不修改文件或执行命令。Composer 模式不写入配置或 SQLite，切换 Session、执行 `/clear` 或重新启动后恢复 execute；如果旧配置仍有 `agent.mode`，运行 `config check` 会报告未知字段，请将其删除。
 

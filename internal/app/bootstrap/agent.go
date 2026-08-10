@@ -335,7 +335,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 		MaxOutputTokens:  provider.MaxOutputTokens,
 		MaxParallelTools: configured.Agent.MaxParallelTools,
 		ContextWindow:    contextManager,
-		ContextProfile:   agentcontext.DefaultContextProfile(provider.ContextWindow, provider.MaxOutputTokens),
+		ContextProfile:   agentcontext.DefaultContextProfile(provider.ContextWindow),
 		Events:           events,
 		Rollout:          rolloutRecorder,
 	})

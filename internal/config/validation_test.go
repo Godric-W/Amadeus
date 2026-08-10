@@ -62,8 +62,6 @@ func TestValidateReportsStableFieldPaths(t *testing.T) {
 		"providers.broken.max_output_tokens",
 		"agent.max_iterations",
 		"agent.max_tool_calls",
-		"agent.max_input_tokens",
-		"agent.max_output_tokens",
 		"agent.max_duration",
 		"agent.max_parallel_tools",
 		"logging.level",
@@ -80,8 +78,6 @@ func TestValidateRejectsAgentBudgetAboveLimits(t *testing.T) {
 	configured.Agent = AgentConfig{
 		MaxIterations:    maxAgentIterations + 1,
 		MaxToolCalls:     maxAgentToolCalls + 1,
-		MaxInputTokens:   maxAgentTokens + 1,
-		MaxOutputTokens:  maxAgentTokens + 1,
 		MaxDuration:      maxAgentDuration + 1,
 		MaxParallelTools: maxParallelTools + 1,
 	}
@@ -91,8 +87,7 @@ func TestValidateRejectsAgentBudgetAboveLimits(t *testing.T) {
 		t.Fatal("expected oversized Agent budget to fail")
 	}
 	for _, path := range []string{
-		"agent.max_iterations", "agent.max_tool_calls", "agent.max_input_tokens",
-		"agent.max_output_tokens", "agent.max_duration", "agent.max_parallel_tools",
+		"agent.max_iterations", "agent.max_tool_calls", "agent.max_duration", "agent.max_parallel_tools",
 	} {
 		if !strings.Contains(err.Error(), path+":") {
 			t.Fatalf("validation error does not contain %q: %v", path, err)

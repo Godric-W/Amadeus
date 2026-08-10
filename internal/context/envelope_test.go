@@ -319,7 +319,7 @@ func TestBuilderCompactsHistoryWithinBudgetAndPreservesReplacementSource(t *test
 		llm.AssistantMessage("second answer with more implementation details"),
 		llm.UserMessage("latest request"),
 	}
-	input.Budget = Budget{System: 100, Instructions: 100, History: 30, Interrupted: 40, Tools: 100, Resources: 10, OutputReserve: 20}
+	input.Budget = Budget{System: 100, Instructions: 100, History: 30, Interrupted: 40, Tools: 100, Resources: 10}
 	envelope, err := NewBuilder().Build(context.Background(), input)
 	if err != nil {
 		t.Fatalf("build compacted context: %v", err)
@@ -363,7 +363,7 @@ func TestBuilderAcceptsCanonicalToolProtocolAndInterruptedMarker(t *testing.T) {
 
 func TestBuilderPlacesCompactionReplacementBeforeRetainedTail(t *testing.T) {
 	input := testBuildInput(t)
-	input.Budget = DefaultBudget(4000, 500)
+	input.Budget = DefaultBudget(4000)
 	input.Budget.History = 300
 	input.Conversation = []llm.Message{
 		llm.UserMessage("old request " + strings.Repeat("history ", 500)),

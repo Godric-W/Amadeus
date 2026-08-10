@@ -13,39 +13,31 @@ import (
 )
 
 type Budget struct {
-	System        int64 `json:"system"`
-	Instructions  int64 `json:"instructions"`
-	History       int64 `json:"history"`
-	Interrupted   int64 `json:"interrupted"`
-	Tools         int64 `json:"tools"`
-	Resources     int64 `json:"resources"`
-	OutputReserve int64 `json:"output_reserve"`
+	System       int64 `json:"system"`
+	Instructions int64 `json:"instructions"`
+	History      int64 `json:"history"`
+	Interrupted  int64 `json:"interrupted"`
+	Tools        int64 `json:"tools"`
+	Resources    int64 `json:"resources"`
 }
 
-func DefaultBudget(maxInputTokens, outputReserve int64) Budget {
+func DefaultBudget(maxInputTokens int64) Budget {
 	if maxInputTokens <= 0 {
 		return Budget{}
 	}
-	if outputReserve < 0 {
-		outputReserve = 0
-	}
-	if outputReserve > maxInputTokens/4 {
-		outputReserve = maxInputTokens / 4
-	}
-	available := maxInputTokens - outputReserve
 	return Budget{
-		System: available * 15 / 100, Instructions: available * 15 / 100,
-		History: available * 35 / 100, Interrupted: available * 10 / 100,
-		Tools: available * 20 / 100, Resources: available * 5 / 100, OutputReserve: outputReserve,
+		System: maxInputTokens * 15 / 100, Instructions: maxInputTokens * 15 / 100,
+		History: maxInputTokens * 35 / 100, Interrupted: maxInputTokens * 10 / 100,
+		Tools: maxInputTokens * 20 / 100, Resources: maxInputTokens * 5 / 100,
 	}
 }
 
 func (budget Budget) Enabled() bool {
-	return budget.System+budget.Instructions+budget.History+budget.Interrupted+budget.Tools+budget.Resources+budget.OutputReserve > 0
+	return budget.System+budget.Instructions+budget.History+budget.Interrupted+budget.Tools+budget.Resources > 0
 }
 
 func (budget Budget) Validate() error {
-	values := []int64{budget.System, budget.Instructions, budget.History, budget.Interrupted, budget.Tools, budget.Resources, budget.OutputReserve}
+	values := []int64{budget.System, budget.Instructions, budget.History, budget.Interrupted, budget.Tools, budget.Resources}
 	for _, value := range values {
 		if value < 0 {
 			return errors.New("Agent context budget cannot be negative")

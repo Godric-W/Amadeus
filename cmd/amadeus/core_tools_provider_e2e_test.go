@@ -78,8 +78,6 @@ providers:
 agent:
   max_iterations: 12
   max_tool_calls: 12
-  max_input_tokens: 100000
-  max_output_tokens: 10000
   max_duration: 2m
   max_parallel_tools: 2
 `, api, dialect, server.URL))
@@ -180,8 +178,6 @@ providers:
 agent:
   max_iterations: 4
   max_tool_calls: 2
-  max_input_tokens: 100000
-  max_output_tokens: 10000
   max_duration: 2m
   max_parallel_tools: 1
 `, api, dialect, server.URL))
@@ -293,8 +289,6 @@ providers:
 agent:
   max_iterations: 6
   max_tool_calls: 4
-  max_input_tokens: 100000
-  max_output_tokens: 10000
   max_duration: 2m
   max_parallel_tools: 1
 `, api, dialect, server.URL))

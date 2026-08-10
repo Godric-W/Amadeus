@@ -339,19 +339,18 @@ func TestRunnerReportsProviderFailureAndCancellation(t *testing.T) {
 	}
 }
 
-func TestRunnerAccumulatesUsageAndRespectsOutputRemainder(t *testing.T) {
+func TestRunnerAccumulatesUsageWithoutReducingProviderRequestLimit(t *testing.T) {
 	response := llm.Response{Message: llm.AssistantMessage("done"), FinishReason: llm.FinishReasonStop, Usage: llm.Usage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5}}
 	candidate := response.Message
 	iterator := &scriptedIterator{results: []IterationResult{{Kind: IterationCandidate, Response: response, Candidate: &candidate}}}
 	request := validRequest()
 	request.Budget.OutputTokensUsed = 4
-	request.Budget.Budget.MaxOutputTokens = 6
 	runner := newTestRunner(t, iterator, &scriptedCallExecutor{executions: map[string]ToolOutcome{}, errors: map[string]error{}}, &scriptedProgress{})
 	result, err := runner.Run(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if iterator.inputs[0].MaxOutputTokens != 2 || result.Usage.TotalTokens != 5 || result.Budget.OutputTokensUsed != 6 {
+	if iterator.inputs[0].MaxOutputTokens != 512 || result.Usage.TotalTokens != 5 || result.Budget.OutputTokensUsed != 6 {
 		t.Fatalf("unexpected usage accounting: input=%#v result=%#v", iterator.inputs[0], result)
 	}
 }
@@ -366,7 +365,7 @@ func TestRunnerPublishesIterationLifecycleWithRunMetadata(t *testing.T) {
 		&scriptedProgress{},
 		RunnerOptions{
 			Temperature: 0.2, MaxOutputTokens: 512, MaxParallelTools: 2, Events: events,
-			ContextProfile: agentcontext.ContextProfile{ContextWindow: 1000, OutputReserve: 100, SafetyMargin: 50, CompressAt: 0.8},
+			ContextProfile: agentcontext.DefaultContextProfile(1000),
 			ContextWindow: fixedContextWindowManager{view: agentcontext.RequestView{
 				Messages:   []llm.Message{llm.UserMessage("goal")},
 				Usage:      agentcontext.ContextUsage{EstimatedInputTokens: 400, EffectiveInputLimit: 850},
@@ -432,7 +431,7 @@ func validRequest() Request {
 	return Request{
 		RunID: "run-1", Goal: "inspect repository", Messages: []llm.Message{llm.UserMessage("inspect repository")},
 		AvailableTools: []tool.Spec{{Name: "read_file", Description: "read", InputSchema: []byte(`{"type":"object"}`), SideEffect: tool.SideEffectRead, Idempotent: true}},
-		Budget:         BudgetState{Budget: Budget{MaxIterations: 8, MaxToolCalls: 8, MaxInputTokens: 1000, MaxOutputTokens: 1000, MaxDuration: time.Minute}},
+		Budget:         BudgetState{Budget: Budget{MaxIterations: 8, MaxToolCalls: 8, MaxDuration: time.Minute}},
 	}
 }
 

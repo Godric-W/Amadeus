@@ -18,7 +18,6 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 )
@@ -93,43 +92,47 @@ type FullscreenApplication struct {
 }
 
 type fullscreenModel struct {
-	app             *FullscreenApplication
-	ctx             context.Context
-	startup         FullscreenStartup
-	input           textarea.Model
-	renderer        *glamour.TermRenderer
-	lastMouseEvent  time.Time
-	width           int
-	height          int
-	transcript      transcriptState
-	draft           string
-	running         bool
-	status          string
-	model           string
-	inputUsage      int64
-	outputUsage     int64
-	contextUsage    int64
-	contextLimit    int64
-	runDiffChanges  []event.RunDiffChange
-	runDiffExact    bool
-	history         []string
-	historyPos      int
-	queuedTasks     []TaskSubmission
-	runStartedAt    time.Time
-	palette         terminalPalette
-	clock           motionClock
-	motion          motionMode
-	motionStartedAt time.Time
-	details         *transcriptDetailStore
-	detailViewport  viewport.Model
-	viewingDetails  bool
-	approval        *fullscreenApproval
-	sessions        []SessionOption
-	slashPopup      slashCommandPopup
-	collaboration   CollaborationMode
-	selection       *selectionOverlay
-	selectionKind   string
-	skills          []SkillOption
+	app                    *FullscreenApplication
+	ctx                    context.Context
+	startup                FullscreenStartup
+	input                  textarea.Model
+	renderer               *glamour.TermRenderer
+	lastMouseEvent         time.Time
+	width                  int
+	height                 int
+	transcript             TranscriptState
+	historyCells           []HistoryCell
+	pendingHistoryCells    []HistoryCell
+	hasEmittedHistoryLines bool
+	historyMode            HistoryRenderMode
+	draft                  string
+	running                bool
+	status                 string
+	model                  string
+	inputUsage             int64
+	outputUsage            int64
+	contextUsage           int64
+	contextLimit           int64
+	runDiffChanges         []event.RunDiffChange
+	runDiffExact           bool
+	history                []string
+	historyPos             int
+	queuedTasks            []TaskSubmission
+	runStartedAt           time.Time
+	palette                terminalPalette
+	clock                  motionClock
+	motion                 motionMode
+	motionStartedAt        time.Time
+	details                *transcriptDetailStore
+	detailViewport         viewport.Model
+	viewingDetails         bool
+	approval               *fullscreenApproval
+	sessions               []SessionOption
+	slashPopup             slashCommandPopup
+	collaboration          CollaborationMode
+	selection              *selectionOverlay
+	selectionKind          string
+	skills                 []SkillOption
 }
 
 type fullscreenApproval struct {
@@ -169,6 +172,7 @@ type fullscreenApprovalMsg struct{ prompt *fullscreenApproval }
 type fullscreenTaskDoneMsg struct {
 	err     error
 	session string
+	elapsed time.Duration
 }
 type fullscreenCommandDoneMsg struct {
 	command string
@@ -207,8 +211,8 @@ type fullscreenSkillSetMsg struct {
 type fullscreenWorkingTickMsg time.Time
 
 const (
-	fullscreenInputPrompt      = "> "
-	fullscreenInputPlaceholder = "输入任务，或输入 / 查看命令"
+	fullscreenInputPrompt      = "› "
+	fullscreenInputPlaceholder = "Ask Amadeus to do anything, or type / for commands"
 	fullscreenInputCharLimit   = 20000
 	fullscreenMaxInputRows     = 5
 )
@@ -239,6 +243,9 @@ func (app *FullscreenApplication) Run(ctx context.Context) error {
 		return errors.New("fullscreen TUI application is nil")
 	}
 	model := newFullscreenModel(ctx, app)
+	originalColorProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(model.palette.colorProfile())
+	defer lipgloss.SetColorProfile(originalColorProfile)
 	programOptions := []tea.ProgramOption{tea.WithContext(ctx), tea.WithInput(app.options.Input), tea.WithOutput(app.options.Output)}
 	program := tea.NewProgram(model, programOptions...)
 	app.programMutex.Lock()
@@ -347,10 +354,16 @@ func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscr
 	input.MaxHeight = fullscreenMaxInputRows
 	input.FocusedStyle.Base = fullscreenInputFillStyle
 	input.FocusedStyle.CursorLine = fullscreenInputFillStyle
-	input.FocusedStyle.Prompt = palette.plain()
+	input.FocusedStyle.Prompt = palette.strong()
 	input.FocusedStyle.Placeholder = palette.dim()
 	input.FocusedStyle.Text = palette.plain()
 	input.FocusedStyle.EndOfBuffer = fullscreenInputFillStyle
+	input.BlurredStyle.Base = fullscreenInputFillStyle
+	input.BlurredStyle.CursorLine = fullscreenInputFillStyle
+	input.BlurredStyle.Prompt = palette.dim()
+	input.BlurredStyle.Placeholder = palette.dim()
+	input.BlurredStyle.Text = palette.dim()
+	input.BlurredStyle.EndOfBuffer = fullscreenInputFillStyle
 	input.SetWidth(80)
 	input.SetHeight(1)
 	input.Focus()
@@ -376,8 +389,8 @@ func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscr
 
 func (model fullscreenModel) Init() tea.Cmd {
 	header := model.banner()
-	if len(model.transcript.Cells) > 0 {
-		header += "\n\n" + model.renderCell(model.transcript.Cells[0])
+	if len(model.historyCells) > 0 {
+		header += "\n\n" + model.renderHistoryCell(model.historyCells[0])
 	}
 	commands := []tea.Cmd{tea.Println(header), tea.HideCursor, model.input.Focus()}
 	if model.app.options.OpenSessions && model.app.options.Sessions != nil {
@@ -413,7 +426,7 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if model.viewingDetails && model.details != nil && !model.details.Empty() {
 			model.refreshTranscriptViewport()
 		}
-		return model, model.flushTranscript()
+		return model, model.flushHistory()
 	case fullscreenApprovalMsg:
 		model.approval = message.prompt
 		choices := approvalChoices(message.prompt.request)
@@ -427,21 +440,24 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.input.Blur()
 		return model, nil
 	case fullscreenTaskDoneMsg:
-		runDuration := model.runElapsed()
+		runDuration := message.elapsed
+		if runDuration <= 0 {
+			runDuration = model.runElapsed()
+		}
 		model.finishDraft()
-		model.transcript.flushActive()
+		model.flushActiveHistoryCell()
 		if strings.TrimSpace(message.session) != "" {
 			model.startup.Session = strings.TrimSpace(message.session)
 		}
 		if model.transcript.HadWorkActivity && model.transcript.NeedsFinalMessageSeparator {
-			model.transcript.append(finalMessageSeparatorCell{elapsed: runDuration})
+			model.insertHistoryCell(FinalMessageSeparator{Elapsed: runDuration})
 			model.transcript.NeedsFinalMessageSeparator = false
 		}
 		if message.err != nil {
 			if errors.Is(message.err, context.Canceled) {
-				model.appendCell(cellNotice, "当前任务已取消。")
+				model.insertHistoryCell(NewNoticeHistoryCell("当前任务已取消。"))
 			} else {
-				model.appendCell(cellError, message.err.Error())
+				model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
 			}
 		}
 		model.transcript.HadWorkActivity = false
@@ -457,16 +473,16 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.runDiffExact = true
 			model.status = taskPhase(next)
 			model.draft = ""
-			return model, tea.Sequence(model.flushTranscript(), tea.Batch(model.runTask(next), model.workingTick()))
+			return model, tea.Sequence(model.flushHistory(), tea.Batch(model.runTask(next), model.workingTick()))
 		}
 		model.running = false
 		model.status = "idle"
-		return model, model.flushTranscript()
+		return model, model.flushHistory()
 	case fullscreenCommandDoneMsg:
 		if message.err != nil {
-			model.appendCell(cellError, message.err.Error())
+			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
 		} else if strings.HasPrefix(strings.TrimSpace(message.command), "/clear") {
-			model.transcript.reset()
+			model.resetHistory()
 			model.details = newTranscriptDetailStore(0, 0)
 			model.draft = ""
 			model.collaboration = CollaborationExecute
@@ -474,19 +490,19 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.status = "idle"
 			return model, tea.Sequence(func() tea.Msg { return tea.ClearScreen() }, tea.Println(model.banner()))
 		} else if strings.TrimSpace(message.output) != "" {
-			model.appendCell(cellNotice, message.output)
+			model.insertHistoryCell(NewNoticeHistoryCell(message.output))
 		}
 		model.status = "idle"
-		return model, model.flushTranscript()
+		return model, model.flushHistory()
 	case fullscreenSessionsMsg:
 		model.status = "idle"
 		if message.err != nil {
-			model.appendCell(cellError, message.err.Error())
-			return model, model.flushTranscript()
+			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
+			return model, model.flushHistory()
 		}
 		if len(message.sessions) == 0 {
-			model.appendCell(cellNotice, "当前项目还没有可恢复的 Session。")
-			return model, model.flushTranscript()
+			model.insertHistoryCell(NewNoticeHistoryCell("当前项目还没有可恢复的 Session。"))
+			return model, model.flushHistory()
 		}
 		model.sessions = message.sessions
 		selected := 0
@@ -510,52 +526,52 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.sessions = nil
 		model.status = "idle"
 		if message.err != nil {
-			model.appendCell(cellError, message.err.Error())
+			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
 		} else if strings.TrimSpace(message.message) != "" {
-			model.appendCell(cellNotice, message.message)
+			model.insertHistoryCell(NewNoticeHistoryCell(message.message))
 			model.refreshCurrentSession()
 			model.collaboration = CollaborationExecute
 		}
-		return model, model.flushTranscript()
+		return model, model.flushHistory()
 	case fullscreenRenameMsg:
 		model.selection = nil
 		model.selectionKind = ""
 		model.status = "idle"
 		if message.err != nil {
-			model.appendCell(cellError, message.err.Error())
+			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
 		} else {
-			model.appendCell(cellNotice, message.message)
+			model.insertHistoryCell(NewNoticeHistoryCell(message.message))
 			model.refreshCurrentSession()
 		}
-		return model, model.flushTranscript()
+		return model, model.flushHistory()
 	case fullscreenDeleteMsg:
 		model.selection = nil
 		model.selectionKind = ""
 		model.status = "idle"
 		if message.err != nil {
-			model.appendCell(cellError, message.err.Error())
-			return model, model.flushTranscript()
+			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
+			return model, model.flushHistory()
 		}
-		model.appendCell(cellNotice, message.message)
-		return model, tea.Sequence(model.flushTranscript(), tea.Quit)
+		model.insertHistoryCell(NewNoticeHistoryCell(message.message))
+		return model, tea.Sequence(model.flushHistory(), tea.Quit)
 	case fullscreenCompactMsg:
 		model.status = "idle"
 		if message.err != nil {
-			model.appendCell(cellError, message.err.Error())
+			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
 		} else {
-			model.appendCell(cellNotice, message.message)
+			model.insertHistoryCell(NewNoticeHistoryCell(message.message))
 		}
-		return model, model.flushTranscript()
+		return model, model.flushHistory()
 	case fullscreenSkillsMsg:
 		model.status = "idle"
 		if message.err != nil {
-			model.appendCell(cellError, message.err.Error())
-			return model, model.flushTranscript()
+			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
+			return model, model.flushHistory()
 		}
 		model.skills = message.skills
 		if len(message.skills) == 0 {
-			model.appendCell(cellNotice, "No skills available.")
-			return model, model.flushTranscript()
+			model.insertHistoryCell(NewNoticeHistoryCell("No skills available."))
+			return model, model.flushHistory()
 		}
 		items := make([]selectionItem, 0, len(message.skills))
 		for _, skill := range message.skills {
@@ -570,8 +586,8 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return model, nil
 	case fullscreenSkillSetMsg:
 		if message.err != nil {
-			model.appendCell(cellError, message.err.Error())
-			return model, model.flushTranscript()
+			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
+			return model, model.flushHistory()
 		}
 		for index := range model.skills {
 			if model.skills[index].Name == message.name {
@@ -618,19 +634,19 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 	switch key.String() {
 	case "shift+tab":
 		if model.running {
-			model.appendCell(cellNotice, "Collaboration mode cannot change while a task is in progress.")
-			return model, model.flushTranscript()
+			model.insertHistoryCell(NewNoticeHistoryCell("Collaboration mode cannot change while a task is in progress."))
+			return model, model.flushHistory()
 		}
 		if model.collaboration == CollaborationPlan {
 			model.collaboration = CollaborationExecute
 			model.status = "idle"
-			model.appendCell(cellNotice, "Switched to Execute mode")
+			model.insertHistoryCell(NewNoticeHistoryCell("Switched to Execute mode"))
 		} else {
 			model.collaboration = CollaborationPlan
 			model.status = "plan mode"
-			model.appendCell(cellNotice, "Switched to Plan mode")
+			model.insertHistoryCell(NewNoticeHistoryCell("Switched to Plan mode"))
 		}
-		return model, model.flushTranscript()
+		return model, model.flushHistory()
 	case "ctrl+c":
 		if model.running {
 			model.status = "cancelling"
@@ -719,23 +735,23 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 			if strings.HasPrefix(text, "/") {
 				spec, _, ok := ParseSlashCommand(text)
 				if !ok || !spec.AvailableDuringRun {
-					model.appendCell(cellNotice, "This command is disabled while a task is in progress.")
-					return model, model.flushTranscript()
+					model.insertHistoryCell(NewNoticeHistoryCell("This command is disabled while a task is in progress."))
+					return model, model.flushHistory()
 				}
 				return model.submitCommand(text)
 			}
 			if strings.HasPrefix(text, "/") {
-				return model, model.flushTranscript()
+				return model, model.flushHistory()
 			}
-			model.appendCell(cellUser, text)
+			model.insertHistoryCell(NewUserMessageCell(text))
 			model.queuedTasks = append(model.queuedTasks, TaskSubmission{Content: text, Mode: model.collaboration})
 			model.status = fmt.Sprintf("%s · %d queued", model.status, len(model.queuedTasks))
-			return model, model.flushTranscript()
+			return model, model.flushHistory()
 		}
 		if strings.HasPrefix(text, "/") {
 			return model.submitCommand(text)
 		}
-		model.appendCell(cellUser, text)
+		model.insertHistoryCell(NewUserMessageCell(text))
 		model.details = newTranscriptDetailStore(0, 0)
 		model.running = true
 		model.runStartedAt = time.Now()
@@ -747,7 +763,7 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		submission := TaskSubmission{Content: text, Mode: model.collaboration}
 		model.status = taskPhase(submission)
 		model.draft = ""
-		return model, tea.Sequence(model.flushTranscript(), tea.Batch(model.runTask(submission), model.workingTick()))
+		return model, tea.Sequence(model.flushHistory(), tea.Batch(model.runTask(submission), model.workingTick()))
 	}
 	var command tea.Cmd
 	model.input, command = model.input.Update(key)
@@ -765,15 +781,15 @@ func (model *fullscreenModel) applyEvent(item event.Event) {
 	switch item := item.(type) {
 	case event.LLMCallStarted:
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
-			model.transcript.flushActive()
+			model.flushActiveHistoryCell()
 		}
 		if strings.TrimSpace(item.Model.Name) != "" {
 			model.model = item.Model.Name
 		}
 	case event.TextDelta:
 		if model.draft == "" && model.transcript.HadWorkActivity && model.transcript.NeedsFinalMessageSeparator {
-			model.transcript.flushActive()
-			model.transcript.append(finalMessageSeparatorCell{elapsed: model.runElapsed()})
+			model.flushActiveHistoryCell()
+			model.insertHistoryCell(FinalMessageSeparator{Elapsed: model.runElapsed()})
 			model.transcript.NeedsFinalMessageSeparator = false
 		}
 		model.draft += item.Delta
@@ -791,7 +807,7 @@ func (model *fullscreenModel) applyEvent(item event.Event) {
 		}
 	case event.PlanUpdated:
 		model.finishDraft()
-		model.transcript.append(newPlanUpdateCell(item))
+		model.insertHistoryCell(NewPlanUpdateCell(item))
 		model.status = "planning"
 	case event.RunDiffUpdated:
 		model.runDiffChanges = append([]event.RunDiffChange(nil), item.Changes...)
@@ -807,12 +823,14 @@ func (model *fullscreenModel) applyEvent(item event.Event) {
 		}
 		model.finishDraft()
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
-			model.transcript.flushActive()
+			model.flushActiveHistoryCell()
 		}
 		if model.transcript.ActiveCell == nil {
 			model.transcript.ActiveCell = newToolHistoryCell()
 		}
-		model.transcript.ActiveCell.Apply(item)
+		if model.transcript.ActiveCell.Apply(item) {
+			model.transcript.bumpActiveCellRevision()
+		}
 		model.transcript.HadWorkActivity = true
 		model.transcript.NeedsFinalMessageSeparator = true
 		model.status = "executing"
@@ -826,13 +844,15 @@ func (model *fullscreenModel) applyEvent(item event.Event) {
 			cell.Apply(event.ToolCallStarted{CallID: item.CallID, ToolName: item.ToolName, Iteration: item.Iteration})
 			model.transcript.ActiveCell = cell
 		}
-		model.transcript.ActiveCell.Apply(item)
+		if model.transcript.ActiveCell.Apply(item) {
+			model.transcript.bumpActiveCellRevision()
+		}
 		model.transcript.HadWorkActivity = true
 		model.transcript.NeedsFinalMessageSeparator = true
 		if model.details == nil {
 			model.details = newTranscriptDetailStore(0, 0)
 		}
-		if cell, ok := model.transcript.ActiveCell.(*toolHistoryCell); ok {
+		if cell, ok := model.transcript.ActiveCell.(*ToolHistoryCell); ok {
 			activity := cell.byCallID[item.CallID]
 			if activity != nil {
 				detailContent := strings.TrimSpace(strings.Join([]string{activity.Detail, item.Summary}, "\n\n"))
@@ -847,7 +867,7 @@ func (model *fullscreenModel) applyEvent(item event.Event) {
 		model.status = "awaiting approval"
 	case event.ApprovalResolved:
 		model.finishDraft()
-		model.appendCell(cellNotice, fmt.Sprintf("Approval · %s · %s", item.ToolName, item.Outcome))
+		model.insertHistoryCell(NewNoticeHistoryCell(fmt.Sprintf("Approval · %s · %s", item.ToolName, item.Outcome)))
 	case event.RunStatusChanged:
 		if strings.TrimSpace(item.To) != "" {
 			model.status = item.To
@@ -859,15 +879,15 @@ func (model *fullscreenModel) applyEvent(item event.Event) {
 	case event.DiagnosticPublished:
 		model.finishDraft()
 		content := strings.TrimSpace(strings.Join([]string{item.Severity, item.Code, item.Message}, " "))
-		model.appendCell(cellDiagnostic, content)
+		model.insertHistoryCell(NewDiagnosticHistoryCell(content))
 	case event.ErrorOccurred:
 		model.finishDraft()
 		if strings.TrimSpace(item.Error.Message) != "" {
-			model.appendCell(cellError, item.Error.Message)
+			model.insertHistoryCell(NewErrorHistoryCell(item.Error.Message))
 		}
 	case event.RunCompleted:
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
-			model.transcript.flushActive()
+			model.flushActiveHistoryCell()
 		}
 		model.status = item.Status
 	}
@@ -875,35 +895,58 @@ func (model *fullscreenModel) applyEvent(item event.Event) {
 
 func (model *fullscreenModel) finishDraft() {
 	if strings.TrimSpace(model.draft) != "" {
-		model.transcript.LastAssistantMarkdown = model.draft
-		model.appendCell(cellAssistant, model.draft)
+		model.transcript.LastAgentMarkdown = model.draft
+		model.insertHistoryCell(NewAgentMessageCell(model.draft))
 	}
 	model.draft = ""
 }
 
-func (model *fullscreenModel) appendCell(kind transcriptCellKind, content string) {
-	if model == nil || strings.TrimSpace(content) == "" {
+func (model *fullscreenModel) insertHistoryCell(cell HistoryCell) {
+	if model == nil || cell == nil {
 		return
 	}
-	model.transcript.append(newTextCell(kind, content))
+	if len(cell.RawLines()) == 0 && len(cell.DisplayLines(model.historyRenderContext())) == 0 {
+		return
+	}
+	model.historyCells = append(model.historyCells, cell)
+	model.pendingHistoryCells = append(model.pendingHistoryCells, cell)
 }
 
-func (model fullscreenModel) transcriptRenderContext() transcriptRenderContext {
+func (model *fullscreenModel) flushActiveHistoryCell() {
+	if model == nil || model.transcript.ActiveCell == nil {
+		return
+	}
+	model.insertHistoryCell(model.transcript.ActiveCell.Complete())
+	model.transcript.ActiveCell = nil
+	model.transcript.bumpActiveCellRevision()
+}
+
+func (model *fullscreenModel) resetHistory() {
+	if model == nil {
+		return
+	}
+	model.transcript.reset()
+	model.historyCells = nil
+	model.pendingHistoryCells = nil
+	model.hasEmittedHistoryLines = false
+}
+
+func (model fullscreenModel) historyRenderContext() HistoryRenderContext {
 	now := time.Now()
 	if model.clock != nil {
 		now = model.clock.Now()
 	}
-	return transcriptRenderContext{
+	return HistoryRenderContext{
 		Width: maxInt(36, model.width-3), Palette: model.palette, Markdown: model.renderer,
 		Now: now, MotionStart: model.motionStartedAt, Motion: model.motion,
 	}
 }
 
-func (model fullscreenModel) renderCell(cell transcriptCell) (rendered string) {
+func (model fullscreenModel) renderHistoryCell(cell HistoryCell) (rendered string) {
 	if cell == nil {
 		return ""
 	}
-	rendered = cell.Render(model.transcriptRenderContext())
+	rendered = renderStyledLines(historyLinesForMode(cell, model.historyMode, model.historyRenderContext()), model.historyRenderContext())
 	if model.app != nil && model.app.options.NoColor {
 		return xansi.Strip(rendered)
 	}
@@ -977,9 +1020,12 @@ func (model fullscreenModel) View() (rendered string) {
 		parts = append(parts, working)
 	}
 	activity := strings.Join(parts, "\n\n")
-	inputRegion := input + "\n" + status
+	inputRegion := input + "\n\n" + status
 	if activity == "" {
 		return "\n\n" + inputRegion
+	}
+	if model.hasEmittedHistoryLines {
+		activity = "\n" + activity
 	}
 	return activity + "\n\n\n" + inputRegion
 }
@@ -1022,7 +1068,7 @@ func (model fullscreenModel) handleDetailViewerKey(key tea.KeyMsg) (tea.Model, t
 }
 
 func (model fullscreenModel) renderTranscriptViewer() string {
-	header := model.palette.accent().Bold(true).Render("Transcript Details") + "  " + model.palette.dim().Render("↑/↓ · PgUp/PgDn · Esc return")
+	header := model.palette.strong().Render("Transcript Details") + "  " + model.palette.dim().Render("↑/↓ · PgUp/PgDn · Esc return")
 	footer := model.palette.dim().Render(fmt.Sprintf("%d retained item(s) · bounded in memory", len(model.details.items)))
 	return strings.Join([]string{header, model.detailViewport.View(), footer}, "\n")
 }
@@ -1057,7 +1103,7 @@ func (model fullscreenModel) banner() (rendered string) {
 		return logo + "\n" + strings.Join(rows, "\n")
 	}
 	panelWidth := maxInt(24, width-6)
-	panel := fullscreenPanelStyle.BorderForeground(model.palette.semantic(terminalRGB{90, 90, 90}, "238", "250")).Width(panelWidth).Render(strings.Join(rows, "\n"))
+	panel := fullscreenPanelStyle.BorderForeground(model.palette.border().GetForeground()).Width(panelWidth).Render(strings.Join(rows, "\n"))
 	return logo + "\n\n" + panel
 }
 
@@ -1067,24 +1113,6 @@ func bannerMetadataRow(label, value string, width int) string {
 		return truncateFullscreen(strings.TrimSpace(label)+strings.TrimSpace(value), width)
 	}
 	return fmt.Sprintf("%-*s%s", labelWidth, label, truncateFullscreen(strings.TrimSpace(value), width-labelWidth))
-}
-
-func newFullscreenMarkdownRenderer(width int, palette terminalPalette) (*glamour.TermRenderer, error) {
-	style := styles.DarkStyleConfig
-	if !palette.Dark {
-		style = styles.LightStyleConfig
-	}
-	zero := uint(0)
-	accent := palette.markdownAccent()
-	bold := true
-	style.Document.Margin = &zero
-	style.Document.Indent = &zero
-	style.Document.BlockPrefix = ""
-	style.Document.BlockSuffix = ""
-	style.Code.Color = &accent
-	style.Code.BackgroundColor = nil
-	style.Code.Bold = &bold
-	return glamour.NewTermRenderer(glamour.WithStyles(style), glamour.WithWordWrap(width))
 }
 
 func isTerminalControlResponse(message tea.KeyMsg) bool {
@@ -1157,10 +1185,6 @@ func (model fullscreenModel) inputBox() string {
 		}, width)
 		return input + "\n\n" + list
 	}
-	if model.running {
-		hint := fmt.Sprintf("Agent 正在执行；Enter 排队下一条任务 · Esc/Ctrl+C 取消 · %d queued", len(model.queuedTasks))
-		return input + "\n" + model.palette.dim().Render(xansi.Truncate(hint, width, "…"))
-	}
 	return input
 }
 
@@ -1168,18 +1192,18 @@ func (model fullscreenModel) statusBar() string {
 	width := maxInt(40, model.width)
 	parts := []statusBarPart{}
 	if modelName := strings.TrimSpace(model.model); modelName != "" {
-		parts = append(parts, statusBarPart{text: modelName, style: model.palette.accent()})
+		parts = append(parts, statusBarPart{text: modelName, style: model.palette.statusLineStyle(statusAccentModel)})
 	} else {
-		parts = append(parts, statusBarPart{text: "AMADEUS", style: model.palette.accent()})
+		parts = append(parts, statusBarPart{text: "AMADEUS", style: model.palette.statusLineStyle(statusAccentModel)})
 	}
 	if project := strings.TrimSpace(model.startup.Project); project != "" {
-		parts = append(parts, statusBarPart{text: project, style: model.palette.plain()})
+		parts = append(parts, statusBarPart{text: project, style: model.palette.statusLineStyle(statusAccentPath)})
 	}
 	if branch := strings.TrimSpace(model.startup.Branch); branch != "" {
-		parts = append(parts, statusBarPart{text: branch, style: model.palette.warning()})
+		parts = append(parts, statusBarPart{text: branch, style: model.palette.statusLineStyle(statusAccentBranch)})
 	}
 	if model.collaboration == CollaborationPlan {
-		parts = append(parts, statusBarPart{text: "Plan", style: model.palette.warning()})
+		parts = append(parts, statusBarPart{text: "Plan", style: model.palette.statusLineStyle(statusAccentMode)})
 	}
 	contextWindow := model.contextLimit
 	if contextWindow <= 0 {
@@ -1193,7 +1217,7 @@ func (model fullscreenModel) statusBar() string {
 		contextStyle := statusContextStyle(model.palette, percent)
 		parts = append(parts,
 			statusBarPart{text: fmt.Sprintf("Context %d%% used", percent), style: contextStyle},
-			statusBarPart{text: compactTokenCount(contextWindow) + " window", style: model.palette.dim()},
+			statusBarPart{text: compactTokenCount(contextWindow) + " window", style: model.palette.statusLineStyle(statusAccentUsage)},
 		)
 	}
 	if len(parts) == 1 && strings.TrimSpace(model.startup.Project) == "" && strings.TrimSpace(model.startup.Branch) == "" && contextWindow <= 0 {
@@ -1216,7 +1240,7 @@ func statusContextStyle(palette terminalPalette, percent int64) lipgloss.Style {
 	case percent >= 70:
 		return palette.warning()
 	default:
-		return palette.success()
+		return palette.statusLineStyle(statusAccentUsage)
 	}
 }
 
@@ -1303,27 +1327,46 @@ func (model *fullscreenModel) updateInputLayout() {
 }
 
 func (model fullscreenModel) transcriptContent() string {
-	cells := append([]transcriptCell(nil), model.transcript.Cells...)
+	cells := append([]HistoryCell(nil), model.historyCells...)
 	if model.draft != "" {
-		cells = append(cells, newTextCell(cellAssistant, model.draft))
+		cells = append(cells, NewAgentMessageCell(model.draft))
 	}
 	if model.transcript.ActiveCell != nil {
 		cells = append(cells, model.transcript.ActiveCell)
 	}
-	return renderTranscriptCells(cells, model.transcriptRenderContext())
+	return renderHistoryCells(cells, model.historyMode, model.historyRenderContext())
 }
 
-func (model *fullscreenModel) flushTranscript() tea.Cmd {
-	if model == nil || model.transcript.Committed >= len(model.transcript.Cells) {
+func (model *fullscreenModel) displayLinesForHistoryInsert(cell HistoryCell) []styledLine {
+	if model == nil || cell == nil {
 		return nil
 	}
-	pending := model.transcript.Cells[model.transcript.Committed:]
-	output := renderTranscriptCells(pending, model.transcriptRenderContext())
-	model.transcript.Committed = len(model.transcript.Cells)
+	lines := historyLinesForMode(cell, model.historyMode, model.historyRenderContext())
+	if len(lines) == 0 {
+		return nil
+	}
+	if model.hasEmittedHistoryLines && !cell.IsStreamContinuation() {
+		lines = append([]styledLine{{}}, lines...)
+	}
+	model.hasEmittedHistoryLines = true
+	return lines
+}
+
+func (model *fullscreenModel) flushHistory() tea.Cmd {
+	if model == nil || len(model.pendingHistoryCells) == 0 {
+		return nil
+	}
+	pending := append([]HistoryCell(nil), model.pendingHistoryCells...)
+	model.pendingHistoryCells = nil
+	var lines []styledLine
+	for _, cell := range pending {
+		lines = append(lines, model.displayLinesForHistoryInsert(cell)...)
+	}
+	output := renderStyledLines(lines, model.historyRenderContext())
 	if output == "" {
 		return nil
 	}
-	return tea.Println(output + "\n")
+	return tea.Println(output)
 }
 
 func (model fullscreenModel) renderActiveDraft() string {
@@ -1335,7 +1378,7 @@ func (model fullscreenModel) renderActiveDraft() string {
 	if len(sourceLines) > available {
 		sourceLines = sourceLines[len(sourceLines)-available:]
 	}
-	rendered := model.renderCell(newTextCell(cellAssistant, strings.Join(sourceLines, "\n")))
+	rendered := model.renderHistoryCell(NewAgentMessageCell(strings.Join(sourceLines, "\n")))
 	lines := strings.Split(rendered, "\n")
 	if len(lines) > available {
 		lines = lines[len(lines)-available:]
@@ -1347,7 +1390,7 @@ func (model fullscreenModel) renderActiveCell() string {
 	if model.transcript.ActiveCell == nil {
 		return ""
 	}
-	rendered := model.renderCell(model.transcript.ActiveCell)
+	rendered := model.renderHistoryCell(model.transcript.ActiveCell)
 	available := maxInt(1, model.height-lipgloss.Height(model.inputBox())-lipgloss.Height(model.statusBar())-4)
 	lines := strings.Split(rendered, "\n")
 	if len(lines) > available {

@@ -159,8 +159,6 @@ providers:
 		"providers.compatible.timeout: 2m0s [source: default]",
 		"agent.max_iterations: 30 [source: default]",
 		"agent.max_tool_calls: 120 [source: default]",
-		"agent.max_input_tokens: 1000000 [source: default]",
-		"agent.max_output_tokens: 245760 [source: default]",
 		"agent.max_duration: 30m0s [source: default]",
 		"agent.max_parallel_tools: 4 [source: default]",
 	}

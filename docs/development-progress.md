@@ -1,7 +1,7 @@
 # Amadeus 开发进度
 
 > 创建日期：2026-07-29
-> 最近重排：2026-08-08
+> 最近重排：2026-08-10
 > 唯一目标架构：`docs/design.md`
 > 当前状态：M8R、M8U、M8P、M8H、M9 与 M9V 已完成；当前进入 M10 正式发布收尾，M11 Multi-Agent 不阻塞正式发布
 
@@ -63,6 +63,7 @@
 23. Run/Session Permission Store 与 SessionApprovalStore 都只属于活动 Runtime 内存，不写 SQLite、不随 `--resume` 恢复；MVP 不实现 DeniedGlobs、AdditionalReadableRoots、RunApprovalStore、NetworkPermissionStore 或 Run 专属临时根，网络默认允许。
 24. `--add-dir` 是附加 Workspace Root，加载目标相关 AGENTS.md，但首版不加载其中的 MCP/Skill；Additional Writable Root 只扩大写权限，不获得工作区指令或扩展语义。
 25. Prompt 是内部 Runtime 资产：模板位于 `internal/prompt/builtin/templates`，Bootstrap 负责分层装配并注入 Iterator，Reactor 不直接读取或兜底内置 Prompt；Codex Prompt 只选择性改写为 Amadeus 语义。
+26. Token 语义向 Codex 收敛：Provider `max_output_tokens` 只控制单次采样；Context Profile 使用 95% 有效窗口与 90% 自动压缩阈值；稳定 Agent 配置不提供累计 input/output token 终止预算，usage 只用于事件、持久化、审计和未来可选 Rollout Budget。
 
 ## 3. 里程碑总览
 
@@ -82,9 +83,9 @@
 | M8U | Permission/Isolation/Approval Runtime 收敛 | DONE | Codex 风格 Root/Policy 分层、Run/Session Permission Store、Sandboxed/Unsandboxed Shell、Session Command Approval 与安全回归已完成 |
 | M8P | Prompt Runtime 优化 | DONE | Prompt 资产内置化、Reactor 解耦、Coding Agent 文案重写与 Contract/E2E 已完成 |
 | M8H | Tool Handler 主链与 Apply Patch 收敛 | DONE | Codex 风格 Handler/Registry/Router、私有 ExecRequest/PreparedPatch、typed exact delta 与 RunDiffProjector 已完成并通过发布门禁 |
-| M9 | TUI 交互与 Slash Command 重构 | DONE | Composer、Slash Popup、SelectionOverlay、十一个 Codex 对齐命令、Session 操作和交互门禁已完成；不代表视觉运行时已对齐 |
-| M9V | TUI Visual Runtime 重构 | DONE | TerminalPalette、Motion、TranscriptCell、ActiveCell、Tool History 和 Separator 状态模型已完成 |
-| M10 | 兼容回归与首个正式发布 | TODO | 依赖 M8H 完成；只负责冻结、回归、构建、文档和发布 |
+| M9 | TUI 交互与 Slash Command 重构 | DONE | Composer、Slash/Selection、语义视觉与 Codex HistoryCell/TranscriptState/History insertion 最终结构全部完成 |
+| M9V | TUI Visual Runtime 重构 | DONE | TerminalPalette、Motion、HistoryCell/ActiveHistoryCell、Tool History 和 Separator 视觉状态已完成 |
+| M10 | 兼容回归与首个正式发布 | TODO | M8H 与 M9-26 已完成；只负责冻结、回归、构建、文档和发布 |
 | M11 | 可选只读 Multi-Agent 与高级入口 | TODO | 不阻塞 M10 |
 
 当前关键路径：
@@ -100,7 +101,8 @@ M8R-A Canonical Persistence
 → M8U Workspace/Permission/Approval Runtime
 → M8P Prompt Runtime
 → M9 TUI/Slash Command
-→ M9V TUI Visual Runtime
+→ M9V TUI Visual Runtime 行为基线
+→ M9 HistoryCell 结构收敛
 → M8H Tool Handler/Apply Patch Convergence
 → M10 Release
 ```
@@ -110,7 +112,8 @@ M8R-A Canonical Persistence
 - 当前阶段：`M8H` 已完成，进入 `M10` 兼容回归与首个正式发布阶段。
 - 当前任务：无；下一项可领取任务为 `M10-01`。
 - 当前阻塞：无。
-- 最近实施进展：M8H 已完成唯一 ToolRouter/ToolRegistry/ToolHandler 主链、唯一参数 Normalizer/Schema Validate、Run 级并发闸门、FileSystemPolicy 直连、私有 ExecRequest/PreparedPatch、内容级 AppliedPatchDelta 与 typed RunDiffProjector；旧 Prepared/Dispatcher/Executor/Gate/PathGuard/ToolAuthorizer/Hook 主链已删除。
+- 最近实施进展：M10-00A 已完成 Token/Context 收敛；稳定 Agent 配置删除累计 input/output token 双预算，Provider `max_output_tokens` 只服务单次采样，Context Profile 使用 95% effective window 与 90% auto compact，历史和当前 Run 的 Tool Result 都参与安全投影，usage 继续完整累计。
+- 最近 TUI 进展：修复实机黑白回归；ANSI16 继续使用 Codex 标准 cyan，Status Bar 按 model cyan/path green/branch magenta/usage green 分类，Lip Gloss profile 与 Palette 同步，Rich TUI 不再被继承的 `NO_COLOR` 静默剥色；Composer 文案已英文化；scrollback 提交不再附加尾部空行，最终回复到输入框恢复 Codex 同款两次换行。
 - 发布约束：M10 完成前不得发布首个稳定版，也不得把 M11 Multi-Agent 接入默认主链。
 
 ### 4.1 交付顺序
@@ -126,10 +129,10 @@ M8R-A Canonical Persistence
 | 7 | M8S-01～08 | 历史 Prepared Tool Call 收敛；其公共流水线由 M8H 取代 |
 | 8 | M8U-01～11 | 收敛 Workspace、Permission、Approval、ExecPolicy 与 Sandbox 主链 |
 | 8P | M8P-01～04 | Prompt 资产、装配、文案和 Contract/E2E 收敛 |
-| 9 | M9-01～14 | 重构 Composer、Slash Popup、SelectionOverlay 与十一个 Codex 对齐命令 |
-| 9V | M9V-01～10 | 重构 TerminalPalette、Motion、TranscriptCell、Tool History 与 Separator Visual Runtime |
+| 9 | M9-01～26 | 重构 Composer、Slash Popup、SelectionOverlay、Codex 对齐命令、语义视觉样式与 HistoryCell 结构 |
+| 9V | M9V-01～10 | 建立 TerminalPalette、Motion、旧 TranscriptCell 行为基线、Tool History 与 Separator Visual Runtime |
 | 8H | M8H-01～10 | 收敛 Handler/Registry/Router、权限接入、并发声明、PreparedPatch 与 RunDiffProjector |
-| 10 | M10-01～10 | 在 M8H 后完成发布兼容、构建、文档和版本候选 |
+| 10 | M10-00A～10 | 在 M8H 后先冻结 token/context 配置，再完成发布兼容、构建、文档和版本候选 |
 | 11 | M11-01～07 | 发布后验证只读 Multi-Agent 的真实收益 |
 
 ## 5. 历史交付摘要
@@ -348,6 +351,8 @@ M8H 是首个正式发布前追加的 Tool 收敛阶段。它以 `docs/design.md
 
 M9 在正式发布冻结前完成交互主链重构。它不改变 Reactor、Prepared Tool、Permission、Sandbox 或 Provider 的领域语义，而是把现有 Bubble Tea Rich Inline TUI 收敛为 Codex 风格的 Composer、Slash Popup、SelectionOverlay 和命令分发结构。现有 `Amadeus Logo + >_` Braille 品牌头部保持不变；启动信息面板、状态展示、Slash Command 文案和交互优先直接复用 Codex 用户可见设计，只做产品名、`thread → session` 与真实能力差异所需替换。
 
+M9-01～14 已于 2026-08-08 交付交互与命令基线；M9-15～20 完成 Palette、Composer、Selection、Tool/Status 层级和 Markdown/代码渲染的视觉一致性。2026-08-10 进一步对照 Codex 源码后确认，旧 `transcriptCell.Render() string + transcriptState.Cells/Committed` 只完成行为级视觉对齐，仍混合 Active Cell、正式历史和终端提交进度；M9-21～26 现已完成 `HistoryCell/ActiveHistoryCell/HistoryRenderMode/TranscriptState/InsertHistoryCell` 结构收敛，且没有建立第二套 Visual Runtime。
+
 | ID | 状态 | 依赖 | 最小任务 | 验收标准 |
 |---|---|---|---|---|
 | M9-01 | DONE | M8P-04 | 冻结 Codex 对齐交互 Contract | 明确 Composer、SlashCommandCatalog、SlashCommandPopup、SelectionOverlay、Dispatcher、运行中可用性和十一个命令的名称/说明/参数规则；`docs/design.md` 为唯一事实源 |
@@ -364,8 +369,20 @@ M9 在正式发布冻结前完成交互主链重构。它不改变 Reactor、Pre
 | M9-12 | DONE | M9-11 | 实现手动 `/compact` | 主动生成语义化会话摘要并 append `context_compaction`，校验 covered sequence/source hash/replacement history；不 UPDATE/DELETE 原 rollout，失败保持旧历史可用 |
 | M9-13 | DONE | M9-12 | 对齐启动面板、状态和用户文案 | 保留现有 Amadeus Logo 与 Braille `>_`；启动面板只显示产品/version、model、directory；命令说明、确认、空状态和结果提示优先复用 Codex 文本并集中管理 |
 | M9-14 | DONE | M9-13 | 完成 TUI/Slash 发布门禁 | 覆盖 Popup/Overlay 快照、中文输入、运行中命令 gating、Plain `/` Catalog、Resume/Clear/Plan/Skill/MCP/Compact/Rename/Delete/Copy/Exit E2E、无空 Session、race、全仓测试和 `make check` |
+| M9-15 | DONE | M9V-10 | 冻结 Codex 语义渲染补强 Contract | `design.md` 与 `tui-visual-contract.md` 明确 default/strong/dim/accent/selection/status/Markdown 规则；确认不直接复制 Rust 类型、不维护固定 Dashboard Palette |
+| M9-16 | DONE | M9-15 | 收敛 TerminalPalette 语义层 | `palette.go` 已实现 deep/light accent、ANSI256 最近色、ANSI16 标准 cyan/green/magenta、NoColor 降级、strong/muted/selection/border/separator 和 bold success/failure；Program 启动同步 Lip Gloss profile |
+| M9-17 | DONE | M9-16 | 对齐 Composer 与统一 Selection UI | Composer 与 Overlay 输入使用 `›`；Focused strong、Blurred dim；Slash/Resume/Approval/Skills 选中整行使用 accent + bold，普通名称 default、说明 dim，黄色 selected palette 已删除 |
+| M9-18 | DONE | M9-17 | 对齐 Tool History 与 Status Bar 层级 | `Ran/Explored/Updated Plan` 使用 default + bold；命令 default、输出 dim、Read/List/Search accent；Status 按 Codex fallback 使用 model cyan、path/usage green、branch/mode magenta，高 context 使用 yellow/red |
+| M9-19 | DONE | M9-18 | 完整实现 Codex Markdown 语义与代码高亮 | `markdown.go` 集中配置 heading/emphasis/strong/link/blockquote/list/inline code；Go/Bash/JSON fenced block 使用独立深浅 Chroma 主题与 terminal16m/256/16 formatter，无背景；未知语言与 NoColor 确定性降级 |
+| M9-20 | DONE | M9-19 | 完成语义视觉矩阵与发布门禁 | `semantic_visual_test.go` 与既有视觉/交互测试覆盖深浅 accent、Composer enabled/disabled、Selection、Tool、Status、Markdown/多语言代码、ANSI16/NoColor；全仓、race、`make check`、主屏 smoke 与 diff check 通过 |
+| M9-21 | DONE | M9-20 | 冻结 Codex HistoryCell Contract 与迁移清单 | `design.md`/视觉契约已明确 HistoryCell、ActiveHistoryCell、HistoryRenderMode、TranscriptState、HistoryCells、PendingHistoryCells、HasEmittedHistoryLines 和不复制的 Ratatui 专属能力；旧 transcriptCell/Kind/Render/Committed 迁移清单已落地 |
+| M9-22 | DONE | M9-21 | 引入 HistoryCell 与具体 Message Cell | `history_cell.go` 定义 Rich/Raw DisplayLines Contract；UserMessageCell、AgentMessageCell、Plain/Notice/Diagnostic/Error Cell 已拆分；通用 text cell、HistoryCellKind 和 kind render switch 已删除 |
+| M9-23 | DONE | M9-22 | 分离 TranscriptState 与正式 History 所有权 | TranscriptState 只保留 ActiveHistoryCell、ActiveCellRevision、LastAgentMarkdown 和 Turn flags；fullscreenModel 持有 historyCells/pendingHistoryCells/hasEmittedHistoryLines；Cells/Committed 混合状态已删除 |
+| M9-24 | DONE | M9-23 | 实现统一 History insertion 主链 | application.go 已实现 insertHistoryCell、displayLinesForHistoryInsert、flushHistory；独立 Cell 插入结构化空 StyledLine，stream continuation 保持相邻；`"\n" + output` 和 flushTranscript 兼容入口已删除 |
+| M9-25 | DONE | M9-24 | 迁移 Active Tool、Plan 与 Separator Cell | `history_cell_tools.go` 的 ToolHistoryCell/ExecCell/ExploreCell/WebSearchCell 与 PlanUpdateCell/FinalMessageSeparator 均使用 DisplayLines/RawLines；ActiveHistoryCell 按 Event 原位更新并以完成 Cell 提交 |
+| M9-26 | DONE | M9-25 | 完成 Rich/Raw、结构测试与发布门禁 | history/application/activity/semantic/visual 测试覆盖 Rich/Raw、跨批次间距、stream continuation、revision、Agent/Tool/Separator、Working/Composer、Unicode/NoColor/Plain/main-screen；全仓、race、make check、build 与 diff check 通过，架构守卫确认无旧主链 |
 
-M9 出口证据：共享 Catalog、Popup、Selection、Session Store/Runtime、Skill settings 与 Compaction 均有针对性测试；Memory/SQLite 的 rename/delete/cascade、Draft 无空记录、Plan Mode 只读边界和 Provider mock E2E 通过。最终于 2026-08-08 执行 `go test ./... -count=1`、`go test -race ./... -count=1`、`make check` 和 `git diff --check`，全部成功。
+M9 完成证据：M9-01～20 的 Catalog、Popup、Selection、Session、Compaction、Palette、Composer、Tool/Status 和 Markdown 测试继续通过；M9-21～26 新增 `history_cell.go`、`history_cell_tools.go` 与 HistoryCell 架构守卫，覆盖 Rich/Raw、跨批次 spacing、stream continuation、ActiveCellRevision 和正式 History ownership。2026-08-10 执行 `go test ./... -count=1`、`go test -race ./... -count=1`、`make check`、`make build` 与 `git diff --check` 均成功。
 
 ## 12. M9V：TUI Visual Runtime 重构
 
@@ -378,7 +395,7 @@ M9V 以当前 `../codex-main/codex-rs/tui` 源码和快照为视觉事实源，�
 | M9V-01 | DONE | M9-14 | 冻结 Codex Visual Contract | `docs/tui-visual-contract.md` 固定 Working、Palette、Cells、Tool History、Separator、Layout 与终端矩阵边界 |
 | M9V-02 | DONE | M9V-01 | 实现 TerminalPalette 与统一 Style | `palette.go` 检测 True Color/ANSI256/ANSI16/No Color 与明暗背景，集中派生语义 Style 和 Markdown accent |
 | M9V-03 | DONE | M9V-02 | 实现 Motion 与 Codex Shimmer | `motion.go` 使用可注入 Clock、32ms redraw、2s/10-padding/half-width-5 余弦光带、600ms marker fallback 与 Reduced Motion |
-| M9V-04 | DONE | M9V-03 | 引入 TranscriptCell 与统一 Layout | `transcript.go` 定义 StyledLine、TranscriptCell、ActiveCell、TranscriptState 与统一 commit spacing；旧 kind/content 和 previous-kind 特判已删除 |
+| M9V-04 | DONE | M9V-03 | 引入 TranscriptCell 行为基线与统一 Layout | 历史 `transcript.go` 曾建立 StyledLine、旧 TranscriptCell/ActiveCell、TranscriptState 和 commit spacing 的首版行为；M9-21～26 已将其替换为 `history_cell.go`/`history_cell_tools.go` 的最终结构 |
 | M9V-05 | DONE | M9V-04 | 实现 ExecCell 活动生命周期 | Tool Started/Completed 原位更新；Running/Ran/You ran、命令/output 上限、omission、success/failure、partial 与 duration 均有测试 |
 | M9V-06 | DONE | M9V-05 | 实现 Explore 与 WebSearch Cell | Exploring/Explored、Read 去重、Read/List/Search accent、Searching/Searched 与 CallID/sequence 顺序已实现 |
 | M9V-07 | DONE | M9V-06 | 实现 Transcript Separator 状态 | HadWorkActivity/NeedsFinalMessageSeparator 驱动内容边界；Iteration 不再排版；短 Run dim rule、长 Run 零填充 Worked for 已测试 |
@@ -392,12 +409,13 @@ M9V 出口证据：`palette_test.go`、`motion_test.go`、`transcript_test.go`�
 
 ## 13. M10：兼容回归与首个正式发布
 
-M10 只在 M9V-10、M10-00 与 M8H-10 全部完成后继续。M10 不再进行 Agent Engine、Prompt、Permission、Persistence、Tool、TUI 或 Slash Command 主链重构，只冻结已经完成的能力、执行发布级回归、构建各平台产物并准备正式版本。
+M10 只在 M9V-10、M9-26、M10-00 与 M8H-10 全部完成后继续。M10 不再进行 Agent Engine、Prompt、Permission、Persistence、Tool、TUI 或 Slash Command 主链重构，只冻结已经完成的能力、执行发布级回归、构建各平台产物并准备正式版本。
 
 | ID | 状态 | 依赖 | 最小任务 | 验收标准 |
 |---|---|---|---|---|
 | M10-00 | DONE | M9V-10 | 对齐 Codex Diff 语义 | 历史实现已让 Patch exact delta 成为唯一归因来源；M8H-09 负责将其迁移到 RunDiffProjector 与最终 Handler 主链 |
-| M10-01 | TODO | M10-00,M8H-10 | 冻结 CLI、配置、TUI 和 Tool 暴露基线 | 根命令、`--plain`、Slash Catalog、Resume/Clear、Plan Mode、Provider、Exposure、Handler Tool Contract、Workspace/Permission/Approval、Visual Runtime 和错误语义固定 |
+| M10-00A | DONE | M10-00,M8H-10 | 收敛 Token 与 Context 配置 | 已删除 Agent 累计 input/output token 配置与 Reactor 终止条件；Provider `max_output_tokens` 只控制单次请求；Context Profile 改为 95% effective window、90% auto compact；历史 Tool Result 安全投影与 usage 记录通过测试 |
+| M10-01 | TODO | M10-00A | 冻结 CLI、配置、TUI 和 Tool 暴露基线 | 根命令、`--plain`、Slash Catalog、Resume/Clear、Plan Mode、Provider、Exposure、Handler Tool Contract、Workspace/Permission/Approval、Visual Runtime 和错误语义固定 |
 | M10-02 | TODO | M10-01 | 冻结稳定版迁移策略 | 首个稳定版 schema 成为数据兼容起点；后续目标版本有保留数据的明确迁移，不支持版本给出可恢复错误且不静默丢数据 |
 | M10-03 | TODO | M10-02 | 执行安全回归 | Path、Sandbox、Command、Approval、Audit、MCP/Web、凭证脱敏和非 TTY fail-closed 通过 |
 | M10-04 | TODO | M10-03 | 执行可靠性与性能基线 | 长 Session、Compaction、parallel Handler shared guard、non-parallel Handler exclusive guard、取消和内存/token 指标有记录 |
@@ -431,14 +449,14 @@ M11 不阻塞 M10。首版只验证最多两个只读 SubAgent，不建立 Team 
 | Persistence | canonical rollout 是唯一历史事实源 | migration、append/replay、crash recovery |
 | Session/Run | SessionRuntime 与 RunRuntime 职责不重叠 | 生命周期、取消、Finish Once、race |
 | Reactor | 只有 Think→Analyze→Act→Observe 一条循环 | 默认 execute、Plan Mode、旧 Engine guard |
-| Context | RequestContext 动态构建，compaction append-only | token、Replacement History、Resume |
+| Context | RequestContext 动态构建，compaction append-only；95% effective window、90% auto compact 与 Provider 单次输出语义分离 | token、历史 Tool Result 投影、Replacement History、Resume |
 | Prompt | 内置模板只由 Bootstrap 分层装配，稳定规则与动态事实分离 | asset migration、变量/层级 contract、RunMode/Exposure、Permission developer message、双 API E2E |
 | Tool | ToolRouter/Registry/Handler 是唯一调用主链，ToolOutput 是内容事实，ToolCallOutcome 是生命周期事实 | normalizer/schema、handler dispatch、failure/denied/partial/interrupted E2E、旧链架构守卫 |
 | Concurrency | Handler 只声明 `SupportsParallelToolCalls()`，Run 级读写锁实现 shared/exclusive 行为且无第二层资源锁 | parallel overlap、non-parallel barrier、cancel、order、race |
 | Safety | PermissionProfile、Run/Session Permission Store、Isolation、Session Command Approval、ExecPolicy 与 Audit 职责不重叠且不可绕过 | ReadHost、symlink、ReadOnly/Denied、request_permissions 重调用、Run/Session 生命周期、Linux Sandbox、Unsandboxed 精确 Command Key、非 TTY、resume 不恢复 Store |
 | Diff | RunDiffProjector 只投影可信 Patch exact delta；WorkspaceDiff 独立按需读取 Git 状态 | add/update/delete/move、partial、staging/revalidation、Shell/MCP ignore、无 transcript 警告 |
 | Extensions | MCP/Skill/Web 复用统一 Runtime | binding、approval、timeout、event projection |
-| TUI | UI 只消费事件，不拥有 Agent/Session 事实；Composer/Slash/Selection 与 Visual Runtime 分层；TranscriptCell/ActiveCell、TerminalPalette、Motion 和 Separator 状态不依赖 Reactor Iteration 排版 | scrollback、Unicode、popup/filter/navigation、approval、resume/clear、plan mode、copy/status/MCP/Skill、Working 固定 Clock 快照、True Color/ANSI/No Color、Exec/Explore/WebSearch、separator、interrupt、diff |
+| TUI | UI 只消费事件，不拥有 Agent/Session 事实；Composer/Slash/Selection 与 Visual Runtime 分层；目标 HistoryCell/ActiveHistoryCell、TerminalPalette、Motion 和 Separator 状态不依赖 Reactor Iteration 排版 | scrollback、Unicode、popup/filter/navigation、approval、resume/clear、plan mode、copy/status/MCP/Skill、Working 固定 Clock 快照、True Color/ANSI/No Color、Rich/Raw、Exec/Explore/WebSearch、separator、interrupt、diff |
 
 ## 16. 决策日志
 
@@ -464,7 +482,14 @@ M11 不阻塞 M10。首版只验证最多两个只读 SubAgent，不建立 Team 
 | 2026-08-07 | M8U Permission/Approval Runtime 完成 | Permission Grant 重调用、Session Command Approval、多 Workspace AGENTS、Sandboxed/Unsandboxed 分流、Audit fail-closed 与多 Root RunDiff 全部接入统一 PreparedToolCall 主链并通过全仓/race/发布门禁 |
 | 2026-08-07 | Prompt 优化拆为独立 M8P | M8P-01～04 负责目录迁移、Reactor 解耦、Codex 成熟规则选择性改写和 Prompt Contract/E2E；Prompt 完成后再进入交互与发布阶段 |
 | 2026-08-07 | M9 重排为 TUI 交互与 Slash Command | 保留 Amadeus Logo；统一 Composer/Popup/Selection/Dispatcher，最终加入 `/resume /skills /rename /delete /compact /plan /copy /status /mcp /clear /exit`；原发布 M9 顺延 M10，Multi-Agent 顺延 M11 |
-| 2026-08-08 | 在 M9 后新增 M9V TUI Visual Runtime | M9 只视为交互命令重构完成；M9V 移植 Codex TerminalPalette、Motion、TranscriptCell/ActiveCell、Exec/Explore/WebSearch 与内容边界 Separator，完成后 M10 才能冻结发布 |
+| 2026-08-08 | 在 M9 后新增 M9V TUI Visual Runtime | M9 只视为交互命令重构完成；M9V 建立 Codex TerminalPalette、Motion、首版 TranscriptCell/ActiveCell、Exec/Explore/WebSearch 与内容边界 Separator 行为基线；2026-08-10 的 M9-21～26 再完成 HistoryCell 最终结构 |
+| 2026-08-08 | 重新打开 M9 进行 Codex 语义视觉一致性补强 | M9-15～20 收敛 terminal-aware semantic palette、`›` Composer prompt、统一 cyan selection、Tool/Status 层级与 Markdown/代码高亮；复用 M9V 行为基线，不建立第二套 Visual Runtime；该阶段门禁后来由 2026-08-10 的 M9-21～26 HistoryCell 结构收敛继续延后 |
+| 2026-08-10 | 修复 Rich TUI 实机黑白回归并对齐 Codex StatusLineAccent | ANSI16 accent 保留标准 cyan；状态栏使用 cyan/green/magenta 分类；Program 同步 Lip Gloss profile；继承 `NO_COLOR` 不再关闭 Rich TUI 颜色；输入占位与运行提示统一英文 |
+| 2026-08-10 | 修复最终回复到 Composer 的三行距离 | `flushTranscript` 提交精确 Cell 输出，不再使用 `tea.Println(output + "\n")` 追加空行；空闲 Bottom Pane 独占两次换行，避免 scrollback 尾行与 View 前导留白叠加 |
+| 2026-08-10 | M9 新增 Codex HistoryCell 结构收敛 | M9-21～26 对齐 HistoryCell、ActiveHistoryCell、HistoryRenderMode、TranscriptState 与 InsertHistoryCell 语义；正式历史、活动状态和 history insertion 分离，删除 Kind/Render string/Committed 兼容链，M10 改为等待 M9-26 |
+| 2026-08-10 | M9-21～26 HistoryCell 重构完成 | Message/Tool/Plan/Separator 全部迁入 DisplayLines/RawLines；TranscriptState 与正式 History ownership 分离；结构化 insertion、Rich/Raw、continuation、revision 和架构守卫通过全仓/race/make check/build/diff check |
+| 2026-08-10 | 新增 M10-00A Token/Context 收敛 | 向 Codex 主链看齐，移除稳定 Agent 累计 input/output token 双预算；Provider 输出上限只服务单次请求；Context Profile 改为 effective window percent 与 auto compact token limit |
+| 2026-08-10 | M10-00A Token/Context 收敛完成 | 配置、Reactor Budget、ContextProfile、历史 Tool Result 投影、示例/README/config explain 与兼容测试完成；旧 Agent token 字段明确拒绝，不静默忽略 |
 | 2026-08-08 | RunDiff 对齐 Codex 双层语义 | RunDiffProjector 只记录可信 Patch exact delta；普通 Shell/MCP 不触发失效或 transcript 警告；真实工作区变化留给独立 WorkspaceDiff `/diff` 按需读取 Git 状态且不做 Tool 归因 |
 | 2026-08-08 | 新增 M8H Tool Handler 与 Apply Patch 收敛 | ToolRouter/Registry/Handler 成为唯一主链；Permission 集中于 FileSystemPolicy；并发改为 Handler capability；ApplyPatchHandler 私有 PreparedPatch 负责 preflight、staging、revalidation、partial 与 exact delta |
 

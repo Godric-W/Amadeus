@@ -94,7 +94,7 @@ func NewRunnerWithPhases(phases RunnerPhases, options RunnerOptions) (*Runner, e
 		options.ContextWindow = agentcontext.NewContextWindowManager(nil)
 	}
 	if options.ContextProfile.ContextWindow == 0 {
-		options.ContextProfile = agentcontext.DefaultContextProfile(128_000, options.MaxOutputTokens)
+		options.ContextProfile = agentcontext.DefaultContextProfile(128_000)
 	}
 	if err := options.ContextProfile.Validate(); err != nil {
 		return nil, fmt.Errorf("Reactor context profile: %w", err)
@@ -189,7 +189,7 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 			Messages:        view.Messages,
 			AvailableTools:  view.Tools,
 			Temperature:     runner.options.Temperature,
-			MaxOutputTokens: maxOutputTokens(runner.options.MaxOutputTokens, state.Budget),
+			MaxOutputTokens: runner.options.MaxOutputTokens,
 		})
 		if err != nil {
 			if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
@@ -207,12 +207,6 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 		state.Budget.IterationsUsed++
 		state.Budget.InputTokensUsed += think.Response.Usage.InputTokens
 		state.Budget.OutputTokensUsed += think.Response.Usage.OutputTokens
-		if result, ok := exceededAfterThink(state.Budget, state.Iterations, state.Usage); ok {
-			if err := completeIteration("budget_exhausted", result.Reason); err != nil {
-				return Result{}, err
-			}
-			return finish(result)
-		}
 
 		analysis, err := runner.analyze.Analyze(AnalyzeInput{Think: think, AvailableTools: view.Tools})
 		if err != nil {
@@ -386,8 +380,6 @@ func exhaustedBeforeThink(budget BudgetState, iterations []Iteration, usage llm.
 		maximum int64
 	}{
 		{budget.Budget.MaxIterations > 0 && budget.IterationsUsed >= budget.Budget.MaxIterations, LimitIterations, int64(budget.IterationsUsed), int64(budget.Budget.MaxIterations)},
-		{budget.Budget.MaxInputTokens > 0 && budget.InputTokensUsed >= budget.Budget.MaxInputTokens, LimitInputTokens, budget.InputTokensUsed, budget.Budget.MaxInputTokens},
-		{budget.Budget.MaxOutputTokens > 0 && budget.OutputTokensUsed >= budget.Budget.MaxOutputTokens, LimitOutputTokens, budget.OutputTokensUsed, budget.Budget.MaxOutputTokens},
 	}
 	for _, check := range checks {
 		if check.reached {
@@ -399,39 +391,8 @@ func exhaustedBeforeThink(budget BudgetState, iterations []Iteration, usage llm.
 	return Result{}, false
 }
 
-func exceededAfterThink(budget BudgetState, iterations []Iteration, usage llm.Usage) (Result, bool) {
-	checks := []struct {
-		exceeded bool
-		limit    LimitKind
-		used     int64
-		maximum  int64
-	}{
-		{budget.Budget.MaxInputTokens > 0 && budget.InputTokensUsed > budget.Budget.MaxInputTokens, LimitInputTokens, budget.InputTokensUsed, budget.Budget.MaxInputTokens},
-		{budget.Budget.MaxOutputTokens > 0 && budget.OutputTokensUsed > budget.Budget.MaxOutputTokens, LimitOutputTokens, budget.OutputTokensUsed, budget.Budget.MaxOutputTokens},
-	}
-	for _, check := range checks {
-		if check.exceeded {
-			result := budgetResult(budget, check.limit, check.used, check.maximum)
-			result.Iterations, result.Usage = iterations, usage
-			return result, true
-		}
-	}
-	return Result{}, false
-}
-
 func budgetResult(budget BudgetState, limit LimitKind, used, maximum int64) Result {
 	return Result{Budget: budget, StopReason: StopBudgetExhausted, Limit: &LimitReached{Limit: limit, Used: used, Maximum: maximum}, Reason: fmt.Sprintf("%s budget reached: used %d of %d", limit, used, maximum)}
-}
-
-func maxOutputTokens(configured int, budget BudgetState) int {
-	if budget.Budget.MaxOutputTokens <= 0 {
-		return configured
-	}
-	remaining := budget.Budget.MaxOutputTokens - budget.OutputTokensUsed
-	if remaining < int64(configured) {
-		return int(remaining)
-	}
-	return configured
 }
 
 func iterationID(request Request, index int) string {

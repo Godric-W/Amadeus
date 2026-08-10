@@ -41,8 +41,6 @@ providers:
 agent:
   max_iterations: 12
   max_tool_calls: 24
-  max_input_tokens: 30000
-  max_output_tokens: 4000
   max_duration: 5m
   max_parallel_tools: 2
 web:
@@ -77,7 +75,7 @@ logging:
 	if compatible.Timeout != 45*time.Second {
 		t.Fatalf("unexpected compatible timeout: got %s", compatible.Timeout)
 	}
-	if configured.Agent.MaxIterations != 12 || configured.Agent.MaxToolCalls != 24 || configured.Agent.MaxInputTokens != 30_000 || configured.Agent.MaxOutputTokens != 4_000 || configured.Agent.MaxDuration != 5*time.Minute || configured.Agent.MaxParallelTools != 2 {
+	if configured.Agent.MaxIterations != 12 || configured.Agent.MaxToolCalls != 24 || configured.Agent.MaxDuration != 5*time.Minute || configured.Agent.MaxParallelTools != 2 {
 		t.Fatalf("unexpected agent config: %#v", configured.Agent)
 	}
 	if !configured.Web.Fetch.Enabled || configured.Web.Fetch.Timeout != 20*time.Second || configured.Web.Fetch.MaxBytes != 2<<20 || configured.Web.Fetch.MaxRedirects != 2 {
@@ -131,6 +129,21 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), loader.ConfigPath()) {
 		t.Fatalf("error does not contain config path: %v", err)
+	}
+}
+
+func TestLoadRejectsRemovedAgentTokenBudgets(t *testing.T) {
+	amadeusRoot := t.TempDir()
+	loader := newTestLoader(amadeusRoot)
+	writeConfig(t, loader, `
+agent:
+  max_input_tokens: 1000000
+  max_output_tokens: 245760
+`)
+
+	_, err := loader.Load()
+	if err == nil || !strings.Contains(err.Error(), "max_input_tokens") || !strings.Contains(err.Error(), "max_output_tokens") {
+		t.Fatalf("removed Agent token budgets were not rejected clearly: %v", err)
 	}
 }
 

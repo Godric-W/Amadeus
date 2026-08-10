@@ -1052,8 +1052,6 @@ providers:
 agent:
   max_iterations: 30
   max_tool_calls: 120
-  max_input_tokens: 1000000
-  max_output_tokens: 245760
   max_duration: 30m
   max_parallel_tools: 4
 
@@ -1087,7 +1085,7 @@ logging:
 
 `web_search` 与 `providers` 中的 LLM 配置是两个独立能力域：用户可以用 DeepSeek/Qwen/GLM 生成推理，同时使用 Tavily、SearXNG、Brave 或 DuckDuckGo 搜索。`web_search.enabled=false`、Provider 不存在或必要凭证缺失时，不向模型注册 `web_search` Tool，避免模型反复调用必然失败的能力。搜索凭证同样参与环境变量展开、来源追踪、权限警告和统一脱敏，但不复用 `AMADEUS_API_KEY`。
 
-`providers.<name>.max_output_tokens` 限制单次模型请求可生成的 token；`agent.max_input_tokens` 与 `agent.max_output_tokens` 分别限制整次 Run 的累计输入和输出 token。`agent.max_iterations`、`agent.max_tool_calls`、`agent.max_duration` 控制总执行预算，`agent.max_parallel_tools` 只控制同一批可并行工具的并发度，不会扩大工具调用总额度。首版默认值保持保守且显式：30 iterations、120 tool calls、1,000,000 input tokens、245,760 output tokens、30 分钟和 4 个并行工具。
+`providers.<name>.max_output_tokens` 只限制单次模型请求可生成的 token，并映射到 Responses `max_output_tokens` 或 Chat Completions `max_tokens`。稳定配置不再提供 `agent.max_input_tokens/max_output_tokens`：input/output usage 继续按 Run 累计并进入事件、状态栏、SQLite usage 与审计，但不作为默认终止条件。Run 的结构和时间安全边界由 `agent.max_iterations`、`agent.max_tool_calls` 与 `agent.max_duration` 控制；`agent.max_parallel_tools` 只控制同一批可并行工具的并发度，不会扩大工具调用总额度。首版默认值为 30 iterations、120 tool calls、30 分钟和 4 个并行工具。若未来需要成本控制，应参考 Codex 另行引入可选的统一 Rollout Budget，而不是恢复两套累计 input/output 上限。
 
 仓库提供可直接通过结构校验的 `configs/amadeus.example.yaml`。该文件可复制为 `$AMADEUS_HOME/config.yaml`，默认不包含凭证或固定模型；实际运行时优先通过 `AMADEUS_API_KEY` 和 `AMADEUS_MODEL` 注入，避免把密钥提交到版本控制。
 
@@ -1639,30 +1637,26 @@ M3 已有的 canonical ApprovalRequest、参数 hash、Terminal Handler、Audit 
 
 ### 16.1 上下文预算
 
-Amadeus 必须严格区分两类 token 预算：
+Amadeus 的稳定主链只保留 **Request Context Profile**，用于描述单次模型调用的 Context Window、有效输入比例和自动压缩阈值。Run 仍累计 input/output usage，但普通配置不再用累计 token 上限终止 Run；结构和时间安全边界由 iteration、tool call 与 duration 控制。
 
-1. **Run Budget**：`agent.max_input_tokens/max_output_tokens` 表示整个 Run 所有 LLM 调用的累计消耗，与 steps、tool calls 和 duration 一起控制 Run 终止。
-2. **Request Context Profile**：表示单次模型调用的 Context Window、输出预留、安全余量和压缩阈值，决定本轮 Request 实际可以携带多少输入。
-
-不得再使用 Run 的累计 token 上限推导单次 Context Window。目标配置或 Provider capability 必须提供明确的 `context_window`；OpenAI-compatible Provider 不根据 URL 或模型名猜测窗口。单次有效输入上限为：
+目标配置或 Provider capability 必须提供明确的 `context_window`；OpenAI-compatible Provider 不根据 URL 或模型名猜测窗口。单次有效输入上限向 Codex 看齐，按模型窗口比例计算：
 
 ```text
 effective_input_limit
-    = context_window
-    - output_reserve
-    - safety_margin
+    = context_window × effective_context_window_percent / 100
 ```
 
 ```go
 type ContextProfile struct {
-    ContextWindow  int64
-    OutputReserve  int64
-    SafetyMargin   int64
-    CompressAt     float64
+    ContextWindow                  int64
+    EffectiveContextWindowPercent int64
+    AutoCompactTokenLimit          int64
 }
 ```
 
-`CompressAt` 首版使用约 80%～85% 的保守阈值，为 Provider 差异、Tool Schema 编码和估算误差留出空间。Context Window 未知时不得退回 `agent.max_input_tokens`；显式配置缺失可以使用保守 Provider 默认值或拒绝启动，但必须在 `config explain` 中显示来源。
+首版默认 `effective_context_window_percent=95`，`auto_compact_token_limit=context_window×90%`。自动压缩阈值不得高于有效输入上限；Provider `max_output_tokens` 只控制单次采样，不再同时承担 Context 输出预留和安全余量职责。Context Window 未知时不得退回任何 Run 累计 token 配置；显式配置缺失可以使用保守 Provider 默认值或拒绝启动，但必须在 `config explain` 中显示来源。
+
+若未来需要限制 Session/Agent Tree 的总成本，应在实验能力中引入单一加权 Rollout Budget，分别为 sampling output 与 non-cached input 配置权重；该预算不属于模型 Context Profile，也不恢复 `agent.max_input_tokens/max_output_tokens`。
 
 ### 16.1.1 ContextManager 与唯一历史源
 
@@ -1839,7 +1833,7 @@ Amadeus 不采用 PaiCLI 式全能 `MemoryManager`，也不在近期版本实现
 必须保持以下边界：
 
 - Tool Call 与 ToolOutput 投影出的 Tool Result 是正式 RolloutItem；Reactor 不再维护重复的 Observation/Evidence 事实树，也不自动生成长期偏好或项目规则。
-- Run Budget 与 Request Context Profile 属于不同 Policy；前者累计整个 Run，后者限制单次 LLM 请求，均不属于 Conversation 或 Instruction。
+- Run Structural Budget 与 Request Context Profile 属于不同 Policy；前者只限制 iteration、tool call 和 duration，后者限制单次 LLM 请求的有效输入与压缩阈值。input/output usage 独立累计但不作为稳定版默认终止条件，三者均不属于 Conversation 或 Instruction。
 - Compaction 只追加 Replacement History，不删除或改写原始 RolloutItem。
 - Replacement History、interruption marker 和 Tool Result Projection 都不能获得 `AGENTS.md` 或当前用户消息的指令优先级。
 - ContextManager 只投影 RequestView；需要影响恢复语义的变化必须通过 RolloutStore append，不能只修改内存历史。
@@ -2213,7 +2207,7 @@ Renderer、TUI、HTTP/SSE、Audit 和 Trace 订阅同一事件流。Channel 只�
 - `SlashCommandCatalog`：集中保存命令名称、Codex 对齐的英文说明、展示顺序、参数规则、运行中可用性和破坏性标记；Rich TUI 与 Plain fallback 共用同一目录，不再分别维护字符串和 switch，也不注册 `/help`、`/sessions`、`/tools`。
 - `SlashCommandPopup`：输入第一行以 `/` 开头且光标仍位于命令 token 时自动出现；显示命令与说明，完全匹配优先、前缀匹配其次，并保持 Catalog 展示顺序。`↑/↓` 循环选择、Enter 执行、Tab 补全、Esc 关闭但保留草稿；Popup 激活时方向键不得触发输入历史。
 - `SelectionOverlay`：为 `/resume`、`/skills`、`/rename`、`/delete` 和 Approval 提供统一的无边框选择/输入交互，避免每个命令维护独立键盘状态机。
-- `ListVisual`：Slash Popup 与所有 SelectionOverlay 共用同一个无边框列表 Renderer，统一标题、hint、名称列宽、muted description、黄色 selected cursor/name、disabled reason、Search/Input 行和最多八行可见窗口；Read/List/Search 等 Transcript 内容语义继续使用青色，不与交互选择色混用。
+- `ListVisual`：Slash Popup 与所有 SelectionOverlay 共用同一个无边框列表 Renderer，统一标题、hint、名称列宽、muted description、terminal-aware cyan selected row、disabled reason、Search/Input 行和最多八行可见窗口。选中行的 cursor、名称和说明整体使用 `accent + bold`；未选中名称使用默认前景，说明使用 dim，禁用项整体 dim。Slash、Resume、Approval 等选择界面不得各自维护黄色、绿色或其它独立 selected palette。
 - `FullscreenApproval`：复用 `SelectionOverlay` 显示 tool/risk/reason 与 Codex 风格选项，使用 `↑/↓` 选择、Enter 确认、Esc 拒绝本次调用；Ctrl+C 取消当前 Run。
 
 第一版交互语义：
@@ -2234,7 +2228,7 @@ Renderer、TUI、HTTP/SSE、Audit 和 Trace 订阅同一事件流。Channel 只�
 | 鼠标滚轮 | 由终端滚动原生 scrollback，不向 Bubble Tea 注册 mouse tracking |
 | 鼠标拖拽 | 使用终端原生文本选择，不要求 Shift 修饰键 |
 
-`/resume` 选择器使用 main-screen 内联无边框列表，不使用 RoundedBorder 或 modal 方框。标题、当前选中项和 `›` 指示符使用与状态栏 amber 一致的自适应黄色（light `#A16207` / dark `#FDE68A`），未选中项保持普通前景色，辅助按键提示使用 muted gray。用户通过 `↑/↓` 或 `j/k` 移动，Enter 恢复，Esc 取消并返回当前对话。
+`/resume` 选择器使用 main-screen 内联无边框列表，不使用 RoundedBorder 或 modal 方框。当前选中行和 `›` 指示符使用统一 `selection` 样式，即 terminal-aware cyan + bold；未选中项保持普通前景色，辅助按键提示使用 dim。用户通过 `↑/↓` 或 `j/k` 移动，Enter 恢复，Esc 取消并返回当前对话。该规则与 Slash Popup、Approval、Skills 等选择界面一致，不为 Resume 单独维护 amber palette。
 
 #### 19.1.1 Codex 对齐的 Slash Command
 
@@ -2322,36 +2316,91 @@ GPT-TOP · /project/root · main · Context 47% used · 128K window
 
 启动信息栏在宽终端下必须保留 4 列右侧 margin，Lip Gloss 的内容宽度需要扣除 border 盒模型，不能让右边界贴住终端最右列。窄于 60 列时继续使用无边框降级布局。
 
-#### 19.2.2 TUI Visual Runtime 与 Transcript Cell
+#### 19.2.2 TUI Visual Runtime 与 HistoryCell
 
-M9V 已完成 Codex 视觉运行时向 Amadeus 的行为级移植。旧 `fullscreenEntry{kind, content}`、统一 `strings.Join(..., "\n\n")`、按 kind 手工补换行、frame 阶梯颜色和 `IterationCompleted` 后批量提交 Activity 的兼容链已经从生产代码删除；M9 的 SlashCommandCatalog、Popup、SelectionOverlay 和 Session Command 继续作为独立交互层保留。
+M9V 已完成 Codex 视觉运行时向 Amadeus 的行为级移植。旧 `fullscreenEntry{kind, content}`、frame 阶梯颜色和 `IterationCompleted` 后批量提交 Activity 的兼容链已经从生产代码删除；M9 的 SlashCommandCatalog、Popup、SelectionOverlay 和 Session Command 继续作为独立交互层保留。后续实测确认，旧 `transcriptCell.Render() string + transcriptState.Cells/Committed` 仍过早降级为 ANSI 字符串，并把活动状态、正式历史和终端提交进度混在同一对象中；M9-21～26 已完成 Codex `HistoryCell` 语义级结构收敛，M9V 的行为基线现在由正式 History 模型承载。
 
-当前 Visual Runtime 保留 Go、Bubble Tea、Lip Gloss 和终端主屏 scrollback，不复制 Rust/Ratatui 类型本身；它移植 Codex 的数据模型、状态转换、终端感知颜色、动画算法和快照 Contract。核心抽象为只读 UI Projection：
+目标 Visual Runtime 保留 Go、Bubble Tea、Lip Gloss 和终端主屏 scrollback，不复制 Rust/Ratatui 的 `Rect/Buffer/Widget/Paragraph` 类型；它对齐 Codex 的 `HistoryCell`、`HistoryRenderMode`、`TranscriptState`、`InsertHistoryCell`、活动 Cell 和 history insertion 语义。核心抽象为只读 UI Projection：
 
 ```go
-type TranscriptCell interface {
-    Render(TranscriptRenderContext) string
+type HistoryRenderMode uint8
+
+const (
+    HistoryRenderRich HistoryRenderMode = iota
+    HistoryRenderRaw
+)
+
+type HistoryCell interface {
+    DisplayLines(HistoryRenderContext) []StyledLine
     RawLines() []string
+    IsStreamContinuation() bool
 }
 
-type ActiveCell interface {
-    TranscriptCell
+type ActiveHistoryCell interface {
+    HistoryCell
     Apply(event.Event) bool
-    Complete() TranscriptCell
+    Complete() HistoryCell
     IsComplete() bool
 }
 
 type TranscriptState struct {
-    ActiveCell                  ActiveCell
+    ActiveCell                  ActiveHistoryCell
+    ActiveCellRevision          uint64
     NeedsFinalMessageSeparator bool
     HadWorkActivity            bool
-    LastAssistantMarkdown      string
+    LastAgentMarkdown          string
 }
 ```
 
-当前实现包含 User、Assistant、Exec、Explore、WebSearch、Plan、Notice、Error、Diagnostic 与 Final Message Separator Cell；`StyledLine/StyledSpan` 在 Tool Cell 内表达语义化样式，统一 Renderer 才把它投影为终端字符串。Cell 只拥有展示投影，不写 SQLite、不替代 RolloutItem，也不成为 ToolOutput/ToolCallOutcome 或 Run 状态的第二事实源。`fullscreenModel` 只负责 Composer、Bottom Pane、活动 Cell、待提交 Cell 和 Bubble Tea 消息路由，不再承担每种内容的字符串拼装规则。
+正式类型命名对齐为 `UserMessageCell`、`AgentMessageCell`、`PlainHistoryCell/NoticeHistoryCell`、`ErrorHistoryCell`、`ExecCell`、`ExploreCell`、`WebSearchCell`、`PlanUpdateCell` 与 `FinalMessageSeparator`。`HistoryCellKind` 和通用 `textTranscriptCell{kind}` 目标上删除；类型本身表达语义，不再通过 `Kind()` 与 switch 决定渲染。`StyledLine/StyledSpan` 必须贯穿到 history insertion 之后才统一投影为 ANSI 字符串，不能由 Cell 提前返回完整字符串。
+
+Codex 将当前 Turn 的临时状态与正式历史分开。Amadeus 同样采用以下所有权：
+
+```go
+type fullscreenModel struct {
+    Transcript             TranscriptState
+    HistoryCells           []HistoryCell
+    PendingHistoryCells    []HistoryCell
+    HasEmittedHistoryLines bool
+}
+```
+
+- `TranscriptState` 只拥有 Active Cell、活动修订号、最近 Agent Markdown 和 Turn 级 separator/work 标记，不拥有正式历史或终端提交游标；
+- `HistoryCells` 是当前 TUI 的 canonical UI projection，可用于 Transcript/Raw 视图重新渲染，但不替代 Session rollout；
+- `PendingHistoryCells` 是 Bubble Tea 对 Codex `AppEvent::InsertHistoryCell` 的本地适配，表示下一次需要提交到主屏 scrollback 的完整 Cell；
+- `HasEmittedHistoryLines` 由唯一 history insertion 层维护，不能以 `Committed > 0`、Cell 尾部换行或调用方手工补 `"\n"` 代替。
+
+Cell 只拥有展示投影，不写 SQLite、不替代 RolloutItem，也不成为 ToolOutput/ToolCallOutcome 或 Run 状态的第二事实源。`fullscreenModel` 负责 Composer、Bottom Pane、Bubble Tea 消息路由和正式 History insertion；具体 Cell 决定自身逻辑行，不决定与相邻 Cell 的间距。
+
+History 提交主链固定为：
+
+```text
+Typed Agent Event
+→ TranscriptState.ActiveCell.Apply(event)
+→ ActiveHistoryCell.Complete()
+→ insertHistoryCell(HistoryCell)
+→ HistoryCells + PendingHistoryCells
+→ displayLinesForHistoryInsert()
+→ HistoryRenderMode + IsStreamContinuation + Cell spacing
+→ StyledLine Renderer
+→ tea.Println
+```
+
+核心方法命名与 Codex 语义保持一致：
+
+```go
+func (model *fullscreenModel) insertHistoryCell(cell HistoryCell)
+func (model *fullscreenModel) displayLinesForHistoryInsert(cell HistoryCell) []StyledLine
+func (model *fullscreenModel) flushHistory() tea.Cmd
+```
+
+`HistoryRenderRich` 用于默认 Rich Inline TUI；`HistoryRenderRaw` 用于 Plain、复制和无样式 Transcript 投影。当前 Agent stream 继续留在 Bottom Pane draft，完成后一次形成 `AgentMessageCell`，因此第一阶段不复制 Codex 的 provisional stream cell consolidation；`IsStreamContinuation()` 仍进入 Contract，保证未来若提交连续 stream cell，history insertion 不会错误插入空白行。
 
 正文不携带为了排版伪造的前置或尾部 `\n`。每个 Cell 返回精确的逻辑行；Transcript Layout 统一决定 Cell 之间的一行空白、活动区与 Composer 的间距以及提交到 `tea.Println` 的批次边界。Assistant、Tool、Separator 和下一条 User Message 不再依赖 `previousKind/lastKind` 特判。
+
+提交到 main-screen scrollback 的 `tea.Println` payload 必须由 `displayLinesForHistoryInsert()` 生成，不追加 `output + "\n"`，也不在 `flushHistory()` 中使用 `"\n" + output` 修补跨批次边界。新的非 continuation Cell 如果前面已有可见历史，由 history insertion 在结构化行首插入一个空 `StyledLine`。Run 结束后的空闲 Bottom Pane 使用自身前导两次换行维持 Codex 同款最终回复到 Composer 距离；若提交 payload 再携带尾部空行，会与 Bottom Pane 前导留白叠加成三行视觉距离。
+
+以下 Codex 能力属于 Ratatui 或尚未出现的产品需求，当前不进入 M9-21～26：`desired_height`、`desired_transcript_height`、`HyperlinkLine`、`transcript_animation_tick`、完整 main-screen resize reflow、`Arc<dyn HistoryCell>` 和复杂 Agent stream consolidation。只有在 Amadeus 实现完整 Transcript Overlay、终端超链接或可重排历史视口时才能增量引入，不为形式对齐提前复制。
 
 #### 19.2.3 Tool History Cell 与安全 Action Summary
 
@@ -2391,7 +2440,7 @@ type ToolCallStarted struct {
 
 颜色遵循 Codex 的克制语义而不是固定 Dashboard Palette：普通正文使用终端默认前景色，辅助信息和树形前缀使用 dim，标题使用 bold，`Read/List/Search` 使用 terminal-aware cyan，成功与失败命令的 `•` 分别使用 green/red，活动中的 Tool 使用统一 Motion indicator。命令正文允许 Bash 语法高亮；路径、pattern、结果正文保持默认前景色。不得给 Assistant 正文、Tool Result 或普通 Notice 添加固定灰色背景、砖红色强调或大面积彩色边框。
 
-`ExecCell` 表示单个命令或进程交互，显示 `Running/Ran/You ran`、命令、最多两行命令续行、最多五行输出、dim omission marker、exit status 和 duration。`ExploreCell` 合并连续只读浏览行为，去重连续 Read，并以 `Exploring/Explored` 加 `Read/List/Search` 子项展示。`WebSearchCell` 单独表达 `Searching/Searched the web`。Tool Started 时创建或更新 `ActiveCell`，Tool Delta/Completed 原位更新活动区；开始 Assistant Stream、切换为不兼容 Cell 或 Run terminal 时才把完成 Cell 提交到 scrollback。并行 Tool Call 继续按 CallID 关联，稳定展示顺序来自 Tool Call 原始 sequence，而不是完成先后。
+`ExecCell` 表示单个命令或进程交互，显示 `Running/Ran/You ran`、命令、最多两行命令续行、最多五行输出、dim omission marker、exit status 和 duration。`ExploreCell` 合并连续只读浏览行为，去重连续 Read，并以 `Exploring/Explored` 加 `Read/List/Search` 子项展示。`WebSearchCell` 单独表达 `Searching/Searched the web`。Tool Started 时创建或更新 `ActiveHistoryCell`，Tool Delta/Completed 原位更新活动区；开始 Agent Stream、切换为不兼容 Cell 或 Run terminal 时才把完成 Cell 提交到 scrollback。并行 Tool Call 继续按 CallID 关联，稳定展示顺序来自 Tool Call 原始 sequence，而不是完成先后。
 
 #### 19.2.4 Transcript 边界与 Separator 状态
 
@@ -2403,10 +2452,10 @@ Separator 使用 Transcript 状态驱动：
 Tool/Exec/MCP/Patch 产生可见工作
   → HadWorkActivity = true
 
-ActiveCell 提交或其他非流式 History Cell 插入
+ActiveHistoryCell 提交或其他非流式 HistoryCell 插入
   → NeedsFinalMessageSeparator = true
 
-下一段 Assistant Stream 或 Run terminal
+下一段 Agent Stream 或 Run terminal
   → 根据 HadWorkActivity/NeedsFinalMessageSeparator 插入 FinalMessageSeparatorCell
   → 清理本 Turn 的 separator 状态
 ```
@@ -2437,6 +2486,25 @@ type TerminalPalette struct {
 
 Palette 检测 True Color、ANSI256、ANSI16/Unknown 与 No Color，并在可用时读取或推导终端默认前景/背景。用户消息低对比背景、separator、accent 和 shimmer 都从 Palette 派生；不可检测时退化为默认前景、dim、bold、cyan、green、red，不维护一组与终端主题无关的固定 pastel RGB。
 
+TerminalPalette 是语义样式层而不是固定产品色板。所有 Renderer 只能消费以下稳定语义，不得直接在 Widget、Cell 或 Popup 中散落 RGB/ANSI 编号：
+
+| 语义 | Codex 对齐规则 | 主要用途 |
+|---|---|---|
+| `default/plain` | 终端默认 foreground | Assistant 正文、命令、路径、普通列表名称 |
+| `strong/bold` | 默认 foreground + bold | `Ran`、`Explored`、重要标题、可用 Composer prompt |
+| `muted/dim` | 默认 foreground 向 background 降低对比；ANSI16/Unknown 使用 dim | Tool 输出、树形线、说明、hint、低优先级状态 |
+| `accent` | 深色/未知背景使用 ANSI cyan + bold；浅色背景在 TrueColor/ANSI256 下接近 `RGB(0,95,135)`；ANSI16 仍使用标准 cyan | `Read/List/Search`、链接、行内代码、当前可交互项 |
+| `selection` | `accent + bold`，应用到选中行全部 span | Slash Popup、Resume、Approval、Skills 等列表 |
+| `success/failure` | green/red + bold，并保留可读符号 | Tool 完成点、失败点、错误状态 |
+| `warning` | yellow，仅真实警告使用 | 高上下文占用、不可逆或风险提示 |
+| `separator` | default foreground 与 background 的低对比混合；低色终端 dim | Transcript 内容边界 |
+
+`Ran/Explored/Updated Plan` 等标题不使用固定亮白 RGB，而使用终端默认 foreground + bold；视觉突出依赖周围结果正文和辅助信息降为 dim。成功或失败颜色只着色状态点/错误信息，不把整条 Tool History 染绿、染红或染青。Shell 命令默认使用普通前景，只有可识别语言时才做语法高亮；命令输出默认 dim。
+
+Composer prompt 对齐 Codex 使用 `›`：可输入时为 default + bold，真正禁用输入时为 dim；Bash 模式未来如实现可使用 light red + bold 的 `!`。Placeholder 使用 dim，用户输入使用默认 foreground。Run 执行期间 Composer 仍允许编辑与排队，因此不能仅因为 `running=true` 就把 `›` 降为 dim。
+
+Rich TUI 的颜色能力由 TTY、`TERM/COLORTERM` 与实际输出 profile 决定，不把父 Coding Agent 为 shell 子进程注入的 `NO_COLOR` 当作关闭 Amadeus UI 颜色的指令。Plain、非 TTY、`TERM=dumb` 和显式 `FullscreenOptions.NoColor` 继续形成确定性的 No Color 路径。Bubble Tea Program 启动时必须把 TerminalPalette 的 profile 同步给 Lip Gloss，否则 Palette 即使产生 cyan/green/magenta 也会被全局 Ascii profile 静默剥离。
+
 底部活动区增加 `tea.Tick` 驱动的 Working 行，显示 Run elapsed time 和取消提示：
 
 ```text
@@ -2456,7 +2524,8 @@ Run terminal 时 Working 行消失，是否提交完成分隔线由 19.2.4 的 T
 状态栏使用 Provider `context_window`，不能再把 `agent.max_input_tokens` 当作模型窗口。两者语义保持：
 
 - Provider `context_window`：单次 LLM Request 的模型上下文窗口；
-- Agent `max_input_tokens/max_output_tokens`：整个 Run 的累计预算。
+- Provider `max_output_tokens`：单次 LLM Request 的最大采样输出；
+- Run usage：累计 input/output token，仅用于状态、持久化、审计和未来可选 Rollout Budget，不作为稳定版默认终止条件。
 
 为了准确显示 `Context 47% used`，在 ContextManager 生成 RequestView 后发布 `ContextWindowUpdated`：
 
@@ -2470,9 +2539,31 @@ type ContextWindowUpdated struct {
 }
 ```
 
-TUI 使用 `EstimatedInputTokens / ContextWindow` 展示最近一次 RequestView 百分比；Provider `UsageUpdated` 继续显示真实 token usage，但不替代 ContextView 估算。窗口使用 `128K/258K/1M` 等稳定格式。状态栏按宽度依次保留 model、project、branch、context percent 和 window，窄终端从低优先级字段开始隐藏。状态栏同样使用 TerminalPalette：主信息保持默认 foreground，低优先级字段和分隔符使用 dim，Plan/Warning 使用 yellow，健康/失败只在需要表达状态时使用 green/red，当前可交互 accent 使用 terminal-aware cyan。不得为 model、project、branch 分别维护 sky/blue/lavender 固定配色，也不使用彩虹式动画。
+TUI 使用 `EstimatedInputTokens / ContextWindow` 展示最近一次 RequestView 百分比；Provider `UsageUpdated` 继续显示真实 token usage，但不替代 ContextView 估算。窗口使用 `128K/258K/1M` 等稳定格式。状态栏按宽度依次保留 model、project、branch、context percent 和 window，窄终端从低优先级字段开始隐藏。颜色对齐 Codex `StatusLineAccent` fallback 分类：model/state/metadata 使用 cyan，project/path 与 context usage 使用 green，branch/thread 与 Plan mode 使用 magenta，分隔符使用 dim；context 达到 70%/90% 后分别覆盖为 warning yellow/failure red。该配色只作用于短状态 segment，不扩散到 Assistant 正文或 Tool 输出，也不使用彩虹动画。
 
-#### 19.2.7 Bounded Transcript Detail Viewer
+#### 19.2.7 Markdown 与代码高亮
+
+Assistant Markdown 需要按 Codex 的语义样式渲染，而不是把整段正文交给单一白色样式或把所有代码统一染成青色。稳定规则为：
+
+| Markdown 元素 | 样式 |
+|---|---|
+| H1 | bold + underline |
+| H2 | bold |
+| H3 | bold + italic |
+| H4～H6 | italic |
+| inline code | accent/cyan，不强制 bold |
+| emphasis / strong | italic / bold |
+| strikethrough | crossed-out |
+| ordered list marker | light blue 或最接近的 terminal-aware 色 |
+| unordered list marker | 默认 foreground |
+| link | accent/cyan + underline |
+| blockquote | green；No Color 保留引用符号 |
+
+第一阶段继续使用 Glamour，但必须完整覆盖上述语义并保持代码块透明背景，不能再只覆盖 `style.Code.Color/Bold`。第二阶段为 fenced code block 引入独立语法高亮路径：根据语言标识高亮关键字、字符串、注释、数字和符号；无法识别语言时使用普通 foreground。Markdown Parser 负责结构，代码高亮器只负责 fenced code 内容，二者不得重复输出 ANSI。Go 实现优先评估 Chroma；是否引入依赖以视觉快照、终端降级和包体影响为验收依据。
+
+Tool History 中的 shell command 同样允许复用 Bash/Shell 高亮器，但 `Ran` 标题仍为 default + bold，输出仍为 dim，语法高亮不能覆盖 success/failure marker 或树形 gutter。
+
+#### 19.2.8 Bounded Transcript Detail Viewer
 
 原生 scrollback 中已经提交的行不可原位展开，因此 `Ctrl+T` 不修改旧输出，而是打开临时详情查看器：
 
@@ -2488,7 +2579,7 @@ Rich Inline
 
 首版 Viewer 只支持查看、上下滚动、PgUp/PgDn 和 Esc 返回；搜索、复制模式、文件树、Diff Pane 与持久化 transcript 后置。
 
-#### 19.2.8 响应式与降级边界
+#### 19.2.9 响应式与降级边界
 
 - `>= 100` 列：wide Logo、完整启动面板与状态栏；
 - `64～99` 列：wide Logo、压缩面板、按宽度隐藏次要状态；
@@ -2500,16 +2591,18 @@ Rich Inline
 
 TUI 产品化验收必须覆盖：宽度档位、中文输入/退格、运行中排队、Esc/Ctrl+C 取消、并行 Tool 顺序、敏感参数脱敏、超大详情截断、Context 百分比、Git 非仓库降级、Approval、`/resume`、`--plain`、main-screen 控制序列守卫和全仓 race。
 
-#### 19.2.9 实现切片与代码落点
+#### 19.2.10 实现切片与代码落点
 
 M9V 按“先建立 Palette/Motion，再替换 Transcript 数据模型，最后接入 Tool/Separator 与发布门禁”的顺序落地。它不重写 Reactor、Session、ToolRouter/Handler 或 Slash Command，只替换 Typed Event 到终端的视觉投影：
 
 | 切片 | 主要代码落点 | 实现边界 |
 |---|---|---|
 | Terminal Palette | `internal/interface/tui/palette.go` | 检测 color level 与明暗背景，集中派生 default/dim/accent/success/error/separator/user background；不得散落固定 RGB |
+| Markdown Renderer | `internal/interface/tui/markdown.go` | 集中配置 Codex heading/inline/link/quote/list 语义；TrueColor/ANSI256/ANSI16 分别使用 `terminal16m/terminal256/terminal16` Chroma formatter，独立深浅主题无背景，NoColor 确定性降级 |
 | Motion | `internal/interface/tui/motion.go` | 使用可注入单调时钟实现 32ms、2s sweep、余弦柔光和 reduced-motion fallback；Widget 不直接维护 frame 色阶 |
-| Transcript Cell | `internal/interface/tui/transcript.go` | 定义 Cell、ActiveCell、StyledLine、统一间距和 scrollback commit；删除 `kind/content` 与尾部换行特判 |
-| Tool History | `internal/interface/tui/tool_cells.go`、`activity.go` | Exec/Explore/WebSearch Cell 按 CallID/sequence 原位更新 ActiveCell，完成后稳定提交；Read/List/Search 合并、命令/output 截断和状态颜色对齐 Codex |
+| HistoryCell | `internal/interface/tui/history_cell*.go`、`transcript_state.go` | 定义 HistoryCell、ActiveHistoryCell、HistoryRenderMode、StyledLine 与具体 Message/Tool/Plan/Separator Cell；删除 Kind switch、通用 text cell 和过早 ANSI string render |
+| History Insertion | `internal/interface/tui/history_ui.go`、`history_render.go` | 对齐 insertHistoryCell/displayLinesForHistoryInsert/hasEmittedHistoryLines；统一 Rich/Raw、continuation、Cell spacing 与 main-screen commit |
+| Tool History | `internal/interface/tui/history_cell_tools.go`、`activity.go` | Exec/Explore/WebSearch Cell 按 CallID/sequence 原位更新 ActiveHistoryCell，完成后稳定提交；Read/List/Search 合并、命令/output 截断和状态颜色对齐 Codex |
 | Action Summary | `internal/tool/presentation.go`、`internal/agent/event/*`、目标 `internal/tool/router` | 由 ToolRouter 在唯一参数校验后生成安全摘要；事件只传展示白名单，不把 raw arguments 下放给 UI |
 | Separator Runtime | `internal/interface/tui/transcript.go`、`application.go` | 使用 HadWorkActivity/NeedsFinalMessageSeparator，不再把 Iteration 当作排版边界；短 Run 只显示 dim rule |
 | Context 状态 | `internal/context/window.go`、`internal/agent/event/context.go`、TUI 状态投影 | 每次 RequestView 构建后发布估算；Provider Usage 与 Context 估算并存但语义分离 |
@@ -2518,7 +2611,7 @@ M9V 按“先建立 Palette/Motion，再替换 Transcript 数据模型，最后�
 实现和测试遵循以下顺序：
 
 1. 先冻结 Codex 当前源码与快照所表达的 Visual Contract，并实现 TerminalPalette、Motion 和可注入 Clock；
-2. 再引入 TranscriptCell/ActiveCell 与统一 Layout，迁移 User、Assistant、Notice、Error 和 Final Separator；
+2. 再引入 HistoryCell/ActiveHistoryCell/HistoryRenderMode 与统一 Layout，迁移 User、Agent、Notice、Error 和 Final Separator；
 3. 然后迁移 Exec/Explore/WebSearch/Plan Tool History，移除按 Iteration 批量提交和固定 separator；
 4. 最后接回 Slash Popup、SelectionOverlay、Approval、Detail Viewer、Status Bar 和现有 Amadeus Logo，执行宽度、Unicode、TTY/Plain、No Color、动画降级、Session、取消和 race 矩阵。
 
@@ -2913,8 +3006,8 @@ SQLite 使用 WAL 模式和短事务。Amadeus 首版不复制 Codex 的 JSONL +
 ### ADR-030：TUI Visual Runtime 对齐 Codex 状态模型
 
 - 决策：M9 只视为 Composer、Slash Popup、SelectionOverlay 与 Session Command 交互重构完成；视觉运行时单独由 M9V 完成，M9V 结束前不得进入 M10 发布冻结。
-- 决策：保留 Go、Bubble Tea、Lip Gloss、Amadeus Logo、主屏 scrollback 和原生鼠标行为；移植 Codex 的 TerminalPalette、Motion、TranscriptCell/ActiveCell、Exec/Explore/WebSearch Cell 与 FinalMessageSeparator 状态模型，不直接复制 Rust/Ratatui 类型。
-- 决策：TUI 不把 Reactor Iteration 当作排版边界。Tool Started/Delta/Completed 原位更新 ActiveCell，提交与 separator 由 `HadWorkActivity/NeedsFinalMessageSeparator` 和内容边界驱动；Cell 内容不通过伪造 `\n` 或 previous-kind 特判控制间距。
+- 决策：保留 Go、Bubble Tea、Lip Gloss、Amadeus Logo、主屏 scrollback 和原生鼠标行为；移植 Codex 的 TerminalPalette、Motion、HistoryCell/ActiveHistoryCell、HistoryRenderMode、TranscriptState、InsertHistoryCell、Exec/Explore/WebSearch Cell 与 FinalMessageSeparator 状态模型，不直接复制 Rust/Ratatui 类型。
+- 决策：TUI 不把 Reactor Iteration 当作排版边界。Tool Started/Delta/Completed 原位更新 ActiveHistoryCell；正式 HistoryCells 与 TranscriptState 分离；提交与 separator 由 `HadWorkActivity/NeedsFinalMessageSeparator` 和内容边界驱动；Cell 间距只由 `displayLinesForHistoryInsert()` 根据 `HasEmittedHistoryLines/IsStreamContinuation` 插入结构化空行。
 - 决策：颜色以终端默认 foreground/background、dim/bold、terminal-aware cyan 和 success/error green/red 为主；Working 使用可注入单调时钟、约 32ms redraw、2s 余弦 shimmer 与 Reduced Motion fallback，不再维护固定 pastel Dashboard Palette 或 frame 阶梯色。
 
 ### ADR-031：Handler 主链与确定性 Apply Patch
@@ -2945,6 +3038,6 @@ SQLite 使用 WAL 模式和短事务。Amadeus 首版不复制 Codex 的 JSONL +
 16. `ReadHost=true` 使结构化读取在未命中 DeniedRoots 时直接执行；写入 Effective Writable Roots 内直接执行，范围外返回 `permission_required` 并由 `request_permissions` 写入 Run/Session Permission Store。Sandboxed Shell 由 Bubblewrap 强制范围；Unsandboxed Shell 在相同 Permission Check 后使用 SessionApprovalStore 对完整命令做操作审批。精确 Patch 变化由 RunDiffProjector 投影，目标架构不实现 Run 文件 Snapshot/Revert。
 17. Amadeus 当前不实现 ThreadRollback；未来若增加，只能追加 rollback marker 并改变 Context Projection，不修改磁盘、不删除 canonical rollout。
 18. Prompt 模板属于 `internal/prompt/builtin`，由 Bootstrap 按 Agent Base、RunMode、动态 Runtime/Permission、Instructions、Extensions、Tool Exposure 和 Compaction 职责分层装配；Reactor 不读取模板资产。Codex Prompt 只选择性改写为已实现的 Amadeus Runtime 语义，不预埋模型专属或尚未实现的能力。
-19. 默认 Rich Inline 的交互层与视觉层分离：Composer/Slash/Selection 已由 M9 收敛，M9V 使用 TerminalPalette、Motion、TranscriptCell/ActiveCell 和内容边界 Separator 替换旧 `fullscreenEntry`/Iteration 排版链；UI 仍只消费 Typed Events，不拥有 Agent、Session 或 Tool 事实。
+19. 默认 Rich Inline 的交互层与视觉层分离：Composer/Slash/Selection 已由 M9 收敛，M9V 建立 TerminalPalette、Motion、Tool History 和内容边界 Separator 的行为基线；M9-21～26 进一步以 HistoryCell/ActiveHistoryCell、HistoryRenderMode、TranscriptState 与唯一 History insertion 替换旧 transcriptCell/Committed 字符串提交链；UI 仍只消费 Typed Events，不拥有 Agent、Session 或 Tool 事实。
 20. ToolRouter 是唯一参数校验和分发入口；ToolHandler 是业务执行入口。普通 Handler 直接执行，文件 Handler 调用 FileSystemPolicy，ApplyPatchHandler 使用私有 PreparedPatch，ExecuteCommandHandler 使用私有 ExecRequest 与轻量进程 Runtime；第二类进程 Tool 出现前不建立具名通用 ToolOrchestrator，目标架构也不保留通用 PreparedCall、全工具 Authorizer 或伪通用 Hook。
 21. `apply_patch` 是首选结构化写入能力，保留唯一匹配、无静默覆盖、全量 preflight、staging、identity revalidation、partial metadata 与 exact delta；匹配容错必须有界且每级唯一，普通 Shell 修改不伪装为 Patch 归因。

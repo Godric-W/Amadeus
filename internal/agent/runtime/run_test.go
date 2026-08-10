@@ -108,8 +108,8 @@ func validRunContext(t *testing.T) *RunContext {
 	value, err := NewRunContext(project, session, run, RunContext{
 		Provider: "openai", Model: "model", Mode: sessiondomain.RunModeExecute, CWD: root,
 		FileSystem:     FileSystemProfile{ReadHost: true, WorkspaceRoots: []string{root}},
-		ContextProfile: agentcontext.DefaultContextProfile(128_000, 4096),
-		Budget:         react.Budget{MaxIterations: 10, MaxToolCalls: 20, MaxInputTokens: 1000, MaxOutputTokens: 1000, MaxDuration: time.Minute},
+		ContextProfile: agentcontext.DefaultContextProfile(128_000),
+		Budget:         react.Budget{MaxIterations: 10, MaxToolCalls: 20, MaxDuration: time.Minute},
 	})
 	if err != nil {
 		t.Fatal(err)

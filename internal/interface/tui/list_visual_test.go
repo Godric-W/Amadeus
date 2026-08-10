@@ -32,7 +32,7 @@ func TestSlashAndSelectionUseSharedListVisual(t *testing.T) {
 	}
 	selection := selectionModel.inputBox()
 
-	accentPrefix := strings.Split(slashModel.palette.warning().Bold(true).Render("X"), "X")[0]
+	accentPrefix := strings.Split(slashModel.palette.selection().Render("X"), "X")[0]
 	for name, rendered := range map[string]string{"slash": slash, "selection": selection} {
 		if accentPrefix == "" || !strings.Contains(rendered, accentPrefix) {
 			t.Fatalf("%s list omitted shared accent style: %q", name, rendered)
@@ -82,7 +82,7 @@ func TestApprovalAndRenameUseSharedHeaderAndInputStyles(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	model.selection = &selectionOverlay{Title: "Rename session", Subtitle: "Type a name and press Enter", Input: true, Value: "new name", Hint: "Esc cancel"}
 	rename := xansi.Strip(model.renderSelectionOverlay(80))
-	for _, expected := range []string{"Rename session", "Esc cancel", "> new name"} {
+	for _, expected := range []string{"Rename session", "Esc cancel", "› new name"} {
 		if !strings.Contains(rename, expected) {
 			t.Fatalf("rename visual omitted %q: %q", expected, rename)
 		}

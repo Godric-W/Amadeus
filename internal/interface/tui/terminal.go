@@ -39,12 +39,11 @@ func DetectTerminalCapabilitiesWithOptions(input io.Reader, output io.Writer, op
 	}
 	term, _ := lookupEnv("TERM")
 	term = strings.ToLower(strings.TrimSpace(term))
-	_, noColor := lookupEnv("NO_COLOR")
 	capabilities.Plain = !capabilities.TTY || term == "dumb" || options.ForcePlain
 	if term == "" {
 		capabilities.Color = false
 	}
-	if capabilities.Plain || noColor {
+	if capabilities.Plain {
 		capabilities.Color = false
 	}
 	return capabilities

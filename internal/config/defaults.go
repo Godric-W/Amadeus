@@ -22,8 +22,6 @@ func Default() Config {
 		Agent: AgentConfig{
 			MaxIterations:    30,
 			MaxToolCalls:     120,
-			MaxInputTokens:   1_000_000,
-			MaxOutputTokens:  245_760,
 			MaxDuration:      30 * time.Minute,
 			MaxParallelTools: 4,
 		},

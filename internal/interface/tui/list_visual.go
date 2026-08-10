@@ -31,7 +31,7 @@ func (model fullscreenModel) renderListVisual(visual listVisual, width int) stri
 	width = maxInt(20, width)
 	lines := make([]string, 0, len(visual.Items)+4)
 	if strings.TrimSpace(visual.Title) != "" {
-		header := model.palette.warning().Bold(true).Render(strings.TrimSpace(visual.Title))
+		header := model.palette.strong().Render(strings.TrimSpace(visual.Title))
 		if hint := strings.TrimSpace(visual.Hint); hint != "" {
 			header += "  " + model.palette.dim().Render(hint)
 		}
@@ -46,7 +46,7 @@ func (model fullscreenModel) renderListVisual(visual listVisual, width int) stri
 		}
 	}
 	if visual.InputLabel != "" {
-		prefix := model.palette.warning().Render(visual.InputLabel)
+		prefix := model.palette.accent().Render(visual.InputLabel)
 		valueWidth := maxInt(1, width-lipgloss.Width(visual.InputLabel))
 		lines = append(lines, prefix+model.palette.plain().Render(truncateFullscreen(visual.InputValue, valueWidth)))
 	}
@@ -67,7 +67,7 @@ func (model fullscreenModel) renderListVisual(visual listVisual, width int) stri
 func (model fullscreenModel) renderListVisualItem(item listVisualItem, nameWidth, width int) string {
 	prefix := "  "
 	if item.Selected {
-		prefix = model.palette.warning().Bold(true).Render("›") + " "
+		prefix = model.palette.selection().Render("›") + " "
 	}
 	name := truncateFullscreen(strings.TrimSpace(item.Name), nameWidth)
 	padding := strings.Repeat(" ", maxInt(0, nameWidth-lipgloss.Width(name)))
@@ -82,10 +82,11 @@ func (model fullscreenModel) renderListVisualItem(item listVisualItem, nameWidth
 		}
 		description += reason
 	}
-	nameStyle := model.palette.bold()
+	nameStyle := model.palette.plain()
 	descriptionStyle := model.palette.dim()
 	if item.Selected && !item.Disabled {
-		nameStyle = model.palette.warning().Bold(true)
+		nameStyle = model.palette.selection()
+		descriptionStyle = model.palette.selection()
 	} else if item.Disabled {
 		nameStyle = model.palette.dim()
 		if item.Selected {

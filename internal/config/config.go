@@ -83,8 +83,6 @@ type ProviderConfig struct {
 type AgentConfig struct {
 	MaxIterations    int           `yaml:"max_iterations"`
 	MaxToolCalls     int           `yaml:"max_tool_calls"`
-	MaxInputTokens   int64         `yaml:"max_input_tokens"`
-	MaxOutputTokens  int64         `yaml:"max_output_tokens"`
 	MaxDuration      time.Duration `yaml:"max_duration"`
 	MaxParallelTools int           `yaml:"max_parallel_tools"`
 }

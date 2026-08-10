@@ -18,7 +18,7 @@ func TestContextWindowManagerPreservesPinnedAndCurrentMessagesWhileDroppingPairs
 		llm.UserMessage(strings.Repeat("recent request ", 30)), llm.AssistantMessage(strings.Repeat("recent response ", 30)),
 		llm.UserMessage("current goal"),
 	}}
-	view, err := manager.Prepare(context.Background(), WindowRequest{Base: base, Profile: ContextProfile{ContextWindow: 900, OutputReserve: 100, SafetyMargin: 50, CompressAt: 0.8}})
+	view, err := manager.Prepare(context.Background(), WindowRequest{Base: base, Profile: DefaultContextProfile(900)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestContextWindowManagerProjectsToolResultAndPreservesMetadata(t *testing.T
 	view, err := manager.Prepare(context.Background(), WindowRequest{
 		Base:    BaseEnvelope{Messages: []llm.Message{llm.SystemMessage("system"), llm.UserMessage("run tests")}},
 		Runtime: []llm.Message{assistant, llm.ToolResultMessage("call-1", string(payload))},
-		Profile: ContextProfile{ContextWindow: 4000, OutputReserve: 500, SafetyMargin: 200, CompressAt: 0.8},
+		Profile: DefaultContextProfile(4000),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -71,12 +71,47 @@ func TestContextWindowManagerAccountsForToolsAndProviderUsage(t *testing.T) {
 	usage := llm.Usage{InputTokens: 321}
 	view, err := manager.Prepare(context.Background(), WindowRequest{
 		Base:    BaseEnvelope{Messages: []llm.Message{llm.SystemMessage("system"), llm.UserMessage("goal")}, AvailableTools: []tool.Spec{{Name: "read_file", Description: "read a file", InputSchema: json.RawMessage(`{"type":"object"}`)}}},
-		Profile: ContextProfile{ContextWindow: 8000, OutputReserve: 1000, SafetyMargin: 500, CompressAt: 0.82}, PreviousUsage: &usage,
+		Profile: DefaultContextProfile(8000), PreviousUsage: &usage,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if view.Usage.ToolTokens <= 0 || view.Usage.ProviderInputTokens != 321 || len(view.SHA256) != 64 {
 		t.Fatalf("unexpected context usage/hash: %#v", view)
+	}
+}
+
+func TestDefaultContextProfileMatchesCodexWindowSemantics(t *testing.T) {
+	profile := DefaultContextProfile(128_000)
+	if profile.EffectiveContextWindowPercent != 95 || profile.EffectiveInputLimit() != 121_600 || profile.AutoCompactTokenLimit != 115_200 {
+		t.Fatalf("unexpected default context profile: %#v", profile)
+	}
+	if err := profile.Validate(); err != nil {
+		t.Fatalf("validate default context profile: %v", err)
+	}
+}
+
+func TestContextWindowManagerProjectsHistoricalToolResults(t *testing.T) {
+	manager := NewContextWindowManager(ConservativeEstimator{})
+	payload, err := json.Marshal(map[string]any{"ok": true, "text": strings.Repeat("historical output ", 3000)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := BaseEnvelope{Messages: []llm.Message{
+		llm.SystemMessage("system"),
+		llm.UserMessage("inspect"),
+		llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call-history", Name: "read_file", Arguments: json.RawMessage(`{"path":"docs/design.md"}`)}),
+		llm.ToolResultMessage("call-history", string(payload)),
+		llm.UserMessage("continue"),
+	}}
+	view, err := manager.Prepare(context.Background(), WindowRequest{Base: base, Profile: DefaultContextProfile(8_000)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Compaction == nil || view.Compaction.ProjectedToolResults != 1 {
+		t.Fatalf("historical tool result was not projected: %#v", view.Compaction)
+	}
+	if !strings.Contains(view.Messages[3].Content, "context_truncated") {
+		t.Fatalf("historical tool projection marker missing: %q", view.Messages[3].Content)
 	}
 }

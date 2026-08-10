@@ -110,7 +110,6 @@ func reactorRunEventReason(status sessiondomain.RunStatus, values ...string) str
 func configuredReactorBudget(agent config.AgentConfig) react.BudgetState {
 	return react.BudgetState{Budget: react.Budget{
 		MaxIterations: agent.MaxIterations, MaxToolCalls: agent.MaxToolCalls,
-		MaxInputTokens: agent.MaxInputTokens, MaxOutputTokens: agent.MaxOutputTokens,
 		MaxDuration: agent.MaxDuration,
 	}}
 }

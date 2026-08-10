@@ -57,8 +57,6 @@ func SourcesFor(configured Config) Sources {
 	for _, path := range []string{
 		"agent.max_iterations",
 		"agent.max_tool_calls",
-		"agent.max_input_tokens",
-		"agent.max_output_tokens",
 		"agent.max_duration",
 		"agent.max_parallel_tools",
 		"web.fetch.enabled",

@@ -177,7 +177,7 @@ func (model fullscreenModel) renderSelectionOverlay(width int) string {
 		)
 	}
 	if overlay.Input || overlay.Search {
-		visual.InputLabel = "> "
+		visual.InputLabel = "› "
 		if overlay.Search {
 			visual.InputLabel = "Search: "
 		}

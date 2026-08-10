@@ -15,7 +15,6 @@ const (
 	maxContextWindow   = int64(100_000_000)
 	maxAgentIterations = 1_000
 	maxAgentToolCalls  = 10_000
-	maxAgentTokens     = int64(100_000_000)
 	maxAgentDuration   = 24 * time.Hour
 	maxParallelTools   = 64
 	maxWebTimeout      = 2 * time.Minute
@@ -196,12 +195,6 @@ func validateAgent(agent AgentConfig, addIssue func(string, string)) {
 	}
 	if agent.MaxToolCalls <= 0 || agent.MaxToolCalls > maxAgentToolCalls {
 		addIssue("agent.max_tool_calls", fmt.Sprintf("must be greater than 0 and at most %d", maxAgentToolCalls))
-	}
-	if agent.MaxInputTokens <= 0 || agent.MaxInputTokens > maxAgentTokens {
-		addIssue("agent.max_input_tokens", fmt.Sprintf("must be greater than 0 and at most %d", maxAgentTokens))
-	}
-	if agent.MaxOutputTokens <= 0 || agent.MaxOutputTokens > maxAgentTokens {
-		addIssue("agent.max_output_tokens", fmt.Sprintf("must be greater than 0 and at most %d", maxAgentTokens))
 	}
 	if agent.MaxDuration <= 0 || agent.MaxDuration > maxAgentDuration {
 		addIssue("agent.max_duration", fmt.Sprintf("must be greater than 0 and at most %s", maxAgentDuration))

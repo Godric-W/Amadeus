@@ -65,8 +65,6 @@ providers:
 agent:
   max_iterations: 8
   max_tool_calls: 8
-  max_input_tokens: 10000
-  max_output_tokens: 4000
   max_duration: 1m
   max_parallel_tools: 2
 `, api, dialect, server.URL))

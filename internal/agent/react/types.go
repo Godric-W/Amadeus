@@ -24,11 +24,9 @@ const (
 )
 
 type Budget struct {
-	MaxIterations   int
-	MaxToolCalls    int
-	MaxInputTokens  int64
-	MaxOutputTokens int64
-	MaxDuration     time.Duration
+	MaxIterations int
+	MaxToolCalls  int
+	MaxDuration   time.Duration
 }
 
 type BudgetState struct {
@@ -41,7 +39,7 @@ type BudgetState struct {
 }
 
 func (state BudgetState) Validate() error {
-	if state.Budget.MaxIterations < 0 || state.Budget.MaxToolCalls < 0 || state.Budget.MaxInputTokens < 0 || state.Budget.MaxOutputTokens < 0 || state.Budget.MaxDuration < 0 {
+	if state.Budget.MaxIterations < 0 || state.Budget.MaxToolCalls < 0 || state.Budget.MaxDuration < 0 {
 		return errors.New("Reactor budget limits cannot be negative")
 	}
 	if state.IterationsUsed < 0 || state.ToolCallsUsed < 0 || state.InputTokensUsed < 0 || state.OutputTokensUsed < 0 || state.Elapsed < 0 {
@@ -53,11 +51,9 @@ func (state BudgetState) Validate() error {
 type LimitKind string
 
 const (
-	LimitIterations   LimitKind = "iterations"
-	LimitToolCalls    LimitKind = "tool_calls"
-	LimitInputTokens  LimitKind = "input_tokens"
-	LimitOutputTokens LimitKind = "output_tokens"
-	LimitWallClock    LimitKind = "wall_clock"
+	LimitIterations LimitKind = "iterations"
+	LimitToolCalls  LimitKind = "tool_calls"
+	LimitWallClock  LimitKind = "wall_clock"
 )
 
 type LimitReached struct {
