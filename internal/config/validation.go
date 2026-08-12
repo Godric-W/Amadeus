@@ -165,6 +165,12 @@ func validateProvider(name string, provider ProviderConfig, addIssue func(string
 	if provider.ContextWindow <= int64(provider.MaxOutputTokens) || provider.ContextWindow > maxContextWindow {
 		addIssue(path+".context_window", fmt.Sprintf("must be greater than max_output_tokens and at most %d", maxContextWindow))
 	}
+	if provider.AutoCompactTokenLimit < 0 || provider.AutoCompactTokenLimit > provider.ContextWindow {
+		addIssue(path+".auto_compact_token_limit", "must be zero (derived) or between 1 and context_window")
+	}
+	if provider.ToolOutputMaxTokens < 0 || provider.ToolOutputMaxTokens > provider.ContextWindow {
+		addIssue(path+".tool_output_max_tokens", "must be zero (derived) or no greater than context_window")
+	}
 }
 
 func validateBaseURL(path, value string, addIssue func(string, string)) {

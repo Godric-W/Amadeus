@@ -64,7 +64,7 @@ func (writeStdin *WriteStdin) Handle(ctx context.Context, invocation tool.Invoca
 	if arguments.Enter {
 		chars += "\n"
 	}
-	owner := event.MetadataFromContext(ctx).RunID
+	owner := event.MetadataFromContext(ctx).TurnID
 	if owner == "" {
 		owner = "standalone"
 	}

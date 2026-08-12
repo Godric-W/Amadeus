@@ -37,11 +37,12 @@ func Default() Config {
 
 func defaultProviderConfig() ProviderConfig {
 	return ProviderConfig{
-		Dialect:         DialectStandard,
-		Timeout:         2 * time.Minute,
-		MaxRetries:      2,
-		Temperature:     0.2,
-		MaxOutputTokens: 8192,
-		ContextWindow:   128_000,
+		Dialect:             DialectStandard,
+		Timeout:             2 * time.Minute,
+		MaxRetries:          2,
+		Temperature:         0.2,
+		MaxOutputTokens:     8192,
+		ContextWindow:       128_000,
+		ToolOutputMaxTokens: 16_384,
 	}
 }

@@ -68,16 +68,18 @@ type WebSearchConfig struct {
 }
 
 type ProviderConfig struct {
-	API             APIMode         `yaml:"api"`
-	Dialect         ProviderDialect `yaml:"dialect"`
-	APIKey          string          `yaml:"api_key"`
-	BaseURL         string          `yaml:"base_url"`
-	Model           string          `yaml:"model"`
-	Timeout         time.Duration   `yaml:"timeout"`
-	MaxRetries      int             `yaml:"max_retries"`
-	Temperature     float64         `yaml:"temperature"`
-	MaxOutputTokens int             `yaml:"max_output_tokens"`
-	ContextWindow   int64           `yaml:"context_window"`
+	API                   APIMode         `yaml:"api"`
+	Dialect               ProviderDialect `yaml:"dialect"`
+	APIKey                string          `yaml:"api_key"`
+	BaseURL               string          `yaml:"base_url"`
+	Model                 string          `yaml:"model"`
+	Timeout               time.Duration   `yaml:"timeout"`
+	MaxRetries            int             `yaml:"max_retries"`
+	Temperature           float64         `yaml:"temperature"`
+	MaxOutputTokens       int             `yaml:"max_output_tokens"`
+	ContextWindow         int64           `yaml:"context_window"`
+	AutoCompactTokenLimit int64           `yaml:"auto_compact_token_limit"`
+	ToolOutputMaxTokens   int64           `yaml:"tool_output_max_tokens"`
 }
 
 type AgentConfig struct {

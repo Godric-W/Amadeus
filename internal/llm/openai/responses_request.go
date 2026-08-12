@@ -17,7 +17,8 @@ func newResponsesRequest(request llm.Request) (responses.ResponseNewParams, erro
 	if strings.TrimSpace(request.Model) == "" {
 		return responses.ResponseNewParams{}, errors.New("responses request model is empty")
 	}
-	if len(request.Messages) == 0 {
+	messages := request.InputMessages()
+	if len(messages) == 0 {
 		return responses.ResponseNewParams{}, errors.New("responses request messages are empty")
 	}
 	if request.Temperature < 0 || request.Temperature > 2 {
@@ -27,8 +28,8 @@ func newResponsesRequest(request llm.Request) (responses.ResponseNewParams, erro
 		return responses.ResponseNewParams{}, errors.New("responses request max output tokens must be greater than zero")
 	}
 
-	input := make(responses.ResponseInputParam, 0, len(request.Messages))
-	for index, message := range request.Messages {
+	input := make(responses.ResponseInputParam, 0, len(messages))
+	for index, message := range messages {
 		converted, err := responsesInputItems(message)
 		if err != nil {
 			return responses.ResponseNewParams{}, fmt.Errorf("responses request messages[%d]: %w", index, err)
@@ -36,7 +37,7 @@ func newResponsesRequest(request llm.Request) (responses.ResponseNewParams, erro
 		input = append(input, converted...)
 	}
 
-	tools, err := responsesTools(request.Tools)
+	tools, err := responsesTools(request.ToolDefinitions())
 	if err != nil {
 		return responses.ResponseNewParams{}, err
 	}

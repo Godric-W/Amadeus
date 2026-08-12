@@ -30,15 +30,15 @@ type commandRuntime struct {
 	webFetcher          webfetch.Fetcher
 	webSearch           websearch.Provider
 	patchProjectors     []builtin.PatchProjector
-	agentContextFactory runContextFactory
+	agentContextFactory turnContextFactory
 	agentCommand        agentCommand
 	agentCommandFactory agentCommandFactory
 	terminalDetector    terminalDetector
 	auditSinkFactory    auditSinkFactory
-	sessionStoreFactory sessionStoreFactory
+	threadStoreFactory  threadStoreFactory
 	persistentIDFactory func(string) string
 	now                 func() time.Time
-	runIDFactory        func() string
+	turnIDFactory       func() string
 }
 
 func newRootCommand() *cobra.Command {
@@ -103,10 +103,9 @@ func defaultCommandRuntime() commandRuntime {
 		agentContextFactory: interruptibleTurnContext,
 		agentCommandFactory: defaultAgentCommandFactory,
 		auditSinkFactory:    defaultAuditSinkFactory(lookupEnv, os.UserHomeDir),
-		sessionStoreFactory: defaultSessionStoreFactory,
+		threadStoreFactory:  defaultThreadStoreFactory,
 		persistentIDFactory: nextPersistentID,
 		now:                 time.Now,
-		runIDFactory:        nextAgentRunID,
 	}
 }
 

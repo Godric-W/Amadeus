@@ -82,7 +82,7 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent event.E
 		return renderer.writeStatus("usage: input=%d cached=%d output=%d reasoning=%d total=%d", typed.Usage.InputTokens, typed.Usage.CachedInputTokens, typed.Usage.OutputTokens, typed.Usage.ReasoningTokens, typed.Usage.TotalTokens)
 	case event.StatusChanged:
 		return renderer.writeStatus("status: %s %s %s -> %s", typed.Entity, typed.EntityID, typed.From, typed.To)
-	case event.RunStatusChanged:
+	case event.TurnStatusChanged:
 		return renderer.writeStatus("status: %s %s %s -> %s", typed.Entity, typed.EntityID, typed.From, typed.To)
 	case event.DiagnosticPublished:
 		return renderer.writeStatus("diagnostic[%s/%s]: %s", typed.Severity, typed.Code, typed.Message)
@@ -92,9 +92,9 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent event.E
 		return nil
 	case event.PlanUpdated:
 		return renderer.writeStatus("plan: updated revision=%d items=%d", typed.Revision, len(typed.Items))
-	case event.RunStarted:
-		return renderer.writeStatus("run: started %s (task=%s)", typed.RunID, typed.TaskID)
-	case event.RunCompleted:
+	case event.TurnStarted:
+		return renderer.writeStatus("run: started %s (task=%s)", typed.TurnID, typed.TaskID)
+	case event.TurnCompleted:
 		return renderer.writeStatus("run: %s (stop=%s): %s", typed.Status, typed.StopReason, typed.Reason)
 	case event.ErrorOccurred:
 		message := typed.Error.Message

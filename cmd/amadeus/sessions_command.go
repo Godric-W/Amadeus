@@ -1,15 +1,14 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"text/tabwriter"
 	"time"
 
-	sessiondomain "github.com/Godric-W/Amadeus/internal/session"
+	"github.com/Godric-W/Amadeus/internal/state"
+	threadmanager "github.com/Godric-W/Amadeus/internal/thread/manager"
 	"github.com/spf13/cobra"
 )
 
@@ -24,58 +23,38 @@ func newSessionsCommand(projectFlags *projectFlags, runtime commandRuntime) *cob
 			if err != nil {
 				return err
 			}
-			coordinator, closer, err := openSessionCoordinator(command.Context(), runtime, root.Path())
+			if runtime.rootErr != nil {
+				return fmt.Errorf("resolve Amadeus root for thread store: %w", runtime.rootErr)
+			}
+			factory := runtime.threadStoreFactory
+			if factory == nil {
+				factory = defaultThreadStoreFactory
+			}
+			store, err := factory(command.Context(), runtime.amadeusRoot)
 			if err != nil {
 				return err
 			}
-			if closer != nil {
-				defer closer.Close()
+			manager, err := threadmanager.New(command.Context(), store, threadmanager.SharedServices{NextID: nextPersistentID})
+			if err != nil {
+				_ = store.Close()
+				return err
 			}
-			sessions, err := coordinator.ListSessions(command.Context())
+			defer manager.Close(command.Context())
+			threads, err := manager.ListThreads(command.Context(), state.ListQuery{CWD: root.Path()})
 			if err != nil {
 				return err
 			}
-			return writeSessionList(command.OutOrStdout(), sessions)
+			return writeSessionList(command.OutOrStdout(), threads)
 		},
 	})
 	return command
 }
 
-func openSessionCoordinator(ctx context.Context, runtime commandRuntime, projectPath string) (*sessiondomain.Coordinator, io.Closer, error) {
-	if runtime.rootErr != nil {
-		return nil, nil, fmt.Errorf("resolve Amadeus root for session store: %w", runtime.rootErr)
-	}
-	factory := runtime.sessionStoreFactory
-	if factory == nil {
-		factory = defaultSessionStoreFactory
-	}
-	store, closer, err := factory(ctx, runtime.amadeusRoot)
-	if err != nil {
-		return nil, nil, err
-	}
-	idFactory := runtime.persistentIDFactory
-	if idFactory == nil {
-		idFactory = nextPersistentID
-	}
-	clock := runtime.now
-	if clock == nil {
-		clock = time.Now
-	}
-	coordinator, err := sessiondomain.NewCoordinator(store, projectPath, filepath.Base(projectPath), sessiondomain.CoordinatorOptions{IDFactory: idFactory, Clock: clock})
-	if err != nil {
-		if closer != nil {
-			_ = closer.Close()
-		}
-		return nil, nil, err
-	}
-	return coordinator, closer, nil
-}
-
-func writeSessionList(output io.Writer, sessions []sessiondomain.Session) error {
+func writeSessionList(output io.Writer, threads []state.StoredThread) error {
 	if output == nil {
 		return errors.New("session list output is nil")
 	}
-	if len(sessions) == 0 {
+	if len(threads) == 0 {
 		_, err := fmt.Fprintln(output, "No sessions for the current project.")
 		return err
 	}
@@ -83,8 +62,12 @@ func writeSessionList(output io.Writer, sessions []sessiondomain.Session) error 
 	if _, err := fmt.Fprintln(writer, "ID\tTITLE\tSTATUS\tUPDATED"); err != nil {
 		return err
 	}
-	for _, conversation := range sessions {
-		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", conversation.ID, conversation.Title, conversation.Status, conversation.UpdatedAt.UTC().Format(time.RFC3339)); err != nil {
+	for _, metadata := range threads {
+		status := "active"
+		if metadata.Archived {
+			status = "archived"
+		}
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", metadata.ID, metadata.Title, status, metadata.UpdatedAt.UTC().Format(time.RFC3339)); err != nil {
 			return err
 		}
 	}

@@ -91,7 +91,7 @@ agent:
 				amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 				terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
 				auditSinkFactory: func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil },
-				runIDFactory:     func() string { return "core-tools-" + string(api) },
+				turnIDFactory:    func() string { return "core-tools-" + string(api) },
 				agentContextFactory: func(parent context.Context) (context.Context, context.CancelFunc) {
 					return context.WithCancel(parent)
 				},
@@ -187,7 +187,7 @@ agent:
 				amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 				terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
 				auditSinkFactory: func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil },
-				runIDFactory:     func() string { return "denied-write-" + string(api) },
+				turnIDFactory:    func() string { return "denied-write-" + string(api) },
 			}
 			command := newRootCommandWithRuntime(&configFlags{}, runtime)
 			var stdout bytes.Buffer
@@ -297,7 +297,7 @@ agent:
 				amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 				terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
 				auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
-				runIDFactory:     func() string { return "permission-grant-" + string(api) },
+				turnIDFactory:    func() string { return "permission-grant-" + string(api) },
 			}
 			command := newRootCommandWithRuntime(&configFlags{}, runtime)
 			var stdout bytes.Buffer

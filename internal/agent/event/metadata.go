@@ -5,7 +5,7 @@ import (
 	"reflect"
 )
 
-var metadataFieldNames = [...]string{"SessionID", "RunID", "TaskID", "Iteration", "LLMCallID"}
+var metadataFieldNames = [...]string{"SessionID", "TurnID", "TaskID", "Iteration", "LLMCallID"}
 
 func MetadataFromEvent(runtimeEvent Event) Metadata {
 	value, ok := eventStructValue(runtimeEvent)
@@ -14,7 +14,7 @@ func MetadataFromEvent(runtimeEvent Event) Metadata {
 	}
 	return Metadata{
 		SessionID: stringField(value, "SessionID"),
-		RunID:     stringField(value, "RunID"),
+		TurnID:    stringField(value, "TurnID"),
 		TaskID:    stringField(value, "TaskID"),
 		Iteration: intField(value, "Iteration"),
 		LLMCallID: stringField(value, "LLMCallID"),
@@ -39,7 +39,7 @@ func WithEventMetadata(runtimeEvent Event, metadata Metadata) (Event, error) {
 	merged := mergeMetadata(metadata, current)
 	values := map[string]any{
 		"SessionID": merged.SessionID,
-		"RunID":     merged.RunID,
+		"TurnID":    merged.TurnID,
 		"TaskID":    merged.TaskID,
 		"Iteration": merged.Iteration,
 		"LLMCallID": merged.LLMCallID,
@@ -68,8 +68,8 @@ func mergeMetadata(base, override Metadata) Metadata {
 	if override.SessionID != "" {
 		base.SessionID = override.SessionID
 	}
-	if override.RunID != "" {
-		base.RunID = override.RunID
+	if override.TurnID != "" {
+		base.TurnID = override.TurnID
 	}
 	if override.TaskID != "" {
 		base.TaskID = override.TaskID

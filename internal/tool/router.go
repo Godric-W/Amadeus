@@ -183,7 +183,7 @@ func (router *Router) executeRouted(ctx context.Context, routed routedCall) (Too
 		metadata.Source = ToolCallSourceModel
 	}
 	output, handleErr := routed.handler.Handle(ctx, Invocation{
-		SessionID: metadata.SessionID, RunID: metadata.RunID,
+		SessionID: metadata.SessionID, TurnID: metadata.TurnID,
 		Call: routed.call, Source: metadata.Source,
 	})
 	unlock()

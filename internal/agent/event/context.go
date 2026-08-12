@@ -11,8 +11,8 @@ func WithMetadata(ctx context.Context, metadata Metadata) context.Context {
 	if metadata.SessionID == "" {
 		metadata.SessionID = current.SessionID
 	}
-	if metadata.RunID == "" {
-		metadata.RunID = current.RunID
+	if metadata.TurnID == "" {
+		metadata.TurnID = current.TurnID
 	}
 	if metadata.TaskID == "" {
 		metadata.TaskID = current.TaskID

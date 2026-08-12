@@ -73,10 +73,10 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent event.
 		return nil
 	case event.RunDiffInvalidated:
 		return nil
-	case event.RunStarted:
+	case event.TurnStarted:
 		renderer.phase = "starting"
-		return renderer.statusLine("run started: %s", typed.RunID)
-	case event.RunStatusChanged:
+		return renderer.statusLine("run started: %s", typed.TurnID)
+	case event.TurnStatusChanged:
 		if typed.Entity == "run" {
 			renderer.phase = inlinePhase(typed.To)
 		}
@@ -115,7 +115,7 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent event.
 			total = typed.Usage.InputTokens + typed.Usage.OutputTokens
 		}
 		return renderer.statusLine("usage: input=%d output=%d total=%d", typed.Usage.InputTokens, typed.Usage.OutputTokens, total)
-	case event.RunCompleted:
+	case event.TurnCompleted:
 		renderer.phase = "idle"
 		return renderer.statusLine("run %s: %s", typed.Status, typed.Reason)
 	case event.ErrorOccurred:

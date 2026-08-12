@@ -65,12 +65,13 @@ func TestIteratorProducesCandidateAndStableEvents(t *testing.T) {
 	}}
 	client := &fakeClient{model: llm.ModelInfo{Provider: "fake", Name: "fake-model"}, stream: stream}
 	sink := event.NewMemorySink()
-	iterator, err := NewIteratorWithOptions(client, sink, IteratorOptions{SystemPrompt: "stable Agent protocol"})
+	iterator, err := NewIterator(client, sink)
 	if err != nil {
 		t.Fatalf("create iterator: %v", err)
 	}
 	input := validIterationInput()
 	input.AvailableTools = []tool.Spec{{Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object"}`)}}
+	input.OutputSchema = llm.OutputSchema(`{"type":"object","properties":{"answer":{"type":"string"}}}`)
 
 	result, err := iterator.Run(context.Background(), input)
 	if err != nil {
@@ -79,11 +80,14 @@ func TestIteratorProducesCandidateAndStableEvents(t *testing.T) {
 	if result.Kind != IterationCandidate || result.Candidate == nil || result.Candidate.Content != "hello" {
 		t.Fatalf("unexpected candidate result: %#v", result)
 	}
-	if !stream.closed || client.request.Model != "fake-model" || len(client.request.Tools) != 1 || client.request.Tools[0].Name != "read_file" {
+	if !stream.closed || client.request.Model != "fake-model" || len(client.request.Prompt.Tools) != 1 || client.request.Prompt.Tools[0].Name != "read_file" {
 		t.Fatalf("unexpected model request or stream state: request=%#v closed=%v", client.request, stream.closed)
 	}
-	if len(client.request.Messages) != 2 || !reflect.DeepEqual(client.request.Messages[0], llm.SystemMessage("stable Agent protocol")) || client.request.Messages[1].Content != "inspect repository" {
-		t.Fatalf("model request omitted stable Agent protocol: %#v", client.request.Messages)
+	if client.request.Prompt.BaseInstructions.Text != "stable Agent protocol" || len(client.request.Prompt.Input) != 1 || client.request.Prompt.Input[0].Content != "inspect repository" {
+		t.Fatalf("model request omitted stable Agent protocol: %#v", client.request.Prompt)
+	}
+	if string(client.request.Prompt.OutputSchema) != string(input.OutputSchema) {
+		t.Fatalf("model request omitted OutputSchema: %#v", client.request.Prompt.OutputSchema)
 	}
 	expectedTypes := []event.Type{event.TypeLLMCallStarted, event.TypeReasoningDelta, event.TypeTextDelta, event.TypeTextDelta, event.TypeUsageUpdated, event.TypeLLMCallCompleted}
 	assertEventTypes(t, sink.Snapshot(), expectedTypes)
@@ -92,40 +96,49 @@ func TestIteratorProducesCandidateAndStableEvents(t *testing.T) {
 func TestIteratorPreservesAssembledSystemPrompt(t *testing.T) {
 	stream := &fakeStream{chunks: []llm.StreamChunk{{ContentDelta: "done", FinishReason: llm.FinishReasonStop}}}
 	client := &fakeClient{model: llm.ModelInfo{Provider: "fake", Name: "fake-model"}, stream: stream}
-	iterator, err := NewIteratorWithOptions(client, event.NewMemorySink(), IteratorOptions{SystemPrompt: "stable Agent protocol"})
+	iterator, err := NewIterator(client, event.NewMemorySink())
 	if err != nil {
 		t.Fatalf("create iterator: %v", err)
 	}
 	input := validIterationInput()
-	input.Messages = []llm.Message{llm.SystemMessage("assembled context"), llm.UserMessage("inspect repository")}
+	input.BaseInstructions = llm.BaseInstructions{Text: "assembled context"}
+	input.Messages = []llm.Message{llm.UserMessage("inspect repository")}
 
 	if _, err := iterator.Run(context.Background(), input); err != nil {
 		t.Fatalf("run iteration: %v", err)
 	}
-	if !reflect.DeepEqual(client.request.Messages, input.Messages) {
-		t.Fatalf("iterator replaced assembled system prompt: got %#v, want %#v", client.request.Messages, input.Messages)
+	if client.request.Prompt.BaseInstructions.Text != "assembled context" || !reflect.DeepEqual(client.request.Prompt.Input, input.Messages) {
+		t.Fatalf("iterator replaced assembled Prompt: got %#v, want %#v", client.request.Prompt, input)
 	}
 }
 
-func TestIteratorUsesConfiguredSystemPrompt(t *testing.T) {
+func TestIteratorUsesInputBaseInstructions(t *testing.T) {
 	stream := &fakeStream{chunks: []llm.StreamChunk{{ContentDelta: "done", FinishReason: llm.FinishReasonStop}}}
 	client := &fakeClient{model: llm.ModelInfo{Provider: "fake", Name: "fake-model"}, stream: stream}
-	iterator, err := NewIteratorWithOptions(client, event.NewMemorySink(), IteratorOptions{SystemPrompt: " assembled protocol "})
+	iterator, err := NewIterator(client, event.NewMemorySink())
 	if err != nil {
 		t.Fatalf("create configured iterator: %v", err)
 	}
-	if _, err := iterator.Run(context.Background(), validIterationInput()); err != nil {
+	input := validIterationInput()
+	input.BaseInstructions = llm.BaseInstructions{Text: " assembled protocol "}
+	if _, err := iterator.Run(context.Background(), input); err != nil {
 		t.Fatalf("run configured iterator: %v", err)
 	}
-	if len(client.request.Messages) != 2 || client.request.Messages[0].Content != "assembled protocol" {
-		t.Fatalf("iterator omitted configured system prompt: %#v", client.request.Messages)
+	if client.request.Prompt.BaseInstructions.Text != " assembled protocol " || len(client.request.Prompt.Input) != 1 {
+		t.Fatalf("iterator omitted configured system prompt: %#v", client.request.Prompt)
 	}
 }
 
-func TestIteratorRejectsMissingSystemPrompt(t *testing.T) {
+func TestIteratorRejectsMissingBaseInstructionsAtRunBoundary(t *testing.T) {
 	client := &fakeClient{model: llm.ModelInfo{Provider: "fake", Name: "fake-model"}}
-	if _, err := NewIterator(client, event.NewMemorySink()); err == nil || !strings.Contains(err.Error(), "system Prompt is empty") {
-		t.Fatalf("unexpected missing system Prompt error: %v", err)
+	iterator, err := NewIterator(client, event.NewMemorySink())
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := validIterationInput()
+	input.BaseInstructions = llm.BaseInstructions{}
+	if _, err := iterator.Run(context.Background(), input); err == nil || !strings.Contains(err.Error(), "BaseInstructions") {
+		t.Fatalf("unexpected missing BaseInstructions error: %v", err)
 	}
 }
 
@@ -136,7 +149,7 @@ func TestIteratorProducesNormalizedToolCalls(t *testing.T) {
 	}}}
 	client := &fakeClient{model: llm.ModelInfo{Provider: "fake", Name: "fake-model"}, stream: stream}
 	sink := event.NewMemorySink()
-	iterator, err := NewIteratorWithOptions(client, sink, IteratorOptions{SystemPrompt: "stable Agent protocol"})
+	iterator, err := NewIterator(client, sink)
 	if err != nil {
 		t.Fatalf("create iterator: %v", err)
 	}
@@ -159,7 +172,7 @@ func TestIteratorRejectsEmptyCandidateAndPublishesError(t *testing.T) {
 	stream := &fakeStream{chunks: []llm.StreamChunk{{FinishReason: llm.FinishReasonStop, ProviderFinishReason: "stop"}}}
 	client := &fakeClient{model: llm.ModelInfo{Provider: "fake", Name: "fake-model"}, stream: stream}
 	sink := event.NewMemorySink()
-	iterator, err := NewIteratorWithOptions(client, sink, IteratorOptions{SystemPrompt: "stable Agent protocol"})
+	iterator, err := NewIterator(client, sink)
 	if err != nil {
 		t.Fatalf("create iterator: %v", err)
 	}
@@ -174,10 +187,11 @@ func TestIteratorRejectsEmptyCandidateAndPublishesError(t *testing.T) {
 
 func validIterationInput() IterationInput {
 	return IterationInput{
-		ID:              "iteration_1",
-		Messages:        []llm.Message{llm.UserMessage("inspect repository")},
-		Temperature:     0.2,
-		MaxOutputTokens: 512,
+		ID:               "iteration_1",
+		Messages:         []llm.Message{llm.UserMessage("inspect repository")},
+		BaseInstructions: llm.BaseInstructions{Text: "stable Agent protocol"},
+		Temperature:      0.2,
+		MaxOutputTokens:  512,
 	}
 }
 

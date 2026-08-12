@@ -20,12 +20,15 @@ const (
 )
 
 type IterationInput struct {
-	ID              string
-	Messages        []llm.Message
-	AvailableTools  []tool.Spec
-	Temperature     float64
-	MaxOutputTokens int
-	Reasoning       *llm.ReasoningConfig
+	ID                string
+	Messages          []llm.Message
+	BaseInstructions  llm.BaseInstructions
+	AvailableTools    []tool.Spec
+	OutputSchema      llm.OutputSchema
+	ParallelToolCalls bool
+	Temperature       float64
+	MaxOutputTokens   int
+	Reasoning         *llm.ReasoningConfig
 }
 
 func (input IterationInput) Validate() error {
@@ -34,6 +37,9 @@ func (input IterationInput) Validate() error {
 	}
 	if len(input.Messages) == 0 {
 		return errors.New("model iteration messages are empty")
+	}
+	if strings.TrimSpace(input.BaseInstructions.Text) == "" {
+		return errors.New("model iteration BaseInstructions are empty")
 	}
 	if input.Temperature < 0 || input.Temperature > 2 {
 		return errors.New("model iteration temperature must be between 0 and 2")
@@ -55,21 +61,12 @@ type ModelIterator interface {
 	Run(context.Context, IterationInput) (IterationResult, error)
 }
 
-type IteratorOptions struct {
-	SystemPrompt string
-}
-
 type Iterator struct {
-	client       llm.Client
-	events       event.Sink
-	systemPrompt string
+	client llm.Client
+	events event.Sink
 }
 
 func NewIterator(client llm.Client, events event.Sink) (*Iterator, error) {
-	return NewIteratorWithOptions(client, events, IteratorOptions{})
-}
-
-func NewIteratorWithOptions(client llm.Client, events event.Sink, options IteratorOptions) (*Iterator, error) {
 	if client == nil {
 		return nil, errors.New("model iterator LLM client is nil")
 	}
@@ -79,11 +76,7 @@ func NewIteratorWithOptions(client llm.Client, events event.Sink, options Iterat
 	if strings.TrimSpace(client.Model().Name) == "" {
 		return nil, errors.New("model iterator model is empty")
 	}
-	systemPrompt := strings.TrimSpace(options.SystemPrompt)
-	if systemPrompt == "" {
-		return nil, errors.New("model iterator system Prompt is empty")
-	}
-	return &Iterator{client: client, events: events, systemPrompt: systemPrompt}, nil
+	return &Iterator{client: client, events: events}, nil
 }
 
 func (iterator *Iterator) Run(ctx context.Context, input IterationInput) (IterationResult, error) {
@@ -94,12 +87,16 @@ func (iterator *Iterator) Run(ctx context.Context, input IterationInput) (Iterat
 		return IterationResult{}, fmt.Errorf("publish model iteration started: %w", err)
 	}
 
+	definitions := toolDefinitions(input.AvailableTools)
 	request := llm.Request{
-		Model:           iterator.client.Model().Name,
-		Messages:        withAgentSystemPrompt(input.Messages, iterator.systemPrompt),
+		Model: iterator.client.Model().Name,
+		Prompt: llm.Prompt{
+			BaseInstructions: input.BaseInstructions,
+			Input:            input.Messages, Tools: definitions,
+			ParallelToolCalls: input.ParallelToolCalls, OutputSchema: input.OutputSchema,
+		},
 		Temperature:     input.Temperature,
 		MaxOutputTokens: input.MaxOutputTokens,
-		Tools:           toolDefinitions(input.AvailableTools),
 		Reasoning:       input.Reasoning,
 	}
 	stream, err := iterator.client.Stream(ctx, request)
@@ -128,14 +125,6 @@ func (iterator *Iterator) Run(ctx context.Context, input IterationInput) (Iterat
 		return result, fmt.Errorf("publish model iteration completed: %w", err)
 	}
 	return result, nil
-}
-
-func withAgentSystemPrompt(messages []llm.Message, systemPrompt string) []llm.Message {
-	result := append([]llm.Message(nil), messages...)
-	if len(result) != 0 && result[0].Role == llm.RoleSystem {
-		return result
-	}
-	return append([]llm.Message{llm.SystemMessage(systemPrompt)}, result...)
 }
 
 func (iterator *Iterator) consume(ctx context.Context, iterationID string, stream llm.Stream) (llm.Response, error) {

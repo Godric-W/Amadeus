@@ -19,7 +19,7 @@ func TestHubFansOutFilteredEnrichedEvents(t *testing.T) {
 	}
 	defer subscription.Close()
 
-	ctx := WithMetadata(context.Background(), Metadata{SessionID: "session-1", RunID: "run-1", Iteration: 3})
+	ctx := WithMetadata(context.Background(), Metadata{SessionID: "session-1", TurnID: "run-1", Iteration: 3})
 	if err := hub.Publish(ctx, TextDelta{LLMCallID: "call-1", Delta: "hello"}); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestHubFansOutFilteredEnrichedEvents(t *testing.T) {
 	}
 
 	got := (<-subscription.Events).(TextDelta)
-	if got.SessionID != "session-1" || got.RunID != "run-1" || got.Iteration != 3 || got.LLMCallID != "call-1" || got.Delta != "hello" {
+	if got.SessionID != "session-1" || got.TurnID != "run-1" || got.Iteration != 3 || got.LLMCallID != "call-1" || got.Delta != "hello" {
 		t.Fatalf("unexpected subscriber event: %#v", got)
 	}
 	if memory.Len() != 2 {
@@ -52,12 +52,12 @@ func TestHubFansOutToMultipleSubscribers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer second.Close()
-	if err := hub.Publish(context.Background(), RunCompleted{RunID: "run-1", Status: "completed"}); err != nil {
+	if err := hub.Publish(context.Background(), TurnCompleted{TurnID: "run-1", Status: "completed"}); err != nil {
 		t.Fatal(err)
 	}
 	for index, subscription := range []*Subscription{first, second} {
-		got, ok := (<-subscription.Events).(RunCompleted)
-		if !ok || got.RunID != "run-1" {
+		got, ok := (<-subscription.Events).(TurnCompleted)
+		if !ok || got.TurnID != "run-1" {
 			t.Fatalf("subscriber %d received %#v", index, got)
 		}
 	}
@@ -104,7 +104,7 @@ func TestHubCloseClosesSubscriptionsAndRejectsPublish(t *testing.T) {
 	if _, ok := <-subscription.Events; ok {
 		t.Fatal("subscription channel remained open")
 	}
-	if err := hub.Publish(context.Background(), RunCompleted{}); !errors.Is(err, ErrHubClosed) {
+	if err := hub.Publish(context.Background(), TurnCompleted{}); !errors.Is(err, ErrHubClosed) {
 		t.Fatalf("unexpected publish-after-close error: %v", err)
 	}
 }
@@ -120,7 +120,7 @@ func TestHubPropagatesCriticalSinkErrors(t *testing.T) {
 		t.Fatalf("create event hub: %v", err)
 	}
 	defer hub.Close()
-	if err := hub.Publish(context.Background(), RunCompleted{}); !errors.Is(err, want) {
+	if err := hub.Publish(context.Background(), TurnCompleted{}); !errors.Is(err, want) {
 		t.Fatalf("unexpected sink error: %v", err)
 	}
 }

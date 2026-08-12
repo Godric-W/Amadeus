@@ -11,7 +11,7 @@ import (
 )
 
 type llmClientFactory func(string, config.ProviderConfig) (llm.Client, error)
-type runContextFactory func(context.Context) (context.Context, context.CancelFunc)
+type turnContextFactory func(context.Context) (context.Context, context.CancelFunc)
 
 func defaultLLMClientFactory(providerName string, provider config.ProviderConfig) (llm.Client, error) {
 	return openaiadapter.NewAdapter(providerName, provider)

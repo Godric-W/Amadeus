@@ -308,12 +308,12 @@ func TestRouterRejectsInvisibleHandlerAndPopulatesInvocationMetadata(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := WithInvocationMetadata(context.Background(), InvocationMetadata{SessionID: "session-1", RunID: "run-1", Source: ToolCallSourceUser})
+	ctx := WithInvocationMetadata(context.Background(), InvocationMetadata{SessionID: "session-1", TurnID: "run-1", Source: ToolCallSourceUser})
 	execution, err = visible.Execute(ctx, routerCall("visible", handler.name))
 	if err != nil || execution.Outcome.Status != ToolCallCompleted {
 		t.Fatalf("visible Handler failed: %#v err=%v", execution, err)
 	}
-	if received.SessionID != "session-1" || received.RunID != "run-1" || received.Source != ToolCallSourceUser {
+	if received.SessionID != "session-1" || received.TurnID != "run-1" || received.Source != ToolCallSourceUser {
 		t.Fatalf("Invocation metadata was not populated: %#v", received)
 	}
 }

@@ -1,2 +1,9 @@
 /bin/
 /config.yaml
+
+# Go test and coverage artifacts
+*.test
+coverage.out
+
+# Local OS metadata
+.DS_Store

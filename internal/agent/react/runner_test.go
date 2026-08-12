@@ -3,6 +3,7 @@ package react
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -68,23 +69,6 @@ type scriptedProgress struct {
 	samples []ProgressSample
 }
 
-type fixedContextWindowManager struct {
-	view agentcontext.RequestView
-	err  error
-}
-
-type recordingRequestViewProvider struct {
-	inputs []RequestViewInput
-	tools  []tool.Spec
-}
-
-func (provider *recordingRequestViewProvider) PrepareRequestView(_ context.Context, input RequestViewInput) (agentcontext.RequestView, error) {
-	provider.inputs = append(provider.inputs, input)
-	messages := []llm.Message{llm.UserMessage("inspect repository")}
-	messages = append(messages, input.RuntimeMessages...)
-	return agentcontext.RequestView{Messages: messages, Tools: append([]tool.Spec(nil), provider.tools...)}, nil
-}
-
 type orderingRolloutRecorder struct {
 	mutex       sync.Mutex
 	callsSaved  bool
@@ -137,10 +121,6 @@ func (executor orderingExecutor) ExecuteBatch(ctx context.Context, calls []tool.
 	return executions, nil
 }
 
-func (manager fixedContextWindowManager) Prepare(context.Context, agentcontext.WindowRequest) (agentcontext.RequestView, error) {
-	return manager.view, manager.err
-}
-
 func (progress *scriptedProgress) Observe(sample ProgressSample) ([]ProgressSignal, error) {
 	progress.samples = append(progress.samples, sample)
 	return append([]ProgressSignal(nil), progress.signals...), nil
@@ -177,31 +157,64 @@ func TestRunnerExecutesToolsReplaysResultsAndCompletes(t *testing.T) {
 	}
 }
 
-func TestRunnerBuildsFreshRequestViewBeforeEveryThink(t *testing.T) {
+func TestRunnerBuildsFreshPromptFromContextBeforeEveryThink(t *testing.T) {
 	call := tool.NewCall("call-1", "read_file", []byte(`{"path":"README.md"}`))
 	iterator := &scriptedIterator{results: []IterationResult{toolIteration(call), candidateIteration("done")}}
 	executor := &scriptedCallExecutor{executions: map[string]ToolOutcome{call.ID: successfulExecution(call, "contents")}, errors: map[string]error{}}
-	provider := &recordingRequestViewProvider{tools: validRequest().AvailableTools}
 	runner := newTestRunner(t, iterator, executor, &scriptedProgress{})
 	request := validRequest()
-	request.Messages = nil
-	request.AvailableTools = nil
-	request.RequestViewProvider = provider
 	result, err := runner.Run(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.StopReason != StopCompleted || len(provider.inputs) != 2 {
-		t.Fatalf("unexpected dynamic request result: result=%#v samples=%d", result, len(provider.inputs))
-	}
-	if len(provider.inputs[0].RuntimeMessages) != 0 || len(provider.inputs[1].RuntimeMessages) != 2 {
-		t.Fatalf("request views did not receive per-iteration runtime state: %#v", provider.inputs)
+	if result.StopReason != StopCompleted {
+		t.Fatalf("unexpected dynamic request result: %#v", result)
 	}
 	if len(iterator.inputs) != 2 || len(iterator.inputs[1].Messages) != 3 || iterator.inputs[1].Messages[2].Role != llm.RoleTool {
-		t.Fatalf("fresh request view did not drive the next Think: %#v", iterator.inputs)
+		t.Fatalf("fresh ContextManager snapshot did not drive the next Think: %#v", iterator.inputs)
 	}
 	if len(executor.calls) != 1 || executor.calls[0].Name != "read_file" {
 		t.Fatalf("Act did not use the Tool snapshot from the sampled request view: %#v", executor.calls)
+	}
+}
+
+func TestRunnerInvokesBeforeSampleAndUsesReplacedContextEveryIteration(t *testing.T) {
+	call := tool.NewCall("call-1", "read_file", []byte(`{"path":"README.md"}`))
+	iterator := &scriptedIterator{results: []IterationResult{toolIteration(call), candidateIteration("done")}}
+	runner := newTestRunner(t, iterator, &scriptedCallExecutor{executions: map[string]ToolOutcome{call.ID: successfulExecution(call, "contents")}, errors: map[string]error{}}, &scriptedProgress{})
+	request := validRequest()
+	samples := 0
+	request.BeforeSample = func(_ context.Context, manager *agentcontext.Manager) error {
+		samples++
+		if samples == 1 {
+			manager.Replace(llm.UserMessage("compacted objective"))
+		}
+		return nil
+	}
+	result, err := runner.Run(context.Background(), request)
+	if err != nil || result.StopReason != StopCompleted {
+		t.Fatalf("run result=%#v err=%v", result, err)
+	}
+	if samples != 2 {
+		t.Fatalf("BeforeSample invocation count = %d, want 2", samples)
+	}
+	if iterator.inputs[0].Messages[0].Content != "compacted objective" || len(iterator.inputs[1].Messages) != 3 || iterator.inputs[1].Messages[0].Content != "compacted objective" {
+		t.Fatalf("fresh replaced Context was not sampled: %#v", iterator.inputs)
+	}
+}
+
+func TestRunnerRejectsPromptThatStillExceedsContextWindow(t *testing.T) {
+	iterator := &scriptedIterator{results: []IterationResult{candidateIteration("must not run")}}
+	runner := newTestRunner(t, iterator, &scriptedCallExecutor{executions: map[string]ToolOutcome{}, errors: map[string]error{}}, &scriptedProgress{})
+	request := validRequest()
+	request.Context.Replace(llm.UserMessage(strings.Repeat("x", 3000)))
+	request.ModelInfo = llm.ModelInfo{ContextWindow: 1000, AutoCompactTokenLimit: 900, MaxOutputTokens: 400}
+	result, err := runner.Run(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StopReason != StopFailed || !strings.Contains(result.Reason, "exceeds model context window") || len(iterator.inputs) != 0 {
+		t.Fatalf("oversized Prompt was not rejected before sampling: result=%#v inputs=%#v", result, iterator.inputs)
 	}
 }
 
@@ -212,7 +225,7 @@ func TestRunnerPersistsToolCallsBeforeExecutionAndOutcomesInModelOrder(t *testin
 	runner, err := NewRunner(
 		&scriptedIterator{results: []IterationResult{toolIteration(first, second), candidateIteration("done")}},
 		orderingExecutor{recorder: recorder}, &scriptedProgress{},
-		RunnerOptions{Temperature: 0.2, MaxOutputTokens: 512, MaxParallelTools: 2, Rollout: recorder},
+		RunnerOptions{Temperature: 0.2, MaxParallelTools: 2, Rollout: recorder},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -364,19 +377,15 @@ func TestRunnerPublishesIterationLifecycleWithRunMetadata(t *testing.T) {
 		&scriptedCallExecutor{executions: map[string]ToolOutcome{}, errors: map[string]error{}},
 		&scriptedProgress{},
 		RunnerOptions{
-			Temperature: 0.2, MaxOutputTokens: 512, MaxParallelTools: 2, Events: events,
-			ContextProfile: agentcontext.DefaultContextProfile(1000),
-			ContextWindow: fixedContextWindowManager{view: agentcontext.RequestView{
-				Messages:   []llm.Message{llm.UserMessage("goal")},
-				Usage:      agentcontext.ContextUsage{EstimatedInputTokens: 400, EffectiveInputLimit: 850},
-				Compaction: &agentcontext.CompactionReport{ProjectedToolResults: 2, DroppedMessagePairs: 3},
-			}},
+			Temperature: 0.2, MaxParallelTools: 2, Events: events,
 		},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := validRequest()
+	request.ModelInfo.ContextWindow = 1000
+	request.ModelInfo.AutoCompactTokenLimit = 850
 	ctx := event.WithMetadata(context.Background(), event.Metadata{SessionID: "session-1"})
 	if _, err := runner.Run(ctx, request); err != nil {
 		t.Fatal(err)
@@ -386,15 +395,15 @@ func TestRunnerPublishesIterationLifecycleWithRunMetadata(t *testing.T) {
 		t.Fatalf("unexpected lifecycle event count: %#v", snapshot)
 	}
 	started, ok := snapshot[0].(event.IterationStarted)
-	if !ok || started.SessionID != "session-1" || started.RunID != "run-1" || started.TaskID != "" || started.Iteration != 1 || started.LLMCallID != "run-1/llm-1" {
+	if !ok || started.SessionID != "session-1" || started.TurnID != "run-1" || started.TaskID != "" || started.Iteration != 1 || started.LLMCallID != "run-1/llm-1" {
 		t.Fatalf("unexpected iteration started event: %#v", snapshot[0])
 	}
 	contextUpdate, ok := snapshot[1].(event.ContextWindowUpdated)
-	if !ok || contextUpdate.ContextWindow != 1000 || contextUpdate.EstimatedInputTokens != 400 || contextUpdate.EffectiveInputLimit != 850 || contextUpdate.ProjectedToolResults != 2 || contextUpdate.DroppedMessagePairs != 3 || contextUpdate.RunID != "run-1" || contextUpdate.Iteration != 1 || contextUpdate.LLMCallID != started.LLMCallID {
+	if !ok || contextUpdate.ContextWindow != 1000 || contextUpdate.EstimatedInputTokens <= 0 || contextUpdate.EffectiveInputLimit != 488 || contextUpdate.ProjectedToolResults != 0 || contextUpdate.DroppedMessagePairs != 0 || contextUpdate.TurnID != "run-1" || contextUpdate.Iteration != 1 || contextUpdate.LLMCallID != started.LLMCallID {
 		t.Fatalf("unexpected context window event: %#v", snapshot[1])
 	}
 	completed, ok := snapshot[2].(event.IterationCompleted)
-	if !ok || completed.Status != string(IterationCompleted) || completed.RunID != "run-1" || completed.TaskID != "" || completed.LLMCallID != started.LLMCallID {
+	if !ok || completed.Status != string(IterationCompleted) || completed.TurnID != "run-1" || completed.TaskID != "" || completed.LLMCallID != started.LLMCallID {
 		t.Fatalf("unexpected iteration completed event: %#v", snapshot[2])
 	}
 }
@@ -420,7 +429,7 @@ func TestRunnerCompletesWithoutAvailableTools(t *testing.T) {
 
 func newTestRunner(t *testing.T, iterator ModelIterator, executor CallExecutor, progress ProgressObserver) *Runner {
 	t.Helper()
-	runner, err := NewRunner(iterator, executor, progress, RunnerOptions{Temperature: 0.2, MaxOutputTokens: 512, MaxParallelTools: 2})
+	runner, err := NewRunner(iterator, executor, progress, RunnerOptions{Temperature: 0.2, MaxParallelTools: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,10 +437,14 @@ func newTestRunner(t *testing.T, iterator ModelIterator, executor CallExecutor, 
 }
 
 func validRequest() Request {
+	contextManager := agentcontext.NewManager(nil)
+	contextManager.Record(llm.UserMessage("inspect repository"))
 	return Request{
-		RunID: "run-1", Goal: "inspect repository", Messages: []llm.Message{llm.UserMessage("inspect repository")},
-		AvailableTools: []tool.Spec{{Name: "read_file", Description: "read", InputSchema: []byte(`{"type":"object"}`), SideEffect: tool.SideEffectRead, Idempotent: true}},
-		Budget:         BudgetState{Budget: Budget{MaxIterations: 8, MaxToolCalls: 8, MaxDuration: time.Minute}},
+		TurnID: "run-1", Goal: "inspect repository", Context: contextManager,
+		BaseInstructions: llm.BaseInstructions{Text: "You are Amadeus."},
+		ModelInfo:        llm.ModelInfo{ContextWindow: 128_000, AutoCompactTokenLimit: 115_200, MaxOutputTokens: 512},
+		AvailableTools:   []tool.Spec{{Name: "read_file", Description: "read", InputSchema: []byte(`{"type":"object"}`), SideEffect: tool.SideEffectRead, Idempotent: true}},
+		Budget:           BudgetState{Budget: Budget{MaxIterations: 8, MaxToolCalls: 8, MaxDuration: time.Minute}},
 	}
 }
 

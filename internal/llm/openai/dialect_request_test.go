@@ -13,7 +13,7 @@ func TestQwenChatDialectSerializesThinkingWithoutReasoningHistory(t *testing.T) 
 	enabled := true
 	request := dialectChatRequest()
 	request.Reasoning = &llm.ReasoningConfig{Enabled: &enabled}
-	request.Messages[0].Reasoning = "do not replay this"
+	request.Prompt.Input[0].Reasoning = "do not replay this"
 
 	body := marshalDialectChatRequest(t, config.DialectQwen, request)
 	if body["enable_thinking"] != true {
@@ -43,7 +43,7 @@ func TestGLMChatDialectSerializesPreservedThinking(t *testing.T) {
 	preserve := true
 	request := dialectChatRequest()
 	request.Reasoning = &llm.ReasoningConfig{Enabled: &enabled, Preserve: &preserve}
-	request.Messages[0].Reasoning = "preserved reasoning"
+	request.Prompt.Input[0].Reasoning = "preserved reasoning"
 
 	body := marshalDialectChatRequest(t, config.DialectGLM, request)
 	thinking := body["thinking"].(map[string]any)
@@ -72,7 +72,7 @@ func TestGLMChatDialectRejectsPreserveWhenDisabled(t *testing.T) {
 
 func TestDeepSeekChatDialectKeepsStandardRequestShape(t *testing.T) {
 	request := dialectChatRequest()
-	request.Messages[0].Reasoning = "must not be replayed"
+	request.Prompt.Input[0].Reasoning = "must not be replayed"
 
 	body := marshalDialectChatRequest(t, config.DialectDeepSeek, request)
 	assertCompatibleTokenAndToolFields(t, body)
@@ -91,13 +91,15 @@ func TestDeepSeekChatDialectKeepsStandardRequestShape(t *testing.T) {
 func dialectChatRequest() llm.Request {
 	return llm.Request{
 		Model: "test-model",
-		Messages: []llm.Message{
-			llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
-			llm.ToolResultMessage("call_1", "contents"),
+		Prompt: llm.Prompt{
+			Input: []llm.Message{
+				llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
+				llm.ToolResultMessage("call_1", "contents"),
+			},
+			Tools: []llm.ToolDefinition{{
+				Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`), Strict: false,
+			}},
 		},
-		Tools: []llm.ToolDefinition{{
-			Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`), Strict: false,
-		}},
 		Temperature: 0.2, MaxOutputTokens: 256,
 	}
 }

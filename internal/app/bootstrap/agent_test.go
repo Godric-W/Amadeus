@@ -16,7 +16,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
-	promptbuiltin "github.com/Godric-W/Amadeus/internal/prompt/builtin"
 	"github.com/Godric-W/Amadeus/internal/tool"
 	patchtool "github.com/Godric-W/Amadeus/internal/tool/patch"
 	"github.com/Godric-W/Amadeus/internal/webfetch"
@@ -58,14 +57,11 @@ func TestNewAgentBuildsDefaultComposition(t *testing.T) {
 	if agent.Project.Path() != root.Path() {
 		t.Fatalf("unexpected project root: got %q, want %q", agent.Project.Path(), root.Path())
 	}
-	if agent.Client == nil || agent.Events != sink || agent.Audit == nil || agent.ContextManager == nil || agent.PromptRepository == nil || agent.PromptAssembler == nil || agent.Registry == nil || agent.CommandAuthorizer == nil || agent.ToolRouter == nil || agent.Iterator == nil || agent.Progress == nil || agent.Runner == nil {
+	if agent.Client == nil || agent.Events != sink || agent.Audit == nil || agent.Registry == nil || agent.CommandAuthorizer == nil || agent.ToolRouter == nil || agent.Iterator == nil || agent.Progress == nil || agent.Runner == nil {
 		t.Fatalf("Agent composition is incomplete: %#v", agent)
 	}
-	if !strings.Contains(agent.AgentPrompt.Content, "You are Amadeus") {
-		t.Fatalf("Agent composition contains an unexpected Agent Prompt bundle: %#v", agent.AgentPrompt)
-	}
-	if len(agent.AgentPrompt.Sources) != len(promptbuiltin.AgentSystemLayers()) || len(agent.AgentPrompt.SHA256) != 64 {
-		t.Fatalf("Agent Prompt metadata is incomplete: agent=%#v", agent.AgentPrompt)
+	if !strings.Contains(agent.BaseInstructions.Text, "You are Amadeus") {
+		t.Fatalf("Agent composition contains an unexpected BaseInstructions: %#v", agent.BaseInstructions)
 	}
 	if agent.Client.Model().Provider != configured.DefaultProvider || agent.Client.Model().Name != "test-model" {
 		t.Fatalf("unexpected composed client model: %#v", agent.Client.Model())

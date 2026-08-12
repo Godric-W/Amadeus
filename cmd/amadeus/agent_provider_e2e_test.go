@@ -76,7 +76,7 @@ agent:
 				amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 				terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
 				auditSinkFactory: func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil },
-				runIDFactory:     func() string { return "provider-" + string(api) },
+				turnIDFactory:    func() string { return "provider-" + string(api) },
 				agentContextFactory: func(parent context.Context) (context.Context, context.CancelFunc) {
 					return context.WithCancel(parent)
 				},

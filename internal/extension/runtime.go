@@ -146,7 +146,7 @@ func (runtime *Runtime) ResolveSkillInjections(task string) ([]agentcontext.Skil
 		content := strings.TrimSpace(value.Content)
 		digest := sha256.Sum256([]byte(content))
 		result = append(result, agentcontext.SkillInjection{
-			Name: value.Name, Content: content, ContentHash: hex.EncodeToString(digest[:]), Source: value.Source,
+			Name: value.Name, Content: content, ContentHash: hex.EncodeToString(digest[:]), Source: string(value.Source),
 		})
 		seen[name] = struct{}{}
 	}

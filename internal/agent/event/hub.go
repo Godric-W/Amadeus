@@ -214,7 +214,7 @@ func containsType(types map[Type]struct{}, eventType Type) bool {
 func criticalEvent(eventType Type) bool {
 	switch eventType {
 	case TypeToolCallStarted, TypeToolCallCompleted, TypeApprovalRequested, TypeApprovalResolved,
-		TypeErrorOccurred, TypeRunCompleted:
+		TypeErrorOccurred, TypeTurnCompleted:
 		return true
 	default:
 		return false

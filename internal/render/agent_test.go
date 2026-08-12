@@ -21,20 +21,20 @@ func TestAgentRendererRendersCompleteAgentEventSequence(t *testing.T) {
 		t.Fatalf("create Agent renderer: %v", err)
 	}
 	events := []event.Event{
-		event.RunStarted{RunID: "run-1", TaskID: "task-1"},
+		event.TurnStarted{TurnID: "run-1", TaskID: "task-1"},
 		event.LLMCallStarted{LLMCallID: "turn-1"},
 		event.ReasoningDelta{LLMCallID: "turn-1", Delta: "hidden chain of thought"},
 		event.TextDelta{LLMCallID: "turn-1", Delta: "working"},
-		event.ToolCallStarted{RunID: "run-1", CallID: "call-1", ToolName: "read_file"},
+		event.ToolCallStarted{TurnID: "run-1", CallID: "call-1", ToolName: "read_file"},
 		event.ApprovalRequested{RequestID: "call-2", ToolName: "write_file", Risk: "high", Reason: "tool writes files"},
 		event.ApprovalResolved{RequestID: "call-2", ToolName: "write_file", Outcome: "allow", Scope: "once", Source: "user", Reason: "approved once"},
-		event.ToolCallCompleted{RunID: "run-1", CallID: "call-1", ToolName: "read_file", Success: true, Duration: 12 * time.Millisecond, Summary: "read 10 lines"},
+		event.ToolCallCompleted{TurnID: "run-1", CallID: "call-1", ToolName: "read_file", Success: true, Duration: 12 * time.Millisecond, Summary: "read 10 lines"},
 		event.UsageUpdated{LLMCallID: "turn-1", Usage: llm.Usage{InputTokens: 10, CachedInputTokens: 2, OutputTokens: 4, ReasoningTokens: 1, TotalTokens: 14}},
 		event.StatusChanged{Entity: "task", EntityID: "task-1", From: "ready", To: "running"},
-		event.RunStatusChanged{Entity: "run", EntityID: "run-1", From: "running", To: "verifying"},
+		event.TurnStatusChanged{Entity: "run", EntityID: "run-1", From: "running", To: "verifying"},
 		event.DiagnosticPublished{Severity: "warn", Code: "partial", Message: "output was truncated"},
 		event.ErrorOccurred{LLMCallID: "turn-1", Error: event.ErrorInfo{Message: "provider\nfailed"}},
-		event.RunCompleted{RunID: "run-1", Status: "cancelled", StopReason: "context_cancelled", Reason: "user interrupted"},
+		event.TurnCompleted{TurnID: "run-1", Status: "cancelled", StopReason: "context_cancelled", Reason: "user interrupted"},
 		event.LLMCallCompleted{LLMCallID: "turn-1"},
 	}
 	for _, runtimeEvent := range events {

@@ -4,21 +4,18 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/buildinfo"
-	"github.com/Godric-W/Amadeus/internal/config"
-	extensionruntime "github.com/Godric-W/Amadeus/internal/extension"
+	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/interface/tui"
-	"github.com/Godric-W/Amadeus/internal/llm"
-	sessiondomain "github.com/Godric-W/Amadeus/internal/session"
+	"github.com/Godric-W/Amadeus/internal/thread"
 	"github.com/Godric-W/Amadeus/internal/tool/builtin"
 	"github.com/atotto/clipboard"
 )
@@ -49,11 +46,7 @@ func (runner *agentController) runInteractive(ctx context.Context, invocation ag
 
 func (runner *agentController) runPlainInteractive(ctx context.Context, invocation agentInvocation, reader *bufio.Reader, capabilities tui.TerminalCapabilities) error {
 	interactionInput := io.Reader(reader)
-	interactionReader := reader
 	var lastAssistantMarkdown string
-	ensureRuntime := func(commandCtx context.Context) (*sessiondomain.SessionRuntime, error) {
-		return runner.ensureSessionRuntime(commandCtx, invocation)
-	}
 	controller, err := tui.NewTerminalInteractionController(interactionInput, invocation.Output, invocation.ErrorOutput,
 		func(commandCtx context.Context, command string) error {
 			spec, arguments, ok := tui.ParseSlashCommand(command)
@@ -62,95 +55,57 @@ func (runner *agentController) runPlainInteractive(ctx context.Context, invocati
 			}
 			switch spec.Command {
 			case tui.SlashClear:
-				sessionRuntime, runtimeErr := ensureRuntime(commandCtx)
-				if runtimeErr != nil {
-					return runtimeErr
-				}
-				if err := sessionRuntime.NewDraft(); err != nil {
+				if err := runner.newDraft(commandCtx); err != nil {
 					return err
 				}
 				lastAssistantMarkdown = ""
 				_, err := fmt.Fprint(invocation.ErrorOutput, "\x1b[2J\x1b[H")
 				return err
 			case tui.SlashResume:
-				selector := interactionReader
-				if selector == nil {
-					selector = bufio.NewReader(invocation.Input)
-				}
-				return runner.selectSession(commandCtx, invocation, selector)
+				return runner.selectSession(commandCtx, invocation, reader)
 			case tui.SlashStatus:
 				return runner.writeInteractiveStatus(commandCtx, invocation)
 			case tui.SlashSkills:
-				sessionRuntime, runtimeErr := ensureRuntime(commandCtx)
-				if runtimeErr != nil {
-					return runtimeErr
-				}
-				return writeInteractiveSkills(commandCtx, invocation.ErrorOutput, sessionRuntime)
+				return runner.writeInteractiveSkills(commandCtx, invocation, invocation.ErrorOutput)
 			case tui.SlashMCP:
-				sessionRuntime, runtimeErr := ensureRuntime(commandCtx)
-				if runtimeErr != nil {
-					return runtimeErr
-				}
-				return writeInteractiveMCP(commandCtx, invocation.ErrorOutput, sessionRuntime, strings.EqualFold(arguments, "verbose"))
+				return runner.writeInteractiveMCP(commandCtx, invocation, invocation.ErrorOutput, strings.EqualFold(arguments, "verbose"))
 			case tui.SlashRename:
 				if arguments == "" {
 					return errors.New("/rename requires a session name in plain mode")
 				}
-				sessionRuntime, runtimeErr := ensureRuntime(commandCtx)
-				if runtimeErr != nil {
-					return runtimeErr
-				}
-				_, title, err := sessionRuntime.RenameCurrent(commandCtx, arguments)
+				title, err := runner.renameCurrent(commandCtx, arguments)
 				if err == nil {
 					_, err = fmt.Fprintf(invocation.ErrorOutput, "Session renamed to %s\n", title)
 				}
 				return err
 			case tui.SlashDelete:
-				sessionRuntime, runtimeErr := ensureRuntime(commandCtx)
-				if runtimeErr != nil {
-					return runtimeErr
-				}
-				if interactionReader == nil {
-					return errors.New("session deletion confirmation requires interactive input")
-				}
 				if _, err := fmt.Fprint(invocation.ErrorOutput, "Permanently delete this session and exit? [y/N] "); err != nil {
 					return err
 				}
-				answer, readErr := interactionReader.ReadString('\n')
+				answer, readErr := reader.ReadString('\n')
 				if readErr != nil && !errors.Is(readErr, io.EOF) {
 					return readErr
 				}
 				if !strings.EqualFold(strings.TrimSpace(answer), "y") && !strings.EqualFold(strings.TrimSpace(answer), "yes") {
-					_, writeErr := fmt.Fprintln(invocation.ErrorOutput, "Session deletion cancelled")
-					return writeErr
+					_, err := fmt.Fprintln(invocation.ErrorOutput, "Session deletion cancelled")
+					return err
 				}
-				deleted, deleteErr := sessionRuntime.DeleteCurrent(commandCtx)
-				if deleteErr != nil {
-					return deleteErr
+				deleted, err := runner.deleteCurrent(commandCtx)
+				if err != nil {
+					return err
 				}
 				if deleted == "" {
-					_, deleteErr = fmt.Fprintln(invocation.ErrorOutput, "Draft session discarded")
+					fmt.Fprintln(invocation.ErrorOutput, "Draft session discarded")
 				} else {
-					_, deleteErr = fmt.Fprintf(invocation.ErrorOutput, "Session deleted: %s\n", deleted)
-				}
-				if deleteErr != nil {
-					return deleteErr
+					fmt.Fprintf(invocation.ErrorOutput, "Session deleted: %s\n", deleted)
 				}
 				return tui.ErrQuit
 			case tui.SlashCompact:
-				sessionRuntime, runtimeErr := ensureRuntime(commandCtx)
-				if runtimeErr != nil {
-					return runtimeErr
+				message, err := runner.compactInteractiveSession(commandCtx, invocation)
+				if err == nil {
+					_, err = fmt.Fprintln(invocation.ErrorOutput, message)
 				}
-				configured, _, configErr := loadEffectiveConfig(runner.command, runner.flags, runner.runtime)
-				if configErr != nil {
-					return configErr
-				}
-				message, compactErr := runner.compactInteractiveSession(commandCtx, configured, sessionRuntime)
-				if compactErr == nil {
-					_, compactErr = fmt.Fprintln(invocation.ErrorOutput, message)
-				}
-				return compactErr
+				return err
 			case tui.SlashCopy:
 				if strings.TrimSpace(lastAssistantMarkdown) == "" {
 					return errors.New("No agent response to copy")
@@ -173,10 +128,9 @@ func (runner *agentController) runPlainInteractive(ctx context.Context, invocati
 			runInvocation := invocation
 			runInvocation.Mode = agentInvocationOnce
 			runInvocation.Task = submission.Content
+			runInvocation.RunMode = turn.PermissionModeDefault
 			if submission.Mode == tui.CollaborationPlan {
-				runInvocation.RunMode = sessiondomain.RunModePlan
-			} else {
-				runInvocation.RunMode = sessiondomain.RunModeExecute
+				runInvocation.RunMode = turn.PermissionModePlan
 			}
 			runInvocation.Input = interactionInput
 			var response bytes.Buffer
@@ -194,10 +148,9 @@ func (runner *agentController) runPlainInteractive(ctx context.Context, invocati
 	if err != nil {
 		return err
 	}
-	controller.WithTaskContextFactory(runner.newRunContext)
+	controller.WithTaskContextFactory(runner.newTurnContext)
 	controller.WithCapabilities(capabilities)
-	err = controller.Run(ctx)
-	if err != nil {
+	if err := controller.Run(ctx); err != nil {
 		return err
 	}
 	_, err = fmt.Fprintln(invocation.ErrorOutput, "session: closed")
@@ -205,22 +158,11 @@ func (runner *agentController) runPlainInteractive(ctx context.Context, invocati
 }
 
 func (runner *agentController) runFullscreenInteractive(ctx context.Context, invocation agentInvocation, capabilities tui.TerminalCapabilities) error {
-	configured, _, err := loadEffectiveConfig(runner.command, runner.flags, runner.runtime)
+	active, configured, err := runner.ensureActiveThread(ctx, invocation)
 	if err != nil {
-		return err
-	}
-	if err := config.Validate(configured); err != nil {
 		return err
 	}
 	provider := configured.Providers[configured.DefaultProvider]
-	sessionRuntime, err := runner.ensureSessionRuntime(ctx, invocation)
-	if err != nil {
-		return err
-	}
-	sessionID := string(sessionRuntime.CurrentSessionID())
-	if sessionID == "" {
-		sessionID = "draft"
-	}
 	branch := tui.ResolveWorkspaceBranch(ctx, invocation.Project.Path())
 	var application *tui.FullscreenApplication
 	application, err = tui.NewFullscreenApplication(tui.FullscreenOptions{
@@ -228,9 +170,9 @@ func (runner *agentController) runFullscreenInteractive(ctx context.Context, inv
 		NoColor: !capabilities.Color, Width: capabilities.Width,
 		Startup: tui.FullscreenStartup{
 			Version: buildinfo.Current().Version, Provider: configured.DefaultProvider, Model: provider.Model,
-			Project: invocation.Project.Path(), Branch: branch, Session: sessionID, ContextWindow: provider.ContextWindow,
+			Project: invocation.Project.Path(), Branch: branch, Session: string(active.ID()), ContextWindow: provider.ContextWindow,
 		},
-		NewTask: runner.newRunContext,
+		NewTask: runner.newTurnContext,
 		Task: func(runCtx context.Context, submission tui.TaskSubmission) error {
 			if len(submission.Content) > maxRootTaskBytes {
 				return fmt.Errorf("interactive task exceeds %d bytes", maxRootTaskBytes)
@@ -238,10 +180,9 @@ func (runner *agentController) runFullscreenInteractive(ctx context.Context, inv
 			runInvocation := invocation
 			runInvocation.Mode = agentInvocationOnce
 			runInvocation.Task = submission.Content
+			runInvocation.RunMode = turn.PermissionModeDefault
 			if submission.Mode == tui.CollaborationPlan {
-				runInvocation.RunMode = sessiondomain.RunModePlan
-			} else {
-				runInvocation.RunMode = sessiondomain.RunModeExecute
+				runInvocation.RunMode = turn.PermissionModePlan
 			}
 			runInvocation.Input = strings.NewReader("")
 			runInvocation.Output = io.Discard
@@ -267,46 +208,63 @@ func (runner *agentController) runFullscreenInteractive(ctx context.Context, inv
 				err := runner.writeInteractiveStatus(commandCtx, statusInvocation)
 				return strings.TrimSpace(output.String()), err
 			case tui.SlashMCP:
-				err := writeInteractiveMCP(commandCtx, &output, sessionRuntime, strings.EqualFold(arguments, "verbose"))
+				err := runner.writeInteractiveMCP(commandCtx, invocation, &output, strings.EqualFold(arguments, "verbose"))
 				return strings.TrimSpace(output.String()), err
 			case tui.SlashClear:
-				err := sessionRuntime.NewDraft()
-				return "Started a new chat", err
+				return "Started a new chat", runner.newDraft(commandCtx)
 			default:
 				return "", fmt.Errorf("command /%s is not delegated through the generic handler", spec.Command)
 			}
 		},
 		Sessions: func(commandCtx context.Context) ([]tui.SessionOption, error) {
-			sessions, listErr := sessionRuntime.ListSessions(commandCtx)
-			if listErr != nil {
-				return nil, listErr
+			threads, err := runner.listThreads(commandCtx, invocation)
+			if err != nil {
+				return nil, err
 			}
-			options := make([]tui.SessionOption, 0, len(sessions))
-			for _, conversation := range sessions {
-				options = append(options, tui.SessionOption{ID: string(conversation.ID), Title: conversation.Title, Current: conversation.ID == sessionRuntime.CurrentSessionID()})
+			runner.threadMutex.Lock()
+			current := runner.currentThread
+			runner.threadMutex.Unlock()
+			options := make([]tui.SessionOption, 0, len(threads))
+			for _, metadata := range threads {
+				options = append(options, tui.SessionOption{ID: string(metadata.ID), Title: metadata.Title, Current: current != nil && metadata.ID == current.ID()})
 			}
 			return options, nil
 		},
 		Resume: func(commandCtx context.Context, id string) (string, error) {
-			conversation, resumeErr := sessionRuntime.Resume(commandCtx, sessiondomain.SessionID(id))
-			if resumeErr != nil {
-				return "", resumeErr
+			manager, configured, err := runner.ensureThreadManager(commandCtx, invocation)
+			if err != nil {
+				return "", err
 			}
-			return fmt.Sprintf("Session resumed: %s (%s)", conversation.ID, conversation.Title), nil
+			active, err := runner.resumeThread(commandCtx, manager, configured, invocation, thread.ID(id))
+			if err != nil {
+				return "", err
+			}
+			metadata, _ := runner.currentThreadMetadata(commandCtx)
+			return fmt.Sprintf("Session resumed: %s (%s)", active.ID(), metadata.Title), nil
 		},
-		CurrentSession:      func() string { return string(sessionRuntime.CurrentSessionID()) },
-		CurrentSessionTitle: func() string { return sessionRuntime.History().Session.Title },
-		Rename: func(commandCtx context.Context, title string) (string, error) {
-			_, normalized, renameErr := sessionRuntime.RenameCurrent(commandCtx, title)
-			if renameErr != nil {
-				return "", renameErr
+		CurrentSession: func() string {
+			runner.threadMutex.Lock()
+			defer runner.threadMutex.Unlock()
+			if runner.currentThread == nil {
+				return "draft"
 			}
-			return "Session renamed to " + normalized, nil
+			return string(runner.currentThread.ID())
+		},
+		CurrentSessionTitle: func() string {
+			metadata, err := runner.currentThreadMetadata(context.Background())
+			if err != nil {
+				return "draft"
+			}
+			return metadata.Title
+		},
+		Rename: func(commandCtx context.Context, title string) (string, error) {
+			normalized, err := runner.renameCurrent(commandCtx, title)
+			return "Session renamed to " + normalized, err
 		},
 		Delete: func(commandCtx context.Context) (string, error) {
-			deleted, deleteErr := sessionRuntime.DeleteCurrent(commandCtx)
-			if deleteErr != nil {
-				return "", deleteErr
+			deleted, err := runner.deleteCurrent(commandCtx)
+			if err != nil {
+				return "", err
 			}
 			if deleted == "" {
 				return "Draft session discarded", nil
@@ -314,18 +272,18 @@ func (runner *agentController) runFullscreenInteractive(ctx context.Context, inv
 			return "Session deleted: " + string(deleted), nil
 		},
 		Compact: func(commandCtx context.Context) (string, error) {
-			return runner.compactInteractiveSession(commandCtx, configured, sessionRuntime)
+			return runner.compactInteractiveSession(commandCtx, invocation)
 		},
 		Skills: func(commandCtx context.Context) ([]tui.SkillOption, error) {
-			extension, extensionErr := sessionRuntime.EnsureExtension()
-			if extensionErr != nil {
-				return nil, extensionErr
+			factory, err := runner.currentTaskFactory(commandCtx, invocation)
+			if err != nil {
+				return nil, err
 			}
-			runtime, ok := extension.(*extensionruntime.Runtime)
-			if !ok || runtime.Skills() == nil {
+			extensions, err := factory.ensureExtensions()
+			if err != nil || extensions.Skills() == nil {
 				return nil, errors.New("Skill catalog is unavailable")
 			}
-			entries := runtime.Skills().Index()
+			entries := extensions.Skills().Index()
 			options := make([]tui.SkillOption, 0, len(entries))
 			for _, entry := range entries {
 				options = append(options, tui.SkillOption{Name: entry.Name, Description: entry.Description, Source: string(entry.Source), Enabled: entry.Enabled})
@@ -333,15 +291,15 @@ func (runner *agentController) runFullscreenInteractive(ctx context.Context, inv
 			return options, commandCtx.Err()
 		},
 		SetSkill: func(commandCtx context.Context, name string, enabled bool) error {
-			extension, extensionErr := sessionRuntime.EnsureExtension()
-			if extensionErr != nil {
-				return extensionErr
+			factory, err := runner.currentTaskFactory(commandCtx, invocation)
+			if err != nil {
+				return err
 			}
-			runtime, ok := extension.(*extensionruntime.Runtime)
-			if !ok {
-				return errors.New("Skill catalog is unavailable")
+			extensions, err := factory.ensureExtensions()
+			if err != nil {
+				return err
 			}
-			if err := runtime.SetSkillEnabled(name, enabled); err != nil {
+			if err := extensions.SetSkillEnabled(name, enabled); err != nil {
 				return err
 			}
 			return commandCtx.Err()
@@ -353,89 +311,61 @@ func (runner *agentController) runFullscreenInteractive(ctx context.Context, inv
 	return application.Run(ctx)
 }
 
-func (runner *agentController) compactInteractiveSession(ctx context.Context, configured config.Config, sessionRuntime *sessiondomain.SessionRuntime) (string, error) {
-	if sessionRuntime == nil {
-		return "", errors.New("Session runtime is unavailable")
-	}
-	projection, err := sessiondomain.ProjectMessages(sessionRuntime.History().Items)
+func (runner *agentController) compactInteractiveSession(ctx context.Context, invocation agentInvocation) (string, error) {
+	active, _, err := runner.ensureActiveThread(ctx, invocation)
 	if err != nil {
 		return "", err
 	}
-	if len(projection.Messages) == 0 || len(projection.SourceSequences) != len(projection.Messages) {
+	factory, err := runner.currentTaskFactory(ctx, invocation)
+	if err != nil {
+		return "", err
+	}
+	projection, err := agentcontext.ProjectRolloutMessages(active.History())
+	if err != nil {
+		return "", err
+	}
+	if len(projection.Messages) == 0 {
 		return "", errors.New("There is no conversation to compact")
 	}
-	providerName := configured.DefaultProvider
-	provider, ok := configured.Providers[providerName]
-	if !ok {
-		return "", fmt.Errorf("default Provider %q is not configured", providerName)
-	}
-	createClient := runner.runtime.llmClientFactory
-	if createClient == nil {
-		createClient = defaultLLMClientFactory
-	}
-	client, err := createClient(providerName, provider)
+	compactInvocation := invocation
+	compactInvocation.Task = "compact context"
+	result, err := factory.Prepare(ctx, compactInvocation)
 	if err != nil {
 		return "", err
 	}
-	messages := make([]llm.Message, 0, len(projection.Messages)+2)
-	messages = append(messages, llm.SystemMessage("You compact an Amadeus coding-agent session. Produce a concise but complete handoff summary that preserves user intent, decisions, files changed, commands and test results, unresolved work, constraints, and information needed to continue. Return only the summary in Markdown. Do not call tools."))
-	messages = append(messages, projection.Messages...)
-	messages = append(messages, llm.UserMessage("Compact the conversation above into the canonical continuation summary now."))
-	maxOutputTokens := provider.MaxOutputTokens
-	if maxOutputTokens <= 0 || maxOutputTokens > 4096 {
-		maxOutputTokens = 4096
-	}
-	response, err := client.Complete(ctx, llm.Request{
-		Model: provider.Model, Messages: messages, Temperature: 0,
-		MaxOutputTokens: maxOutputTokens,
-	})
-	if err != nil {
-		return "", fmt.Errorf("generate conversation summary: %w", err)
-	}
-	summary := strings.TrimSpace(response.Message.Content)
-	if summary == "" || len(response.Message.ToolCalls) > 0 {
-		return "", errors.New("compaction model returned no usable summary")
-	}
-	encodedSource, err := json.Marshal(projection.Messages)
-	if err != nil {
-		return "", fmt.Errorf("encode compaction source: %w", err)
-	}
-	digest := sha256.Sum256(encodedSource)
-	payload, err := sessiondomain.EncodePayload(sessiondomain.ContextCompactionPayload{
-		Summary:                summary,
-		ReplacementHistory:     []sessiondomain.CompactionHistoryItem{{Role: llm.RoleAssistant, Content: summary}},
-		CoveredThroughSequence: projection.SourceSequences[len(projection.SourceSequences)-1],
-		SourceHash:             hex.EncodeToString(digest[:]), Provider: providerName, Model: provider.Model,
-	})
-	if err != nil {
+	if err := active.Submit(ctx, protocol.CompactOp{}); err != nil {
 		return "", err
 	}
-	items, err := sessionRuntime.AppendStandalone(context.WithoutCancel(ctx), sessiondomain.AppendItem{
-		ID: sessiondomain.RolloutItemID(runner.runtimeID("item")), Kind: sessiondomain.RolloutContextCompaction,
-		Payload: payload, CreatedAt: runner.runtimeNow(),
-	})
-	if err != nil {
+	if err := runner.waitTurn(ctx, active, result); err != nil {
 		return "", err
-	}
-	if len(items) != 1 {
-		return "", errors.New("compaction did not persist exactly one rollout item")
-	}
-	if _, err := sessiondomain.DecodeContextCompaction(items[0]); err != nil {
-		return "", fmt.Errorf("validate persisted compaction: %w", err)
 	}
 	return "Conversation compacted", nil
 }
 
-func writeInteractiveSkills(ctx context.Context, writer io.Writer, sessionRuntime *sessiondomain.SessionRuntime) error {
-	extension, err := sessionRuntime.EnsureExtension()
+func (runner *agentController) currentTaskFactory(ctx context.Context, invocation agentInvocation) (*codingTaskFactory, error) {
+	active, _, err := runner.ensureActiveThread(ctx, invocation)
+	if err != nil {
+		return nil, err
+	}
+	runner.threadMutex.Lock()
+	factory := runner.taskFactories[active.ID()]
+	runner.threadMutex.Unlock()
+	if factory == nil {
+		return nil, errors.New("active thread task factory is unavailable")
+	}
+	return factory, nil
+}
+
+func (runner *agentController) writeInteractiveSkills(ctx context.Context, invocation agentInvocation, writer io.Writer) error {
+	factory, err := runner.currentTaskFactory(ctx, invocation)
 	if err != nil {
 		return err
 	}
-	runtime, ok := extension.(*extensionruntime.Runtime)
-	if !ok || runtime.Skills() == nil {
+	extensions, err := factory.ensureExtensions()
+	if err != nil || extensions.Skills() == nil {
 		return errors.New("Skill catalog is unavailable")
 	}
-	entries := runtime.Skills().Index()
+	entries := extensions.Skills().Index()
 	if len(entries) == 0 {
 		_, err = fmt.Fprintln(writer, "No skills available.")
 		return err
@@ -452,22 +382,22 @@ func writeInteractiveSkills(ctx context.Context, writer io.Writer, sessionRuntim
 	return ctx.Err()
 }
 
-func writeInteractiveMCP(ctx context.Context, writer io.Writer, sessionRuntime *sessiondomain.SessionRuntime, verbose bool) error {
-	extension, err := sessionRuntime.EnsureExtension()
+func (runner *agentController) writeInteractiveMCP(ctx context.Context, invocation agentInvocation, writer io.Writer, verbose bool) error {
+	factory, err := runner.currentTaskFactory(ctx, invocation)
 	if err != nil {
 		return err
 	}
-	runtime, ok := extension.(*extensionruntime.Runtime)
-	if !ok || runtime.MCP() == nil {
+	extensions, err := factory.ensureExtensions()
+	if err != nil || extensions.MCP() == nil {
 		return errors.New("MCP manager is unavailable")
 	}
-	servers := runtime.MCP().EnabledServers()
+	servers := extensions.MCP().EnabledServers()
 	sort.Strings(servers)
 	if len(servers) == 0 {
 		_, err = fmt.Fprintln(writer, "No MCP servers configured.")
 		return err
 	}
-	bindings := runtime.MCP().BindingSnapshot()
+	bindings := extensions.MCP().BindingSnapshot()
 	byName := make(map[string]bool, len(bindings.Servers))
 	for _, binding := range bindings.Servers {
 		byName[binding.Name] = binding.ToolsLoaded
@@ -483,7 +413,7 @@ func writeInteractiveMCP(ctx context.Context, writer io.Writer, sessionRuntime *
 			}
 			continue
 		}
-		tools, listErr := runtime.MCP().ListTools(ctx, server)
+		tools, listErr := extensions.MCP().ListTools(ctx, server)
 		if listErr != nil {
 			if _, err := fmt.Fprintf(writer, "%s  error: %v\n", server, listErr); err != nil {
 				return err

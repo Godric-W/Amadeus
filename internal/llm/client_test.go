@@ -83,7 +83,7 @@ func TestFakeClientImplementsCompleteContract(t *testing.T) {
 	if !reflect.DeepEqual(response, expected) {
 		t.Fatalf("unexpected response: got %#v, want %#v", response, expected)
 	}
-	if client.request.Model != "fake-model" || client.request.Messages[0].Content != "hello" {
+	if client.request.Model != "fake-model" || client.request.Prompt.Input[0].Content != "hello" {
 		t.Fatalf("fake client did not receive request: %#v", client.request)
 	}
 	if client.Model().Provider != "fake" || client.Model().Name != "fake-model" {
@@ -129,5 +129,20 @@ func TestFakeStreamImplementsRecvContract(t *testing.T) {
 	}
 	if !stream.closed {
 		t.Fatal("fake stream was not closed")
+	}
+}
+
+func TestModelInfoNormalizedDefaultsAndOnlyTightensAutoCompactLimit(t *testing.T) {
+	defaulted := (ModelInfo{ContextWindow: 1000}).Normalized()
+	if defaulted.AutoCompactTokenLimit != 900 || defaulted.ToolOutputMaxTokens != 16_384 {
+		t.Fatalf("unexpected ModelInfo defaults: %#v", defaulted)
+	}
+	tightened := (ModelInfo{ContextWindow: 1000, AutoCompactTokenLimit: 700}).Normalized()
+	if tightened.AutoCompactTokenLimit != 700 {
+		t.Fatalf("explicit tighter limit changed: %#v", tightened)
+	}
+	loosened := (ModelInfo{ContextWindow: 1000, AutoCompactTokenLimit: 950}).Normalized()
+	if loosened.AutoCompactTokenLimit != 900 {
+		t.Fatalf("explicit limit loosened the default threshold: %#v", loosened)
 	}
 }

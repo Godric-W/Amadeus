@@ -9,9 +9,10 @@ import (
 	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
-	sessiondomain "github.com/Godric-W/Amadeus/internal/session"
+	"github.com/Godric-W/Amadeus/internal/thread"
 	"github.com/spf13/cobra"
 )
 
@@ -29,9 +30,9 @@ type agentInvocation struct {
 	Project        project.Root
 	WorkspaceRoots []string
 	Task           string
-	RunMode        sessiondomain.RunMode
+	RunMode        turn.PermissionMode
 	SessionMode    sessionStartMode
-	SessionID      sessiondomain.SessionID
+	SessionID      thread.ID
 	Interactive    bool
 	Plain          bool
 	EventSink      event.Sink

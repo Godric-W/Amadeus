@@ -80,7 +80,7 @@ func (adapter *Adapter) Stream(ctx context.Context, request llm.Request) (llm.St
 }
 
 func requestHasImages(request llm.Request) bool {
-	for _, message := range request.Messages {
+	for _, message := range request.InputMessages() {
 		for _, part := range message.Parts {
 			if part.Kind == llm.ContentImage {
 				return true
@@ -92,8 +92,13 @@ func requestHasImages(request llm.Request) bool {
 
 func (adapter *Adapter) Model() llm.ModelInfo {
 	return llm.ModelInfo{
-		Provider: adapter.providerName,
-		Name:     adapter.provider.Model,
+		Provider:                  adapter.providerName,
+		Name:                      adapter.provider.Model,
+		ContextWindow:             adapter.provider.ContextWindow,
+		AutoCompactTokenLimit:     adapter.provider.AutoCompactTokenLimit,
+		MaxOutputTokens:           adapter.provider.MaxOutputTokens,
+		ToolOutputMaxTokens:       adapter.provider.ToolOutputMaxTokens,
+		SupportsParallelToolCalls: adapter.dialect.Capabilities(adapter.provider.API).SupportsParallelToolCalls,
 	}
 }
 

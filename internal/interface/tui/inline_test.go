@@ -36,14 +36,14 @@ func TestInlineRendererRendersPlanApprovalAndSafeToolSummary(t *testing.T) {
 	}
 	ctx := context.Background()
 	events := []event.Event{
-		event.PlanUpdated{RunID: "run-1", Revision: 1, Items: []event.PlanItem{{Step: "Read source", Status: "pending"}}},
-		event.RunStatusChanged{RunID: "run-1", Entity: "run", EntityID: "run-1", From: "starting", To: "running"},
+		event.PlanUpdated{TurnID: "run-1", Revision: 1, Items: []event.PlanItem{{Step: "Read source", Status: "pending"}}},
+		event.TurnStatusChanged{TurnID: "run-1", Entity: "run", EntityID: "run-1", From: "starting", To: "running"},
 		event.ApprovalRequested{ToolName: "write_file", Risk: "high", Reason: "Authorization: Bearer should-not-leak"},
 		event.ApprovalResolved{ToolName: "write_file", Outcome: "allow", Scope: "once", Source: "user"},
 		event.ToolCallStarted{ToolName: "write_file"},
 		event.ToolCallCompleted{ToolName: "write_file", Success: true, Summary: "token=should-not-leak"},
 		event.UsageUpdated{Usage: llm.Usage{InputTokens: 3, OutputTokens: 5}},
-		event.RunCompleted{Status: "completed", Reason: "done"},
+		event.TurnCompleted{Status: "completed", Reason: "done"},
 	}
 	for _, runtimeEvent := range events {
 		if err := renderer.Publish(ctx, runtimeEvent); err != nil {
@@ -109,14 +109,14 @@ func TestInlineRendererGoldenTranscript(t *testing.T) {
 	}
 	ctx := context.Background()
 	for _, runtimeEvent := range []event.Event{
-		event.RunStarted{RunID: "run-1"},
-		event.PlanUpdated{RunID: "run-1", Revision: 1, Items: []event.PlanItem{{Step: "Read README", Status: "pending"}}},
-		event.RunStatusChanged{RunID: "run-1", Entity: "run", EntityID: "run-1", From: "starting", To: "running"},
+		event.TurnStarted{TurnID: "run-1"},
+		event.PlanUpdated{TurnID: "run-1", Revision: 1, Items: []event.PlanItem{{Step: "Read README", Status: "pending"}}},
+		event.TurnStatusChanged{TurnID: "run-1", Entity: "run", EntityID: "run-1", From: "starting", To: "running"},
 		event.TextDelta{LLMCallID: "turn-1", Delta: "answer"},
-		event.ToolCallStarted{RunID: "run-1", CallID: "read-1", ToolName: "read_file"},
-		event.ToolCallCompleted{RunID: "run-1", CallID: "read-1", ToolName: "read_file", Success: true, Summary: "README contents"},
+		event.ToolCallStarted{TurnID: "run-1", CallID: "read-1", ToolName: "read_file"},
+		event.ToolCallCompleted{TurnID: "run-1", CallID: "read-1", ToolName: "read_file", Success: true, Summary: "README contents"},
 		event.LLMCallCompleted{LLMCallID: "turn-1"},
-		event.RunCompleted{RunID: "run-1", Status: "completed", Reason: "done"},
+		event.TurnCompleted{TurnID: "run-1", Status: "completed", Reason: "done"},
 	} {
 		if err := renderer.Publish(ctx, runtimeEvent); err != nil {
 			t.Fatalf("publish %T: %v", runtimeEvent, err)

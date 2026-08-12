@@ -43,7 +43,7 @@ func TestRunnerPhasesAreIndependentlyInjectableAndOrdered(t *testing.T) {
 	runner, err := NewRunnerWithPhases(RunnerPhases{
 		Think: recordingThink{order: &order}, Analyze: recordingAnalyze{order: &order},
 		Act: recordingAct{order: &order}, Observe: recordingObserve{order: &order},
-	}, RunnerOptions{MaxOutputTokens: 128})
+	}, RunnerOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestModelThinkerDoesNotRetryInvalidRequest(t *testing.T) {
 }
 
 func TestNewRunnerWithPhasesRejectsMissingPort(t *testing.T) {
-	_, err := NewRunnerWithPhases(RunnerPhases{Think: recordingThink{order: &[]string{}}}, RunnerOptions{MaxOutputTokens: 128})
+	_, err := NewRunnerWithPhases(RunnerPhases{Think: recordingThink{order: &[]string{}}}, RunnerOptions{})
 	if err == nil {
 		t.Fatal("missing phases were accepted")
 	}

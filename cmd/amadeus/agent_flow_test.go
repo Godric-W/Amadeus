@@ -16,7 +16,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
-	sessiondomain "github.com/Godric-W/Amadeus/internal/session"
 )
 
 type codingCommandClient struct {
@@ -201,7 +200,7 @@ func TestDefaultGreetingUsesStandaloneReactorWithoutPlanner(t *testing.T) {
 		terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
 		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
-		runIDFactory:     func() string { return "greeting-run" },
+		turnIDFactory:    func() string { return "greeting-run" },
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout, stderr bytes.Buffer
@@ -227,7 +226,7 @@ func TestDefaultReactorRecoversFromToolFailure(t *testing.T) {
 		terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
 		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
-		runIDFactory:     func() string { return "tool-recovery-run" },
+		turnIDFactory:    func() string { return "tool-recovery-run" },
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout, stderr bytes.Buffer
@@ -242,8 +241,8 @@ func TestDefaultReactorRecoversFromToolFailure(t *testing.T) {
 		t.Fatalf("unexpected tool recovery path: stdout=%q streams=%d completes=%d", stdout.String(), len(client.streamRequests), len(client.completeRequests))
 	}
 	followUp := client.streamRequests[1]
-	if len(followUp.Messages) < 2 || followUp.Messages[len(followUp.Messages)-1].Role != llm.RoleTool || !strings.Contains(followUp.Messages[len(followUp.Messages)-1].Content, "missing_tool") {
-		t.Fatalf("tool failure was not replayed to Reactor: %#v", followUp.Messages)
+	if len(followUp.Prompt.Input) < 2 || followUp.Prompt.Input[len(followUp.Prompt.Input)-1].Role != llm.RoleTool || !strings.Contains(followUp.Prompt.Input[len(followUp.Prompt.Input)-1].Content, "missing_tool") {
+		t.Fatalf("tool failure was not replayed to Reactor: %#v", followUp.Prompt.Input)
 	}
 }
 
@@ -264,7 +263,7 @@ func TestCodingAgentPublishesNonFatalSkillLoadWarnings(t *testing.T) {
 		terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
 		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
-		runIDFactory:     func() string { return "skill-warning-run" },
+		turnIDFactory:    func() string { return "skill-warning-run" },
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout, stderr bytes.Buffer
@@ -297,7 +296,7 @@ func TestCodingAgentInjectsExplicitSkillIntoFirstRequestContext(t *testing.T) {
 		terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
 		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
-		runIDFactory:     func() string { return "explicit-skill-run" },
+		turnIDFactory:    func() string { return "explicit-skill-run" },
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout, stderr bytes.Buffer
@@ -342,7 +341,7 @@ func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 			return client, nil
 		},
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil },
-		runIDFactory:     func() string { return "run-test" },
+		turnIDFactory:    func() string { return "run-test" },
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout bytes.Buffer
@@ -369,18 +368,18 @@ func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 		t.Fatalf("unexpected Provider request counts: stream=%d complete=%d", len(client.streamRequests), len(client.completeRequests))
 	}
 	first := client.streamRequests[0]
-	if len(first.Messages) < 5 || first.Messages[0].Role != llm.RoleSystem || first.Messages[len(first.Messages)-1].Role != llm.RoleUser || first.Messages[len(first.Messages)-1].Content != "Inspect README and finish" || len(first.Tools) != 9 {
+	if !strings.Contains(first.Prompt.BaseInstructions.Text, "You are Amadeus") || len(first.Prompt.Input) < 4 || first.Prompt.Input[0].Role != llm.RoleDeveloper || first.Prompt.Input[len(first.Prompt.Input)-1].Role != llm.RoleUser || first.Prompt.Input[len(first.Prompt.Input)-1].Content != "Inspect README and finish" || len(first.Prompt.Tools) != 9 {
 		t.Fatalf("unexpected first Agent request: %#v", first)
 	}
-	firstPrompt := messageContents(first.Messages)
+	firstPrompt := messageContents(first.Prompt.Input)
 	for _, fragment := range []string{"## Execute Mode", "## Workspace Context", "## Permission And Isolation Context", "## Tool Discipline", "user instruction", "project instruction"} {
 		if !strings.Contains(firstPrompt, fragment) {
 			t.Fatalf("first Agent request omitted Prompt fragment %q: %s", fragment, firstPrompt)
 		}
 	}
 	second := client.streamRequests[1]
-	if len(second.Messages) < len(first.Messages)+2 || second.Messages[len(second.Messages)-2].Role != llm.RoleAssistant || second.Messages[len(second.Messages)-1].Role != llm.RoleTool || !strings.Contains(second.Messages[len(second.Messages)-1].Content, "project readme") {
-		t.Fatalf("tool result was not replayed into the second request: %#v", second.Messages)
+	if len(second.Prompt.Input) < len(first.Prompt.Input)+2 || second.Prompt.Input[len(second.Prompt.Input)-2].Role != llm.RoleAssistant || second.Prompt.Input[len(second.Prompt.Input)-1].Role != llm.RoleTool || !strings.Contains(second.Prompt.Input[len(second.Prompt.Input)-1].Content, "project readme") {
+		t.Fatalf("tool result was not replayed into the second request: %#v", second.Prompt.Input)
 	}
 	records := auditSink.Snapshot()
 	if len(records) != 0 {
@@ -419,7 +418,7 @@ func TestRootCommandRunsIndependentInteractiveTasksUntilExit(t *testing.T) {
 			return client, nil
 		},
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
-		runIDFactory: func() string {
+		turnIDFactory: func() string {
 			runSequence++
 			return fmt.Sprintf("interactive-%d", runSequence)
 		},
@@ -459,7 +458,7 @@ func TestPlainInteractiveWorkspaceWriteDoesNotPrompt(t *testing.T) {
 			return client, nil
 		},
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
-		runIDFactory:     func() string { return "inline-approval" },
+		turnIDFactory:    func() string { return "inline-approval" },
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout bytes.Buffer
@@ -543,7 +542,7 @@ func TestInteractiveDumbTerminalUsesPlainRenderer(t *testing.T) {
 			return &codingCommandClient{}, nil
 		},
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
-		runIDFactory:     func() string { return "dumb-terminal" },
+		turnIDFactory:    func() string { return "dumb-terminal" },
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout bytes.Buffer
@@ -583,7 +582,7 @@ func TestInteractiveInterruptCancelsCurrentRunAndContinues(t *testing.T) {
 			return &codingCommandClient{}, nil
 		},
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
-		runIDFactory:     func() string { return fmt.Sprintf("interrupt-%d", contextCount) },
+		turnIDFactory:    func() string { return fmt.Sprintf("interrupt-%d", contextCount) },
 		agentContextFactory: func(parent context.Context) (context.Context, context.CancelFunc) {
 			contextCount++
 			runCtx, cancel := context.WithCancel(parent)
@@ -627,7 +626,7 @@ func TestOneShotInterruptReturnsCancelledExitCode(t *testing.T) {
 			return &interruptingCodingClient{codingCommandClient: &codingCommandClient{}, cancel: currentCancel}, nil
 		},
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
-		runIDFactory:     func() string { return "cancelled-once" },
+		turnIDFactory:    func() string { return "cancelled-once" },
 		agentContextFactory: func(parent context.Context) (context.Context, context.CancelFunc) {
 			runCtx, cancel := context.WithCancel(parent)
 			currentCancel = cancel
@@ -751,7 +750,7 @@ func TestInteractivePlanCommandUsesReadOnlyReactor(t *testing.T) {
 			return client, nil
 		},
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
-		runIDFactory:     func() string { return "planned-cli-run" },
+		turnIDFactory:    func() string { return "planned-cli-run" },
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout, stderr bytes.Buffer
@@ -774,15 +773,15 @@ func TestInteractivePlanCommandUsesReadOnlyReactor(t *testing.T) {
 		t.Fatalf("unexpected Plan Mode provider calls: streams=%d", len(client.streamRequests))
 	}
 	request := client.streamRequests[0]
-	if !messagesContain(request.Messages, "## Plan Mode") {
-		t.Fatalf("Plan Mode instruction missing from request: %#v", request.Messages)
+	if !messagesContain(request.Prompt.Input, "## Plan Mode") {
+		t.Fatalf("Plan Mode instruction missing from request: %#v", request.Prompt.Input)
 	}
 	for _, forbidden := range []string{"## `apply_patch`", "## `execute_command`", "request_permissions", "update_plan"} {
-		if messagesContain(request.Messages, forbidden) {
-			t.Fatalf("Plan Mode request contains forbidden guidance %q: %#v", forbidden, request.Messages)
+		if messagesContain(request.Prompt.Input, forbidden) {
+			t.Fatalf("Plan Mode request contains forbidden guidance %q: %#v", forbidden, request.Prompt.Input)
 		}
 	}
-	for _, definition := range request.Tools {
+	for _, definition := range request.Prompt.Tools {
 		switch definition.Name {
 		case "apply_patch", "execute_command", "write_stdin", "mcp_call", "update_plan", "request_permissions":
 			t.Fatalf("Plan Mode exposed mutating tool %q", definition.Name)
@@ -797,13 +796,4 @@ func messagesContain(messages []llm.Message, fragment string) bool {
 		}
 	}
 	return false
-}
-
-func TestReactorRunEventReasonLeavesCompletedReasonEmpty(t *testing.T) {
-	if reason := reactorRunEventReason(sessiondomain.RunCompleted, "", ""); reason != "" {
-		t.Fatalf("completed Run event has reason %q", reason)
-	}
-	if reason := reactorRunEventReason(sessiondomain.RunFailed, "", "provider failed"); reason != "provider failed" {
-		t.Fatalf("failed Run event reason = %q", reason)
-	}
 }

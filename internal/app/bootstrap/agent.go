@@ -10,7 +10,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/react"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
-	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	openaiadapter "github.com/Godric-W/Amadeus/internal/llm/openai"
 	"github.com/Godric-W/Amadeus/internal/mcp"
@@ -18,7 +17,6 @@ import (
 	processdomain "github.com/Godric-W/Amadeus/internal/process"
 	"github.com/Godric-W/Amadeus/internal/project"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
-	promptbuiltin "github.com/Godric-W/Amadeus/internal/prompt/builtin"
 	sandboxdomain "github.com/Godric-W/Amadeus/internal/sandbox"
 	"github.com/Godric-W/Amadeus/internal/skill"
 	"github.com/Godric-W/Amadeus/internal/tool"
@@ -55,10 +53,7 @@ type Agent struct {
 	Client            llm.Client
 	Events            event.Sink
 	Audit             audit.Sink
-	ContextManager    *agentcontext.Manager
-	PromptRepository  *internalprompt.Repository
-	PromptAssembler   *internalprompt.Assembler
-	AgentPrompt       internalprompt.Bundle
+	BaseInstructions  llm.BaseInstructions
 	Registry          *tool.Registry
 	CommandAuthorizer *policy.CommandAuthorizer
 	ToolRouter        *tool.Router
@@ -135,17 +130,9 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 	if client == nil {
 		return nil, errors.New("create Provider client: factory returned nil")
 	}
-	promptRepository, err := internalprompt.NewBuiltinRepository()
+	assets, err := internalprompt.LoadAssets()
 	if err != nil {
-		return nil, fmt.Errorf("create Prompt repository: %w", err)
-	}
-	promptAssembler, err := internalprompt.NewAssembler(promptRepository)
-	if err != nil {
-		return nil, fmt.Errorf("create Prompt assembler: %w", err)
-	}
-	agentPrompt, err := assemblePrompts(promptAssembler, promptbuiltin.AgentSystemLayers())
-	if err != nil {
-		return nil, fmt.Errorf("assemble Agent Prompt: %w", err)
+		return nil, fmt.Errorf("load prompt assets: %w", err)
 	}
 	mvpOptions := builtin.DefaultMVPOptions()
 	var sandboxRunner *sandboxdomain.Runner
@@ -324,18 +311,14 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 	if err != nil {
 		return nil, fmt.Errorf("create tool router: %w", err)
 	}
-	iterator, err := react.NewIteratorWithOptions(client, events, react.IteratorOptions{SystemPrompt: agentPrompt.Content})
+	iterator, err := react.NewIterator(client, events)
 	if err != nil {
 		return nil, fmt.Errorf("create model iterator: %w", err)
 	}
 	progress := react.DefaultProgressMonitor()
-	contextManager := agentcontext.NewManager(nil)
 	runner, err := react.NewRunner(iterator, toolRouter, progress, react.RunnerOptions{
 		Temperature:      provider.Temperature,
-		MaxOutputTokens:  provider.MaxOutputTokens,
 		MaxParallelTools: configured.Agent.MaxParallelTools,
-		ContextWindow:    contextManager,
-		ContextProfile:   agentcontext.DefaultContextProfile(provider.ContextWindow),
 		Events:           events,
 		Rollout:          rolloutRecorder,
 	})
@@ -360,10 +343,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 		Client:            client,
 		Events:            events,
 		Audit:             auditSink,
-		ContextManager:    contextManager,
-		PromptRepository:  promptRepository,
-		PromptAssembler:   promptAssembler,
-		AgentPrompt:       agentPrompt,
+		BaseInstructions:  assets.Base,
 		Registry:          registry,
 		CommandAuthorizer: commandAuthorizer,
 		ToolRouter:        toolRouter,
@@ -425,14 +405,6 @@ func (agent *Agent) Close() error {
 		return nil
 	}
 	return agent.MCP.Close()
-}
-
-func assemblePrompts(assembler *internalprompt.Assembler, ids []promptbuiltin.ID) (internalprompt.Bundle, error) {
-	layers := make([]string, len(ids))
-	for index, id := range ids {
-		layers[index] = string(id)
-	}
-	return assembler.Assemble(internalprompt.AssembleInput{Layers: layers})
 }
 
 func defaultClientFactory(providerName string, provider config.ProviderConfig) (llm.Client, error) {

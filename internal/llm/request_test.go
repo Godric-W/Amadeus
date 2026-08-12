@@ -11,7 +11,7 @@ func TestNewRequestCopiesMessages(t *testing.T) {
 	}
 	messages[0].ToolCalls[0].Name = "changed"
 	messages[0].ToolCalls[0].Arguments[0] = '['
-	if request.Messages[0].ToolCalls[0].Name != "read_file" || string(request.Messages[0].ToolCalls[0].Arguments) != `{"path":"a"}` {
-		t.Fatalf("request messages share caller storage: %#v", request.Messages[0])
+	if request.Prompt.Input[0].ToolCalls[0].Name != "read_file" || string(request.Prompt.Input[0].ToolCalls[0].Arguments) != `{"path":"a"}` {
+		t.Fatalf("request Prompt input shares caller storage: %#v", request.Prompt.Input[0])
 	}
 }

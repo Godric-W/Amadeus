@@ -196,9 +196,9 @@ func (executeCommand *ExecuteCommand) prepareExecRequest(ctx context.Context, in
 		maxTokens = executeCommand.options.MaxOutputTokens
 	}
 	maxBytes := min(int(executeCommand.options.MaxOutputBytes), maxTokens*4)
-	owner := strings.TrimSpace(invocation.RunID)
+	owner := strings.TrimSpace(invocation.TurnID)
 	if owner == "" {
-		owner = strings.TrimSpace(event.MetadataFromContext(ctx).RunID)
+		owner = strings.TrimSpace(event.MetadataFromContext(ctx).TurnID)
 	}
 	if owner == "" {
 		owner = "standalone"

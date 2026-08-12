@@ -11,11 +11,14 @@ import (
 )
 
 type ThinkInput struct {
-	LLMCallID       string
-	Messages        []llm.Message
-	AvailableTools  []tool.Spec
-	Temperature     float64
-	MaxOutputTokens int
+	LLMCallID         string
+	Messages          []llm.Message
+	BaseInstructions  llm.BaseInstructions
+	AvailableTools    []tool.Spec
+	OutputSchema      llm.OutputSchema
+	ParallelToolCalls bool
+	Temperature       float64
+	MaxOutputTokens   int
 }
 
 type ThinkOutput struct {
@@ -101,8 +104,10 @@ func (thinker *modelThinker) Think(ctx context.Context, input ThinkInput) (Think
 	var lastErr error
 	for attempt := 0; attempt < thinker.attempts; attempt++ {
 		iteration, err := thinker.iterator.Run(ctx, IterationInput{
-			ID: input.LLMCallID, Messages: input.Messages, AvailableTools: input.AvailableTools,
-			Temperature: input.Temperature, MaxOutputTokens: input.MaxOutputTokens,
+			ID: input.LLMCallID, Messages: input.Messages, BaseInstructions: input.BaseInstructions,
+			AvailableTools: input.AvailableTools, OutputSchema: input.OutputSchema,
+			ParallelToolCalls: input.ParallelToolCalls, Temperature: input.Temperature,
+			MaxOutputTokens: input.MaxOutputTokens,
 		})
 		if err == nil {
 			return ThinkOutput{LLMCallID: input.LLMCallID, Response: iteration.Response}, nil

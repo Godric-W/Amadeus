@@ -111,7 +111,7 @@ func TestCodingAgentExposesAndExecutesUpdatePlan(t *testing.T) {
 		terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
 		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
-		runIDFactory:     func() string { return "plan-guided-e2e" },
+		turnIDFactory:    func() string { return "plan-guided-e2e" },
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout, stderr bytes.Buffer
@@ -126,7 +126,7 @@ func TestCodingAgentExposesAndExecutesUpdatePlan(t *testing.T) {
 		t.Fatalf("unexpected plan-guided trace: stdout=%q streams=%d requests=%d", stdout.String(), client.streams, len(client.requests))
 	}
 	if !requestHasTool(client.requests[0], "update_plan") {
-		t.Fatalf("execute request did not expose update_plan: %#v", client.requests[0].Tools)
+		t.Fatalf("execute request did not expose update_plan: %#v", client.requests[0].Prompt.Tools)
 	}
 	if prompt := requestPromptText(client.requests[0]); !strings.Contains(prompt, "## `update_plan`") || !strings.Contains(prompt, "multiple files or components") {
 		t.Fatalf("execute request omitted plan guidance: %s", prompt)
@@ -135,12 +135,12 @@ func TestCodingAgentExposesAndExecutesUpdatePlan(t *testing.T) {
 		t.Fatalf("update_plan was not rendered as a dedicated plan update: %q", output)
 	}
 	if !requestContainsToolOutput(client.requests[1], "plan-1") {
-		t.Fatalf("follow-up request omitted update_plan result: %#v", client.requests[1].Messages)
+		t.Fatalf("follow-up request omitted update_plan result: %#v", client.requests[1].Prompt.Input)
 	}
 }
 
 func requestHasTool(request llm.Request, name string) bool {
-	for _, definition := range request.Tools {
+	for _, definition := range request.Prompt.Tools {
 		if definition.Name == name {
 			return true
 		}
@@ -150,14 +150,14 @@ func requestHasTool(request llm.Request, name string) bool {
 
 func requestPromptText(request llm.Request) string {
 	var content []string
-	for _, message := range request.Messages {
+	for _, message := range request.Prompt.Input {
 		content = append(content, message.Content)
 	}
 	return strings.Join(content, "\n")
 }
 
 func requestContainsToolOutput(request llm.Request, callID string) bool {
-	for _, message := range request.Messages {
+	for _, message := range request.Prompt.Input {
 		if message.Role == llm.RoleTool && message.ToolCallID == callID && strings.TrimSpace(message.Content) != "" {
 			return true
 		}
@@ -184,7 +184,7 @@ func TestCodingAgentCommandReadsFixesTestsAndCompletes(t *testing.T) {
 		terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
 		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil },
-		runIDFactory:     func() string { return "coding-workflow-e2e" },
+		turnIDFactory:    func() string { return "coding-workflow-e2e" },
 		agentContextFactory: func(parent context.Context) (context.Context, context.CancelFunc) {
 			return context.WithCancel(parent)
 		},
@@ -270,7 +270,7 @@ func TestCodingAgentAddDirAllowsPatchAcrossWorkspaceRoots(t *testing.T) {
 		terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
 		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
-		runIDFactory:     func() string { return "add-dir-e2e" },
+		turnIDFactory:    func() string { return "add-dir-e2e" },
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout, stderr bytes.Buffer
@@ -361,7 +361,7 @@ func TestCodingAgentSkillWorkflowUsesProjectOverrideAndNextRequestContext(t *tes
 		terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
 		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
-		runIDFactory:     func() string { return "skill-workflow-e2e" },
+		turnIDFactory:    func() string { return "skill-workflow-e2e" },
 	}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout bytes.Buffer
@@ -381,10 +381,10 @@ func TestCodingAgentSkillWorkflowUsesProjectOverrideAndNextRequestContext(t *tes
 	}
 	first, second := client.requests[0], client.requests[1]
 	if !requestContains(first, "amadeus.skill_index.v1") || !requestContains(first, "Project review guidance") || requestContains(first, "PROJECT-SKILL-BODY") {
-		t.Fatalf("initial request did not contain disclosure-safe project Skill index: %#v", first.Messages)
+		t.Fatalf("initial request did not contain disclosure-safe project Skill index: %#v", first.Prompt.Input)
 	}
 	if !requestContains(second, "PROJECT-SKILL-BODY") || requestContains(second, "USER-SKILL-BODY") {
-		t.Fatalf("second request did not contain the project Skill body: %#v", second.Messages)
+		t.Fatalf("second request did not contain the project Skill body: %#v", second.Prompt.Input)
 	}
 	if strings.Count(stderr.String(), "tool started: read_skill") != 2 {
 		t.Fatalf("Skill tools did not execute: %s", stderr.String())
@@ -392,7 +392,7 @@ func TestCodingAgentSkillWorkflowUsesProjectOverrideAndNextRequestContext(t *tes
 }
 
 func requestContains(request llm.Request, content string) bool {
-	for _, message := range request.Messages {
+	for _, message := range request.Prompt.Input {
 		if strings.Contains(message.Content, content) {
 			return true
 		}
@@ -490,7 +490,7 @@ func TestCodingWorkflowIntegratesSkillMCPWebAndDiagnosticHook(t *testing.T) {
 	client, remote, hook := &integratedWorkflowClient{}, &integratedMCPClient{}, &integratedWriteHook{}
 	auditSink := audit.NewMemorySink()
 	runtime := commandRuntime{amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup, terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil }, mcpClientFactory: func(context.Context, mcp.ServerConfig) (mcp.Client, error) { return remote, nil }, webFetcher: &integratedWebFetcher{}, patchProjectors: []builtin.PatchProjector{hook}, auditSinkFactory: func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil }, runIDFactory: func() string { return "integrated-m6" }}
+		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil }, mcpClientFactory: func(context.Context, mcp.ServerConfig) (mcp.Client, error) { return remote, nil }, webFetcher: &integratedWebFetcher{}, patchProjectors: []builtin.PatchProjector{hook}, auditSinkFactory: func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil }, turnIDFactory: func() string { return "integrated-m6" }}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout, stderr bytes.Buffer
 	command.SetIn(strings.NewReader("s\ns\ns\ns\n"))

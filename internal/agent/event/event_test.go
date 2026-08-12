@@ -22,12 +22,12 @@ func TestEventTypeValidation(t *testing.T) {
 		TypeStatusChanged,
 		TypeDiagnosticPublished,
 		TypeErrorOccurred,
-		TypeRunStarted,
-		TypeRunStatusChanged,
+		TypeTurnStarted,
+		TypeTurnStatusChanged,
 		TypePlanUpdated,
 		TypeRunDiffUpdated,
 		TypeRunDiffInvalidated,
-		TypeRunCompleted,
+		TypeTurnCompleted,
 	}
 	for _, eventType := range validTypes {
 		if !eventType.Valid() {

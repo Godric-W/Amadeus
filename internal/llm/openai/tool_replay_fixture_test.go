@@ -22,7 +22,7 @@ func TestToolResultReplayPreservesCallOrderAcrossProtocols(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build replay messages: %v", err)
 	}
-	request := llm.Request{Model: "test-model", Messages: messages, Temperature: 0.2, MaxOutputTokens: 100}
+	request := llm.Request{Model: "test-model", Prompt: llm.Prompt{Input: messages}, Temperature: 0.2, MaxOutputTokens: 100}
 
 	responsesParams, err := newResponsesRequest(request)
 	if err != nil {

@@ -868,7 +868,7 @@ func (model *fullscreenModel) applyEvent(item event.Event) {
 	case event.ApprovalResolved:
 		model.finishDraft()
 		model.insertHistoryCell(NewNoticeHistoryCell(fmt.Sprintf("Approval · %s · %s", item.ToolName, item.Outcome)))
-	case event.RunStatusChanged:
+	case event.TurnStatusChanged:
 		if strings.TrimSpace(item.To) != "" {
 			model.status = item.To
 		}
@@ -885,7 +885,7 @@ func (model *fullscreenModel) applyEvent(item event.Event) {
 		if strings.TrimSpace(item.Error.Message) != "" {
 			model.insertHistoryCell(NewErrorHistoryCell(item.Error.Message))
 		}
-	case event.RunCompleted:
+	case event.TurnCompleted:
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
 			model.flushActiveHistoryCell()
 		}

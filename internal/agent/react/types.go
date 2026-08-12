@@ -134,60 +134,51 @@ type Iteration struct {
 }
 
 type LoopState struct {
-	Budget          BudgetState
-	RuntimeMessages []llm.Message
-	Iterations      []Iteration
-	Usage           llm.Usage
-	PreviousUsage   *llm.Usage
-	LastSentCount   int
+	Budget     BudgetState
+	Iterations []Iteration
+	Usage      llm.Usage
 }
 
 func newLoopState(request Request) LoopState {
 	return LoopState{
-		Budget:          request.Budget,
-		RuntimeMessages: make([]llm.Message, 0),
-		Iterations:      append([]Iteration(nil), request.PriorIterations...),
+		Budget: request.Budget, Iterations: append([]Iteration(nil), request.PriorIterations...),
 	}
 }
 
 type Request struct {
-	RunID               string
-	Goal                string
-	Messages            []llm.Message
-	AvailableTools      []tool.Spec
-	RequestViewProvider RequestViewProvider
-	PriorIterations     []Iteration
-	Budget              BudgetState
+	TurnID           string
+	Goal             string
+	Context          *agentcontext.Manager
+	BaseInstructions llm.BaseInstructions
+	ModelInfo        llm.ModelInfo
+	AvailableTools   []tool.Spec
+	OutputSchema     llm.OutputSchema
+	RequestSnapshot  tool.RequestSnapshot
+	BeforeSample     func(context.Context, *agentcontext.Manager) error
+	PriorIterations  []Iteration
+	Budget           BudgetState
 }
 
 func (request Request) Validate() error {
-	if strings.TrimSpace(request.RunID) == "" {
-		return errors.New("Reactor request RunID is empty")
+	if strings.TrimSpace(request.TurnID) == "" {
+		return errors.New("Reactor request TurnID is empty")
 	}
 	if strings.TrimSpace(request.Goal) == "" {
 		return errors.New("Reactor request goal is empty")
+	}
+	if request.Context == nil {
+		return errors.New("Reactor request ContextManager is nil")
+	}
+	if strings.TrimSpace(request.BaseInstructions.Text) == "" {
+		return errors.New("Reactor request BaseInstructions are empty")
+	}
+	if request.ModelInfo.MaxOutputTokens <= 0 {
+		return errors.New("Reactor request ModelInfo max output tokens must be greater than zero")
 	}
 	if err := request.Budget.Validate(); err != nil {
 		return err
 	}
 	return nil
-}
-
-type RequestViewInput struct {
-	RuntimeMessages []llm.Message
-	Additional      []llm.Message
-	PreviousUsage   *llm.Usage
-	LastSentCount   int
-}
-
-type RequestViewProvider interface {
-	PrepareRequestView(context.Context, RequestViewInput) (agentcontext.RequestView, error)
-}
-
-type RequestViewProviderFunc func(context.Context, RequestViewInput) (agentcontext.RequestView, error)
-
-func (provider RequestViewProviderFunc) PrepareRequestView(ctx context.Context, input RequestViewInput) (agentcontext.RequestView, error) {
-	return provider(ctx, input)
 }
 
 type Result struct {

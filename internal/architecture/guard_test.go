@@ -11,7 +11,8 @@ import (
 func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 	root := repositoryRoot(t)
 	forbidden := []string{
-		"ChatSession", "PreviousWork", "ConversationSession", "ConversationSummary",
+		"ChatSession", "PreviousWork", "ConversationSession", "ConversationSummary", "SessionRuntime",
+		"RunRuntime", "RunContext", "RunState", "RunID", "TurnRuntime",
 		"ResourceStrategy", "ParallelSafe", "ResourceExecutor", "revert_run", "internal/snapshot",
 		"Planner", "Replanner", "Scheduler", "ExecutionGraph", "PlanController", "ReActTaskExecutor",
 		"Evidence", "Verified", "CriterionIDs", "NoEvidenceThreshold",
@@ -48,7 +49,7 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 			t.Fatalf("scan %s: %v", relative, err)
 		}
 	}
-	for _, relative := range []string{"internal/agent/engine", "internal/agent/reflect", "internal/snapshot"} {
+	for _, relative := range []string{"internal/agent/engine", "internal/agent/reflect", "internal/agent/runtime", "internal/session", "internal/snapshot"} {
 		if _, err := os.Stat(filepath.Join(root, relative)); err == nil {
 			t.Errorf("removed production package still exists: %s", relative)
 		} else if !os.IsNotExist(err) {

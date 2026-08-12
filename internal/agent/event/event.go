@@ -24,19 +24,19 @@ const (
 	TypeStatusChanged        Type = "status.changed"
 	TypeDiagnosticPublished  Type = "diagnostic.published"
 	TypeErrorOccurred        Type = "error.occurred"
-	TypeRunStarted           Type = "run.started"
-	TypeRunStatusChanged     Type = "run.status.changed"
+	TypeTurnStarted          Type = "turn.started"
+	TypeTurnStatusChanged    Type = "turn.status.changed"
 	TypePlanUpdated          Type = "plan.updated"
 	TypeRunDiffUpdated       Type = "run_diff.updated"
 	TypeRunDiffInvalidated   Type = "run_diff.invalidated"
-	TypeRunCompleted         Type = "run.completed"
+	TypeTurnCompleted        Type = "turn.completed"
 	TypeIterationStarted     Type = "iteration.started"
 	TypeIterationCompleted   Type = "iteration.completed"
 )
 
 type Metadata struct {
 	SessionID string `json:"session_id,omitempty"`
-	RunID     string `json:"run_id,omitempty"`
+	TurnID    string `json:"turn_id,omitempty"`
 	TaskID    string `json:"task_id,omitempty"`
 	Iteration int    `json:"iteration,omitempty"`
 	LLMCallID string `json:"llm_call_id,omitempty"`
@@ -49,7 +49,7 @@ type Sink interface {
 
 type LLMCallStarted struct {
 	SessionID string
-	RunID     string
+	TurnID    string
 	TaskID    string
 	Iteration int
 	LLMCallID string
@@ -60,7 +60,7 @@ func (LLMCallStarted) Type() Type { return TypeLLMCallStarted }
 
 type TextDelta struct {
 	SessionID  string
-	RunID      string
+	TurnID     string
 	TaskID     string
 	Iteration  int
 	LLMCallID  string
@@ -72,7 +72,7 @@ func (TextDelta) Type() Type { return TypeTextDelta }
 
 type ReasoningDelta struct {
 	SessionID  string
-	RunID      string
+	TurnID     string
 	TaskID     string
 	Iteration  int
 	LLMCallID  string
@@ -84,7 +84,7 @@ func (ReasoningDelta) Type() Type { return TypeReasoningDelta }
 
 type UsageUpdated struct {
 	SessionID  string
-	RunID      string
+	TurnID     string
 	TaskID     string
 	Iteration  int
 	LLMCallID  string
@@ -96,7 +96,7 @@ func (UsageUpdated) Type() Type { return TypeUsageUpdated }
 
 type ContextWindowUpdated struct {
 	SessionID            string
-	RunID                string
+	TurnID               string
 	TaskID               string
 	Iteration            int
 	LLMCallID            string
@@ -111,7 +111,7 @@ func (ContextWindowUpdated) Type() Type { return TypeContextWindowUpdated }
 
 type LLMCallCompleted struct {
 	SessionID            string
-	RunID                string
+	TurnID               string
 	TaskID               string
 	Iteration            int
 	LLMCallID            string
@@ -125,7 +125,7 @@ func (LLMCallCompleted) Type() Type { return TypeLLMCallCompleted }
 
 type IterationStarted struct {
 	SessionID string
-	RunID     string
+	TurnID    string
 	TaskID    string
 	Iteration int
 	LLMCallID string
@@ -135,7 +135,7 @@ func (IterationStarted) Type() Type { return TypeIterationStarted }
 
 type IterationCompleted struct {
 	SessionID string
-	RunID     string
+	TurnID    string
 	TaskID    string
 	Iteration int
 	LLMCallID string
@@ -147,7 +147,7 @@ func (IterationCompleted) Type() Type { return TypeIterationCompleted }
 
 type ToolCallStarted struct {
 	SessionID     string
-	RunID         string
+	TurnID        string
 	TaskID        string
 	Iteration     int
 	LLMCallID     string
@@ -162,7 +162,7 @@ func (ToolCallStarted) Type() Type { return TypeToolCallStarted }
 
 type ToolCallCompleted struct {
 	SessionID string
-	RunID     string
+	TurnID    string
 	TaskID    string
 	Iteration int
 	LLMCallID string
@@ -178,7 +178,7 @@ func (ToolCallCompleted) Type() Type { return TypeToolCallCompleted }
 
 type ApprovalRequested struct {
 	SessionID string
-	RunID     string
+	TurnID    string
 	TaskID    string
 	Iteration int
 	LLMCallID string
@@ -192,7 +192,7 @@ func (ApprovalRequested) Type() Type { return TypeApprovalRequested }
 
 type ApprovalResolved struct {
 	SessionID string
-	RunID     string
+	TurnID    string
 	TaskID    string
 	Iteration int
 	LLMCallID string
@@ -208,7 +208,7 @@ func (ApprovalResolved) Type() Type { return TypeApprovalResolved }
 
 type StatusChanged struct {
 	SessionID string
-	RunID     string
+	TurnID    string
 	TaskID    string
 	Iteration int
 	LLMCallID string
@@ -222,7 +222,7 @@ func (StatusChanged) Type() Type { return TypeStatusChanged }
 
 type DiagnosticPublished struct {
 	SessionID string
-	RunID     string
+	TurnID    string
 	TaskID    string
 	Iteration int
 	LLMCallID string
@@ -255,7 +255,7 @@ func NewErrorInfo(err error) ErrorInfo {
 
 type ErrorOccurred struct {
 	SessionID string
-	RunID     string
+	TurnID    string
 	TaskID    string
 	Iteration int
 	LLMCallID string
@@ -264,19 +264,19 @@ type ErrorOccurred struct {
 
 func (ErrorOccurred) Type() Type { return TypeErrorOccurred }
 
-type RunStarted struct {
+type TurnStarted struct {
 	SessionID string
-	RunID     string
+	TurnID    string
 	TaskID    string
 	Iteration int
 	LLMCallID string
 }
 
-func (RunStarted) Type() Type { return TypeRunStarted }
+func (TurnStarted) Type() Type { return TypeTurnStarted }
 
-type RunStatusChanged struct {
+type TurnStatusChanged struct {
 	SessionID string
-	RunID     string
+	TurnID    string
 	TaskID    string
 	Iteration int
 	LLMCallID string
@@ -286,7 +286,7 @@ type RunStatusChanged struct {
 	To        string
 }
 
-func (RunStatusChanged) Type() Type { return TypeRunStatusChanged }
+func (TurnStatusChanged) Type() Type { return TypeTurnStatusChanged }
 
 type PlanItem struct {
 	Step   string
@@ -294,7 +294,7 @@ type PlanItem struct {
 }
 type PlanUpdated struct {
 	SessionID   string
-	RunID       string
+	TurnID      string
 	TaskID      string
 	Iteration   int
 	LLMCallID   string
@@ -315,7 +315,7 @@ type RunDiffChange struct {
 
 type RunDiffUpdated struct {
 	SessionID string
-	RunID     string
+	TurnID    string
 	TaskID    string
 	Iteration int
 	LLMCallID string
@@ -327,7 +327,7 @@ func (RunDiffUpdated) Type() Type { return TypeRunDiffUpdated }
 
 type RunDiffInvalidated struct {
 	SessionID string
-	RunID     string
+	TurnID    string
 	TaskID    string
 	Iteration int
 	LLMCallID string
@@ -337,9 +337,9 @@ type RunDiffInvalidated struct {
 
 func (RunDiffInvalidated) Type() Type { return TypeRunDiffInvalidated }
 
-type RunCompleted struct {
+type TurnCompleted struct {
 	SessionID  string
-	RunID      string
+	TurnID     string
 	TaskID     string
 	Iteration  int
 	LLMCallID  string
@@ -348,15 +348,15 @@ type RunCompleted struct {
 	Reason     string
 }
 
-func (RunCompleted) Type() Type { return TypeRunCompleted }
+func (TurnCompleted) Type() Type { return TypeTurnCompleted }
 
 func (eventType Type) Valid() bool {
 	switch eventType {
 	case TypeLLMCallStarted, TypeLLMCallCompleted, TypeTextDelta, TypeReasoningDelta,
 		TypeToolCallStarted, TypeToolCallCompleted, TypeApprovalRequested, TypeApprovalResolved,
 		TypeUsageUpdated, TypeContextWindowUpdated, TypeStatusChanged, TypeDiagnosticPublished, TypeErrorOccurred,
-		TypeRunStarted, TypeRunStatusChanged, TypePlanUpdated, TypeRunDiffUpdated, TypeRunDiffInvalidated,
-		TypeRunCompleted, TypeIterationStarted, TypeIterationCompleted:
+		TypeTurnStarted, TypeTurnStatusChanged, TypePlanUpdated, TypeRunDiffUpdated, TypeRunDiffInvalidated,
+		TypeTurnCompleted, TypeIterationStarted, TypeIterationCompleted:
 		return true
 	default:
 		return false

@@ -84,14 +84,14 @@ const (
 
 type Invocation struct {
 	SessionID string
-	RunID     string
+	TurnID    string
 	Call      ToolCall
 	Source    ToolCallSource
 }
 
 type InvocationMetadata struct {
 	SessionID string
-	RunID     string
+	TurnID    string
 	Source    ToolCallSource
 }
 
