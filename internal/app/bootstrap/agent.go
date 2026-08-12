@@ -45,6 +45,7 @@ type AgentOptions struct {
 	RunPermissions     *project.PermissionStore
 	SessionPermissions *project.PermissionStore
 	SessionApprovals   *policy.SessionApprovalStore
+	FileApprovals      *policy.FileApprovalStore
 }
 
 type Agent struct {
@@ -83,7 +84,7 @@ func NewAgentWithOptions(configured config.Config, root project.Root, events eve
 	if createClient == nil {
 		createClient = defaultClientFactory
 	}
-	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, options.PatchProjector, options.RolloutRecorder, options.PlanState, options.PlanRecorder, options.UserSkillRoot, options.UserMCPRoot, options.MCPClientFactory, options.Skills, options.SkillWarnings, options.MCP, options.WebFetcher, options.WebSearch, options.FileSystemPolicy, options.RunPermissions, options.SessionPermissions, options.SessionApprovals)
+	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, options.PatchProjector, options.RolloutRecorder, options.PlanState, options.PlanRecorder, options.UserSkillRoot, options.UserMCPRoot, options.MCPClientFactory, options.Skills, options.SkillWarnings, options.MCP, options.WebFetcher, options.WebSearch, options.FileSystemPolicy, options.RunPermissions, options.SessionPermissions, options.SessionApprovals, options.FileApprovals)
 }
 
 func (agent *Agent) AvailableTools() []tool.Spec {
@@ -93,16 +94,28 @@ func (agent *Agent) AvailableTools() []tool.Spec {
 	entries := agent.Registry.VisibleSnapshot(agent.visibility)
 	tools := make([]tool.Spec, 0, len(entries))
 	for _, entry := range entries {
+		if legacyToolName(entry.Spec.Name) {
+			continue
+		}
 		tools = append(tools, entry.Spec.Clone())
 	}
 	return tools
 }
 
-func newAgent(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory) (*Agent, error) {
-	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, nil, nil, nil, nil, "", "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+func legacyToolName(name string) bool {
+	switch name {
+	case "apply_patch", "read_file", "list_dir", "glob_files", "grep_code", "request_permissions":
+		return true
+	default:
+		return false
+	}
 }
 
-func newAgentWithOptions(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory, patchProjector builtin.PatchProjector, rolloutRecorder react.RolloutRecorder, planState *plan.State, planRecorder builtin.PlanUpdateRecorder, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, externalSkills *skill.Catalog, externalSkillWarnings []error, externalMCP *mcp.Manager, webFetcher webfetch.Fetcher, webSearch websearch.Provider, fileSystemPolicy *project.FileSystemPolicy, runPermissions, sessionPermissions *project.PermissionStore, sessionApprovals *policy.SessionApprovalStore) (*Agent, error) {
+func newAgent(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory) (*Agent, error) {
+	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, nil, nil, nil, nil, "", "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+}
+
+func newAgentWithOptions(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory, patchProjector builtin.PatchProjector, rolloutRecorder react.RolloutRecorder, planState *plan.State, planRecorder builtin.PlanUpdateRecorder, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, externalSkills *skill.Catalog, externalSkillWarnings []error, externalMCP *mcp.Manager, webFetcher webfetch.Fetcher, webSearch websearch.Provider, fileSystemPolicy *project.FileSystemPolicy, runPermissions, sessionPermissions *project.PermissionStore, sessionApprovals *policy.SessionApprovalStore, fileApprovals *policy.FileApprovalStore) (*Agent, error) {
 	if err := config.Validate(configured); err != nil {
 		return nil, fmt.Errorf("validate Agent configuration: %w", err)
 	}
@@ -164,6 +177,29 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 	registry, err := builtin.NewMVPRegistry(root, mvpOptions)
 	if err != nil {
 		return nil, fmt.Errorf("create MVP tool registry: %w", err)
+	}
+	fileTools, err := builtin.NewFileTools(root, builtin.FileToolsOptions{
+		FileSystemPolicy: fileSystemPolicy, Approvals: approvals, SessionApprovals: fileApprovals,
+		RunPermissions: runPermissions, SessionPermissions: sessionPermissions,
+		MaxBytes: mvpOptions.ReadFile.MaxBytes, MaxLineBytes: mvpOptions.ReadFile.MaxLineBytes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create file tools: %w", err)
+	}
+	for _, candidate := range []tool.Handler{fileTools.ReadTool(), fileTools.EditTool(), fileTools.WriteTool()} {
+		if err := registry.Register(candidate); err != nil {
+			return nil, fmt.Errorf("register file tool %q: %w", candidate.Spec().Name, err)
+		}
+	}
+	if legacyGlob, ok := registry.Lookup("glob_files"); ok {
+		if err := registry.Register(builtin.NewGlobAlias(legacyGlob)); err != nil {
+			return nil, fmt.Errorf("register glob tool: %w", err)
+		}
+	}
+	if legacyGrep, ok := registry.Lookup("grep_code"); ok {
+		if err := registry.Register(builtin.NewGrepAlias(legacyGrep)); err != nil {
+			return nil, fmt.Errorf("register grep tool: %w", err)
+		}
 	}
 	if fileSystemPolicy != nil && runPermissions != nil && sessionPermissions != nil {
 		requestPermissions, requestErr := builtin.NewRequestPermissions(builtin.RequestPermissionsOptions{

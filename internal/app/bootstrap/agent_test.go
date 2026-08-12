@@ -66,10 +66,10 @@ func TestNewAgentBuildsDefaultComposition(t *testing.T) {
 	if agent.Client.Model().Provider != configured.DefaultProvider || agent.Client.Model().Name != "test-model" {
 		t.Fatalf("unexpected composed client model: %#v", agent.Client.Model())
 	}
-	if agent.Registry.Len() != 8 {
-		t.Fatalf("unexpected Agent registry size: got %d, want 8", agent.Registry.Len())
+	if agent.Registry.Len() != 13 {
+		t.Fatalf("unexpected Agent registry size: got %d, want 13", agent.Registry.Len())
 	}
-	wantTools := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "view_image", "write_stdin"}
+	wantTools := []string{"edit", "execute_command", "glob", "grep", "read", "view_image", "write", "write_stdin"}
 	if got := toolNames(agent.AvailableTools()); !reflect.DeepEqual(got, wantTools) {
 		t.Fatalf("unexpected available tools: got %v, want %v", got, wantTools)
 	}
@@ -87,7 +87,7 @@ func TestNewAgentRegistersOnlyEnabledWebTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"apply_patch", "execute_command", "glob_files", "grep_code", "list_dir", "read_file", "web_fetch", "web_search", "write_stdin"}
+	want := []string{"edit", "execute_command", "glob", "grep", "read", "web_fetch", "web_search", "write", "write_stdin"}
 	if got := toolNames(agent.AvailableTools()); !reflect.DeepEqual(got, want) {
 		t.Fatalf("configured Web tools = %v, want %v", got, want)
 	}

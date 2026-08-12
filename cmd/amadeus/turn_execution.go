@@ -242,7 +242,8 @@ func (runner *agentController) executeCodingTurn(ctx context.Context, factory *c
 		PatchProjector: patchProjectors, RolloutRecorder: &turnRolloutRecorder{host: host, turnID: turnContext.TurnID},
 		PlanState: planState, FileSystemPolicy: fileSystemPolicy, RunPermissions: turnPermissions,
 		SessionPermissions: factory.sessionPermissions, SessionApprovals: factory.sessionApprovals,
-		Skills: extensions.Skills(), SkillWarnings: extensions.SkillWarnings(), MCP: extensions.MCP(),
+		FileApprovals: factory.fileApprovals,
+		Skills:        extensions.Skills(), SkillWarnings: extensions.SkillWarnings(), MCP: extensions.MCP(),
 		PlanRecorder: func(recordCtx context.Context, snapshot plan.Snapshot) error {
 			return recordPlanUpdate(recordCtx, host, turnContext.TurnID, snapshot)
 		},

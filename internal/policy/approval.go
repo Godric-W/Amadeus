@@ -32,6 +32,7 @@ type ApprovalPurpose string
 const (
 	ApprovalPurposeCommand    ApprovalPurpose = "command_operation"
 	ApprovalPurposePermission ApprovalPurpose = "filesystem_permission"
+	ApprovalPurposeFile       ApprovalPurpose = "file_edit"
 )
 
 type ApprovalSource string
@@ -43,13 +44,33 @@ const (
 )
 
 type ApprovalRequest struct {
-	ID              string          `json:"id"`
-	ToolName        string          `json:"tool_name"`
-	Arguments       json.RawMessage `json:"arguments"`
-	ArgumentsSHA256 string          `json:"arguments_sha256"`
-	Purpose         ApprovalPurpose `json:"purpose"`
-	Risk            CommandRisk     `json:"risk"`
-	Reason          string          `json:"reason"`
+	ID              string               `json:"id"`
+	ToolName        string               `json:"tool_name"`
+	Arguments       json.RawMessage      `json:"arguments"`
+	ArgumentsSHA256 string               `json:"arguments_sha256"`
+	Purpose         ApprovalPurpose      `json:"purpose"`
+	Risk            CommandRisk          `json:"risk"`
+	Reason          string               `json:"reason"`
+	Path            string               `json:"path,omitempty"`
+	Command         string               `json:"command,omitempty"`
+	CWD             string               `json:"cwd,omitempty"`
+	Diff            any                  `json:"diff,omitempty"`
+	Presentation    ApprovalPresentation `json:"presentation,omitempty"`
+}
+
+type ApprovalPresentation struct {
+	Title    string           `json:"title,omitempty"`
+	Question string           `json:"question,omitempty"`
+	Details  []string         `json:"details,omitempty"`
+	Options  []ApprovalOption `json:"options,omitempty"`
+}
+
+type ApprovalOption struct {
+	ID          string          `json:"id"`
+	Label       string          `json:"label"`
+	Description string          `json:"description,omitempty"`
+	Scope       ApprovalScope   `json:"scope"`
+	Outcome     ApprovalOutcome `json:"outcome"`
 }
 
 func NewApprovalRequest(id, toolName string, arguments json.RawMessage, risk CommandRisk, reason string) (ApprovalRequest, error) {
@@ -78,7 +99,7 @@ func (request ApprovalRequest) Validate() error {
 	if request.ToolName == "" {
 		return errors.New("approval request tool name is empty")
 	}
-	if request.Purpose != ApprovalPurposeCommand && request.Purpose != ApprovalPurposePermission {
+	if request.Purpose != ApprovalPurposeCommand && request.Purpose != ApprovalPurposePermission && request.Purpose != ApprovalPurposeFile {
 		return fmt.Errorf("approval purpose %q is invalid", request.Purpose)
 	}
 	if !request.Risk.Valid() {
@@ -102,6 +123,8 @@ func (request ApprovalRequest) Validate() error {
 
 func (request ApprovalRequest) Clone() ApprovalRequest {
 	request.Arguments = append(json.RawMessage(nil), request.Arguments...)
+	request.Presentation.Details = append([]string(nil), request.Presentation.Details...)
+	request.Presentation.Options = append([]ApprovalOption(nil), request.Presentation.Options...)
 	return request
 }
 

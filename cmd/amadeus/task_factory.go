@@ -30,6 +30,7 @@ type codingTaskFactory struct {
 	extensions         *extensionruntime.Runtime
 	sessionPermissions *project.PermissionStore
 	sessionApprovals   *policy.SessionApprovalStore
+	fileApprovals      *policy.FileApprovalStore
 }
 
 type codingSessionTask struct {
@@ -45,7 +46,7 @@ func newCodingTaskFactory(runner *agentController, threadID thread.ID, configure
 	return &codingTaskFactory{
 		runner: runner, threadID: threadID, configured: configured, baseInvocation: invocation,
 		requests: make(chan codingTaskRequest, 1), sessionPermissions: project.NewPermissionStore(),
-		sessionApprovals: policy.NewSessionApprovalStore(),
+		sessionApprovals: policy.NewSessionApprovalStore(), fileApprovals: policy.NewFileApprovalStore(),
 	}, nil
 }
 
@@ -100,6 +101,7 @@ func (factory *codingTaskFactory) Close() error {
 	factory.mu.Unlock()
 	factory.sessionPermissions.Clear()
 	factory.sessionApprovals.Clear()
+	factory.fileApprovals.Clear()
 	if runtime == nil {
 		return nil
 	}

@@ -20,13 +20,15 @@ type CatalogEntry struct {
 
 func TargetCatalog() []CatalogEntry {
 	entries := []CatalogEntry{
-		{Name: "apply_patch", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectWrite},
+		{Name: "read", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectRead},
+		{Name: "edit", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectWrite},
+		{Name: "write", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectWrite},
+		{Name: "glob", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectRead},
+		{Name: "grep", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectRead},
 		{Name: "execute_command", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectExecute},
 		{Name: "glob_files", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectRead},
 		{Name: "grep_code", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectRead},
 		{Name: "list_dir", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectRead},
-		{Name: "read_file", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectRead},
-		{Name: "request_permissions", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectNone},
 		{Name: "update_plan", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectNone},
 		{Name: "write_stdin", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectExecute},
 		{Name: "view_image", Exposure: tool.ExposureConditional, Condition: "provider.images", Status: CatalogAvailable, SideEffect: tool.SideEffectRead},

@@ -142,7 +142,7 @@ func (authorizer *CommandAuthorizer) authorize(ctx context.Context, request Comm
 	if request.IsolationMode != sandboxdomain.IsolationUnsandboxed {
 		return ApprovalDecision{}, "", fmt.Errorf("execute_command isolation mode %q is invalid", request.IsolationMode)
 	}
-	key, ok := NewCommandApprovalKey(request.Shell, request.Command, request.CWD, request.TTY, request.IsolationMode)
+	key, ok := NewCommandApprovalKey(request.Command, request.CWD)
 	if !ok {
 		return ApprovalDecision{}, "", errors.New("execute_command approval key is invalid")
 	}
@@ -153,6 +153,9 @@ func (authorizer *CommandAuthorizer) authorize(ctx context.Context, request Comm
 	if err != nil {
 		return ApprovalDecision{}, CommandRiskHigh, err
 	}
+	approval.Command = request.Command
+	approval.CWD = request.CWD
+	approval.Presentation = CommandApprovalPresentation(request.Command, request.CWD)
 	decision, err := authorizer.requestApproval(ctx, approval)
 	if err != nil {
 		return ApprovalDecision{}, CommandRiskHigh, err

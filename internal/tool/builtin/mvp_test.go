@@ -9,7 +9,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
-func TestMVPRegistryContainsSevenStableTools(t *testing.T) {
+func TestMVPRegistryContainsCompatibilityAndExecutionTools(t *testing.T) {
 	root, err := project.NewRoot(t.TempDir())
 	if err != nil {
 		t.Fatalf("create project root: %v", err)
@@ -51,11 +51,9 @@ func TestMVPDescriptionsEnforceToolSelectionBoundaries(t *testing.T) {
 		descriptions[spec.Name] = spec.Description
 	}
 	checks := map[string][]string{
-		"read_file":       {"Preferred over shell"},
-		"list_dir":        {"Preferred over shell"},
-		"glob_files":      {"Preferred over shell"},
-		"grep_code":       {"Preferred over shell"},
-		"apply_patch":     {"Preferred tool", "editing existing files"},
+		"read":            {"Read a UTF-8"},
+		"edit":            {"approved", "structured diff"},
+		"write":           {"Create or overwrite", "approval"},
 		"execute_command": {"builds, tests, Git", "never use it to bypass"},
 	}
 	for name, fragments := range checks {

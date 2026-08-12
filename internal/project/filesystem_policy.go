@@ -217,11 +217,32 @@ func (policy *FileSystemPolicy) ResolveForWrite(requested string) (ResolvedPath,
 	if policy == nil || policy.resolver == nil {
 		return ResolvedPath{}, errors.New("filesystem policy is nil")
 	}
-	resolved, err := policy.resolver.ResolveForWrite(requested)
+	resolved, err := policy.ResolveForWriteTarget(requested)
 	if err != nil {
 		return ResolvedPath{}, err
 	}
 	return policy.authorizeResolved(resolved, AccessWrite)
+}
+
+// ResolveForWriteTarget resolves a write target and applies only immutable
+// deny/read-only rules. The caller may use the returned target to construct a
+// user approval request before applying a temporary or session grant.
+func (policy *FileSystemPolicy) ResolveForWriteTarget(requested string) (ResolvedPath, error) {
+	if policy == nil || policy.resolver == nil {
+		return ResolvedPath{}, errors.New("filesystem policy is nil")
+	}
+	resolved, err := policy.resolver.ResolveForWrite(requested)
+	if err != nil {
+		return ResolvedPath{}, err
+	}
+	effective := policy.EffectiveProfile()
+	if root := longestMatch(effective.Base.DeniedRoots, resolved.Canonical); root != "" {
+		return ResolvedPath{}, &PathDeniedError{Requested: requested, Reason: fmt.Sprintf("is denied by %q", root)}
+	}
+	if root := longestMatch(effective.Base.ReadOnlyRoots, resolved.Canonical); root != "" {
+		return ResolvedPath{}, &PathDeniedError{Requested: requested, Reason: fmt.Sprintf("is read-only under %q", root)}
+	}
+	return resolved, nil
 }
 
 func (policy *FileSystemPolicy) ResolveWritableDirectory(requested string) (ResolvedPath, error) {

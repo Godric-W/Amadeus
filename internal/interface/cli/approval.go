@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"unicode"
@@ -98,9 +99,44 @@ func (handler *TerminalApprovalHandler) interactiveDecision(ctx context.Context,
 }
 
 func writeApprovalPrompt(writer io.Writer, request policy.ApprovalRequest) error {
+	if request.Presentation.Title != "" {
+		if _, err := fmt.Fprintf(writer, "%s\n", sanitizeApprovalText(request.Presentation.Title)); err != nil {
+			return fmt.Errorf("write approval title: %w", err)
+		}
+		for _, detail := range request.Presentation.Details {
+			if _, err := fmt.Fprintf(writer, "  %s\n", sanitizeApprovalText(detail)); err != nil {
+				return fmt.Errorf("write approval detail: %w", err)
+			}
+		}
+		question := request.Presentation.Question
+		if question == "" {
+			question = "Do you want to proceed?"
+		}
+		if _, err := fmt.Fprintf(writer, "%s [y] Yes / [s] session / [n] No: ", sanitizeApprovalText(question)); err != nil {
+			return fmt.Errorf("write approval question: %w", err)
+		}
+		return nil
+	}
 	first := "once"
 	if request.Purpose == policy.ApprovalPurposePermission {
 		first = "this run"
+	}
+	if request.Purpose == policy.ApprovalPurposeFile {
+		label := sanitizeApprovalText(request.Path)
+		if label == "" {
+			label = "this file"
+		}
+		second := "Yes, allow all edits during this session"
+		if directory := filepath.Dir(request.Path); directory != "." && directory != "" {
+			second = fmt.Sprintf("Yes, allow all edits in %s/ during this session", sanitizeApprovalText(directory))
+		}
+		_, err := fmt.Fprintf(writer,
+			"Edit file\n  path: %s\n  reason: %s\n  diff: %v\nDo you want to make this edit? [y] Yes / [s] %s / [n] No: ",
+			label, sanitizeApprovalText(request.Reason), request.Diff, second)
+		if err != nil {
+			return fmt.Errorf("write file approval prompt: %w", err)
+		}
+		return nil
 	}
 	_, err := fmt.Fprintf(writer,
 		"Approval required\n  request: %s\n  tool: %s\n  risk: %s\n  reason: %s\n  arguments_sha256: %s\nAllow? [y] %s / [s] session / [n] deny: ",

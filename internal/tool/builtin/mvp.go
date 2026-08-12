@@ -44,11 +44,31 @@ func patchExecutorDefaults() patchtool.ExecutorOptions {
 }
 
 func MVPSpecs() []tool.Spec {
-	specs := []tool.Spec{applyPatchSpec(), executeCommandSpec(), globFilesSpec(), grepCodeSpec(), listDirSpec(), readFileSpec(), writeStdinSpec()}
+	specs := []tool.Spec{readSpec(), editSpec(), writeSpec(), globSpec(), grepSpec(), executeCommandSpec(), updatePlanSpec(), writeStdinSpec()}
 	for index := range specs {
 		specs[index] = specs[index].Clone()
 	}
 	return specs
+}
+
+func readSpec() tool.Spec {
+	return tool.Spec{Name: "read", Description: "Read a UTF-8 text file with bounded line output.", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1},"line":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1}},"required":["path"],"additionalProperties":false}`), SideEffect: tool.SideEffectRead, Idempotent: true}
+}
+
+func editSpec() tool.Spec {
+	return tool.Spec{Name: "edit", Description: "Make an approved, uniquely matched edit to an existing file and return a structured diff.", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"}},"required":["path","old_string","new_string"],"additionalProperties":false}`), SideEffect: tool.SideEffectWrite, Idempotent: false}
+}
+
+func writeSpec() tool.Spec {
+	return tool.Spec{Name: "write", Description: "Create or overwrite a file after approval and return a structured diff.", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`), SideEffect: tool.SideEffectWrite, Idempotent: false}
+}
+
+func globSpec() tool.Spec {
+	return tool.Spec{Name: "glob", Description: "Find files below a directory using bounded glob matching.", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"pattern":{"type":"string","minLength":1},"include_hidden":{"type":"boolean"},"limit":{"type":"integer","minimum":1}},"required":["pattern"],"additionalProperties":false}`), SideEffect: tool.SideEffectRead, Idempotent: true}
+}
+
+func grepSpec() tool.Spec {
+	return tool.Spec{Name: "grep", Description: "Search project text with bounded matching and stable file/line output.", InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","minLength":1},"path":{"type":"string"},"glob":{"type":"string"},"type":{"type":"string"},"regex":{"type":"boolean"},"case_sensitive":{"type":"boolean"},"context":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}},"required":["query"],"additionalProperties":false}`), SideEffect: tool.SideEffectRead, Idempotent: true}
 }
 
 func NewMVPRegistry(root project.Root, options MVPOptions) (*tool.Registry, error) {

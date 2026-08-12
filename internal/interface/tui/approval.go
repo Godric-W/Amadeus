@@ -62,7 +62,23 @@ func (prompt *InlineApprovalPrompt) Decide(ctx context.Context, request policy.A
 	if request.Purpose == policy.ApprovalPurposePermission {
 		first = "this run"
 	}
-	if _, err := fmt.Fprintf(prompt.output, "approval input\n  tool: %s\n  risk: %s\n  reason: %s\n  arguments_sha256: %s\nAllow? [y] %s / [s] session / [n] deny: ", sanitizeInlineEventText(request.ToolName), request.Risk, sanitizeInlineEventText(request.Reason), request.ArgumentsSHA256, first); err != nil {
+	if request.Presentation.Title != "" {
+		if _, err := fmt.Fprintf(prompt.output, "%s\n", sanitizeInlineEventText(request.Presentation.Title)); err != nil {
+			return policy.ApprovalDecision{}, fmt.Errorf("write inline approval title: %w", err)
+		}
+		for _, detail := range request.Presentation.Details {
+			if _, err := fmt.Fprintf(prompt.output, "  %s\n", sanitizeInlineEventText(detail)); err != nil {
+				return policy.ApprovalDecision{}, fmt.Errorf("write inline approval detail: %w", err)
+			}
+		}
+		question := request.Presentation.Question
+		if question == "" {
+			question = "Do you want to proceed?"
+		}
+		if _, err := fmt.Fprintf(prompt.output, "%s [y] Yes / [s] session / [n] No: ", sanitizeInlineEventText(question)); err != nil {
+			return policy.ApprovalDecision{}, fmt.Errorf("write inline approval question: %w", err)
+		}
+	} else if _, err := fmt.Fprintf(prompt.output, "approval input\n  tool: %s\n  risk: %s\n  reason: %s\n  arguments_sha256: %s\nAllow? [y] %s / [s] session / [n] deny: ", sanitizeInlineEventText(request.ToolName), request.Risk, sanitizeInlineEventText(request.Reason), request.ArgumentsSHA256, first); err != nil {
 		return policy.ApprovalDecision{}, fmt.Errorf("write inline approval prompt: %w", err)
 	}
 	for {

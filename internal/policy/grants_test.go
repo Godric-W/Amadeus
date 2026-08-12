@@ -2,13 +2,11 @@ package policy
 
 import (
 	"testing"
-
-	sandboxdomain "github.com/Godric-W/Amadeus/internal/sandbox"
 )
 
 func TestSessionApprovalStoreUsesExactCommandKey(t *testing.T) {
 	store := NewSessionApprovalStore()
-	key, ok := NewCommandApprovalKey("/bin/sh", "echo a\r\n", "/tmp", false, sandboxdomain.IsolationUnsandboxed)
+	key, ok := NewCommandApprovalKey("echo a\r\n", "/tmp")
 	if !ok {
 		t.Fatal("key rejected")
 	}
@@ -16,13 +14,13 @@ func TestSessionApprovalStoreUsesExactCommandKey(t *testing.T) {
 	if store.Count() != 1 {
 		t.Fatalf("unexpected approval count: %d", store.Count())
 	}
-	equivalent, _ := NewCommandApprovalKey("/bin/sh", "echo a\n", "/tmp", false, sandboxdomain.IsolationUnsandboxed)
+	equivalent, _ := NewCommandApprovalKey("echo a\n", "/tmp")
 	if !store.IsApproved(equivalent) {
 		t.Fatal("CRLF normalization did not match")
 	}
-	different, _ := NewCommandApprovalKey("/bin/sh", "echo a\n", "/tmp", true, sandboxdomain.IsolationUnsandboxed)
+	different, _ := NewCommandApprovalKey("echo b\n", "/tmp")
 	if store.IsApproved(different) {
-		t.Fatal("TTY difference reused approval")
+		t.Fatal("different command reused approval")
 	}
 	store.Clear()
 	if store.Count() != 0 {
