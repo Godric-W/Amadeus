@@ -281,91 +281,81 @@ Model Tool Call
 
 文件 Session Approval 对齐 Claude Code 的 `accept_edits + Working Directories`；命令使用独立的 Session Command Rule。
 
-### C-01：Tool Contract
+### C-01：Tool Contract — `DONE`
 
-- `TODO`：定义 Spec、ValidateInput、CheckPermission、Execute、IsReadOnly、IsConcurrencySafe 和 PresentCall。
-- `TODO`：统一 ToolCallID、ToolContext、Result、Presentation 和 Registry。
-- `TODO`：删除重复 Dispatcher/Router、PreparedCall、通用 Hook、TargetStrategy 和全局 Authorizer。
+- `DONE`：统一使用 `Spec`、`ToolCall`、`Invocation`、`Output`、`Handler`、`Registry` 和 `Router`。
+- `DONE`：Router 负责 Schema Normalize、生命周期事件、串行/有界并行调度和 ToolResult 顺序恢复。
+- `DONE`：未引入 `PreparedCall`、通用 Hook、TargetStrategy 或第二套 Dispatcher；旧 `Router` 是当前唯一运行时入口。
 
-### C-02：`read` 与文件状态
+### C-02：`read` 与文件状态 — `DONE`
 
-- `TODO`：实现 canonical path、完整读取、范围读取、编码错误和输出截断。
-- `TODO`：完整读取时记录 path、exists、content hash 和必要快照。
-- `TODO`：文件状态只服务 `edit/write` stale check，不成为历史源。
+- `DONE`：`read` 支持 canonical path、范围读取、输出上限和截断元数据。
+- `DONE`：结果记录 canonical path、content hash、行范围和输出统计。
+- `DONE`：文件状态只服务 `edit/write` stale check，不成为历史源。
 
-### C-03：`edit` + Diff Approval
+### C-03：`edit` + Diff Approval — `DONE`
 
-- `TODO`：实现 old_string/new_string/replace_all 与唯一匹配校验。
-- `TODO`：强制已有文件 Read-before-write。
-- `TODO`：生成 FileChangePreview、StructuredDiff 和 DiffStats。
-- `TODO`：工作目录内显示 `Yes / Yes, allow all edits during this session / No`。
-- `TODO`：工作目录外显示 `Yes, allow all edits in <directory>/ during this session`。
-- `TODO`：批准后重新读取、stale check、原子写入和 Verify。
+- `DONE`：实现 `old_string/new_string/replace_all`、唯一匹配校验和 Read-before-write。
+- `DONE`：共享 `internal/tool/textdiff` 生成 Unified Diff、插入/删除统计和 FileChange。
+- `DONE`：Approval 后重新读取并执行 stale check，再进行同目录临时文件原子写入。
+- `DONE`：文件 Approval 发布 `ApprovalRequested/ApprovalResolved`，TUI/Plain 只消费 Tool 提供的 Presentation。
 
-### C-04：`write`
+### C-04：`write` — `DONE`
 
-- `TODO`：实现新文件创建和已有文件完整覆盖。
-- `TODO`：新文件展示全新增 Diff；覆盖展示完整 Diff。
-- `TODO`：复用 Read-before-write、Approval、stale check、原子写入和 Verify。
-- `TODO`：`edit/write` ToolResult 自己返回准确 StructuredDiff。
+- `DONE`：支持新文件创建与已有文件完整覆盖，并分别展示新增/覆盖 Diff。
+- `DONE`：复用 Approval、stale check、原子写入和结果校验。
+- `DONE`：`write` ToolResult 自己返回准确 `FileChange`，不依赖 Workspace Diff attribution。
 
-### C-05：Permission State 与 Approval Runtime
+### C-05：Permission State 与 Approval Runtime — `PARTIAL`
 
-- `TODO`：定义 PermissionBehavior、PermissionMode、SessionPermissionState、PermissionContext 和 PermissionUpdate。
-- `TODO`：SessionPermissionState 保存 Mode、Additional Working Directories 和 Session Rules。
-- `TODO`：工作目录内文件 Session Approval 设置 `accept_edits`。
-- `TODO`：工作目录外同时设置 `accept_edits` 并增加目标目录。
-- `TODO`：Deny/Ask、符号链接和受保护路径检查优先于 `accept_edits`。
-- `TODO`：Plan Mode 保存并恢复进入前 Permission Mode。
-- `TODO`：Permission State 变化后生成 replace-key Context Update；Resume 重置权限且不重放历史授权。
+- `DONE`：文件修改使用 Session 级目录授权；命令使用 canonical CWD + 精确命令的 `SessionApprovalStore`；Web/MCP 使用独立 `SessionRuleStore`。
+- `DONE`：Denied roots、Read-only roots、路径 canonicalization、符号链接检查优先于文件 Session Approval。
+- `DONE`：Resume/Session Close 不持久化、不重放内存中的授权。
+- `PARTIAL`：旧 `project.PermissionProfile` 仍作为路径策略兼容实现存在；它已不再承载默认 Session writable-root 授权主链，后续单独收敛为更小的 FileSystemPolicy。
 
-### C-06：Approval Presentation 与 TUI Contract
+### C-06：Approval Presentation 与 TUI Contract — `PARTIAL`
 
-- `TODO`：定义 ApprovalRequest、ApprovalPresentation、ApprovalOption 和 ApprovalDecision。
-- `TODO`：TUI 只渲染 Tool 提供的 Presentation，不硬编码 Allow/Session/Deny。
-- `TODO`：实现 Claude Code 对齐的 Edit、Create、Overwrite、Read、Command、Skill、Fetch 和 MCP 文案。
-- `TODO`：拒绝支持 Tab Feedback，并显示 `Esc to reject · Tab to add feedback`。
-- `TODO`：ApprovalDecisionOp 通过 AmadeusThread 路由到 ActiveTurn Pending Approval。
+- `DONE`：定义 `ApprovalRequest`、`ApprovalPresentation`、`ApprovalOption`、`ApprovalDecision.OptionID` 并支持 CLI/TUI 结构化选择。
+- `DONE`：文件、命令、Web Fetch 和 MCP Call 都由 Tool 生成 Presentation，TUI 不硬编码选项语义。
+- `DONE`：CLI/Plain 支持 `y/s/n` 与结构化 Option ID；全屏 TUI 支持方向键、Enter、Esc 的动态选项。
+- `PARTIAL`：Tab Feedback 与正式 `ApprovalDecisionOp` SessionIo 路由仍属于 D 阶段 Event 重构，不在当前旧 Event Hub 主链中伪装完成。
 
-### C-07：`execute_command` Host Execution
+### C-07：`execute_command` Host Execution — `DONE`
 
-- `TODO`：校验 command、canonical cwd、timeout、tty、输出上限和 process cancellation。
-- `TODO`：空命令、NUL、非法 CWD 和少量灾难性命令直接 Deny。
-- `TODO`：实现 `SessionCommandRule{CWD, Command}` 的最小规范化精确匹配。
-- `TODO`：使用 `Bash command`、`PowerShell command` 或 `Command` Presentation。
-- `TODO`：直接 Host Execute，返回 stdout、stderr、exit code、duration 和截断信息。
-- `TODO`：不解析完整 Shell 文件副作用，不生成 Workspace Diff attribution。
+- `DONE`：校验 command、canonical CWD、timeout、TTY、输出上限和进程取消。
+- `DONE`：空命令、NUL、非法 CWD 和灾难性命令直接拒绝。
+- `DONE`：Session Rule 只匹配 canonical CWD + 最小规范化后的精确命令。
+- `DONE`：默认 Host Execute，返回 stdout、stderr、exit code、duration 和截断信息；不解析 Shell AST、不生成文件归因 Diff。
 
-### C-08：Tool 命名、条件 Tool 与并发
+### C-08：Tool 命名、条件 Tool 与并发 — `DONE`
 
-- `TODO`：模型可见 Tool 收敛为 `read/edit/write/glob/grep/execute_command/update_plan`。
-- `TODO`：旧 `read_file/glob_files/grep_code` 只用于历史 Resume/Replay。
-- `TODO`：删除新 Catalog 中的 `list_dir`、`apply_patch` 和 `request_permissions`。
-- `TODO`：按能力接入 `write_stdin/view_image/request_user_input`。
-- `TODO`：按输入判断 IsConcurrencySafe；读取有界并行，修改、命令、Plan 和 MCP Call 串行。
+- `DONE`：默认模型主链使用 `read/edit/write/glob/grep/execute_command/update_plan`，并按能力暴露条件工具。
+- `DONE`：旧 `read_file/list_dir/glob_files/grep_code/apply_patch/request_permissions` 只作为隐藏兼容 Handler，不进入模型可见快照。
+- `DONE`：读取与网络只读 Tool 可有界并行；修改、命令、Plan、MCP Call 串行；结果按原调用顺序恢复。
 
-### C-09：MCP、Skill 与 Web Approval
+### C-09：MCP、Skill 与 Web Approval — `DONE`
 
-- `TODO`：MCP List/Resource Read 默认 Allow，MCP Call 默认 Ask。
-- `TODO`：Skill Markdown 默认 Allow，Skill Script 统一调用 `execute_command`。
-- `TODO`：Web Search 默认 Allow；Web Fetch 需要域名确认时使用 hostname Rule。
-- `TODO`：第二选项准确展示 Skill、命令前缀、Hostname 或 MCP Tool Name。
+- `DONE`：MCP List/Resource Read 默认 Allow，MCP Call 按 `server/tool` 询问并支持 Session Rule。
+- `DONE`：Skill Markdown 默认 Allow；脚本执行继续统一复用 `execute_command`。
+- `DONE`：保留可配置 Provider 的 `web_search`；Web Fetch 按 hostname 询问并支持 Session Rule。
+- `DONE`：Web/MCP 审批发布 Requested/Resolved 事件，第二选项包含 hostname 或 server/tool 具体范围。
 
-### C-10：Legacy Tool/Permission Cleanup
+### C-10：Legacy Tool/Permission Cleanup — `PARTIAL`
 
-- `TODO`：删除旧 PermissionProfile、Writable Root Store、CommandAuthorizer 和 Approval Key 主链。
-- `TODO`：删除 TurnDiffTracker、Workspace Diff attribution 和 Snapshot/Revert 依赖。
-- `TODO`：删除 `internal/sandbox`、Degraded Sandbox 和平台 Sandbox 分支。
-- `TODO`：删除旧 Router/Dispatcher/Hook 和新请求中的旧 Tool 名。
+- `DONE`：默认 Agent/Turn 不再注入旧 PatchProjector、RunDiff、Session writable-root Store、Sandbox 或 CommandAuthorizer。
+- `DONE`：新请求不暴露 `requested_permissions`，旧工具被 Registry 标记为 Hidden，不进入模型工具快照。
+- `PARTIAL`：`internal/project.PermissionProfile`、`internal/policy/CommandAuthorizer`、`internal/sandbox`、`internal/diff` 及旧 Handler 文件仍保留给历史测试/Replay 兼容；不得作为新主链继续扩展。
+- `TODO`：后续将历史调用迁移完毕后删除这些兼容包，并清除遗留 RunDiff Event/渲染分支。
 
 ### C 出口
 
-- [ ] `edit/write` 写入前展示准确 Diff，No 时零写入，stale 时拒绝覆盖。
-- [ ] 文件 Session Approval 使用 `accept_edits + Working Directories`。
-- [ ] 命令 Session Rule 只复用相同 canonical CWD 与精确命令。
-- [ ] Approval 文案快照覆盖 Edit、Create、Overwrite、External Read、Command、Skill、Fetch 和 MCP。
-- [ ] TUI 与 `--plain` 都能完成 Approval，且不直接拥有 Tool 状态。
-- [ ] 目标代码不存在 PreparedCall、通用 Hook、旧 PermissionProfile、TurnDiffTracker 或 Sandbox 主链。
+- [x] `edit/write` 写入前展示准确 Diff，No 时零写入，stale 时拒绝覆盖。
+- [x] 文件 Session Approval 使用目录级 `accept edits` 语义。
+- [x] 命令 Session Rule 只复用相同 canonical CWD 与精确命令。
+- [x] Web/MCP 外部 Session Rule 和 Approval 事件具备回归测试。
+- [x] TUI 与 `--plain` 都能完成结构化 Approval，且不直接拥有 Tool 状态。
+- [x] 默认主链不存在 PreparedCall、通用 Hook、旧 PermissionStore 注入、RunDiff 投影器或 Sandbox 执行分支。
+- [ ] 历史兼容包完全删除，并由 D 阶段统一 Event/InteractiveRequest 主链替代旧 Approval Event。
 
 ## 6. D. Event + TUI + Slash Command
 

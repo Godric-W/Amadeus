@@ -27,25 +27,22 @@ import (
 type ClientFactory func(string, config.ProviderConfig) (llm.Client, error)
 
 type AgentOptions struct {
-	ClientFactory      ClientFactory
-	PatchProjector     builtin.PatchProjector
-	RolloutRecorder    react.RolloutRecorder
-	PlanState          *plan.State
-	PlanRecorder       builtin.PlanUpdateRecorder
-	UserSkillRoot      string
-	UserMCPRoot        string
-	MCPClientFactory   mcp.ClientFactory
-	Skills             *skill.Catalog
-	SkillWarnings      []error
-	MCP                *mcp.Manager
-	WebFetcher         webfetch.Fetcher
-	WebSearch          websearch.Provider
-	FileSystemPolicy   *project.FileSystemPolicy
-	RunPermissions     *project.PermissionStore
-	SessionPermissions *project.PermissionStore
-	SessionApprovals   *policy.SessionApprovalStore
-	FileApprovals      *policy.FileApprovalStore
-	ExternalApprovals  *policy.SessionRuleStore
+	ClientFactory     ClientFactory
+	RolloutRecorder   react.RolloutRecorder
+	PlanState         *plan.State
+	PlanRecorder      builtin.PlanUpdateRecorder
+	UserSkillRoot     string
+	UserMCPRoot       string
+	MCPClientFactory  mcp.ClientFactory
+	Skills            *skill.Catalog
+	SkillWarnings     []error
+	MCP               *mcp.Manager
+	WebFetcher        webfetch.Fetcher
+	WebSearch         websearch.Provider
+	FileSystemPolicy  *project.FileSystemPolicy
+	SessionApprovals  *policy.SessionApprovalStore
+	FileApprovals     *policy.FileApprovalStore
+	ExternalApprovals *policy.SessionRuleStore
 }
 
 type Agent struct {
@@ -81,7 +78,7 @@ func NewAgentWithOptions(configured config.Config, root project.Root, events eve
 	if createClient == nil {
 		createClient = defaultClientFactory
 	}
-	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, options.PatchProjector, options.RolloutRecorder, options.PlanState, options.PlanRecorder, options.UserSkillRoot, options.UserMCPRoot, options.MCPClientFactory, options.Skills, options.SkillWarnings, options.MCP, options.WebFetcher, options.WebSearch, options.FileSystemPolicy, options.RunPermissions, options.SessionPermissions, options.SessionApprovals, options.FileApprovals, options.ExternalApprovals)
+	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, options.RolloutRecorder, options.PlanState, options.PlanRecorder, options.UserSkillRoot, options.UserMCPRoot, options.MCPClientFactory, options.Skills, options.SkillWarnings, options.MCP, options.WebFetcher, options.WebSearch, options.FileSystemPolicy, options.SessionApprovals, options.FileApprovals, options.ExternalApprovals)
 }
 
 func (agent *Agent) AvailableTools() []tool.Spec {
@@ -109,10 +106,10 @@ func legacyToolName(name string) bool {
 }
 
 func newAgent(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory) (*Agent, error) {
-	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, nil, nil, nil, nil, "", "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, nil, nil, nil, "", "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 }
 
-func newAgentWithOptions(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory, patchProjector builtin.PatchProjector, rolloutRecorder react.RolloutRecorder, planState *plan.State, planRecorder builtin.PlanUpdateRecorder, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, externalSkills *skill.Catalog, externalSkillWarnings []error, externalMCP *mcp.Manager, webFetcher webfetch.Fetcher, webSearch websearch.Provider, fileSystemPolicy *project.FileSystemPolicy, runPermissions, sessionPermissions *project.PermissionStore, sessionApprovals *policy.SessionApprovalStore, fileApprovals *policy.FileApprovalStore, externalApprovals *policy.SessionRuleStore) (*Agent, error) {
+func newAgentWithOptions(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory, rolloutRecorder react.RolloutRecorder, planState *plan.State, planRecorder builtin.PlanUpdateRecorder, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, externalSkills *skill.Catalog, externalSkillWarnings []error, externalMCP *mcp.Manager, webFetcher webfetch.Fetcher, webSearch websearch.Provider, fileSystemPolicy *project.FileSystemPolicy, sessionApprovals *policy.SessionApprovalStore, fileApprovals *policy.FileApprovalStore, externalApprovals *policy.SessionRuleStore) (*Agent, error) {
 	if err := config.Validate(configured); err != nil {
 		return nil, fmt.Errorf("validate Agent configuration: %w", err)
 	}
@@ -156,7 +153,6 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 	}
 	mvpOptions.FileSystemPolicy = fileSystemPolicy
 	mvpOptions.ApplyPatch.Executor.FileSystemPolicy = fileSystemPolicy
-	mvpOptions.ApplyPatch.Projector = patchProjector
 	mvpOptions.ExecuteCommand.FileSystemPolicy = fileSystemPolicy
 	mvpOptions.ExecuteCommand.Approvals = approvals
 	mvpOptions.ExecuteCommand.SessionApprovals = sessionApprovals
@@ -167,7 +163,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 		return nil, fmt.Errorf("create MVP tool registry: %w", err)
 	}
 	fileTools, err := builtin.NewFileTools(root, builtin.FileToolsOptions{
-		FileSystemPolicy: fileSystemPolicy, Approvals: approvals, SessionApprovals: fileApprovals,
+		FileSystemPolicy: fileSystemPolicy, Approvals: approvals, Events: events, SessionApprovals: fileApprovals,
 		MaxBytes: mvpOptions.ReadFile.MaxBytes, MaxLineBytes: mvpOptions.ReadFile.MaxLineBytes,
 	})
 	if err != nil {

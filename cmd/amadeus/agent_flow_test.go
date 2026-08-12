@@ -64,7 +64,7 @@ func (client *inlineApprovalCodingClient) Stream(_ context.Context, _ llm.Reques
 	switch client.streamRequests {
 	case 1:
 		return &codingCommandStream{chunks: []llm.StreamChunk{
-			{ID: "write-tool", ToolCalls: []llm.ToolCall{{ID: "write-1", Name: "apply_patch", Arguments: json.RawMessage(`{"patch":"*** Begin Patch\n*** Add File: approved.txt\n+approved\n*** End Patch"}`)}}, FinishReason: llm.FinishReasonToolCalls},
+			{ID: "write-tool", ToolCalls: []llm.ToolCall{{ID: "write-1", Name: "write", Arguments: json.RawMessage(`{"path":"approved.txt","content":"approved\n"}`)}}, FinishReason: llm.FinishReasonToolCalls},
 		}}, nil
 	case 2:
 		return &codingCommandStream{chunks: []llm.StreamChunk{
@@ -152,7 +152,7 @@ func (client *codingCommandClient) Stream(_ context.Context, request llm.Request
 	switch len(client.streamRequests) {
 	case 1:
 		return &codingCommandStream{chunks: []llm.StreamChunk{
-			{ID: "response-tools", ToolCalls: []llm.ToolCall{{ID: "read-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)}},
+			{ID: "response-tools", ToolCalls: []llm.ToolCall{{ID: "read-1", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`)}},
 				Usage: &llm.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}},
 			{ID: "response-tools", FinishReason: llm.FinishReasonToolCalls, ProviderFinishReason: "tool_calls"},
 		}}, nil
@@ -358,7 +358,7 @@ func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 		t.Fatalf("unexpected Coding Agent stdout: %q", stdout.String())
 	}
 	for _, fragment := range []string{
-		"tool started: read_file", "tool completed: read_file", "status: phase=idle", "result: completed",
+		"tool started: read", "tool completed: read", "status: phase=idle", "result: completed",
 	} {
 		if !strings.Contains(stderr.String(), fragment) {
 			t.Fatalf("Coding Agent stderr missing %q: %s", fragment, stderr.String())
@@ -368,8 +368,20 @@ func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 		t.Fatalf("unexpected Provider request counts: stream=%d complete=%d", len(client.streamRequests), len(client.completeRequests))
 	}
 	first := client.streamRequests[0]
-	if !strings.Contains(first.Prompt.BaseInstructions.Text, "You are Amadeus") || len(first.Prompt.Input) < 4 || first.Prompt.Input[0].Role != llm.RoleDeveloper || first.Prompt.Input[len(first.Prompt.Input)-1].Role != llm.RoleUser || first.Prompt.Input[len(first.Prompt.Input)-1].Content != "Inspect README and finish" || len(first.Prompt.Tools) != 9 {
-		t.Fatalf("unexpected first Agent request: %#v", first)
+	if !strings.Contains(first.Prompt.BaseInstructions.Text, "You are Amadeus") {
+		t.Fatalf("base instructions missing Amadeus identity")
+	}
+	if len(first.Prompt.Input) < 4 {
+		t.Fatalf("first Agent request has too few messages: %d", len(first.Prompt.Input))
+	}
+	if first.Prompt.Input[0].Role != llm.RoleDeveloper || first.Prompt.Input[len(first.Prompt.Input)-1].Role != llm.RoleUser {
+		t.Fatalf("unexpected first Agent message roles: first=%q last=%q", first.Prompt.Input[0].Role, first.Prompt.Input[len(first.Prompt.Input)-1].Role)
+	}
+	if first.Prompt.Input[len(first.Prompt.Input)-1].Content != "Inspect README and finish" {
+		t.Fatalf("unexpected first Agent user message: %q", first.Prompt.Input[len(first.Prompt.Input)-1].Content)
+	}
+	if len(first.Prompt.Tools) != 8 {
+		t.Fatalf("unexpected first Agent tool count: %d", len(first.Prompt.Tools))
 	}
 	firstPrompt := messageContents(first.Prompt.Input)
 	for _, fragment := range []string{"## Execute Mode", "## Workspace Context", "## Permission And Isolation Context", "## Tool Discipline", "user instruction", "project instruction"} {
@@ -463,7 +475,7 @@ func TestPlainInteractiveWorkspaceWriteDoesNotPrompt(t *testing.T) {
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	command.SetIn(strings.NewReader("create a file\n"))
+	command.SetIn(strings.NewReader("create a file\ns\n"))
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)
 	command.SetArgs([]string{"--plain"})
@@ -474,13 +486,13 @@ func TestPlainInteractiveWorkspaceWriteDoesNotPrompt(t *testing.T) {
 	if err != nil || string(content) != "approved\n" {
 		t.Fatalf("approved write missing: content=%q err=%v", content, err)
 	}
-	for _, fragment := range []string{"tool: apply_patch", "result: completed", "session: closed"} {
+	for _, fragment := range []string{"tool: write", "result: completed", "session: closed"} {
 		if !strings.Contains(stderr.String(), fragment) {
 			t.Fatalf("inline approval transcript missing %q: %s", fragment, stderr.String())
 		}
 	}
-	if strings.Contains(stderr.String(), "Approval required") {
-		t.Fatalf("workspace write unexpectedly prompted: %s", stderr.String())
+	if !strings.Contains(stderr.String(), "Create file") {
+		t.Fatalf("workspace write did not present Approval: %s", stderr.String())
 	}
 	if client.completeRequests != 0 || client.streamRequests != 2 || !strings.Contains(stdout.String(), "created") {
 		t.Fatalf("inline approval run did not complete: complete=%d stream=%d stdout=%q", client.completeRequests, client.streamRequests, stdout.String())

@@ -69,22 +69,24 @@ func (runner *agentController) writeInteractiveStatus(ctx context.Context, invoc
 	runner.threadMutex.Lock()
 	factory := runner.taskFactories[active.ID()]
 	runner.threadMutex.Unlock()
-	writableRoots := 0
-	approvalCount := 0
+	fileApprovalCount := 0
+	commandApprovalCount := 0
+	externalApprovalCount := 0
 	skillRevision := "unloaded"
 	mcpRevision := "unloaded"
 	if factory != nil {
-		writableRoots = len(factory.sessionPermissions.Snapshot().WritableRoots)
-		approvalCount = factory.sessionApprovals.Count()
+		fileApprovalCount = factory.fileApprovals.Count()
+		commandApprovalCount = factory.sessionApprovals.Count()
+		externalApprovalCount = factory.externalApprovals.Count()
 		if extensions, extensionErr := factory.ensureExtensions(); extensionErr == nil {
 			skillRevision = shortRevision(extensions.SkillRevision())
 			mcpRevision = shortRevision(extensions.MCPRevision())
 		}
 	}
 	_, err = fmt.Fprintf(invocation.ErrorOutput,
-		"project: %s\nsession: %s\ntitle: %s\nprovider: %s\nmodel: %s\nrollout items: %d\nsession writable roots: %d\nsession approvals: %d\nskills revision: %s\nmcp revision: %s\n",
+		"project: %s\nsession: %s\ntitle: %s\nprovider: %s\nmodel: %s\nrollout items: %d\nfile approvals: %d\ncommand approvals: %d\nexternal approvals: %d\nskills revision: %s\nmcp revision: %s\n",
 		invocation.Project.Path(), sessionID, title, configured.DefaultProvider, provider.Model, rolloutItems,
-		writableRoots, approvalCount, skillRevision, mcpRevision,
+		fileApprovalCount, commandApprovalCount, externalApprovalCount, skillRevision, mcpRevision,
 	)
 	return err
 }

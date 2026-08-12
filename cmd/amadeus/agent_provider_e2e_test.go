@@ -158,8 +158,8 @@ func providerAgentFixture(api config.APIMode, requestIndex int) string {
 		case 1:
 			return strings.Join([]string{
 				`event: response.created`, `data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_tool","status":"in_progress"}}`, ``,
-				`event: response.output_item.added`, `data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"item_1","type":"function_call","call_id":"read-1","name":"read_file","arguments":"","status":"in_progress"}}`, ``,
-				`event: response.function_call_arguments.done`, `data: {"type":"response.function_call_arguments.done","sequence_number":2,"item_id":"item_1","output_index":0,"name":"read_file","arguments":"{\"path\":\"README.md\"}"}`, ``,
+				`event: response.output_item.added`, `data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"item_1","type":"function_call","call_id":"read-1","name":"read","arguments":"","status":"in_progress"}}`, ``,
+				`event: response.function_call_arguments.done`, `data: {"type":"response.function_call_arguments.done","sequence_number":2,"item_id":"item_1","output_index":0,"name":"read","arguments":"{\"path\":\"README.md\"}"}`, ``,
 				`event: response.completed`, `data: {"type":"response.completed","sequence_number":3,"response":{"id":"resp_tool","status":"completed","usage":{"input_tokens":2,"input_tokens_details":{"cached_tokens":0},"output_tokens":2,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":4}}}`, ``, `data: [DONE]`, ``,
 			}, "\n")
 		case 2:
@@ -170,7 +170,7 @@ func providerAgentFixture(api config.APIMode, requestIndex int) string {
 	}
 	if requestIndex == 1 {
 		return strings.Join([]string{
-			`data: {"id":"chat_tool","object":"chat.completion.chunk","created":0,"model":"mock-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"read-1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}]},"finish_reason":null}]}`, ``,
+			`data: {"id":"chat_tool","object":"chat.completion.chunk","created":0,"model":"mock-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"read-1","type":"function","function":{"name":"read","arguments":"{\"path\":\"README.md\"}"}}]},"finish_reason":null}]}`, ``,
 			`data: {"id":"chat_tool","object":"chat.completion.chunk","created":0,"model":"mock-model","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`, ``, `data: [DONE]`, ``,
 		}, "\n")
 	}

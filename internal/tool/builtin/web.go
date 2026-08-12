@@ -85,6 +85,11 @@ func (fetch *WebFetch) Handle(ctx context.Context, invocation tool.Invocation) (
 		if validateErr := decision.Validate(); validateErr != nil {
 			return tool.Output{}, validateErr
 		}
+		if fetch.events != nil {
+			if publishErr := fetch.events.Publish(ctx, event.ApprovalResolved{RequestID: request.ID, ToolName: request.ToolName, Outcome: string(decision.Outcome), Scope: string(decision.Scope), Source: string(decision.Source), Reason: decision.Reason}); publishErr != nil {
+				return tool.Output{}, publishErr
+			}
+		}
 		if !decision.Allowed() {
 			return tool.Output{ToolName: "web_fetch", Text: "web fetch denied"}, &webApprovalDeniedError{reason: decision.Reason}
 		}

@@ -17,7 +17,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	bootstrap "github.com/Godric-W/Amadeus/internal/app/bootstrap"
 	"github.com/Godric-W/Amadeus/internal/config"
-	rundiff "github.com/Godric-W/Amadeus/internal/diff"
 	"github.com/Godric-W/Amadeus/internal/instruction"
 	interfacecli "github.com/Godric-W/Amadeus/internal/interface/cli"
 	"github.com/Godric-W/Amadeus/internal/interface/tui"
@@ -28,31 +27,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	threadmanager "github.com/Godric-W/Amadeus/internal/thread/manager"
 	"github.com/Godric-W/Amadeus/internal/tool"
-	"github.com/Godric-W/Amadeus/internal/tool/builtin"
-	patchtool "github.com/Godric-W/Amadeus/internal/tool/patch"
 )
-
-type patchProjectorGroup []builtin.PatchProjector
-
-func (group patchProjectorGroup) ProjectPatch(ctx context.Context, deltas []patchtool.AppliedPatchDelta) error {
-	var combined error
-	for _, projector := range group {
-		if projector != nil {
-			combined = errors.Join(combined, projector.ProjectPatch(ctx, clonePatchDeltas(deltas)))
-		}
-	}
-	return combined
-}
-
-func clonePatchDeltas(deltas []patchtool.AppliedPatchDelta) []patchtool.AppliedPatchDelta {
-	cloned := make([]patchtool.AppliedPatchDelta, len(deltas))
-	for index, delta := range deltas {
-		cloned[index] = delta
-		cloned[index].OldContent = append([]byte(nil), delta.OldContent...)
-		cloned[index].NewContent = append([]byte(nil), delta.NewContent...)
-	}
-	return cloned
-}
 
 func (runner *agentController) newTurnContext(parent context.Context) (context.Context, context.CancelFunc, error) {
 	factory := runner.runtime.agentContextFactory
@@ -188,14 +163,12 @@ func (runner *agentController) executeCodingTurn(ctx context.Context, factory *c
 	deniedRoots := append(project.DefaultDeniedRoots(), amadeusDeniedRoots(runner.runtime.amadeusRoot)...)
 	readOnlyRoots := workspaceReadOnlyRoots(workspaceRoots)
 	temporaryRoots := project.DefaultTemporaryRoots()
-	turnPermissions := project.NewPermissionStore()
 	fileSystemPolicy, err := project.NewFileSystemPolicy(project.FileSystemPolicyOptions{
 		CWD: invocation.Project.Path(),
 		Profile: project.PermissionProfile{
 			ReadHost: true, WorkspaceRoots: workspaceRoots, TemporaryRoots: temporaryRoots,
 			ReadOnlyRoots: readOnlyRoots, DeniedRoots: deniedRoots,
 		},
-		RunPermissions: turnPermissions, SessionPermissions: factory.sessionPermissions,
 	})
 	if err != nil {
 		return task.Result{}, err
@@ -226,11 +199,6 @@ func (runner *agentController) executeCodingTurn(ctx context.Context, factory *c
 	if auditCloser != nil {
 		defer func() { runErr = errors.Join(runErr, auditCloser.Close()) }()
 	}
-	runDiff, err := rundiff.NewProjector(invocation.Project.Path(), eventHub)
-	if err != nil {
-		return task.Result{}, err
-	}
-	patchProjectors := append(patchProjectorGroup{runDiff}, runner.runtime.patchProjectors...)
 	planState := plan.NewState()
 	extensions, err := factory.ensureExtensions()
 	if err != nil {
@@ -239,9 +207,8 @@ func (runner *agentController) executeCodingTurn(ctx context.Context, factory *c
 	options := bootstrap.AgentOptions{
 		UserSkillRoot: runner.runtime.amadeusRoot, UserMCPRoot: runner.runtime.amadeusRoot,
 		MCPClientFactory: runner.runtime.mcpClientFactory, WebFetcher: runner.runtime.webFetcher, WebSearch: runner.runtime.webSearch,
-		PatchProjector: patchProjectors, RolloutRecorder: &turnRolloutRecorder{host: host, turnID: turnContext.TurnID},
-		PlanState: planState, FileSystemPolicy: fileSystemPolicy, RunPermissions: turnPermissions,
-		SessionPermissions: factory.sessionPermissions, SessionApprovals: factory.sessionApprovals,
+		RolloutRecorder: &turnRolloutRecorder{host: host, turnID: turnContext.TurnID},
+		PlanState:       planState, FileSystemPolicy: fileSystemPolicy, SessionApprovals: factory.sessionApprovals,
 		FileApprovals:     factory.fileApprovals,
 		ExternalApprovals: factory.externalApprovals,
 		Skills:            extensions.Skills(), SkillWarnings: extensions.SkillWarnings(), MCP: extensions.MCP(),

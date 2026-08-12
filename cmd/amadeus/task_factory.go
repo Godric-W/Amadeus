@@ -11,7 +11,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/config"
 	extensionruntime "github.com/Godric-W/Amadeus/internal/extension"
 	"github.com/Godric-W/Amadeus/internal/policy"
-	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/thread"
 )
 
@@ -21,17 +20,16 @@ type codingTaskRequest struct {
 }
 
 type codingTaskFactory struct {
-	mu                 sync.Mutex
-	runner             *agentController
-	threadID           thread.ID
-	configured         config.Config
-	baseInvocation     agentInvocation
-	requests           chan codingTaskRequest
-	extensions         *extensionruntime.Runtime
-	sessionPermissions *project.PermissionStore
-	sessionApprovals   *policy.SessionApprovalStore
-	fileApprovals      *policy.FileApprovalStore
-	externalApprovals  *policy.SessionRuleStore
+	mu                sync.Mutex
+	runner            *agentController
+	threadID          thread.ID
+	configured        config.Config
+	baseInvocation    agentInvocation
+	requests          chan codingTaskRequest
+	extensions        *extensionruntime.Runtime
+	sessionApprovals  *policy.SessionApprovalStore
+	fileApprovals     *policy.FileApprovalStore
+	externalApprovals *policy.SessionRuleStore
 }
 
 type codingSessionTask struct {
@@ -46,7 +44,7 @@ func newCodingTaskFactory(runner *agentController, threadID thread.ID, configure
 	}
 	return &codingTaskFactory{
 		runner: runner, threadID: threadID, configured: configured, baseInvocation: invocation,
-		requests: make(chan codingTaskRequest, 1), sessionPermissions: project.NewPermissionStore(),
+		requests:         make(chan codingTaskRequest, 1),
 		sessionApprovals: policy.NewSessionApprovalStore(), fileApprovals: policy.NewFileApprovalStore(),
 		externalApprovals: policy.NewSessionRuleStore(),
 	}, nil
@@ -101,7 +99,6 @@ func (factory *codingTaskFactory) Close() error {
 	runtime := factory.extensions
 	factory.extensions = nil
 	factory.mu.Unlock()
-	factory.sessionPermissions.Clear()
 	factory.sessionApprovals.Clear()
 	factory.fileApprovals.Clear()
 	factory.externalApprovals.Clear()

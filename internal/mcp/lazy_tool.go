@@ -170,6 +170,11 @@ func (value *LazyCallTool) Handle(ctx context.Context, invocation tool.Invocatio
 		if validateErr := decision.Validate(); validateErr != nil {
 			return tool.Output{}, validateErr
 		}
+		if value.events != nil {
+			if publishErr := value.events.Publish(ctx, event.ApprovalResolved{RequestID: request.ID, ToolName: request.ToolName, Outcome: string(decision.Outcome), Scope: string(decision.Scope), Source: string(decision.Source), Reason: decision.Reason}); publishErr != nil {
+				return tool.Output{}, publishErr
+			}
+		}
 		if !decision.Allowed() {
 			return tool.Output{ToolName: "mcp_call", Text: "MCP tool call denied"}, &mcpApprovalDeniedError{reason: decision.Reason}
 		}

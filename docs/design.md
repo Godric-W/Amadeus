@@ -989,8 +989,8 @@ Tool 主链收敛为：
 Model Tool Call
 → Tool Registry
 → Schema Validate
-→ Tool.ValidateInput
-→ Tool.CheckPermission
+→ Argument Normalize / Validate
+→ Handler 内部 Permission Check
 → Allow / Ask / Deny
 → Approval Runtime（仅 Ask）
 → Tool.Execute
@@ -1000,29 +1000,17 @@ Model Tool Call
 → TUI Tool/Diff Cell
 ```
 
-核心类型：
+当前 Go 实现的核心类型：
 
 ```go
-type Tool interface {
+type Handler interface {
     Spec() Spec
-    ValidateInput(context.Context, json.RawMessage) error
-    CheckPermission(
-        context.Context,
-        json.RawMessage,
-        PermissionContext,
-    ) (PermissionResult, error)
-    Execute(
-        context.Context,
-        json.RawMessage,
-        ToolContext,
-    ) (Result, error)
-    IsReadOnly(json.RawMessage) bool
-    IsConcurrencySafe(json.RawMessage) bool
-    PresentCall(json.RawMessage) Presentation
+    SupportsParallelToolCalls() bool
+    Handle(context.Context, Invocation) (Output, error)
 }
 ```
 
-Tool Registry 同时提供模型可见 Spec 和 Runtime Tool 实例。文件状态、Diff 和命令规范化属于具体 Tool 的内部实现。
+`Registry` 同时提供模型可见 Spec 和 Runtime Handler；`Router` 是唯一的运行时调用入口，负责参数规范化、可见性、生命周期事件和有界并行。文件状态、Diff、Approval 和命令规范化属于具体 Handler 的内部实现，不再引入通用 Hook 或第二套 Permission Engine。
 
 ### 14.2 Tool 分类
 
@@ -1193,14 +1181,14 @@ type ApprovalDecision struct {
 - Insertions/Deletions。
 - 选项说明。
 
-Approval TUI 不得把所有 Tool 硬编码为 `Allow / Allow for this session / Deny`。具体标题、问题和选项文本由 Tool 类型、目标范围与 Permission Suggestions 共同生成，TUI 只负责统一的选择、反馈输入和键盘交互。
+Approval TUI 不得把所有 Tool 硬编码为 `Allow / Allow for this session / Deny`。具体标题、问题和选项文本由 Handler 类型和目标范围生成，TUI 只负责统一的选择、反馈输入和键盘交互。
 
 - `Yes` 只批准当前 Tool Call，不应用 Permission Update。
 - 带有具体范围的第二选项批准当前调用，并应用该选项携带的 Session Permission Updates。
 - `No` 不执行 Tool，并把拒绝及可选反馈作为 ToolResult 返回模型。
 - Session Permission State 只存在于当前进程内存，Resume 后恢复为默认权限状态。
 
-ApprovalDecision 只提交 RequestID、OptionID 和可选反馈。Approval Runtime 从原始 ApprovalRequest 中解析对应 Outcome 与 Permission Updates，再通过 AmadeusThread 路由到 ActiveTurn；TUI 不直接调用 Tool 或修改权限状态。
+当前实现中 CLI/TUI 将选项解析为完整 `ApprovalDecision`，Handler 直接消费该结果；D 阶段再将同一数据模型接入 `InteractiveRequest`/`ApprovalDecisionOp`，不改变 Handler 的审批语义。
 
 #### Claude Code 对齐的 Approval 文案
 
@@ -1241,9 +1229,19 @@ Yes, allow edits to Amadeus config for this session
 Esc to reject · Tab to add feedback
 ```
 
-### 15.5 Permission Context 与默认规则
+### 15.5 Permission Stores 与默认规则
 
-权限状态对齐 Claude Code 的核心结构，但只保留 Amadeus 实际需要的字段：
+当前不实现完整的 Claude Code Permission Engine，而采用三个职责明确、仅存于活动 Session 内存的 Store：
+
+- `FileApprovalStore`：保存 canonical directory 的 `accept edits` 授权，供 `edit/write` 共用。
+- `SessionApprovalStore`：保存 `{canonical CWD, exact normalized command}`，供 `execute_command` 复用。
+- `SessionRuleStore`：保存 `web:<hostname>` 与 `mcp:<server>/<tool>` 等外部调用规则。
+
+它们都在 Session Close/Resume 时清空，不写入 SQLite 或 Rollout，也不恢复历史 Approval。路径策略仍负责 canonicalization、Denied/ReadOnly roots 和符号链接安全检查；旧 `PermissionProfile`/`PermissionStore` 只作为过渡兼容实现，不再参与默认授权主链。
+
+未来若 D 阶段需要统一协议，只允许在这些 Store 之上增加薄的 Runtime Facade，不恢复大而全的 Permission Engine。
+
+历史设计草案中的 Permission State 仅作为语义参考，不是当前必须存在的 Go 类型：
 
 ```go
 type PermissionMode string
@@ -1290,20 +1288,19 @@ type AddPermissionRules struct {
 }
 ```
 
-`WorkingDirectories` 由 Session 启动 CWD 加上 `AdditionalWorkingDirectories` 构成。Rule Source 只包含 BuiltIn 与 Session，不提供配置规则 DSL。
+`WorkingDirectories` 等概念在当前实现中由 `FileApprovalStore` 的 canonical directory 集合表达；不提供配置规则 DSL。
 
 #### Claude Code 对齐的文件 Session Approval
 
 `edit` 与 `write` 共用同一文件修改权限语义；其他结构化文件编辑 Tool 复用该语义：
 
 - 默认模式下，结构化文件修改返回 Ask。
-- 用户对工作目录内的文件选择 `Yes, allow all edits during this session` 时，应用 `SetPermissionMode{accept_edits}`。
-- `accept_edits` 模式自动允许所有 Working Directories 内通过安全检查的 `edit/write`。
-- 用户对工作目录外的文件选择 `Yes, allow all edits in <directory>/ during this session` 时，同时应用 `SetPermissionMode{accept_edits}` 和 `AddWorkingDirectories{目标文件所在目录}`。
-- 显式 Deny/Ask Rule、符号链接检查和受保护路径检查优先于 `accept_edits`，不能被模式绕过。
+- 用户对文件选择 `Yes, allow all edits during this session` 或 `Yes, allow all edits in <directory>/ during this session` 时，直接将目标 canonical directory 写入 `FileApprovalStore`。
+- 后续位于已授权目录内的 `edit/write` 自动允许，但仍执行路径 canonicalization、Denied/ReadOnly roots、符号链接和 stale check。
+- 当前不实现独立 `accept_edits` Mode 或通用 Deny/Ask Rule；这些是未来可选的协议层语义，不应被误认为已存在的运行时 API。
 - 对 `$AMADEUS_HOME`、版本控制元数据和 Shell 启动文件等受保护位置，可以只提供窄范围 Session Rule，而不是扩大整个工作目录。
 
-因此文件 Tool 的 Session Allow 不是“同一文件规则”，也不是分别为 `edit` 与 `write` 缓存授权；它表示当前 Session 对允许工作目录中的安全结构化编辑进入 `accept_edits` 模式。
+因此文件 Tool 的 Session Allow 不是“同一文件规则”，也不是分别为 `edit` 与 `write` 缓存授权；它是共享的 canonical directory 规则。
 
 默认规则：
 
@@ -1325,7 +1322,7 @@ type AddPermissionRules struct {
 | Web Fetch 已授权域名 | Allow |
 | Web Fetch 未授权域名 | Ask |
 
-Plan Mode 将 Session Permission Mode 切换为 `plan` 并禁止实施副作用；退出 Plan Mode 时恢复进入前的模式。`accept_edits` 只作用于结构化文件修改，不自动批准任意 `execute_command`。
+Plan Mode 由当前 Agent 的可见 Tool 投影禁止实施副作用；它不修改上述三个 Store，也不自动批准任意 `execute_command`。
 
 ### 15.6 Apply 与 Verify
 
@@ -1345,7 +1342,6 @@ Plan Mode 将 Session Permission Mode 切换为 `plan` 并禁止实施副作用�
 ```text
 Parse Invocation
 → Validate cwd/timeout/tty
-→ Tool.CheckPermission
 → Allow / Ask / Deny
 → Approval Runtime（仅 Ask）
 → Host Execute

@@ -16,8 +16,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/mcp"
-	"github.com/Godric-W/Amadeus/internal/tool/builtin"
-	patchtool "github.com/Godric-W/Amadeus/internal/tool/patch"
 	"github.com/Godric-W/Amadeus/internal/webfetch"
 )
 
@@ -43,9 +41,9 @@ func (client *codingWorkflowClient) Stream(_ context.Context, request llm.Reques
 	var call llm.ToolCall
 	switch client.streamIndex {
 	case 1:
-		call = llm.ToolCall{ID: "read-calc", Name: "read_file", Arguments: json.RawMessage(`{"path":"calc.go"}`)}
+		call = llm.ToolCall{ID: "read-calc", Name: "read", Arguments: json.RawMessage(`{"path":"calc.go"}`)}
 	case 2:
-		call = llm.ToolCall{ID: "write-calc", Name: "apply_patch", Arguments: json.RawMessage(`{"patch":"*** Begin Patch\n*** Update File: calc.go\n@@\n-func Add(left, right int) int { return left - right }\n+func Add(left, right int) int { return left + right }\n*** End Patch"}`)}
+		call = llm.ToolCall{ID: "write-calc", Name: "edit", Arguments: json.RawMessage(`{"path":"calc.go","old_string":"func Add(left, right int) int { return left - right }","new_string":"func Add(left, right int) int { return left + right }"}`)}
 	case 3:
 		call = llm.ToolCall{ID: "test-project", Name: "execute_command", Arguments: json.RawMessage(`{"command":"go test ./...","timeout_ms":30000}`)}
 	default:
@@ -207,7 +205,7 @@ func TestCodingAgentCommandReadsFixesTestsAndCompletes(t *testing.T) {
 	if stdout.String() != "fixed Add and verified go test\n" {
 		t.Fatalf("unexpected workflow stdout: %q", stdout.String())
 	}
-	for _, fragment := range []string{"tool started: read_file", "tool started: apply_patch", "tool started: execute_command", "result: completed"} {
+	for _, fragment := range []string{"tool started: read", "tool started: edit", "tool started: execute_command", "result: completed"} {
 		if !strings.Contains(stderr.String(), fragment) {
 			t.Fatalf("workflow stderr missing %q: %s", fragment, stderr.String())
 		}
@@ -238,11 +236,11 @@ func (client *addDirWorkflowClient) Complete(context.Context, llm.Request) (llm.
 func (client *addDirWorkflowClient) Stream(context.Context, llm.Request) (llm.Stream, error) {
 	client.stream++
 	if client.stream == 1 {
-		arguments, err := json.Marshal(map[string]string{"patch": "*** Begin Patch\n*** Add File: " + client.target + "\n+shared\n*** End Patch"})
+		arguments, err := json.Marshal(map[string]string{"path": client.target, "content": "shared\n"})
 		if err != nil {
 			return nil, err
 		}
-		return skillWorkflowToolStream("add-shared", "apply_patch", string(arguments)), nil
+		return skillWorkflowToolStream("add-shared", "write", string(arguments)), nil
 	}
 	return &codingCommandStream{chunks: []llm.StreamChunk{
 		{ID: "add-dir-final", ContentDelta: "updated shared workspace"},
@@ -419,7 +417,7 @@ func (client *integratedWorkflowClient) Stream(_ context.Context, _ llm.Request)
 		{"mcp-list", "mcp_list_tools", `{"server":"demo"}`},
 		{"mcp", "mcp_call", `{"server":"demo","name":"echo","arguments":{"value":"hello"}}`},
 		{"web", "web_fetch", `{"url":"https://example.com/article"}`},
-		{"write", "apply_patch", `{"patch":"*** Begin Patch\n*** Add File: report.txt\n+integrated\n*** End Patch"}`},
+		{"write", "write", `{"path":"report.txt","content":"integrated\n"}`},
 	}
 	if client.stream <= len(calls) {
 		call := calls[client.stream-1]
@@ -460,13 +458,6 @@ func (*integratedWebFetcher) Fetch(context.Context, string) (webfetch.Document, 
 	return webfetch.Document{URL: "https://example.com/article", Title: "Article", Text: "web fixture"}, nil
 }
 
-type integratedWriteHook struct{ calls int }
-
-func (hook *integratedWriteHook) ProjectPatch(_ context.Context, _ []patchtool.AppliedPatchDelta) error {
-	hook.calls++
-	return nil
-}
-
 func TestCodingWorkflowIntegratesSkillMCPWebAndDiagnosticHook(t *testing.T) {
 	amadeusHome, projectDirectory := t.TempDir(), t.TempDir()
 	writeCodingCommandConfig(t, amadeusHome)
@@ -487,10 +478,10 @@ func TestCodingWorkflowIntegratesSkillMCPWebAndDiagnosticHook(t *testing.T) {
 	}
 	writeE2EFile(t, filepath.Join(amadeusHome, "skills", "review", "SKILL.md"), "---\nname: review\ndescription: Review\n---\nSkill body\n")
 	writeE2EFile(t, filepath.Join(amadeusHome, "mcp.yaml"), "servers:\n  demo:\n    transport: stdio\n    command: fixture\n")
-	client, remote, hook := &integratedWorkflowClient{}, &integratedMCPClient{}, &integratedWriteHook{}
+	client, remote := &integratedWorkflowClient{}, &integratedMCPClient{}
 	auditSink := audit.NewMemorySink()
 	runtime := commandRuntime{amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup, terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil }, mcpClientFactory: func(context.Context, mcp.ServerConfig) (mcp.Client, error) { return remote, nil }, webFetcher: &integratedWebFetcher{}, patchProjectors: []builtin.PatchProjector{hook}, auditSinkFactory: func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil }, turnIDFactory: func() string { return "integrated-m6" }}
+		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil }, mcpClientFactory: func(context.Context, mcp.ServerConfig) (mcp.Client, error) { return remote, nil }, webFetcher: &integratedWebFetcher{}, auditSinkFactory: func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil }, turnIDFactory: func() string { return "integrated-m6" }}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout, stderr bytes.Buffer
 	command.SetIn(strings.NewReader("s\ns\ns\ns\n"))
@@ -500,8 +491,8 @@ func TestCodingWorkflowIntegratesSkillMCPWebAndDiagnosticHook(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatalf("run integrated workflow: %v\nstderr=%s", err, stderr.String())
 	}
-	if stdout.String() != "integrated workflow completed\n" || client.stream != 6 || client.complete != 0 || remote.calls != 1 || remote.closed != 1 || hook.calls != 1 {
-		t.Fatalf("unexpected integrated trace: stdout=%q client=%#v remote=%#v hook=%#v", stdout.String(), client, remote, hook)
+	if stdout.String() != "integrated workflow completed\n" || client.stream != 6 || client.complete != 0 || remote.calls != 1 || remote.closed != 1 {
+		t.Fatalf("unexpected integrated trace: stdout=%q client=%#v remote=%#v", stdout.String(), client, remote)
 	}
 	if content, err := os.ReadFile(filepath.Join(projectDirectory, "report.txt")); err != nil || string(content) != "integrated\n" {
 		t.Fatalf("write did not complete: content=%q err=%v", content, err)

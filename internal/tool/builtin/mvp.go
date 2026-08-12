@@ -120,7 +120,7 @@ func RegisterMVP(registry *tool.Registry, root project.Root, options MVPOptions)
 		return err
 	}
 	for _, candidate := range []tool.Handler{applyPatch, readFile, listDir, globFiles, grepCode} {
-		if err := registry.Register(candidate); err != nil {
+		if err := registry.RegisterWithRegistration(candidate, tool.Registration{Exposure: tool.ExposureHidden}); err != nil {
 			return fmt.Errorf("register MVP tool %q: %w", candidate.Spec().Name, err)
 		}
 	}
@@ -174,8 +174,8 @@ func grepCodeSpec() tool.Spec {
 
 func executeCommandSpec() tool.Spec {
 	return tool.Spec{
-		Name: "execute_command", Description: "Run builds, tests, Git, formatting, generators, project scripts, or legitimate fallback commands. Declare known extra writable roots in requested_permissions; Amadeus does not infer paths from the shell command; never use it to bypass tool policy.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","minLength":1},"cwd":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1},"yield_time_ms":{"type":"integer","minimum":0},"max_output_tokens":{"type":"integer","minimum":1},"tty":{"type":"boolean"},"requested_permissions":{"type":"object","properties":{"writable_roots":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true}},"additionalProperties":false}},"required":["command"],"additionalProperties":false}`),
+		Name: "execute_command", Description: "Run builds, tests, Git, formatting, generators, project scripts, or other shell commands in the requested working directory. Commands are subject to safety checks and approval before execution; never use it to bypass tool policy.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","minLength":1},"cwd":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1},"yield_time_ms":{"type":"integer","minimum":0},"max_output_tokens":{"type":"integer","minimum":1},"tty":{"type":"boolean"}},"required":["command"],"additionalProperties":false}`),
 		SideEffect:  tool.SideEffectExecute, Idempotent: false,
 	}
 }

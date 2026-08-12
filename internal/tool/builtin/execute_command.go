@@ -74,17 +74,12 @@ type ExecuteCommand struct {
 }
 
 type executeCommandArguments struct {
-	Command              string                      `json:"command"`
-	CWD                  string                      `json:"cwd,omitempty"`
-	TimeoutMS            int64                       `json:"timeout_ms,omitempty"`
-	YieldTimeMS          int64                       `json:"yield_time_ms,omitempty"`
-	MaxOutputTokens      int                         `json:"max_output_tokens,omitempty"`
-	TTY                  bool                        `json:"tty,omitempty"`
-	RequestedPermissions requestedCommandPermissions `json:"requested_permissions,omitempty"`
-}
-
-type requestedCommandPermissions struct {
-	WritableRoots []string `json:"writable_roots,omitempty"`
+	Command         string `json:"command"`
+	CWD             string `json:"cwd,omitempty"`
+	TimeoutMS       int64  `json:"timeout_ms,omitempty"`
+	YieldTimeMS     int64  `json:"yield_time_ms,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+	TTY             bool   `json:"tty,omitempty"`
 }
 
 type ExecRequest struct {
@@ -176,12 +171,6 @@ func (executeCommand *ExecuteCommand) prepareExecRequest(ctx context.Context, in
 	resolved, err := executeCommand.policy.ResolveExisting(relativeCWD, project.PathDirectory)
 	if err != nil {
 		return ExecRequest{}, err
-	}
-	for _, requestedRoot := range arguments.RequestedPermissions.WritableRoots {
-		_, resolveErr := executeCommand.policy.ResolveWritableDirectory(requestedRoot)
-		if resolveErr != nil {
-			return ExecRequest{}, resolveErr
-		}
 	}
 	shell, err := exec.LookPath(executeCommand.options.Shell)
 	if err != nil {

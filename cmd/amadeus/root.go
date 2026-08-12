@@ -10,7 +10,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/buildinfo"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/mcp"
-	"github.com/Godric-W/Amadeus/internal/tool/builtin"
 	"github.com/Godric-W/Amadeus/internal/webfetch"
 	"github.com/Godric-W/Amadeus/internal/websearch"
 	"github.com/spf13/cobra"
@@ -29,7 +28,6 @@ type commandRuntime struct {
 	mcpClientFactory    mcp.ClientFactory
 	webFetcher          webfetch.Fetcher
 	webSearch           websearch.Provider
-	patchProjectors     []builtin.PatchProjector
 	agentContextFactory turnContextFactory
 	agentCommand        agentCommand
 	agentCommandFactory agentCommandFactory

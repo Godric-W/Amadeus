@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/tool"
@@ -20,6 +21,7 @@ import (
 type FileToolsOptions struct {
 	FileSystemPolicy *project.FileSystemPolicy
 	Approvals        policy.ApprovalHandler
+	Events           event.Sink
 	SessionApprovals *policy.FileApprovalStore
 	MaxBytes         int64
 	MaxLineBytes     int
@@ -29,6 +31,7 @@ type FileToolsOptions struct {
 type FileTools struct {
 	policy           *project.FileSystemPolicy
 	approvals        policy.ApprovalHandler
+	events           event.Sink
 	sessionApprovals *policy.FileApprovalStore
 	maxBytes         int64
 	maxLineBytes     int
@@ -94,7 +97,7 @@ func NewFileTools(root project.Root, options FileToolsOptions) (*FileTools, erro
 	if options.FileMode == 0 {
 		options.FileMode = 0o644
 	}
-	return &FileTools{root: root, policy: options.FileSystemPolicy, approvals: options.Approvals,
+	return &FileTools{root: root, policy: options.FileSystemPolicy, approvals: options.Approvals, events: options.Events,
 		sessionApprovals: options.SessionApprovals, maxBytes: options.MaxBytes,
 		maxLineBytes: options.MaxLineBytes, fileMode: options.FileMode}, nil
 }
@@ -234,12 +237,22 @@ func (files *FileTools) applyChange(ctx context.Context, invocation tool.Invocat
 			}
 		}
 		request.Presentation = policy.FileApprovalPresentation(presentationOperation, resolved.Canonical, change)
+		if files.events != nil {
+			if err := files.events.Publish(ctx, event.ApprovalRequested{RequestID: request.ID, ToolName: request.ToolName, Risk: string(request.Risk), Reason: request.Reason}); err != nil {
+				return tool.Output{}, err
+			}
+		}
 		decision, err := files.approvals.Decide(ctx, request)
 		if err != nil {
 			return tool.Output{}, err
 		}
 		if err := decision.Validate(); err != nil {
 			return tool.Output{}, err
+		}
+		if files.events != nil {
+			if err := files.events.Publish(ctx, event.ApprovalResolved{RequestID: request.ID, ToolName: request.ToolName, Outcome: string(decision.Outcome), Scope: string(decision.Scope), Source: string(decision.Source), Reason: decision.Reason}); err != nil {
+				return tool.Output{}, err
+			}
 		}
 		if !decision.Allowed() {
 			return tool.Output{ToolName: invocation.Call.Name, Text: "file change denied", Metadata: map[string]any{"change": change}}, &toolDeniedError{reason: decision.Reason}
