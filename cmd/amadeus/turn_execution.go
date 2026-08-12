@@ -242,8 +242,9 @@ func (runner *agentController) executeCodingTurn(ctx context.Context, factory *c
 		PatchProjector: patchProjectors, RolloutRecorder: &turnRolloutRecorder{host: host, turnID: turnContext.TurnID},
 		PlanState: planState, FileSystemPolicy: fileSystemPolicy, RunPermissions: turnPermissions,
 		SessionPermissions: factory.sessionPermissions, SessionApprovals: factory.sessionApprovals,
-		FileApprovals: factory.fileApprovals,
-		Skills:        extensions.Skills(), SkillWarnings: extensions.SkillWarnings(), MCP: extensions.MCP(),
+		FileApprovals:     factory.fileApprovals,
+		ExternalApprovals: factory.externalApprovals,
+		Skills:            extensions.Skills(), SkillWarnings: extensions.SkillWarnings(), MCP: extensions.MCP(),
 		PlanRecorder: func(recordCtx context.Context, snapshot plan.Snapshot) error {
 			return recordPlanUpdate(recordCtx, host, turnContext.TurnID, snapshot)
 		},
@@ -357,11 +358,6 @@ func (runner *agentController) turnInterface(invocation agentInvocation) (event.
 }
 
 func (runner *agentController) publishAgentDiagnostics(ctx context.Context, agent *bootstrap.Agent) error {
-	if agent.SandboxDiagnostic != "" {
-		if err := agent.Events.Publish(ctx, event.DiagnosticPublished{Severity: "warn", Code: "sandbox_unavailable", Message: fmt.Sprintf("command isolation is %s: %s", agent.SandboxMode, agent.SandboxDiagnostic)}); err != nil {
-			return err
-		}
-	}
 	for _, warning := range agent.SkillWarnings {
 		if warning != nil {
 			if err := agent.Events.Publish(ctx, event.DiagnosticPublished{Severity: "warn", Code: "skill_load_warning", Message: warning.Error()}); err != nil {

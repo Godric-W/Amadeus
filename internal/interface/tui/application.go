@@ -157,6 +157,22 @@ var fullscreenApprovalChoices = []fullscreenApprovalChoice{
 }
 
 func approvalChoices(request policy.ApprovalRequest) []fullscreenApprovalChoice {
+	if len(request.Presentation.Options) > 0 {
+		choices := make([]fullscreenApprovalChoice, 0, len(request.Presentation.Options))
+		for _, option := range request.Presentation.Options {
+			choices = append(choices, fullscreenApprovalChoice{
+				label: option.Label,
+				decision: policy.ApprovalDecision{
+					OptionID: option.ID,
+					Outcome:  option.Outcome,
+					Scope:    option.Scope,
+					Source:   policy.ApprovalSourceUser,
+					Reason:   "user selected " + option.Label,
+				},
+			})
+		}
+		return choices
+	}
 	if request.Purpose != policy.ApprovalPurposePermission {
 		return fullscreenApprovalChoices
 	}

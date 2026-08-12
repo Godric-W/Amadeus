@@ -38,7 +38,18 @@ func CommandApprovalPresentation(command, cwd string) ApprovalPresentation {
 		Details: []string{command, "cwd: " + cwd},
 		Options: []ApprovalOption{
 			{ID: "allow", Label: "Yes", Outcome: ApprovalAllow, Scope: ApprovalOnce},
-			{ID: "allow-session", Label: "Yes, and don't ask again for this command in this directory", Outcome: ApprovalAllow, Scope: ApprovalSession},
+			{ID: "allow-session", Label: "Yes, and don't ask again for " + command + " commands in " + cwd, Outcome: ApprovalAllow, Scope: ApprovalSession},
+			{ID: "deny", Label: "No", Outcome: ApprovalDeny, Scope: ApprovalOnce},
+		},
+	}
+}
+
+func ExternalApprovalPresentation(title, question, sessionLabel string, details ...string) ApprovalPresentation {
+	return ApprovalPresentation{
+		Title: title, Question: question, Details: append([]string(nil), details...),
+		Options: []ApprovalOption{
+			{ID: "allow", Label: "Yes", Outcome: ApprovalAllow, Scope: ApprovalOnce},
+			{ID: "allow-session", Label: sessionLabel, Outcome: ApprovalAllow, Scope: ApprovalSession},
 			{ID: "deny", Label: "No", Outcome: ApprovalDeny, Scope: ApprovalOnce},
 		},
 	}

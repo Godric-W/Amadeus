@@ -13,30 +13,27 @@ import (
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/tool"
+	"github.com/Godric-W/Amadeus/internal/tool/textdiff"
 	"github.com/Godric-W/Amadeus/internal/workspace"
 )
 
 type FileToolsOptions struct {
-	FileSystemPolicy   *project.FileSystemPolicy
-	Approvals          policy.ApprovalHandler
-	SessionApprovals   *policy.FileApprovalStore
-	RunPermissions     *project.PermissionStore
-	SessionPermissions *project.PermissionStore
-	MaxBytes           int64
-	MaxLineBytes       int
-	FileMode           os.FileMode
+	FileSystemPolicy *project.FileSystemPolicy
+	Approvals        policy.ApprovalHandler
+	SessionApprovals *policy.FileApprovalStore
+	MaxBytes         int64
+	MaxLineBytes     int
+	FileMode         os.FileMode
 }
 
 type FileTools struct {
-	policy             *project.FileSystemPolicy
-	approvals          policy.ApprovalHandler
-	sessionApprovals   *policy.FileApprovalStore
-	runPermissions     *project.PermissionStore
-	sessionPermissions *project.PermissionStore
-	maxBytes           int64
-	maxLineBytes       int
-	fileMode           os.FileMode
-	root               project.Root
+	policy           *project.FileSystemPolicy
+	approvals        policy.ApprovalHandler
+	sessionApprovals *policy.FileApprovalStore
+	maxBytes         int64
+	maxLineBytes     int
+	fileMode         os.FileMode
+	root             project.Root
 }
 
 type fileReadArgs struct {
@@ -99,8 +96,7 @@ func NewFileTools(root project.Root, options FileToolsOptions) (*FileTools, erro
 	}
 	return &FileTools{root: root, policy: options.FileSystemPolicy, approvals: options.Approvals,
 		sessionApprovals: options.SessionApprovals, maxBytes: options.MaxBytes,
-		maxLineBytes: options.MaxLineBytes, fileMode: options.FileMode,
-		runPermissions: options.RunPermissions, sessionPermissions: options.SessionPermissions}, nil
+		maxLineBytes: options.MaxLineBytes, fileMode: options.FileMode}, nil
 }
 
 func (files *FileTools) ReadSpec() tool.Spec {
@@ -248,26 +244,9 @@ func (files *FileTools) applyChange(ctx context.Context, invocation tool.Invocat
 		if !decision.Allowed() {
 			return tool.Output{ToolName: invocation.Call.Name, Text: "file change denied", Metadata: map[string]any{"change": change}}, &toolDeniedError{reason: decision.Reason}
 		}
-		grantRoot := filepath.Dir(resolved.Canonical)
-		// A one-call approval still needs a temporary writable grant so the
-		// common FileSystemPolicy can authorize the actual write. The store is
-		// owned by the current Turn and is discarded when that Turn ends.
-		if files.runPermissions != nil {
-			if err := files.runPermissions.GrantWritableRoots([]string{grantRoot}); err != nil {
-				return tool.Output{}, fmt.Errorf("grant run file permission: %w", err)
-			}
-		}
 		if decision.Scope == policy.ApprovalSession {
-			if files.sessionPermissions != nil {
-				if err := files.sessionPermissions.GrantWritableRoots([]string{grantRoot}); err != nil {
-					return tool.Output{}, fmt.Errorf("grant session file permission: %w", err)
-				}
-			}
 			files.sessionApprovals.ApproveDirectory(filepath.Dir(resolved.Canonical))
 		}
-	}
-	if _, err := files.policy.ResolveForWrite(resolved.Canonical); err != nil {
-		return tool.Output{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return tool.Output{}, err
@@ -308,20 +287,12 @@ func fileApprovalReason(operation, path string) string {
 }
 
 func buildFileChange(path string, before, after []byte, operation string) FileChange {
-	return FileChange{Path: path, Operation: operation, BeforeHash: hashBytes(before), AfterHash: hashBytes(after), BeforeBytes: len(before), AfterBytes: len(after), UnifiedDiff: unifiedDiff(path, string(before), string(after)), Insertions: lineCount(string(after)) - lineCount(string(before)), Deletions: lineCount(string(before)) - lineCount(string(after))}
+	stats := textdiff.ChangedLineStats(before, after)
+	return FileChange{Path: path, Operation: operation, BeforeHash: hashBytes(before), AfterHash: hashBytes(after), BeforeBytes: len(before), AfterBytes: len(after), UnifiedDiff: textdiff.ContentDiff(operation, path, "", before, after), Insertions: stats.Insertions, Deletions: stats.Deletions}
 }
 
 func hashBytes(value []byte) string    { sum := sha256.Sum256(value); return hex.EncodeToString(sum[:]) }
 func readFileBytes(path string) []byte { value, _ := os.ReadFile(path); return value }
-func lineCount(value string) int {
-	if value == "" {
-		return 0
-	}
-	return len(strings.Split(strings.TrimSuffix(value, "\n"), "\n"))
-}
-func unifiedDiff(path, before, after string) string {
-	return fmt.Sprintf("--- %s\n+++ %s\n@@\n-%s\n+%s\n", path, path, strings.TrimSuffix(before, "\n"), strings.TrimSuffix(after, "\n"))
-}
 
 func atomicWrite(path string, content []byte, mode os.FileMode) error {
 	directory := filepath.Dir(path)

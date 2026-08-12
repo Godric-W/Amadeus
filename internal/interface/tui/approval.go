@@ -92,7 +92,7 @@ func (prompt *InlineApprovalPrompt) Decide(ctx context.Context, request policy.A
 			}
 			return policy.ApprovalDecision{}, fmt.Errorf("read inline approval: %w", err)
 		}
-		if decision, ok := parseInlineApprovalChoiceForPurpose(line, request.Purpose); ok {
+		if decision, ok := policy.ResolveApprovalInput(request, line); ok {
 			return decision, nil
 		}
 		if _, err := io.WriteString(prompt.output, "Invalid choice. Enter y, s, or n: "); err != nil {

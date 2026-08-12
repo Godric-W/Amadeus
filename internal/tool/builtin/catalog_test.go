@@ -8,7 +8,7 @@ import (
 
 func TestTargetCatalogFixesCoreConditionalDeferredAndHiddenTools(t *testing.T) {
 	entries := TargetCatalog()
-	if len(entries) != 19 {
+	if len(entries) != 16 {
 		t.Fatalf("unexpected target catalog size: %d", len(entries))
 	}
 	byName := make(map[string]CatalogEntry, len(entries))

@@ -99,7 +99,7 @@ func (request ApprovalRequest) Validate() error {
 	if request.ToolName == "" {
 		return errors.New("approval request tool name is empty")
 	}
-	if request.Purpose != ApprovalPurposeCommand && request.Purpose != ApprovalPurposePermission && request.Purpose != ApprovalPurposeFile {
+	if request.Purpose != ApprovalPurposeCommand && request.Purpose != ApprovalPurposePermission && request.Purpose != ApprovalPurposeFile && request.Purpose != ApprovalPurposeExternal {
 		return fmt.Errorf("approval purpose %q is invalid", request.Purpose)
 	}
 	if !request.Risk.Valid() {
@@ -129,10 +129,80 @@ func (request ApprovalRequest) Clone() ApprovalRequest {
 }
 
 type ApprovalDecision struct {
-	Outcome ApprovalOutcome `json:"outcome"`
-	Scope   ApprovalScope   `json:"scope"`
-	Source  ApprovalSource  `json:"source"`
-	Reason  string          `json:"reason"`
+	OptionID string          `json:"option_id,omitempty"`
+	Outcome  ApprovalOutcome `json:"outcome"`
+	Scope    ApprovalScope   `json:"scope"`
+	Source   ApprovalSource  `json:"source"`
+	Reason   string          `json:"reason"`
+}
+
+// ResolveApprovalInput maps plain terminal input to the option supplied by
+// the tool. Numeric choices are useful for structured prompts; y/s/n remain
+// compatible aliases for the common allow/session/deny presentation.
+func ResolveApprovalInput(request ApprovalRequest, input string) (ApprovalDecision, bool) {
+	value := strings.ToLower(strings.TrimSpace(input))
+	options := request.Presentation.Options
+	if len(options) == 0 {
+		firstScope := ApprovalOnce
+		firstReason := "user approved once"
+		if request.Purpose == ApprovalPurposePermission {
+			firstScope = ApprovalRun
+			firstReason = "user approved for the run"
+		}
+		switch value {
+		case "y", "yes":
+			return ApprovalDecision{Outcome: ApprovalAllow, Scope: firstScope, Source: ApprovalSourceUser, Reason: firstReason}, true
+		case "s", "session":
+			return ApprovalDecision{Outcome: ApprovalAllow, Scope: ApprovalSession, Source: ApprovalSourceUser, Reason: "user approved for the session"}, true
+		case "n", "no", "deny":
+			return ApprovalDecision{Outcome: ApprovalDeny, Scope: firstScope, Source: ApprovalSourceUser, Reason: "user denied the request"}, true
+		default:
+			return ApprovalDecision{}, false
+		}
+	}
+	selected := -1
+	if len(value) == 1 && value[0] >= '1' && int(value[0]-'1') < len(options) {
+		selected = int(value[0] - '1')
+	}
+	if selected < 0 {
+		for index, option := range options {
+			if value == strings.ToLower(strings.TrimSpace(option.ID)) {
+				selected = index
+				break
+			}
+		}
+	}
+	if selected < 0 {
+		switch value {
+		case "y", "yes":
+			for index, option := range options {
+				if option.Outcome == ApprovalAllow {
+					selected = index
+					break
+				}
+			}
+		case "s", "session":
+			for index, option := range options {
+				if option.Outcome == ApprovalAllow && option.Scope == ApprovalSession {
+					selected = index
+					break
+				}
+			}
+		case "n", "no", "deny":
+			for index, option := range options {
+				if option.Outcome == ApprovalDeny {
+					selected = index
+					break
+				}
+			}
+		}
+	}
+	if selected < 0 {
+		return ApprovalDecision{}, false
+	}
+	option := options[selected]
+	reason := "user selected " + option.Label
+	return ApprovalDecision{OptionID: option.ID, Outcome: option.Outcome, Scope: option.Scope, Source: ApprovalSourceUser, Reason: reason}, true
 }
 
 func (decision ApprovalDecision) Validate() error {

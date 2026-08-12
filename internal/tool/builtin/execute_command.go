@@ -2,6 +2,8 @@ package builtin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	processdomain "github.com/Godric-W/Amadeus/internal/process"
 	"github.com/Godric-W/Amadeus/internal/project"
@@ -51,8 +54,14 @@ type ExecuteCommandOptions struct {
 	MaxOutputTokens  int
 	ProcessManager   *processdomain.Manager
 	FileSystemPolicy *project.FileSystemPolicy
-	Sandbox          *sandboxdomain.Runner
-	Authorizer       *policy.CommandAuthorizer
+	Approvals        policy.ApprovalHandler
+	SessionApprovals *policy.SessionApprovalStore
+	Events           event.Sink
+	Audit            audit.Sink
+	// Sandbox and Authorizer are retained for historical callers. The
+	// application bootstrap no longer supplies them.
+	Sandbox    *sandboxdomain.Runner
+	Authorizer *policy.CommandAuthorizer
 }
 
 type ExecuteCommand struct {
@@ -61,6 +70,7 @@ type ExecuteCommand struct {
 	options ExecuteCommandOptions
 	manager *processdomain.Manager
 	sandbox *sandboxdomain.Runner
+	guard   *policy.CommandGuard
 }
 
 type executeCommandArguments struct {
@@ -122,7 +132,10 @@ func NewExecuteCommand(root project.Root, options ExecuteCommandOptions) (*Execu
 	if manager == nil {
 		manager = processdomain.NewManager()
 	}
-	return &ExecuteCommand{root: root, policy: fileSystemPolicy, options: options, manager: manager, sandbox: options.Sandbox}, nil
+	if options.SessionApprovals == nil {
+		options.SessionApprovals = policy.NewSessionApprovalStore()
+	}
+	return &ExecuteCommand{root: root, policy: fileSystemPolicy, options: options, manager: manager, sandbox: options.Sandbox, guard: policy.NewCommandGuard()}, nil
 }
 
 func (executeCommand *ExecuteCommand) Spec() tool.Spec { return executeCommandSpec() }
@@ -181,11 +194,12 @@ func (executeCommand *ExecuteCommand) prepareExecRequest(ctx context.Context, in
 			return ExecRequest{}, fmt.Errorf("prepare sandbox command: %w", err)
 		}
 	}
-	if executeCommand.options.Authorizer == nil && launch.Mode == sandboxdomain.IsolationUnsandboxed {
-		return ExecRequest{}, errors.New("execute_command unsandboxed operation authorizer is nil")
-	}
 	if executeCommand.options.Authorizer != nil {
 		if err := executeCommand.options.Authorizer.Authorize(ctx, policy.CommandRequest{Call: call, Shell: shell, Command: arguments.Command, CWD: resolved.Canonical, TTY: arguments.TTY, IsolationMode: launch.Mode}); err != nil {
+			return ExecRequest{}, err
+		}
+	} else if executeCommand.sandbox == nil {
+		if err := executeCommand.authorizeHostCommand(ctx, call, arguments.Command, resolved.Canonical); err != nil {
 			return ExecRequest{}, err
 		}
 	}
@@ -211,6 +225,79 @@ func (executeCommand *ExecuteCommand) prepareExecRequest(ctx context.Context, in
 			Timeout: timeout, TTY: arguments.TTY, MaxOutputBytes: maxBytes,
 		},
 	}, nil
+}
+
+func (executeCommand *ExecuteCommand) authorizeHostCommand(ctx context.Context, call tool.ToolCall, command, cwd string) error {
+	assessment, err := executeCommand.guard.Assess(command)
+	if err != nil {
+		return fmt.Errorf("assess execute_command: %w", err)
+	}
+	if assessment.Disposition == policy.CommandDeny {
+		if err := executeCommand.writeCommandAudit(ctx, call, assessment.Risk, policy.ApprovalDeny, policy.ApprovalSourcePolicy, assessment.Reason); err != nil {
+			return err
+		}
+		return &policy.ToolDeniedError{ToolName: call.Name, Risk: assessment.Risk, Source: policy.ApprovalSourcePolicy, Reason: assessment.Reason}
+	}
+	key, ok := policy.NewCommandApprovalKey(command, cwd)
+	if !ok {
+		return errors.New("execute_command approval key is invalid")
+	}
+	if executeCommand.options.SessionApprovals.IsApproved(key) {
+		return nil
+	}
+	if executeCommand.options.Approvals == nil {
+		return errors.New("execute_command approval handler is nil")
+	}
+	request, err := policy.NewApprovalRequestForPurpose(call.ID, call.Name, call.Payload, policy.ApprovalPurposeCommand, assessment.Risk, assessment.Reason)
+	if err != nil {
+		return err
+	}
+	request.Command = command
+	request.CWD = cwd
+	request.Presentation = policy.CommandApprovalPresentation(command, cwd)
+	if executeCommand.options.Events != nil {
+		if err := executeCommand.options.Events.Publish(ctx, event.ApprovalRequested{RequestID: request.ID, ToolName: request.ToolName, Risk: string(request.Risk), Reason: request.Reason}); err != nil {
+			return fmt.Errorf("publish command approval requested: %w", err)
+		}
+	}
+	decision, err := executeCommand.options.Approvals.Decide(ctx, request)
+	if err != nil {
+		return fmt.Errorf("resolve command approval: %w", err)
+	}
+	if err := decision.Validate(); err != nil {
+		return fmt.Errorf("validate command approval decision: %w", err)
+	}
+	if err := executeCommand.writeCommandAudit(ctx, call, assessment.Risk, decision.Outcome, decision.Source, decision.Reason); err != nil {
+		return err
+	}
+	if executeCommand.options.Events != nil {
+		if err := executeCommand.options.Events.Publish(ctx, event.ApprovalResolved{RequestID: request.ID, ToolName: request.ToolName, Outcome: string(decision.Outcome), Scope: string(decision.Scope), Source: string(decision.Source), Reason: decision.Reason}); err != nil {
+			return fmt.Errorf("publish command approval resolved: %w", err)
+		}
+	}
+	if !decision.Allowed() {
+		return &policy.ToolDeniedError{ToolName: call.Name, Risk: assessment.Risk, Source: decision.Source, Reason: decision.Reason}
+	}
+	if decision.Scope == policy.ApprovalSession {
+		executeCommand.options.SessionApprovals.Approve(key)
+	}
+	return nil
+}
+
+func (executeCommand *ExecuteCommand) writeCommandAudit(ctx context.Context, call tool.ToolCall, risk policy.CommandRisk, outcome policy.ApprovalOutcome, source policy.ApprovalSource, reason string) error {
+	if executeCommand.options.Audit == nil {
+		return nil
+	}
+	digest := sha256.Sum256(call.Payload)
+	record := audit.Record{
+		Timestamp: time.Now(), RequestID: call.ID, ToolName: call.Name,
+		ArgumentsSHA256: hex.EncodeToString(digest[:]), Risk: string(risk),
+		Outcome: audit.Outcome(outcome), Source: string(source), Reason: strings.TrimSpace(reason),
+	}
+	if err := executeCommand.options.Audit.Write(ctx, record); err != nil {
+		return fmt.Errorf("write command approval audit: %w", err)
+	}
+	return nil
 }
 
 func (executeCommand *ExecuteCommand) executeExecRequest(ctx context.Context, request ExecRequest) (tool.Output, error) {

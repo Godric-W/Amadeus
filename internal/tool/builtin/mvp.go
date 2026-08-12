@@ -119,7 +119,12 @@ func RegisterMVP(registry *tool.Registry, root project.Root, options MVPOptions)
 	if err != nil {
 		return err
 	}
-	for _, candidate := range []tool.Handler{applyPatch, readFile, listDir, globFiles, grepCode, executeCommand, writeStdin} {
+	for _, candidate := range []tool.Handler{applyPatch, readFile, listDir, globFiles, grepCode} {
+		if err := registry.Register(candidate); err != nil {
+			return fmt.Errorf("register MVP tool %q: %w", candidate.Spec().Name, err)
+		}
+	}
+	for _, candidate := range []tool.Handler{executeCommand, writeStdin} {
 		if err := registry.Register(candidate); err != nil {
 			return fmt.Errorf("register MVP tool %q: %w", candidate.Spec().Name, err)
 		}

@@ -5,5 +5,11 @@
 *.test
 coverage.out
 
+# Local runtime data
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
 # Local OS metadata
 .DS_Store

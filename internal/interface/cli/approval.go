@@ -89,7 +89,7 @@ func (handler *TerminalApprovalHandler) interactiveDecision(ctx context.Context,
 			}
 			return policy.ApprovalDecision{}, fmt.Errorf("read terminal approval: %w", err)
 		}
-		if decision, ok := parseApprovalChoiceForPurpose(line, request.Purpose); ok {
+		if decision, ok := policy.ResolveApprovalInput(request, line); ok {
 			return decision, nil
 		}
 		if _, err := io.WriteString(handler.output, "Invalid choice. Enter y, s, or n: "); err != nil {

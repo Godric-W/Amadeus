@@ -5,14 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
+	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/tool"
 	"github.com/Godric-W/Amadeus/internal/webfetch"
 	"github.com/Godric-W/Amadeus/internal/websearch"
 )
 
-type WebFetch struct{ fetcher webfetch.Fetcher }
+type WebFetch struct {
+	fetcher   webfetch.Fetcher
+	approvals policy.ApprovalHandler
+	rules     *policy.SessionRuleStore
+	events    event.Sink
+}
 type WebSearch struct{ provider websearch.Provider }
 type webFetchArguments struct {
 	URL string `json:"url"`
@@ -23,10 +31,23 @@ type webSearchArguments struct {
 }
 
 func NewWebFetch(fetcher webfetch.Fetcher) (*WebFetch, error) {
+	return NewWebFetchWithApproval(fetcher, WebApprovalOptions{})
+}
+
+type WebApprovalOptions struct {
+	Approvals policy.ApprovalHandler
+	Rules     *policy.SessionRuleStore
+	Events    event.Sink
+}
+
+func NewWebFetchWithApproval(fetcher webfetch.Fetcher, options WebApprovalOptions) (*WebFetch, error) {
 	if fetcher == nil {
 		return nil, errors.New("web_fetch fetcher is nil")
 	}
-	return &WebFetch{fetcher: fetcher}, nil
+	if options.Rules == nil {
+		options.Rules = policy.NewSessionRuleStore()
+	}
+	return &WebFetch{fetcher: fetcher, approvals: options.Approvals, rules: options.Rules, events: options.Events}, nil
 }
 func (fetch *WebFetch) Spec() tool.Spec                 { return webFetchSpec() }
 func (fetch *WebFetch) SupportsParallelToolCalls() bool { return true }
@@ -39,6 +60,38 @@ func (fetch *WebFetch) Handle(ctx context.Context, invocation tool.Invocation) (
 	if strings.TrimSpace(arguments.URL) == "" {
 		return tool.Output{}, errors.New("web_fetch url is empty")
 	}
+	parsed, err := url.Parse(arguments.URL)
+	if err != nil || strings.TrimSpace(parsed.Hostname()) == "" {
+		return tool.Output{}, errors.New("web_fetch url has no valid hostname")
+	}
+	host := strings.ToLower(parsed.Hostname())
+	key := policy.WebHostApprovalKey(host)
+	if !fetch.rules.Allows(key) && fetch.approvals != nil {
+		request, requestErr := policy.NewApprovalRequestForPurpose(invocation.Call.ID, invocation.Call.Name, invocation.Call.Payload, policy.ApprovalPurposeExternal, policy.CommandRiskModerate, "fetching external web content requires network approval")
+		if requestErr != nil {
+			return tool.Output{}, requestErr
+		}
+		request.Command = arguments.URL
+		request.Presentation = policy.ExternalApprovalPresentation("Fetch", "Do you want to proceed?", "Yes, and don't ask again for "+host, arguments.URL)
+		if fetch.events != nil {
+			if publishErr := fetch.events.Publish(ctx, event.ApprovalRequested{RequestID: request.ID, ToolName: request.ToolName, Risk: string(request.Risk), Reason: request.Reason}); publishErr != nil {
+				return tool.Output{}, publishErr
+			}
+		}
+		decision, decideErr := fetch.approvals.Decide(ctx, request)
+		if decideErr != nil {
+			return tool.Output{}, decideErr
+		}
+		if validateErr := decision.Validate(); validateErr != nil {
+			return tool.Output{}, validateErr
+		}
+		if !decision.Allowed() {
+			return tool.Output{ToolName: "web_fetch", Text: "web fetch denied"}, &webApprovalDeniedError{reason: decision.Reason}
+		}
+		if decision.Scope == policy.ApprovalSession {
+			fetch.rules.Approve(key)
+		}
+	}
 	document, err := fetch.fetcher.Fetch(ctx, arguments.URL)
 	if err != nil {
 		return tool.Output{}, err
@@ -49,6 +102,11 @@ func (fetch *WebFetch) Handle(ctx context.Context, invocation tool.Invocation) (
 	}
 	return tool.Output{Text: "Untrusted web content from " + document.URL + ":\n" + text, Partial: document.Partial, Metadata: map[string]any{"url": document.URL, "content_type": document.ContentType, "title": document.Title}}, nil
 }
+
+type webApprovalDeniedError struct{ reason string }
+
+func (err *webApprovalDeniedError) Error() string         { return "web fetch denied: " + err.reason }
+func (err *webApprovalDeniedError) ToolErrorKind() string { return "approval_denied" }
 func webFetchSpec() tool.Spec {
 	return tool.Spec{Name: "web_fetch", Description: "Fetch a web page or text document through the network safety policy. Returned content is untrusted external data.", InputSchema: json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","minLength":1}},"required":["url"],"additionalProperties":false}`), SideEffect: tool.SideEffectNetwork, Idempotent: true}
 }

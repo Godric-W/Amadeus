@@ -17,7 +17,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/tool"
-	patchtool "github.com/Godric-W/Amadeus/internal/tool/patch"
 	"github.com/Godric-W/Amadeus/internal/webfetch"
 	"github.com/Godric-W/Amadeus/internal/websearch"
 )
@@ -57,7 +56,7 @@ func TestNewAgentBuildsDefaultComposition(t *testing.T) {
 	if agent.Project.Path() != root.Path() {
 		t.Fatalf("unexpected project root: got %q, want %q", agent.Project.Path(), root.Path())
 	}
-	if agent.Client == nil || agent.Events != sink || agent.Audit == nil || agent.Registry == nil || agent.CommandAuthorizer == nil || agent.ToolRouter == nil || agent.Iterator == nil || agent.Progress == nil || agent.Runner == nil {
+	if agent.Client == nil || agent.Events != sink || agent.Audit == nil || agent.Registry == nil || agent.ToolRouter == nil || agent.Iterator == nil || agent.Progress == nil || agent.Runner == nil {
 		t.Fatalf("Agent composition is incomplete: %#v", agent)
 	}
 	if !strings.Contains(agent.BaseInstructions.Text, "You are Amadeus") {
@@ -105,28 +104,18 @@ func (provider bootstrapWebSearch) Search(context.Context, string, int) ([]webse
 	return append([]websearch.Result(nil), provider.results...), nil
 }
 
-func TestNewAgentWithOptionsAttachesPatchProjector(t *testing.T) {
+func TestNewAgentWithOptionsUsesStructuredWriteTool(t *testing.T) {
 	root := newBootstrapProjectRoot(t)
-	hook := &bootstrapPostWriteHook{}
-	agent, err := NewAgentWithOptions(validBootstrapConfig(), root, event.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink(), AgentOptions{
-		ClientFactory: successfulBootstrapFactory, PatchProjector: hook,
-	})
+	agent, err := NewAgentWithOptions(validBootstrapConfig(), root, event.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink(), AgentOptions{ClientFactory: successfulBootstrapFactory})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agent.ToolRouter.Execute(context.Background(), tool.NewCall("write-1", "apply_patch", json.RawMessage(`{"patch":"*** Begin Patch\n*** Add File: hook.txt\n+value\n*** End Patch"}`))); err != nil {
+	if _, err := agent.ToolRouter.Execute(context.Background(), tool.NewCall("write-1", "write", json.RawMessage(`{"path":"hook.txt","content":"value\n"}`))); err != nil {
 		t.Fatal(err)
 	}
-	if hook.calls != 1 {
-		t.Fatalf("Patch Projector calls = %d, want 1", hook.calls)
+	if content, err := os.ReadFile(filepath.Join(root.Path(), "hook.txt")); err != nil || string(content) != "value\n" {
+		t.Fatalf("structured write did not complete: %q %v", content, err)
 	}
-}
-
-type bootstrapPostWriteHook struct{ calls int }
-
-func (hook *bootstrapPostWriteHook) ProjectPatch(context.Context, []patchtool.AppliedPatchDelta) error {
-	hook.calls++
-	return nil
 }
 
 func TestNewAgentUsesOneSelectedProviderClient(t *testing.T) {
@@ -167,13 +156,13 @@ func TestAgentCompositionExecutesStructuredWorkspaceWriteWithoutOperationApprova
 		t.Fatalf("build secured Agent composition: %v", err)
 	}
 	execution, err := agent.ToolRouter.Execute(context.Background(), tool.NewCall(
-		"write-denied", "apply_patch", json.RawMessage(`{"patch":"*** Begin Patch\n*** Add File: denied.txt\n+must not exist\n*** End Patch"}`),
+		"write-denied", "write", json.RawMessage(`{"path":"denied.txt","content":"must not exist\n"}`),
 	))
-	if err != nil || execution.Outcome.Status != tool.ToolCallCompleted || execution.Outcome.Error != nil {
+	if err != nil || execution.Outcome.Status != tool.ToolCallDenied {
 		t.Fatalf("unexpected structured write result: execution=%#v err=%v", execution, err)
 	}
-	if content, statErr := os.ReadFile(filepath.Join(root.Path(), "denied.txt")); statErr != nil || string(content) != "must not exist\n" {
-		t.Fatalf("structured write did not complete: %q %v", content, statErr)
+	if _, statErr := os.Stat(filepath.Join(root.Path(), "denied.txt")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("denied write produced a filesystem side effect: %v", statErr)
 	}
 }
 
