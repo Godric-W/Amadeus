@@ -26,7 +26,7 @@ func TestDeveloperInstructionsExposeOnlyVisibleToolGuidance(t *testing.T) {
 	if !strings.Contains(text, "## Execute Mode") || !strings.Contains(text, "## `update_plan`") || !strings.Contains(text, "## `execute_command`") {
 		t.Fatalf("visible Tool guidance is missing: %q", text)
 	}
-	if strings.Contains(text, "## `apply_patch`") || strings.Contains(text, "{{") {
+	if strings.Contains(text, "## `apply_patch`") || strings.Contains(text, "request_permissions") || strings.Contains(text, "{{") {
 		t.Fatalf("Developer Instructions leaked hidden Tool or unresolved variable: %q", text)
 	}
 	plan, err := DeveloperInstructions("plan", []string{"execute_command"})

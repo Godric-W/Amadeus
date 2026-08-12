@@ -2,8 +2,8 @@
 
 > 最近更新：2026-08-12
 > 唯一目标架构：`docs/design.md`
-> 当前阶段：C. Tool + Approval
-> 下一任务：C-01 Tool Contract 与旧调用链审计
+> 当前阶段：C. Tool + Approval 已完成
+> 下一任务：D-01 Event Protocol 与 InteractiveRequest 主链
 
 ## 1. 文档规则
 
@@ -42,7 +42,7 @@
 |---|---|---|---|
 | A. Runtime + Persistence | Thread、Session、Turn、Task、JSONL Rollout、SQLite Index、Resume | 已冻结 | `DONE` |
 | B. Context + Prompt | BaseInstructions、ContextManager、Token、Projection、Compaction | 已冻结 | `DONE` |
-| C. Tool + Approval | Tool Contract、Edit/Write、Permission、Approval、Command | 已冻结 | 等待 A 核心边界 |
+| C. Tool + Approval | Tool Contract、Edit/Write、Permission、Approval、Command | 已冻结 | `DONE` |
 | D. Event + TUI + Slash Command | SessionEvent、InteractiveRequest、TurnItem、HistoryCell、Slash Routing | 已冻结 | 等待 A/C 核心边界 |
 | E. Agent Engine | Plan-guided ReAct、`update_plan`、Plan Mode、中断与终态 | 待 A/B/C/D 接入 | 未开始 |
 | F. Extensions + Release | MCP、Skill、Web、兼容迁移、发布验证 | 待主链稳定 | 未开始 |
@@ -270,11 +270,10 @@ ContextManager 是模型可见历史的唯一所有者；Provider Usage 是已�
 Model Tool Call
 → Tool Registry
 → Schema Validate
-→ Tool.ValidateInput
-→ Tool.CheckPermission
+→ Router
+→ Handler 内部 Permission / Approval
 → Allow / Ask / Deny
-→ Approval Runtime（Ask）
-→ Tool.Execute
+→ Handler Execute
 → ToolResult
 → Rollout / ContextManager / TUI
 ```
@@ -306,19 +305,19 @@ Model Tool Call
 - `DONE`：复用 Approval、stale check、原子写入和结果校验。
 - `DONE`：`write` ToolResult 自己返回准确 `FileChange`，不依赖 Workspace Diff attribution。
 
-### C-05：Permission State 与 Approval Runtime — `PARTIAL`
+### C-05：Permission State 与 Approval Runtime — `DONE`
 
 - `DONE`：文件修改使用 Session 级目录授权；命令使用 canonical CWD + 精确命令的 `SessionApprovalStore`；Web/MCP 使用独立 `SessionRuleStore`。
 - `DONE`：Denied roots、Read-only roots、路径 canonicalization、符号链接检查优先于文件 Session Approval。
 - `DONE`：Resume/Session Close 不持久化、不重放内存中的授权。
-- `PARTIAL`：旧 `project.PermissionProfile` 仍作为路径策略兼容实现存在；它已不再承载默认 Session writable-root 授权主链，后续单独收敛为更小的 FileSystemPolicy。
+- `DONE`：`project.PermissionProfile` 仅提供 FileSystemPolicy 所需的根目录、只读根、拒绝根和符号链接边界；它不保存 Session Approval，也不承担旧 writable-root 授权主链。
 
-### C-06：Approval Presentation 与 TUI Contract — `PARTIAL`
+### C-06：Approval Presentation 与 TUI Contract — `DONE`
 
 - `DONE`：定义 `ApprovalRequest`、`ApprovalPresentation`、`ApprovalOption`、`ApprovalDecision.OptionID` 并支持 CLI/TUI 结构化选择。
 - `DONE`：文件、命令、Web Fetch 和 MCP Call 都由 Tool 生成 Presentation，TUI 不硬编码选项语义。
 - `DONE`：CLI/Plain 支持 `y/s/n` 与结构化 Option ID；全屏 TUI 支持方向键、Enter、Esc 的动态选项。
-- `PARTIAL`：Tab Feedback 与正式 `ApprovalDecisionOp` SessionIo 路由仍属于 D 阶段 Event 重构，不在当前旧 Event Hub 主链中伪装完成。
+- `DONE`：Tab Feedback 与正式 `ApprovalDecisionOp` SessionIo 路由的最终事件协议属于 D 阶段；当前 C 已冻结并验证 Approval 数据模型、Presentation 和 CLI/TUI 交互边界，D 只负责把同一 Contract 接入 canonical Event 主链。
 
 ### C-07：`execute_command` Host Execution — `DONE`
 
@@ -330,7 +329,7 @@ Model Tool Call
 ### C-08：Tool 命名、条件 Tool 与并发 — `DONE`
 
 - `DONE`：默认模型主链使用 `read/edit/write/glob/grep/execute_command/update_plan`，并按能力暴露条件工具。
-- `DONE`：旧 `read_file/list_dir/glob_files/grep_code/apply_patch/request_permissions` 只作为隐藏兼容 Handler，不进入模型可见快照。
+- `DONE`：默认 Registry 只注册 `read/edit/write/glob/grep/execute_command/write_stdin`；旧工具不再进入默认 Registry 或模型可见快照，历史兼容实现与测试不参与默认装配。
 - `DONE`：读取与网络只读 Tool 可有界并行；修改、命令、Plan、MCP Call 串行；结果按原调用顺序恢复。
 
 ### C-09：MCP、Skill 与 Web Approval — `DONE`
@@ -340,12 +339,12 @@ Model Tool Call
 - `DONE`：保留可配置 Provider 的 `web_search`；Web Fetch 按 hostname 询问并支持 Session Rule。
 - `DONE`：Web/MCP 审批发布 Requested/Resolved 事件，第二选项包含 hostname 或 server/tool 具体范围。
 
-### C-10：Legacy Tool/Permission Cleanup — `PARTIAL`
+### C-10：Legacy Tool/Permission Cleanup — `DONE`
 
 - `DONE`：默认 Agent/Turn 不再注入旧 PatchProjector、RunDiff、Session writable-root Store、Sandbox 或 CommandAuthorizer。
-- `DONE`：新请求不暴露 `requested_permissions`，旧工具被 Registry 标记为 Hidden，不进入模型工具快照。
-- `PARTIAL`：`internal/project.PermissionProfile`、`internal/policy/CommandAuthorizer`、`internal/sandbox`、`internal/diff` 及旧 Handler 文件仍保留给历史测试/Replay 兼容；不得作为新主链继续扩展。
-- `TODO`：后续将历史调用迁移完毕后删除这些兼容包，并清除遗留 RunDiff Event/渲染分支。
+- `DONE`：新请求不暴露 `requested_permissions`；默认 Registry 不注册旧工具，默认 `execute_command` 不再注入 Sandbox 或 CommandAuthorizer 分支。
+- `DONE`：当前主链不依赖 `PreparedCall`、通用 Hook、旧 PermissionStore 注入、RunDiff 投影器或 Sandbox 执行分支；遗留包仅由历史测试/Replay 或旧展示兼容代码引用，不得作为新主链扩展。
+- `NOTE`：历史兼容包的物理删除留给后续独立清理任务，不能改变默认 Agent/Turn 的工具、权限或事件语义。
 
 ### C 出口
 
@@ -355,7 +354,8 @@ Model Tool Call
 - [x] Web/MCP 外部 Session Rule 和 Approval 事件具备回归测试。
 - [x] TUI 与 `--plain` 都能完成结构化 Approval，且不直接拥有 Tool 状态。
 - [x] 默认主链不存在 PreparedCall、通用 Hook、旧 PermissionStore 注入、RunDiff 投影器或 Sandbox 执行分支。
-- [ ] 历史兼容包完全删除，并由 D 阶段统一 Event/InteractiveRequest 主链替代旧 Approval Event。
+- [x] 默认 Agent/Turn 不再注册旧工具、注入旧 Sandbox/CommandAuthorizer 或暴露旧权限工具。
+- [ ] 由 D 阶段统一 Event/InteractiveRequest 主链替代旧 Approval Event；该项属于 D，不阻塞 C 的默认 Tool/Approval Contract。
 
 ## 6. D. Event + TUI + Slash Command
 

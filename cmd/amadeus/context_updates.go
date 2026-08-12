@@ -170,7 +170,7 @@ func planModeTools(specs []tool.Spec) []tool.Spec {
 	allowedNetwork := map[string]struct{}{"web_search": {}, "web_fetch": {}, "mcp_list_tools": {}, "mcp_list_resources": {}, "mcp_read_resource": {}}
 	result := make([]tool.Spec, 0, len(specs))
 	for _, spec := range specs {
-		if spec.Name == "update_plan" || spec.Name == "request_permissions" {
+		if spec.Name == "update_plan" {
 			continue
 		}
 		if spec.SideEffect == tool.SideEffectNone || spec.SideEffect == tool.SideEffectRead {

@@ -1050,7 +1050,7 @@ MCP Tools
 request_user_input
 ```
 
-模型可见 Tool Catalog 不包含 `list_dir`、`apply_patch` 和 `request_permissions`。`read_file`、`glob_files`、`grep_code` 只用于历史 Rollout Resume/Replay 兼容。
+模型可见 Tool Catalog 和默认 Registry 只包含当前公开工具：`read`、`edit`、`write`、`glob`、`grep`、`execute_command`、`write_stdin`，以及按配置启用的条件工具。`read_file`、`list_dir`、`glob_files`、`grep_code`、`apply_patch`、`request_permissions` 不属于默认装配；若历史 Replay 需要识别旧名称，由独立兼容层处理，不得回流到默认 Tool Registry。
 
 保留 `execute_command` 而不命名为 `Bash`，因为 Amadeus 面向多平台；Skill Script 统一通过它执行。
 
@@ -1237,7 +1237,7 @@ Esc to reject · Tab to add feedback
 - `SessionApprovalStore`：保存 `{canonical CWD, exact normalized command}`，供 `execute_command` 复用。
 - `SessionRuleStore`：保存 `web:<hostname>` 与 `mcp:<server>/<tool>` 等外部调用规则。
 
-它们都在 Session Close/Resume 时清空，不写入 SQLite 或 Rollout，也不恢复历史 Approval。路径策略仍负责 canonicalization、Denied/ReadOnly roots 和符号链接安全检查；旧 `PermissionProfile`/`PermissionStore` 只作为过渡兼容实现，不再参与默认授权主链。
+它们都在 Session Close/Resume 时清空，不写入 SQLite 或 Rollout，也不恢复历史 Approval。`FileSystemPolicy` 使用 `PermissionProfile` 提供 canonicalization、Denied/ReadOnly roots 和符号链接安全检查；该 Profile 是静态路径边界，不保存 Session Approval。旧 `PermissionStore` 仅供历史兼容代码使用，不参与默认授权主链。
 
 未来若 D 阶段需要统一协议，只允许在这些 Store 之上增加薄的 Runtime Facade，不恢复大而全的 Permission Engine。
 

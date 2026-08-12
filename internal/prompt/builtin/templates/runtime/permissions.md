@@ -1,11 +1,7 @@
-## Permission And Isolation Context
+## Permission And Approval Context
 
-- Host filesystem readable by default: {{read_host}}
-- Shell isolation mode: `{{isolation_mode}}`
-- Additional writable roots for this Run: {{run_writable_roots}}
-- Additional writable roots for this Session: {{session_writable_roots}}
-- Cached Session command approvals: {{session_command_approval_count}}
+Amadeus checks every tool call before execution. Read operations normally proceed; `edit` and `write` show a diff and require user approval. `execute_command` shows the command, working directory, and its operation approval before running it. MCP calls and host fetches may ask for approval when their server, tool, or hostname has not been approved in this Session.
 
-Permission Check applies independently to every filesystem operation. Read-only and denied roots cannot be expanded by ordinary grants. When a tool returns `permission_required`, call `request_permissions` for only the minimal writable directory roots and give a concrete reason; after approval, issue a new call to the original tool.
+Use the tool result as the source of truth. If an operation is denied, do not retry it unchanged or invent a permission-grant tool. Explain the denial, adjust the request only when the user asked for that change, or continue with a safe alternative.
 
-Unsandboxed `execute_command` operation approval is separate from filesystem permission. A cached Session command approval applies only to the exact shell, command, canonical cwd, TTY, and isolation tuple, and never skips a new Permission Check.
+Session approvals are temporary in-memory rules. They are scoped to the specific file directory, exact command and canonical working directory, MCP server/tool, or web hostname shown in the approval option. They are not persisted or restored by Resume.

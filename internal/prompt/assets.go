@@ -52,9 +52,6 @@ func DeveloperInstructions(mode string, toolNames []string) (string, error) {
 		if visible["update_plan"] {
 			layers = append(layers, builtin.ToolUpdatePlan)
 		}
-		if visible["apply_patch"] {
-			layers = append(layers, builtin.ToolApplyPatch)
-		}
 		if visible["execute_command"] {
 			layers = append(layers, builtin.ToolExecuteCommand)
 		}

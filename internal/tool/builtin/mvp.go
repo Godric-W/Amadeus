@@ -132,6 +132,50 @@ func RegisterMVP(registry *tool.Registry, root project.Root, options MVPOptions)
 	return nil
 }
 
+// NewCodingRegistry builds the public coding-agent tool set. The legacy MVP
+// registry remains available for replay and compatibility tests, but is not
+// part of the default runtime assembly.
+func NewCodingRegistry(root project.Root, options MVPOptions) (*tool.Registry, error) {
+	registry := tool.NewRegistry()
+	if err := RegisterCoding(registry, root, options); err != nil {
+		return nil, err
+	}
+	return registry, nil
+}
+
+func RegisterCoding(registry *tool.Registry, root project.Root, options MVPOptions) error {
+	if registry == nil {
+		return errors.New("register coding tools: registry is nil")
+	}
+	if options.FileSystemPolicy != nil {
+		options.GlobFiles.FileSystemPolicy = options.FileSystemPolicy
+		options.GrepCode.FileSystemPolicy = options.FileSystemPolicy
+		options.ExecuteCommand.FileSystemPolicy = options.FileSystemPolicy
+	}
+	globFiles, err := NewGlobFiles(root, options.GlobFiles)
+	if err != nil {
+		return err
+	}
+	grepCode, err := NewGrepCode(root, options.GrepCode)
+	if err != nil {
+		return err
+	}
+	executeCommand, err := NewExecuteCommand(root, options.ExecuteCommand)
+	if err != nil {
+		return err
+	}
+	writeStdin, err := NewWriteStdin(WriteStdinOptions{Manager: executeCommand.ProcessManager()})
+	if err != nil {
+		return err
+	}
+	for _, candidate := range []tool.Handler{NewGlobAlias(globFiles), NewGrepAlias(grepCode), executeCommand, writeStdin} {
+		if err := registry.Register(candidate); err != nil {
+			return fmt.Errorf("register coding tool %q: %w", candidate.Spec().Name, err)
+		}
+	}
+	return nil
+}
+
 func applyPatchSpec() tool.Spec {
 	return tool.Spec{
 		Name: "apply_patch", Description: "Preferred tool for editing existing files: apply a versioned, uniquely context-matched create/update/delete patch after full preflight.",

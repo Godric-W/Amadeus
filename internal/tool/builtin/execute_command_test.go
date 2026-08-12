@@ -12,7 +12,6 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
-	sandboxdomain "github.com/Godric-W/Amadeus/internal/sandbox"
 )
 
 func TestExecuteCommandUsesFixedProjectCWDAndCombinedOutput(t *testing.T) {
@@ -72,70 +71,16 @@ func TestExecuteCommandAllowsReadableExternalCWD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy, err := project.NewFileSystemPolicy(project.FileSystemPolicyOptions{CWD: rootPath, Profile: project.PermissionProfile{ReadHost: true, WorkspaceRoots: []string{rootPath}}})
+	filesystemPolicy, err := project.NewFileSystemPolicy(project.FileSystemPolicyOptions{CWD: rootPath, Profile: project.PermissionProfile{ReadHost: true, WorkspaceRoots: []string{rootPath}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	authorizer := newTestCommandAuthorizer(t)
-	executeCommand, err := NewExecuteCommand(root, ExecuteCommandOptions{DefaultTimeout: 5 * time.Second, MaxTimeout: 5 * time.Second, MaxOutputBytes: 1024, MaxOutputLines: 100, FileSystemPolicy: policy, Authorizer: authorizer})
+	executeCommand, err := NewExecuteCommand(root, ExecuteCommandOptions{DefaultTimeout: 5 * time.Second, MaxTimeout: 5 * time.Second, MaxOutputBytes: 1024, MaxOutputLines: 100, FileSystemPolicy: filesystemPolicy, Approvals: &permissionApprovalHandler{decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "test command approved"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := executePreparedTool(t, context.Background(), executeCommand, json.RawMessage(`{"command":"pwd","cwd":".."}`)); err != nil {
 		t.Fatalf("external readable cwd rejected: %v", err)
-	}
-}
-
-func TestExecuteCommandWorkspaceWriteSandboxReadsHostAndDeniesUndeclaredWrites(t *testing.T) {
-	primary := t.TempDir()
-	readOnly := t.TempDir()
-	outsideFile := filepath.Join(readOnly, "outside.txt")
-	if err := os.WriteFile(outsideFile, []byte("outside\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	root, err := project.NewRoot(primary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	policy, err := project.NewFileSystemPolicy(project.FileSystemPolicyOptions{CWD: primary, Profile: project.PermissionProfile{ReadHost: true, WorkspaceRoots: []string{primary}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runner, err := sandboxdomain.NewRunner(policy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runner.Mode() != sandboxdomain.IsolationSandboxed {
-		t.Skip("workspace-write sandbox unavailable: " + runner.Diagnostic())
-	}
-	executeCommand, err := NewExecuteCommand(root, ExecuteCommandOptions{
-		DefaultTimeout: 5 * time.Second, MaxTimeout: 5 * time.Second, MaxOutputBytes: 4096, MaxOutputLines: 100,
-		FileSystemPolicy: policy, Sandbox: runner,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	readInput, _ := json.Marshal(map[string]any{"command": "cat " + outsideFile, "cwd": readOnly})
-	result, err := executePreparedTool(t, context.Background(), executeCommand, readInput)
-	if err != nil || result.Text != "outside\n" || result.Metadata["sandbox_mode"] != string(sandboxdomain.IsolationSandboxed) {
-		t.Fatalf("sandbox host read failed: %#v err=%v", result, err)
-	}
-	insideFile := filepath.Join(primary, "inside.txt")
-	insideInput, _ := json.Marshal(map[string]any{"command": "printf inside > " + insideFile})
-	if _, err := executePreparedTool(t, context.Background(), executeCommand, insideInput); err != nil {
-		t.Fatalf("sandbox writable root write failed: %v", err)
-	}
-	if content, err := os.ReadFile(insideFile); err != nil || string(content) != "inside" {
-		t.Fatalf("sandbox writable file mismatch: %q err=%v", content, err)
-	}
-	deniedFile := filepath.Join(readOnly, "denied.txt")
-	deniedInput, _ := json.Marshal(map[string]any{"command": "printf denied > " + deniedFile})
-	deniedResult, err := executePreparedTool(t, context.Background(), executeCommand, deniedInput)
-	if !errors.Is(err, ErrSandboxDenied) || deniedResult.Metadata["sandbox_mode"] != string(sandboxdomain.IsolationSandboxed) {
-		t.Fatalf("sandbox undeclared write was not classified: %#v err=%v", deniedResult, err)
-	}
-	if _, statErr := os.Stat(deniedFile); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("sandbox created undeclared file: %v", statErr)
 	}
 }
 
@@ -147,24 +92,10 @@ func newTestExecuteCommand(t *testing.T, rootPath string, maxTimeout time.Durati
 	}
 	executeCommand, err := NewExecuteCommand(root, ExecuteCommandOptions{
 		DefaultTimeout: maxTimeout, MaxTimeout: maxTimeout, MaxOutputBytes: maxBytes, MaxOutputLines: maxLines,
-		Authorizer: newTestCommandAuthorizer(t),
+		Approvals: &permissionApprovalHandler{decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "test command approved"}},
 	})
 	if err != nil {
 		t.Fatalf("create execute_command: %v", err)
 	}
 	return executeCommand
-}
-
-func newTestCommandAuthorizer(t *testing.T) *policy.CommandAuthorizer {
-	t.Helper()
-	authorizer, err := policy.NewCommandAuthorizer(&permissionApprovalHandler{decision: policy.ApprovalDecision{
-		Outcome: policy.ApprovalAllow,
-		Scope:   policy.ApprovalOnce,
-		Source:  policy.ApprovalSourceUser,
-		Reason:  "test command approved",
-	}}, policy.NewSessionApprovalStore())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return authorizer
 }

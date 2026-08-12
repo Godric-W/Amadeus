@@ -65,12 +65,18 @@ func TestNewAgentBuildsDefaultComposition(t *testing.T) {
 	if agent.Client.Model().Provider != configured.DefaultProvider || agent.Client.Model().Name != "test-model" {
 		t.Fatalf("unexpected composed client model: %#v", agent.Client.Model())
 	}
-	if agent.Registry.Len() != 13 {
-		t.Fatalf("unexpected Agent registry size: got %d, want 13", agent.Registry.Len())
+	if agent.Registry.Len() != 8 {
+		t.Fatalf("unexpected Agent registry size: got %d, want 8", agent.Registry.Len())
 	}
 	wantTools := []string{"edit", "execute_command", "glob", "grep", "read", "view_image", "write", "write_stdin"}
 	if got := toolNames(agent.AvailableTools()); !reflect.DeepEqual(got, wantTools) {
 		t.Fatalf("unexpected available tools: got %v, want %v", got, wantTools)
+	}
+	for _, entry := range agent.Registry.Snapshot() {
+		switch entry.Spec.Name {
+		case "apply_patch", "read_file", "list_dir", "glob_files", "grep_code", "request_permissions":
+			t.Fatalf("legacy tool entered default registry: %q", entry.Spec.Name)
+		}
 	}
 }
 

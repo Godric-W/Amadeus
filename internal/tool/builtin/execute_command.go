@@ -15,33 +15,16 @@ import (
 	"github.com/Godric-W/Amadeus/internal/policy"
 	processdomain "github.com/Godric-W/Amadeus/internal/process"
 	"github.com/Godric-W/Amadeus/internal/project"
-	sandboxdomain "github.com/Godric-W/Amadeus/internal/sandbox"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 var ErrCommandTimeout = errors.New("command timed out")
-var ErrSandboxDenied = errors.New("sandbox denied filesystem access")
 
 type CommandExitError struct{ ExitCode int }
 
 func (err *CommandExitError) Error() string {
 	return fmt.Sprintf("command exited with code %d", err.ExitCode)
 }
-
-type SandboxDeniedError struct {
-	Output string
-}
-
-func (err *SandboxDeniedError) Error() string {
-	message := strings.TrimSpace(err.Output)
-	if message == "" {
-		return ErrSandboxDenied.Error()
-	}
-	return ErrSandboxDenied.Error() + ": " + message
-}
-
-func (err *SandboxDeniedError) Unwrap() error         { return ErrSandboxDenied }
-func (err *SandboxDeniedError) ToolErrorKind() string { return "sandbox_denied" }
 
 type ExecuteCommandOptions struct {
 	Shell            string
@@ -58,10 +41,6 @@ type ExecuteCommandOptions struct {
 	SessionApprovals *policy.SessionApprovalStore
 	Events           event.Sink
 	Audit            audit.Sink
-	// Sandbox and Authorizer are retained for historical callers. The
-	// application bootstrap no longer supplies them.
-	Sandbox    *sandboxdomain.Runner
-	Authorizer *policy.CommandAuthorizer
 }
 
 type ExecuteCommand struct {
@@ -69,7 +48,6 @@ type ExecuteCommand struct {
 	policy  *project.FileSystemPolicy
 	options ExecuteCommandOptions
 	manager *processdomain.Manager
-	sandbox *sandboxdomain.Runner
 	guard   *policy.CommandGuard
 }
 
@@ -83,11 +61,10 @@ type executeCommandArguments struct {
 }
 
 type ExecRequest struct {
-	owner         string
-	displayCWD    string
-	yield         time.Duration
-	isolationMode sandboxdomain.IsolationMode
-	command       processdomain.Command
+	owner      string
+	displayCWD string
+	yield      time.Duration
+	command    processdomain.Command
 }
 
 func NewExecuteCommand(root project.Root, options ExecuteCommandOptions) (*ExecuteCommand, error) {
@@ -130,7 +107,7 @@ func NewExecuteCommand(root project.Root, options ExecuteCommandOptions) (*Execu
 	if options.SessionApprovals == nil {
 		options.SessionApprovals = policy.NewSessionApprovalStore()
 	}
-	return &ExecuteCommand{root: root, policy: fileSystemPolicy, options: options, manager: manager, sandbox: options.Sandbox, guard: policy.NewCommandGuard()}, nil
+	return &ExecuteCommand{root: root, policy: fileSystemPolicy, options: options, manager: manager, guard: policy.NewCommandGuard()}, nil
 }
 
 func (executeCommand *ExecuteCommand) Spec() tool.Spec { return executeCommandSpec() }
@@ -176,21 +153,8 @@ func (executeCommand *ExecuteCommand) prepareExecRequest(ctx context.Context, in
 	if err != nil {
 		return ExecRequest{}, fmt.Errorf("resolve execute_command shell: %w", err)
 	}
-	launch := sandboxdomain.Launch{Executable: shell, Arguments: []string{"-c", arguments.Command}, Directory: resolved.Canonical, Mode: sandboxdomain.IsolationUnsandboxed}
-	if executeCommand.sandbox != nil {
-		launch, err = executeCommand.sandbox.Prepare(shell, arguments.Command, resolved.Canonical)
-		if err != nil {
-			return ExecRequest{}, fmt.Errorf("prepare sandbox command: %w", err)
-		}
-	}
-	if executeCommand.options.Authorizer != nil {
-		if err := executeCommand.options.Authorizer.Authorize(ctx, policy.CommandRequest{Call: call, Shell: shell, Command: arguments.Command, CWD: resolved.Canonical, TTY: arguments.TTY, IsolationMode: launch.Mode}); err != nil {
-			return ExecRequest{}, err
-		}
-	} else if executeCommand.sandbox == nil {
-		if err := executeCommand.authorizeHostCommand(ctx, call, arguments.Command, resolved.Canonical); err != nil {
-			return ExecRequest{}, err
-		}
+	if err := executeCommand.authorizeHostCommand(ctx, call, arguments.Command, resolved.Canonical); err != nil {
+		return ExecRequest{}, err
 	}
 	timeout := durationFromMilliseconds(arguments.TimeoutMS, executeCommand.options.DefaultTimeout, executeCommand.options.MaxTimeout)
 	yield := durationFromMilliseconds(arguments.YieldTimeMS, executeCommand.options.DefaultYield, executeCommand.options.MaxYield)
@@ -207,10 +171,10 @@ func (executeCommand *ExecuteCommand) prepareExecRequest(ctx context.Context, in
 		owner = "standalone"
 	}
 	return ExecRequest{
-		owner: owner, displayCWD: relativeCWD, yield: yield, isolationMode: launch.Mode,
+		owner: owner, displayCWD: relativeCWD, yield: yield,
 		command: processdomain.Command{
 			Shell: executeCommand.options.Shell, Command: arguments.Command,
-			Executable: launch.Executable, Arguments: launch.Arguments, Directory: launch.Directory,
+			Executable: shell, Arguments: []string{"-c", arguments.Command}, Directory: resolved.Canonical,
 			Timeout: timeout, TTY: arguments.TTY, MaxOutputBytes: maxBytes,
 		},
 	}, nil
@@ -300,7 +264,7 @@ func (executeCommand *ExecuteCommand) executeExecRequest(ctx context.Context, re
 		_ = executeCommand.manager.Cancel(processID, request.owner)
 		return tool.Output{}, err
 	}
-	return commandSnapshotResult("execute_command", request.displayCWD, snapshot, time.Since(startedAt), request.isolationMode)
+	return commandSnapshotResult("execute_command", request.displayCWD, snapshot, time.Since(startedAt))
 }
 
 var _ tool.Handler = (*ExecuteCommand)(nil)
@@ -316,7 +280,7 @@ func durationFromMilliseconds(value int64, fallback, maximum time.Duration) time
 	return result
 }
 
-func commandSnapshotResult(toolName, cwd string, snapshot processdomain.Snapshot, duration time.Duration, sandboxMode sandboxdomain.IsolationMode) (tool.Output, error) {
+func commandSnapshotResult(toolName, cwd string, snapshot processdomain.Snapshot, duration time.Duration) (tool.Output, error) {
 	result := tool.Output{
 		ToolName: toolName, Text: snapshot.Output,
 		Partial: snapshot.OutputTruncated || snapshot.State == processdomain.StateRunning || snapshot.State == processdomain.StateTimedOut || snapshot.State == processdomain.StateCancelled,
@@ -325,7 +289,6 @@ func commandSnapshotResult(toolName, cwd string, snapshot processdomain.Snapshot
 			"duration_ms": duration.Milliseconds(), "timed_out": snapshot.State == processdomain.StateTimedOut,
 			"cancelled": snapshot.State == processdomain.StateCancelled, "output_bytes": snapshot.TotalOutputBytes,
 			"output_truncated": snapshot.OutputTruncated,
-			"sandbox_mode":     string(sandboxMode),
 		},
 	}
 	switch snapshot.State {
@@ -336,18 +299,10 @@ func commandSnapshotResult(toolName, cwd string, snapshot processdomain.Snapshot
 	case processdomain.StateCancelled:
 		return result, context.Canceled
 	case processdomain.StateFailed:
-		if sandboxMode == sandboxdomain.IsolationSandboxed && sandboxFailureOutput(snapshot.Output) {
-			return result, &SandboxDeniedError{Output: snapshot.Output}
-		}
 		return result, &CommandExitError{ExitCode: snapshot.ExitCode}
 	default:
 		return result, fmt.Errorf("process has unknown state %q", snapshot.State)
 	}
-}
-
-func sandboxFailureOutput(output string) bool {
-	value := strings.ToLower(output)
-	return strings.Contains(value, "read-only file system") || strings.Contains(value, "permission denied") || strings.Contains(value, "operation not permitted")
 }
 
 var _ tool.Handler = (*ExecuteCommand)(nil)

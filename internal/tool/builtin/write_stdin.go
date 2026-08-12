@@ -73,7 +73,7 @@ func (writeStdin *WriteStdin) Handle(ctx context.Context, invocation tool.Invoca
 	if err != nil {
 		return tool.Output{}, err
 	}
-	return commandSnapshotResult("write_stdin", "", snapshot, time.Since(snapshot.StartedAt), "")
+	return commandSnapshotResult("write_stdin", "", snapshot, time.Since(snapshot.StartedAt))
 }
 
 func writeStdinSpec() tool.Spec {

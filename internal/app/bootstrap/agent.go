@@ -88,21 +88,9 @@ func (agent *Agent) AvailableTools() []tool.Spec {
 	entries := agent.Registry.VisibleSnapshot(agent.visibility)
 	tools := make([]tool.Spec, 0, len(entries))
 	for _, entry := range entries {
-		if legacyToolName(entry.Spec.Name) {
-			continue
-		}
 		tools = append(tools, entry.Spec.Clone())
 	}
 	return tools
-}
-
-func legacyToolName(name string) bool {
-	switch name {
-	case "apply_patch", "read_file", "list_dir", "glob_files", "grep_code", "request_permissions":
-		return true
-	default:
-		return false
-	}
 }
 
 func newAgent(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory) (*Agent, error) {
@@ -152,13 +140,12 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 		}
 	}
 	mvpOptions.FileSystemPolicy = fileSystemPolicy
-	mvpOptions.ApplyPatch.Executor.FileSystemPolicy = fileSystemPolicy
 	mvpOptions.ExecuteCommand.FileSystemPolicy = fileSystemPolicy
 	mvpOptions.ExecuteCommand.Approvals = approvals
 	mvpOptions.ExecuteCommand.SessionApprovals = sessionApprovals
 	mvpOptions.ExecuteCommand.Events = events
 	mvpOptions.ExecuteCommand.Audit = auditSink
-	registry, err := builtin.NewMVPRegistry(root, mvpOptions)
+	registry, err := builtin.NewCodingRegistry(root, mvpOptions)
 	if err != nil {
 		return nil, fmt.Errorf("create MVP tool registry: %w", err)
 	}
@@ -172,16 +159,6 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 	for _, candidate := range []tool.Handler{fileTools.ReadTool(), fileTools.EditTool(), fileTools.WriteTool()} {
 		if err := registry.Register(candidate); err != nil {
 			return nil, fmt.Errorf("register file tool %q: %w", candidate.Spec().Name, err)
-		}
-	}
-	if legacyGlob, ok := registry.Lookup("glob_files"); ok {
-		if err := registry.Register(builtin.NewGlobAlias(legacyGlob)); err != nil {
-			return nil, fmt.Errorf("register glob tool: %w", err)
-		}
-	}
-	if legacyGrep, ok := registry.Lookup("grep_code"); ok {
-		if err := registry.Register(builtin.NewGrepAlias(legacyGrep)); err != nil {
-			return nil, fmt.Errorf("register grep tool: %w", err)
 		}
 	}
 	if planState != nil || planRecorder != nil {
