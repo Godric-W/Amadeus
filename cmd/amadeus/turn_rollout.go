@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/react"
 	"github.com/Godric-W/Amadeus/internal/agent/task"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
@@ -76,17 +74,6 @@ func (recorder *turnRolloutRecorder) RecordToolOutcomes(ctx context.Context, out
 		return nil
 	}
 	return recorder.host.AppendItems(ctx, recorder.turnID, items...)
-}
-
-func recordPlanUpdate(ctx context.Context, host task.Host, turnID turn.ID, snapshot plan.Snapshot) error {
-	item, err := rollout.NewRawItem(rollout.KindPlanUpdate, mustMarshalRaw(map[string]any{
-		"explanation": snapshot.Explanation, "items": snapshot.Items,
-		"updated_at": snapshot.UpdatedAt.UTC().Format(time.RFC3339Nano), "revision": snapshot.Revision,
-	}))
-	if err != nil {
-		return err
-	}
-	return host.AppendItems(ctx, turnID, item)
 }
 
 func newResponseItem(payload any) (rollout.Item, error) {

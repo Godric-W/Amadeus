@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
 )
 
@@ -49,7 +48,7 @@ func TestExecuteCommandTimeoutAndCancellationArePartial(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	result, err = executePreparedTool(t, ctx, executeCommand, json.RawMessage(`{"command":"printf ignored"}`))
-	if !errors.Is(err, context.Canceled) || result.ToolName != "" {
+	if !errors.Is(err, context.Canceled) || result.CallID != "test-call" || result.ToolName != "execute_command" || result.Text != context.Canceled.Error() {
 		t.Fatalf("unexpected pre-cancel result: result=%#v err=%v", result, err)
 	}
 }
@@ -75,7 +74,7 @@ func TestExecuteCommandAllowsReadableExternalCWD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	executeCommand, err := NewExecuteCommand(root, ExecuteCommandOptions{DefaultTimeout: 5 * time.Second, MaxTimeout: 5 * time.Second, MaxOutputBytes: 1024, MaxOutputLines: 100, FileSystemPolicy: filesystemPolicy, Approvals: &permissionApprovalHandler{decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "test command approved"}}})
+	executeCommand, err := NewExecuteCommand(root, ExecuteCommandOptions{DefaultTimeout: 5 * time.Second, MaxTimeout: 5 * time.Second, MaxOutputBytes: 1024, MaxOutputLines: 100, FileSystemPolicy: filesystemPolicy})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +91,6 @@ func newTestExecuteCommand(t *testing.T, rootPath string, maxTimeout time.Durati
 	}
 	executeCommand, err := NewExecuteCommand(root, ExecuteCommandOptions{
 		DefaultTimeout: maxTimeout, MaxTimeout: maxTimeout, MaxOutputBytes: maxBytes, MaxOutputLines: maxLines,
-		Approvals: &permissionApprovalHandler{decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "test command approved"}},
 	})
 	if err != nil {
 		t.Fatalf("create execute_command: %v", err)

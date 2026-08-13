@@ -16,7 +16,7 @@ func TestManagerNormalizesToolProtocolAndProjectsLargeResults(t *testing.T) {
 	manager := NewManager(ConservativeEstimator{})
 	manager.Record(
 		llm.UserMessage("inspect"),
-		llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"large.md"}`)}),
+		llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"large.md"}`)}),
 		llm.ToolResultMessage("call-1", strings.Repeat("x", 5000)),
 		llm.ToolResultMessage("orphan", "must disappear"),
 		llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call-2", Name: "execute_command", Arguments: json.RawMessage(`{"command":"long"}`)}),
@@ -78,7 +78,7 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 
 	covered := []llm.Message{
 		llm.UserMessage("initial objective"),
-		llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
+		llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
 		llm.ToolResultMessage("call-1", "full contents"),
 		llm.AssistantMessage("inspection complete"),
 	}
@@ -89,7 +89,7 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 	digest := sha256.Sum256(encoded)
 	lines := []rollout.Line{
 		contextTestLine(t, 1, rollout.KindResponseItem, map[string]any{"type": "user_message", "role": "user", "content": "initial objective"}),
-		contextTestLine(t, 2, rollout.KindResponseItem, map[string]any{"type": "tool_call", "role": "assistant", "call_id": "call-1", "name": "read_file", "arguments": map[string]any{"path": "README.md"}}),
+		contextTestLine(t, 2, rollout.KindResponseItem, map[string]any{"type": "tool_call", "role": "assistant", "call_id": "call-1", "name": "read", "arguments": map[string]any{"path": "README.md"}}),
 		contextTestLine(t, 3, rollout.KindResponseItem, map[string]any{"type": "tool_result", "role": "tool", "call_id": "call-1", "content": "full contents"}),
 		contextTestLine(t, 4, rollout.KindResponseItem, map[string]any{"type": "assistant_message", "role": "assistant", "content": "inspection complete"}),
 		contextTestLine(t, 5, rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(UpdateAgents), Content: "project agents"}),
@@ -134,12 +134,12 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 
 func TestManagerPromptSnapshotDoesNotShareMutableHistory(t *testing.T) {
 	manager := NewManager(nil)
-	manager.Record(llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}))
+	manager.Record(llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"a"}`)}))
 	first := manager.ForPrompt(llm.ModelInfo{ContextWindow: 1000})
 	first.Items[0].ToolCalls[0].Name = "changed"
 	first.Items[0].ToolCalls[0].Arguments[0] = '['
 	second := manager.ForPrompt(llm.ModelInfo{ContextWindow: 1000})
-	if second.Items[0].ToolCalls[0].Name != "read_file" || string(second.Items[0].ToolCalls[0].Arguments) != `{"path":"a"}` {
+	if second.Items[0].ToolCalls[0].Name != "read" || string(second.Items[0].ToolCalls[0].Arguments) != `{"path":"a"}` {
 		t.Fatalf("Prompt snapshot shares mutable history: %#v", second.Items[0])
 	}
 }

@@ -102,15 +102,15 @@ func TestPromptArchitectureKeepsAssetsInternalAndReactorDecoupled(t *testing.T) 
 	}
 }
 
-func TestToolRouterOwnsArgumentValidation(t *testing.T) {
+func TestToolServiceOwnsArgumentValidation(t *testing.T) {
 	root := repositoryRoot(t)
-	routerPath := filepath.Join(root, "internal", "tool", "router.go")
-	router, err := os.ReadFile(routerPath)
+	servicePath := filepath.Join(root, "internal", "tool", "execution_service.go")
+	service, err := os.ReadFile(servicePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(router), "router.validator.Normalize") {
-		t.Fatal("ToolRouter does not own Tool argument validation")
+	if !strings.Contains(string(service), "service.validator.Normalize") {
+		t.Fatal("ToolService does not own Tool argument validation")
 	}
 	aggregatorPath := filepath.Join(root, "internal", "llm", "openai", "tool_call_aggregator.go")
 	aggregator, err := os.ReadFile(aggregatorPath)
@@ -118,26 +118,26 @@ func TestToolRouterOwnsArgumentValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(aggregator), "json.Valid") {
-		t.Fatal("Provider Tool Call aggregator rejects arguments before ToolRouter validation")
+		t.Fatal("Provider Tool Call aggregator rejects arguments before ToolService validation")
 	}
 }
 
-func TestToolHandlersOnlyExecuteThroughRouter(t *testing.T) {
+func TestToolsOnlyExecuteThroughToolExecutionService(t *testing.T) {
 	root := repositoryRoot(t)
 	for _, relative := range []string{"cmd", "internal"} {
 		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
 			}
-			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") || filepath.Base(path) == "router.go" {
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") || filepath.Base(path) == "execution_service.go" {
 				return nil
 			}
 			content, readErr := os.ReadFile(path)
 			if readErr != nil {
 				return readErr
 			}
-			if strings.Contains(string(content), ".Handle(ctx, Invocation{") || strings.Contains(string(content), ".Handle(ctx, tool.Invocation{") {
-				t.Errorf("Tool Handler is invoked outside ToolRouter in %s", filepath.ToSlash(path[len(root)+1:]))
+			if strings.Contains(string(content), ".Call(ctx, Invocation{") || strings.Contains(string(content), ".Call(ctx, tool.Invocation{") {
+				t.Errorf("Tool Handler is invoked outside ToolService in %s", filepath.ToSlash(path[len(root)+1:]))
 			}
 			return nil
 		})

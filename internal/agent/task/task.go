@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/rollout"
@@ -27,6 +28,11 @@ type Result struct {
 type Host interface {
 	AppendItems(context.Context, turn.ID, ...rollout.Item) error
 	History() []rollout.Line
+}
+
+type PlanHost interface {
+	Host
+	UpdatePlan(context.Context, turn.ID, plan.Update) (plan.Snapshot, error)
 }
 
 type ContextHost interface {

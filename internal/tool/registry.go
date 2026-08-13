@@ -16,8 +16,8 @@ var (
 )
 
 type Entry struct {
-	Spec      Spec
-	Handler   Handler
+	Spec      ToolSpec
+	Tool      Tool
 	Exposure  Exposure
 	Condition string
 }
@@ -32,11 +32,11 @@ func NewRegistry() *Registry {
 	return &Registry{tools: make(map[string]Entry), groups: make(map[string]map[string]struct{})}
 }
 
-func (registry *Registry) ReplaceGroup(group string, candidates []Handler) error {
+func (registry *Registry) ReplaceGroup(group string, candidates []Tool) error {
 	return registry.ReplaceGroupWithRegistration(group, candidates, DirectRegistration())
 }
 
-func (registry *Registry) ReplaceGroupWithRegistration(group string, candidates []Handler, registration Registration) error {
+func (registry *Registry) ReplaceGroupWithRegistration(group string, candidates []Tool, registration Registration) error {
 	group = strings.TrimSpace(group)
 	if group == "" {
 		return errors.New("tool registry group is empty")
@@ -48,7 +48,7 @@ func (registry *Registry) ReplaceGroupWithRegistration(group string, candidates 
 	entries := make([]Entry, 0, len(candidates))
 	seen := make(map[string]struct{}, len(candidates))
 	for _, candidate := range candidates {
-		if candidate == nil || isNilHandler(candidate) {
+		if candidate == nil || isNilTool(candidate) {
 			return ErrNilTool
 		}
 		spec := candidate.Spec().Clone()
@@ -59,7 +59,7 @@ func (registry *Registry) ReplaceGroupWithRegistration(group string, candidates 
 			return fmt.Errorf("%w: %s", ErrDuplicateTool, spec.Name)
 		}
 		seen[spec.Name] = struct{}{}
-		entries = append(entries, Entry{Spec: spec, Handler: candidate, Exposure: registration.Exposure, Condition: registration.Condition})
+		entries = append(entries, Entry{Spec: spec, Tool: candidate, Exposure: registration.Exposure, Condition: registration.Condition})
 	}
 
 	registry.mutex.Lock()
@@ -83,12 +83,12 @@ func (registry *Registry) ReplaceGroupWithRegistration(group string, candidates 
 	return nil
 }
 
-func (registry *Registry) Register(candidate Handler) error {
+func (registry *Registry) Register(candidate Tool) error {
 	return registry.RegisterWithRegistration(candidate, DirectRegistration())
 }
 
-func (registry *Registry) RegisterWithRegistration(candidate Handler, registration Registration) error {
-	if candidate == nil || isNilHandler(candidate) {
+func (registry *Registry) RegisterWithRegistration(candidate Tool, registration Registration) error {
+	if candidate == nil || isNilTool(candidate) {
 		return ErrNilTool
 	}
 	registration, err := normalizeRegistration(registration)
@@ -105,32 +105,32 @@ func (registry *Registry) RegisterWithRegistration(candidate Handler, registrati
 	if _, exists := registry.tools[spec.Name]; exists {
 		return fmt.Errorf("%w: %s", ErrDuplicateTool, spec.Name)
 	}
-	registry.tools[spec.Name] = Entry{Spec: spec, Handler: candidate, Exposure: registration.Exposure, Condition: registration.Condition}
+	registry.tools[spec.Name] = Entry{Spec: spec, Tool: candidate, Exposure: registration.Exposure, Condition: registration.Condition}
 	return nil
 }
 
-func (registry *Registry) Lookup(name string) (Handler, bool) {
+func (registry *Registry) Lookup(name string) (Tool, bool) {
 	registry.mutex.RLock()
 	entry, exists := registry.tools[strings.TrimSpace(name)]
 	registry.mutex.RUnlock()
-	return entry.Handler, exists
+	return entry.Tool, exists
 }
 
-func (registry *Registry) LookupVisible(name string, conditions map[string]bool) (Handler, bool) {
+func (registry *Registry) LookupVisible(name string, conditions map[string]bool) (Tool, bool) {
 	registry.mutex.RLock()
 	entry, exists := registry.tools[strings.TrimSpace(name)]
 	registry.mutex.RUnlock()
 	if !exists || !entryVisible(entry, conditions) {
 		return nil, false
 	}
-	return entry.Handler, true
+	return entry.Tool, true
 }
 
 func (registry *Registry) Snapshot() []Entry {
 	registry.mutex.RLock()
 	entries := make([]Entry, 0, len(registry.tools))
 	for _, entry := range registry.tools {
-		entries = append(entries, Entry{Spec: entry.Spec.Clone(), Handler: entry.Handler, Exposure: entry.Exposure, Condition: entry.Condition})
+		entries = append(entries, Entry{Spec: entry.Spec.Clone(), Tool: entry.Tool, Exposure: entry.Exposure, Condition: entry.Condition})
 	}
 	registry.mutex.RUnlock()
 	sort.Slice(entries, func(left, right int) bool {
@@ -184,7 +184,7 @@ func (registry *Registry) Len() int {
 	return length
 }
 
-func validateSpec(spec Spec) error {
+func validateSpec(spec ToolSpec) error {
 	if strings.TrimSpace(spec.Name) == "" {
 		return fmt.Errorf("%w: name is empty", ErrInvalidSpec)
 	}
@@ -200,11 +200,11 @@ func validateSpec(spec Spec) error {
 	return nil
 }
 
-func ValidateSpec(spec Spec) error {
+func ValidateSpec(spec ToolSpec) error {
 	return validateSpec(spec)
 }
 
-func isNilHandler(candidate Handler) bool {
+func isNilTool(candidate Tool) bool {
 	value := reflect.ValueOf(candidate)
 	switch value.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:

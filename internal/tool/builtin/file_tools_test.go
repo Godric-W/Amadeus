@@ -11,7 +11,6 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
-	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type fileApprovalStub struct {
@@ -24,7 +23,7 @@ func (stub *fileApprovalStub) Decide(_ context.Context, request policy.ApprovalR
 	return stub.decision, nil
 }
 
-func newFileToolsTest(t *testing.T, decision policy.ApprovalDecision) (*FileTools, *fileApprovalStub, string) {
+func newFileToolsTest(t *testing.T, decision policy.ApprovalDecision) (*FileTools, *fileApprovalStub, *policy.ApprovalCoordinator, string) {
 	t.Helper()
 	rootPath := t.TempDir()
 	root, err := project.NewRoot(rootPath)
@@ -39,20 +38,25 @@ func newFileToolsTest(t *testing.T, decision policy.ApprovalDecision) (*FileTool
 		t.Fatal(err)
 	}
 	stub := &fileApprovalStub{decision: decision}
-	files, err := NewFileTools(root, FileToolsOptions{FileSystemPolicy: filesystem, Approvals: stub, SessionApprovals: policy.NewFileApprovalStore()})
+	files, err := NewFileTools(root, FileToolsOptions{FileSystemPolicy: filesystem})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return files, stub, rootPath
+	coordinator, err := policy.NewApprovalCoordinator(stub, policy.NewSessionPermissionContext(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files, stub, coordinator, rootPath
 }
 
 func TestFileEditRequiresApprovalAndReturnsDiff(t *testing.T) {
-	files, stub, rootPath := newFileToolsTest(t, policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "approved"})
+	files, stub, coordinator, rootPath := newFileToolsTest(t, policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "approved"})
 	path := filepath.Join(rootPath, "main.go")
 	if err := os.WriteFile(path, []byte("before\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := files.EditTool().Handle(context.Background(), tool.Invocation{Call: tool.NewCall("edit-1", "edit", json.RawMessage(`{"path":"main.go","old_string":"before","new_string":"after"}`))})
+	ctx := withTestApprovalCoordinator(context.Background(), coordinator)
+	result, err := executePreparedTool(t, ctx, files.EditTool(), json.RawMessage(`{"path":"main.go","old_string":"before","new_string":"after"}`))
 	if err != nil {
 		t.Fatalf("edit failed: %v", err)
 	}
@@ -69,18 +73,20 @@ func TestFileEditRequiresApprovalAndReturnsDiff(t *testing.T) {
 }
 
 func TestFileEditRejectsStaleTargetAfterApproval(t *testing.T) {
-	files, stub, rootPath := newFileToolsTest(t, policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "approved"})
+	files, stub, _, rootPath := newFileToolsTest(t, policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "approved"})
 	path := filepath.Join(rootPath, "main.go")
 	if err := os.WriteFile(path, []byte("before\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	original := files.applyChange
-	_ = original
 	// The approval callback mutates the file between preview and revalidation.
 	stub.decision = policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "approved"}
 	stubCallback := &mutatingApproval{stub: stub, path: path}
-	files.approvals = stubCallback
-	_, err := files.EditTool().Handle(context.Background(), tool.Invocation{Call: tool.NewCall("edit-2", "edit", json.RawMessage(`{"path":"main.go","old_string":"before","new_string":"after"}`))})
+	coordinator, coordinatorErr := policy.NewApprovalCoordinator(stubCallback, policy.NewSessionPermissionContext(), nil)
+	if coordinatorErr != nil {
+		t.Fatal(coordinatorErr)
+	}
+	ctx := withTestApprovalCoordinator(context.Background(), coordinator)
+	_, err := executePreparedTool(t, ctx, files.EditTool(), json.RawMessage(`{"path":"main.go","old_string":"before","new_string":"after"}`))
 	var stale *staleFileError
 	if !errors.As(err, &stale) {
 		t.Fatalf("expected stale error, got %v", err)
@@ -101,9 +107,10 @@ func (approval *mutatingApproval) Decide(ctx context.Context, request policy.App
 }
 
 func TestFileWriteSessionApprovalCoversDirectory(t *testing.T) {
-	files, stub, rootPath := newFileToolsTest(t, policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalSession, Source: policy.ApprovalSourceUser, Reason: "trusted"})
+	files, stub, coordinator, rootPath := newFileToolsTest(t, policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalSession, Source: policy.ApprovalSourceUser, Reason: "trusted"})
+	ctx := withTestApprovalCoordinator(context.Background(), coordinator)
 	for _, name := range []string{"one.txt", "two.txt"} {
-		_, err := files.WriteTool().Handle(context.Background(), tool.Invocation{Call: tool.NewCall("write-"+name, "write", json.RawMessage(`{"path":"`+name+`","content":"ok"}`))})
+		_, err := executePreparedTool(t, ctx, files.WriteTool(), json.RawMessage(`{"path":"`+name+`","content":"ok"}`))
 		if err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}
@@ -111,17 +118,18 @@ func TestFileWriteSessionApprovalCoversDirectory(t *testing.T) {
 	if len(stub.requests) != 1 {
 		t.Fatalf("session approval should be reused, requests=%d", len(stub.requests))
 	}
-	if !files.sessionApprovals.Allows(filepath.Join(rootPath, "nested", "file.txt")) {
+	if !coordinator.Permissions().MatchFileDirectory(filepath.Join(rootPath, "nested", "file.txt")) {
 		t.Fatal("session directory grant not applied")
 	}
 }
 
 func TestFileReadIsParallelAndDoesNotAsk(t *testing.T) {
-	files, stub, rootPath := newFileToolsTest(t, policy.ApprovalDecision{Outcome: policy.ApprovalDeny, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "not expected"})
+	files, stub, coordinator, rootPath := newFileToolsTest(t, policy.ApprovalDecision{Outcome: policy.ApprovalDeny, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "not expected"})
 	if err := os.WriteFile(filepath.Join(rootPath, "read.txt"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := files.ReadTool().Handle(context.Background(), tool.Invocation{Call: tool.NewCall("read-1", "read", json.RawMessage(`{"path":"read.txt"}`))})
+	ctx := withTestApprovalCoordinator(context.Background(), coordinator)
+	result, err := executePreparedTool(t, ctx, files.ReadTool(), json.RawMessage(`{"path":"read.txt"}`))
 	if err != nil || result.Text != "L1:hello\n" {
 		t.Fatalf("read failed: %#v %v", result, err)
 	}

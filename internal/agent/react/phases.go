@@ -14,7 +14,7 @@ type ThinkInput struct {
 	LLMCallID         string
 	Messages          []llm.Message
 	BaseInstructions  llm.BaseInstructions
-	AvailableTools    []tool.Spec
+	AvailableTools    []tool.ToolSpec
 	OutputSchema      llm.OutputSchema
 	ParallelToolCalls bool
 	Temperature       float64
@@ -40,7 +40,7 @@ const (
 
 type AnalyzeInput struct {
 	Think          ThinkOutput
-	AvailableTools []tool.Spec
+	AvailableTools []tool.ToolSpec
 }
 
 type AnalyzeOutput struct {
@@ -58,7 +58,7 @@ type AnalyzePort interface {
 
 type ActInput struct {
 	Calls          []tool.ToolCall
-	AvailableTools []tool.Spec
+	AvailableTools []tool.ToolSpec
 	RecordCalls    tool.NormalizedCallRecorder
 }
 
@@ -76,7 +76,7 @@ type ObserveInput struct {
 	Index          int
 	Analysis       AnalyzeOutput
 	Act            ActOutput
-	AvailableTools []tool.Spec
+	AvailableTools []tool.ToolSpec
 }
 
 type ObserveOutput struct {

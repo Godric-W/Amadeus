@@ -84,7 +84,7 @@ func TestHubReportsCriticalBackpressureAndCountsNonCriticalDrops(t *testing.T) {
 	if subscription.Dropped() != 1 {
 		t.Fatalf("unexpected dropped count: %d", subscription.Dropped())
 	}
-	if err := hub.Publish(context.Background(), ToolCallCompleted{CallID: "call-1", ToolName: "read_file"}); !errors.Is(err, ErrSubscriberBackpressure) {
+	if err := hub.Publish(context.Background(), ToolCallCompleted{CallID: "call-1", ToolName: "read"}); !errors.Is(err, ErrSubscriberBackpressure) {
 		t.Fatalf("unexpected critical backpressure error: %v", err)
 	}
 }

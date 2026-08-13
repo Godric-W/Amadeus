@@ -149,9 +149,9 @@ func TestHistoryCellArchitectureHasNoLegacyMainChain(t *testing.T) {
 }
 
 func toolStarted(callID string) event.ToolCallStarted {
-	return event.ToolCallStarted{CallID: callID, ToolName: "read_file", SideEffect: "read", ActionSummary: "Read file"}
+	return event.ToolCallStarted{CallID: callID, ToolName: "read", SideEffect: "read", ActionSummary: "Read file"}
 }
 
 func toolCompleted(callID string) event.ToolCallCompleted {
-	return event.ToolCallCompleted{CallID: callID, ToolName: "read_file", Success: true}
+	return event.ToolCallCompleted{CallID: callID, ToolName: "read", Success: true}
 }

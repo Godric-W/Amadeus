@@ -18,7 +18,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/workspace"
 )
 
-type GrepCodeOptions struct {
+type GrepOptions struct {
 	MaxResults       int
 	MaxFileBytes     int64
 	MaxContextLines  int
@@ -28,15 +28,15 @@ type GrepCodeOptions struct {
 	FileSystemPolicy *project.FileSystemPolicy
 }
 
-type GrepCode struct {
+type Grep struct {
 	root       project.Root
 	reader     *workspace.Reader
 	enumerator *workspace.FileEnumerator
-	options    GrepCodeOptions
+	options    GrepOptions
 	ripgrep    string
 }
 
-type grepCodeArguments struct {
+type grepArguments struct {
 	Query         string `json:"query"`
 	Path          string `json:"path,omitempty"`
 	Glob          string `json:"glob,omitempty"`
@@ -55,12 +55,12 @@ type grepLine struct {
 	Context bool
 }
 
-func NewGrepCode(root project.Root, options GrepCodeOptions) (*GrepCode, error) {
+func NewGrep(root project.Root, options GrepOptions) (*Grep, error) {
 	if root.Path() == "" {
-		return nil, errors.New("grep_code project root is empty")
+		return nil, errors.New("grep project root is empty")
 	}
 	if options.MaxResults <= 0 || options.MaxFileBytes <= 0 || options.MaxContextLines < 0 {
-		return nil, errors.New("grep_code limits are invalid")
+		return nil, errors.New("grep limits are invalid")
 	}
 	if options.MaxRGOutputBytes <= 0 {
 		options.MaxRGOutputBytes = 4 << 20
@@ -91,32 +91,32 @@ func NewGrepCode(root project.Root, options GrepCodeOptions) (*GrepCode, error) 
 			ripgrep = discovered
 		}
 	}
-	return &GrepCode{root: root, reader: reader, enumerator: enumerator, options: options, ripgrep: ripgrep}, nil
+	return &Grep{root: root, reader: reader, enumerator: enumerator, options: options, ripgrep: ripgrep}, nil
 }
 
-func (grepCode *GrepCode) Spec() tool.Spec { return grepCodeSpec() }
+func (grep *Grep) Spec() tool.ToolSpec { return grepSpec() }
 
-func (grepCode *GrepCode) SupportsParallelToolCalls() bool { return true }
+func (grep *Grep) SupportsParallelToolCalls() bool { return true }
 
-func (grepCode *GrepCode) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+func (grep *Grep) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	call := invocation.Call
-	var arguments grepCodeArguments
+	var arguments grepArguments
 	if err := decodeArguments(call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
 	if arguments.Query == "" {
-		return tool.Output{}, errors.New("grep_code query is empty")
+		return tool.Output{}, errors.New("grep query is empty")
 	}
 	if arguments.Context < 0 || arguments.Limit < 0 {
-		return tool.Output{}, errors.New("grep_code context and limit cannot be negative")
+		return tool.Output{}, errors.New("grep context and limit cannot be negative")
 	}
 	if arguments.Glob != "" {
 		if _, err := workspace.NormalizeGlob(arguments.Glob); err != nil {
-			return tool.Output{}, fmt.Errorf("grep_code glob is invalid: %w", err)
+			return tool.Output{}, fmt.Errorf("grep glob is invalid: %w", err)
 		}
 	}
-	contextLines := min(arguments.Context, grepCode.options.MaxContextLines)
-	limit := grepCode.options.MaxResults
+	contextLines := min(arguments.Context, grep.options.MaxContextLines)
+	limit := grep.options.MaxResults
 	if arguments.Limit > 0 && arguments.Limit < limit {
 		limit = arguments.Limit
 	}
@@ -132,23 +132,23 @@ func (grepCode *GrepCode) Handle(ctx context.Context, invocation tool.Invocation
 	if searchPath == "" {
 		searchPath = "."
 	}
-	resolved, err := grepCode.reader.ResolveExistingTarget(searchPath, project.PathAny)
+	resolved, err := grep.reader.ResolveExistingTarget(searchPath, project.PathAny)
 	if err != nil {
 		return tool.Output{}, err
 	}
-	lines, matches, files, skipped, partial, backend, err := grepCode.ripgrepSearch(ctx, resolved.Canonical, arguments, contextLines, limit, caseSensitive)
+	lines, matches, files, skipped, partial, backend, err := grep.ripgrepSearch(ctx, resolved.Canonical, arguments, contextLines, limit, caseSensitive)
 	if err != nil && ctx.Err() != nil {
 		return tool.Output{}, ctx.Err()
 	}
-	if err != nil || grepCode.ripgrep == "" {
-		lines, matches, files, skipped, partial, err = grepCode.goSearch(ctx, resolved.Canonical, arguments, matcher, contextLines, limit)
+	if err != nil || grep.ripgrep == "" {
+		lines, matches, files, skipped, partial, err = grep.goSearch(ctx, resolved.Canonical, arguments, matcher, contextLines, limit)
 		backend = "go"
 		if err != nil {
 			return tool.Output{}, err
 		}
 	}
 	return tool.Output{
-		ToolName: "grep_code", Text: formatGrepLines(lines), Partial: partial,
+		ToolName: "grep", Text: formatGrepLines(lines), Partial: partial,
 		Metadata: map[string]any{
 			"query": arguments.Query, "path": searchPath, "glob": arguments.Glob, "type": arguments.Type,
 			"matches_returned": matches, "files_searched": files, "files_skipped": skipped, "backend": backend,
@@ -156,7 +156,7 @@ func (grepCode *GrepCode) Handle(ctx context.Context, invocation tool.Invocation
 	}, nil
 }
 
-var _ tool.Handler = (*GrepCode)(nil)
+var _ tool.Tool = (*Grep)(nil)
 
 type rgJSONEvent struct {
 	Type string `json:"type"`
@@ -174,8 +174,8 @@ type rgJSONEvent struct {
 	} `json:"data"`
 }
 
-func (grepCode *GrepCode) ripgrepSearch(ctx context.Context, searchPath string, arguments grepCodeArguments, contextLines, limit int, caseSensitive bool) ([]grepLine, int, int, int, bool, string, error) {
-	if grepCode.ripgrep == "" {
+func (grep *Grep) ripgrepSearch(ctx context.Context, searchPath string, arguments grepArguments, contextLines, limit int, caseSensitive bool) ([]grepLine, int, int, int, bool, string, error) {
+	if grep.ripgrep == "" {
 		return nil, 0, 0, 0, false, "", errors.New("ripgrep is unavailable")
 	}
 	commandArguments := []string{"--json", "--color", "never", "--no-messages", "--line-number", "--column", "--context", fmt.Sprint(contextLines)}
@@ -195,9 +195,9 @@ func (grepCode *GrepCode) ripgrepSearch(ctx context.Context, searchPath string, 
 		commandArguments = append(commandArguments, "--glob", "!"+directory+"/**")
 	}
 	commandArguments = append(commandArguments, "--", arguments.Query, searchPath)
-	command := exec.CommandContext(ctx, grepCode.ripgrep, commandArguments...)
-	command.Dir = grepCode.root.Path()
-	stdout := &limitedCommandBuffer{limit: grepCode.options.MaxRGOutputBytes}
+	command := exec.CommandContext(ctx, grep.ripgrep, commandArguments...)
+	command.Dir = grep.root.Path()
+	stdout := &limitedCommandBuffer{limit: grep.options.MaxRGOutputBytes}
 	stderr := &limitedCommandBuffer{limit: 64 << 10}
 	command.Stdout, command.Stderr = stdout, stderr
 	err := command.Run()
@@ -219,7 +219,7 @@ func (grepCode *GrepCode) ripgrepSearch(ctx context.Context, searchPath string, 
 	files := map[string]struct{}{}
 	partial := false
 	scanner := bufio.NewScanner(bytes.NewReader(stdout.Bytes()))
-	scanner.Buffer(make([]byte, 64<<10), int(grepCode.options.MaxRGOutputBytes))
+	scanner.Buffer(make([]byte, 64<<10), int(grep.options.MaxRGOutputBytes))
 	for scanner.Scan() {
 		var event rgJSONEvent
 		if json.Unmarshal(scanner.Bytes(), &event) != nil || (event.Type != "match" && event.Type != "context") {
@@ -227,7 +227,7 @@ func (grepCode *GrepCode) ripgrepSearch(ctx context.Context, searchPath string, 
 		}
 		recognized++
 		path := strings.TrimPrefix(filepath.ToSlash(event.Data.Path.Text), "./")
-		if _, err := grepCode.reader.ResolveExisting(filepath.FromSlash(path), project.PathFile); err != nil {
+		if _, err := grep.reader.ResolveExisting(filepath.FromSlash(path), project.PathFile); err != nil {
 			return nil, 0, 0, 0, false, "", err
 		}
 		isMatch := event.Type == "match"
@@ -260,8 +260,8 @@ func (grepCode *GrepCode) ripgrepSearch(ctx context.Context, searchPath string, 
 	return lines, matches, len(files), 0, partial, "rg", nil
 }
 
-func (grepCode *GrepCode) goSearch(ctx context.Context, absolutePath string, arguments grepCodeArguments, matcher *regexp.Regexp, contextLines, limit int) ([]grepLine, int, int, int, bool, error) {
-	enumerated, err := grepCode.enumerator.EnumeratePrepared(ctx, absolutePath, workspace.EnumerateOptions{})
+func (grep *Grep) goSearch(ctx context.Context, absolutePath string, arguments grepArguments, matcher *regexp.Regexp, contextLines, limit int) ([]grepLine, int, int, int, bool, error) {
+	enumerated, err := grep.enumerator.EnumeratePrepared(ctx, absolutePath, workspace.EnumerateOptions{})
 	if err != nil {
 		return nil, 0, 0, 0, false, err
 	}
@@ -278,7 +278,7 @@ func (grepCode *GrepCode) goSearch(ctx context.Context, absolutePath string, arg
 		if !matchesType(file.Relative, arguments.Type) {
 			continue
 		}
-		if file.Size > grepCode.options.MaxFileBytes {
+		if file.Size > grep.options.MaxFileBytes {
 			filesSkipped++
 			continue
 		}
@@ -286,7 +286,7 @@ func (grepCode *GrepCode) goSearch(ctx context.Context, absolutePath string, arg
 		if err != nil {
 			return nil, 0, 0, 0, false, err
 		}
-		if int64(len(content)) > grepCode.options.MaxFileBytes || !(workspace.TextDetector{}).Valid(content) {
+		if int64(len(content)) > grep.options.MaxFileBytes || !(workspace.TextDetector{}).Valid(content) {
 			filesSkipped++
 			continue
 		}
@@ -341,7 +341,7 @@ func compileGrepMatcher(query string, regex, caseSensitive bool) (*regexp.Regexp
 	}
 	matcher, err := regexp.Compile(pattern)
 	if err != nil {
-		return nil, fmt.Errorf("compile grep_code query: %w", err)
+		return nil, fmt.Errorf("compile grep query: %w", err)
 	}
 	return matcher, nil
 }
@@ -389,4 +389,4 @@ func (buffer *limitedCommandBuffer) Write(content []byte) (int, error) {
 func (buffer *limitedCommandBuffer) Bytes() []byte  { return buffer.buffer.Bytes() }
 func (buffer *limitedCommandBuffer) String() string { return buffer.buffer.String() }
 
-var _ tool.Handler = (*GrepCode)(nil)
+var _ tool.Tool = (*Grep)(nil)

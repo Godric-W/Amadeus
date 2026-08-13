@@ -23,7 +23,7 @@ type IterationInput struct {
 	ID                string
 	Messages          []llm.Message
 	BaseInstructions  llm.BaseInstructions
-	AvailableTools    []tool.Spec
+	AvailableTools    []tool.ToolSpec
 	OutputSchema      llm.OutputSchema
 	ParallelToolCalls bool
 	Temperature       float64
@@ -193,7 +193,7 @@ func classify(response llm.Response) (IterationResult, error) {
 	return IterationResult{Kind: IterationCandidate, Response: response, Candidate: &candidate}, nil
 }
 
-func toolDefinitions(specs []tool.Spec) []llm.ToolDefinition {
+func toolDefinitions(specs []tool.ToolSpec) []llm.ToolDefinition {
 	definitions := make([]llm.ToolDefinition, len(specs))
 	for index, spec := range specs {
 		definitions[index] = llm.ToolDefinition{

@@ -53,7 +53,7 @@ func DirectRegistration() Registration {
 	return Registration{Exposure: ExposureDirect}
 }
 
-type Spec struct {
+type ToolSpec struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
@@ -61,7 +61,7 @@ type Spec struct {
 	Idempotent  bool            `json:"idempotent"`
 }
 
-func (spec Spec) Clone() Spec {
+func (spec ToolSpec) Clone() ToolSpec {
 	spec.InputSchema = append(json.RawMessage(nil), spec.InputSchema...)
 	return spec
 }

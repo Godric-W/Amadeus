@@ -93,11 +93,11 @@ func dialectChatRequest() llm.Request {
 		Model: "test-model",
 		Prompt: llm.Prompt{
 			Input: []llm.Message{
-				llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
+				llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call_1", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
 				llm.ToolResultMessage("call_1", "contents"),
 			},
 			Tools: []llm.ToolDefinition{{
-				Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`), Strict: false,
+				Name: "read", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`), Strict: false,
 			}},
 		},
 		Temperature: 0.2, MaxOutputTokens: 256,
@@ -141,7 +141,7 @@ func assertCompatibleTokenAndToolFields(t *testing.T, body map[string]any) {
 	}
 	tool := body["tools"].([]any)[0].(map[string]any)
 	function := tool["function"].(map[string]any)
-	if tool["type"] != "function" || function["name"] != "read_file" {
+	if tool["type"] != "function" || function["name"] != "read" {
 		t.Fatalf("unexpected compatible tool definition: %#v", tool)
 	}
 	if _, ok := function["strict"]; ok {

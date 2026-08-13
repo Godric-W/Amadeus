@@ -173,14 +173,7 @@ func approvalChoices(request policy.ApprovalRequest) []fullscreenApprovalChoice 
 		}
 		return choices
 	}
-	if request.Purpose != policy.ApprovalPurposePermission {
-		return fullscreenApprovalChoices
-	}
-	return []fullscreenApprovalChoice{
-		{label: "Yes, allow for this run", decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalRun, Source: policy.ApprovalSourceUser, Reason: "user approved for the run"}},
-		{label: "Yes, allow for this session", decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalSession, Source: policy.ApprovalSourceUser, Reason: "user approved for the session"}},
-		{label: "No, deny", decision: policy.ApprovalDecision{Outcome: policy.ApprovalDeny, Scope: policy.ApprovalRun, Source: policy.ApprovalSourceUser, Reason: "user denied the request"}},
-	}
+	return fullscreenApprovalChoices
 }
 
 type fullscreenEventMsg struct{ item event.Event }
@@ -1456,4 +1449,4 @@ func maxInt(left, right int) int {
 }
 
 var _ event.Sink = (*FullscreenApplication)(nil)
-var _ policy.ApprovalHandler = (*FullscreenApplication)(nil)
+var _ policy.ApprovalPort = (*FullscreenApplication)(nil)

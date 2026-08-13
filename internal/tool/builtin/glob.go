@@ -15,7 +15,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/workspace"
 )
 
-type GlobFilesOptions struct {
+type GlobOptions struct {
 	MaxResults       int
 	RipgrepPath      string
 	DisableRipgrep   bool
@@ -23,15 +23,15 @@ type GlobFilesOptions struct {
 	FileSystemPolicy *project.FileSystemPolicy
 }
 
-type GlobFiles struct {
+type Glob struct {
 	root       project.Root
 	reader     *workspace.Reader
 	enumerator *workspace.FileEnumerator
-	options    GlobFilesOptions
+	options    GlobOptions
 	ripgrep    string
 }
 
-type globFilesArguments struct {
+type globArguments struct {
 	Path          string `json:"path,omitempty"`
 	Pattern       string `json:"pattern"`
 	IncludeHidden bool   `json:"include_hidden,omitempty"`
@@ -42,12 +42,12 @@ var ignoredGlobDirectories = map[string]struct{}{
 	".git": {}, ".hg": {}, ".svn": {}, "node_modules": {}, "vendor": {}, "dist": {}, "build": {}, "target": {},
 }
 
-func NewGlobFiles(root project.Root, options GlobFilesOptions) (*GlobFiles, error) {
+func NewGlob(root project.Root, options GlobOptions) (*Glob, error) {
 	if root.Path() == "" {
-		return nil, errors.New("glob_files project root is empty")
+		return nil, errors.New("glob project root is empty")
 	}
 	if options.MaxResults <= 0 {
-		return nil, errors.New("glob_files max results must be greater than zero")
+		return nil, errors.New("glob max results must be greater than zero")
 	}
 	if options.MaxRGOutputBytes <= 0 {
 		options.MaxRGOutputBytes = 4 << 20
@@ -78,63 +78,63 @@ func NewGlobFiles(root project.Root, options GlobFilesOptions) (*GlobFiles, erro
 			ripgrep = discovered
 		}
 	}
-	return &GlobFiles{root: root, reader: reader, enumerator: enumerator, options: options, ripgrep: ripgrep}, nil
+	return &Glob{root: root, reader: reader, enumerator: enumerator, options: options, ripgrep: ripgrep}, nil
 }
 
-func (globFiles *GlobFiles) Spec() tool.Spec {
-	return globFilesSpec()
+func (glob *Glob) Spec() tool.ToolSpec {
+	return globSpec()
 }
 
-func (globFiles *GlobFiles) SupportsParallelToolCalls() bool { return true }
+func (glob *Glob) SupportsParallelToolCalls() bool { return true }
 
-func (globFiles *GlobFiles) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+func (glob *Glob) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	call := invocation.Call
-	var arguments globFilesArguments
+	var arguments globArguments
 	if err := decodeArguments(call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
 	}
 	pattern, err := workspace.NormalizeGlob(arguments.Pattern)
 	if err != nil {
-		return tool.Output{}, fmt.Errorf("glob_files pattern is invalid: %w", err)
+		return tool.Output{}, fmt.Errorf("glob pattern is invalid: %w", err)
 	}
 	if arguments.Limit < 0 {
-		return tool.Output{}, errors.New("glob_files limit cannot be negative")
+		return tool.Output{}, errors.New("glob limit cannot be negative")
 	}
 	base := strings.TrimSpace(arguments.Path)
 	if base == "" {
 		base = "."
 	}
-	resolved, err := globFiles.reader.ResolveExistingTarget(base, project.PathDirectory)
+	resolved, err := glob.reader.ResolveExistingTarget(base, project.PathDirectory)
 	if err != nil {
 		return tool.Output{}, err
 	}
 	absoluteBase := resolved.Canonical
-	limit := globFiles.options.MaxResults
+	limit := glob.options.MaxResults
 	if arguments.Limit > 0 && arguments.Limit < limit {
 		limit = arguments.Limit
 	}
-	matches, partial, backend, err := globFiles.ripgrepMatches(ctx, absoluteBase, pattern, arguments.IncludeHidden, limit)
+	matches, partial, backend, err := glob.ripgrepMatches(ctx, absoluteBase, pattern, arguments.IncludeHidden, limit)
 	if err != nil && ctx.Err() != nil {
 		return tool.Output{}, ctx.Err()
 	}
-	if err != nil || globFiles.ripgrep == "" {
-		matches, partial, err = globFiles.goMatches(ctx, absoluteBase, pattern, arguments.IncludeHidden, limit)
+	if err != nil || glob.ripgrep == "" {
+		matches, partial, err = glob.goMatches(ctx, absoluteBase, pattern, arguments.IncludeHidden, limit)
 		backend = "go"
 		if err != nil {
 			return tool.Output{}, err
 		}
 	}
 	return tool.Output{
-		ToolName: "glob_files", Text: strings.Join(matches, "\n"), Partial: partial,
+		ToolName: "glob", Text: strings.Join(matches, "\n"), Partial: partial,
 		Metadata: map[string]any{"path": base, "pattern": pattern, "matches_returned": len(matches), "backend": backend},
 	}, nil
 }
 
-func (globFiles *GlobFiles) ripgrepMatches(ctx context.Context, absoluteBase, pattern string, includeHidden bool, limit int) ([]string, bool, string, error) {
-	if globFiles.ripgrep == "" {
+func (glob *Glob) ripgrepMatches(ctx context.Context, absoluteBase, pattern string, includeHidden bool, limit int) ([]string, bool, string, error) {
+	if glob.ripgrep == "" {
 		return nil, false, "", errors.New("ripgrep is unavailable")
 	}
-	baseRelative, err := globFiles.root.Relative(absoluteBase)
+	baseRelative, err := glob.root.Relative(absoluteBase)
 	if err != nil {
 		return nil, false, "", err
 	}
@@ -146,9 +146,9 @@ func (globFiles *GlobFiles) ripgrepMatches(ctx context.Context, absoluteBase, pa
 		arguments = append(arguments, "--glob", "!"+directory+"/**")
 	}
 	arguments = append(arguments, "--", filepath.FromSlash(baseRelative))
-	command := exec.CommandContext(ctx, globFiles.ripgrep, arguments...)
-	command.Dir = globFiles.root.Path()
-	stdout := &limitedCommandBuffer{limit: globFiles.options.MaxRGOutputBytes}
+	command := exec.CommandContext(ctx, glob.ripgrep, arguments...)
+	command.Dir = glob.root.Path()
+	stdout := &limitedCommandBuffer{limit: glob.options.MaxRGOutputBytes}
 	stderr := &limitedCommandBuffer{limit: 64 << 10}
 	command.Stdout = stdout
 	command.Stderr = stderr
@@ -164,10 +164,10 @@ func (globFiles *GlobFiles) ripgrepMatches(ctx context.Context, absoluteBase, pa
 			continue
 		}
 		relative := strings.TrimPrefix(filepath.ToSlash(string(part)), "./")
-		if _, err := globFiles.reader.ResolveExisting(filepath.FromSlash(relative), project.PathFile); err != nil {
+		if _, err := glob.reader.ResolveExisting(filepath.FromSlash(relative), project.PathFile); err != nil {
 			return nil, false, "", err
 		}
-		candidate, err := filepath.Rel(absoluteBase, filepath.Join(globFiles.root.Path(), filepath.FromSlash(relative)))
+		candidate, err := filepath.Rel(absoluteBase, filepath.Join(glob.root.Path(), filepath.FromSlash(relative)))
 		if err != nil {
 			return nil, false, "", err
 		}
@@ -190,8 +190,8 @@ func (globFiles *GlobFiles) ripgrepMatches(ctx context.Context, absoluteBase, pa
 	return matches, partial, "rg", nil
 }
 
-func (globFiles *GlobFiles) goMatches(ctx context.Context, absoluteBase, pattern string, includeHidden bool, limit int) ([]string, bool, error) {
-	result, err := globFiles.enumerator.EnumeratePrepared(ctx, absoluteBase, workspace.EnumerateOptions{IncludeHidden: includeHidden, MaxResults: 0})
+func (glob *Glob) goMatches(ctx context.Context, absoluteBase, pattern string, includeHidden bool, limit int) ([]string, bool, error) {
+	result, err := glob.enumerator.EnumeratePrepared(ctx, absoluteBase, workspace.EnumerateOptions{IncludeHidden: includeHidden, MaxResults: 0})
 	if err != nil {
 		return nil, false, fmt.Errorf("enumerate project files: %w", err)
 	}
@@ -220,4 +220,4 @@ func (globFiles *GlobFiles) goMatches(ctx context.Context, absoluteBase, pattern
 	return matches, partial, nil
 }
 
-var _ tool.Handler = (*GlobFiles)(nil)
+var _ tool.Tool = (*Glob)(nil)

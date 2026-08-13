@@ -20,7 +20,7 @@ func NewToolEventObserver(events event.Sink) tool.LifecycleObserver {
 	return &toolEventObserver{events: events}
 }
 
-func (observer *toolEventObserver) ToolCallStarted(ctx context.Context, spec tool.Spec, call tool.ToolCall) error {
+func (observer *toolEventObserver) ToolCallStarted(ctx context.Context, spec tool.ToolSpec, call tool.ToolCall) error {
 	presentation := tool.PresentCall(spec, call)
 	return observer.events.Publish(ctx, event.ToolCallStarted{
 		CallID: call.ID, ToolName: call.Name, SideEffect: string(spec.SideEffect),

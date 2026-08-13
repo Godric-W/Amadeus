@@ -23,7 +23,6 @@ type ApprovalScope string
 
 const (
 	ApprovalOnce    ApprovalScope = "once"
-	ApprovalRun     ApprovalScope = "run"
 	ApprovalSession ApprovalScope = "session"
 )
 
@@ -33,6 +32,7 @@ const (
 	ApprovalPurposeCommand    ApprovalPurpose = "command_operation"
 	ApprovalPurposePermission ApprovalPurpose = "filesystem_permission"
 	ApprovalPurposeFile       ApprovalPurpose = "file_edit"
+	ApprovalPurposeExternal   ApprovalPurpose = "external_operation"
 )
 
 type ApprovalSource string
@@ -54,6 +54,7 @@ type ApprovalRequest struct {
 	Path            string               `json:"path,omitempty"`
 	Command         string               `json:"command,omitempty"`
 	CWD             string               `json:"cwd,omitempty"`
+	PermissionKey   string               `json:"permission_key,omitempty"`
 	Diff            any                  `json:"diff,omitempty"`
 	Presentation    ApprovalPresentation `json:"presentation,omitempty"`
 }
@@ -145,10 +146,6 @@ func ResolveApprovalInput(request ApprovalRequest, input string) (ApprovalDecisi
 	if len(options) == 0 {
 		firstScope := ApprovalOnce
 		firstReason := "user approved once"
-		if request.Purpose == ApprovalPurposePermission {
-			firstScope = ApprovalRun
-			firstReason = "user approved for the run"
-		}
 		switch value {
 		case "y", "yes":
 			return ApprovalDecision{Outcome: ApprovalAllow, Scope: firstScope, Source: ApprovalSourceUser, Reason: firstReason}, true
@@ -209,7 +206,7 @@ func (decision ApprovalDecision) Validate() error {
 	if decision.Outcome != ApprovalAllow && decision.Outcome != ApprovalDeny {
 		return fmt.Errorf("approval outcome %q is invalid", decision.Outcome)
 	}
-	if decision.Scope != ApprovalOnce && decision.Scope != ApprovalRun && decision.Scope != ApprovalSession {
+	if decision.Scope != ApprovalOnce && decision.Scope != ApprovalSession {
 		return fmt.Errorf("approval scope %q is invalid", decision.Scope)
 	}
 	switch decision.Source {
@@ -225,7 +222,7 @@ func (decision ApprovalDecision) Validate() error {
 
 func (decision ApprovalDecision) Allowed() bool { return decision.Outcome == ApprovalAllow }
 
-type ApprovalHandler interface {
+type ApprovalPort interface {
 	Decide(context.Context, ApprovalRequest) (ApprovalDecision, error)
 }
 

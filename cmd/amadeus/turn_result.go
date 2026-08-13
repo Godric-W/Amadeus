@@ -17,7 +17,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
-func (runner *agentController) executeReactorTurn(ctx context.Context, invocation agentInvocation, configured config.Config, agent *bootstrap.Agent, contextManager *agentcontext.Manager, compact func(context.Context) error, availableTools []tool.Spec, outputSchema llm.OutputSchema, turnID rollout.TurnID) (task.Result, error) {
+func (runner *agentController) executeReactorTurn(ctx context.Context, invocation agentInvocation, configured config.Config, agent *bootstrap.Agent, contextManager *agentcontext.Manager, compact func(context.Context) error, availableTools []tool.ToolSpec, outputSchema llm.OutputSchema, turnID rollout.TurnID) (task.Result, error) {
 	if err := agent.Events.Publish(ctx, event.TurnStarted{}); err != nil {
 		return task.Result{}, fmt.Errorf("publish Reactor turn started: %w", err)
 	}

@@ -20,16 +20,14 @@ type codingTaskRequest struct {
 }
 
 type codingTaskFactory struct {
-	mu                sync.Mutex
-	runner            *agentController
-	threadID          thread.ID
-	configured        config.Config
-	baseInvocation    agentInvocation
-	requests          chan codingTaskRequest
-	extensions        *extensionruntime.Runtime
-	sessionApprovals  *policy.SessionApprovalStore
-	fileApprovals     *policy.FileApprovalStore
-	externalApprovals *policy.SessionRuleStore
+	mu             sync.Mutex
+	runner         *agentController
+	threadID       thread.ID
+	configured     config.Config
+	baseInvocation agentInvocation
+	requests       chan codingTaskRequest
+	extensions     *extensionruntime.Runtime
+	permissions    *policy.SessionPermissionContext
 }
 
 type codingSessionTask struct {
@@ -44,9 +42,8 @@ func newCodingTaskFactory(runner *agentController, threadID thread.ID, configure
 	}
 	return &codingTaskFactory{
 		runner: runner, threadID: threadID, configured: configured, baseInvocation: invocation,
-		requests:         make(chan codingTaskRequest, 1),
-		sessionApprovals: policy.NewSessionApprovalStore(), fileApprovals: policy.NewFileApprovalStore(),
-		externalApprovals: policy.NewSessionRuleStore(),
+		requests:    make(chan codingTaskRequest, 1),
+		permissions: policy.NewSessionPermissionContext(),
 	}, nil
 }
 
@@ -99,9 +96,7 @@ func (factory *codingTaskFactory) Close() error {
 	runtime := factory.extensions
 	factory.extensions = nil
 	factory.mu.Unlock()
-	factory.sessionApprovals.Clear()
-	factory.fileApprovals.Clear()
-	factory.externalApprovals.Clear()
+	factory.permissions.Clear()
 	if runtime == nil {
 		return nil
 	}

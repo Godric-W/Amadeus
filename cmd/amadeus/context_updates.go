@@ -95,17 +95,15 @@ func prepareTurnContext(ctx context.Context, options contextPreparationOptions) 
 		approvalCount = options.ApprovalCount()
 	}
 	permissionPayload := struct {
-		ReadHost        bool     `json:"read_host"`
-		WorkspaceRoots  []string `json:"workspace_roots"`
-		ReadOnlyRoots   []string `json:"read_only_roots"`
-		DeniedRoots     []string `json:"denied_roots"`
-		RunWritable     []string `json:"run_writable_roots"`
-		SessionWritable []string `json:"session_writable_roots"`
-		ApprovalCount   int      `json:"session_command_approval_count"`
+		ReadHost       bool     `json:"read_host"`
+		WorkspaceRoots []string `json:"workspace_roots"`
+		TemporaryRoots []string `json:"temporary_roots"`
+		ReadOnlyRoots  []string `json:"read_only_roots"`
+		DeniedRoots    []string `json:"denied_roots"`
+		ApprovalCount  int      `json:"session_command_approval_count"`
 	}{
-		ReadHost: effective.Base.ReadHost, WorkspaceRoots: effective.Base.WorkspaceRoots,
-		ReadOnlyRoots: effective.Base.ReadOnlyRoots, DeniedRoots: effective.Base.DeniedRoots,
-		RunWritable: effective.Run.WritableRoots, SessionWritable: effective.Session.WritableRoots,
+		ReadHost: effective.ReadHost, WorkspaceRoots: effective.WorkspaceRoots,
+		TemporaryRoots: effective.TemporaryRoots, ReadOnlyRoots: effective.ReadOnlyRoots, DeniedRoots: effective.DeniedRoots,
 		ApprovalCount: approvalCount,
 	}
 	encodedPermission, err := json.Marshal(permissionPayload)
@@ -158,7 +156,7 @@ func prepareTurnContext(ctx context.Context, options contextPreparationOptions) 
 	return nil
 }
 
-func promptToolNames(specs []tool.Spec) []string {
+func promptToolNames(specs []tool.ToolSpec) []string {
 	result := make([]string, 0, len(specs))
 	for _, spec := range specs {
 		result = append(result, spec.Name)
@@ -166,9 +164,9 @@ func promptToolNames(specs []tool.Spec) []string {
 	return result
 }
 
-func planModeTools(specs []tool.Spec) []tool.Spec {
+func planModeTools(specs []tool.ToolSpec) []tool.ToolSpec {
 	allowedNetwork := map[string]struct{}{"web_search": {}, "web_fetch": {}, "mcp_list_tools": {}, "mcp_list_resources": {}, "mcp_read_resource": {}}
-	result := make([]tool.Spec, 0, len(specs))
+	result := make([]tool.ToolSpec, 0, len(specs))
 	for _, spec := range specs {
 		if spec.Name == "update_plan" {
 			continue

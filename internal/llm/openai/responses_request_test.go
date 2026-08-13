@@ -115,11 +115,11 @@ func TestResponsesRequestSerializesStandardToolProtocol(t *testing.T) {
 		Model: "test-model",
 		Prompt: llm.Prompt{
 			Input: []llm.Message{
-				llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
+				llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call_1", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
 				llm.ToolResultMessage("call_1", "file contents"),
 			},
 			Tools: []llm.ToolDefinition{{
-				Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`), Strict: true,
+				Name: "read", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`), Strict: true,
 			}},
 		},
 		Temperature: 0.2, MaxOutputTokens: 100,
@@ -134,13 +134,13 @@ func TestResponsesRequestSerializesStandardToolProtocol(t *testing.T) {
 
 	tools := requestBody["tools"].([]any)
 	tool := tools[0].(map[string]any)
-	if tool["type"] != "function" || tool["name"] != "read_file" || tool["description"] != "Read a file" || tool["strict"] != true {
+	if tool["type"] != "function" || tool["name"] != "read" || tool["description"] != "Read a file" || tool["strict"] != true {
 		t.Fatalf("unexpected Responses tool: %#v", tool)
 	}
 	input := requestBody["input"].([]any)
 	call := input[0].(map[string]any)
 	result := input[1].(map[string]any)
-	if call["type"] != "function_call" || call["call_id"] != "call_1" || call["name"] != "read_file" || call["arguments"] != `{"path":"README.md"}` {
+	if call["type"] != "function_call" || call["call_id"] != "call_1" || call["name"] != "read" || call["arguments"] != `{"path":"README.md"}` {
 		t.Fatalf("unexpected Responses tool call: %#v", call)
 	}
 	if result["type"] != "function_call_output" || result["call_id"] != "call_1" || result["output"] != "file contents" {

@@ -21,7 +21,7 @@ type CallPresentation struct {
 	Detail        string
 }
 
-func PresentCall(spec Spec, call ToolCall) CallPresentation {
+func PresentCall(spec ToolSpec, call ToolCall) CallPresentation {
 	arguments := map[string]any{}
 	_ = json.Unmarshal(call.Payload, &arguments)
 	value := func(key string) string {
@@ -30,16 +30,11 @@ func PresentCall(spec Spec, call ToolCall) CallPresentation {
 	}
 	path := value("path")
 	switch call.Name {
-	case "read_file":
+	case "read":
 		return CallPresentation{ActionSummary: joinAction("Read", path)}
-	case "list_dir":
-		if path == "" {
-			path = "."
-		}
-		return CallPresentation{ActionSummary: joinAction("List", path)}
-	case "glob_files":
+	case "glob":
 		return CallPresentation{ActionSummary: joinAction("Find", value("pattern"))}
-	case "grep_code":
+	case "grep":
 		summary := joinAction("Search", value("query"))
 		if path != "" {
 			summary += " in " + path

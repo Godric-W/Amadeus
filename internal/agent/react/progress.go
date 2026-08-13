@@ -33,7 +33,7 @@ type ProgressSignal struct {
 type ProgressSample struct {
 	Calls    []tool.ToolCall
 	Outcomes []ToolOutcome
-	Specs    []tool.Spec
+	Specs    []tool.ToolSpec
 }
 
 type ProgressMonitorOptions struct {
@@ -144,8 +144,8 @@ func (monitor *ProgressMonitor) Reset() {
 	monitor.mutex.Unlock()
 }
 
-func indexProgressSpecs(specs []tool.Spec) (map[string]tool.Spec, error) {
-	indexed := make(map[string]tool.Spec, len(specs))
+func indexProgressSpecs(specs []tool.ToolSpec) (map[string]tool.ToolSpec, error) {
+	indexed := make(map[string]tool.ToolSpec, len(specs))
 	for _, spec := range specs {
 		if _, exists := indexed[spec.Name]; exists {
 			return nil, fmt.Errorf("progress sample has duplicate tool spec %q", spec.Name)
@@ -188,7 +188,7 @@ func outcomeFingerprint(outcome ToolOutcome) string {
 	return strings.TrimSpace(outcome.ToolName) + ":" + string(outcome.Status) + ":" + strings.ToLower(strings.Join(strings.Fields(outcomeSummary(outcome)), " "))
 }
 
-func highImpact(spec tool.Spec) bool {
+func highImpact(spec tool.ToolSpec) bool {
 	return spec.SideEffect == tool.SideEffectWrite ||
 		spec.SideEffect == tool.SideEffectExecute ||
 		spec.SideEffect == tool.SideEffectNetwork

@@ -10,8 +10,8 @@ import (
 
 func TestProgressMonitorDetectsRepeatedCanonicalAction(t *testing.T) {
 	monitor := DefaultProgressMonitor()
-	first := ProgressSample{Calls: []tool.ToolCall{tool.NewCall("call_1", "read_file", json.RawMessage(`{"path":"README.md","offset":0}`))}}
-	second := ProgressSample{Calls: []tool.ToolCall{tool.NewCall("call_2", "read_file", json.RawMessage(`{"offset":0,"path":"README.md"}`))}}
+	first := ProgressSample{Calls: []tool.ToolCall{tool.NewCall("call_1", "read", json.RawMessage(`{"path":"README.md","offset":0}`))}}
+	second := ProgressSample{Calls: []tool.ToolCall{tool.NewCall("call_2", "read", json.RawMessage(`{"offset":0,"path":"README.md"}`))}}
 	if signals, err := monitor.Observe(first); err != nil || hasSignal(signals, ProgressRepeatedAction) {
 		t.Fatalf("unexpected first action signals=%#v err=%v", signals, err)
 	}
@@ -26,7 +26,7 @@ func TestProgressMonitorDetectsRepeatedCanonicalAction(t *testing.T) {
 
 func TestProgressMonitorDetectsRepeatedErrorAndOutcome(t *testing.T) {
 	monitor := DefaultProgressMonitor()
-	sample := ProgressSample{Outcomes: []ToolOutcome{{CallID: "call", ToolName: "read_file", Status: ToolOutcomeFailed, Error: &ToolError{Kind: "execution_failed", Message: " Permission   Denied "}}}}
+	sample := ProgressSample{Outcomes: []ToolOutcome{{CallID: "call", ToolName: "read", Status: ToolOutcomeFailed, Error: &ToolError{Kind: "execution_failed", Message: " Permission   Denied "}}}}
 	if signals, err := monitor.Observe(sample); err != nil || len(signals) != 0 {
 		t.Fatalf("unexpected first failure signals=%#v err=%v", signals, err)
 	}
@@ -43,12 +43,12 @@ func TestProgressMonitorDetectsRepeatedErrorAndOutcome(t *testing.T) {
 func TestProgressMonitorDoesNotTreatDifferentCallsWithSameOutputAsRepeated(t *testing.T) {
 	monitor := DefaultProgressMonitor()
 	first := ProgressSample{
-		Calls:    []tool.ToolCall{tool.NewCall("first", "read_file", json.RawMessage(`{"path":"a.go"}`))},
-		Outcomes: []ToolOutcome{{CallID: "first", ToolName: "read_file", Status: ToolOutcomeSucceeded, Result: tool.Output{Text: "same"}}},
+		Calls:    []tool.ToolCall{tool.NewCall("first", "read", json.RawMessage(`{"path":"a.go"}`))},
+		Outcomes: []ToolOutcome{{CallID: "first", ToolName: "read", Status: ToolOutcomeSucceeded, Result: tool.Output{Text: "same"}}},
 	}
 	second := ProgressSample{
-		Calls:    []tool.ToolCall{tool.NewCall("second", "read_file", json.RawMessage(`{"path":"b.go"}`))},
-		Outcomes: []ToolOutcome{{CallID: "second", ToolName: "read_file", Status: ToolOutcomeSucceeded, Result: tool.Output{Text: "same"}}},
+		Calls:    []tool.ToolCall{tool.NewCall("second", "read", json.RawMessage(`{"path":"b.go"}`))},
+		Outcomes: []ToolOutcome{{CallID: "second", ToolName: "read", Status: ToolOutcomeSucceeded, Result: tool.Output{Text: "same"}}},
 	}
 	if _, err := monitor.Observe(first); err != nil {
 		t.Fatal(err)
@@ -75,9 +75,6 @@ func TestProgressMonitorAllowsPermissionRequiredCallToBeRetried(t *testing.T) {
 	if err != nil || hasSignal(signals, ProgressRepeatedAction) {
 		t.Fatalf("permission preflight counted as an attempted action: signals=%#v err=%v", signals, err)
 	}
-	if _, err := monitor.Observe(ProgressSample{Calls: []tool.ToolCall{tool.NewCall("grant-1", "request_permissions", json.RawMessage(`{"writable_roots":["/outside"]}`))}}); err != nil {
-		t.Fatal(err)
-	}
 	retry := tool.NewCall("patch-2", "apply_patch", json.RawMessage(`{"patch":"same"}`))
 	signals, err = monitor.Observe(ProgressSample{
 		Calls:    []tool.ToolCall{retry},
@@ -96,7 +93,7 @@ func TestProgressMonitorDetectsHighImpactCalls(t *testing.T) {
 	call := tool.NewCall("call_write", "write_file", json.RawMessage(`{"path":"main.go"}`))
 	signals, err := monitor.Observe(ProgressSample{
 		Calls: []tool.ToolCall{call},
-		Specs: []tool.Spec{{Name: "write_file", SideEffect: tool.SideEffectWrite}},
+		Specs: []tool.ToolSpec{{Name: "write_file", SideEffect: tool.SideEffectWrite}},
 	})
 	if err != nil {
 		t.Fatalf("observe high-impact call: %v", err)
@@ -113,12 +110,12 @@ func TestProgressMonitorIsConcurrentSafe(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			_, _ = monitor.Observe(ProgressSample{Calls: []tool.ToolCall{tool.NewCall("call", "read_file", json.RawMessage(`{"path":"README.md"}`))}})
+			_, _ = monitor.Observe(ProgressSample{Calls: []tool.ToolCall{tool.NewCall("call", "read", json.RawMessage(`{"path":"README.md"}`))}})
 		}()
 	}
 	wait.Wait()
 	monitor.mutex.Lock()
-	count := monitor.actionCounts[`read_file:{"path":"README.md"}`]
+	count := monitor.actionCounts[`read:{"path":"README.md"}`]
 	monitor.mutex.Unlock()
 	if count != 32 {
 		t.Fatalf("unexpected concurrent action count: %d", count)

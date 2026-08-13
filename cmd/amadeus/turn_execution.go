@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
-	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/task"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
@@ -199,22 +198,20 @@ func (runner *agentController) executeCodingTurn(ctx context.Context, factory *c
 	if auditCloser != nil {
 		defer func() { runErr = errors.Join(runErr, auditCloser.Close()) }()
 	}
-	planState := plan.NewState()
 	extensions, err := factory.ensureExtensions()
 	if err != nil {
 		return task.Result{}, err
+	}
+	planHost, ok := host.(task.PlanHost)
+	if !ok {
+		return task.Result{}, errors.New("turn host does not support session plans")
 	}
 	options := bootstrap.AgentOptions{
 		UserSkillRoot: runner.runtime.amadeusRoot, UserMCPRoot: runner.runtime.amadeusRoot,
 		MCPClientFactory: runner.runtime.mcpClientFactory, WebFetcher: runner.runtime.webFetcher, WebSearch: runner.runtime.webSearch,
 		RolloutRecorder: &turnRolloutRecorder{host: host, turnID: turnContext.TurnID},
-		PlanState:       planState, FileSystemPolicy: fileSystemPolicy, SessionApprovals: factory.sessionApprovals,
-		FileApprovals:     factory.fileApprovals,
-		ExternalApprovals: factory.externalApprovals,
-		Skills:            extensions.Skills(), SkillWarnings: extensions.SkillWarnings(), MCP: extensions.MCP(),
-		PlanRecorder: func(recordCtx context.Context, snapshot plan.Snapshot) error {
-			return recordPlanUpdate(recordCtx, host, turnContext.TurnID, snapshot)
-		},
+		PlanUpdater:     planHost, FileSystemPolicy: fileSystemPolicy, Permissions: factory.permissions,
+		Skills: extensions.Skills(), SkillWarnings: extensions.SkillWarnings(), MCP: extensions.MCP(),
 	}
 	if runner.runtime.llmClientFactory != nil {
 		options.ClientFactory = func(providerName string, providerConfig config.ProviderConfig) (llm.Client, error) {
@@ -238,7 +235,7 @@ func (runner *agentController) executeCodingTurn(ctx context.Context, factory *c
 	}
 	if err := prepareTurnContext(ctx, contextPreparationOptions{
 		Task: invocation.Task, TurnContext: turnContext, Host: host, Agent: agent, Extensions: extensions,
-		FileSystemPolicy: fileSystemPolicy, Instructions: resolver, ApprovalCount: factory.sessionApprovals.Count,
+		FileSystemPolicy: fileSystemPolicy, Instructions: resolver, ApprovalCount: factory.permissions.GrantCount,
 	}); err != nil {
 		return task.Result{}, err
 	}
@@ -282,7 +279,7 @@ func (runner *agentController) executeCodingTurn(ctx context.Context, factory *c
 	return runner.executeReactorTurn(ctx, invocation, configured, agent, contextHost.Context(), autoCompact, availableTools, llm.OutputSchema(turnContext.OutputSchema), turnContext.TurnID)
 }
 
-func promptToolDefinitions(specs []tool.Spec) []llm.ToolDefinition {
+func promptToolDefinitions(specs []tool.ToolSpec) []llm.ToolDefinition {
 	definitions := make([]llm.ToolDefinition, len(specs))
 	for index, spec := range specs {
 		definitions[index] = llm.ToolDefinition{
@@ -293,10 +290,10 @@ func promptToolDefinitions(specs []tool.Spec) []llm.ToolDefinition {
 	return definitions
 }
 
-func (runner *agentController) turnInterface(invocation agentInvocation) (event.Sink, policy.ApprovalHandler, error) {
+func (runner *agentController) turnInterface(invocation agentInvocation) (event.Sink, policy.ApprovalPort, error) {
 	if invocation.EventSink != nil || invocation.Approvals != nil {
 		if invocation.EventSink == nil || invocation.Approvals == nil {
-			return nil, nil, errors.New("Coding Agent external TUI requires both event sink and approval handler")
+			return nil, nil, errors.New("Coding Agent external TUI requires both event sink and approval port")
 		}
 		return invocation.EventSink, invocation.Approvals, nil
 	}
@@ -308,7 +305,7 @@ func (runner *agentController) turnInterface(invocation agentInvocation) (event.
 		IsTerminal: func(input io.Reader) bool { return detectTerminal(input) }, ForcePlain: invocation.Plain,
 	})
 	var renderer event.Sink
-	var approvals policy.ApprovalHandler
+	var approvals policy.ApprovalPort
 	var err error
 	if capabilities.TTY && !capabilities.Plain {
 		renderer, err = tui.NewInlineRenderer(invocation.Output, invocation.ErrorOutput)
@@ -318,7 +315,7 @@ func (runner *agentController) turnInterface(invocation agentInvocation) (event.
 	} else {
 		renderer, err = render.NewAgentRenderer(invocation.Output, invocation.ErrorOutput)
 		if err == nil {
-			approvals, err = interfacecli.NewTerminalApprovalHandler(interfacecli.TerminalApprovalOptions{Input: invocation.Input, Output: invocation.ErrorOutput, IsTerminal: func(input io.Reader) bool { return detectTerminal(input) }})
+			approvals, err = interfacecli.NewTerminalApprovalPrompt(interfacecli.TerminalApprovalOptions{Input: invocation.Input, Output: invocation.ErrorOutput, IsTerminal: func(input io.Reader) bool { return detectTerminal(input) }})
 		}
 	}
 	return renderer, approvals, err

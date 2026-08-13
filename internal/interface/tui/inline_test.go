@@ -20,10 +20,10 @@ func TestInlineRendererKeepsTextAndStatusBlocksSeparate(t *testing.T) {
 	if err := renderer.Publish(ctx, event.TextDelta{Delta: "hello"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := renderer.Publish(ctx, event.ToolCallStarted{ToolName: "read_file"}); err != nil {
+	if err := renderer.Publish(ctx, event.ToolCallStarted{ToolName: "read"}); err != nil {
 		t.Fatal(err)
 	}
-	if text.String() != "hello\n" || !strings.Contains(status.String(), "tool started: read_file") || !strings.Contains(status.String(), "status: phase=executing") {
+	if text.String() != "hello\n" || !strings.Contains(status.String(), "tool started: read") || !strings.Contains(status.String(), "status: phase=executing") {
 		t.Fatalf("unexpected inline output: text=%q status=%q", text.String(), status.String())
 	}
 }
@@ -113,8 +113,8 @@ func TestInlineRendererGoldenTranscript(t *testing.T) {
 		event.PlanUpdated{TurnID: "run-1", Revision: 1, Items: []event.PlanItem{{Step: "Read README", Status: "pending"}}},
 		event.TurnStatusChanged{TurnID: "run-1", Entity: "run", EntityID: "run-1", From: "starting", To: "running"},
 		event.TextDelta{LLMCallID: "turn-1", Delta: "answer"},
-		event.ToolCallStarted{TurnID: "run-1", CallID: "read-1", ToolName: "read_file"},
-		event.ToolCallCompleted{TurnID: "run-1", CallID: "read-1", ToolName: "read_file", Success: true, Summary: "README contents"},
+		event.ToolCallStarted{TurnID: "run-1", CallID: "read-1", ToolName: "read"},
+		event.ToolCallCompleted{TurnID: "run-1", CallID: "read-1", ToolName: "read", Success: true, Summary: "README contents"},
 		event.LLMCallCompleted{LLMCallID: "turn-1"},
 		event.TurnCompleted{TurnID: "run-1", Status: "completed", Reason: "done"},
 	} {
@@ -133,9 +133,9 @@ func TestInlineRendererGoldenTranscript(t *testing.T) {
 		"status: phase=planning tools=0 usage=0/0\n" +
 		"run run-1: starting -> running\n" +
 		"status: phase=executing tools=0 usage=0/0\n" +
-		"tool started: read_file\n" +
+		"tool started: read\n" +
 		"status: phase=executing tools=1 usage=0/0\n" +
-		"tool completed: read_file in 0s: README contents\n" +
+		"tool completed: read in 0s: README contents\n" +
 		"status: phase=executing tools=1 usage=0/0\n" +
 		"run completed: done\n" +
 		"status: phase=idle tools=1 usage=0/0\n"

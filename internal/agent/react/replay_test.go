@@ -10,12 +10,12 @@ import (
 
 func TestReplayToolResultsUsesAssistantCallOrder(t *testing.T) {
 	assistant := llm.AssistantToolCallMessage("checking files",
-		llm.ToolCall{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)},
-		llm.ToolCall{ID: "call_2", Name: "read_file", Arguments: json.RawMessage(`{"path":"b"}`)},
+		llm.ToolCall{ID: "call_1", Name: "read", Arguments: json.RawMessage(`{"path":"a"}`)},
+		llm.ToolCall{ID: "call_2", Name: "read", Arguments: json.RawMessage(`{"path":"b"}`)},
 	)
 	outcomes := []ToolOutcome{
-		replayExecution("call_2", "read_file", tool.Output{Text: "B"}, ""),
-		replayExecution("call_1", "read_file", tool.Output{Text: "A"}, ""),
+		replayExecution("call_2", "read", tool.Output{Text: "B"}, ""),
+		replayExecution("call_1", "read", tool.Output{Text: "A"}, ""),
 	}
 
 	messages, err := ReplayToolResults(assistant, outcomes)
@@ -52,15 +52,15 @@ func TestReplayToolResultsIncludesFailureAndPartialOutput(t *testing.T) {
 }
 
 func TestReplayToolResultsRejectsIncompleteMappings(t *testing.T) {
-	assistant := llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{}`)})
+	assistant := llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call_1", Name: "read", Arguments: json.RawMessage(`{}`)})
 	tests := []struct {
 		name     string
 		outcomes []ToolOutcome
 		match    string
 	}{
 		{name: "missing", match: "missing result"},
-		{name: "duplicate", outcomes: []ToolOutcome{replayExecution("call_1", "read_file", tool.Output{}, ""), replayExecution("call_1", "read_file", tool.Output{}, "")}, match: "duplicate"},
-		{name: "unknown", outcomes: []ToolOutcome{replayExecution("call_1", "read_file", tool.Output{}, ""), replayExecution("call_2", "read_file", tool.Output{}, "")}, match: "unknown call"},
+		{name: "duplicate", outcomes: []ToolOutcome{replayExecution("call_1", "read", tool.Output{}, ""), replayExecution("call_1", "read", tool.Output{}, "")}, match: "duplicate"},
+		{name: "unknown", outcomes: []ToolOutcome{replayExecution("call_1", "read", tool.Output{}, ""), replayExecution("call_2", "read", tool.Output{}, "")}, match: "unknown call"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

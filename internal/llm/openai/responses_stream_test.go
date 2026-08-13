@@ -103,7 +103,7 @@ func TestResponsesStreamAggregatesFunctionCallArguments(t *testing.T) {
 		`data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_tools","status":"in_progress"}}`,
 		``,
 		`event: response.output_item.added`,
-		`data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"item_1","type":"function_call","call_id":"call_1","name":"read_file","arguments":"","status":"in_progress"}}`,
+		`data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"item_1","type":"function_call","call_id":"call_1","name":"read","arguments":"","status":"in_progress"}}`,
 		``,
 		`event: response.function_call_arguments.delta`,
 		`data: {"type":"response.function_call_arguments.delta","sequence_number":2,"item_id":"item_1","output_index":0,"delta":"{\"path\":\""}`,
@@ -112,7 +112,7 @@ func TestResponsesStreamAggregatesFunctionCallArguments(t *testing.T) {
 		`data: {"type":"response.function_call_arguments.delta","sequence_number":3,"item_id":"item_1","output_index":0,"delta":"README.md\"}"}`,
 		``,
 		`event: response.function_call_arguments.done`,
-		`data: {"type":"response.function_call_arguments.done","sequence_number":4,"item_id":"item_1","output_index":0,"name":"read_file","arguments":"{\"path\":\"README.md\"}"}`,
+		`data: {"type":"response.function_call_arguments.done","sequence_number":4,"item_id":"item_1","output_index":0,"name":"read","arguments":"{\"path\":\"README.md\"}"}`,
 		``,
 		`event: response.completed`,
 		`data: {"type":"response.completed","sequence_number":5,"response":{"id":"resp_tools","status":"completed","usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}}}`,
@@ -129,7 +129,7 @@ func TestResponsesStreamAggregatesFunctionCallArguments(t *testing.T) {
 		t.Fatalf("unexpected tool completion: %#v", completed)
 	}
 	call := completed.ToolCalls[0]
-	if call.ID != "call_1" || call.Name != "read_file" || string(call.Arguments) != `{"path":"README.md"}` {
+	if call.ID != "call_1" || call.Name != "read" || string(call.Arguments) != `{"path":"README.md"}` {
 		t.Fatalf("unexpected aggregated tool call: %#v", call)
 	}
 }
@@ -137,10 +137,10 @@ func TestResponsesStreamAggregatesFunctionCallArguments(t *testing.T) {
 func TestResponsesStreamDefersMalformedFunctionCallArgumentsToRouter(t *testing.T) {
 	fixture := strings.Join([]string{
 		`event: response.output_item.added`,
-		`data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"item_1","type":"function_call","call_id":"call_1","name":"read_file","arguments":"","status":"in_progress"}}`,
+		`data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"item_1","type":"function_call","call_id":"call_1","name":"read","arguments":"","status":"in_progress"}}`,
 		``,
 		`event: response.function_call_arguments.done`,
-		`data: {"type":"response.function_call_arguments.done","sequence_number":2,"item_id":"item_1","output_index":0,"name":"read_file","arguments":"{"}`,
+		`data: {"type":"response.function_call_arguments.done","sequence_number":2,"item_id":"item_1","output_index":0,"name":"read","arguments":"{"}`,
 		``,
 		`event: response.completed`,
 		`data: {"type":"response.completed","sequence_number":3,"response":{"id":"resp_bad","status":"completed","usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}}}`,
@@ -154,7 +154,7 @@ func TestResponsesStreamDefersMalformedFunctionCallArgumentsToRouter(t *testing.
 		t.Fatal(err)
 	}
 	if completed.FinishReason != llm.FinishReasonToolCalls || len(completed.ToolCalls) != 1 || string(completed.ToolCalls[0].Arguments) != `{` {
-		t.Fatalf("malformed arguments were not preserved for Router validation: %#v", completed)
+		t.Fatalf("malformed arguments were not preserved for ToolExecutionService validation: %#v", completed)
 	}
 }
 

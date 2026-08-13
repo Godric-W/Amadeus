@@ -56,7 +56,7 @@ func TestNewAgentBuildsDefaultComposition(t *testing.T) {
 	if agent.Project.Path() != root.Path() {
 		t.Fatalf("unexpected project root: got %q, want %q", agent.Project.Path(), root.Path())
 	}
-	if agent.Client == nil || agent.Events != sink || agent.Audit == nil || agent.Registry == nil || agent.ToolRouter == nil || agent.Iterator == nil || agent.Progress == nil || agent.Runner == nil {
+	if agent.Client == nil || agent.Events != sink || agent.Audit == nil || agent.Registry == nil || agent.ToolService == nil || agent.Iterator == nil || agent.Progress == nil || agent.Runner == nil {
 		t.Fatalf("Agent composition is incomplete: %#v", agent)
 	}
 	if !strings.Contains(agent.BaseInstructions.Text, "You are Amadeus") {
@@ -74,7 +74,7 @@ func TestNewAgentBuildsDefaultComposition(t *testing.T) {
 	}
 	for _, entry := range agent.Registry.Snapshot() {
 		switch entry.Spec.Name {
-		case "apply_patch", "read_file", "list_dir", "glob_files", "grep_code", "request_permissions":
+		case "apply_patch":
 			t.Fatalf("legacy tool entered default registry: %q", entry.Spec.Name)
 		}
 	}
@@ -116,7 +116,7 @@ func TestNewAgentWithOptionsUsesStructuredWriteTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agent.ToolRouter.Execute(context.Background(), tool.NewCall("write-1", "write", json.RawMessage(`{"path":"hook.txt","content":"value\n"}`))); err != nil {
+	if _, err := agent.ToolService.Execute(context.Background(), tool.NewCall("write-1", "write", json.RawMessage(`{"path":"hook.txt","content":"value\n"}`))); err != nil {
 		t.Fatal(err)
 	}
 	if content, err := os.ReadFile(filepath.Join(root.Path(), "hook.txt")); err != nil || string(content) != "value\n" {
@@ -161,7 +161,7 @@ func TestAgentCompositionExecutesStructuredWorkspaceWriteWithoutOperationApprova
 	if err != nil {
 		t.Fatalf("build secured Agent composition: %v", err)
 	}
-	execution, err := agent.ToolRouter.Execute(context.Background(), tool.NewCall(
+	execution, err := agent.ToolService.Execute(context.Background(), tool.NewCall(
 		"write-denied", "write", json.RawMessage(`{"path":"denied.txt","content":"must not exist\n"}`),
 	))
 	if err != nil || execution.Outcome.Status != tool.ToolCallDenied {
@@ -172,10 +172,10 @@ func TestAgentCompositionExecutesStructuredWorkspaceWriteWithoutOperationApprova
 	}
 }
 
-func TestAgentCompositionRequiresApprovalHandler(t *testing.T) {
+func TestAgentCompositionRequiresApprovalPort(t *testing.T) {
 	_, err := newAgent(validBootstrapConfig(), newBootstrapProjectRoot(t), event.NewMemorySink(), nil, audit.NewMemorySink(), successfulBootstrapFactory)
-	if err == nil || !strings.Contains(err.Error(), "approval handler is nil") {
-		t.Fatalf("unexpected nil approval handler error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "approval port is nil") {
+		t.Fatalf("unexpected nil approval port error: %v", err)
 	}
 }
 
@@ -196,7 +196,7 @@ func TestAgentCompositionFailsClosedBeforeCommandWhenAuditFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build audited Agent composition: %v", err)
 	}
-	outcome, err := agent.ToolRouter.Execute(context.Background(), tool.NewCall(
+	outcome, err := agent.ToolService.Execute(context.Background(), tool.NewCall(
 		"command-audit-failed", "execute_command", json.RawMessage(`{"command":"printf 'must not exist' > unaudited.txt"}`),
 	))
 	if err != nil || outcome.Outcome.Status != tool.ToolCallFailed || outcome.Outcome.Error == nil || !strings.Contains(outcome.Outcome.Error.Message, expected.Error()) {
@@ -318,7 +318,7 @@ func successfulBootstrapFactory(providerName string, provider config.ProviderCon
 	return &bootstrapClient{model: llm.ModelInfo{Provider: providerName, Name: provider.Model}}, nil
 }
 
-func toolNames(specs []tool.Spec) []string {
+func toolNames(specs []tool.ToolSpec) []string {
 	names := make([]string, len(specs))
 	for index, spec := range specs {
 		names[index] = spec.Name

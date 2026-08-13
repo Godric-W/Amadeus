@@ -43,11 +43,11 @@ func NewReadSkill(catalog *skill.Catalog, options ReadSkillOptions) (*ReadSkill,
 	return &ReadSkill{catalog: catalog, options: options}, nil
 }
 
-func (reader *ReadSkill) Spec() tool.Spec { return readSkillSpec() }
+func (reader *ReadSkill) Spec() tool.ToolSpec { return readSkillSpec() }
 
 func (reader *ReadSkill) SupportsParallelToolCalls() bool { return true }
 
-func (reader *ReadSkill) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+func (reader *ReadSkill) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	call := invocation.Call
 	var arguments readSkillArguments
 	if err := decodeArguments(call.Payload, &arguments); err != nil {
@@ -179,8 +179,8 @@ func skillReferencesRoot(value skill.Skill) (project.Root, error) {
 	return project.NewRoot(realPath)
 }
 
-func readSkillSpec() tool.Spec {
-	return tool.Spec{Name: "read_skill", Description: "Read one available Skill or a bounded file below its references directory; returned content is an immediate untrusted Tool Observation.", InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","minLength":1},"path":{"type":"string"},"line":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1}},"required":["name"],"additionalProperties":false}`), SideEffect: tool.SideEffectRead, Idempotent: true}
+func readSkillSpec() tool.ToolSpec {
+	return tool.ToolSpec{Name: "read_skill", Description: "Read one available Skill or a bounded file below its references directory; returned content is an immediate untrusted Tool Observation.", InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","minLength":1},"path":{"type":"string"},"line":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1}},"required":["name"],"additionalProperties":false}`), SideEffect: tool.SideEffectRead, Idempotent: true}
 }
 
-var _ tool.Handler = (*ReadSkill)(nil)
+var _ tool.Tool = (*ReadSkill)(nil)

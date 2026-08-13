@@ -36,7 +36,7 @@ type agentInvocation struct {
 	Interactive    bool
 	Plain          bool
 	EventSink      event.Sink
-	Approvals      policy.ApprovalHandler
+	Approvals      policy.ApprovalPort
 	Input          io.Reader
 	Output         io.Writer
 	ErrorOutput    io.Writer

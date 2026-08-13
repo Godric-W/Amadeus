@@ -7,42 +7,27 @@ import (
 	"testing"
 )
 
-func TestFileSystemPolicyReadHostAndPermissionStores(t *testing.T) {
+func TestFileSystemPolicyReadHostAndStaticWriteRoots(t *testing.T) {
 	workspace := t.TempDir()
-	external := t.TempDir()
-	runStore := NewPermissionStore()
-	sessionStore := NewPermissionStore()
+	externalRead := t.TempDir()
+	externalWrite := t.TempDir()
 	policy, err := NewFileSystemPolicy(FileSystemPolicyOptions{
-		CWD:            workspace,
-		Profile:        PermissionProfile{ReadHost: true, WorkspaceRoots: []string{workspace}},
-		RunPermissions: runStore, SessionPermissions: sessionStore,
+		CWD:     workspace,
+		Profile: PermissionProfile{ReadHost: true, WorkspaceRoots: []string{workspace}, TemporaryRoots: []string{externalRead}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	file := filepath.Join(external, "read.txt")
+	file := filepath.Join(externalRead, "read.txt")
 	if err := os.WriteFile(file, []byte("ok"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if resolved, err := policy.ResolveExisting(file, PathFile); err != nil || resolved.RootSource != RootSourceHost {
+	if resolved, err := policy.ResolveExisting(file, PathFile); err != nil || resolved.RootSource != RootSourceTemporary {
 		t.Fatalf("host read: %#v %v", resolved, err)
 	}
-	target := filepath.Join(external, "write.txt")
+	target := filepath.Join(externalWrite, "write.txt")
 	if _, err := policy.ResolveForWrite(target); !errors.Is(err, ErrPermissionRequired) {
 		t.Fatalf("expected permission_required, got %v", err)
-	}
-	if err := runStore.GrantWritableRoots([]string{external}); err != nil {
-		t.Fatal(err)
-	}
-	if resolved, err := policy.ResolveForWrite(target); err != nil || resolved.RootSource != RootSourceRun {
-		t.Fatalf("run grant: %#v %v", resolved, err)
-	}
-	runStore.Clear()
-	if err := sessionStore.GrantWritableRoots([]string{external}); err != nil {
-		t.Fatal(err)
-	}
-	if resolved, err := policy.ResolveForWrite(target); err != nil || resolved.RootSource != RootSourceSession {
-		t.Fatalf("session grant: %#v %v", resolved, err)
 	}
 }
 
@@ -56,14 +41,9 @@ func TestFileSystemPolicyReadOnlyAndDeniedCannotBeGranted(t *testing.T) {
 	if err := os.MkdirAll(denied, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store := NewPermissionStore()
-	if err := store.GrantWritableRoots([]string{readOnly, denied}); err != nil {
-		t.Fatal(err)
-	}
 	policy, err := NewFileSystemPolicy(FileSystemPolicyOptions{
-		CWD:            workspace,
-		Profile:        PermissionProfile{ReadHost: true, WorkspaceRoots: []string{workspace}, ReadOnlyRoots: []string{readOnly}, DeniedRoots: []string{denied}},
-		RunPermissions: store,
+		CWD:     workspace,
+		Profile: PermissionProfile{ReadHost: true, WorkspaceRoots: []string{workspace}, ReadOnlyRoots: []string{readOnly}, DeniedRoots: []string{denied}},
 	})
 	if err != nil {
 		t.Fatal(err)

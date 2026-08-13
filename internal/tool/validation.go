@@ -59,7 +59,7 @@ func NewArgumentValidator() *ArgumentValidator {
 	return &ArgumentValidator{maxRepairBytes: defaultMaxRepairBytes}
 }
 
-func (validator *ArgumentValidator) Validate(spec Spec, arguments json.RawMessage) (json.RawMessage, error) {
+func (validator *ArgumentValidator) Validate(spec ToolSpec, arguments json.RawMessage) (json.RawMessage, error) {
 	normalized, err := validator.Normalize(spec, arguments)
 	if err != nil {
 		return nil, err
@@ -67,7 +67,7 @@ func (validator *ArgumentValidator) Validate(spec Spec, arguments json.RawMessag
 	return normalized.Payload, nil
 }
 
-func (validator *ArgumentValidator) Normalize(spec Spec, arguments json.RawMessage) (NormalizedArguments, error) {
+func (validator *ArgumentValidator) Normalize(spec ToolSpec, arguments json.RawMessage) (NormalizedArguments, error) {
 	schema, err := compileInputSchema(spec)
 	if err != nil {
 		return NormalizedArguments{}, err
@@ -108,7 +108,7 @@ func (validator *ArgumentValidator) parseArguments(arguments json.RawMessage) (j
 	return repaired, repairs, nil
 }
 
-func compileInputSchema(spec Spec) (*jsonschema.Schema, error) {
+func compileInputSchema(spec ToolSpec) (*jsonschema.Schema, error) {
 	if len(bytes.TrimSpace(spec.InputSchema)) == 0 {
 		return nil, &ArgumentError{Kind: ArgumentErrorSchema, Message: "input schema is empty"}
 	}

@@ -2,8 +2,8 @@ package tool
 
 import "context"
 
-type Handler interface {
-	Spec() Spec
+type Tool interface {
+	Spec() ToolSpec
 	SupportsParallelToolCalls() bool
-	Handle(context.Context, Invocation) (Output, error)
+	Call(context.Context, Invocation) (Output, error)
 }

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
-	"github.com/Godric-W/Amadeus/internal/policy"
 	processdomain "github.com/Godric-W/Amadeus/internal/process"
 	"github.com/Godric-W/Amadeus/internal/project"
 )
@@ -25,7 +24,7 @@ func TestWriteStdinContinuesOwnedProcessAndPollsCompletion(t *testing.T) {
 		DefaultTimeout: 5 * time.Second, MaxTimeout: 5 * time.Second,
 		DefaultYield: time.Millisecond, MaxYield: time.Second,
 		MaxOutputBytes: 1 << 20, MaxOutputLines: 1_000, MaxOutputTokens: 8_000,
-		ProcessManager: manager, Approvals: &permissionApprovalHandler{decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "test command approved"}},
+		ProcessManager: manager,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +59,7 @@ func TestWriteStdinRejectsAnotherRunOwner(t *testing.T) {
 		DefaultTimeout: 5 * time.Second, MaxTimeout: 5 * time.Second,
 		DefaultYield: time.Millisecond, MaxYield: time.Second,
 		MaxOutputBytes: 1 << 20, MaxOutputLines: 1_000, MaxOutputTokens: 8_000,
-		ProcessManager: manager, Approvals: &permissionApprovalHandler{decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "test command approved"}},
+		ProcessManager: manager,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -59,9 +59,6 @@ func (prompt *InlineApprovalPrompt) Decide(ctx context.Context, request policy.A
 		return inlinePolicyDecision("approval requires a TTY; non-interactive input was denied"), nil
 	}
 	first := "once"
-	if request.Purpose == policy.ApprovalPurposePermission {
-		first = "this run"
-	}
 	if request.Presentation.Title != "" {
 		if _, err := fmt.Fprintf(prompt.output, "%s\n", sanitizeInlineEventText(request.Presentation.Title)); err != nil {
 			return policy.ApprovalDecision{}, fmt.Errorf("write inline approval title: %w", err)
@@ -107,9 +104,7 @@ func parseInlineApprovalChoice(input string) (policy.ApprovalDecision, bool) {
 
 func parseInlineApprovalChoiceForPurpose(input string, purpose policy.ApprovalPurpose) (policy.ApprovalDecision, bool) {
 	firstScope, firstReason := policy.ApprovalOnce, "user approved once"
-	if purpose == policy.ApprovalPurposePermission {
-		firstScope, firstReason = policy.ApprovalRun, "user approved for the run"
-	}
+	_ = purpose
 	switch strings.ToLower(strings.TrimSpace(input)) {
 	case "y", "yes":
 		return inlineUserDecision(policy.ApprovalAllow, firstScope, firstReason), true
@@ -154,4 +149,4 @@ func readInlineApprovalLine(reader io.Reader) (string, error) {
 	return "", fmt.Errorf("input exceeds %d byte limit", maxInlineApprovalInputBytes)
 }
 
-var _ policy.ApprovalHandler = (*InlineApprovalPrompt)(nil)
+var _ policy.ApprovalPort = (*InlineApprovalPrompt)(nil)

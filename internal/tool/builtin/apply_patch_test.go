@@ -68,7 +68,7 @@ func TestApplyPatchPreservesPartialExecutorResult(t *testing.T) {
 	input := json.RawMessage(`{"patch":"*** Begin Patch v1\n*** Update File: first.txt\n@@\n-old\n+new\n*** Delete File: second.txt\n*** End Patch\n"}`)
 
 	result, err := executePreparedTool(t, context.Background(), candidate, input)
-	if !errors.Is(err, expected) {
+	if err == nil || err.Error() != expected.Error() {
 		t.Fatalf("unexpected partial error: %v", err)
 	}
 	if !result.Partial || result.Text != "applied 1 of 2 patch operation(s) before failure" || result.Metadata["operation_count"] != 1 || result.Metadata["total_operations"] != 2 {
@@ -96,7 +96,7 @@ func TestApplyPatchProjectsOnlyAppliedExactDeltas(t *testing.T) {
 		t.Fatal(err)
 	}
 	input := json.RawMessage(`{"patch":"*** Begin Patch\n*** Update File: first.txt\n@@\n-old\n+new\n*** Delete File: second.txt\n*** End Patch"}`)
-	if _, err := executePreparedTool(t, context.Background(), candidate, input); !errors.Is(err, expected) {
+	if _, err := executePreparedTool(t, context.Background(), candidate, input); err == nil || err.Error() != expected.Error() {
 		t.Fatalf("unexpected partial error: %v", err)
 	}
 	if projector.calls != 1 || len(projector.deltas) != 1 || !projector.deltas[0].Exact || projector.deltas[0].Path != "first.txt" {
@@ -132,7 +132,7 @@ func TestApplyPatchHandlesMoveThroughPrivatePreparedPatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := tool.NewCall("move", "apply_patch", json.RawMessage(`{"patch":"*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n*** End Patch"}`))
-	if _, err := candidate.Handle(context.Background(), tool.Invocation{Call: call, Source: tool.ToolCallSourceModel}); err != nil {
+	if _, err := candidate.Call(context.Background(), tool.Invocation{Call: call, Source: tool.ToolCallSourceModel}); err != nil {
 		t.Fatalf("handle move patch: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(rootPath, "old.txt")); !errors.Is(err, os.ErrNotExist) {
@@ -149,7 +149,7 @@ func TestApplyPatchHonorsPreCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	result, err := executePreparedTool(t, ctx, candidate, json.RawMessage(`{"patch":"*** Begin Patch v1\n*** Add File: file.txt\n+x\n*** End Patch\n"}`))
-	if !errors.Is(err, context.Canceled) || applier.calls != 0 || result.CallID != "" || result.ToolName != "" || result.Text != "" || len(result.Parts) != 0 || result.Metadata != nil || result.Partial {
+	if !errors.Is(err, context.Canceled) || applier.calls != 0 || result.CallID != "test-call" || result.ToolName != "apply_patch" || result.Text != context.Canceled.Error() || len(result.Parts) != 0 || result.Metadata != nil || result.Partial {
 		t.Fatalf("unexpected cancelled execution: result=%#v calls=%d err=%v", result, applier.calls, err)
 	}
 }

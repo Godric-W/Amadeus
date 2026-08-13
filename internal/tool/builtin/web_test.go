@@ -66,11 +66,16 @@ func TestWebFetchProducesUntrustedBoundedDocument(t *testing.T) {
 func TestWebFetchApprovalDenialPreventsFetch(t *testing.T) {
 	fetcher := &countingWebFetcher{document: webfetch.Document{URL: "https://example.com", Text: "body"}}
 	approvals := &webApprovalStub{decision: policy.ApprovalDecision{Outcome: policy.ApprovalDeny, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "not now"}}
-	fetch, err := NewWebFetchWithApproval(fetcher, WebApprovalOptions{Approvals: approvals})
+	fetch, err := NewWebFetch(fetcher)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := executePreparedTool(t, context.Background(), fetch, json.RawMessage(`{"url":"https://example.com/page"}`)); err == nil {
+	coordinator, err := policy.NewApprovalCoordinator(approvals, policy.NewSessionPermissionContext(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := withTestApprovalCoordinator(context.Background(), coordinator)
+	if _, err := executePreparedTool(t, ctx, fetch, json.RawMessage(`{"url":"https://example.com/page"}`)); err == nil {
 		t.Fatal("denied web fetch succeeded")
 	}
 	if fetcher.count != 0 || len(approvals.requests) != 1 {
@@ -82,12 +87,17 @@ func TestWebFetchSessionApprovalIsScopedByHostname(t *testing.T) {
 	fetcher := &countingWebFetcher{document: webfetch.Document{URL: "https://example.com", Text: "body"}}
 	approvals := &webApprovalStub{decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalSession, Source: policy.ApprovalSourceUser, Reason: "trusted"}}
 	events := event.NewMemorySink()
-	fetch, err := NewWebFetchWithApproval(fetcher, WebApprovalOptions{Approvals: approvals, Events: events})
+	fetch, err := NewWebFetch(fetcher)
 	if err != nil {
 		t.Fatal(err)
 	}
+	coordinator, err := policy.NewApprovalCoordinator(approvals, policy.NewSessionPermissionContext(), events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := withTestApprovalCoordinator(context.Background(), coordinator)
 	for _, raw := range []string{`{"url":"https://example.com/one"}`, `{"url":"https://example.com/two"}`, `{"url":"https://other.example/two"}`} {
-		if _, err := executePreparedTool(t, context.Background(), fetch, json.RawMessage(raw)); err != nil {
+		if _, err := executePreparedTool(t, ctx, fetch, json.RawMessage(raw)); err != nil {
 			t.Fatalf("web fetch %s failed: %v", raw, err)
 		}
 	}

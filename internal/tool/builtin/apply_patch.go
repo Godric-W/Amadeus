@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -51,13 +52,21 @@ func newApplyPatch(options ApplyPatchOptions, executor patchApplier) (*ApplyPatc
 	return &ApplyPatch{parseOptions: options.Parse, executor: executor, projector: options.Projector}, nil
 }
 
-func (applyPatch *ApplyPatch) Spec() tool.Spec {
+func (applyPatch *ApplyPatch) Spec() tool.ToolSpec {
 	return applyPatchSpec()
+}
+
+func applyPatchSpec() tool.ToolSpec {
+	return tool.ToolSpec{
+		Name: "apply_patch", Description: "Apply a uniquely context-matched patch to files.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"patch":{"type":"string","minLength":1,"maxLength":1048576}},"required":["patch"],"additionalProperties":false}`),
+		SideEffect:  tool.SideEffectWrite, Idempotent: false,
+	}
 }
 
 func (applyPatch *ApplyPatch) SupportsParallelToolCalls() bool { return false }
 
-func (applyPatch *ApplyPatch) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+func (applyPatch *ApplyPatch) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	call := invocation.Call
 	if err := ctx.Err(); err != nil {
 		return tool.Output{}, err
@@ -112,4 +121,4 @@ func patchToolResult(document patchtool.Document, applied patchtool.ApplyResult,
 	}
 }
 
-var _ tool.Handler = (*ApplyPatch)(nil)
+var _ tool.Tool = (*ApplyPatch)(nil)

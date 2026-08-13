@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/Godric-W/Amadeus/internal/agent/event"
-	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/react"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
@@ -27,22 +26,19 @@ import (
 type ClientFactory func(string, config.ProviderConfig) (llm.Client, error)
 
 type AgentOptions struct {
-	ClientFactory     ClientFactory
-	RolloutRecorder   react.RolloutRecorder
-	PlanState         *plan.State
-	PlanRecorder      builtin.PlanUpdateRecorder
-	UserSkillRoot     string
-	UserMCPRoot       string
-	MCPClientFactory  mcp.ClientFactory
-	Skills            *skill.Catalog
-	SkillWarnings     []error
-	MCP               *mcp.Manager
-	WebFetcher        webfetch.Fetcher
-	WebSearch         websearch.Provider
-	FileSystemPolicy  *project.FileSystemPolicy
-	SessionApprovals  *policy.SessionApprovalStore
-	FileApprovals     *policy.FileApprovalStore
-	ExternalApprovals *policy.SessionRuleStore
+	ClientFactory    ClientFactory
+	RolloutRecorder  react.RolloutRecorder
+	PlanUpdater      builtin.PlanUpdater
+	UserSkillRoot    string
+	UserMCPRoot      string
+	MCPClientFactory mcp.ClientFactory
+	Skills           *skill.Catalog
+	SkillWarnings    []error
+	MCP              *mcp.Manager
+	WebFetcher       webfetch.Fetcher
+	WebSearch        websearch.Provider
+	FileSystemPolicy *project.FileSystemPolicy
+	Permissions      *policy.SessionPermissionContext
 }
 
 type Agent struct {
@@ -53,7 +49,7 @@ type Agent struct {
 	Audit            audit.Sink
 	BaseInstructions llm.BaseInstructions
 	Registry         *tool.Registry
-	ToolRouter       *tool.Router
+	ToolService      *tool.ToolExecutionService
 	Iterator         *react.Iterator
 	Progress         *react.ProgressMonitor
 	Runner           *react.Runner
@@ -65,39 +61,39 @@ type Agent struct {
 	WebSearch        websearch.Provider
 	Processes        *processdomain.Manager
 	ownMCP           bool
-	tools            []tool.Spec
+	tools            []tool.ToolSpec
 	visibility       map[string]bool
 }
 
-func NewAgent(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink) (*Agent, error) {
+func NewAgent(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalPort, auditSink audit.Sink) (*Agent, error) {
 	return NewAgentWithOptions(configured, root, events, approvals, auditSink, AgentOptions{})
 }
 
-func NewAgentWithOptions(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, options AgentOptions) (*Agent, error) {
+func NewAgentWithOptions(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalPort, auditSink audit.Sink, options AgentOptions) (*Agent, error) {
 	createClient := options.ClientFactory
 	if createClient == nil {
 		createClient = defaultClientFactory
 	}
-	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, options.RolloutRecorder, options.PlanState, options.PlanRecorder, options.UserSkillRoot, options.UserMCPRoot, options.MCPClientFactory, options.Skills, options.SkillWarnings, options.MCP, options.WebFetcher, options.WebSearch, options.FileSystemPolicy, options.SessionApprovals, options.FileApprovals, options.ExternalApprovals)
+	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, options.RolloutRecorder, options.PlanUpdater, options.UserSkillRoot, options.UserMCPRoot, options.MCPClientFactory, options.Skills, options.SkillWarnings, options.MCP, options.WebFetcher, options.WebSearch, options.FileSystemPolicy, options.Permissions)
 }
 
-func (agent *Agent) AvailableTools() []tool.Spec {
+func (agent *Agent) AvailableTools() []tool.ToolSpec {
 	if agent == nil || agent.Registry == nil {
 		return nil
 	}
 	entries := agent.Registry.VisibleSnapshot(agent.visibility)
-	tools := make([]tool.Spec, 0, len(entries))
+	tools := make([]tool.ToolSpec, 0, len(entries))
 	for _, entry := range entries {
 		tools = append(tools, entry.Spec.Clone())
 	}
 	return tools
 }
 
-func newAgent(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory) (*Agent, error) {
-	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, nil, nil, nil, "", "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+func newAgent(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalPort, auditSink audit.Sink, createClient ClientFactory) (*Agent, error) {
+	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, nil, nil, "", "", nil, nil, nil, nil, nil, nil, nil, nil)
 }
 
-func newAgentWithOptions(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalHandler, auditSink audit.Sink, createClient ClientFactory, rolloutRecorder react.RolloutRecorder, planState *plan.State, planRecorder builtin.PlanUpdateRecorder, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, externalSkills *skill.Catalog, externalSkillWarnings []error, externalMCP *mcp.Manager, webFetcher webfetch.Fetcher, webSearch websearch.Provider, fileSystemPolicy *project.FileSystemPolicy, sessionApprovals *policy.SessionApprovalStore, fileApprovals *policy.FileApprovalStore, externalApprovals *policy.SessionRuleStore) (*Agent, error) {
+func newAgentWithOptions(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalPort, auditSink audit.Sink, createClient ClientFactory, rolloutRecorder react.RolloutRecorder, planUpdater builtin.PlanUpdater, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, externalSkills *skill.Catalog, externalSkillWarnings []error, externalMCP *mcp.Manager, webFetcher webfetch.Fetcher, webSearch websearch.Provider, fileSystemPolicy *project.FileSystemPolicy, permissions *policy.SessionPermissionContext) (*Agent, error) {
 	if err := config.Validate(configured); err != nil {
 		return nil, fmt.Errorf("validate Agent configuration: %w", err)
 	}
@@ -108,13 +104,17 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 		return nil, errors.New("bootstrap Agent event sink is nil")
 	}
 	if approvals == nil {
-		return nil, errors.New("bootstrap Agent approval handler is nil")
+		return nil, errors.New("bootstrap Agent approval port is nil")
 	}
 	if auditSink == nil {
 		return nil, errors.New("bootstrap Agent audit sink is nil")
 	}
-	if externalApprovals == nil {
-		externalApprovals = policy.NewSessionRuleStore()
+	if permissions == nil {
+		permissions = policy.NewSessionPermissionContext()
+	}
+	coordinator, err := policy.NewApprovalCoordinator(approvals, permissions, events)
+	if err != nil {
+		return nil, fmt.Errorf("create approval coordinator: %w", err)
 	}
 	if createClient == nil {
 		return nil, errors.New("bootstrap Agent client factory is nil")
@@ -132,51 +132,28 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 	if err != nil {
 		return nil, fmt.Errorf("load prompt assets: %w", err)
 	}
-	mvpOptions := builtin.DefaultMVPOptions()
+	coreOptions := builtin.DefaultCoreToolOptions()
 	if fileSystemPolicy == nil {
 		fileSystemPolicy, err = project.NewFileSystemPolicy(project.FileSystemPolicyOptions{CWD: root.Path(), Profile: project.PermissionProfile{WorkspaceRoots: []string{root.Path()}}})
 		if err != nil {
 			return nil, fmt.Errorf("create default filesystem policy: %w", err)
 		}
 	}
-	mvpOptions.FileSystemPolicy = fileSystemPolicy
-	mvpOptions.ExecuteCommand.FileSystemPolicy = fileSystemPolicy
-	mvpOptions.ExecuteCommand.Approvals = approvals
-	mvpOptions.ExecuteCommand.SessionApprovals = sessionApprovals
-	mvpOptions.ExecuteCommand.Events = events
-	mvpOptions.ExecuteCommand.Audit = auditSink
-	registry, err := builtin.NewCodingRegistry(root, mvpOptions)
+	coreOptions.FileSystemPolicy = fileSystemPolicy
+	coreOptions.Events = events
+	coreOptions.ExecuteCommand.Audit = auditSink
+	coreOptions.PlanUpdater = planUpdater
+	registry, err := builtin.NewCoreRegistry(root, coreOptions)
 	if err != nil {
-		return nil, fmt.Errorf("create MVP tool registry: %w", err)
-	}
-	fileTools, err := builtin.NewFileTools(root, builtin.FileToolsOptions{
-		FileSystemPolicy: fileSystemPolicy, Approvals: approvals, Events: events, SessionApprovals: fileApprovals,
-		MaxBytes: mvpOptions.ReadFile.MaxBytes, MaxLineBytes: mvpOptions.ReadFile.MaxLineBytes,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create file tools: %w", err)
-	}
-	for _, candidate := range []tool.Handler{fileTools.ReadTool(), fileTools.EditTool(), fileTools.WriteTool()} {
-		if err := registry.Register(candidate); err != nil {
-			return nil, fmt.Errorf("register file tool %q: %w", candidate.Spec().Name, err)
-		}
-	}
-	if planState != nil || planRecorder != nil {
-		updatePlan, planErr := builtin.NewUpdatePlan(planState, builtin.UpdatePlanOptions{Events: events, Recorder: planRecorder})
-		if planErr != nil {
-			return nil, fmt.Errorf("create update_plan tool: %w", planErr)
-		}
-		if planErr := registry.Register(updatePlan); planErr != nil {
-			return nil, fmt.Errorf("register update_plan tool: %w", planErr)
-		}
+		return nil, fmt.Errorf("create core tool registry: %w", err)
 	}
 	executeTool, exists := registry.Lookup("execute_command")
 	if !exists {
-		return nil, errors.New("create MVP tool registry: execute_command is missing")
+		return nil, errors.New("create core tool registry: execute_command is missing")
 	}
 	executeCommand, ok := executeTool.(*builtin.ExecuteCommand)
 	if !ok {
-		return nil, errors.New("create MVP tool registry: execute_command has unexpected type")
+		return nil, errors.New("create core tool registry: execute_command has unexpected type")
 	}
 	visibility := make(map[string]bool)
 	if client.Capabilities().SupportsImages {
@@ -196,7 +173,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 				return nil, fmt.Errorf("create web fetcher: %w", err)
 			}
 		}
-		webFetchTool, toolErr := builtin.NewWebFetchWithApproval(webFetcher, builtin.WebApprovalOptions{Approvals: approvals, Rules: externalApprovals, Events: events})
+		webFetchTool, toolErr := builtin.NewWebFetch(webFetcher)
 		if toolErr != nil {
 			return nil, fmt.Errorf("create web_fetch tool: %w", toolErr)
 		}
@@ -256,7 +233,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 		}
 		ownMCP = true
 	}
-	mcpListTool, mcpCallTool, err := mcp.NewLazyToolsWithApproval(mcpManager, mcp.LazyApprovalOptions{Approvals: approvals, Rules: externalApprovals, Events: events})
+	mcpListTool, mcpCallTool, err := mcp.NewLazyTools(mcpManager)
 	if err != nil {
 		return nil, fmt.Errorf("create lazy MCP tools: %w", err)
 	}
@@ -289,18 +266,18 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 		visibility["mcp.catalog"] = true
 		visibility["mcp.resources"] = true
 	}
-	toolRouter, err := tool.NewRouter(registry, tool.NewArgumentValidator(), tool.RouterOptions{
-		Observer: react.NewToolEventObserver(events), MaxParallel: configured.Agent.MaxParallelTools, Visibility: visibility,
+	toolService, err := tool.NewToolExecutionService(registry, tool.NewArgumentValidator(), tool.ToolExecutionServiceOptions{
+		Observer: react.NewToolEventObserver(events), MaxParallel: configured.Agent.MaxParallelTools, Visibility: visibility, Approvals: coordinator,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create tool router: %w", err)
+		return nil, fmt.Errorf("create tool execution service: %w", err)
 	}
 	iterator, err := react.NewIterator(client, events)
 	if err != nil {
 		return nil, fmt.Errorf("create model iterator: %w", err)
 	}
 	progress := react.DefaultProgressMonitor()
-	runner, err := react.NewRunner(iterator, toolRouter, progress, react.RunnerOptions{
+	runner, err := react.NewRunner(iterator, toolService, progress, react.RunnerOptions{
 		Temperature:      provider.Temperature,
 		MaxParallelTools: configured.Agent.MaxParallelTools,
 		Events:           events,
@@ -310,7 +287,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 		return nil, fmt.Errorf("create ReAct runner: %w", err)
 	}
 	entries := registry.VisibleSnapshot(visibility)
-	availableTools := make([]tool.Spec, 0, len(entries))
+	availableTools := make([]tool.ToolSpec, 0, len(entries))
 	for _, entry := range entries {
 		availableTools = append(availableTools, entry.Spec.Clone())
 	}
@@ -323,7 +300,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 		Audit:            auditSink,
 		BaseInstructions: assets.Base,
 		Registry:         registry,
-		ToolRouter:       toolRouter,
+		ToolService:      toolService,
 		Iterator:         iterator,
 		Progress:         progress,
 		Runner:           runner,
@@ -357,7 +334,7 @@ func (agent *Agent) RefreshMCP(ctx context.Context) []error {
 			warnings = append(warnings, fmt.Errorf("refresh MCP server %q: %w", server, err))
 			continue
 		}
-		values := make([]tool.Handler, len(tools))
+		values := make([]tool.Tool, len(tools))
 		for index, value := range tools {
 			values[index] = value
 		}

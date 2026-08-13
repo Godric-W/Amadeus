@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"sync"
 )
 
 type FileAccess string
@@ -25,8 +24,6 @@ const (
 	RootSourceHost      RootSource = "host"
 	RootSourceWorkspace RootSource = "workspace"
 	RootSourceTemporary RootSource = "temporary"
-	RootSourceRun       RootSource = "run"
-	RootSourceSession   RootSource = "session"
 	RootSourceReadOnly  RootSource = "read_only"
 	RootSourceDenied    RootSource = "denied"
 )
@@ -64,7 +61,7 @@ type PermissionRequiredError struct {
 }
 
 func (err *PermissionRequiredError) Error() string {
-	return fmt.Sprintf("permission_required: write access to %q requires request_permissions for writable root %q", err.CanonicalPath, err.WritableRoot)
+	return fmt.Sprintf("permission_required: write access to %q requires writable root %q", err.CanonicalPath, err.WritableRoot)
 }
 
 func (err *PermissionRequiredError) Unwrap() error         { return ErrPermissionRequired }
@@ -86,94 +83,14 @@ func (profile PermissionProfile) Clone() PermissionProfile {
 	return profile
 }
 
-type AdditionalPermissions struct {
-	WritableRoots []string
-}
-
-func (permissions AdditionalPermissions) Clone() AdditionalPermissions {
-	permissions.WritableRoots = append([]string(nil), permissions.WritableRoots...)
-	return permissions
-}
-
-type PermissionSnapshotSource interface {
-	Snapshot() AdditionalPermissions
-}
-
-type PermissionStore struct {
-	mutex sync.RWMutex
-	roots []string
-}
-
-func NewPermissionStore() *PermissionStore { return &PermissionStore{} }
-
-func (store *PermissionStore) Snapshot() AdditionalPermissions {
-	if store == nil {
-		return AdditionalPermissions{}
-	}
-	store.mutex.RLock()
-	defer store.mutex.RUnlock()
-	return AdditionalPermissions{WritableRoots: append([]string(nil), store.roots...)}
-}
-
-func (store *PermissionStore) GrantWritableRoots(roots []string) error {
-	if store == nil {
-		return errors.New("permission store is nil")
-	}
-	canonical := make([]string, 0, len(roots))
-	for _, root := range roots {
-		value, err := canonicalDirectory(root)
-		if err != nil {
-			return fmt.Errorf("grant writable root %q: %w", root, err)
-		}
-		canonical = appendUniquePath(canonical, value)
-	}
-	store.mutex.Lock()
-	for _, root := range canonical {
-		store.roots = appendUniquePath(store.roots, root)
-	}
-	sort.Slice(store.roots, func(left, right int) bool { return len(store.roots[left]) > len(store.roots[right]) })
-	store.mutex.Unlock()
-	return nil
-}
-
-func (store *PermissionStore) Clear() {
-	if store == nil {
-		return
-	}
-	store.mutex.Lock()
-	store.roots = nil
-	store.mutex.Unlock()
-}
-
-type EffectivePermissionProfile struct {
-	Base    PermissionProfile
-	Run     AdditionalPermissions
-	Session AdditionalPermissions
-}
-
-func (profile EffectivePermissionProfile) WritableRoots() []string {
-	roots := make([]string, 0, len(profile.Base.WorkspaceRoots)+len(profile.Base.TemporaryRoots)+len(profile.Run.WritableRoots)+len(profile.Session.WritableRoots))
-	for _, values := range [][]string{profile.Base.WorkspaceRoots, profile.Base.TemporaryRoots, profile.Run.WritableRoots, profile.Session.WritableRoots} {
-		for _, root := range values {
-			roots = appendUniquePath(roots, root)
-		}
-	}
-	sort.Slice(roots, func(left, right int) bool { return len(roots[left]) > len(roots[right]) })
-	return roots
-}
-
 type FileSystemPolicyOptions struct {
-	CWD                string
-	Profile            PermissionProfile
-	RunPermissions     PermissionSnapshotSource
-	SessionPermissions PermissionSnapshotSource
+	CWD     string
+	Profile PermissionProfile
 }
 
 type FileSystemPolicy struct {
-	resolver           *PathResolver
-	base               PermissionProfile
-	runPermissions     PermissionSnapshotSource
-	sessionPermissions PermissionSnapshotSource
+	resolver *PathResolver
+	base     PermissionProfile
 }
 
 func NewFileSystemPolicy(options FileSystemPolicyOptions) (*FileSystemPolicy, error) {
@@ -185,21 +102,14 @@ func NewFileSystemPolicy(options FileSystemPolicyOptions) (*FileSystemPolicy, er
 	if err != nil {
 		return nil, err
 	}
-	return &FileSystemPolicy{resolver: resolver, base: profile, runPermissions: options.RunPermissions, sessionPermissions: options.SessionPermissions}, nil
+	return &FileSystemPolicy{resolver: resolver, base: profile}, nil
 }
 
-func (policy *FileSystemPolicy) EffectiveProfile() EffectivePermissionProfile {
+func (policy *FileSystemPolicy) EffectiveProfile() PermissionProfile {
 	if policy == nil {
-		return EffectivePermissionProfile{}
+		return PermissionProfile{}
 	}
-	result := EffectivePermissionProfile{Base: policy.base.Clone()}
-	if policy.runPermissions != nil {
-		result.Run = policy.runPermissions.Snapshot()
-	}
-	if policy.sessionPermissions != nil {
-		result.Session = policy.sessionPermissions.Snapshot()
-	}
-	return result
+	return policy.base.Clone()
 }
 
 func (policy *FileSystemPolicy) ResolveExisting(requested string, expected PathType) (ResolvedPath, error) {
@@ -235,11 +145,11 @@ func (policy *FileSystemPolicy) ResolveForWriteTarget(requested string) (Resolve
 	if err != nil {
 		return ResolvedPath{}, err
 	}
-	effective := policy.EffectiveProfile()
-	if root := longestMatch(effective.Base.DeniedRoots, resolved.Canonical); root != "" {
+	profile := policy.EffectiveProfile()
+	if root := longestMatch(profile.DeniedRoots, resolved.Canonical); root != "" {
 		return ResolvedPath{}, &PathDeniedError{Requested: requested, Reason: fmt.Sprintf("is denied by %q", root)}
 	}
-	if root := longestMatch(effective.Base.ReadOnlyRoots, resolved.Canonical); root != "" {
+	if root := longestMatch(profile.ReadOnlyRoots, resolved.Canonical); root != "" {
 		return ResolvedPath{}, &PathDeniedError{Requested: requested, Reason: fmt.Sprintf("is read-only under %q", root)}
 	}
 	return resolved, nil
@@ -274,25 +184,25 @@ func (policy *FileSystemPolicy) ResolveGrantRoot(requested string) (string, erro
 }
 
 func (policy *FileSystemPolicy) authorizeResolved(resolved ResolvedPath, requestedAccess FileAccess) (ResolvedPath, error) {
-	effective := policy.EffectiveProfile()
-	if root := longestMatch(effective.Base.DeniedRoots, resolved.Canonical); root != "" {
+	profile := policy.EffectiveProfile()
+	if root := longestMatch(profile.DeniedRoots, resolved.Canonical); root != "" {
 		return ResolvedPath{}, &PathDeniedError{Requested: resolved.Requested, Reason: fmt.Sprintf("is denied by %q", root)}
 	}
-	if root := longestMatch(effective.Base.ReadOnlyRoots, resolved.Canonical); root != "" {
+	if root := longestMatch(profile.ReadOnlyRoots, resolved.Canonical); root != "" {
 		if requestedAccess == AccessWrite {
 			return ResolvedPath{}, &PathDeniedError{Requested: resolved.Requested, Reason: fmt.Sprintf("is read-only under %q", root)}
 		}
 		resolved.Access, resolved.MatchedRoot, resolved.RootSource = AccessRead, root, RootSourceReadOnly
 		return resolved, nil
 	}
-	if root, source := writableMatch(effective, resolved.Canonical); root != "" {
+	if root, source := writableMatch(profile, resolved.Canonical); root != "" {
 		resolved.Access, resolved.MatchedRoot, resolved.RootSource = requestedAccess, root, source
 		return resolved, nil
 	}
 	if requestedAccess == AccessWrite {
 		return ResolvedPath{}, &PermissionRequiredError{RequestedPath: resolved.Requested, CanonicalPath: resolved.Canonical, WritableRoot: suggestedWritableRoot(resolved.Canonical)}
 	}
-	if !effective.Base.ReadHost {
+	if !profile.ReadHost {
 		return ResolvedPath{}, &PathDeniedError{Requested: resolved.Requested, Reason: "is outside declared readable roots"}
 	}
 	resolved.Access, resolved.MatchedRoot, resolved.RootSource = AccessRead, string(filepath.Separator), RootSourceHost
@@ -300,7 +210,13 @@ func (policy *FileSystemPolicy) authorizeResolved(resolved ResolvedPath, request
 }
 
 func (policy *FileSystemPolicy) WritableRoots() []string {
-	return policy.EffectiveProfile().WritableRoots()
+	if policy == nil {
+		return nil
+	}
+	roots := append([]string(nil), policy.base.WorkspaceRoots...)
+	roots = append(roots, policy.base.TemporaryRoots...)
+	sort.Slice(roots, func(left, right int) bool { return len(roots[left]) > len(roots[right]) })
+	return roots
 }
 
 func (policy *FileSystemPolicy) ReadOnlyRoots() []string {
@@ -371,13 +287,12 @@ func canonicalExistingRoots(values []string, kind string) ([]string, error) {
 	return result, nil
 }
 
-func writableMatch(profile EffectivePermissionProfile, candidate string) (string, RootSource) {
+func writableMatch(profile PermissionProfile, candidate string) (string, RootSource) {
 	groups := []struct {
 		roots  []string
 		source RootSource
 	}{
-		{profile.Run.WritableRoots, RootSourceRun}, {profile.Session.WritableRoots, RootSourceSession},
-		{profile.Base.WorkspaceRoots, RootSourceWorkspace}, {profile.Base.TemporaryRoots, RootSourceTemporary},
+		{profile.WorkspaceRoots, RootSourceWorkspace}, {profile.TemporaryRoots, RootSourceTemporary},
 	}
 	best, source := "", RootSource("")
 	for _, group := range groups {

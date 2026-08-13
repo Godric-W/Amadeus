@@ -13,11 +13,11 @@ import (
 
 type ListResourcesTool struct {
 	manager *Manager
-	spec    tool.Spec
+	spec    tool.ToolSpec
 }
 type ReadResourceTool struct {
 	manager  *Manager
-	spec     tool.Spec
+	spec     tool.ToolSpec
 	maxBytes int
 }
 type listResourcesArguments struct {
@@ -42,14 +42,14 @@ func NewResourceTools(manager *Manager) (*ListResourcesTool, *ReadResourceTool, 
 	}
 	listSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s}},"required":["server"],"additionalProperties":false}`, encoded))
 	readSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s},"uri":{"type":"string","minLength":1}},"required":["server","uri"],"additionalProperties":false}`, encoded))
-	list := &ListResourcesTool{manager: manager, spec: tool.Spec{Name: "mcp_list_resources", Description: "List untrusted resources exposed by one configured MCP server.", InputSchema: listSchema, SideEffect: tool.SideEffectNetwork, Idempotent: true}}
-	read := &ReadResourceTool{manager: manager, maxBytes: defaultResultBytes, spec: tool.Spec{Name: "mcp_read_resource", Description: "Read one previously discovered MCP resource. Text and image blobs are returned as bounded untrusted content.", InputSchema: readSchema, SideEffect: tool.SideEffectNetwork, Idempotent: true}}
+	list := &ListResourcesTool{manager: manager, spec: tool.ToolSpec{Name: "mcp_list_resources", Description: "List untrusted resources exposed by one configured MCP server.", InputSchema: listSchema, SideEffect: tool.SideEffectNetwork, Idempotent: true}}
+	read := &ReadResourceTool{manager: manager, maxBytes: defaultResultBytes, spec: tool.ToolSpec{Name: "mcp_read_resource", Description: "Read one previously discovered MCP resource. Text and image blobs are returned as bounded untrusted content.", InputSchema: readSchema, SideEffect: tool.SideEffectNetwork, Idempotent: true}}
 	return list, read, nil
 }
 
-func (value *ListResourcesTool) Spec() tool.Spec                 { return value.spec.Clone() }
+func (value *ListResourcesTool) Spec() tool.ToolSpec             { return value.spec.Clone() }
 func (value *ListResourcesTool) SupportsParallelToolCalls() bool { return true }
-func (value *ListResourcesTool) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+func (value *ListResourcesTool) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	var arguments listResourcesArguments
 	if err := json.Unmarshal(invocation.Call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
@@ -71,9 +71,9 @@ func (value *ListResourcesTool) Handle(ctx context.Context, invocation tool.Invo
 	text, partial := boundText(string(encoded), defaultResultBytes)
 	return tool.Output{ToolName: "mcp_list_resources", Text: "Untrusted MCP resource catalog:\n" + text, Partial: partial, Metadata: map[string]any{"server": arguments.Server, "resource_count": len(resources)}}, nil
 }
-func (value *ReadResourceTool) Spec() tool.Spec                 { return value.spec.Clone() }
+func (value *ReadResourceTool) Spec() tool.ToolSpec             { return value.spec.Clone() }
 func (value *ReadResourceTool) SupportsParallelToolCalls() bool { return true }
-func (value *ReadResourceTool) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+func (value *ReadResourceTool) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	var arguments readResourceArguments
 	if err := json.Unmarshal(invocation.Call.Payload, &arguments); err != nil {
 		return tool.Output{}, err
@@ -129,5 +129,5 @@ func supportedMCPImageType(mediaType string) bool {
 	}
 }
 
-var _ tool.Handler = (*ListResourcesTool)(nil)
-var _ tool.Handler = (*ReadResourceTool)(nil)
+var _ tool.Tool = (*ListResourcesTool)(nil)
+var _ tool.Tool = (*ReadResourceTool)(nil)

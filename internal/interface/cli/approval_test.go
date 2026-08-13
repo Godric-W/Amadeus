@@ -25,13 +25,13 @@ func TestTerminalApprovalInteractiveChoices(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var output bytes.Buffer
-			handler, err := NewTerminalApprovalHandler(TerminalApprovalOptions{
+			prompt, err := NewTerminalApprovalPrompt(TerminalApprovalOptions{
 				Input: strings.NewReader(test.input), Output: &output, IsTerminal: func(_ io.Reader) bool { return true },
 			})
 			if err != nil {
-				t.Fatalf("create approval handler: %v", err)
+				t.Fatalf("create approval prompt: %v", err)
 			}
-			decision, err := handler.Decide(context.Background(), testApprovalRequest(t))
+			decision, err := prompt.Decide(context.Background(), testApprovalRequest(t))
 			if err != nil {
 				t.Fatalf("decide approval: %v", err)
 			}
@@ -46,13 +46,13 @@ func TestTerminalApprovalInteractiveChoices(t *testing.T) {
 }
 
 func TestTerminalApprovalNonTTYAlwaysDenies(t *testing.T) {
-	handler, err := NewTerminalApprovalHandler(TerminalApprovalOptions{
+	prompt, err := NewTerminalApprovalPrompt(TerminalApprovalOptions{
 		Input: strings.NewReader("y\n"), Output: &bytes.Buffer{}, IsTerminal: func(_ io.Reader) bool { return false },
 	})
 	if err != nil {
-		t.Fatalf("create approval handler: %v", err)
+		t.Fatalf("create approval prompt: %v", err)
 	}
-	decision, err := handler.Decide(context.Background(), testApprovalRequest(t))
+	decision, err := prompt.Decide(context.Background(), testApprovalRequest(t))
 	if err != nil {
 		t.Fatalf("decide approval: %v", err)
 	}
@@ -63,13 +63,13 @@ func TestTerminalApprovalNonTTYAlwaysDenies(t *testing.T) {
 
 func TestTerminalApprovalRejectsInvalidChoiceThenAccepts(t *testing.T) {
 	var output bytes.Buffer
-	handler, err := NewTerminalApprovalHandler(TerminalApprovalOptions{
+	prompt, err := NewTerminalApprovalPrompt(TerminalApprovalOptions{
 		Input: strings.NewReader("always\ny\n"), Output: &output, IsTerminal: func(_ io.Reader) bool { return true },
 	})
 	if err != nil {
-		t.Fatalf("create approval handler: %v", err)
+		t.Fatalf("create approval prompt: %v", err)
 	}
-	decision, err := handler.Decide(context.Background(), testApprovalRequest(t))
+	decision, err := prompt.Decide(context.Background(), testApprovalRequest(t))
 	if err != nil {
 		t.Fatalf("decide approval: %v", err)
 	}
@@ -78,30 +78,30 @@ func TestTerminalApprovalRejectsInvalidChoiceThenAccepts(t *testing.T) {
 	}
 }
 
-func TestTerminalApprovalPermissionChoiceUsesRunScope(t *testing.T) {
+func TestTerminalApprovalPermissionChoiceUsesOnceScope(t *testing.T) {
 	var output bytes.Buffer
-	handler, err := NewTerminalApprovalHandler(TerminalApprovalOptions{
+	prompt, err := NewTerminalApprovalPrompt(TerminalApprovalOptions{
 		Input: strings.NewReader("y\n"), Output: &output, IsTerminal: func(_ io.Reader) bool { return true },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	request, err := policy.NewApprovalRequestForPurpose(
-		"permission-1", "request_permissions", json.RawMessage(`{"writable_roots":["/outside"]}`),
+		"permission-1", "execute_command", json.RawMessage(`{"command":"touch /outside/file"}`),
 		policy.ApprovalPurposePermission, policy.CommandRiskHigh, "write outside the workspace",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decision, err := handler.Decide(context.Background(), request)
+	decision, err := prompt.Decide(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.Outcome != policy.ApprovalAllow || decision.Scope != policy.ApprovalRun || decision.Source != policy.ApprovalSourceUser {
+	if decision.Outcome != policy.ApprovalAllow || decision.Scope != policy.ApprovalOnce || decision.Source != policy.ApprovalSourceUser {
 		t.Fatalf("unexpected permission decision: %#v", decision)
 	}
-	if !strings.Contains(output.String(), "[y] this run / [s] session / [n] deny") {
-		t.Fatalf("permission prompt omitted run scope: %q", output.String())
+	if !strings.Contains(output.String(), "[y] once / [s] session / [n] deny") {
+		t.Fatalf("permission prompt omitted once scope: %q", output.String())
 	}
 }
 

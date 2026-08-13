@@ -433,7 +433,7 @@ func (runner *agentController) writeInteractiveMCP(ctx context.Context, invocati
 }
 
 func writeInteractiveTools(writer io.Writer) error {
-	for _, spec := range builtin.MVPSpecs() {
+	for _, spec := range builtin.CoreSpecs() {
 		if _, err := fmt.Fprintf(writer, "%s (%s)\n", spec.Name, spec.SideEffect); err != nil {
 			return err
 		}

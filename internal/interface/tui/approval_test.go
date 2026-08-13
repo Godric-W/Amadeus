@@ -76,7 +76,7 @@ func TestInlineApprovalPromptPermissionChoiceUsesRunScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	request, err := policy.NewApprovalRequestForPurpose(
-		"permission-1", "request_permissions", json.RawMessage(`{"writable_roots":["/outside"]}`),
+		"permission-1", "execute_command", json.RawMessage(`{"command":"touch /outside/file"}`),
 		policy.ApprovalPurposePermission, policy.CommandRiskHigh, "write outside the workspace",
 	)
 	if err != nil {
@@ -86,17 +86,17 @@ func TestInlineApprovalPromptPermissionChoiceUsesRunScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.Outcome != policy.ApprovalAllow || decision.Scope != policy.ApprovalRun || decision.Source != policy.ApprovalSourceUser {
+	if decision.Outcome != policy.ApprovalAllow || decision.Scope != policy.ApprovalOnce || decision.Source != policy.ApprovalSourceUser {
 		t.Fatalf("unexpected permission decision: %#v", decision)
 	}
-	if !strings.Contains(output.String(), "[y] this run / [s] session / [n] deny") {
-		t.Fatalf("permission prompt omitted run scope: %q", output.String())
+	if !strings.Contains(output.String(), "[y] once / [s] session / [n] deny") {
+		t.Fatalf("permission prompt omitted once scope: %q", output.String())
 	}
 }
 
-func TestFullscreenApprovalPermissionChoicesUseRunThenSession(t *testing.T) {
+func TestFullscreenApprovalPermissionChoicesUseOnceThenSession(t *testing.T) {
 	request, err := policy.NewApprovalRequestForPurpose(
-		"permission-1", "request_permissions", json.RawMessage(`{"writable_roots":["/outside"]}`),
+		"permission-1", "execute_command", json.RawMessage(`{"command":"touch /outside/file"}`),
 		policy.ApprovalPurposePermission, policy.CommandRiskHigh, "write outside the workspace",
 	)
 	if err != nil {
@@ -106,13 +106,13 @@ func TestFullscreenApprovalPermissionChoicesUseRunThenSession(t *testing.T) {
 	if len(choices) != 3 {
 		t.Fatalf("unexpected permission choices: %#v", choices)
 	}
-	if choices[0].decision.Outcome != policy.ApprovalAllow || choices[0].decision.Scope != policy.ApprovalRun || !strings.Contains(choices[0].label, "this run") {
-		t.Fatalf("unexpected run choice: %#v", choices[0])
+	if choices[0].decision.Outcome != policy.ApprovalAllow || choices[0].decision.Scope != policy.ApprovalOnce || !strings.Contains(choices[0].label, "once") {
+		t.Fatalf("unexpected once choice: %#v", choices[0])
 	}
 	if choices[1].decision.Outcome != policy.ApprovalAllow || choices[1].decision.Scope != policy.ApprovalSession || !strings.Contains(choices[1].label, "this session") {
 		t.Fatalf("unexpected session choice: %#v", choices[1])
 	}
-	if choices[2].decision.Outcome != policy.ApprovalDeny {
+	if choices[2].decision.Outcome != policy.ApprovalDeny || choices[2].decision.Scope != policy.ApprovalOnce {
 		t.Fatalf("unexpected deny choice: %#v", choices[2])
 	}
 }

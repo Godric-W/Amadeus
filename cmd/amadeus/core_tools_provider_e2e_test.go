@@ -382,7 +382,7 @@ func assertCoreToolsProviderRequests(t *testing.T, api config.APIMode, captured 
 		{request: 5, contains: "return left - right"},
 		{request: 6, contains: "updated"},
 		{request: 7, contains: "generated.txt"},
-		{request: 8, contains: "tool execution denied"},
+		{request: 8, contains: "tool permission denied"},
 		{request: 9, contains: "obsolete.txt"},
 		{request: 10, contains: "example.com/coretools"},
 	}

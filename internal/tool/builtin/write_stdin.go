@@ -44,11 +44,11 @@ func NewWriteStdin(options WriteStdinOptions) (*WriteStdin, error) {
 	return &WriteStdin{options: options}, nil
 }
 
-func (writeStdin *WriteStdin) Spec() tool.Spec { return writeStdinSpec() }
+func (writeStdin *WriteStdin) Spec() tool.ToolSpec { return writeStdinSpec() }
 
 func (writeStdin *WriteStdin) SupportsParallelToolCalls() bool { return false }
 
-func (writeStdin *WriteStdin) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+func (writeStdin *WriteStdin) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	call := invocation.Call
 	var arguments writeStdinArguments
 	if err := decodeArguments(call.Payload, &arguments); err != nil {
@@ -76,12 +76,12 @@ func (writeStdin *WriteStdin) Handle(ctx context.Context, invocation tool.Invoca
 	return commandSnapshotResult("write_stdin", "", snapshot, time.Since(snapshot.StartedAt))
 }
 
-func writeStdinSpec() tool.Spec {
-	return tool.Spec{
+func writeStdinSpec() tool.ToolSpec {
+	return tool.ToolSpec{
 		Name: "write_stdin", Description: "Continue or poll a running process created by execute_command in the current Run; optionally write characters, Enter, or EOF.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"process_id":{"type":"string","minLength":1},"chars":{"type":"string"},"enter":{"type":"boolean"},"eof":{"type":"boolean"},"yield_time_ms":{"type":"integer","minimum":0}},"required":["process_id"],"additionalProperties":false}`),
 		SideEffect:  tool.SideEffectExecute, Idempotent: false,
 	}
 }
 
-var _ tool.Handler = (*WriteStdin)(nil)
+var _ tool.Tool = (*WriteStdin)(nil)

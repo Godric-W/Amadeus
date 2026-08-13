@@ -83,11 +83,16 @@ func TestLazyCallApprovalDenialPreventsRemoteCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	approvals := &mcpApprovalStub{decision: policy.ApprovalDecision{Outcome: policy.ApprovalDeny, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "no"}}
-	_, call, err := NewLazyToolsWithApproval(manager, LazyApprovalOptions{Approvals: approvals})
+	_, call, err := NewLazyTools(manager)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := executePreparedTool(t, context.Background(), call, json.RawMessage(`{"server":"demo","name":"echo","arguments":{}}`)); err == nil {
+	coordinator, err := policy.NewApprovalCoordinator(approvals, policy.NewSessionPermissionContext(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := withTestApprovalCoordinator(context.Background(), coordinator)
+	if _, err := executePreparedTool(t, ctx, call, json.RawMessage(`{"server":"demo","name":"echo","arguments":{}}`)); err == nil {
 		t.Fatal("denied MCP call succeeded")
 	}
 	if client.callCalls != 0 || len(approvals.requests) != 1 {
@@ -105,16 +110,21 @@ func TestLazyCallSessionApprovalIsScopedByServerAndTool(t *testing.T) {
 	}
 	approvals := &mcpApprovalStub{decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalSession, Source: policy.ApprovalSourceUser, Reason: "trusted"}}
 	events := event.NewMemorySink()
-	_, call, err := NewLazyToolsWithApproval(manager, LazyApprovalOptions{Approvals: approvals, Events: events})
+	_, call, err := NewLazyTools(manager)
 	if err != nil {
 		t.Fatal(err)
 	}
+	coordinator, err := policy.NewApprovalCoordinator(approvals, policy.NewSessionPermissionContext(), events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := withTestApprovalCoordinator(context.Background(), coordinator)
 	for _, raw := range []string{
 		`{"server":"demo","name":"echo","arguments":{}}`,
 		`{"server":"demo","name":"echo","arguments":{}}`,
 		`{"server":"demo","name":"other","arguments":{}}`,
 	} {
-		if _, err := executePreparedTool(t, context.Background(), call, json.RawMessage(raw)); err != nil {
+		if _, err := executePreparedTool(t, ctx, call, json.RawMessage(raw)); err != nil {
 			t.Fatalf("MCP call %s failed: %v", raw, err)
 		}
 	}

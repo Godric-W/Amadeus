@@ -43,6 +43,7 @@
 | A. Runtime + Persistence | Thread、Session、Turn、Task、JSONL Rollout、SQLite Index、Resume | 已冻结 | `DONE` |
 | B. Context + Prompt | BaseInstructions、ContextManager、Token、Projection、Compaction | 已冻结 | `DONE` |
 | C. Tool + Approval | Tool Contract、Edit/Write、Permission、Approval、Command | 已冻结 | `DONE` |
+| C-R. Tool Runtime Refactor | Claude Code 风格 Tool Contract、SessionPermissionContext、ApprovalCoordinator、统一执行链 | 已冻结 | `DONE` |
 | D. Event + TUI + Slash Command | SessionEvent、InteractiveRequest、TurnItem、HistoryCell、Slash Routing | 已冻结 | 等待 A/C 核心边界 |
 | E. Agent Engine | Plan-guided ReAct、`update_plan`、Plan Mode、中断与终态 | 待 A/B/C/D 接入 | 未开始 |
 | F. Extensions + Release | MCP、Skill、Web、兼容迁移、发布验证 | 待主链稳定 | 未开始 |
@@ -52,6 +53,7 @@
 ```text
 A Runtime Contract + Canonical Persistence
 → B Context/Prompt 与 C Tool/Approval 可并行推进
+→ C-R Tool Runtime、SessionPermissionContext 与 ApprovalCoordinator 重构（`DONE`）
 → D Event Protocol、TUI Projection 与 Slash Routing
 → E Plan-guided ReAct 整合
 → F Extensions/Release
@@ -270,21 +272,23 @@ ContextManager 是模型可见历史的唯一所有者；Provider Usage 是已�
 Model Tool Call
 → Tool Registry
 → Schema Validate
-→ Router
-→ Handler 内部 Permission / Approval
+→ ToolExecutionService
+→ Tool.CheckPermissions（实现 PermissionChecker 的 Tool）
+→ SessionPermissionContext
 → Allow / Ask / Deny
-→ Handler Execute
+→ ApprovalCoordinator（仅 Ask）
+→ Tool.Call
 → ToolResult
 → Rollout / ContextManager / TUI
 ```
 
-文件 Session Approval 对齐 Claude Code 的 `accept_edits + Working Directories`；命令使用独立的 Session Command Rule。
+当前 C-R 阶段已完成文件 Diff、命令审批和各类 Approval 的行为验证，并已将这些能力从各 Tool 内部的分散实现收敛到统一 `ToolExecutionService + SessionPermissionContext + ApprovalCoordinator` 主链。
 
 ### C-01：Tool Contract — `DONE`
 
-- `DONE`：统一使用 `Spec`、`ToolCall`、`Invocation`、`Output`、`Handler`、`Registry` 和 `Router`。
-- `DONE`：Router 负责 Schema Normalize、生命周期事件、串行/有界并行调度和 ToolResult 顺序恢复。
-- `DONE`：未引入 `PreparedCall`、通用 Hook、TargetStrategy 或第二套 Dispatcher；旧 `Router` 是当前唯一运行时入口。
+- `DONE`：当前实现统一使用 `Tool`、`ToolSpec`、`ToolCall`、`Invocation`、`Output`、`Registry` 和 `ToolExecutionService`。
+- `DONE`：ToolExecutionService 负责 Schema Normalize、生命周期事件、串行/有界并行调度和 ToolResult 顺序恢复。
+- `DONE`：未引入 `PreparedCall`、通用 Hook、TargetStrategy 或第二套 Dispatcher；ToolExecutionService 是唯一运行时入口。
 
 ### C-02：`read` 与文件状态 — `DONE`
 
@@ -305,11 +309,13 @@ Model Tool Call
 - `DONE`：复用 Approval、stale check、原子写入和结果校验。
 - `DONE`：`write` ToolResult 自己返回准确 `FileChange`，不依赖 Workspace Diff attribution。
 
-### C-05：Permission State 与 Approval Runtime — `DONE`
+### C-05：Permission State 与 Approval Runtime — `DONE`（行为完成，运行时上下文收敛列入 C-R）
 
-- `DONE`：文件修改使用 Session 级目录授权；命令使用 canonical CWD + 精确命令的 `SessionApprovalStore`；Web/MCP 使用独立 `SessionRuleStore`。
+- `DONE`：文件修改、命令、Web/MCP 的 session 级授权统一由当前 Session 持有；文件按 canonical directory 匹配，命令按 canonical CWD + exact command 匹配，Web/MCP 按各自外部资源 key 匹配。
+- `DONE`：Amadeus 明确不实现 Approval 持久化；授权不写入 Rollout、SQLite、`config.yaml` 或任何用户/项目权限文件。
+- `DONE`：`allow once` 只作用于当前调用；`allow for this session` 才写入当前 Session 的内存权限上下文；`deny` 默认只拒绝当前调用。
 - `DONE`：Denied roots、Read-only roots、路径 canonicalization、符号链接检查优先于文件 Session Approval。
-- `DONE`：Resume/Session Close 不持久化、不重放内存中的授权。
+- `DONE`：Resume/Session Close 不持久化、不重放内存中的授权；进程退出后授权自动消失。
 - `DONE`：`project.PermissionProfile` 仅提供 FileSystemPolicy 所需的根目录、只读根、拒绝根和符号链接边界；它不保存 Session Approval，也不承担旧 writable-root 授权主链。
 
 ### C-06：Approval Presentation 与 TUI Contract — `DONE`
@@ -329,7 +335,7 @@ Model Tool Call
 ### C-08：Tool 命名、条件 Tool 与并发 — `DONE`
 
 - `DONE`：默认模型主链使用 `read/edit/write/glob/grep/execute_command/update_plan`，并按能力暴露条件工具。
-- `DONE`：默认 Registry 只注册 `read/edit/write/glob/grep/execute_command/write_stdin`；旧工具不再进入默认 Registry 或模型可见快照，历史兼容实现与测试不参与默认装配。
+- `DONE`：默认 Core Registry 统一注册 `read/edit/write/glob/grep/execute_command/write_stdin/update_plan`；条件 Tool 在同一 Registry 上按能力注册。
 - `DONE`：读取与网络只读 Tool 可有界并行；修改、命令、Plan、MCP Call 串行；结果按原调用顺序恢复。
 
 ### C-09：MCP、Skill 与 Web Approval — `DONE`
@@ -341,10 +347,10 @@ Model Tool Call
 
 ### C-10：Legacy Tool/Permission Cleanup — `DONE`
 
-- `DONE`：默认 Agent/Turn 不再注入旧 PatchProjector、RunDiff、Session writable-root Store、Sandbox 或 CommandAuthorizer。
+- `DONE`：默认 Agent/Turn 不再注入旧 PatchProjector、RunDiff、Session writable-root Store 或 Sandbox 执行分支；当前授权统一由 Session 内存权限上下文持有。
 - `DONE`：新请求不暴露 `requested_permissions`；默认 Registry 不注册旧工具，默认 `execute_command` 不再注入 Sandbox 或 CommandAuthorizer 分支。
-- `DONE`：当前主链不依赖 `PreparedCall`、通用 Hook、旧 PermissionStore 注入、RunDiff 投影器或 Sandbox 执行分支；遗留包仅由历史测试/Replay 或旧展示兼容代码引用，不得作为新主链扩展。
-- `NOTE`：历史兼容包的物理删除留给后续独立清理任务，不能改变默认 Agent/Turn 的工具、权限或事件语义。
+- `DONE`：旧 `read_file/list_dir/glob_files/grep_code/request_permissions` 实现、别名、注册入口与专属测试已物理删除。
+- `DONE`：`apply_patch` 与 sandbox 实现保留，但不进入默认 Core Registry、模型可见快照或正式执行主链。
 
 ### C 出口
 
@@ -353,11 +359,89 @@ Model Tool Call
 - [x] 命令 Session Rule 只复用相同 canonical CWD 与精确命令。
 - [x] Web/MCP 外部 Session Rule 和 Approval 事件具备回归测试。
 - [x] TUI 与 `--plain` 都能完成结构化 Approval，且不直接拥有 Tool 状态。
-- [x] 默认主链不存在 PreparedCall、通用 Hook、旧 PermissionStore 注入、RunDiff 投影器或 Sandbox 执行分支。
+- [x] 默认主链不存在 PreparedCall、通用 Hook、RunDiff 投影器或 Sandbox 执行分支；工具共享 Session 内存权限上下文，但授权规则仍按工具语义匹配。
 - [x] 默认 Agent/Turn 不再注册旧工具、注入旧 Sandbox/CommandAuthorizer 或暴露旧权限工具。
 - [ ] 由 D 阶段统一 Event/InteractiveRequest 主链替代旧 Approval Event；该项属于 D，不阻塞 C 的默认 Tool/Approval Contract。
 
-## 6. D. Event + TUI + Slash Command
+## 6. C-R. Tool Runtime Refactor
+
+### C-R 目标
+
+将 C 阶段已经实现的内置 Tool 和 Approval 能力收敛为一条 Claude Code 风格、Codex Runtime 兼容的统一主链：
+
+```text
+LLM Tool Call
+→ ToolRegistry.Lookup
+→ ToolExecutionService
+→ Normalize / Backfill Input
+→ Schema Validate
+→ Tool.CheckPermissions
+→ SessionPermissionContext
+→ Allow / Ask / Deny
+→ ApprovalCoordinator（仅 Ask）
+→ Tool.Call
+→ ToolResult
+→ Event / Rollout / Context / TUI
+```
+
+C-R 不重新设计 Agent Engine，也不增加第二套执行器或 Permission Engine。`Registry` 负责注册和查找，`ToolExecutionService` 是唯一的工具执行入口。
+
+### C-R-01：冻结 SessionPermissionContext — `DONE`
+
+- `DONE`：Session 只持有内存中的文件目录、精确命令和外部资源 grant。
+- `DONE`：提供统一的 `Match(PermissionGrant)`、`ApplyGrant(PermissionGrant)` 和 `Clear()` 语义。
+- `DONE`：`allow once` 不写入 Context，`allow for this session` 写入 Context，`deny` 不保存；Session Close/Resume 不恢复授权。
+- `DONE`：删除旧的文件、远端和运行级 Approval Store 及 `ApprovalRun` 语义。
+
+### C-R-02：统一 Tool Contract — `DONE`
+
+- `DONE`：生产接口统一使用 `Tool`、`ToolSpec`、`Invocation`、`Output`、`Call`，由 `ToolExecutionService` 负责唯一执行入口。
+- `DONE`：Schema Normalize、生命周期事件、有界并行和结果顺序恢复集中在 `ToolExecutionService`。
+- `DONE`：Tool 不直接读取 TUI、不解析键盘输入、不直接更新 SessionPermissionContext；需要权限判断的 Tool 通过可选 `PermissionChecker` 接口提供检查结果。
+
+### C-R-03：拆分 PathResolver、FileSystemPolicy 与 SessionPermissionContext — `DONE`
+
+- `DONE`：Path/FileSystemPolicy 负责客观路径边界，SessionPermissionContext 只负责当前 Session grant。
+- `DONE`：删除 `FileApprovalStore`、`SessionApprovalStore`、`SessionRuleStore` 三个并列 legacy 类型。
+- `DONE`：工具不再直接更新权限，Session grant 统一由 ApprovalCoordinator 应用。
+
+### C-R-04：ApprovalCoordinator — `DONE`
+
+- `DONE`：ApprovalCoordinator 统一负责请求校验、UI ApprovalPort、审批事件和 Session grant 应用；ApprovalPort 仅作为 UI 端口保留。
+- `DONE`：文件、命令、Web、MCP 通过共享 Coordinator 进入 TUI/CLI；文件 Diff 仍由文件 Tool 生成。
+- `DONE`：工具保留自身的参数解析、客观安全检查和执行逻辑，不再直接调用 UI 或发布审批事件。
+
+### C-R-05：迁移 `read/edit/write` — `DONE`
+
+- `DONE`：`read` 默认无需审批；`edit/write` 执行 Diff、Approval、Stale Check、Atomic Apply 和 Verify。
+- `DONE`：`edit/write` 共用目录级 Session grant，TUI 渲染 ApprovalRequest 中的 Diff。
+- `DONE`：ToolResult 保留最终文件状态、Structured Diff 和错误分类。
+
+### C-R-06：迁移 `execute_command` 与其他 Tool — `DONE`
+
+- `DONE`：`execute_command` 保留 cwd、危险命令、TTY、timeout、输出上限和 Process Manager，并将用户审批交给 Coordinator。
+- `DONE`：Web/MCP 使用相同 Coordinator，分别按 hostname、server/tool key 复用 Session grant。
+- `DONE`：`write_stdin` 继续继承进程生命周期，不创建第二套审批链。
+
+### C-R-07：统一 ToolResult、Event 与 TUI — `DONE`
+
+- `DONE`：ToolExecutionService 统一发布 ToolStarted/ToolCompleted；审批事件由 Coordinator 发布。
+- `DONE`：ToolResult 保留文本、结构化 metadata、Diff 和错误分类，TUI 不从 Tool 或 ApprovalPort 状态推断 Runtime。
+- `DONE`：D 阶段只需将现有事件与 InteractiveRequest/TUI Projection 继续整合，不再改变 Tool/Approval 语义。
+
+### C-R 出口
+
+- [x] 所有默认模型可见 Tool 都经过同一个 ToolExecutionService。
+- [x] `FileSystemPolicy` 不再保存用户授权状态。
+- [x] `SessionPermissionContext` 是 Session 唯一权限投影。
+- [x] 文件、命令、Web、MCP 共享 ApprovalCoordinator；Skill 脚本继续复用 execute_command。
+- [x] `edit/write` 的 Diff 在 Approval 前生成、Approval 后应用、ToolResult 中回传。
+- [x] `apply_patch` 和 sandbox 仍可保留实现，但不进入默认 Tool 主链。
+- [x] 删除旧 Router 文件、旧 Approval Store、旧文件读取/搜索工具和旧权限兼容 API；测试与架构守卫已同步到 `ToolExecutionService` 语义。
+- [x] 审批并发去重、Session grant 复用、审批等待不占执行闸门、权限拒绝不进入 `Tool.Call` 均有回归测试。
+- [x] `go test ./... -count=1`、`go test -race ./... -count=1` 与 `git diff --check` 已通过。
+
+## 7. D. Event + TUI + Slash Command
 
 ### D 目标
 
@@ -451,7 +535,7 @@ Event、Interactive Request、Rollout、TUI Message 和 Trace 必须是五个独
 - [ ] Slash Command 不拥有业务状态。
 - [ ] Approval、Plan、Compaction、Tool 和 Turn 终态在 Runtime、Rollout、TUI 与 `--plain` 中一致。
 
-## 7. E. Plan-guided ReAct
+## 8. E. Plan-guided ReAct
 
 ### E-01：唯一 RegularTask/Reactor
 
@@ -467,9 +551,9 @@ Event、Interactive Request、Rollout、TUI Message 和 Trace 必须是五个独
 
 ### E-03：`update_plan`
 
-- `TODO`：`update_plan` 只更新 TurnState.Plan，不驱动 DAG。
-- `TODO`：简单输入不强制创建 Plan。
-- `TODO`：PlanUpdated 进入 canonical Rollout、SessionEvent 和 TUI。
+- `DONE`：`update_plan` 通过 Session capability 更新 `SessionState.Plan`，不持有 Tool 私有状态且不驱动 DAG。
+- `DONE`：Session 按 canonical Rollout persist-then-commit，Resume 从最近 `plan_update` 恢复 revision。
+- `TODO`：简单输入不强制创建 Plan；补齐 PlanUpdated 到统一 SessionEvent/TurnItem/TUI 主链。
 
 ### E-04：Plan Mode
 
@@ -489,7 +573,7 @@ Event、Interactive Request、Rollout、TUI Message 和 Trace 必须是五个独
 - [ ] 简单对话不创建无关计划或 Tool 调用。
 - [ ] Reactor 只发布稳定 SessionEvent，不暴露内部 Iteration/LLM Call 作为 UI Contract。
 
-## 8. F. Extensions + Release
+## 9. F. Extensions + Release
 
 ### F-01：MCP
 
@@ -535,15 +619,11 @@ Event、Interactive Request、Rollout、TUI Message 和 Trace 必须是五个独
 当前关键路径：
 
 ```text
-B-01 Context/Prompt 现状审计
-→ B-02 BaseInstructions 与 Prompt Input
-→ B-03 ContextManager canonical projection
-→ B-04 Token Accounting
-→ B-05 自动压缩与 /compact
-→ B-09 Context 验收
+C-R Tool Runtime Refactor（DONE）
+→ D Event Protocol、TUI Projection 与 Slash Routing
 ```
 
-下一项开发任务：**B-01：审计当前 ContextBuilder、Prompt 构建和 Rollout projection，删除旧的双重历史与按 Turn 临时组装路径。**
+下一项开发任务：**D：Event Protocol、TUI Projection 与 Slash Routing。**
 
 ## 11. 更新模板
 

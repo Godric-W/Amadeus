@@ -24,9 +24,9 @@ func renderHistoryCellForTest(cell HistoryCell, ctx HistoryRenderContext) string
 func TestToolHistoryCellGroupsExplorationAndDeduplicatesReads(t *testing.T) {
 	cell := newToolHistoryCell()
 	for _, started := range []event.ToolCallStarted{
-		{CallID: "read-1", ToolName: "read_file", SideEffect: "read", ActionSummary: "Read docs/design.md"},
-		{CallID: "read-2", ToolName: "read_file", SideEffect: "read", ActionSummary: "Read docs/design.md"},
-		{CallID: "search-1", ToolName: "grep_code", SideEffect: "read", ActionSummary: "Search M9V"},
+		{CallID: "read-1", ToolName: "read", SideEffect: "read", ActionSummary: "Read docs/design.md"},
+		{CallID: "read-2", ToolName: "read", SideEffect: "read", ActionSummary: "Read docs/design.md"},
+		{CallID: "search-1", ToolName: "grep", SideEffect: "read", ActionSummary: "Search M9V"},
 	} {
 		cell.Apply(started)
 		cell.Apply(event.ToolCallCompleted{CallID: started.CallID, ToolName: started.ToolName, Success: true})

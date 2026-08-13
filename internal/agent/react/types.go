@@ -151,7 +151,7 @@ type Request struct {
 	Context          *agentcontext.Manager
 	BaseInstructions llm.BaseInstructions
 	ModelInfo        llm.ModelInfo
-	AvailableTools   []tool.Spec
+	AvailableTools   []tool.ToolSpec
 	OutputSchema     llm.OutputSchema
 	RequestSnapshot  tool.RequestSnapshot
 	BeforeSample     func(context.Context, *agentcontext.Manager) error

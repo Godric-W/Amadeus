@@ -9,18 +9,18 @@ import (
 func TestPresentCallUsesStableSafeSummaries(t *testing.T) {
 	tests := []struct {
 		name   string
-		spec   Spec
+		spec   ToolSpec
 		input  string
 		want   string
 		detail string
 	}{
-		{name: "read", spec: Spec{Name: "read_file", SideEffect: SideEffectRead}, input: `{"path":"docs/design.md"}`, want: "Read docs/design.md"},
-		{name: "search", spec: Spec{Name: "grep_code", SideEffect: SideEffectRead}, input: `{"query":"Plan.*Run","path":"internal"}`, want: "Search Plan.*Run in internal"},
-		{name: "command", spec: Spec{Name: "execute_command", SideEffect: SideEffectExecute}, input: `{"command":"curl -H 'Authorization: Bearer secret' example.test"}`, want: "Ran curl -H 'Authorization: [REDACTED] [REDACTED] example.test"},
-		{name: "web", spec: Spec{Name: "web_fetch", SideEffect: SideEffectNetwork}, input: `{"url":"https://example.test/private?q=secret"}`, want: "Fetched example.test"},
-		{name: "mcp call", spec: Spec{Name: "mcp_call", SideEffect: SideEffectNetwork}, input: `{"server":"demo","name":"echo","arguments":{"api_key":"secret"}}`, want: "Called MCP tool", detail: "demo · echo"},
-		{name: "mcp resource", spec: Spec{Name: "mcp_read_resource", SideEffect: SideEffectNetwork}, input: `{"server":"docs","uri":"file:///guide.md","headers":{"Authorization":"Bearer secret"}}`, want: "Read MCP resource docs", detail: "file:///guide.md"},
-		{name: "unknown network", spec: Spec{Name: "remote", SideEffect: SideEffectNetwork}, input: `{}`, want: "Called network tool remote"},
+		{name: "read", spec: ToolSpec{Name: "read", SideEffect: SideEffectRead}, input: `{"path":"docs/design.md"}`, want: "Read docs/design.md"},
+		{name: "search", spec: ToolSpec{Name: "grep", SideEffect: SideEffectRead}, input: `{"query":"Plan.*Run","path":"internal"}`, want: "Search Plan.*Run in internal"},
+		{name: "command", spec: ToolSpec{Name: "execute_command", SideEffect: SideEffectExecute}, input: `{"command":"curl -H 'Authorization: Bearer secret' example.test"}`, want: "Ran curl -H 'Authorization: [REDACTED] [REDACTED] example.test"},
+		{name: "web", spec: ToolSpec{Name: "web_fetch", SideEffect: SideEffectNetwork}, input: `{"url":"https://example.test/private?q=secret"}`, want: "Fetched example.test"},
+		{name: "mcp call", spec: ToolSpec{Name: "mcp_call", SideEffect: SideEffectNetwork}, input: `{"server":"demo","name":"echo","arguments":{"api_key":"secret"}}`, want: "Called MCP tool", detail: "demo · echo"},
+		{name: "mcp resource", spec: ToolSpec{Name: "mcp_read_resource", SideEffect: SideEffectNetwork}, input: `{"server":"docs","uri":"file:///guide.md","headers":{"Authorization":"Bearer secret"}}`, want: "Read MCP resource docs", detail: "file:///guide.md"},
+		{name: "unknown network", spec: ToolSpec{Name: "remote", SideEffect: SideEffectNetwork}, input: `{}`, want: "Called network tool remote"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

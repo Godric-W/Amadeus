@@ -105,12 +105,12 @@ func TestArgumentValidatorRejectsInvalidSchemaExternalReferencesAndNonObjects(t 
 	validator := NewArgumentValidator()
 	tests := []struct {
 		name      string
-		spec      Spec
+		spec      ToolSpec
 		arguments json.RawMessage
 		errorKind ArgumentErrorKind
 	}{
-		{name: "invalid schema", spec: Spec{InputSchema: json.RawMessage(`{"type":`)}, arguments: json.RawMessage(`{}`), errorKind: ArgumentErrorSchema},
-		{name: "external ref", spec: Spec{InputSchema: json.RawMessage(`{"$ref":"https://example.com/schema.json"}`)}, arguments: json.RawMessage(`{}`), errorKind: ArgumentErrorSchema},
+		{name: "invalid schema", spec: ToolSpec{InputSchema: json.RawMessage(`{"type":`)}, arguments: json.RawMessage(`{}`), errorKind: ArgumentErrorSchema},
+		{name: "external ref", spec: ToolSpec{InputSchema: json.RawMessage(`{"$ref":"https://example.com/schema.json"}`)}, arguments: json.RawMessage(`{}`), errorKind: ArgumentErrorSchema},
 		{name: "non object", spec: validationSpec(false), arguments: json.RawMessage(`[]`), errorKind: ArgumentErrorValidation},
 	}
 	for _, test := range tests {
@@ -124,7 +124,7 @@ func TestArgumentValidatorRejectsInvalidSchemaExternalReferencesAndNonObjects(t 
 	}
 }
 
-func validationSpec(allowUnknown bool) Spec {
+func validationSpec(allowUnknown bool) ToolSpec {
 	schema := `{
 		"type":"object",
 		"properties":{
@@ -137,5 +137,5 @@ func validationSpec(allowUnknown bool) Spec {
 	if allowUnknown {
 		schema = strings.Replace(schema, `"additionalProperties":false`, `"additionalProperties":true`, 1)
 	}
-	return Spec{InputSchema: json.RawMessage(schema)}
+	return ToolSpec{InputSchema: json.RawMessage(schema)}
 }

@@ -20,8 +20,8 @@ func TestVisualRuntimeNoColorSnapshots(t *testing.T) {
 	exec.Apply(event.ToolCallCompleted{CallID: "exec", ToolName: "execute_command", Success: true, Duration: 1250 * time.Millisecond, Summary: "ok"})
 
 	explore := newToolHistoryCell()
-	explore.Apply(event.ToolCallStarted{CallID: "read", ToolName: "read_file", SideEffect: "read", ActionSummary: "Read docs/design.md"})
-	explore.Apply(event.ToolCallCompleted{CallID: "read", ToolName: "read_file", Success: true})
+	explore.Apply(event.ToolCallStarted{CallID: "read", ToolName: "read", SideEffect: "read", ActionSummary: "Read docs/design.md"})
+	explore.Apply(event.ToolCallCompleted{CallID: "read", ToolName: "read", Success: true})
 
 	search := newToolHistoryCell()
 	search.Apply(event.ToolCallStarted{CallID: "web", ToolName: "web_search", SideEffect: "network", ActionSummary: "Amadeus TUI"})

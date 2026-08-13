@@ -70,7 +70,7 @@ func TestIteratorProducesCandidateAndStableEvents(t *testing.T) {
 		t.Fatalf("create iterator: %v", err)
 	}
 	input := validIterationInput()
-	input.AvailableTools = []tool.Spec{{Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object"}`)}}
+	input.AvailableTools = []tool.ToolSpec{{Name: "read", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object"}`)}}
 	input.OutputSchema = llm.OutputSchema(`{"type":"object","properties":{"answer":{"type":"string"}}}`)
 
 	result, err := iterator.Run(context.Background(), input)
@@ -80,7 +80,7 @@ func TestIteratorProducesCandidateAndStableEvents(t *testing.T) {
 	if result.Kind != IterationCandidate || result.Candidate == nil || result.Candidate.Content != "hello" {
 		t.Fatalf("unexpected candidate result: %#v", result)
 	}
-	if !stream.closed || client.request.Model != "fake-model" || len(client.request.Prompt.Tools) != 1 || client.request.Prompt.Tools[0].Name != "read_file" {
+	if !stream.closed || client.request.Model != "fake-model" || len(client.request.Prompt.Tools) != 1 || client.request.Prompt.Tools[0].Name != "read" {
 		t.Fatalf("unexpected model request or stream state: request=%#v closed=%v", client.request, stream.closed)
 	}
 	if client.request.Prompt.BaseInstructions.Text != "stable Agent protocol" || len(client.request.Prompt.Input) != 1 || client.request.Prompt.Input[0].Content != "inspect repository" {
@@ -145,7 +145,7 @@ func TestIteratorRejectsMissingBaseInstructionsAtRunBoundary(t *testing.T) {
 func TestIteratorProducesNormalizedToolCalls(t *testing.T) {
 	stream := &fakeStream{chunks: []llm.StreamChunk{{
 		ID: "response_tools", FinishReason: llm.FinishReasonToolCalls, ProviderFinishReason: "tool_calls",
-		ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)}},
+		ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`)}},
 	}}}
 	client := &fakeClient{model: llm.ModelInfo{Provider: "fake", Name: "fake-model"}, stream: stream}
 	sink := event.NewMemorySink()
@@ -161,7 +161,7 @@ func TestIteratorProducesNormalizedToolCalls(t *testing.T) {
 	if result.Kind != IterationToolCalls || result.Candidate != nil || len(result.ToolCalls) != 1 {
 		t.Fatalf("unexpected tool iteration result: %#v", result)
 	}
-	expected := tool.NewCall("call_1", "read_file", json.RawMessage(`{"path":"README.md"}`))
+	expected := tool.NewCall("call_1", "read", json.RawMessage(`{"path":"README.md"}`))
 	if !reflect.DeepEqual(result.ToolCalls[0], expected) {
 		t.Fatalf("unexpected normalized call: got %#v, want %#v", result.ToolCalls[0], expected)
 	}

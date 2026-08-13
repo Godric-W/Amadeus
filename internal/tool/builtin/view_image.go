@@ -61,11 +61,11 @@ func NewViewImage(root project.Root, options ViewImageOptions) (*ViewImage, erro
 	return &ViewImage{reader: reader, options: options}, nil
 }
 
-func (viewImage *ViewImage) Spec() tool.Spec { return viewImageSpec() }
+func (viewImage *ViewImage) Spec() tool.ToolSpec { return viewImageSpec() }
 
 func (viewImage *ViewImage) SupportsParallelToolCalls() bool { return true }
 
-func (viewImage *ViewImage) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+func (viewImage *ViewImage) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
 	call := invocation.Call
 	var arguments viewImageArguments
 	if err := decodeArguments(call.Payload, &arguments); err != nil {
@@ -143,12 +143,12 @@ func supportedImageMediaType(format, extension string) (string, error) {
 	}
 }
 
-func viewImageSpec() tool.Spec {
-	return tool.Spec{
+func viewImageSpec() tool.ToolSpec {
+	return tool.ToolSpec{
 		Name: "view_image", Description: "Read a bounded PNG, JPEG, WebP, or static GIF from the project and return it as a real image content part.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1}},"required":["path"],"additionalProperties":false}`),
 		SideEffect:  tool.SideEffectRead, Idempotent: true,
 	}
 }
 
-var _ tool.Handler = (*ViewImage)(nil)
+var _ tool.Tool = (*ViewImage)(nil)

@@ -232,7 +232,7 @@ func TestFullscreenRunningComposerHasNoAuxiliaryHint(t *testing.T) {
 func TestFullscreenToolEventsAreVisibleBeforeIterationCompletion(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	model.applyEvent(event.IterationStarted{Iteration: 1})
-	model.applyEvent(event.ToolCallStarted{Iteration: 1, CallID: "read", ToolName: "read_file", SideEffect: "read", ActionSummary: "Read docs/design.md"})
+	model.applyEvent(event.ToolCallStarted{Iteration: 1, CallID: "read", ToolName: "read", SideEffect: "read", ActionSummary: "Read docs/design.md"})
 	if model.transcript.ActiveCell == nil || !strings.Contains(xansi.Strip(model.renderActiveCell()), "Exploring") {
 		t.Fatalf("tool was not immediately visible")
 	}

@@ -87,9 +87,9 @@ func TestChatCompletionsStreamReturnsFinishWithoutUsage(t *testing.T) {
 
 func TestChatCompletionsStreamAggregatesToolCallFragments(t *testing.T) {
 	fixture := strings.Join([]string{
-		`data: {"id":"chatcmpl_tools","object":"chat.completion.chunk","created":0,"model":"test-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_","type":"function","function":{"name":"read_","arguments":"{\"path\":\""}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_tools","object":"chat.completion.chunk","created":0,"model":"test-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_","type":"function","function":{"name":"re","arguments":"{\"path\":\""}}]},"finish_reason":null}]}`,
 		``,
-		`data: {"id":"chatcmpl_tools","object":"chat.completion.chunk","created":0,"model":"test-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"1","function":{"name":"file","arguments":"README.md\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_tools","object":"chat.completion.chunk","created":0,"model":"test-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"1","function":{"name":"ad","arguments":"README.md\"}"}}]},"finish_reason":null}]}`,
 		``,
 		`data: {"id":"chatcmpl_tools","object":"chat.completion.chunk","created":0,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 		``,
@@ -112,13 +112,13 @@ func TestChatCompletionsStreamAggregatesToolCallFragments(t *testing.T) {
 		t.Fatalf("unexpected tool completion: %#v", completed)
 	}
 	call := completed.ToolCalls[0]
-	if call.ID != "call_1" || call.Name != "read_file" || string(call.Arguments) != `{"path":"README.md"}` {
+	if call.ID != "call_1" || call.Name != "read" || string(call.Arguments) != `{"path":"README.md"}` {
 		t.Fatalf("unexpected aggregated tool call: %#v", call)
 	}
 }
 
 func TestChatCompletionsStreamDefersMalformedToolArgumentsToRouter(t *testing.T) {
-	fixture := "data: {\"id\":\"chatcmpl_bad\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\"}}]},\"finish_reason\":null}]}\n\n" +
+	fixture := "data: {\"id\":\"chatcmpl_bad\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{\"}}]},\"finish_reason\":null}]}\n\n" +
 		"data: {\"id\":\"chatcmpl_bad\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
 	stream, err := openChatCompletionsStream(context.Background(), chatCompletionsFixtureClient(t, fixture), validChatCompletionsDomainRequest())
 	if err != nil {
@@ -131,7 +131,7 @@ func TestChatCompletionsStreamDefersMalformedToolArgumentsToRouter(t *testing.T)
 		t.Fatal(err)
 	}
 	if completed.FinishReason != llm.FinishReasonToolCalls || len(completed.ToolCalls) != 1 || string(completed.ToolCalls[0].Arguments) != `{` {
-		t.Fatalf("malformed arguments were not preserved for Router validation: %#v", completed)
+		t.Fatalf("malformed arguments were not preserved for ToolExecutionService validation: %#v", completed)
 	}
 }
 

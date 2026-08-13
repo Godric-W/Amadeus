@@ -139,7 +139,7 @@ func TestRunnerCompletesFromFinalModelMessage(t *testing.T) {
 }
 
 func TestRunnerExecutesToolsReplaysResultsAndCompletes(t *testing.T) {
-	call := tool.NewCall("call-1", "read_file", []byte(`{"path":"README.md"}`))
+	call := tool.NewCall("call-1", "read", []byte(`{"path":"README.md"}`))
 	iterator := &scriptedIterator{results: []IterationResult{toolIteration(call), candidateIteration("repository inspected")}}
 	execution := successfulExecution(call, "contents")
 	executor := &scriptedCallExecutor{executions: map[string]ToolOutcome{call.ID: execution}, errors: map[string]error{}}
@@ -158,7 +158,7 @@ func TestRunnerExecutesToolsReplaysResultsAndCompletes(t *testing.T) {
 }
 
 func TestRunnerBuildsFreshPromptFromContextBeforeEveryThink(t *testing.T) {
-	call := tool.NewCall("call-1", "read_file", []byte(`{"path":"README.md"}`))
+	call := tool.NewCall("call-1", "read", []byte(`{"path":"README.md"}`))
 	iterator := &scriptedIterator{results: []IterationResult{toolIteration(call), candidateIteration("done")}}
 	executor := &scriptedCallExecutor{executions: map[string]ToolOutcome{call.ID: successfulExecution(call, "contents")}, errors: map[string]error{}}
 	runner := newTestRunner(t, iterator, executor, &scriptedProgress{})
@@ -173,13 +173,13 @@ func TestRunnerBuildsFreshPromptFromContextBeforeEveryThink(t *testing.T) {
 	if len(iterator.inputs) != 2 || len(iterator.inputs[1].Messages) != 3 || iterator.inputs[1].Messages[2].Role != llm.RoleTool {
 		t.Fatalf("fresh ContextManager snapshot did not drive the next Think: %#v", iterator.inputs)
 	}
-	if len(executor.calls) != 1 || executor.calls[0].Name != "read_file" {
+	if len(executor.calls) != 1 || executor.calls[0].Name != "read" {
 		t.Fatalf("Act did not use the Tool snapshot from the sampled request view: %#v", executor.calls)
 	}
 }
 
 func TestRunnerInvokesBeforeSampleAndUsesReplacedContextEveryIteration(t *testing.T) {
-	call := tool.NewCall("call-1", "read_file", []byte(`{"path":"README.md"}`))
+	call := tool.NewCall("call-1", "read", []byte(`{"path":"README.md"}`))
 	iterator := &scriptedIterator{results: []IterationResult{toolIteration(call), candidateIteration("done")}}
 	runner := newTestRunner(t, iterator, &scriptedCallExecutor{executions: map[string]ToolOutcome{call.ID: successfulExecution(call, "contents")}, errors: map[string]error{}}, &scriptedProgress{})
 	request := validRequest()
@@ -219,8 +219,8 @@ func TestRunnerRejectsPromptThatStillExceedsContextWindow(t *testing.T) {
 }
 
 func TestRunnerPersistsToolCallsBeforeExecutionAndOutcomesInModelOrder(t *testing.T) {
-	first := tool.NewCall("first", "read_file", []byte(`{"path":"first"}`))
-	second := tool.NewCall("second", "read_file", []byte(`{"path":"second"}`))
+	first := tool.NewCall("first", "read", []byte(`{"path":"first"}`))
+	second := tool.NewCall("second", "read", []byte(`{"path":"second"}`))
 	recorder := &orderingRolloutRecorder{}
 	runner, err := NewRunner(
 		&scriptedIterator{results: []IterationResult{toolIteration(first, second), candidateIteration("done")}},
@@ -248,8 +248,8 @@ func TestRunnerPersistsToolCallsBeforeExecutionAndOutcomesInModelOrder(t *testin
 }
 
 func TestRunnerReplaysCanonicalToolArgumentsReturnedByExecutor(t *testing.T) {
-	call := tool.NewCall("call-1", "read_file", []byte(`{"path":"README.md",`))
-	canonical := tool.NewCall("call-1", "read_file", []byte(`{"path":"README.md"}`))
+	call := tool.NewCall("call-1", "read", []byte(`{"path":"README.md",`))
+	canonical := tool.NewCall("call-1", "read", []byte(`{"path":"README.md"}`))
 	iterator := &scriptedIterator{results: []IterationResult{toolIteration(call), candidateIteration("done")}}
 	executor := &scriptedCallExecutor{executions: map[string]ToolOutcome{"call-1": successfulExecution(canonical, "contents")}, errors: map[string]error{}, canonical: map[string]tool.ToolCall{"call-1": canonical}}
 	runner := newTestRunner(t, iterator, executor, &scriptedProgress{})
@@ -258,7 +258,7 @@ func TestRunnerReplaysCanonicalToolArgumentsReturnedByExecutor(t *testing.T) {
 		t.Fatalf("normalize call: result=%#v err=%v", result, err)
 	}
 	if len(executor.calls) != 1 || string(executor.calls[0].Payload) != `{"path":"README.md",` {
-		t.Fatalf("Reactor changed arguments before the Tool Router: %#v", executor.calls)
+		t.Fatalf("Reactor changed arguments before the ToolExecutionService: %#v", executor.calls)
 	}
 	if got := string(iterator.inputs[1].Messages[1].ToolCalls[0].Arguments); got != `{"path":"README.md"}` {
 		t.Fatalf("assistant replay did not use normalized arguments: %s", got)
@@ -266,8 +266,8 @@ func TestRunnerReplaysCanonicalToolArgumentsReturnedByExecutor(t *testing.T) {
 }
 
 func TestRunnerReplaysArgumentFailureReturnedByExecutor(t *testing.T) {
-	call := tool.NewCall("call-1", "read_file", []byte(`{"path":`))
-	canonical := tool.NewCall("call-1", "read_file", []byte(`{}`))
+	call := tool.NewCall("call-1", "read", []byte(`{"path":`))
+	canonical := tool.NewCall("call-1", "read", []byte(`{}`))
 	iterator := &scriptedIterator{results: []IterationResult{toolIteration(call), candidateIteration("recovered")}}
 	failure := ToolOutcome{CallID: call.ID, ToolName: call.Name, Status: ToolOutcomeFailed, Error: &ToolError{Kind: "invalid_arguments", Message: "arguments are not valid JSON"}}
 	executor := &scriptedCallExecutor{executions: map[string]ToolOutcome{call.ID: failure}, errors: map[string]error{}, canonical: map[string]tool.ToolCall{call.ID: canonical}}
@@ -285,7 +285,7 @@ func TestRunnerReplaysArgumentFailureReturnedByExecutor(t *testing.T) {
 }
 
 func TestRunnerStopsBlockedOnPathBoundary(t *testing.T) {
-	call := tool.NewCall("call-1", "read_file", []byte(`{"path":"../secret"}`))
+	call := tool.NewCall("call-1", "read", []byte(`{"path":"../secret"}`))
 	iterator := &scriptedIterator{results: []IterationResult{toolIteration(call)}}
 	execution := successfulExecution(call, "")
 	execution.Status = ToolOutcomeFailed
@@ -302,7 +302,7 @@ func TestRunnerStopsBlockedOnPathBoundary(t *testing.T) {
 }
 
 func TestRunnerReportsStalledWithoutRequestingPlan(t *testing.T) {
-	call := tool.NewCall("call-1", "read_file", []byte(`{"path":"README.md"}`))
+	call := tool.NewCall("call-1", "read", []byte(`{"path":"README.md"}`))
 	iterator := &scriptedIterator{results: []IterationResult{toolIteration(call)}}
 	progress := &scriptedProgress{signals: []ProgressSignal{{Kind: ProgressRepeatedAction, Reason: "same call repeated", RecommendPlan: true}}}
 	runner := newTestRunner(t, iterator, &scriptedCallExecutor{executions: map[string]ToolOutcome{call.ID: successfulExecution(call, "contents")}, errors: map[string]error{}}, progress)
@@ -325,7 +325,7 @@ func TestRunnerEnforcesIterationAndToolBudgets(t *testing.T) {
 		t.Fatalf("unexpected iteration budget result: %#v err=%v", result, err)
 	}
 
-	call := tool.NewCall("call-1", "read_file", []byte(`{"path":"README.md"}`))
+	call := tool.NewCall("call-1", "read", []byte(`{"path":"README.md"}`))
 	request = validRequest()
 	request.Budget.Budget.MaxToolCalls = 0
 	request.Budget.ToolCallsUsed = 1
@@ -443,7 +443,7 @@ func validRequest() Request {
 		TurnID: "run-1", Goal: "inspect repository", Context: contextManager,
 		BaseInstructions: llm.BaseInstructions{Text: "You are Amadeus."},
 		ModelInfo:        llm.ModelInfo{ContextWindow: 128_000, AutoCompactTokenLimit: 115_200, MaxOutputTokens: 512},
-		AvailableTools:   []tool.Spec{{Name: "read_file", Description: "read", InputSchema: []byte(`{"type":"object"}`), SideEffect: tool.SideEffectRead, Idempotent: true}},
+		AvailableTools:   []tool.ToolSpec{{Name: "read", Description: "read", InputSchema: []byte(`{"type":"object"}`), SideEffect: tool.SideEffectRead, Idempotent: true}},
 		Budget:           BudgetState{Budget: Budget{MaxIterations: 8, MaxToolCalls: 8, MaxDuration: time.Minute}},
 	}
 }

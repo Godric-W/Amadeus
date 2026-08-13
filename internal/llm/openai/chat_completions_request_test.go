@@ -138,11 +138,11 @@ func TestChatCompletionsRequestSerializesStandardToolProtocol(t *testing.T) {
 		Model: "test-model",
 		Prompt: llm.Prompt{
 			Input: []llm.Message{
-				llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
+				llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call_1", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
 				llm.ToolResultMessage("call_1", "file contents"),
 			},
 			Tools: []llm.ToolDefinition{{
-				Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`), Strict: true,
+				Name: "read", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`), Strict: true,
 			}},
 		},
 		Temperature: 0.2, MaxOutputTokens: 100,
@@ -157,14 +157,14 @@ func TestChatCompletionsRequestSerializesStandardToolProtocol(t *testing.T) {
 
 	tools := requestBody["tools"].([]any)
 	function := tools[0].(map[string]any)["function"].(map[string]any)
-	if function["name"] != "read_file" || function["description"] != "Read a file" || function["strict"] != true {
+	if function["name"] != "read" || function["description"] != "Read a file" || function["strict"] != true {
 		t.Fatalf("unexpected Chat tool: %#v", tools[0])
 	}
 	messages := requestBody["messages"].([]any)
 	assistant := messages[0].(map[string]any)
 	call := assistant["tool_calls"].([]any)[0].(map[string]any)
 	callFunction := call["function"].(map[string]any)
-	if assistant["role"] != "assistant" || call["id"] != "call_1" || call["type"] != "function" || callFunction["name"] != "read_file" || callFunction["arguments"] != `{"path":"README.md"}` {
+	if assistant["role"] != "assistant" || call["id"] != "call_1" || call["type"] != "function" || callFunction["name"] != "read" || callFunction["arguments"] != `{"path":"README.md"}` {
 		t.Fatalf("unexpected Chat tool call: %#v", assistant)
 	}
 	result := messages[1].(map[string]any)

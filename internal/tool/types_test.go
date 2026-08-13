@@ -6,13 +6,13 @@ import (
 )
 
 func TestToolCallAndSpecCloneIsolateMutableFields(t *testing.T) {
-	spec := Spec{Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object"}`), SideEffect: SideEffectRead}
+	spec := ToolSpec{Name: "read", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object"}`), SideEffect: SideEffectRead}
 	clonedSpec := spec.Clone()
 	clonedSpec.InputSchema[0] = '['
 	if spec.InputSchema[0] == '[' {
 		t.Fatal("spec clone shares input schema")
 	}
-	call := NewCall("call-1", "read_file", json.RawMessage(`{"path":"a"}`))
+	call := NewCall("call-1", "read", json.RawMessage(`{"path":"a"}`))
 	clonedCall := call.Clone()
 	clonedCall.Payload[0] = '['
 	if call.Payload[0] == '[' {
@@ -21,13 +21,13 @@ func TestToolCallAndSpecCloneIsolateMutableFields(t *testing.T) {
 }
 
 func TestToolOutputAndExecutionCloneMetadata(t *testing.T) {
-	output := Output{CallID: "call-1", ToolName: "read_file", Metadata: map[string]any{"path": "a"}}
+	output := Output{CallID: "call-1", ToolName: "read", Metadata: map[string]any{"path": "a"}}
 	cloned := output.Clone()
 	cloned.Metadata["path"] = "b"
 	if output.Metadata["path"] != "a" {
 		t.Fatal("output clone shares metadata")
 	}
-	execution := ToolExecution{Call: NewCall("call-1", "read_file", nil), Output: output, Outcome: ToolCallOutcome{Status: ToolCallCompleted}}
+	execution := ToolExecution{Call: NewCall("call-1", "read", nil), Output: output, Outcome: ToolCallOutcome{Status: ToolCallCompleted}}
 	if execution.Outcome.Status != ToolCallCompleted || !execution.Outcome.Status.Valid() {
 		t.Fatalf("unexpected execution: %#v", execution)
 	}

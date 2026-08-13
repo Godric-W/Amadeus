@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	processdomain "github.com/Godric-W/Amadeus/internal/process"
@@ -37,9 +36,6 @@ type ExecuteCommandOptions struct {
 	MaxOutputTokens  int
 	ProcessManager   *processdomain.Manager
 	FileSystemPolicy *project.FileSystemPolicy
-	Approvals        policy.ApprovalHandler
-	SessionApprovals *policy.SessionApprovalStore
-	Events           event.Sink
 	Audit            audit.Sink
 }
 
@@ -104,34 +100,65 @@ func NewExecuteCommand(root project.Root, options ExecuteCommandOptions) (*Execu
 	if manager == nil {
 		manager = processdomain.NewManager()
 	}
-	if options.SessionApprovals == nil {
-		options.SessionApprovals = policy.NewSessionApprovalStore()
-	}
 	return &ExecuteCommand{root: root, policy: fileSystemPolicy, options: options, manager: manager, guard: policy.NewCommandGuard()}, nil
 }
 
-func (executeCommand *ExecuteCommand) Spec() tool.Spec { return executeCommandSpec() }
+func (executeCommand *ExecuteCommand) Spec() tool.ToolSpec { return executeCommandSpec() }
 func (executeCommand *ExecuteCommand) ProcessManager() *processdomain.Manager {
 	return executeCommand.manager
 }
 
 func (executeCommand *ExecuteCommand) SupportsParallelToolCalls() bool { return false }
 
-func (executeCommand *ExecuteCommand) Handle(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
-	call := invocation.Call
-	var arguments executeCommandArguments
-	if err := decodeArguments(call.Payload, &arguments); err != nil {
-		return tool.Output{}, err
+func (executeCommand *ExecuteCommand) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+	check, ok := tool.PermissionCheckFromContext(ctx)
+	if !ok {
+		return tool.Output{}, errors.New("execute_command must execute through ToolExecutionService")
 	}
-	request, err := executeCommand.prepareExecRequest(ctx, invocation, arguments)
-	if err != nil {
-		return tool.Output{}, err
+	request, ok := check.Prepared.(ExecRequest)
+	if !ok {
+		return tool.Output{}, errors.New("execute_command permission preparation is missing")
 	}
 	return executeCommand.executeExecRequest(ctx, request)
 }
 
+func (executeCommand *ExecuteCommand) CheckPermissions(ctx context.Context, invocation tool.Invocation) (tool.PermissionCheck, error) {
+	var arguments executeCommandArguments
+	if err := decodeArguments(invocation.Call.Payload, &arguments); err != nil {
+		return tool.PermissionCheck{}, err
+	}
+	request, err := executeCommand.prepareExecRequest(ctx, invocation, arguments)
+	if err != nil {
+		return tool.PermissionCheck{}, err
+	}
+	command := arguments.Command
+	cwd := request.command.Directory
+	assessment, err := executeCommand.guard.Assess(command)
+	if err != nil {
+		return tool.PermissionCheck{}, fmt.Errorf("assess execute_command: %w", err)
+	}
+	key, ok := policy.NewCommandApprovalKey(command, cwd)
+	if !ok {
+		return tool.PermissionCheck{}, errors.New("execute_command approval key is invalid")
+	}
+	auditDecision := func(_ context.Context, decision policy.ApprovalDecision) error {
+		return executeCommand.writeCommandAudit(ctx, invocation.Call, assessment.Risk, decision.Outcome, decision.Source, decision.Reason)
+	}
+	if assessment.Disposition == policy.CommandDeny {
+		return tool.PermissionCheck{Decision: tool.PermissionDeny, Prepared: request, Reason: assessment.Reason, OnDecision: auditDecision}, nil
+	}
+	grant := policy.CommandGrant(key)
+	approval, err := policy.NewApprovalRequestForPurpose(invocation.Call.ID, invocation.Call.Name, invocation.Call.Payload, policy.ApprovalPurposeCommand, assessment.Risk, assessment.Reason)
+	if err != nil {
+		return tool.PermissionCheck{}, err
+	}
+	approval.Command = command
+	approval.CWD = cwd
+	approval.Presentation = policy.CommandApprovalPresentation(command, cwd)
+	return tool.PermissionCheck{Decision: tool.PermissionAsk, Request: &approval, Grant: grant, Prepared: request, OnDecision: auditDecision}, nil
+}
+
 func (executeCommand *ExecuteCommand) prepareExecRequest(ctx context.Context, invocation tool.Invocation, arguments executeCommandArguments) (ExecRequest, error) {
-	call := invocation.Call
 	if strings.TrimSpace(arguments.Command) == "" {
 		return ExecRequest{}, errors.New("execute_command command is empty")
 	}
@@ -153,9 +180,6 @@ func (executeCommand *ExecuteCommand) prepareExecRequest(ctx context.Context, in
 	if err != nil {
 		return ExecRequest{}, fmt.Errorf("resolve execute_command shell: %w", err)
 	}
-	if err := executeCommand.authorizeHostCommand(ctx, call, arguments.Command, resolved.Canonical); err != nil {
-		return ExecRequest{}, err
-	}
 	timeout := durationFromMilliseconds(arguments.TimeoutMS, executeCommand.options.DefaultTimeout, executeCommand.options.MaxTimeout)
 	yield := durationFromMilliseconds(arguments.YieldTimeMS, executeCommand.options.DefaultYield, executeCommand.options.MaxYield)
 	maxTokens := arguments.MaxOutputTokens
@@ -164,9 +188,6 @@ func (executeCommand *ExecuteCommand) prepareExecRequest(ctx context.Context, in
 	}
 	maxBytes := min(int(executeCommand.options.MaxOutputBytes), maxTokens*4)
 	owner := strings.TrimSpace(invocation.TurnID)
-	if owner == "" {
-		owner = strings.TrimSpace(event.MetadataFromContext(ctx).TurnID)
-	}
 	if owner == "" {
 		owner = "standalone"
 	}
@@ -178,63 +199,6 @@ func (executeCommand *ExecuteCommand) prepareExecRequest(ctx context.Context, in
 			Timeout: timeout, TTY: arguments.TTY, MaxOutputBytes: maxBytes,
 		},
 	}, nil
-}
-
-func (executeCommand *ExecuteCommand) authorizeHostCommand(ctx context.Context, call tool.ToolCall, command, cwd string) error {
-	assessment, err := executeCommand.guard.Assess(command)
-	if err != nil {
-		return fmt.Errorf("assess execute_command: %w", err)
-	}
-	if assessment.Disposition == policy.CommandDeny {
-		if err := executeCommand.writeCommandAudit(ctx, call, assessment.Risk, policy.ApprovalDeny, policy.ApprovalSourcePolicy, assessment.Reason); err != nil {
-			return err
-		}
-		return &policy.ToolDeniedError{ToolName: call.Name, Risk: assessment.Risk, Source: policy.ApprovalSourcePolicy, Reason: assessment.Reason}
-	}
-	key, ok := policy.NewCommandApprovalKey(command, cwd)
-	if !ok {
-		return errors.New("execute_command approval key is invalid")
-	}
-	if executeCommand.options.SessionApprovals.IsApproved(key) {
-		return nil
-	}
-	if executeCommand.options.Approvals == nil {
-		return errors.New("execute_command approval handler is nil")
-	}
-	request, err := policy.NewApprovalRequestForPurpose(call.ID, call.Name, call.Payload, policy.ApprovalPurposeCommand, assessment.Risk, assessment.Reason)
-	if err != nil {
-		return err
-	}
-	request.Command = command
-	request.CWD = cwd
-	request.Presentation = policy.CommandApprovalPresentation(command, cwd)
-	if executeCommand.options.Events != nil {
-		if err := executeCommand.options.Events.Publish(ctx, event.ApprovalRequested{RequestID: request.ID, ToolName: request.ToolName, Risk: string(request.Risk), Reason: request.Reason}); err != nil {
-			return fmt.Errorf("publish command approval requested: %w", err)
-		}
-	}
-	decision, err := executeCommand.options.Approvals.Decide(ctx, request)
-	if err != nil {
-		return fmt.Errorf("resolve command approval: %w", err)
-	}
-	if err := decision.Validate(); err != nil {
-		return fmt.Errorf("validate command approval decision: %w", err)
-	}
-	if err := executeCommand.writeCommandAudit(ctx, call, assessment.Risk, decision.Outcome, decision.Source, decision.Reason); err != nil {
-		return err
-	}
-	if executeCommand.options.Events != nil {
-		if err := executeCommand.options.Events.Publish(ctx, event.ApprovalResolved{RequestID: request.ID, ToolName: request.ToolName, Outcome: string(decision.Outcome), Scope: string(decision.Scope), Source: string(decision.Source), Reason: decision.Reason}); err != nil {
-			return fmt.Errorf("publish command approval resolved: %w", err)
-		}
-	}
-	if !decision.Allowed() {
-		return &policy.ToolDeniedError{ToolName: call.Name, Risk: assessment.Risk, Source: decision.Source, Reason: decision.Reason}
-	}
-	if decision.Scope == policy.ApprovalSession {
-		executeCommand.options.SessionApprovals.Approve(key)
-	}
-	return nil
 }
 
 func (executeCommand *ExecuteCommand) writeCommandAudit(ctx context.Context, call tool.ToolCall, risk policy.CommandRisk, outcome policy.ApprovalOutcome, source policy.ApprovalSource, reason string) error {
@@ -267,7 +231,7 @@ func (executeCommand *ExecuteCommand) executeExecRequest(ctx context.Context, re
 	return commandSnapshotResult("execute_command", request.displayCWD, snapshot, time.Since(startedAt))
 }
 
-var _ tool.Handler = (*ExecuteCommand)(nil)
+var _ tool.Tool = (*ExecuteCommand)(nil)
 
 func durationFromMilliseconds(value int64, fallback, maximum time.Duration) time.Duration {
 	if value <= 0 {
@@ -305,4 +269,4 @@ func commandSnapshotResult(toolName, cwd string, snapshot processdomain.Snapshot
 	}
 }
 
-var _ tool.Handler = (*ExecuteCommand)(nil)
+var _ tool.Tool = (*ExecuteCommand)(nil)

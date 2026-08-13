@@ -788,14 +788,14 @@ func TestInteractivePlanCommandUsesReadOnlyReactor(t *testing.T) {
 	if !messagesContain(request.Prompt.Input, "## Plan Mode") {
 		t.Fatalf("Plan Mode instruction missing from request: %#v", request.Prompt.Input)
 	}
-	for _, forbidden := range []string{"## `apply_patch`", "## `execute_command`", "request_permissions", "update_plan"} {
+	for _, forbidden := range []string{"## `apply_patch`", "## `execute_command`", "update_plan"} {
 		if messagesContain(request.Prompt.Input, forbidden) {
 			t.Fatalf("Plan Mode request contains forbidden guidance %q: %#v", forbidden, request.Prompt.Input)
 		}
 	}
 	for _, definition := range request.Prompt.Tools {
 		switch definition.Name {
-		case "apply_patch", "execute_command", "write_stdin", "mcp_call", "update_plan", "request_permissions":
+		case "apply_patch", "execute_command", "write_stdin", "mcp_call", "update_plan":
 			t.Fatalf("Plan Mode exposed mutating tool %q", definition.Name)
 		}
 	}

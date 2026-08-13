@@ -11,15 +11,15 @@ import (
 	"github.com/Godric-W/Amadeus/internal/project"
 )
 
-func TestGrepCodeFallbackReturnsLineNumbersAndContext(t *testing.T) {
+func TestGrepFallbackReturnsLineNumbersAndContext(t *testing.T) {
 	rootPath := t.TempDir()
 	content := "package sample\n\nfunc Alpha() {}\nfunc Beta() {}\n"
 	if err := os.WriteFile(filepath.Join(rootPath, "sample.go"), []byte(content), 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
-	grepCode := newTestGrepCode(t, rootPath, 10, 1024)
+	grep := newTestGrep(t, rootPath, 10, 1024)
 
-	result, err := executePreparedTool(t, context.Background(), grepCode, json.RawMessage(`{"query":"func Alpha","context":1}`))
+	result, err := executePreparedTool(t, context.Background(), grep, json.RawMessage(`{"query":"func Alpha","context":1}`))
 	if err != nil {
 		t.Fatalf("grep code: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestGrepCodeFallbackReturnsLineNumbersAndContext(t *testing.T) {
 	}
 }
 
-func TestGrepCodeRipgrepFastPathMatchesFallbackSemantics(t *testing.T) {
+func TestGrepRipgrepFastPathMatchesFallbackSemantics(t *testing.T) {
 	rootPath := t.TempDir()
 	for _, fixture := range []struct{ path, content string }{{"a.go", "before\nneedle\nafter\n"}, {"b.txt", "none\n"}} {
 		if err := os.WriteFile(filepath.Join(rootPath, fixture.path), []byte(fixture.content), 0o644); err != nil {
@@ -49,11 +49,11 @@ printf '%s\n' '{"type":"context","data":{"path":{"text":"a.go"},"lines":{"text":
 	if err != nil {
 		t.Fatalf("create project root: %v", err)
 	}
-	fast, err := NewGrepCode(root, GrepCodeOptions{MaxResults: 10, MaxFileBytes: 1024, MaxContextLines: 2, RipgrepPath: fakeRG})
+	fast, err := NewGrep(root, GrepOptions{MaxResults: 10, MaxFileBytes: 1024, MaxContextLines: 2, RipgrepPath: fakeRG})
 	if err != nil {
 		t.Fatalf("create fast grep: %v", err)
 	}
-	fallback := newTestGrepCode(t, rootPath, 10, 1024)
+	fallback := newTestGrep(t, rootPath, 10, 1024)
 	input := json.RawMessage(`{"query":"needle","context":1}`)
 	fastResult, err := executePreparedTool(t, context.Background(), fast, input)
 	if err != nil {
@@ -68,7 +68,7 @@ printf '%s\n' '{"type":"context","data":{"path":{"text":"a.go"},"lines":{"text":
 	}
 }
 
-func TestGrepCodeFallsBackWhenRipgrepFails(t *testing.T) {
+func TestGrepFallsBackWhenRipgrepFails(t *testing.T) {
 	rootPath := t.TempDir()
 	if err := os.WriteFile(filepath.Join(rootPath, "a.txt"), []byte("needle\n"), 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -81,17 +81,17 @@ func TestGrepCodeFallsBackWhenRipgrepFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project root: %v", err)
 	}
-	grepCode, err := NewGrepCode(root, GrepCodeOptions{MaxResults: 10, MaxFileBytes: 1024, MaxContextLines: 2, RipgrepPath: fakeRG})
+	grep, err := NewGrep(root, GrepOptions{MaxResults: 10, MaxFileBytes: 1024, MaxContextLines: 2, RipgrepPath: fakeRG})
 	if err != nil {
 		t.Fatalf("create grep: %v", err)
 	}
-	result, err := executePreparedTool(t, context.Background(), grepCode, json.RawMessage(`{"query":"needle"}`))
+	result, err := executePreparedTool(t, context.Background(), grep, json.RawMessage(`{"query":"needle"}`))
 	if err != nil || result.Text != "a.txt:1:1:needle" || result.Metadata["backend"] != "go" {
 		t.Fatalf("unexpected fallback result: result=%#v err=%v", result, err)
 	}
 }
 
-func TestGrepCodeFallbackSupportsRegexCaseAndResultLimit(t *testing.T) {
+func TestGrepFallbackSupportsRegexCaseAndResultLimit(t *testing.T) {
 	rootPath := t.TempDir()
 	for _, fixture := range []struct{ path, content string }{
 		{"a.go", "TODO first\n"}, {"b.go", "todo second\n"}, {"c.go", "TODO third\n"},
@@ -100,14 +100,14 @@ func TestGrepCodeFallbackSupportsRegexCaseAndResultLimit(t *testing.T) {
 			t.Fatalf("write fixture: %v", err)
 		}
 	}
-	grepCode := newTestGrepCode(t, rootPath, 2, 1024)
-	result, err := executePreparedTool(t, context.Background(), grepCode, json.RawMessage(`{"query":"^todo","regex":true,"case_sensitive":false}`))
+	grep := newTestGrep(t, rootPath, 2, 1024)
+	result, err := executePreparedTool(t, context.Background(), grep, json.RawMessage(`{"query":"^todo","regex":true,"case_sensitive":false}`))
 	if err != nil || !result.Partial || !strings.Contains(result.Text, "a.go:1") || !strings.Contains(result.Text, "b.go:1") || strings.Contains(result.Text, "c.go") {
 		t.Fatalf("unexpected limited regex result: result=%#v err=%v", result, err)
 	}
 }
 
-func TestGrepCodeFallbackSkipsBinaryOversizeAndIgnoredTrees(t *testing.T) {
+func TestGrepFallbackSkipsBinaryOversizeAndIgnoredTrees(t *testing.T) {
 	rootPath := t.TempDir()
 	fixtures := map[string][]byte{
 		"visible.txt":      []byte("needle\n"),
@@ -125,22 +125,22 @@ func TestGrepCodeFallbackSkipsBinaryOversizeAndIgnoredTrees(t *testing.T) {
 			t.Fatalf("write fixture: %v", err)
 		}
 	}
-	grepCode := newTestGrepCode(t, rootPath, 10, 8)
-	result, err := executePreparedTool(t, context.Background(), grepCode, json.RawMessage(`{"query":"needle"}`))
+	grep := newTestGrep(t, rootPath, 10, 8)
+	result, err := executePreparedTool(t, context.Background(), grep, json.RawMessage(`{"query":"needle"}`))
 	if err != nil || result.Text != "visible.txt:1:1:needle" || result.Metadata["files_skipped"] != 2 {
 		t.Fatalf("unexpected skip result: result=%#v err=%v", result, err)
 	}
 }
 
-func newTestGrepCode(t *testing.T, rootPath string, maxResults int, maxFileBytes int64) *GrepCode {
+func newTestGrep(t *testing.T, rootPath string, maxResults int, maxFileBytes int64) *Grep {
 	t.Helper()
 	root, err := project.NewRoot(rootPath)
 	if err != nil {
 		t.Fatalf("create project root: %v", err)
 	}
-	grepCode, err := NewGrepCode(root, GrepCodeOptions{MaxResults: maxResults, MaxFileBytes: maxFileBytes, MaxContextLines: 3, DisableRipgrep: true})
+	grep, err := NewGrep(root, GrepOptions{MaxResults: maxResults, MaxFileBytes: maxFileBytes, MaxContextLines: 3, DisableRipgrep: true})
 	if err != nil {
-		t.Fatalf("create grep_code: %v", err)
+		t.Fatalf("create grep: %v", err)
 	}
-	return grepCode
+	return grep
 }

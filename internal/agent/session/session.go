@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/task"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
@@ -43,6 +44,7 @@ type SessionState struct {
 	PreviousTurnSettings *Configuration
 	Permissions          PermissionState
 	Context              *agentcontext.Manager
+	Plan                 *plan.State
 }
 
 type SessionServices struct {
@@ -116,6 +118,15 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 		return nil, SessionIo{}, fmt.Errorf("rebuild context from initial history: %w", err)
 	}
 	value.state.Context = contextManager
+	if value.state.Plan == nil {
+		value.state.Plan = plan.NewState()
+	}
+	if snapshot, ok := latestPlanSnapshot(args.History.Lines); ok {
+		if err := value.state.Plan.Restore(snapshot); err != nil {
+			cancel(err)
+			return nil, SessionIo{}, fmt.Errorf("restore plan from initial history: %w", err)
+		}
+	}
 	value.state.PreviousTurnSettings = previousTurnSettings(args.History.Lines)
 	value.state.Permissions = PermissionState{Mode: value.state.Configuration.PermissionMode}
 	io := SessionIo{
@@ -312,6 +323,19 @@ func (session *Session) AppendItems(ctx context.Context, turnID turn.ID, items .
 	return nil
 }
 
+func (session *Session) UpdatePlan(ctx context.Context, turnID turn.ID, update plan.Update) (plan.Snapshot, error) {
+	if session == nil || session.state.Plan == nil {
+		return plan.Snapshot{}, errors.New("session plan state is unavailable")
+	}
+	return session.state.Plan.ApplyPersistent(update, session.services.Clock().UTC(), func(snapshot plan.Snapshot) error {
+		item, err := rollout.NewItem(rollout.KindPlanUpdate, snapshot)
+		if err != nil {
+			return err
+		}
+		return session.AppendItems(ctx, turnID, item)
+	})
+}
+
 func (session *Session) Context() *agentcontext.Manager {
 	return session.state.Context
 }
@@ -332,6 +356,19 @@ func (session *Session) appendHistory(lines []rollout.Line) {
 	session.historyMu.Lock()
 	session.state.History = append(session.state.History, cloneLines(lines)...)
 	session.historyMu.Unlock()
+}
+
+func latestPlanSnapshot(lines []rollout.Line) (plan.Snapshot, bool) {
+	for index := len(lines) - 1; index >= 0; index-- {
+		if lines[index].Item.Kind != rollout.KindPlanUpdate {
+			continue
+		}
+		var snapshot plan.Snapshot
+		if json.Unmarshal(lines[index].Item.Payload, &snapshot) == nil {
+			return snapshot, true
+		}
+	}
+	return plan.Snapshot{}, false
 }
 
 func (session *Session) Rename(ctx context.Context, title string, at time.Time) error {

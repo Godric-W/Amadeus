@@ -25,14 +25,14 @@ type TerminalApprovalOptions struct {
 	IsTerminal TerminalDetector
 }
 
-type TerminalApprovalHandler struct {
+type TerminalApprovalPrompt struct {
 	input      io.Reader
 	output     io.Writer
 	isTerminal TerminalDetector
 	mutex      sync.Mutex
 }
 
-func NewTerminalApprovalHandler(options TerminalApprovalOptions) (*TerminalApprovalHandler, error) {
+func NewTerminalApprovalPrompt(options TerminalApprovalOptions) (*TerminalApprovalPrompt, error) {
 	if options.Input == nil {
 		return nil, errors.New("terminal approval input is nil")
 	}
@@ -42,16 +42,16 @@ func NewTerminalApprovalHandler(options TerminalApprovalOptions) (*TerminalAppro
 	if options.IsTerminal == nil {
 		options.IsTerminal = isTerminalReader
 	}
-	return &TerminalApprovalHandler{
+	return &TerminalApprovalPrompt{
 		input:      options.Input,
 		output:     options.Output,
 		isTerminal: options.IsTerminal,
 	}, nil
 }
 
-func (handler *TerminalApprovalHandler) Decide(ctx context.Context, request policy.ApprovalRequest) (policy.ApprovalDecision, error) {
-	if handler == nil {
-		return policy.ApprovalDecision{}, errors.New("terminal approval handler is nil")
+func (toolImpl *TerminalApprovalPrompt) Decide(ctx context.Context, request policy.ApprovalRequest) (policy.ApprovalDecision, error) {
+	if toolImpl == nil {
+		return policy.ApprovalDecision{}, errors.New("terminal approval prompt is nil")
 	}
 	if ctx == nil {
 		return policy.ApprovalDecision{}, errors.New("terminal approval context is nil")
@@ -63,26 +63,26 @@ func (handler *TerminalApprovalHandler) Decide(ctx context.Context, request poli
 		return policy.ApprovalDecision{}, fmt.Errorf("validate terminal approval request: %w", err)
 	}
 
-	handler.mutex.Lock()
-	defer handler.mutex.Unlock()
+	toolImpl.mutex.Lock()
+	defer toolImpl.mutex.Unlock()
 	if err := ctx.Err(); err != nil {
 		return policy.ApprovalDecision{}, err
 	}
-	if !handler.isTerminal(handler.input) {
+	if !toolImpl.isTerminal(toolImpl.input) {
 		return policyApprovalDecision(policy.ApprovalDeny, "approval requires a TTY; non-interactive input was denied"), nil
 	}
-	return handler.interactiveDecision(ctx, request)
+	return toolImpl.interactiveDecision(ctx, request)
 }
 
-func (handler *TerminalApprovalHandler) interactiveDecision(ctx context.Context, request policy.ApprovalRequest) (policy.ApprovalDecision, error) {
-	if err := writeApprovalPrompt(handler.output, request); err != nil {
+func (toolImpl *TerminalApprovalPrompt) interactiveDecision(ctx context.Context, request policy.ApprovalRequest) (policy.ApprovalDecision, error) {
+	if err := writeApprovalPrompt(toolImpl.output, request); err != nil {
 		return policy.ApprovalDecision{}, err
 	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return policy.ApprovalDecision{}, err
 		}
-		line, err := readApprovalLine(handler.input)
+		line, err := readApprovalLine(toolImpl.input)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return policyApprovalDecision(policy.ApprovalDeny, "approval input closed; request denied"), nil
@@ -92,7 +92,7 @@ func (handler *TerminalApprovalHandler) interactiveDecision(ctx context.Context,
 		if decision, ok := policy.ResolveApprovalInput(request, line); ok {
 			return decision, nil
 		}
-		if _, err := io.WriteString(handler.output, "Invalid choice. Enter y, s, or n: "); err != nil {
+		if _, err := io.WriteString(toolImpl.output, "Invalid choice. Enter y, s, or n: "); err != nil {
 			return policy.ApprovalDecision{}, fmt.Errorf("write terminal approval retry prompt: %w", err)
 		}
 	}
@@ -118,9 +118,6 @@ func writeApprovalPrompt(writer io.Writer, request policy.ApprovalRequest) error
 		return nil
 	}
 	first := "once"
-	if request.Purpose == policy.ApprovalPurposePermission {
-		first = "this run"
-	}
 	if request.Purpose == policy.ApprovalPurposeFile {
 		label := sanitizeApprovalText(request.Path)
 		if label == "" {
@@ -155,9 +152,7 @@ func parseApprovalChoice(input string) (policy.ApprovalDecision, bool) {
 
 func parseApprovalChoiceForPurpose(input string, purpose policy.ApprovalPurpose) (policy.ApprovalDecision, bool) {
 	firstScope, firstReason := policy.ApprovalOnce, "user approved once"
-	if purpose == policy.ApprovalPurposePermission {
-		firstScope, firstReason = policy.ApprovalRun, "user approved for the run"
-	}
+	_ = purpose
 	switch strings.ToLower(strings.TrimSpace(input)) {
 	case "y", "yes":
 		return userApprovalDecision(policy.ApprovalAllow, firstScope, firstReason), true
@@ -233,4 +228,4 @@ func isTerminalReader(reader io.Reader) bool {
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
-var _ policy.ApprovalHandler = (*TerminalApprovalHandler)(nil)
+var _ policy.ApprovalPort = (*TerminalApprovalPrompt)(nil)
