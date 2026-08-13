@@ -15,6 +15,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/buildinfo"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/interface/tui"
+	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/thread"
 	"github.com/Godric-W/Amadeus/internal/tool/builtin"
 	"github.com/atotto/clipboard"
@@ -162,12 +163,17 @@ func (runner *agentController) runFullscreenInteractive(ctx context.Context, inv
 	if err != nil {
 		return err
 	}
+	initialItems, err := replayTurnItems(active.History())
+	if err != nil {
+		return err
+	}
 	provider := configured.Providers[configured.DefaultProvider]
 	branch := tui.ResolveWorkspaceBranch(ctx, invocation.Project.Path())
 	var application *tui.FullscreenApplication
 	application, err = tui.NewFullscreenApplication(tui.FullscreenOptions{
 		Input: invocation.Input, Output: invocation.Output, OpenSessions: invocation.SessionMode == sessionStartSelect,
-		NoColor: !capabilities.Color, Width: capabilities.Width,
+		InitialItems: initialItems,
+		NoColor:      !capabilities.Color, Width: capabilities.Width,
 		Startup: tui.FullscreenStartup{
 			Version: buildinfo.Current().Version, Provider: configured.DefaultProvider, Model: provider.Model,
 			Project: invocation.Project.Path(), Branch: branch, Session: string(active.ID()), ContextWindow: provider.ContextWindow,
@@ -311,6 +317,37 @@ func (runner *agentController) runFullscreenInteractive(ctx context.Context, inv
 	return application.Run(ctx)
 }
 
+func replayTurnItems(lines []rollout.Line) ([]protocol.TurnItem, error) {
+	items, err := protocol.ProjectCompletedItems(lines)
+	if err != nil {
+		return nil, err
+	}
+	legacy, err := protocol.LegacyResponseItemsToCompleted(lines)
+	if err != nil {
+		return nil, err
+	}
+	if len(legacy) == 0 {
+		return items, nil
+	}
+	// Old rollouts have response_item facts but no completed-item records.
+	// Prefer the new records and only use legacy items when no new projection
+	// exists for that stable item ID.
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		seen[item.ID] = struct{}{}
+	}
+	for _, item := range legacy {
+		if _, exists := seen[item.ID]; exists {
+			continue
+		}
+		items = append(items, item)
+	}
+	sort.SliceStable(items, func(left, right int) bool {
+		return items[left].CompletedAt.Before(items[right].CompletedAt)
+	})
+	return items, nil
+}
+
 func (runner *agentController) compactInteractiveSession(ctx context.Context, invocation agentInvocation) (string, error) {
 	active, _, err := runner.ensureActiveThread(ctx, invocation)
 	if err != nil {
@@ -336,7 +373,7 @@ func (runner *agentController) compactInteractiveSession(ctx context.Context, in
 	if err := active.Submit(ctx, protocol.CompactOp{}); err != nil {
 		return "", err
 	}
-	if err := runner.waitTurn(ctx, active, result); err != nil {
+	if err := runner.waitTurn(ctx, active, result, invocation.EventSink, invocation.Approvals); err != nil {
 		return "", err
 	}
 	return "Conversation compacted", nil

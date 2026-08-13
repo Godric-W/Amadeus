@@ -140,12 +140,8 @@ func (model fullscreenModel) commandStatus() string {
 	if mode == "" {
 		mode = string(CollaborationExecute)
 	}
-	patchDiff := fmt.Sprintf("%d file(s)", len(model.runDiffChanges))
-	if !model.runDiffExact {
-		patchDiff = "unavailable"
-	}
-	return fmt.Sprintf("mode: %s\nmodel: %s\ntokens: input=%d cached/unknown output=%d context=%d/%d\npatch diff: %s\nphase: %s",
-		mode, strings.TrimSpace(model.model), model.inputUsage, model.outputUsage, model.contextUsage, model.contextLimit, patchDiff, model.status)
+	return fmt.Sprintf("mode: %s\nmodel: %s\ntokens: input=%d cached/unknown output=%d context=%d/%d\nphase: %s",
+		mode, strings.TrimSpace(model.model), model.inputUsage, model.outputUsage, model.contextUsage, model.contextLimit, model.status)
 }
 
 func taskPhase(task TaskSubmission) string {

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -27,7 +27,7 @@ type RolloutRecorder interface {
 type RunnerOptions struct {
 	Temperature      float64
 	MaxParallelTools int
-	Events           event.Sink
+	Events           protocol.EventSink
 	Rollout          RolloutRecorder
 }
 
@@ -36,7 +36,7 @@ type Runner struct {
 	analyze AnalyzePort
 	act     ActPort
 	observe ObservePort
-	events  event.Sink
+	events  protocol.EventSink
 	options RunnerOptions
 	now     func() time.Time
 }
@@ -117,15 +117,8 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 			return finish(result)
 		}
 		llmCallID := iterationID(request, iterationIndex)
-		iterationCtx := event.WithMetadata(runCtx, event.Metadata{
-			TurnID: request.TurnID, Iteration: iterationIndex + 1, LLMCallID: llmCallID,
-		})
-		if err := runner.publish(iterationCtx, event.IterationStarted{}); err != nil {
-			return Result{}, fmt.Errorf("publish Reactor iteration started: %w", err)
-		}
-		completeIteration := func(status, reason string) error {
-			return runner.publish(context.WithoutCancel(iterationCtx), event.IterationCompleted{Status: status, Reason: reason})
-		}
+		iterationCtx := runCtx
+		completeIteration := func(string, string) error { return nil }
 
 		if request.BeforeSample != nil {
 			if err := request.BeforeSample(iterationCtx, request.Context); err != nil {
@@ -143,7 +136,6 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 			Tools:            toolDefinitions(availableTools),
 			OutputSchema:     request.OutputSchema,
 		})
-		effectiveLimit := effectiveInputLimit(request.ModelInfo)
 		contextWindow := request.ModelInfo.ContextWindow
 		if len(messages) == 0 {
 			err := errors.New("ContextManager produced an empty Prompt")
@@ -151,19 +143,6 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 				err = errors.Join(err, publishErr)
 			}
 			return finish(Result{Iterations: state.Iterations, Usage: state.Usage, StopReason: StopFailed, Reason: err.Error()})
-		}
-		contextUpdate := event.ContextWindowUpdated{
-			EstimatedInputTokens: estimated,
-			ContextWindow:        contextWindow,
-			EffectiveInputLimit:  effectiveLimit,
-			ProjectedToolResults: 0,
-			DroppedMessagePairs:  0,
-		}
-		if err := runner.publish(iterationCtx, contextUpdate); err != nil {
-			if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
-				err = errors.Join(err, publishErr)
-			}
-			return Result{}, fmt.Errorf("publish Reactor context window update: %w", err)
 		}
 		if contextWindow > 0 && estimated+int64(request.ModelInfo.MaxOutputTokens) > contextWindow {
 			err := fmt.Errorf("Prompt exceeds model context window after compaction: estimated input %d + max output %d > context window %d", estimated, request.ModelInfo.MaxOutputTokens, contextWindow)
@@ -301,13 +280,6 @@ func effectiveInputLimit(model llm.ModelInfo) int64 {
 		}
 	}
 	return limit
-}
-
-func (runner *Runner) publish(ctx context.Context, runtimeEvent event.Event) error {
-	if runner.events == nil {
-		return nil
-	}
-	return runner.events.Publish(ctx, runtimeEvent)
 }
 
 func normalizedMessageToolCalls(original []llm.ToolCall, calls []tool.ToolCall) []llm.ToolCall {

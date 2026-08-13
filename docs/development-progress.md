@@ -1,9 +1,9 @@
 # Amadeus 开发进度
 
-> 最近更新：2026-08-12
+> 最近更新：2026-08-13
 > 唯一目标架构：`docs/design.md`
-> 当前阶段：C. Tool + Approval 已完成
-> 下一任务：D-01 Event Protocol 与 InteractiveRequest 主链
+> 当前阶段：E. Slash Command 重构
+> 下一任务：E-01 Codex 风格命令模型
 
 ## 1. 文档规则
 
@@ -36,7 +36,7 @@
 
 ## 2. 工作流总览
 
-开发计划分为四个已经完成设计讨论的核心工作流，以及两个后续整合工作流：
+开发计划按 Runtime、Context、Tool、Event、Slash Command、Agent 和 Extensions 分阶段推进：
 
 | 工作流 | 范围 | 设计状态 | 实施状态 |
 |---|---|---|---|
@@ -44,9 +44,10 @@
 | B. Context + Prompt | BaseInstructions、ContextManager、Token、Projection、Compaction | 已冻结 | `DONE` |
 | C. Tool + Approval | Tool Contract、Edit/Write、Permission、Approval、Command | 已冻结 | `DONE` |
 | C-R. Tool Runtime Refactor | Claude Code 风格 Tool Contract、SessionPermissionContext、ApprovalCoordinator、统一执行链 | 已冻结 | `DONE` |
-| D. Event + TUI + Slash Command | SessionEvent、InteractiveRequest、TurnItem、HistoryCell、Slash Routing | 已冻结 | 等待 A/C 核心边界 |
-| E. Agent Engine | Plan-guided ReAct、`update_plan`、Plan Mode、中断与终态 | 待 A/B/C/D 接入 | 未开始 |
-| F. Extensions + Release | MCP、Skill、Web、兼容迁移、发布验证 | 待主链稳定 | 未开始 |
+| D. Event + TUI | SessionEvent、InteractiveRequest、TurnItem、HistoryCell、Rich Inline Projection | 已冻结 | `DONE` |
+| E. Slash Command | Codex 风格 SlashCommand、InputResult、单一 TUI 分发与 Application/Session 操作 | 待 D 接入 | `DOING` |
+| F. Agent Engine | Plan-guided ReAct、`update_plan`、Plan Mode、中断与终态 | 待 E 接入 | 未开始 |
+| G. Extensions + Release | MCP、Skill、Web、兼容迁移、发布验证 | 待主链稳定 | 未开始 |
 
 推荐实施顺序：
 
@@ -54,9 +55,10 @@
 A Runtime Contract + Canonical Persistence
 → B Context/Prompt 与 C Tool/Approval 可并行推进
 → C-R Tool Runtime、SessionPermissionContext 与 ApprovalCoordinator 重构（`DONE`）
-→ D Event Protocol、TUI Projection 与 Slash Routing
-→ E Plan-guided ReAct 整合
-→ F Extensions/Release
+→ D Event Protocol 与 TUI Projection（`DONE`）
+→ E Codex 风格 Slash Command 重构
+→ F Plan-guided ReAct 整合
+→ G Extensions/Release
 ```
 
 ## 3. A. Runtime + Persistence
@@ -205,7 +207,7 @@ ContextManager 是模型可见历史的唯一所有者；Provider Usage 是已�
 - `DONE`：SessionState.Context 成为唯一模型可见历史所有者，Bootstrap Agent 不再创建第二 ContextManager。
 - `DONE`：实现并发安全的 Record、Replace、原子 Rebuild、ForPrompt、UpdateUsage 和 HistoryVersion，Prompt 返回深拷贝快照。
 - `DONE`：从 Rollout 重建 User、Assistant、ToolCall、ToolResult、Context Update、Turn failure/abort、Token Usage 和 Replacement History。
-- `DONE`：删除 Envelope、WindowRequest、RequestView、RequestViewProvider、ContextRevision、WindowManager 与分类 Budget 主链。
+- `DONE`：删除 Envelope、WindowRequest、RequestView、RequestViewProvider、ContextRevision、WindowManager 与分类 Budget 主链；这些名称仅作为历史清理记录保留。
 
 ### B-04：Dynamic Context Updates
 
@@ -301,7 +303,7 @@ Model Tool Call
 - `DONE`：实现 `old_string/new_string/replace_all`、唯一匹配校验和 Read-before-write。
 - `DONE`：共享 `internal/tool/textdiff` 生成 Unified Diff、插入/删除统计和 FileChange。
 - `DONE`：Approval 后重新读取并执行 stale check，再进行同目录临时文件原子写入。
-- `DONE`：文件 Approval 发布 `ApprovalRequested/ApprovalResolved`，TUI/Plain 只消费 Tool 提供的 Presentation。
+- `DONE`：文件 Approval 通过 InteractiveRequest/ApprovalDecisionOp 进入 Session，TUI 只消费 Tool 提供的 Presentation。
 
 ### C-04：`write` — `DONE`
 
@@ -322,7 +324,7 @@ Model Tool Call
 
 - `DONE`：定义 `ApprovalRequest`、`ApprovalPresentation`、`ApprovalOption`、`ApprovalDecision.OptionID` 并支持 CLI/TUI 结构化选择。
 - `DONE`：文件、命令、Web Fetch 和 MCP Call 都由 Tool 生成 Presentation，TUI 不硬编码选项语义。
-- `DONE`：CLI/Plain 支持 `y/s/n` 与结构化 Option ID；全屏 TUI 支持方向键、Enter、Esc 的动态选项。
+- `DONE`：交互 TUI 支持结构化 Option ID，以及方向键、Enter、Esc 的动态选项。
 - `DONE`：Tab Feedback 与正式 `ApprovalDecisionOp` SessionIo 路由的最终事件协议属于 D 阶段；当前 C 已冻结并验证 Approval 数据模型、Presentation 和 CLI/TUI 交互边界，D 只负责把同一 Contract 接入 canonical Event 主链。
 
 ### C-07：`execute_command` Host Execution — `DONE`
@@ -358,7 +360,7 @@ Model Tool Call
 - [x] 文件 Session Approval 使用目录级 `accept edits` 语义。
 - [x] 命令 Session Rule 只复用相同 canonical CWD 与精确命令。
 - [x] Web/MCP 外部 Session Rule 和 Approval 事件具备回归测试。
-- [x] TUI 与 `--plain` 都能完成结构化 Approval，且不直接拥有 Tool 状态。
+- [x] TUI 能完成结构化 Approval，且不直接拥有 Tool 状态。
 - [x] 默认主链不存在 PreparedCall、通用 Hook、RunDiff 投影器或 Sandbox 执行分支；工具共享 Session 内存权限上下文，但授权规则仍按工具语义匹配。
 - [x] 默认 Agent/Turn 不再注册旧工具、注入旧 Sandbox/CommandAuthorizer 或暴露旧权限工具。
 - [ ] 由 D 阶段统一 Event/InteractiveRequest 主链替代旧 Approval Event；该项属于 D，不阻塞 C 的默认 Tool/Approval Contract。
@@ -441,7 +443,7 @@ C-R 不重新设计 Agent Engine，也不增加第二套执行器或 Permission 
 - [x] 审批并发去重、Session grant 复用、审批等待不占执行闸门、权限拒绝不进入 `Tool.Call` 均有回归测试。
 - [x] `go test ./... -count=1`、`go test -race ./... -count=1` 与 `git diff --check` 已通过。
 
-## 7. D. Event + TUI + Slash Command
+## 7. D. Event + TUI
 
 ### D 目标
 
@@ -452,154 +454,196 @@ Submission / Op
 → EventReducer
 → TranscriptState
 → ActiveHistoryCell / HistoryCell
-→ Rich Inline TUI / --plain
+→ Rich Inline TUI
 ```
 
 Event、Interactive Request、Rollout、TUI Message 和 Trace 必须是五个独立概念；TUI 不再通过 LLM Call、Iteration、通用 Status 或后台 goroutine 返回猜测 Runtime 真相。
 
-### D-01：Protocol Package 与 Envelope
+### D-01：Protocol Package 与 SessionEvent
 
-- `TODO`：建立 `internal/agent/protocol`，定义 Submission、SessionEvent、InteractiveRequest 和 EventMessage 边界。
-- `TODO`：SessionEvent Envelope 统一携带 ThreadID/TurnID，删除每个 Event 重复 Metadata 和反射注入。
-- `TODO`：第一版只依赖 SessionIo 单通道顺序，不增加 Event Priority、Topic DSL 或额外 Sequence。
+- `DONE`：`internal/agent/protocol` 定义 Submission、SessionEvent、InteractiveRequest 和 EventMessage 边界。
+- `DONE`：SessionEvent 固定携带 ThreadID/TurnID，不使用 Envelope、动态 Metadata 或反射注入。
+- `DONE`：SessionIo 使用有界 Events channel 保证单 Session 发布顺序，不引入 Event Priority、Topic DSL 或第二 Event Bus。
 
 ### D-02：TurnItem Contract
 
-- `TODO`：定义 UserMessage、AssistantMessage、Reasoning、ToolCall、CommandExecution、FileChange、Plan 和 ContextCompaction Item。
-- `TODO`：统一 in_progress/completed/failed/declined 状态与稳定 ItemID。
-- `TODO`：Completed Item 包含独立 Replay 所需的完整事实，不依赖历史 Delta。
+- `DONE`：定义 UserMessage、AssistantMessage、Reasoning、ToolCall、CommandExecution、FileChange、Plan 和 ContextCompaction Item。
+- `DONE`：统一 in_progress/completed/failed/declined 状态与稳定 ItemID。
+- `DONE`：`turn_item_completed` 保存独立 Replay 所需的完整事实，不依赖历史 Delta。
 
 ### D-03：EventMessage 与 Delta
 
-- `TODO`：实现 ThreadConfigured、TurnStarted、TurnCompleted、TurnAborted、ItemStarted、ItemCompleted。
-- `TODO`：实现 AssistantMessageDelta、ReasoningDelta 和 CommandOutputDelta，并强制携带 ItemID。
-- `TODO`：实现 PlanUpdated、ThreadTokenUsageUpdated、ContextCompacted、Warning 和 StreamError。
-- `TODO`：LLMCall、Iteration、Retry 和 Provider Attempt 只进入 Trace/Telemetry，不进入产品 Event Protocol。
+- `DONE`：实现 ThreadConfigured、TurnStarted、TurnRejected、TurnCompleted、TurnAborted、ItemStarted、ItemCompleted。
+- `DONE`：实现 AssistantMessageDelta、ReasoningDelta 和 CommandOutputDelta，并携带 ItemID。
+- `DONE`：实现 PlanUpdated、ThreadTokenUsageUpdated、ContextCompacted、Warning 和 StreamError。
+- `DONE`：LLMCall、Iteration、Retry 和 Provider Attempt 不进入产品 Event Protocol。
 
 ### D-04：InteractiveRequest
 
-- `TODO`：定义 ApprovalRequest 与 UserInputRequest，包含稳定 RequestID 和完整 Presentation。
-- `TODO`：通过 ApprovalDecisionOp/UserInputResponseOp 回答，删除普通 ApprovalRequested/Resolved Event 主链。
-- `TODO`：Tool/File/Command Completed Item 记录最终 completed/declined/failed 结果。
+- `DONE`：定义 ApprovalRequest 与 UserInputRequest，包含稳定 RequestID 和完整 Presentation。
+- `DONE`：通过 ApprovalDecisionOp/UserInputResponseOp 回答，不使用普通 ApprovalRequested/Resolved Event 主链。
+- `DONE`：Tool/File/Command Completed Item 记录最终 completed/declined/failed 结果。
 
 ### D-05：SessionIo Delivery 与 Persistence Policy
 
-- `TODO`：SessionIo 分离 Submissions、Events、Requests、Status 和 Terminated 通道。
-- `TODO`：只持久化 Turn 生命周期、Completed Item、Plan、Usage、Compaction 和恢复所需 Context Facts。
-- `TODO`：ItemStarted、Delta、Working、未决 Request、Popup 和动画 Tick 不进入 canonical Rollout。
-- `TODO`：慢 Renderer、关闭 TUI 或调试观察者不能让 Agent Turn 失败；删除通用 Event Hub backpressure 主链。
+- `DONE`：SessionIo 分离 Submissions、Events、Requests、Status 和 Terminated 通道。
+- `DONE`：持久化 Turn 生命周期、Completed Item、Plan、Usage、Compaction 和恢复所需 Context Facts。
+- `DONE`：ItemStarted、Delta、Working、未决 Request、Popup 和动画 Tick 不进入 canonical Rollout。
+- `DONE`：Session 是唯一事件出口，不保留通用 Event Hub backpressure 主链；Rollout append 在 Session/LiveThread 边界串行化，高频事实采用缓冲追加，Turn 终态前强制 flush。
 
 ### D-06：Runtime Event 迁移
 
-- `TODO`：将模型输出、Tool、Command、FileChange、Plan、Usage、Compaction 和终态映射到新协议。
-- `TODO`：删除 RunStarted/RunStatusChanged/RunCompleted、StatusChanged、IterationStarted/Completed 和 UI 可见 LLMCallStarted/Completed。
-- `TODO`：终态只由 TurnCompleted/TurnAborted 表达，失败信息进入唯一终态。
+- `DONE`：模型输出、Tool、Command、FileChange、Plan、Usage、Compaction 和终态进入新协议。
+- `DONE`：产品事件不暴露 RunStarted/RunStatusChanged/RunCompleted、通用 StatusChanged、IterationStarted/Completed 或 LLM Call 生命周期。
+- `DONE`：终态只由 TurnCompleted/TurnAborted 表达，失败信息进入唯一终态。
 
 ### D-07：EventReducer 与 TranscriptState
 
-- `TODO`：建立纯状态 Reducer，将 SessionEvent 投影为 Active Item、Committed History 和 Working 状态。
-- `TODO`：Delta 只更新相同 ItemID；重复 Completed 和迟到 Delta 幂等处理并记录诊断。
-- `TODO`：Bubble Tea Model 只负责输入、Popup、Viewport 和渲染，不再拥有 Turn 业务状态。
+- `DONE`：`protocol.TranscriptState` 作为纯状态 Reducer，将 SessionEvent 投影为 Active Item、Committed History 和 Working 状态；TUI 使用同一 Reducer 做事件校验。
+- `DONE`：Delta 只更新相同 ItemID；重复 Completed、迟到 Delta 和未知 ItemID 有确定性处理并保留诊断。
+- `DONE`：Bubble Tea 只负责输入、Popup、Viewport 和渲染；Runtime 业务事实来自 SessionEvent/TranscriptState。
 
 ### D-08：Live/Replay HistoryCell
 
-- `TODO`：实时路径使用 ItemStarted → Delta → ItemCompleted → HistoryCell。
-- `TODO`：Resume 路径使用 Completed TurnItem → 相同 HistoryCell 映射，不重放 Delta 和 Working 动画。
-- `TODO`：没有 Started 的 Completed Item 仍可直接生成正式 Cell；ActiveHistoryCell 每个 ItemID 只提交一次。
+- `DONE`：实时路径使用 ItemStarted → Delta → ItemCompleted → HistoryCell。
+- `DONE`：Resume 路径使用 `ProjectCompletedItems`/`LegacyResponseItemsToCompleted` → 相同 HistoryCell 映射，不重放 Delta 和 Working 动画。
+- `DONE`：没有 Started 的 Completed Item 可直接生成正式 Cell；Replay 与 Live 共用稳定 TurnItem。
 
-### D-09：Slash Command Routing
+### D-09：Approval、Diff 与 Visual Runtime
 
-- `TODO`：统一 Catalog、描述、过滤、Popup 和参数校验，Catalog 不包含业务执行逻辑。
-- `TODO`：`/copy /status` 路由为 TUI Local；`/resume /skills /rename /delete /mcp /clear /exit` 路由为 Application Action。
-- `TODO`：`/compact` 提交 CompactOp；`/plan` 修改正式 Turn Setting，`/plan <task>` 设置模式后提交用户输入。
-- `TODO`：删除 Slash Command 对 Store、ContextManager、ActiveTurn 或 Tool 状态的直接修改。
-
-### D-10：Approval、Diff 与 Visual Runtime
-
-- `TODO`：TUI 渲染 C 工作流定义的 ApprovalPresentation，不改写选项语义。
-- `TODO`：支持方向键、Enter、Esc、Tab Feedback、Structured Diff 和等待期间 Interrupt。
-- `TODO`：Working 只由 TurnStarted/TurnCompleted/TurnAborted 控制；后台 Task 返回只负责 goroutine 收尾。
-- `TODO`：对齐 Working、Worked for、间距、颜色、状态栏、中文输入、原生 scrollback 和 resize。
-
-### D-11：Plain Renderer 与协议验收
-
-- `TODO`：Rich Inline TUI 和 `--plain` 复用相同 SessionEvent/InteractiveRequest Contract。
-- `TODO`：覆盖慢 Renderer、关闭 TUI、迟到 Delta、重复 Completed、Resume Replay 和 Approval 响应测试。
-- `TODO`：删除旧 `internal/agent/event` Hub/Metadata/Sink 主链和 TUI 双终态推断。
+- `DONE`：TUI 渲染 ApprovalPresentation，不改写选项语义。
+- `DONE`：支持方向键、Enter、Esc、Tab Feedback、Structured Diff 和等待期间 Interrupt。
+- `DONE`：Working 由 TurnStarted/TurnCompleted/TurnAborted 控制；后台 Task 返回只负责 goroutine 收尾。
+- `DONE`：Rich Inline TUI 使用统一事件边界并覆盖 Working、Worked for、间距、颜色和 resize。
+- `DONE`：覆盖关闭 Session、迟到 Delta、重复 Completed、Resume Replay 和 Approval 响应；IPv6 listener 依赖的 HTTP 测试受环境限制。
+- `DONE`：删除 `internal/agent/event` Hub/Metadata/Sink 主链和 TUI 双终态推断。
 
 ### D 出口
 
-- [ ] Event、InteractiveRequest、Rollout、TUI Message 和 Trace 职责独立。
-- [ ] TurnItem 是 Live、Replay 和 HistoryCell 的稳定业务模型。
-- [ ] Working 与终态只有一套 Runtime 真相。
-- [ ] Slash Command 不拥有业务状态。
-- [ ] Approval、Plan、Compaction、Tool 和 Turn 终态在 Runtime、Rollout、TUI 与 `--plain` 中一致。
+- [x] Event、InteractiveRequest、Rollout、TUI Message 和 Trace 职责独立。
+- [x] TurnItem 是 Live、Replay 和 HistoryCell 的稳定业务模型。
+- [x] Working 与终态只有一套 Runtime 真相。
+- [x] TUI 不拥有 Runtime 业务状态，Event、InteractiveRequest、Rollout 与 HistoryCell 边界稳定。
+- [x] Approval、Plan、Compaction、Tool 和 Turn 终态在 Runtime、Rollout 与 TUI 中一致。
 
-## 8. E. Plan-guided ReAct
+## 8. E. Slash Command
 
-### E-01：唯一 RegularTask/Reactor
+### E 目标
+
+```text
+Composer
+→ InputResult
+→ fullscreenModel.dispatchCommand
+→ TUI Local Action / Application Command / Session Op
+→ Runtime
+→ SessionEvent 或 Application Result
+→ HistoryCell / TUI Projection
+```
+
+本阶段完全采用 Codex 的 Slash Command 核心模式：强类型 `SlashCommand`、类型化 `InputResult`、单一 TUI 分发中心和 Application/Session 操作。删除独立 `SlashCommandCatalog`、Plain Controller、`CommandHandler`、`TaskHandler`、`--plain` 和 `cmd/amadeus` 内的 Slash Command switch。
+
+### E-01：Codex 风格命令模型
+
+- `TODO`：将命令身份收敛为 `SlashCommand`，通过类型方法提供名称、描述、参数能力、运行期间可用性和展示顺序。
+- `TODO`：删除 `SlashCommandSpec`、`slashCommandCatalog` 及其业务无关的独立 Catalog API。
+- `TODO`：保留 `/resume /skills /rename /delete /compact /plan /copy /status /mcp /clear /exit`，顺序与说明集中在命令类型附近。
+
+### E-02：Composer 与 InputResult
+
+- `TODO`：输入框统一解析普通文本、裸命令和带参数命令，不让 Plain/Fullscreen 各自解析。
+- `TODO`：Popup 只负责过滤、展示、方向键选择和 Enter/Esc，不直接访问 Session、Store 或 Runtime。
+- `TODO`：命令只有分发成功后才写入本地输入回忆；参数校验失败不污染命令历史。
+
+### E-03：单一 Slash Dispatch
+
+- `TODO`：由 Fullscreen TUI 活动模型承担类似 Codex `ChatWidget` 的唯一 Slash 分发职责。
+- `TODO`：删除 `cmd/amadeus` 的 Slash Command `switch`，cmd 只保留 CLI 参数、依赖装配和 TUI 启动。
+- `TODO`：`/copy` 作为 TUI Local；`/status`、`/mcp`、`/resume`、`/skills`、`/rename`、`/delete`、`/clear`、`/exit` 调用 Application 服务；`/compact`、`/plan` 提交正式 Session/Turn 操作。
+
+### E-04：删除 Plain 第二主链
+
+- `TODO`：删除 `--plain`、`TerminalInteractionController`、Plain 专用 Command/Task Handler 和 Plain Slash 路由。
+- `TODO`：清理 Plain 专用状态、输出、Approval 和测试，避免同一命令维护两套语义。
+- `TODO`：保留必要的非交互能力时另行设计机器可读输出，不恢复第二套交互运行时。
+
+### E-05：Slash 与 Event/Runtime 验收
+
+- `TODO`：命令本身不进入 SessionEvent；命令引起的状态变化通过 Session Op/Application Result、SessionEvent 和 TUI Projection 传播。
+- `TODO`：验证 `/plan <task>` 先提交正式设置再提交用户输入，`/compact` 走 CompactOp，`/resume` 与 `/clear` 正确刷新 Thread 和 Transcript。
+- `TODO`：验证 Plain/Fullscreen 路径删除后，Popup、命令历史、错误和运行期间可用性只有一个事实源。
+
+### E 出口
+
+- [ ] Slash Command 使用 Codex 风格强类型命令与 InputResult。
+- [ ] 只有一个 TUI Slash Dispatch，不存在 cmd 或 Plain 的第二套 switch。
+- [ ] 命令业务通过 Application Command 或 Session Op 执行，TUI 不直接管理 Session 状态。
+- [ ] `--plain`、Plain Controller 和旧 Catalog 主链已删除。
+
+## 9. F. Plan-guided ReAct
+
+### F-01：唯一 RegularTask/Reactor
 
 - `TODO`：RegularTask 驱动唯一 Reactor。
 - `TODO`：每个 Iteration 执行模型采样、Tool 调用、结果回灌和完成判断。
 - `TODO`：删除双 Engine、DAG、Planner、Replanner 和 Scheduler 遗留。
 
-### E-02：模型输出与 TurnItem
+### F-02：模型输出与 TurnItem
 
 - `TODO`：Assistant、Reasoning 和 Tool Call 流统一产生 D 工作流定义的 Item 生命周期与 Delta。
 - `TODO`：模型最终回答完成 AssistantMessageItem 后再结束 Turn。
 - `TODO`：Provider/Context/Tool 错误进入 StreamError、Completed Item 或唯一 Turn 终态，不静默停止。
 
-### E-03：`update_plan`
+### F-03：`update_plan`
 
 - `DONE`：`update_plan` 通过 Session capability 更新 `SessionState.Plan`，不持有 Tool 私有状态且不驱动 DAG。
 - `DONE`：Session 按 canonical Rollout persist-then-commit，Resume 从最近 `plan_update` 恢复 revision。
-- `TODO`：简单输入不强制创建 Plan；补齐 PlanUpdated 到统一 SessionEvent/TurnItem/TUI 主链。
+- `DONE`：简单输入不强制创建 Plan；PlanUpdated 已进入统一 SessionEvent/TurnItem/TUI 主链。
 
-### E-04：Plan Mode
+### F-04：Plan Mode
 
 - `TODO`：`/plan` 将 Session Permission Mode 切换为 `plan`，由 RegularTask 进入只规划行为。
 - `TODO`：Plan Mode 复用同一 Reactor，禁止副作用 Tool。
 - `TODO`：退出 Plan Mode 时恢复进入前 Permission Mode。
 
-### E-05：终态与中断
+### F-05：终态与中断
 
 - `TODO`：完成、失败、停滞、取消和最终回答使用 D 工作流定义的唯一终态。
 - `TODO`：中断后的新 Turn 看到 TurnAborted 事实并重新规划，不恢复旧执行栈。
 
-### E 出口
+### F 出口
 
 - [ ] 默认是单一 Plan-guided ReAct。
 - [ ] `update_plan` 是软状态，`/plan` 是显式只规划模式。
 - [ ] 简单对话不创建无关计划或 Tool 调用。
 - [ ] Reactor 只发布稳定 SessionEvent，不暴露内部 Iteration/LLM Call 作为 UI Contract。
 
-## 9. F. Extensions + Release
+## 10. G. Extensions + Release
 
-### F-01：MCP
+### G-01：MCP
 
 - `TODO`：统一 Tool Registry、lazy discovery、catalog snapshot、Approval 和 ToolResult。
 
-### F-02：Skill
+### G-02：Skill
 
 - `TODO`：用户级与项目级 Skill discovery。
 - `TODO`：Skill 内容按需注入，Script 统一走 `execute_command`。
 
-### F-03：Web
+### G-03：Web
 
 - `TODO`：稳定 OpenAI、Tavily、Brave 等 Search Provider。
 - `TODO`：超时、限流、来源和结果长度进入统一 ToolResult。
 
-### F-04：Legacy Persistence Cleanup
+### G-04：Legacy Persistence Cleanup
 
 - `TODO`：删除旧 projects/sessions/turns/messages/summaries/runs/rollout_items 主链。
 - `TODO`：验证旧数据迁移、Rollout backfill、损坏恢复和 index rebuild。
 
-### F-05：Release Validation
+### G-05：Release Validation
 
 - `TODO`：Provider fixtures、全仓 test/race/build 和真实模型 smoke。
 - `TODO`：同步 README、示例配置、架构文档和首个正式发布检查。
 
-## 9. 当前保留能力
+## 11. 当前保留能力
 
 以下行为有价值，应迁入新主链，但现有包边界不构成兼容约束：
 
@@ -612,24 +656,26 @@ Event、Interactive Request、Rollout、TUI Message 和 Trace 必须是五个独
 - MCP、Skill 和 Web capability 边界。
 - Bubble Tea Inline TUI、HistoryCell 和 Slash Popup。
 - `execute_command` 的超时、取消、输出限制和危险命令保护。
-- `--plain` 非交互输出。
+- Rich Inline TUI、HistoryCell 和 Slash Command Popup。
 
-## 10. 当前下一步
+## 12. 当前下一步
 
 当前关键路径：
 
 ```text
 C-R Tool Runtime Refactor（DONE）
-→ D Event Protocol、TUI Projection 与 Slash Routing
+→ D Event Protocol 与 TUI Projection（DONE）
+→ E Codex 风格 Slash Command 重构
+→ F Plan-guided ReAct 端到端验收
 ```
 
-下一项开发任务：**D：Event Protocol、TUI Projection 与 Slash Routing。**
+下一项开发任务：**E-01：Plan-guided ReAct 端到端验收。**
 
-## 11. 更新模板
+## 13. 更新模板
 
 ```text
 日期：YYYY-MM-DD
-任务：A-?? / B-?? / C-?? / D-?? / E-?? / F-??
+任务：A-?? / B-?? / C-?? / D-?? / E-?? / F-?? / G-??
 状态：TODO / DOING / BLOCKED / DONE / SKIPPED / SUPERSEDED
 改动：
 - ...

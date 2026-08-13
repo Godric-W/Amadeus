@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/task"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
@@ -71,6 +70,14 @@ func (runner *agentController) runOnce(ctx context.Context, invocation agentInvo
 	if factory == nil {
 		return errors.New("active thread task factory is unavailable")
 	}
+	if invocation.EventSink == nil || invocation.Approvals == nil {
+		renderer, approvals, interfaceErr := runner.turnInterface(invocation)
+		if interfaceErr != nil {
+			return interfaceErr
+		}
+		invocation.EventSink = renderer
+		invocation.Approvals = approvals
+	}
 	result, err := factory.Prepare(ctx, invocation)
 	if err != nil {
 		return err
@@ -85,15 +92,16 @@ func (runner *agentController) runOnce(ctx context.Context, invocation agentInvo
 	if err := active.Submit(ctx, protocol.UserInputOp{Content: objective}); err != nil {
 		return err
 	}
-	return runner.waitTurn(ctx, active, result)
+	return runner.waitTurn(ctx, active, result, invocation.EventSink, invocation.Approvals)
 }
 
-func (runner *agentController) waitTurn(ctx context.Context, active *threadmanager.AmadeusThread, taskResult <-chan error) error {
+func (runner *agentController) waitTurn(ctx context.Context, active *threadmanager.AmadeusThread, taskResult <-chan error, renderer protocol.EventSink, approvals policy.ApprovalPort) error {
 	io := active.Io()
 	var turnID rollout.TurnID
 	var executionErr error
 	resultReceived := false
 	interruptSent := false
+	var renderErr error
 	for {
 		select {
 		case err, ok := <-taskResult:
@@ -107,6 +115,11 @@ func (runner *agentController) waitTurn(ctx context.Context, active *threadmanag
 					return executionErr
 				}
 				return errors.New("thread terminated before turn completion")
+			}
+			if renderer != nil {
+				if err := renderer.Publish(context.WithoutCancel(ctx), eventValue); err != nil {
+					renderErr = errors.Join(renderErr, err)
+				}
 			}
 			switch eventValue.Message.(type) {
 			case protocol.TurnStarted:
@@ -129,7 +142,7 @@ func (runner *agentController) waitTurn(ctx context.Context, active *threadmanag
 						default:
 						}
 					}
-					return executionErr
+					return errors.Join(executionErr, renderErr)
 				}
 			case protocol.TurnAborted:
 				if turnID == "" || eventValue.TurnID == turnID {
@@ -137,13 +150,37 @@ func (runner *agentController) waitTurn(ctx context.Context, active *threadmanag
 					if executionErr == nil && message.Reason != "" {
 						executionErr = errors.New(message.Reason)
 					}
-					return executionErr
+					return errors.Join(executionErr, renderErr)
 				}
 			case protocol.StreamError:
 				message := eventValue.Message.(protocol.StreamError)
 				if executionErr == nil {
 					executionErr = errors.New(message.Error)
 				}
+			}
+		case request, ok := <-io.Requests:
+			if !ok {
+				continue
+			}
+			if request.Kind != protocol.RequestApproval {
+				continue
+			}
+			if approvals == nil {
+				executionErr = errors.New("interactive approval port is unavailable")
+				continue
+			}
+			policyRequest, err := approvalRequestFromInteractive(request)
+			if err != nil {
+				executionErr = err
+				continue
+			}
+			decision, err := approvals.Decide(ctx, policyRequest)
+			if err != nil {
+				executionErr = err
+				continue
+			}
+			if err := active.Submit(ctx, approvalDecisionOp(request.RequestID, decision)); err != nil {
+				executionErr = err
 			}
 		case <-ctx.Done():
 			if !interruptSent {
@@ -172,18 +209,31 @@ func (runner *agentController) executeCodingTurn(ctx context.Context, factory *c
 	if err != nil {
 		return task.Result{}, err
 	}
-	ctx = event.WithMetadata(ctx, event.Metadata{SessionID: string(turnContext.ThreadID), TurnID: string(turnContext.TurnID)})
 	ctx = tool.WithInvocationMetadata(ctx, tool.InvocationMetadata{SessionID: string(turnContext.ThreadID), TurnID: string(turnContext.TurnID), Source: tool.ToolCallSourceModel})
 
-	renderer, approvals, err := runner.turnInterface(invocation)
+	eventPublisher, ok := host.(interface {
+		Publish(context.Context, protocol.SessionEvent) error
+	})
+	if !ok {
+		return task.Result{}, errors.New("Coding Agent task host does not publish SessionEvent")
+	}
+	approvals := invocation.Approvals
+	if requester, ok := host.(sessionRequestPort); ok {
+		approvals, err = newSessionApprovalPort(requester)
+		if err != nil {
+			return task.Result{}, err
+		}
+	}
+	if approvals == nil {
+		_, approvals, err = runner.turnInterface(invocation)
+		if err != nil {
+			return task.Result{}, err
+		}
+	}
+	events, err := protocol.NewScopedSink(eventPublisher, turnContext.ThreadID, turnContext.TurnID)
 	if err != nil {
 		return task.Result{}, err
 	}
-	eventHub, err := event.NewHub(renderer)
-	if err != nil {
-		return task.Result{}, err
-	}
-	defer func() { runErr = errors.Join(runErr, eventHub.Close()) }()
 	auditFactory := runner.runtime.auditSinkFactory
 	if auditFactory == nil {
 		auditFactory = defaultAuditSinkFactory(runner.runtime.lookupEnv, os.UserHomeDir)
@@ -218,7 +268,7 @@ func (runner *agentController) executeCodingTurn(ctx context.Context, factory *c
 			return runner.runtime.llmClientFactory(providerName, providerConfig)
 		}
 	}
-	agent, err := bootstrap.NewAgentWithOptions(configured, invocation.Project, eventHub, approvals, auditSink, options)
+	agent, err := bootstrap.NewAgentWithOptions(configured, invocation.Project, events, approvals, auditSink, options)
 	if err != nil {
 		return task.Result{}, err
 	}
@@ -290,7 +340,7 @@ func promptToolDefinitions(specs []tool.ToolSpec) []llm.ToolDefinition {
 	return definitions
 }
 
-func (runner *agentController) turnInterface(invocation agentInvocation) (event.Sink, policy.ApprovalPort, error) {
+func (runner *agentController) turnInterface(invocation agentInvocation) (protocol.EventSink, policy.ApprovalPort, error) {
 	if invocation.EventSink != nil || invocation.Approvals != nil {
 		if invocation.EventSink == nil || invocation.Approvals == nil {
 			return nil, nil, errors.New("Coding Agent external TUI requires both event sink and approval port")
@@ -304,7 +354,7 @@ func (runner *agentController) turnInterface(invocation agentInvocation) (event.
 	capabilities := tui.DetectTerminalCapabilitiesWithOptions(invocation.Input, invocation.Output, tui.TerminalCapabilityOptions{
 		IsTerminal: func(input io.Reader) bool { return detectTerminal(input) }, ForcePlain: invocation.Plain,
 	})
-	var renderer event.Sink
+	var renderer protocol.EventSink
 	var approvals policy.ApprovalPort
 	var err error
 	if capabilities.TTY && !capabilities.Plain {
@@ -324,7 +374,7 @@ func (runner *agentController) turnInterface(invocation agentInvocation) (event.
 func (runner *agentController) publishAgentDiagnostics(ctx context.Context, agent *bootstrap.Agent) error {
 	for _, warning := range agent.SkillWarnings {
 		if warning != nil {
-			if err := agent.Events.Publish(ctx, event.DiagnosticPublished{Severity: "warn", Code: "skill_load_warning", Message: warning.Error()}); err != nil {
+			if err := agent.Events.Publish(ctx, protocol.SessionEvent{Message: protocol.Warning{Message: warning.Error()}}); err != nil {
 				return err
 			}
 		}

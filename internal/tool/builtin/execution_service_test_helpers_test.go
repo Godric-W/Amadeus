@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	processdomain "github.com/Godric-W/Amadeus/internal/process"
 	"github.com/Godric-W/Amadeus/internal/tool"
@@ -34,7 +33,7 @@ func testApprovalCoordinator(ctx context.Context) *policy.ApprovalCoordinator {
 	coordinator, _ := policy.NewApprovalCoordinator(&testApprovalPort{decision: policy.ApprovalDecision{
 		Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce,
 		Source: policy.ApprovalSourceUser, Reason: "test tool approved",
-	}}, policy.NewSessionPermissionContext(), nil)
+	}}, policy.NewSessionPermissionContext())
 	return coordinator
 }
 
@@ -49,8 +48,9 @@ func executePreparedTool(t testing.TB, ctx context.Context, candidate tool.Tool,
 	if err != nil {
 		t.Fatalf("create test tool service: %v", err)
 	}
-	metadata := event.MetadataFromContext(ctx)
-	ctx = tool.WithInvocationMetadata(ctx, tool.InvocationMetadata{SessionID: metadata.SessionID, TurnID: metadata.TurnID, Source: tool.ToolCallSourceModel})
+	metadata := tool.InvocationMetadataFromContext(ctx)
+	metadata.Source = tool.ToolCallSourceModel
+	ctx = tool.WithInvocationMetadata(ctx, metadata)
 	execution, err := service.Execute(ctx, tool.NewCall("test-call", candidate.Spec().Name, arguments))
 	if err != nil {
 		return execution.Output, err

@@ -6,14 +6,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type CoreToolOptions struct {
 	FileSystemPolicy *project.FileSystemPolicy
-	Events           event.Sink
+	Events           protocol.EventSink
 	ReadMaxBytes     int64
 	ReadMaxLineBytes int
 	Glob             GlobOptions

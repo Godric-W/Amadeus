@@ -71,6 +71,27 @@ func (thread *LiveThread) AppendItems(ctx context.Context, turnID TurnID, items 
 	return thread.store.AppendItems(ctx, thread.id, turnID, items...)
 }
 
+// AppendItemsBuffered appends facts and updates the in-memory/index view but
+// lets the store defer its fsync. Session uses this only for high-frequency
+// intermediate response facts; terminal persistence still calls Flush before
+// publishing the terminal SessionEvent.
+func (thread *LiveThread) AppendItemsBuffered(ctx context.Context, turnID TurnID, items ...rollout.Item) (AppendResult, error) {
+	thread.mu.Lock()
+	defer thread.mu.Unlock()
+	if thread.closed {
+		return AppendResult{}, errors.New("live thread is closed")
+	}
+	if !thread.materialized {
+		return AppendResult{}, errors.New("live thread is not materialized")
+	}
+	if buffered, ok := thread.store.(interface {
+		AppendItemsBuffered(context.Context, ID, TurnID, ...rollout.Item) (AppendResult, error)
+	}); ok {
+		return buffered.AppendItemsBuffered(ctx, thread.id, turnID, items...)
+	}
+	return thread.store.AppendItems(ctx, thread.id, turnID, items...)
+}
+
 func (thread *LiveThread) Flush(ctx context.Context) error {
 	thread.mu.Lock()
 	defer thread.mu.Unlock()

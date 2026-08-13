@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/agent/react"
 	"github.com/Godric-W/Amadeus/internal/agent/task"
 	bootstrap "github.com/Godric-W/Amadeus/internal/app/bootstrap"
@@ -18,12 +17,6 @@ import (
 )
 
 func (runner *agentController) executeReactorTurn(ctx context.Context, invocation agentInvocation, configured config.Config, agent *bootstrap.Agent, contextManager *agentcontext.Manager, compact func(context.Context) error, availableTools []tool.ToolSpec, outputSchema llm.OutputSchema, turnID rollout.TurnID) (task.Result, error) {
-	if err := agent.Events.Publish(ctx, event.TurnStarted{}); err != nil {
-		return task.Result{}, fmt.Errorf("publish Reactor turn started: %w", err)
-	}
-	if err := agent.Events.Publish(ctx, event.TurnStatusChanged{Entity: "turn", EntityID: string(turnID), From: "", To: "running"}); err != nil {
-		return task.Result{}, fmt.Errorf("publish Reactor turn status: %w", err)
-	}
 	provider := configured.Providers[configured.DefaultProvider]
 	modelInfo := agent.Client.Model()
 	modelInfo.ContextWindow = provider.ContextWindow
@@ -46,9 +39,6 @@ func (runner *agentController) executeReactorTurn(ctx context.Context, invocatio
 	outcome, code := classifyReactorResult(result)
 	if errors.Is(ctx.Err(), context.Canceled) || result.StopReason == react.StopInterrupted {
 		outcome, code = runOutcomeCancelled, exitCodeCancelled
-	}
-	if publishErr := agent.Events.Publish(context.WithoutCancel(ctx), event.TurnCompleted{Status: string(outcome), StopReason: string(result.StopReason), Reason: nonEmptyStopReason(result.Reason)}); publishErr != nil {
-		runErr = errors.Join(runErr, fmt.Errorf("publish Reactor turn completed: %w", publishErr))
 	}
 	items := make([]rollout.Item, 0, 2)
 	if result.FinalMessage != nil && strings.TrimSpace(result.FinalMessage.Content) != "" {
@@ -78,6 +68,15 @@ func (runner *agentController) executeReactorTurn(ctx context.Context, invocatio
 		return task.Result{Items: items}, &commandExitError{code: code, message: summary, reported: true}
 	}
 	return task.Result{Items: items}, nil
+}
+
+func turnTerminalStatus(outcome runOutcome) rollout.TurnTerminalStatus {
+	switch outcome {
+	case runOutcomeCompleted:
+		return rollout.TurnStatusCompleted
+	default:
+		return rollout.TurnStatusFailed
+	}
 }
 
 func classifyReactorResult(result react.Result) (runOutcome, int) {

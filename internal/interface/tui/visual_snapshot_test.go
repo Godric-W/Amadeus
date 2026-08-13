@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
@@ -16,16 +16,19 @@ func TestVisualRuntimeNoColorSnapshots(t *testing.T) {
 	ctx.Width = 48
 
 	exec := newToolHistoryCell()
-	exec.Apply(event.ToolCallStarted{CallID: "exec", ToolName: "execute_command", SideEffect: "write", Detail: "go test ./..."})
-	exec.Apply(event.ToolCallCompleted{CallID: "exec", ToolName: "execute_command", Success: true, Duration: 1250 * time.Millisecond, Summary: "ok"})
+	execStarted := toolStartedMessage("exec", "execute_command", "write", "", "go test ./...")
+	exec.Apply(execStarted)
+	exec.Apply(toolCompletedMessage(execStarted, protocol.ItemStatusCompleted, "ok", "1.25s", false))
 
 	explore := newToolHistoryCell()
-	explore.Apply(event.ToolCallStarted{CallID: "read", ToolName: "read", SideEffect: "read", ActionSummary: "Read docs/design.md"})
-	explore.Apply(event.ToolCallCompleted{CallID: "read", ToolName: "read", Success: true})
+	exploreStarted := toolStartedMessage("read", "read", "read", "Read docs/design.md", "")
+	explore.Apply(exploreStarted)
+	explore.Apply(toolCompletedMessage(exploreStarted, protocol.ItemStatusCompleted, "", "0s", false))
 
 	search := newToolHistoryCell()
-	search.Apply(event.ToolCallStarted{CallID: "web", ToolName: "web_search", SideEffect: "network", ActionSummary: "Amadeus TUI"})
-	search.Apply(event.ToolCallCompleted{CallID: "web", ToolName: "web_search", Success: true})
+	searchStarted := toolStartedMessage("web", "web_search", "network", "Amadeus TUI", "")
+	search.Apply(searchStarted)
+	search.Apply(toolCompletedMessage(searchStarted, protocol.ItemStatusCompleted, "", "0s", false))
 
 	for name, test := range map[string]struct{ got, want string }{
 		"working":   {got: activityIndicator(ctx.Now, ctx.MotionStart, ctx.Motion, ctx.Palette) + " " + shimmerText("Working", ctx.Now, ctx.MotionStart, ctx.Motion, ctx.Palette) + " (1m 05s • esc to interrupt)", want: "• Working (1m 05s • esc to interrupt)"},

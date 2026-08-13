@@ -51,7 +51,7 @@ func (recorder *turnRolloutRecorder) RecordToolOutcomes(ctx context.Context, out
 	if recorder == nil || recorder.host == nil || recorder.turnID == "" {
 		return errors.New("turn rollout recorder is not configured")
 	}
-	items := make([]rollout.Item, 0, len(outcomes))
+	items := make([]rollout.Item, 0, len(outcomes)*2)
 	for _, outcome := range outcomes {
 		payload := map[string]any{
 			"type": "tool_result", "call_id": outcome.CallID, "name": outcome.ToolName,

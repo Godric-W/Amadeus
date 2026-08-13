@@ -274,7 +274,7 @@ func TestCodingAgentPublishesNonFatalSkillLoadWarnings(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatalf("execute with invalid Skill: %v\nstderr=%s", err, stderr.String())
 	}
-	if stdout.String() != "done\n" || !strings.Contains(stderr.String(), "diagnostic[warn/skill_load_warning]") || !strings.Contains(stderr.String(), "broken") {
+	if stdout.String() != "done\n" || !strings.Contains(stderr.String(), "warning:") || !strings.Contains(stderr.String(), "broken") {
 		t.Fatalf("Skill warning was not surfaced without blocking the Run: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
@@ -566,7 +566,7 @@ func TestInteractiveDumbTerminalUsesPlainRenderer(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatalf("execute dumb-terminal interactive Agent: %v\nstderr=%s", err, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "run: started dumb-terminal") || strings.Contains(stderr.String(), "status: phase=") {
+	if !strings.Contains(stderr.String(), "turn: started") || strings.Contains(stderr.String(), "status: phase=") {
 		t.Fatalf("dumb terminal did not use PlainRenderer: %s", stderr.String())
 	}
 }

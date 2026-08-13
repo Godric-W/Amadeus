@@ -251,6 +251,13 @@ func (threadRuntime *AmadeusThread) Submit(ctx context.Context, op protocol.Op) 
 	}
 }
 
+func (threadRuntime *AmadeusThread) Request(ctx context.Context, request protocol.InteractiveRequest) (protocol.Op, error) {
+	if threadRuntime == nil || threadRuntime.session == nil {
+		return nil, errors.New("thread request is unavailable")
+	}
+	return threadRuntime.session.Request(ctx, request)
+}
+
 func (threadRuntime *AmadeusThread) Shutdown(ctx context.Context) error {
 	if threadRuntime == nil {
 		return nil

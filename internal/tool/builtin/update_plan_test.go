@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/agent/plan"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -34,7 +34,11 @@ func (updater *testPlanUpdater) UpdatePlan(_ context.Context, _ turn.ID, update 
 
 func TestUpdatePlanAppliesAndPublishes(t *testing.T) {
 	updater := &testPlanUpdater{}
-	events := event.NewMemorySink()
+	rootEvents := protocol.NewMemorySink()
+	events, err := protocol.NewScopedSink(rootEvents, "thread-1", "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	candidate, err := NewUpdatePlan(updater, UpdatePlanOptions{Events: events})
 	if err != nil {
 		t.Fatal(err)
@@ -49,14 +53,18 @@ func TestUpdatePlanAppliesAndPublishes(t *testing.T) {
 	if result.ToolName != "update_plan" || result.Metadata["revision"] != int64(1) {
 		t.Fatalf("unexpected Tool result: %#v", result)
 	}
-	published := events.Snapshot()
+	published := rootEvents.Snapshot()
 	if len(published) != 1 {
 		t.Fatalf("unexpected events: %#v", published)
 	}
 }
 
 func TestUpdatePlanRejectsMultipleInProgressItems(t *testing.T) {
-	candidate, err := NewUpdatePlan(&testPlanUpdater{}, UpdatePlanOptions{Events: event.NewMemorySink()})
+	events, err := protocol.NewScopedSink(protocol.NewMemorySink(), "thread-1", "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := NewUpdatePlan(&testPlanUpdater{}, UpdatePlanOptions{Events: events})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +75,11 @@ func TestUpdatePlanRejectsMultipleInProgressItems(t *testing.T) {
 }
 
 func TestUpdatePlanRequiresTurnID(t *testing.T) {
-	candidate, err := NewUpdatePlan(&testPlanUpdater{}, UpdatePlanOptions{Events: event.NewMemorySink()})
+	events, err := protocol.NewScopedSink(protocol.NewMemorySink(), "thread-1", "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := NewUpdatePlan(&testPlanUpdater{}, UpdatePlanOptions{Events: events})
 	if err != nil {
 		t.Fatal(err)
 	}

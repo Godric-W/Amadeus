@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
-
-	"github.com/Godric-W/Amadeus/internal/agent/event"
 )
 
 // ApprovalCoordinator is the single runtime boundary between a tool's
@@ -16,18 +14,17 @@ import (
 type ApprovalCoordinator struct {
 	approvalPort ApprovalPort
 	permissions  *SessionPermissionContext
-	events       event.Sink
 	mutex        sync.Mutex
 }
 
-func NewApprovalCoordinator(approvalPort ApprovalPort, permissions *SessionPermissionContext, events event.Sink) (*ApprovalCoordinator, error) {
+func NewApprovalCoordinator(approvalPort ApprovalPort, permissions *SessionPermissionContext) (*ApprovalCoordinator, error) {
 	if approvalPort == nil {
 		return nil, errors.New("approval coordinator approval port is nil")
 	}
 	if permissions == nil {
 		permissions = NewSessionPermissionContext()
 	}
-	return &ApprovalCoordinator{approvalPort: approvalPort, permissions: permissions, events: events}, nil
+	return &ApprovalCoordinator{approvalPort: approvalPort, permissions: permissions}, nil
 }
 
 func (coordinator *ApprovalCoordinator) Permissions() *SessionPermissionContext {
@@ -56,22 +53,12 @@ func (coordinator *ApprovalCoordinator) DecideForGrant(ctx context.Context, requ
 	if coordinator.permissions.Match(grant) {
 		return ApprovalDecision{Outcome: ApprovalAllow, Scope: ApprovalSession, Source: ApprovalSourceGrant, Reason: "matching session permission grant"}, nil
 	}
-	if coordinator.events != nil {
-		if err := coordinator.events.Publish(ctx, event.ApprovalRequested{RequestID: request.ID, ToolName: request.ToolName, Risk: string(request.Risk), Reason: request.Reason}); err != nil {
-			return ApprovalDecision{}, fmt.Errorf("publish approval requested: %w", err)
-		}
-	}
 	decision, err := coordinator.approvalPort.Decide(ctx, request.Clone())
 	if err != nil {
 		return ApprovalDecision{}, fmt.Errorf("resolve approval: %w", err)
 	}
 	if err := decision.Validate(); err != nil {
 		return ApprovalDecision{}, fmt.Errorf("validate approval decision: %w", err)
-	}
-	if coordinator.events != nil {
-		if err := coordinator.events.Publish(ctx, event.ApprovalResolved{RequestID: request.ID, ToolName: request.ToolName, Outcome: string(decision.Outcome), Scope: string(decision.Scope), Source: string(decision.Source), Reason: decision.Reason}); err != nil {
-			return ApprovalDecision{}, fmt.Errorf("publish approval resolved: %w", err)
-		}
 	}
 	if decision.Allowed() && decision.Scope == ApprovalSession {
 		coordinator.permissions.ApplyGrant(grant)

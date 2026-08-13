@@ -11,8 +11,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/policy"
+	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -61,6 +62,7 @@ type FullscreenOptions struct {
 	Input               io.Reader
 	Output              io.Writer
 	Startup             FullscreenStartup
+	InitialItems        []protocol.TurnItem
 	Task                TaskHandler
 	NewTask             TaskContextFactory
 	Command             FullscreenCommandHandler
@@ -101,6 +103,7 @@ type fullscreenModel struct {
 	width                  int
 	height                 int
 	transcript             TranscriptState
+	runtimeTranscript      *protocol.TranscriptState
 	historyCells           []HistoryCell
 	pendingHistoryCells    []HistoryCell
 	hasEmittedHistoryLines bool
@@ -113,8 +116,6 @@ type fullscreenModel struct {
 	outputUsage            int64
 	contextUsage           int64
 	contextLimit           int64
-	runDiffChanges         []event.RunDiffChange
-	runDiffExact           bool
 	history                []string
 	historyPos             int
 	queuedTasks            []TaskSubmission
@@ -176,7 +177,7 @@ func approvalChoices(request policy.ApprovalRequest) []fullscreenApprovalChoice 
 	return fullscreenApprovalChoices
 }
 
-type fullscreenEventMsg struct{ item event.Event }
+type fullscreenEventMsg struct{ item protocol.SessionEvent }
 type fullscreenApprovalMsg struct{ prompt *fullscreenApproval }
 type fullscreenTaskDoneMsg struct {
 	err     error
@@ -276,9 +277,9 @@ func (app *FullscreenApplication) Run(ctx context.Context) error {
 	return err
 }
 
-func (app *FullscreenApplication) Publish(ctx context.Context, item event.Event) error {
-	if item == nil {
-		return errors.New("fullscreen TUI event is nil")
+func (app *FullscreenApplication) Publish(ctx context.Context, item protocol.SessionEvent) error {
+	if err := item.Validate(); err != nil {
+		return fmt.Errorf("validate fullscreen TUI event: %w", err)
 	}
 	return app.send(ctx, fullscreenEventMsg{item: item})
 }
@@ -385,14 +386,16 @@ func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscr
 	model := fullscreenModel{
 		app: app, ctx: ctx, startup: startup, input: input, renderer: renderer,
 		width: initialWidth, height: 30, status: "idle", model: startup.Model, historyPos: -1, collaboration: CollaborationExecute,
-		palette: palette, clock: systemMotionClock{}, motion: motionAnimated, motionStartedAt: time.Now(), runDiffExact: true,
+		palette: palette, clock: systemMotionClock{}, motion: motionAnimated, motionStartedAt: time.Now(),
 		details: newTranscriptDetailStore(0, 0), detailViewport: newTranscriptViewport(initialWidth, 30),
+		runtimeTranscript: protocol.NewTranscriptState(rollout.ThreadID(startup.Session)),
 	}
 	if app.options.DisableAnimations {
 		model.motion = motionReduced
 	}
 	model.updateInputLayout()
 	model.renderer, _ = newFullscreenMarkdownRenderer(maxInt(20, initialWidth-6), palette)
+	model.restoreCompletedItems(app.options.InitialItems)
 	return model
 }
 
@@ -478,8 +481,6 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.running = true
 			model.runStartedAt = time.Now()
 			model.motionStartedAt = model.runStartedAt
-			model.runDiffChanges = nil
-			model.runDiffExact = true
 			model.status = taskPhase(next)
 			model.draft = ""
 			return model, tea.Sequence(model.flushHistory(), tea.Batch(model.runTask(next), model.workingTick()))
@@ -765,8 +766,6 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		model.running = true
 		model.runStartedAt = time.Now()
 		model.motionStartedAt = model.runStartedAt
-		model.runDiffChanges = nil
-		model.runDiffExact = true
 		model.transcript.HadWorkActivity = false
 		model.transcript.NeedsFinalMessageSeparator = false
 		submission := TaskSubmission{Content: text, Mode: model.collaboration}
@@ -783,51 +782,46 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 	return model, command
 }
 
-func (model *fullscreenModel) applyEvent(item event.Event) {
-	if item == nil {
-		return
+func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) {
+	if model.runtimeTranscript == nil {
+		model.runtimeTranscript = protocol.NewTranscriptState(event.ThreadID)
 	}
-	switch item := item.(type) {
-	case event.LLMCallStarted:
-		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
-			model.flushActiveHistoryCell()
+	if err := model.runtimeTranscript.Apply(event); err != nil {
+		// A live provider may emit a delta before the UI observes its start
+		// marker (for example when an adapter is attached mid-stream). Keep the
+		// strict reducer diagnostic, but recover the projection locally so text
+		// is not lost. Canonical replay never takes this path.
+		if recovered := model.recoverDeltaStart(event); recovered {
+			_ = model.runtimeTranscript.Apply(event)
+		} else {
+			model.insertHistoryCell(NewDiagnosticHistoryCell("event projection: " + err.Error()))
+			return
 		}
-		if strings.TrimSpace(item.Model.Name) != "" {
-			model.model = item.Model.Name
-		}
-	case event.TextDelta:
+	}
+	message := event.Message
+	switch item := message.(type) {
+	case protocol.TurnStarted:
+		model.status = "working"
+	case protocol.AssistantMessageDelta:
 		if model.draft == "" && model.transcript.HadWorkActivity && model.transcript.NeedsFinalMessageSeparator {
 			model.flushActiveHistoryCell()
 			model.insertHistoryCell(FinalMessageSeparator{Elapsed: model.runElapsed()})
 			model.transcript.NeedsFinalMessageSeparator = false
 		}
 		model.draft += item.Delta
-	case event.ReasoningDelta:
+	case protocol.ReasoningDelta:
 		if strings.TrimSpace(item.Delta) != "" {
 			model.status = "thinking"
 		}
-	case event.UsageUpdated:
+	case protocol.ThreadTokenUsageUpdated:
 		model.inputUsage = item.Usage.InputTokens
 		model.outputUsage = item.Usage.OutputTokens
-	case event.ContextWindowUpdated:
-		model.contextUsage = item.EstimatedInputTokens
-		if item.ContextWindow > 0 {
-			model.contextLimit = item.ContextWindow
-		}
-	case event.PlanUpdated:
+	case protocol.PlanUpdated:
 		model.finishDraft()
 		model.insertHistoryCell(NewPlanUpdateCell(item))
 		model.status = "planning"
-	case event.RunDiffUpdated:
-		model.runDiffChanges = append([]event.RunDiffChange(nil), item.Changes...)
-		model.runDiffExact = true
-	case event.RunDiffInvalidated:
-		model.runDiffChanges = nil
-		model.runDiffExact = false
-	case event.IterationStarted, event.IterationCompleted:
-		// Reactor iterations are diagnostic boundaries, not transcript layout boundaries.
-	case event.ToolCallStarted:
-		if item.ToolName == "update_plan" {
+	case protocol.ItemStarted:
+		if item.Item.ToolName == "update_plan" {
 			return
 		}
 		model.finishDraft()
@@ -843,14 +837,14 @@ func (model *fullscreenModel) applyEvent(item event.Event) {
 		model.transcript.HadWorkActivity = true
 		model.transcript.NeedsFinalMessageSeparator = true
 		model.status = "executing"
-	case event.ToolCallCompleted:
-		if item.ToolName == "update_plan" {
+	case protocol.ItemCompleted:
+		if item.Item.ToolName == "update_plan" {
 			return
 		}
 		model.finishDraft()
 		if model.transcript.ActiveCell == nil {
 			cell := newToolHistoryCell()
-			cell.Apply(event.ToolCallStarted{CallID: item.CallID, ToolName: item.ToolName, Iteration: item.Iteration})
+			cell.Apply(protocol.ItemStarted{Item: protocol.TurnItem{ID: item.Item.ID, Kind: item.Item.Kind, Status: protocol.ItemInProgress, CreatedAt: item.Item.CreatedAt, ToolName: item.Item.ToolName, CallID: item.Item.CallID, Payload: item.Item.Payload}})
 			model.transcript.ActiveCell = cell
 		}
 		if model.transcript.ActiveCell.Apply(item) {
@@ -862,43 +856,77 @@ func (model *fullscreenModel) applyEvent(item event.Event) {
 			model.details = newTranscriptDetailStore(0, 0)
 		}
 		if cell, ok := model.transcript.ActiveCell.(*ToolHistoryCell); ok {
-			activity := cell.byCallID[item.CallID]
+			activity := cell.byCallID[item.Item.CallID]
 			if activity != nil {
-				detailContent := strings.TrimSpace(strings.Join([]string{activity.Detail, item.Summary}, "\n\n"))
-				if detail, ok := model.details.Add(item.CallID, activity.Title, detailContent); ok {
+				detailContent := strings.TrimSpace(strings.Join([]string{activity.Detail, item.Item.Text}, "\n\n"))
+				if detail, ok := model.details.Add(item.Item.CallID, activity.Title, detailContent); ok {
 					activity.ResultDetailID = detail.ID
-					activity.DetailAvailable = activity.Kind == activityExplore || detail.Truncated || strings.Count(item.Summary, "\n") >= 5 || len([]rune(item.Summary)) > 600
+					activity.DetailAvailable = activity.Kind == activityExplore || detail.Truncated || strings.Count(item.Item.Text, "\n") >= 5 || len([]rune(item.Item.Text)) > 600
 					activity.Result = detail.Content
 				}
 			}
 		}
-	case event.ApprovalRequested:
-		model.status = "awaiting approval"
-	case event.ApprovalResolved:
+	case protocol.Warning:
 		model.finishDraft()
-		model.insertHistoryCell(NewNoticeHistoryCell(fmt.Sprintf("Approval · %s · %s", item.ToolName, item.Outcome)))
-	case event.TurnStatusChanged:
-		if strings.TrimSpace(item.To) != "" {
-			model.status = item.To
-		}
-	case event.StatusChanged:
-		if strings.TrimSpace(item.To) != "" {
-			model.status = item.To
-		}
-	case event.DiagnosticPublished:
+		model.insertHistoryCell(NewDiagnosticHistoryCell(item.Message))
+	case protocol.StreamError:
 		model.finishDraft()
-		content := strings.TrimSpace(strings.Join([]string{item.Severity, item.Code, item.Message}, " "))
-		model.insertHistoryCell(NewDiagnosticHistoryCell(content))
-	case event.ErrorOccurred:
-		model.finishDraft()
-		if strings.TrimSpace(item.Error.Message) != "" {
-			model.insertHistoryCell(NewErrorHistoryCell(item.Error.Message))
+		if strings.TrimSpace(item.Error) != "" {
+			model.insertHistoryCell(NewErrorHistoryCell(item.Error))
 		}
-	case event.TurnCompleted:
+	case protocol.TurnCompleted:
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
 			model.flushActiveHistoryCell()
 		}
-		model.status = item.Status
+		model.finishDraft()
+		model.status = "completed"
+	case protocol.TurnAborted:
+		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
+			model.flushActiveHistoryCell()
+		}
+		model.finishDraft()
+		model.status = "aborted"
+	}
+}
+
+func (model *fullscreenModel) recoverDeltaStart(event protocol.SessionEvent) bool {
+	var itemID string
+	var kind protocol.ItemKind
+	switch message := event.Message.(type) {
+	case protocol.AssistantMessageDelta:
+		itemID, kind = message.ItemID, protocol.ItemAssistantMessage
+	case protocol.ReasoningDelta:
+		itemID, kind = message.ItemID, protocol.ItemReasoning
+	case protocol.CommandOutputDelta:
+		itemID, kind = message.ItemID, protocol.ItemCommandExecution
+	default:
+		return false
+	}
+	if strings.TrimSpace(itemID) == "" {
+		return false
+	}
+	now := time.Now().UTC()
+	return model.runtimeTranscript.Apply(protocol.SessionEvent{
+		ThreadID: event.ThreadID, TurnID: event.TurnID,
+		Message: protocol.ItemStarted{Item: protocol.TurnItem{ID: itemID, Kind: kind, Status: protocol.ItemInProgress, CreatedAt: now}},
+	}) == nil
+}
+
+func (model *fullscreenModel) restoreCompletedItems(items []protocol.TurnItem) {
+	if model == nil {
+		return
+	}
+	threadID := rollout.ThreadID(model.startup.Session)
+	for _, item := range items {
+		if item.Kind == protocol.ItemAssistantMessage {
+			model.insertHistoryCell(NewAgentMessageCell(item.Text))
+			continue
+		}
+		if item.Kind == protocol.ItemReasoning {
+			continue
+		}
+		event := protocol.SessionEvent{ThreadID: threadID, Message: protocol.ItemCompleted{Item: item}}
+		model.applyEvent(event)
 	}
 }
 
@@ -1448,5 +1476,5 @@ func maxInt(left, right int) int {
 	return right
 }
 
-var _ event.Sink = (*FullscreenApplication)(nil)
+var _ protocol.EventSink = (*FullscreenApplication)(nil)
 var _ policy.ApprovalPort = (*FullscreenApplication)(nil)

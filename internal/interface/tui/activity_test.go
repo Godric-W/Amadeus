@@ -5,31 +5,43 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
 func noColorRenderContext() HistoryRenderContext {
 	now := time.Unix(100, 0)
-	return HistoryRenderContext{
-		Width: 80, Palette: terminalPalette{Level: colorLevelNone, NoColor: true, Dark: true},
-		Now: now, MotionStart: now, Motion: motionReduced,
-	}
+	return HistoryRenderContext{Width: 80, Palette: terminalPalette{Level: colorLevelNone, NoColor: true, Dark: true}, Now: now, MotionStart: now, Motion: motionReduced}
 }
 
 func renderHistoryCellForTest(cell HistoryCell, ctx HistoryRenderContext) string {
 	return renderStyledLines(historyLinesForMode(cell, HistoryRenderRich, ctx), ctx)
 }
 
+func toolStartedMessage(callID, toolName, sideEffect, summary, detail string) protocol.ItemStarted {
+	now := time.Now().UTC()
+	return protocol.ItemStarted{Item: protocol.TurnItem{ID: callID, CallID: callID, ToolName: toolName, Kind: protocol.ItemToolCall, Status: protocol.ItemInProgress, CreatedAt: now, Payload: map[string]any{"side_effect": sideEffect, "action_summary": summary, "detail": detail}}}
+}
+
+func toolCompletedMessage(started protocol.ItemStarted, status protocol.ItemStatus, text, duration string, partial bool) protocol.ItemCompleted {
+	now := time.Now().UTC()
+	item := started.Item
+	item.Status = status
+	item.CompletedAt = now
+	item.Text = text
+	item.Payload = map[string]any{"duration": duration, "partial": partial}
+	return protocol.ItemCompleted{Item: item}
+}
+
 func TestToolHistoryCellGroupsExplorationAndDeduplicatesReads(t *testing.T) {
 	cell := newToolHistoryCell()
-	for _, started := range []event.ToolCallStarted{
-		{CallID: "read-1", ToolName: "read", SideEffect: "read", ActionSummary: "Read docs/design.md"},
-		{CallID: "read-2", ToolName: "read", SideEffect: "read", ActionSummary: "Read docs/design.md"},
-		{CallID: "search-1", ToolName: "grep", SideEffect: "read", ActionSummary: "Search M9V"},
+	for _, started := range []protocol.ItemStarted{
+		toolStartedMessage("read-1", "read", "read", "Read docs/design.md", ""),
+		toolStartedMessage("read-2", "read", "read", "Read docs/design.md", ""),
+		toolStartedMessage("search-1", "grep", "read", "Search M9V", ""),
 	} {
 		cell.Apply(started)
-		cell.Apply(event.ToolCallCompleted{CallID: started.CallID, ToolName: started.ToolName, Success: true})
+		cell.Apply(toolCompletedMessage(started, protocol.ItemStatusCompleted, "", "0s", false))
 	}
 	rendered := xansi.Strip(renderHistoryCellForTest(cell, noColorRenderContext()))
 	if !strings.Contains(rendered, "Explored") || strings.Count(rendered, "docs/design.md") != 1 || !strings.Contains(rendered, "Search M9V") {
@@ -42,12 +54,13 @@ func TestToolHistoryCellGroupsExplorationAndDeduplicatesReads(t *testing.T) {
 
 func TestToolHistoryCellExecLifecycleAndOutputBounds(t *testing.T) {
 	cell := newToolHistoryCell()
-	cell.Apply(event.ToolCallStarted{CallID: "exec-1", ToolName: "execute_command", SideEffect: "write", ActionSummary: "Run tests", Detail: "go test ./..."})
+	started := toolStartedMessage("exec-1", "execute_command", "write", "Run tests", "go test ./...")
+	cell.Apply(started)
 	active := xansi.Strip(renderHistoryCellForTest(cell, noColorRenderContext()))
 	if !strings.Contains(active, "Running") || !strings.Contains(active, "go test ./...") || cell.IsComplete() {
 		t.Fatalf("active exec projection: %q", active)
 	}
-	cell.Apply(event.ToolCallCompleted{CallID: "exec-1", ToolName: "execute_command", Success: true, Duration: 1250 * time.Millisecond, Summary: "1\n2\n3\n4\n5\n6\n7"})
+	cell.Apply(toolCompletedMessage(started, protocol.ItemStatusCompleted, "1\n2\n3\n4\n5\n6\n7", "1.25s", false))
 	rendered := xansi.Strip(renderHistoryCellForTest(cell, noColorRenderContext()))
 	for _, expected := range []string{"Ran", "1", "5", "… +2 lines"} {
 		if !strings.Contains(rendered, expected) {
@@ -64,20 +77,23 @@ func TestToolHistoryCellExecLifecycleAndOutputBounds(t *testing.T) {
 
 func TestToolHistoryCellPreservesCallSequenceAndFailure(t *testing.T) {
 	cell := newToolHistoryCell()
-	cell.Apply(event.ToolCallStarted{CallID: "second", ToolName: "execute_command", SideEffect: "write", ActionSummary: "Second"})
-	cell.Apply(event.ToolCallStarted{CallID: "first", ToolName: "web_search", SideEffect: "network", ActionSummary: "First"})
-	cell.Apply(event.ToolCallCompleted{CallID: "first", ToolName: "web_search", Success: true})
-	cell.Apply(event.ToolCallCompleted{CallID: "second", ToolName: "execute_command", Success: false, Summary: "exit status 1"})
+	second := toolStartedMessage("second", "execute_command", "write", "Second", "")
+	first := toolStartedMessage("first", "web_search", "network", "First", "")
+	cell.Apply(second)
+	cell.Apply(first)
+	cell.Apply(toolCompletedMessage(first, protocol.ItemStatusCompleted, "", "0s", false))
+	cell.Apply(toolCompletedMessage(second, protocol.ItemFailed, "exit status 1", "0s", false))
 	rendered := xansi.Strip(renderHistoryCellForTest(cell, noColorRenderContext()))
-	if strings.Index(rendered, "Second") > strings.Index(rendered, "First") || !strings.Contains(rendered, "failed") && !strings.Contains(rendered, "exit status 1") {
+	if strings.Index(rendered, "Second") > strings.Index(rendered, "First") || (!strings.Contains(rendered, "failed") && !strings.Contains(rendered, "exit status 1")) {
 		t.Fatalf("sequence/failure projection: %q", rendered)
 	}
 }
 
 func TestExecCellPreservesYouRanSemantic(t *testing.T) {
 	cell := newToolHistoryCell()
-	cell.Apply(event.ToolCallStarted{CallID: "user-exec", ToolName: "execute_command", SideEffect: "write", ActionSummary: "You ran git status", Detail: "git status"})
-	cell.Apply(event.ToolCallCompleted{CallID: "user-exec", ToolName: "execute_command", Success: true})
+	started := toolStartedMessage("user-exec", "execute_command", "write", "You ran git status", "git status")
+	cell.Apply(started)
+	cell.Apply(toolCompletedMessage(started, protocol.ItemStatusCompleted, "", "0s", false))
 	if rendered := xansi.Strip(renderHistoryCellForTest(cell, noColorRenderContext())); !strings.Contains(rendered, "You ran") {
 		t.Fatalf("user command semantic missing: %q", rendered)
 	}

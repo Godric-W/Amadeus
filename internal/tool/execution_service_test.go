@@ -231,7 +231,7 @@ func TestToolExecutionServiceInvalidCallDoesNotCancelValidSibling(t *testing.T) 
 func TestToolExecutionServiceAppliesPermissionDecisionsAndSessionGrant(t *testing.T) {
 	permissions := policy.NewSessionPermissionContext()
 	approvalPort := &executionServiceApprovalPort{decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalSession, Source: policy.ApprovalSourceUser, Reason: "trusted"}}
-	coordinator, err := policy.NewApprovalCoordinator(approvalPort, permissions, nil)
+	coordinator, err := policy.NewApprovalCoordinator(approvalPort, permissions)
 	if err != nil {
 		t.Fatal(err)
 	}

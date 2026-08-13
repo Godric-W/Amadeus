@@ -77,6 +77,21 @@ type TurnAborted struct {
 	Reason string `json:"reason"`
 }
 
+// TurnItemCompleted is the durable, self-contained projection of one user-visible
+// turn item. It deliberately lives in rollout rather than importing the agent
+// protocol package, keeping canonical persistence independent from the runtime.
+type TurnItemCompleted struct {
+	ID          string          `json:"id"`
+	Kind        string          `json:"kind"`
+	Status      string          `json:"status"`
+	CreatedAt   time.Time       `json:"created_at"`
+	CompletedAt time.Time       `json:"completed_at,omitempty"`
+	Text        string          `json:"text,omitempty"`
+	ToolName    string          `json:"tool_name,omitempty"`
+	CallID      string          `json:"call_id,omitempty"`
+	Payload     json.RawMessage `json:"payload,omitempty"`
+}
+
 type ContextUpdate struct {
 	Title    string `json:"title,omitempty"`
 	Archived *bool  `json:"archived,omitempty"`
@@ -231,6 +246,22 @@ func validateKnownPayload(item Item) error {
 		}
 		if strings.TrimSpace(payload.Reason) == "" {
 			return errors.New("turn_aborted reason is empty")
+		}
+	case KindTurnItemCompleted:
+		payload, err := DecodePayload[TurnItemCompleted](item)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(payload.ID) == "" || strings.TrimSpace(payload.Kind) == "" {
+			return errors.New("turn_item_completed identity is incomplete")
+		}
+		switch payload.Status {
+		case "completed", "failed", "declined":
+		default:
+			return fmt.Errorf("turn_item_completed status %q is invalid", payload.Status)
+		}
+		if payload.CreatedAt.IsZero() || payload.CompletedAt.IsZero() {
+			return errors.New("turn_item_completed timestamps are incomplete")
 		}
 	case KindTokenUsage:
 		payload, err := DecodePayload[TokenUsage](item)

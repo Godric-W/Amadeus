@@ -6,7 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 )
 
 type activityKind string
@@ -33,14 +33,18 @@ type toolActivity struct {
 	ResultDetailID  string
 }
 
-func activityFromStarted(item event.ToolCallStarted, sequence int) *toolActivity {
-	title := strings.TrimSpace(item.ActionSummary)
+func activityFromStarted(item protocol.TurnItem, sequence int) *toolActivity {
+	payload, _ := item.Payload.(map[string]any)
+	title, _ := payload["action_summary"].(string)
+	title = strings.TrimSpace(title)
 	if title == "" {
 		title = strings.TrimSpace(item.ToolName)
 	}
+	detail, _ := payload["detail"].(string)
+	sideEffect, _ := payload["side_effect"].(string)
 	return &toolActivity{
-		CallID: item.CallID, Iteration: item.Iteration, Sequence: sequence,
-		Kind: activityKindFromSideEffect(item.SideEffect), Title: title, Detail: strings.TrimSpace(item.Detail),
+		CallID: item.CallID, Sequence: sequence,
+		Kind: activityKindFromSideEffect(sideEffect), Title: title, Detail: strings.TrimSpace(detail),
 	}
 }
 

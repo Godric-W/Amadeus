@@ -42,7 +42,7 @@ func newFileToolsTest(t *testing.T, decision policy.ApprovalDecision) (*FileTool
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinator, err := policy.NewApprovalCoordinator(stub, policy.NewSessionPermissionContext(), nil)
+	coordinator, err := policy.NewApprovalCoordinator(stub, policy.NewSessionPermissionContext())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestFileEditRejectsStaleTargetAfterApproval(t *testing.T) {
 	// The approval callback mutates the file between preview and revalidation.
 	stub.decision = policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "approved"}
 	stubCallback := &mutatingApproval{stub: stub, path: path}
-	coordinator, coordinatorErr := policy.NewApprovalCoordinator(stubCallback, policy.NewSessionPermissionContext(), nil)
+	coordinator, coordinatorErr := policy.NewApprovalCoordinator(stubCallback, policy.NewSessionPermissionContext())
 	if coordinatorErr != nil {
 		t.Fatal(coordinatorErr)
 	}

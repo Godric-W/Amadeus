@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -87,7 +86,7 @@ func TestLazyCallApprovalDenialPreventsRemoteCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinator, err := policy.NewApprovalCoordinator(approvals, policy.NewSessionPermissionContext(), nil)
+	coordinator, err := policy.NewApprovalCoordinator(approvals, policy.NewSessionPermissionContext())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,12 +108,11 @@ func TestLazyCallSessionApprovalIsScopedByServerAndTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	approvals := &mcpApprovalStub{decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalSession, Source: policy.ApprovalSourceUser, Reason: "trusted"}}
-	events := event.NewMemorySink()
 	_, call, err := NewLazyTools(manager)
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinator, err := policy.NewApprovalCoordinator(approvals, policy.NewSessionPermissionContext(), events)
+	coordinator, err := policy.NewApprovalCoordinator(approvals, policy.NewSessionPermissionContext())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,8 +128,5 @@ func TestLazyCallSessionApprovalIsScopedByServerAndTool(t *testing.T) {
 	}
 	if len(approvals.requests) != 2 || client.callCalls != 3 {
 		t.Fatalf("unexpected MCP approval/call counts: requests=%d calls=%d", len(approvals.requests), client.callCalls)
-	}
-	if events.Len() != 4 {
-		t.Fatalf("expected requested/resolved for two tool keys, got %d events", events.Len())
 	}
 }

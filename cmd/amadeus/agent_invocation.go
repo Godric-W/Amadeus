@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
@@ -35,7 +35,7 @@ type agentInvocation struct {
 	SessionID      thread.ID
 	Interactive    bool
 	Plain          bool
-	EventSink      event.Sink
+	EventSink      protocol.EventSink
 	Approvals      policy.ApprovalPort
 	Input          io.Reader
 	Output         io.Writer

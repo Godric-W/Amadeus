@@ -3,8 +3,9 @@ package tui
 import (
 	"sort"
 	"strings"
+	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 )
 
 type ToolHistoryCell struct {
@@ -55,29 +56,39 @@ func (cell *ToolHistoryCell) IsComplete() bool {
 	}
 	return true
 }
-func (cell *ToolHistoryCell) Apply(item event.Event) bool {
+func (cell *ToolHistoryCell) Apply(message protocol.EventMessage) bool {
 	if cell == nil {
 		return false
 	}
-	switch item := item.(type) {
-	case event.ToolCallStarted:
-		if _, exists := cell.byCallID[item.CallID]; exists {
+	switch item := message.(type) {
+	case protocol.ItemStarted:
+		if item.Item.ToolName == "" {
+			return false
+		}
+		if _, exists := cell.byCallID[item.Item.CallID]; exists {
 			return true
 		}
 		cell.sequence++
-		activity := activityFromStarted(item, cell.sequence)
+		activity := activityFromStarted(item.Item, cell.sequence)
 		cell.activities = append(cell.activities, activity)
-		cell.byCallID[item.CallID] = activity
+		cell.byCallID[item.Item.CallID] = activity
 		return true
-	case event.ToolCallCompleted:
-		activity := cell.byCallID[item.CallID]
+	case protocol.ItemCompleted:
+		if item.Item.ToolName == "" {
+			return false
+		}
+		activity := cell.byCallID[item.Item.CallID]
 		if activity == nil {
 			return false
 		}
-		activity.Result = strings.TrimSpace(item.Summary)
-		activity.Duration = item.Duration
-		activity.Success = item.Success
-		activity.Partial = item.Partial
+		activity.Result = strings.TrimSpace(item.Item.Text)
+		activity.Success = item.Item.Status == protocol.ItemStatusCompleted
+		if payload, ok := item.Item.Payload.(map[string]any); ok {
+			if duration, ok := payload["duration"].(string); ok {
+				activity.Duration, _ = time.ParseDuration(duration)
+			}
+			activity.Partial, _ = payload["partial"].(bool)
+		}
 		activity.Completed = true
 		return true
 	default:

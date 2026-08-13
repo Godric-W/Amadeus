@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/tool"
 	"github.com/Godric-W/Amadeus/internal/webfetch"
@@ -70,7 +69,7 @@ func TestWebFetchApprovalDenialPreventsFetch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinator, err := policy.NewApprovalCoordinator(approvals, policy.NewSessionPermissionContext(), nil)
+	coordinator, err := policy.NewApprovalCoordinator(approvals, policy.NewSessionPermissionContext())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,12 +85,11 @@ func TestWebFetchApprovalDenialPreventsFetch(t *testing.T) {
 func TestWebFetchSessionApprovalIsScopedByHostname(t *testing.T) {
 	fetcher := &countingWebFetcher{document: webfetch.Document{URL: "https://example.com", Text: "body"}}
 	approvals := &webApprovalStub{decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalSession, Source: policy.ApprovalSourceUser, Reason: "trusted"}}
-	events := event.NewMemorySink()
 	fetch, err := NewWebFetch(fetcher)
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinator, err := policy.NewApprovalCoordinator(approvals, policy.NewSessionPermissionContext(), events)
+	coordinator, err := policy.NewApprovalCoordinator(approvals, policy.NewSessionPermissionContext())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,9 +104,6 @@ func TestWebFetchSessionApprovalIsScopedByHostname(t *testing.T) {
 	}
 	if fetcher.count != 3 {
 		t.Fatalf("expected three fetches, got %d", fetcher.count)
-	}
-	if events.Len() != 4 {
-		t.Fatalf("expected requested/resolved for two hosts, got %d events", events.Len())
 	}
 }
 

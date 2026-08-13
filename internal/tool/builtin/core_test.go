@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/project"
 )
 
@@ -22,7 +22,7 @@ func TestCoreRegistryContainsOnlyPublicCoreTools(t *testing.T) {
 	}
 	options := DefaultCoreToolOptions()
 	options.FileSystemPolicy = filesystem
-	options.Events = event.NewMemorySink()
+	options.Events = protocol.NewMemorySink()
 	options.PlanUpdater = &testPlanUpdater{}
 	registry, err := NewCoreRegistry(root, options)
 	if err != nil {

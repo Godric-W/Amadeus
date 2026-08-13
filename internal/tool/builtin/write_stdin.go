@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
 	processdomain "github.com/Godric-W/Amadeus/internal/process"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -64,7 +63,7 @@ func (writeStdin *WriteStdin) Call(ctx context.Context, invocation tool.Invocati
 	if arguments.Enter {
 		chars += "\n"
 	}
-	owner := event.MetadataFromContext(ctx).TurnID
+	owner := tool.InvocationMetadataFromContext(ctx).TurnID
 	if owner == "" {
 		owner = "standalone"
 	}

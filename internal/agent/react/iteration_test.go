@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -64,7 +64,11 @@ func TestIteratorProducesCandidateAndStableEvents(t *testing.T) {
 		{ID: "response_1", RequestID: "request_1", FinishReason: llm.FinishReasonStop, ProviderFinishReason: "stop", Usage: &usage},
 	}}
 	client := &fakeClient{model: llm.ModelInfo{Provider: "fake", Name: "fake-model"}, stream: stream}
-	sink := event.NewMemorySink()
+	rootSink := protocol.NewMemorySink()
+	sink, err := protocol.NewScopedSink(rootSink, "thread-1", "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	iterator, err := NewIterator(client, sink)
 	if err != nil {
 		t.Fatalf("create iterator: %v", err)
@@ -89,14 +93,45 @@ func TestIteratorProducesCandidateAndStableEvents(t *testing.T) {
 	if string(client.request.Prompt.OutputSchema) != string(input.OutputSchema) {
 		t.Fatalf("model request omitted OutputSchema: %#v", client.request.Prompt.OutputSchema)
 	}
-	expectedTypes := []event.Type{event.TypeLLMCallStarted, event.TypeReasoningDelta, event.TypeTextDelta, event.TypeTextDelta, event.TypeUsageUpdated, event.TypeLLMCallCompleted}
-	assertEventTypes(t, sink.Snapshot(), expectedTypes)
+	events := rootSink.Snapshot()
+	if len(events) != 8 {
+		t.Fatalf("unexpected event count: got %d (%#v)", len(events), events)
+	}
+	if _, ok := events[0].Message.(protocol.ItemStarted); !ok {
+		t.Fatalf("event 0 is not ItemStarted: %#v", events[0])
+	}
+	if _, ok := events[1].Message.(protocol.ReasoningDelta); !ok {
+		t.Fatalf("event 1 is not ReasoningDelta: %#v", events[1])
+	}
+	if _, ok := events[2].Message.(protocol.ItemStarted); !ok {
+		t.Fatalf("event 2 is not ItemStarted: %#v", events[2])
+	}
+	if _, ok := events[3].Message.(protocol.AssistantMessageDelta); !ok {
+		t.Fatalf("event 3 is not AssistantMessageDelta: %#v", events[3])
+	}
+	if _, ok := events[4].Message.(protocol.AssistantMessageDelta); !ok {
+		t.Fatalf("event 4 is not AssistantMessageDelta: %#v", events[4])
+	}
+	if _, ok := events[5].Message.(protocol.ThreadTokenUsageUpdated); !ok {
+		t.Fatalf("event 5 is not ThreadTokenUsageUpdated: %#v", events[5])
+	}
+	if _, ok := events[6].Message.(protocol.ItemCompleted); !ok {
+		t.Fatalf("event 6 is not assistant ItemCompleted: %#v", events[6])
+	}
+	if _, ok := events[7].Message.(protocol.ItemCompleted); !ok {
+		t.Fatalf("event 7 is not reasoning ItemCompleted: %#v", events[7])
+	}
 }
 
 func TestIteratorPreservesAssembledSystemPrompt(t *testing.T) {
 	stream := &fakeStream{chunks: []llm.StreamChunk{{ContentDelta: "done", FinishReason: llm.FinishReasonStop}}}
 	client := &fakeClient{model: llm.ModelInfo{Provider: "fake", Name: "fake-model"}, stream: stream}
-	iterator, err := NewIterator(client, event.NewMemorySink())
+	rootSink := protocol.NewMemorySink()
+	sink, err := protocol.NewScopedSink(rootSink, "thread-1", "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	iterator, err := NewIterator(client, sink)
 	if err != nil {
 		t.Fatalf("create iterator: %v", err)
 	}
@@ -115,7 +150,12 @@ func TestIteratorPreservesAssembledSystemPrompt(t *testing.T) {
 func TestIteratorUsesInputBaseInstructions(t *testing.T) {
 	stream := &fakeStream{chunks: []llm.StreamChunk{{ContentDelta: "done", FinishReason: llm.FinishReasonStop}}}
 	client := &fakeClient{model: llm.ModelInfo{Provider: "fake", Name: "fake-model"}, stream: stream}
-	iterator, err := NewIterator(client, event.NewMemorySink())
+	rootSink := protocol.NewMemorySink()
+	sink, err := protocol.NewScopedSink(rootSink, "thread-1", "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	iterator, err := NewIterator(client, sink)
 	if err != nil {
 		t.Fatalf("create configured iterator: %v", err)
 	}
@@ -131,7 +171,12 @@ func TestIteratorUsesInputBaseInstructions(t *testing.T) {
 
 func TestIteratorRejectsMissingBaseInstructionsAtRunBoundary(t *testing.T) {
 	client := &fakeClient{model: llm.ModelInfo{Provider: "fake", Name: "fake-model"}}
-	iterator, err := NewIterator(client, event.NewMemorySink())
+	rootSink := protocol.NewMemorySink()
+	sink, err := protocol.NewScopedSink(rootSink, "thread-1", "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	iterator, err := NewIterator(client, sink)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +193,11 @@ func TestIteratorProducesNormalizedToolCalls(t *testing.T) {
 		ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`)}},
 	}}}
 	client := &fakeClient{model: llm.ModelInfo{Provider: "fake", Name: "fake-model"}, stream: stream}
-	sink := event.NewMemorySink()
+	rootSink := protocol.NewMemorySink()
+	sink, err := protocol.NewScopedSink(rootSink, "thread-1", "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	iterator, err := NewIterator(client, sink)
 	if err != nil {
 		t.Fatalf("create iterator: %v", err)
@@ -165,13 +214,19 @@ func TestIteratorProducesNormalizedToolCalls(t *testing.T) {
 	if !reflect.DeepEqual(result.ToolCalls[0], expected) {
 		t.Fatalf("unexpected normalized call: got %#v, want %#v", result.ToolCalls[0], expected)
 	}
-	assertEventTypes(t, sink.Snapshot(), []event.Type{event.TypeLLMCallStarted, event.TypeLLMCallCompleted})
+	if len(rootSink.Snapshot()) != 0 {
+		t.Fatalf("tool-call-only iteration should not publish text lifecycle events: %#v", rootSink.Snapshot())
+	}
 }
 
 func TestIteratorRejectsEmptyCandidateAndPublishesError(t *testing.T) {
 	stream := &fakeStream{chunks: []llm.StreamChunk{{FinishReason: llm.FinishReasonStop, ProviderFinishReason: "stop"}}}
 	client := &fakeClient{model: llm.ModelInfo{Provider: "fake", Name: "fake-model"}, stream: stream}
-	sink := event.NewMemorySink()
+	rootSink := protocol.NewMemorySink()
+	sink, err := protocol.NewScopedSink(rootSink, "thread-1", "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	iterator, err := NewIterator(client, sink)
 	if err != nil {
 		t.Fatalf("create iterator: %v", err)
@@ -182,7 +237,13 @@ func TestIteratorRejectsEmptyCandidateAndPublishesError(t *testing.T) {
 	if !errors.As(err, &providerError) || providerError.Kind != llm.ProviderErrorProtocol {
 		t.Fatalf("unexpected empty candidate error: %v", err)
 	}
-	assertEventTypes(t, sink.Snapshot(), []event.Type{event.TypeLLMCallStarted, event.TypeErrorOccurred})
+	events := rootSink.Snapshot()
+	if len(events) != 1 {
+		t.Fatalf("expected one stream error event: %#v", events)
+	}
+	if message, ok := events[0].Message.(protocol.StreamError); !ok || message.Error == "" {
+		t.Fatalf("expected StreamError event: %#v", events[0])
+	}
 }
 
 func validIterationInput() IterationInput {
@@ -192,17 +253,5 @@ func validIterationInput() IterationInput {
 		BaseInstructions: llm.BaseInstructions{Text: "stable Agent protocol"},
 		Temperature:      0.2,
 		MaxOutputTokens:  512,
-	}
-}
-
-func assertEventTypes(t *testing.T, events []event.Event, expected []event.Type) {
-	t.Helper()
-	if len(events) != len(expected) {
-		t.Fatalf("unexpected event count: got %d, want %d (%#v)", len(events), len(expected), events)
-	}
-	for index, expectedType := range expected {
-		if events[index].Type() != expectedType {
-			t.Fatalf("unexpected event %d: got %q, want %q", index, events[index].Type(), expectedType)
-		}
 	}
 }

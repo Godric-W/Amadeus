@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
 	processdomain "github.com/Godric-W/Amadeus/internal/process"
 	"github.com/Godric-W/Amadeus/internal/project"
+	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 func TestWriteStdinContinuesOwnedProcessAndPollsCompletion(t *testing.T) {
@@ -33,7 +33,7 @@ func TestWriteStdinContinuesOwnedProcessAndPollsCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := event.WithMetadata(context.Background(), event.Metadata{TurnID: "run-owner"})
+	ctx := tool.WithInvocationMetadata(context.Background(), tool.InvocationMetadata{TurnID: "run-owner", Source: tool.ToolCallSourceModel})
 	started, err := executePreparedTool(t, ctx, execute, json.RawMessage(`{"command":"read line; printf 'got:%s\\n' \"$line\"","yield_time_ms":1}`))
 	if err != nil || started.Metadata["status"] != string(processdomain.StateRunning) {
 		t.Fatalf("start interactive process: result=%#v err=%v", started, err)
@@ -68,13 +68,13 @@ func TestWriteStdinRejectsAnotherRunOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := event.WithMetadata(context.Background(), event.Metadata{TurnID: "run-owner"})
+	owner := tool.WithInvocationMetadata(context.Background(), tool.InvocationMetadata{TurnID: "run-owner", Source: tool.ToolCallSourceModel})
 	started, err := executePreparedTool(t, owner, execute, json.RawMessage(`{"command":"sleep 5","yield_time_ms":1}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	processID, _ := started.Metadata["process_id"].(string)
-	other := event.WithMetadata(context.Background(), event.Metadata{TurnID: "run-other"})
+	other := tool.WithInvocationMetadata(context.Background(), tool.InvocationMetadata{TurnID: "run-other", Source: tool.ToolCallSourceModel})
 	if _, err := executePreparedTool(t, other, write, json.RawMessage(`{"process_id":"`+processID+`","yield_time_ms":1}`)); !errors.Is(err, processdomain.ErrOwnerMismatch) {
 		t.Fatalf("unexpected owner mismatch: %v", err)
 	}

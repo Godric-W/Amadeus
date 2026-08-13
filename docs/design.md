@@ -27,9 +27,10 @@
 | A. Runtime + Persistence | 分层架构、核心语义、Canonical Runtime、Session/Resume、Persistence |
 | B. Context + Prompt | Prompt/Context、Token、Compaction、Provider Adapter |
 | C. Tool + Approval | Tool 架构、文件修改、Permission、Command、并发 |
-| D. Event + TUI + Slash Command | Session Event、Interactive Request、TurnItem、HistoryCell、Slash Routing |
-| E. Agent Engine | Plan-guided ReAct、Plan Tool、Plan Mode、中断与终态 |
-| F. Extensions + Release | MCP、Skill、Web、迁移清理与发布验收 |
+| D. Event + TUI | Session Event、Interactive Request、TurnItem、HistoryCell、Rich Inline Projection |
+| E. Slash Command | Codex 风格 SlashCommand、InputResult、单一 TUI 分发与 Application/Session 操作 |
+| F. Agent Engine | Plan-guided ReAct、Plan Tool、Plan Mode、中断与终态 |
+| G. Extensions + Release | MCP、Skill、Web、迁移清理与发布验收 |
 
 ## 2. 产品目标
 
@@ -94,7 +95,7 @@ Amadeus 不引入以下主链：
 ```text
 ┌──────────────────────────────────────────────────────────┐
 │ Interface                                                │
-│ CLI · Rich Inline TUI · Plain Renderer                   │
+│ CLI · Rich Inline TUI                                    │
 ├──────────────────────────────────────────────────────────┤
 │ Application                                              │
 │ Bootstrap · ThreadManager · SlashCommandService          │
@@ -140,7 +141,7 @@ Application 负责用例编排：
 - 通过 ThreadManager 创建、恢复、重命名和删除持久化 Thread。
 - 创建和关闭 `AmadeusThread`。
 - 将用户输入、Interrupt、Approval、Compact 和 Shutdown 转换为 `Op`。
-- 将 Slash Command 映射到明确服务。
+- 接收 TUI 分发后的 Application Command，并映射到明确服务。
 - 调用 Thread、Compact 和 Status 等 Application Service。
 
 Application 不包含模型循环，也不复制 Tool 权限逻辑。
@@ -585,7 +586,7 @@ User Input
 6. Resume 通过 StoredThread 定位 Rollout，并由 InitialHistory 重建语义，不恢复 Go goroutine 或旧 RunningTask。
 7. `TurnRejected` 只表示 Turn 尚未进入 canonical started 状态；已写入 `turn_started` 的 Turn 必须以 `turn_completed` 或 `turn_aborted` 收尾。
 
-A 阶段的 `SessionIo` 是唯一 canonical 生命周期协议。现有 Reactor `event.Hub` 在 D 重构前仅作为 Tool/Delta/HistoryCell 的非权威展示适配器：它不能驱动 Turn 持久化、Resume 或 Session 状态判断；D 工作流会将这些展示事件投影到统一 SessionEvent/TurnItem 模型并删除兼容终态语义。
+A 阶段的 `SessionIo` 是唯一 canonical 生命周期协议。D 阶段完成后，Reactor、Tool 和 Application 只通过 `Session.Publish` 进入统一 `SessionEvent` 主链；不存在第二套 Event Hub、Metadata 注入或兼容终态通道。
 
 ### 9.2 Go Runtime Concurrency Model
 
@@ -1471,44 +1472,79 @@ execute_command
 
 ## 18. Slash Command
 
-Slash Command 使用 Codex 风格 Popup：输入 `/` 显示命令、说明和过滤结果，方向键选择，Enter 确认，Esc 关闭。
+Slash Command 完全采用 Codex 风格的轻量模型，不建立独立的 `SlashCommandCatalog`、通用命令注册器或每个 TUI 模式各自的命令路由。
 
-初始命令：
+### 18.1 命令数据模型
 
-| 命令 | 行为 |
-|---|---|
-| `/resume` | 选择并切换当前项目 Session |
-| `/skills` | 展示可用 Skill |
-| `/rename` | 重命名当前 Session |
-| `/delete` | 删除当前 Session |
-| `/compact` | 手动触发 Context Compaction |
-| `/plan` | 进入/退出显式 Plan Mode |
-| `/copy` | 复制最后一条 Assistant 回复 |
-| `/status` | 展示 Session、Model、Context、Permission Mode 和 Working Directories |
-| `/mcp` | 展示 MCP Server 和 Tool 状态 |
-| `/clear` | 建立新的会话显示/上下文边界，保留 canonical history |
-| `/exit` | 退出 Amadeus |
+`SlashCommand` 是命令的唯一身份，命令的展示顺序、名称、描述、参数能力和运行期间可用性通过类型方法提供：
 
-Slash Command 的描述、过滤和 Popup 展示由统一 Catalog 提供；Catalog 不包含业务执行逻辑。命令接受后必须按职责路由：
+```go
+type SlashCommand string
 
-| 路由 | 命令 | 行为 |
-|---|---|---|
-| TUI Local | `/copy`、`/status` | 使用 TUI 已有投影或只读 Thread Snapshot，不创建 Turn |
-| Application Query/Action | `/resume`、`/skills`、`/rename`、`/delete`、`/mcp`、`/clear`、`/exit` | 调用明确 Application Service，操作 Thread、Catalog、Picker 或应用生命周期 |
-| Core Submission | `/compact` | 提交正式 `CompactOp`，由 CompactTask 产生 Rollout 与 Event |
-| Turn Setting | `/plan` | 修改下一 Turn 使用的 Collaboration/Permission Mode；`/plan <task>` 修改模式后提交该用户输入 |
+func (command SlashCommand) Name() string
+func (command SlashCommand) Description() string
+func (command SlashCommand) SupportsInlineArgs() bool
+func (command SlashCommand) AvailableDuringTask() bool
 
-主链：
-
-```text
-Slash Parser
-→ Slash Command ID
-→ TUI Local / Application Action / Core Op
-→ SessionEvent 或 Application Result
-→ TUI Render
+func BuiltinSlashCommands() []SlashCommand
 ```
 
-Slash Command 不发布独立的“命令已执行”Agent Event，也不直接修改 Store、ContextManager、ActiveTurn 或 Tool 状态。`/compact` 和 `/resume` 必须走正式服务；`/plan` 可以先更新本地选择状态，但最终必须作为后续 Turn 的正式 Setting 提交给 Session。
+`BuiltinSlashCommands` 只提供 Codex 风格的固定展示顺序，不是包含业务 Handler 的 Registry。初始命令为：`/resume`、`/skills`、`/rename`、`/delete`、`/compact`、`/plan`、`/copy`、`/status`、`/mcp`、`/clear` 和 `/exit`。
+
+### 18.2 Composer 与输入结果
+
+输入框负责补全、过滤、Popup 选择和解析，不执行命令业务。解析结果必须在输入层区分普通文本与命令：
+
+```go
+type SlashInvocation struct {
+    Command SlashCommand
+    Args    string
+}
+
+type InputResult struct {
+    Text    string
+    Command *SlashInvocation
+}
+```
+
+```text
+普通文本
+→ InputResult.Text
+
+/plan
+→ InputResult.Command(Command: plan)
+
+/plan <task>
+→ InputResult.Command(Command: plan, Args: <task>)
+```
+
+Popup 只负责过滤和选择 `BuiltinSlashCommands`；Enter 后返回类型化 `InputResult`，Esc 只关闭 Popup。命令历史记录只有在分发成功后才提交，失败的输入不污染本地输入回忆。
+
+### 18.3 单一分发中心
+
+Fullscreen TUI 的活动模型承担类似 Codex `ChatWidget` 的统一分发职责：
+
+```text
+Composer
+→ InputResult
+→ fullscreenModel.dispatchCommand
+→ TUI Local Action / Application Command / Session Op
+→ Runtime
+→ SessionEvent 或 Application Result
+→ HistoryCell / TUI Projection
+```
+
+`cmd/amadeus` 只负责 CLI 参数、依赖装配和启动 TUI，不包含 Slash Command `switch`。不保留 Plain Controller、`CommandHandler`、`TaskHandler` 或第二套 Slash Command 执行路径；`--plain` 删除，不作为另一套交互运行时维护。
+
+命令按最终动作分为三类，但分类只服务于分发实现，不引入额外的路由抽象：
+
+| 类型 | 命令 | 执行方式 |
+|---|---|---|
+| TUI Local | `/copy` | 复制最近 Assistant 回复，不创建 Turn |
+| Application Command/Query | `/resume`、`/skills`、`/rename`、`/delete`、`/status`、`/mcp`、`/clear`、`/exit` | 由当前 TUI 分发到 Application/Thread 服务 |
+| Session/Turn Operation | `/compact`、`/plan` | 提交 `CompactOp` 或正式 Turn Setting；`/plan <task>` 再提交用户输入 |
+
+Slash Command 不是 SessionEvent。命令执行引发的状态变化才通过 SessionEvent、Rollout 和 TUI Projection 传播；纯 TUI 操作不写入 canonical history。
 
 ## 19. TUI
 
@@ -1520,7 +1556,7 @@ Slash Command 不发布独立的“命令已执行”Agent Event，也不直接�
 - 历史内容尽量进入终端原生 scrollback。
 - 鼠标默认保留终端选择文本能力。
 - 输入运行期间仍可编辑；Enter 是否提交由 Runtime 状态决定。
-- `--plain` 使用无动画、无交互选择的 Plain Renderer。
+- Amadeus 只维护这一套 Rich Inline 交互运行时；不提供 `--plain` 第二套输入、状态和事件路径。
 
 ### 19.2 HistoryCell
 
@@ -1804,9 +1840,9 @@ Trace / Telemetry     Runtime 内部诊断，不进入产品 Event Protocol
 
 普通 Event 是单向通知，不承担请求—响应职责。Approval、模型主动询问用户和未来 MCP Elicitation 使用 `InteractiveRequest`；回答作为新的 `Submission/Op` 返回 Session。
 
-### 25.2 SessionEvent Envelope
+### 25.2 SessionEvent 作用域
 
-公共 Metadata 只放在 Envelope，不在每个具体 Event 中重复，也不使用反射注入：
+Amadeus 不定义通用 Envelope，也不通过 `context.Context` 注入动态 Event Metadata。`SessionEvent` 直接携带固定的 Thread/Turn 作用域和一个明确的消息类型：
 
 ```go
 type SessionEvent struct {
@@ -1847,11 +1883,11 @@ Warning
 StreamError
 ```
 
-明确不进入公共 Event Protocol：
+明确不进入公共 Event Protocol（内部仍可作为 Trace/Telemetry）：
 
 - LLMCallStarted/Completed。
-- IterationStarted/Completed。
-- 通用 StatusChanged/RunStatusChanged。
+- Iteration 生命周期事件。
+- 通用 StatusChanged 生命周期事件。
 - ContextBuildStarted/Completed。
 - TUI Working/Shimmer Tick。
 - Provider Trace、HTTP Attempt、Retry Backoff 等遥测细节。
@@ -1927,6 +1963,7 @@ UserInputRequest
 - 持久化 TurnStarted、TurnCompleted/TurnAborted、Completed TurnItem、`plan_update`、Token Usage、Compaction 和恢复所需 Context Facts。
 - 不持久化 ItemStarted、Delta、Working、未决 InteractiveRequest、Popup 和动画 Tick。
 - Resume 从 canonical Completed Item 重建 HistoryCell，不重放旧 Delta。
+- 高频 Completed Item 先由 Session 串行追加到 JSONL，并更新内存/SQLite 索引；Session 在 TurnStarted 和 TurnCompleted/TurnAborted 前执行强制 flush，确保终态 Event 只在 canonical facts durable 后发布。这样不会让每个工具事件都独占一次 `fsync`，但不改变持久化顺序和终态不变量。
 
 Turn 终态顺序固定为：
 
@@ -1984,7 +2021,7 @@ Runtime 正确性不能依赖 TUI 消费速度：
 
 ### 27.2 Event Protocol
 
-- SessionEvent Envelope 统一携带 ThreadID/TurnID，具体 payload 不重复公共 Metadata。
+- SessionEvent 统一携带 ThreadID/TurnID，具体 payload 不重复公共 Metadata。
 - Delta 只能更新相同 ItemID 的 Active Item；迟到 Delta 不改变 Completed Item。
 - 没有 ItemStarted 的 Completed Item 仍可直接渲染。
 - InteractiveRequest 必须通过对应 Response Op 完成，不与普通 Event 混用。
@@ -2048,7 +2085,7 @@ Amadeus 至少通过以下真实场景：
 9. `execute_command` 完成后展示命令、输出和退出码，不伪造文件 Diff 或修改归因。
 10. Provider、Context 或 Tool 失败时 TUI 明确显示错误，不静默卡死。
 11. `/resume` 恢复 Session 后 Plan、Compaction 和 Tool 历史语义一致。
-12. `--plain` 在无交互终端中可完成相同 Runtime 流程。
+12. Rich Inline TUI 在正常终端中完成完整 Runtime 流程。
 
 ## 29. 最终架构结论
 

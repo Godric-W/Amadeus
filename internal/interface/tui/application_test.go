@@ -8,8 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
-	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -231,23 +230,24 @@ func TestFullscreenRunningComposerHasNoAuxiliaryHint(t *testing.T) {
 
 func TestFullscreenToolEventsAreVisibleBeforeIterationCompletion(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
-	model.applyEvent(event.IterationStarted{Iteration: 1})
-	model.applyEvent(event.ToolCallStarted{Iteration: 1, CallID: "read", ToolName: "read", SideEffect: "read", ActionSummary: "Read docs/design.md"})
+	started := toolStartedMessage("read", "read", "read", "Read docs/design.md", "")
+	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: started})
 	if model.transcript.ActiveCell == nil || !strings.Contains(xansi.Strip(model.renderActiveCell()), "Exploring") {
 		t.Fatalf("tool was not immediately visible")
 	}
 	count := len(model.historyCells)
-	model.applyEvent(event.IterationCompleted{Iteration: 1})
+	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.TurnStarted{StartedAt: time.Now().UTC()}})
 	if len(model.historyCells) != count {
-		t.Fatal("iteration completion changed transcript layout")
+		t.Fatal("turn lifecycle event changed transcript layout")
 	}
 }
 
 func TestFullscreenSeparatorFollowsToolAndAssistantBoundary(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
-	model.applyEvent(event.ToolCallStarted{CallID: "exec", ToolName: "execute_command", SideEffect: "write", Detail: "go test ./..."})
-	model.applyEvent(event.ToolCallCompleted{CallID: "exec", ToolName: "execute_command", Success: true})
-	model.applyEvent(event.TextDelta{Delta: "完成。"})
+	started := toolStartedMessage("exec", "execute_command", "write", "", "go test ./...")
+	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: started})
+	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: toolCompletedMessage(started, protocol.ItemStatusCompleted, "", "0s", false)})
+	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.AssistantMessageDelta{ItemID: "assistant-1", Delta: "完成。"}})
 	if len(model.historyCells) != 2 {
 		t.Fatalf("tool/final boundary = %#v", model.historyCells)
 	}
@@ -322,11 +322,10 @@ func TestFullscreenErrorAfterToolKeepsFinalSeparator(t *testing.T) {
 
 func TestFullscreenModelRendersAgentEvents(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
-	model.applyEvent(event.LLMCallStarted{Model: llm.ModelInfo{Name: "gpt-test"}})
-	model.applyEvent(event.PlanUpdated{Revision: 1, Items: []event.PlanItem{{Step: "Inspect", Status: "in_progress"}}})
-	model.applyEvent(event.DiagnosticPublished{Severity: "warning", Code: "W1", Message: "notice"})
-	model.applyEvent(event.ErrorOccurred{Error: event.ErrorInfo{Message: "boom"}})
-	if model.model != "gpt-test" || len(model.historyCells) != 3 {
+	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.PlanUpdated{Revision: 1, Items: []protocol.PlanItem{{Step: "Inspect", Status: "in_progress"}}}})
+	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.Warning{Message: "notice"}})
+	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.StreamError{Error: "boom"}})
+	if len(model.historyCells) != 3 {
 		t.Fatalf("event projection = %#v", model.historyCells)
 	}
 	if _, ok := model.historyCells[0].(PlanUpdateCell); !ok {
@@ -339,9 +338,10 @@ func TestFullscreenModelRendersAgentEvents(t *testing.T) {
 
 func TestFullscreenPlanUpdateSuppressesGenericToolActivity(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
-	model.applyEvent(event.ToolCallStarted{CallID: "plan-1", ToolName: "update_plan", SideEffect: "none", ActionSummary: "Ran tool update_plan"})
-	model.applyEvent(event.PlanUpdated{Revision: 1, Items: []event.PlanItem{{Step: "Inspect", Status: "in_progress"}}})
-	model.applyEvent(event.ToolCallCompleted{CallID: "plan-1", ToolName: "update_plan", Success: true})
+	started := toolStartedMessage("plan-1", "update_plan", "none", "Update plan", "")
+	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: started})
+	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.PlanUpdated{Revision: 1, Items: []protocol.PlanItem{{Step: "Inspect", Status: "in_progress"}}}})
+	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: toolCompletedMessage(started, protocol.ItemStatusCompleted, "", "0s", false)})
 	if model.transcript.ActiveCell != nil || len(model.historyCells) != 1 {
 		t.Fatalf("update_plan should render only the plan cell: active=%#v cells=%#v", model.transcript.ActiveCell, model.historyCells)
 	}
@@ -356,21 +356,11 @@ func TestFullscreenPlanUpdateSuppressesGenericToolActivity(t *testing.T) {
 	}
 }
 
-func TestFullscreenDiffEventsUpdateStatusWithoutTranscriptNoise(t *testing.T) {
+func TestFullscreenWarningDoesNotBecomeDiffState(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
-	model.applyEvent(event.RunDiffUpdated{Revision: 1, Changes: []event.RunDiffChange{{Path: "/work/a.go", Kind: "updated"}}})
-	if len(model.historyCells) != 0 || !model.runDiffExact || len(model.runDiffChanges) != 1 {
-		t.Fatalf("exact Patch Diff should update state only: cells=%#v exact=%t changes=%#v", model.historyCells, model.runDiffExact, model.runDiffChanges)
-	}
-	if status := model.commandStatus(); !strings.Contains(status, "patch diff: 1 file(s)") {
-		t.Fatalf("status omitted exact Patch Diff count: %q", status)
-	}
-	model.applyEvent(event.RunDiffInvalidated{Revision: 2, Reason: "malformed Patch delta"})
-	if len(model.historyCells) != 0 || model.runDiffExact || len(model.runDiffChanges) != 0 {
-		t.Fatalf("invalid Patch Diff should clear state without transcript noise: cells=%#v exact=%t changes=%#v", model.historyCells, model.runDiffExact, model.runDiffChanges)
-	}
-	if status := model.commandStatus(); !strings.Contains(status, "patch diff: unavailable") || strings.Contains(status, "attribution") {
-		t.Fatalf("status exposed incorrect Diff semantics: %q", status)
+	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.Warning{Message: "diff is shown in approval"}})
+	if len(model.historyCells) != 1 || !strings.Contains(cellContent(model.historyCells[0]), "diff is shown in approval") {
+		t.Fatalf("warning projection = %#v", model.historyCells)
 	}
 }
 

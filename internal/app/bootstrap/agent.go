@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/react"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
@@ -45,7 +45,7 @@ type Agent struct {
 	ProviderName     string
 	Project          project.Root
 	Client           llm.Client
-	Events           event.Sink
+	Events           protocol.EventSink
 	Audit            audit.Sink
 	BaseInstructions llm.BaseInstructions
 	Registry         *tool.Registry
@@ -65,11 +65,11 @@ type Agent struct {
 	visibility       map[string]bool
 }
 
-func NewAgent(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalPort, auditSink audit.Sink) (*Agent, error) {
+func NewAgent(configured config.Config, root project.Root, events protocol.EventSink, approvals policy.ApprovalPort, auditSink audit.Sink) (*Agent, error) {
 	return NewAgentWithOptions(configured, root, events, approvals, auditSink, AgentOptions{})
 }
 
-func NewAgentWithOptions(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalPort, auditSink audit.Sink, options AgentOptions) (*Agent, error) {
+func NewAgentWithOptions(configured config.Config, root project.Root, events protocol.EventSink, approvals policy.ApprovalPort, auditSink audit.Sink, options AgentOptions) (*Agent, error) {
 	createClient := options.ClientFactory
 	if createClient == nil {
 		createClient = defaultClientFactory
@@ -89,11 +89,11 @@ func (agent *Agent) AvailableTools() []tool.ToolSpec {
 	return tools
 }
 
-func newAgent(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalPort, auditSink audit.Sink, createClient ClientFactory) (*Agent, error) {
+func newAgent(configured config.Config, root project.Root, events protocol.EventSink, approvals policy.ApprovalPort, auditSink audit.Sink, createClient ClientFactory) (*Agent, error) {
 	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, nil, nil, "", "", nil, nil, nil, nil, nil, nil, nil, nil)
 }
 
-func newAgentWithOptions(configured config.Config, root project.Root, events event.Sink, approvals policy.ApprovalPort, auditSink audit.Sink, createClient ClientFactory, rolloutRecorder react.RolloutRecorder, planUpdater builtin.PlanUpdater, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, externalSkills *skill.Catalog, externalSkillWarnings []error, externalMCP *mcp.Manager, webFetcher webfetch.Fetcher, webSearch websearch.Provider, fileSystemPolicy *project.FileSystemPolicy, permissions *policy.SessionPermissionContext) (*Agent, error) {
+func newAgentWithOptions(configured config.Config, root project.Root, events protocol.EventSink, approvals policy.ApprovalPort, auditSink audit.Sink, createClient ClientFactory, rolloutRecorder react.RolloutRecorder, planUpdater builtin.PlanUpdater, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, externalSkills *skill.Catalog, externalSkillWarnings []error, externalMCP *mcp.Manager, webFetcher webfetch.Fetcher, webSearch websearch.Provider, fileSystemPolicy *project.FileSystemPolicy, permissions *policy.SessionPermissionContext) (*Agent, error) {
 	if err := config.Validate(configured); err != nil {
 		return nil, fmt.Errorf("validate Agent configuration: %w", err)
 	}
@@ -112,7 +112,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events eve
 	if permissions == nil {
 		permissions = policy.NewSessionPermissionContext()
 	}
-	coordinator, err := policy.NewApprovalCoordinator(approvals, permissions, events)
+	coordinator, err := policy.NewApprovalCoordinator(approvals, permissions)
 	if err != nil {
 		return nil, fmt.Errorf("create approval coordinator: %w", err)
 	}

@@ -105,7 +105,7 @@ func TestApprovalCoordinatorAppliesOnlySessionGrant(t *testing.T) {
 		t.Fatal("command key rejected")
 	}
 	approvalPort := &fakeApprovalPort{decision: ApprovalDecision{Outcome: ApprovalAllow, Scope: ApprovalSession, Source: ApprovalSourceUser, Reason: "trusted"}}
-	coordinator, err := NewApprovalCoordinator(approvalPort, permissions, nil)
+	coordinator, err := NewApprovalCoordinator(approvalPort, permissions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestApprovalCoordinatorAppliesOnlySessionGrant(t *testing.T) {
 	}
 
 	oncePort := &fakeApprovalPort{decision: ApprovalDecision{Outcome: ApprovalAllow, Scope: ApprovalOnce, Source: ApprovalSourceUser, Reason: "once"}}
-	onceCoordinator, err := NewApprovalCoordinator(oncePort, permissions, nil)
+	onceCoordinator, err := NewApprovalCoordinator(oncePort, permissions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestApprovalCoordinatorAppliesOnlySessionGrant(t *testing.T) {
 func TestApprovalCoordinatorSerializesMatchingSessionGrant(t *testing.T) {
 	permissions := NewSessionPermissionContext()
 	approvalPort := &fakeApprovalPort{decision: ApprovalDecision{Outcome: ApprovalAllow, Scope: ApprovalSession, Source: ApprovalSourceUser, Reason: "trusted"}}
-	coordinator, err := NewApprovalCoordinator(approvalPort, permissions, nil)
+	coordinator, err := NewApprovalCoordinator(approvalPort, permissions)
 	if err != nil {
 		t.Fatal(err)
 	}

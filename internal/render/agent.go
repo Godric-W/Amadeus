@@ -11,7 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 )
 
 const maxAgentEventTextRunes = 240
@@ -35,7 +35,7 @@ func NewAgentRenderer(stdout, stderr io.Writer) (*AgentRenderer, error) {
 	return &AgentRenderer{stdout: stdout, stderr: stderr, openTurns: make(map[string]bool)}, nil
 }
 
-func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent event.Event) error {
+func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent protocol.SessionEvent) error {
 	if renderer == nil {
 		return errors.New("Agent renderer is nil")
 	}
@@ -45,77 +45,64 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent event.E
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if runtimeEvent == nil {
-		return event.ErrNilEvent
+	if err := runtimeEvent.Validate(); err != nil {
+		return err
 	}
 
 	renderer.mutex.Lock()
 	defer renderer.mutex.Unlock()
-	switch typed := runtimeEvent.(type) {
-	case event.TextDelta:
+	switch typed := runtimeEvent.Message.(type) {
+	case protocol.AssistantMessageDelta:
 		return renderer.writeText(typed)
-	case event.LLMCallCompleted:
-		return renderer.closeTurn(typed.LLMCallID)
-	case event.ToolCallStarted:
-		if typed.ToolName == "update_plan" {
+	case protocol.ItemStarted:
+		if typed.Item.Kind == protocol.ItemAssistantMessage || typed.Item.Kind == protocol.ItemReasoning || typed.Item.ToolName == "update_plan" {
 			return nil
 		}
-		return renderer.writeStatus("tool: %s (%s) started", typed.ToolName, typed.CallID)
-	case event.ToolCallCompleted:
-		if typed.ToolName == "update_plan" {
+		return renderer.writeStatus("tool: %s (%s) started", typed.Item.ToolName, typed.Item.CallID)
+	case protocol.ItemCompleted:
+		if typed.Item.Kind == protocol.ItemAssistantMessage {
+			return renderer.closeTurn(typed.Item.ID)
+		}
+		if typed.Item.Kind == protocol.ItemReasoning || typed.Item.ToolName == "update_plan" {
 			return nil
 		}
 		status := "completed"
-		if !typed.Success {
+		if typed.Item.Status != protocol.ItemStatusCompleted {
 			status = "failed"
 		}
-		partial := ""
-		if typed.Partial {
-			partial = " partial"
-		}
-		return renderer.writeStatus("tool: %s (%s) %s%s in %s: %s", typed.ToolName, typed.CallID, status, partial, typed.Duration, typed.Summary)
-	case event.ApprovalRequested:
-		return renderer.writeStatus("approval: requested for %s (%s, risk=%s): %s", typed.ToolName, typed.RequestID, typed.Risk, typed.Reason)
-	case event.ApprovalResolved:
-		return renderer.writeStatus("approval: %s for %s (%s, scope=%s, source=%s): %s", typed.Outcome, typed.ToolName, typed.RequestID, typed.Scope, typed.Source, typed.Reason)
-	case event.UsageUpdated:
-		return renderer.writeStatus("usage: input=%d cached=%d output=%d reasoning=%d total=%d", typed.Usage.InputTokens, typed.Usage.CachedInputTokens, typed.Usage.OutputTokens, typed.Usage.ReasoningTokens, typed.Usage.TotalTokens)
-	case event.StatusChanged:
-		return renderer.writeStatus("status: %s %s %s -> %s", typed.Entity, typed.EntityID, typed.From, typed.To)
-	case event.TurnStatusChanged:
-		return renderer.writeStatus("status: %s %s %s -> %s", typed.Entity, typed.EntityID, typed.From, typed.To)
-	case event.DiagnosticPublished:
-		return renderer.writeStatus("diagnostic[%s/%s]: %s", typed.Severity, typed.Code, typed.Message)
-	case event.RunDiffUpdated:
-		return nil
-	case event.RunDiffInvalidated:
-		return nil
-	case event.PlanUpdated:
+		return renderer.writeStatus("tool: %s (%s) %s: %s", typed.Item.ToolName, typed.Item.CallID, status, typed.Item.Text)
+	case protocol.PlanUpdated:
 		return renderer.writeStatus("plan: updated revision=%d items=%d", typed.Revision, len(typed.Items))
-	case event.TurnStarted:
-		return renderer.writeStatus("run: started %s (task=%s)", typed.TurnID, typed.TaskID)
-	case event.TurnCompleted:
-		return renderer.writeStatus("run: %s (stop=%s): %s", typed.Status, typed.StopReason, typed.Reason)
-	case event.ErrorOccurred:
-		message := typed.Error.Message
+	case protocol.ThreadTokenUsageUpdated:
+		return renderer.writeStatus("usage: input=%d cached=%d output=%d reasoning=%d total=%d", typed.Usage.InputTokens, typed.Usage.CachedInputTokens, typed.Usage.OutputTokens, typed.Usage.ReasoningTokens, typed.Usage.TotalTokens)
+	case protocol.TurnStarted:
+		return renderer.writeStatus("turn: started")
+	case protocol.TurnCompleted:
+		return renderer.writeStatus("turn: completed: %s", typed.Error)
+	case protocol.TurnAborted:
+		return renderer.writeStatus("turn: aborted: %s", typed.Reason)
+	case protocol.Warning:
+		return renderer.writeStatus("warning: %s", typed.Message)
+	case protocol.StreamError:
+		message := typed.Error
 		if strings.TrimSpace(message) == "" {
 			message = "request failed"
 		}
 		return renderer.writeStatus("error: %s", message)
-	case event.LLMCallStarted, event.ReasoningDelta:
+	case protocol.ReasoningDelta, protocol.CommandOutputDelta, protocol.ContextCompacted:
 		return nil
 	default:
 		return nil
 	}
 }
 
-func (renderer *AgentRenderer) writeText(delta event.TextDelta) error {
+func (renderer *AgentRenderer) writeText(delta protocol.AssistantMessageDelta) error {
 	if delta.Delta == "" {
 		return nil
 	}
 	written, err := io.WriteString(renderer.stdout, delta.Delta)
 	if written > 0 {
-		renderer.openTurns[delta.LLMCallID] = true
+		renderer.openTurns[delta.ItemID] = true
 	}
 	if err != nil {
 		return fmt.Errorf("write Agent text delta: %w", err)
@@ -177,4 +164,4 @@ func sanitizeAgentEventText(value string) string {
 	return strings.TrimSpace(result.String())
 }
 
-var _ event.Sink = (*AgentRenderer)(nil)
+var _ protocol.EventSink = (*AgentRenderer)(nil)

@@ -110,15 +110,31 @@ func (store *Store) OpenWriter(ctx context.Context, id thread.ID) (thread.Initia
 }
 
 func (store *Store) AppendItems(ctx context.Context, id thread.ID, turnID thread.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
+	result, err := store.appendItems(ctx, id, turnID, items...)
+	if err != nil {
+		return thread.AppendResult{}, err
+	}
+	recorder, err := store.recorder(id)
+	if err != nil {
+		return thread.AppendResult{}, err
+	}
+	if err := recorder.Flush(ctx); err != nil {
+		return thread.AppendResult{}, err
+	}
+	return result, nil
+}
+
+func (store *Store) AppendItemsBuffered(ctx context.Context, id thread.ID, turnID thread.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
+	return store.appendItems(ctx, id, turnID, items...)
+}
+
+func (store *Store) appendItems(ctx context.Context, id thread.ID, turnID thread.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
 	recorder, err := store.recorder(id)
 	if err != nil {
 		return thread.AppendResult{}, err
 	}
 	lines, err := recorder.Append(ctx, turnID, items...)
 	if err != nil {
-		return thread.AppendResult{}, err
-	}
-	if err := recorder.Flush(ctx); err != nil {
 		return thread.AppendResult{}, err
 	}
 	history, err := rollout.Read(recorder.Path(), id)

@@ -5,14 +5,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
 	patchtool "github.com/Godric-W/Amadeus/internal/tool/patch"
 )
 
 func TestTrackerFoldsRepeatedPatchOperations(t *testing.T) {
 	root := t.TempDir()
-	events := event.NewMemorySink()
-	tracker, err := NewProjector(root, events)
+	tracker, err := NewProjector(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +37,7 @@ func TestTrackerFoldsRepeatedPatchOperations(t *testing.T) {
 
 func TestTrackerFoldsMoveThenDeleteToOriginalDelete(t *testing.T) {
 	root := t.TempDir()
-	tracker, _ := NewProjector(root, event.NewMemorySink())
+	tracker, _ := NewProjector(root)
 	if err := tracker.ProjectPatch(context.Background(), []patchtool.AppliedPatchDelta{patchDelta(patchtool.OperationMove, "old.txt", "new.txt", []byte("content"), []byte("content"))}); err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +53,7 @@ func TestTrackerFoldsMoveThenDeleteToOriginalDelete(t *testing.T) {
 func TestTrackerTracksAbsolutePathsAcrossWritableRoots(t *testing.T) {
 	cwd := t.TempDir()
 	external := t.TempDir()
-	tracker, err := NewProjector(cwd, event.NewMemorySink())
+	tracker, err := NewProjector(cwd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +70,7 @@ func TestTrackerTracksAbsolutePathsAcrossWritableRoots(t *testing.T) {
 func TestTrackerTracksMoveAcrossWritableRoots(t *testing.T) {
 	cwd := t.TempDir()
 	external := t.TempDir()
-	tracker, err := NewProjector(cwd, event.NewMemorySink())
+	tracker, err := NewProjector(cwd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,8 +86,7 @@ func TestTrackerTracksMoveAcrossWritableRoots(t *testing.T) {
 }
 
 func TestProjectorOnlyConsumesExplicitPatchProjection(t *testing.T) {
-	events := event.NewMemorySink()
-	tracker, _ := NewProjector(t.TempDir(), events)
+	tracker, _ := NewProjector(t.TempDir())
 	if err := tracker.ProjectPatch(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -97,18 +94,14 @@ func TestProjectorOnlyConsumesExplicitPatchProjection(t *testing.T) {
 	if snapshot.Invalidated || snapshot.Revision != 0 || len(snapshot.Changes) != 0 {
 		t.Fatalf("non-Patch Tool changed exact Patch projection: %#v", snapshot)
 	}
-	if published := events.Snapshot(); len(published) != 0 {
-		t.Fatalf("non-Patch Tool published Diff events: %#v", published)
-	}
 }
 
 func TestTrackerInvalidatesInexactPatchDelta(t *testing.T) {
-	events := event.NewMemorySink()
-	tracker, _ := NewProjector(t.TempDir(), events)
+	tracker, _ := NewProjector(t.TempDir())
 	delta := patchDelta(patchtool.OperationUpdate, "a.txt", "", []byte("before"), []byte("after"))
 	delta.Exact = false
 	if err := tracker.ProjectPatch(context.Background(), []patchtool.AppliedPatchDelta{delta}); err != nil {
-		t.Fatalf("event publication failed: %v", err)
+		t.Fatalf("inexact Patch delta was not rejected: %v", err)
 	}
 	snapshot := tracker.Snapshot()
 	if !snapshot.Invalidated || len(snapshot.Changes) != 0 {

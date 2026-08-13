@@ -75,12 +75,15 @@ type ActiveTurn struct {
 }
 
 type Session struct {
-	threadID  thread.ID
-	state     SessionState
-	services  SessionServices
-	active    *ActiveTurn
-	queue     []protocol.Submission
-	historyMu sync.RWMutex
+	threadID    thread.ID
+	state       SessionState
+	services    SessionServices
+	active      *ActiveTurn
+	queue       []protocol.Submission
+	historyMu   sync.RWMutex
+	contextMu   sync.Mutex
+	completedMu sync.Mutex
+	queuedItems map[turn.ID][]rollout.Item
 
 	ctx         context.Context
 	cancel      context.CancelCauseFunc
@@ -90,6 +93,13 @@ type Session struct {
 	status      chan protocol.AgentStatus
 	terminated  chan struct{}
 	completed   chan task.Completion
+	requestsIn  chan requestDelivery
+	pending     map[string]chan protocol.Op
+}
+
+type requestDelivery struct {
+	request protocol.InteractiveRequest
+	result  chan protocol.Op
 }
 
 var ErrInterrupted = errors.New("turn interrupted by user")
@@ -110,6 +120,7 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 		submissions: make(chan protocol.Submission, 32), events: make(chan protocol.SessionEvent, 128),
 		requests: make(chan protocol.InteractiveRequest, 8), status: make(chan protocol.AgentStatus, 16),
 		terminated: make(chan struct{}), completed: make(chan task.Completion, 1),
+		requestsIn: make(chan requestDelivery, 8), pending: make(map[string]chan protocol.Op), queuedItems: make(map[turn.ID][]rollout.Item),
 	}
 	value.state.History = cloneLines(args.History.Lines)
 	contextManager, err := agentcontext.NewManagerFromRollout(args.History.Lines, nil)
@@ -142,6 +153,12 @@ func (session *Session) loop() {
 	defer close(session.requests)
 	defer close(session.status)
 	defer close(session.terminated)
+	defer func() {
+		for requestID, result := range session.pending {
+			delete(session.pending, requestID)
+			result <- nil
+		}
+	}()
 	defer func() {
 		cleanupCtx, cancel := session.cleanupContext()
 		defer cancel()
@@ -178,6 +195,12 @@ func (session *Session) loop() {
 				continue
 			}
 			session.handleSubmission(submission)
+		case pending, ok := <-session.requestsIn:
+			if !ok {
+				session.cancel(errors.New("session request channel closed"))
+				continue
+			}
+			session.handleRequest(pending)
 		case completion := <-session.completed:
 			session.finishTurn(completion)
 			if session.ctx.Err() != nil && session.active == nil {
@@ -207,7 +230,38 @@ func (session *Session) handleSubmission(submission protocol.Submission) {
 		if op.PermissionMode == string(turn.PermissionModeDefault) || op.PermissionMode == string(turn.PermissionModePlan) {
 			session.state.Permissions.Mode = turn.PermissionMode(op.PermissionMode)
 		}
+	case protocol.ApprovalDecisionOp:
+		session.resolveRequest(op.RequestID, op)
+	case protocol.UserInputResponseOp:
+		session.resolveRequest(op.RequestID, op)
 	}
+}
+
+func (session *Session) handleRequest(envelope requestDelivery) {
+	if err := envelope.request.Validate(); err != nil {
+		envelope.result <- nil
+		return
+	}
+	if _, exists := session.pending[envelope.request.RequestID]; exists {
+		envelope.result <- nil
+		return
+	}
+	session.pending[envelope.request.RequestID] = envelope.result
+	select {
+	case session.requests <- envelope.request:
+	case <-session.ctx.Done():
+		delete(session.pending, envelope.request.RequestID)
+		envelope.result <- nil
+	}
+}
+
+func (session *Session) resolveRequest(requestID string, op protocol.Op) {
+	result := session.pending[requestID]
+	if result == nil {
+		return
+	}
+	delete(session.pending, requestID)
+	result <- op
 }
 
 func (session *Session) startTurn(input string, compact bool) {
@@ -270,7 +324,7 @@ func (session *Session) startTurn(input string, compact bool) {
 		items = append(items, responseItem)
 	}
 	items = append(items, startedItem)
-	if err := session.AppendItems(session.ctx, turnID, items...); err != nil {
+	if err := session.appendItemsDurable(session.ctx, turnID, items...); err != nil {
 		session.rejectTurn(turnID, err, true)
 		return
 	}
@@ -309,13 +363,36 @@ func (session *Session) rejectTurn(turnID turn.ID, err error, fatal bool) {
 }
 
 func (session *Session) AppendItems(ctx context.Context, turnID turn.ID, items ...rollout.Item) error {
-	result, err := session.services.LiveThread.AppendItems(ctx, turnID, items...)
+	return session.appendItems(ctx, turnID, false, items...)
+}
+
+func (session *Session) appendItemsDurable(ctx context.Context, turnID turn.ID, items ...rollout.Item) error {
+	return session.appendItems(ctx, turnID, true, items...)
+}
+
+func (session *Session) appendItems(ctx context.Context, turnID turn.ID, durable bool, items ...rollout.Item) error {
+	if session == nil {
+		return errors.New("session is nil")
+	}
+	if ctx == nil {
+		return errors.New("append rollout context is nil")
+	}
+	var result thread.AppendResult
+	var err error
+	if durable {
+		result, err = session.services.LiveThread.AppendItems(ctx, turnID, items...)
+	} else {
+		result, err = session.services.LiveThread.AppendItemsBuffered(ctx, turnID, items...)
+	}
 	if err != nil {
 		return err
 	}
 	session.appendHistory(result.Lines)
-	if err := session.state.Context.Rebuild(session.History()); err != nil {
-		return fmt.Errorf("rebuild context after rollout append: %w", err)
+	session.contextMu.Lock()
+	rebuildErr := session.state.Context.Rebuild(session.History())
+	session.contextMu.Unlock()
+	if rebuildErr != nil {
+		return fmt.Errorf("rebuild context after rollout append: %w", rebuildErr)
 	}
 	if result.MetadataWarning != nil {
 		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.Warning{Message: result.MetadataWarning.Error()}})
@@ -332,7 +409,7 @@ func (session *Session) UpdatePlan(ctx context.Context, turnID turn.ID, update p
 		if err != nil {
 			return err
 		}
-		return session.AppendItems(ctx, turnID, item)
+		return session.appendItemsDurable(ctx, turnID, item)
 	})
 }
 
@@ -382,16 +459,20 @@ func (session *Session) Rename(ctx context.Context, title string, at time.Time) 
 	if err != nil {
 		return err
 	}
-	return session.AppendItems(ctx, "", item)
+	return session.appendItemsDurable(ctx, "", item)
 }
 
 func (session *Session) finishTurn(completion task.Completion) {
 	if session.active == nil || session.active.Task.Context().TurnID != completion.TurnID {
 		return
 	}
+	completedItems := session.takeCompletedItems(completion.TurnID)
 	if len(completion.Result.Items) > 0 {
+		completedItems = append(completedItems, completion.Result.Items...)
+	}
+	if len(completedItems) > 0 {
 		cleanupCtx, cancel := session.cleanupContext()
-		err := session.AppendItems(cleanupCtx, completion.TurnID, completion.Result.Items...)
+		err := session.appendItemsDurable(cleanupCtx, completion.TurnID, completedItems...)
 		cancel()
 		if err != nil && completion.Error == nil {
 			completion.Error = err
@@ -402,7 +483,7 @@ func (session *Session) finishTurn(completion task.Completion) {
 		reason := completion.Cause.Error()
 		terminal, _ := rollout.NewItem(rollout.KindTurnAborted, rollout.TurnAborted{Reason: reason})
 		cleanupCtx, cancel := session.cleanupContext()
-		persistErr := session.AppendItems(cleanupCtx, completion.TurnID, terminal)
+		persistErr := session.appendItemsDurable(cleanupCtx, completion.TurnID, terminal)
 		cancel()
 		session.active.State.MarkTerminal(persistErr)
 		session.active = nil
@@ -423,7 +504,7 @@ func (session *Session) finishTurn(completion task.Completion) {
 	}
 	terminal, _ := rollout.NewItem(rollout.KindTurnCompleted, rollout.TurnCompleted{Status: status, Error: errorText})
 	cleanupCtx, cancel := session.cleanupContext()
-	persistErr := session.AppendItems(cleanupCtx, completion.TurnID, terminal)
+	persistErr := session.appendItemsDurable(cleanupCtx, completion.TurnID, terminal)
 	cancel()
 	if persistErr != nil {
 		status = rollout.TurnStatusFailed
@@ -440,10 +521,30 @@ func (session *Session) finishTurn(completion task.Completion) {
 	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: protocol.TurnCompleted{Status: status, Error: errorText, FinishedAt: finishedAt}})
 }
 
+func (session *Session) queueCompletedItem(turnID turn.ID, item rollout.Item) {
+	if session == nil || turnID == "" {
+		return
+	}
+	session.completedMu.Lock()
+	session.queuedItems[turnID] = append(session.queuedItems[turnID], item)
+	session.completedMu.Unlock()
+}
+
+func (session *Session) takeCompletedItems(turnID turn.ID) []rollout.Item {
+	if session == nil {
+		return nil
+	}
+	session.completedMu.Lock()
+	items := append([]rollout.Item(nil), session.queuedItems[turnID]...)
+	delete(session.queuedItems, turnID)
+	session.completedMu.Unlock()
+	return items
+}
+
 func (session *Session) completeWithoutTask(turnID turn.ID, taskErr error) {
 	terminal, _ := rollout.NewItem(rollout.KindTurnCompleted, rollout.TurnCompleted{Status: rollout.TurnStatusFailed, Error: taskErr.Error()})
 	cleanupCtx, cancel := session.cleanupContext()
-	persistErr := session.AppendItems(cleanupCtx, turnID, terminal)
+	persistErr := session.appendItemsDurable(cleanupCtx, turnID, terminal)
 	cancel()
 	if persistErr != nil {
 		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.StreamError{Error: persistErr.Error()}})
@@ -466,9 +567,75 @@ func (session *Session) cancelActive(cause error) {
 }
 
 func (session *Session) publish(event protocol.SessionEvent) {
+	_ = session.Publish(context.WithoutCancel(session.ctx), event)
+}
+
+// Publish is the Session-owned event boundary used by a running task. Events
+// produced below the Session boundary are scoped here before they reach the
+// SessionIo channel; callers do not need to carry routing metadata through
+// tool or reactor internals.
+func (session *Session) Publish(ctx context.Context, event protocol.SessionEvent) error {
+	if session == nil {
+		return errors.New("session event publisher is nil")
+	}
+	if ctx == nil {
+		return errors.New("session event context is nil")
+	}
+	if event.ThreadID == "" {
+		event.ThreadID = session.threadID
+	}
+	if err := event.Validate(); err != nil {
+		return err
+	}
+	if completed, ok := event.Message.(protocol.ItemCompleted); ok {
+		item, err := protocol.NewCompletedItem(completed.Item)
+		if err != nil {
+			return fmt.Errorf("encode completed event for rollout: %w", err)
+		}
+		session.queueCompletedItem(turn.ID(event.TurnID), item)
+	}
 	select {
 	case session.events <- event:
-	case <-session.ctx.Done():
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-session.terminated:
+		return errors.New("session event channel is closed")
+	}
+}
+
+// Request is the Session-owned request/response boundary for approvals and
+// other interactive tool interactions. The Session loop remains the sole
+// owner of pending requests and routes the response back to the caller.
+func (session *Session) Request(ctx context.Context, request protocol.InteractiveRequest) (protocol.Op, error) {
+	if session == nil {
+		return nil, errors.New("session request publisher is nil")
+	}
+	if ctx == nil {
+		return nil, errors.New("session request context is nil")
+	}
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+	result := make(chan protocol.Op, 1)
+	envelope := requestDelivery{request: request, result: result}
+	select {
+	case session.requestsIn <- envelope:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-session.terminated:
+		return nil, errors.New("session is terminated")
+	}
+	select {
+	case op := <-result:
+		if op == nil {
+			return nil, errors.New("interactive request was rejected")
+		}
+		return op, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-session.terminated:
+		return nil, errors.New("session is terminated")
 	}
 }
 

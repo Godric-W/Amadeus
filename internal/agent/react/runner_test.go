@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
@@ -371,7 +371,7 @@ func TestRunnerAccumulatesUsageWithoutReducingProviderRequestLimit(t *testing.T)
 func TestRunnerPublishesIterationLifecycleWithRunMetadata(t *testing.T) {
 	response := llm.Response{Message: llm.AssistantMessage("done"), FinishReason: llm.FinishReasonStop}
 	candidate := response.Message
-	events := event.NewMemorySink()
+	events := protocol.NewMemorySink()
 	runner, err := NewRunner(
 		&scriptedIterator{results: []IterationResult{{Kind: IterationCandidate, Response: response, Candidate: &candidate}}},
 		&scriptedCallExecutor{executions: map[string]ToolOutcome{}, errors: map[string]error{}},
@@ -386,25 +386,12 @@ func TestRunnerPublishesIterationLifecycleWithRunMetadata(t *testing.T) {
 	request := validRequest()
 	request.ModelInfo.ContextWindow = 1000
 	request.ModelInfo.AutoCompactTokenLimit = 850
-	ctx := event.WithMetadata(context.Background(), event.Metadata{SessionID: "session-1"})
-	if _, err := runner.Run(ctx, request); err != nil {
+	if _, err := runner.Run(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := events.Snapshot()
-	if len(snapshot) != 3 {
-		t.Fatalf("unexpected lifecycle event count: %#v", snapshot)
-	}
-	started, ok := snapshot[0].(event.IterationStarted)
-	if !ok || started.SessionID != "session-1" || started.TurnID != "run-1" || started.TaskID != "" || started.Iteration != 1 || started.LLMCallID != "run-1/llm-1" {
-		t.Fatalf("unexpected iteration started event: %#v", snapshot[0])
-	}
-	contextUpdate, ok := snapshot[1].(event.ContextWindowUpdated)
-	if !ok || contextUpdate.ContextWindow != 1000 || contextUpdate.EstimatedInputTokens <= 0 || contextUpdate.EffectiveInputLimit != 488 || contextUpdate.ProjectedToolResults != 0 || contextUpdate.DroppedMessagePairs != 0 || contextUpdate.TurnID != "run-1" || contextUpdate.Iteration != 1 || contextUpdate.LLMCallID != started.LLMCallID {
-		t.Fatalf("unexpected context window event: %#v", snapshot[1])
-	}
-	completed, ok := snapshot[2].(event.IterationCompleted)
-	if !ok || completed.Status != string(IterationCompleted) || completed.TurnID != "run-1" || completed.TaskID != "" || completed.LLMCallID != started.LLMCallID {
-		t.Fatalf("unexpected iteration completed event: %#v", snapshot[2])
+	if len(snapshot) != 0 {
+		t.Fatalf("internal iteration lifecycle leaked into product events: %#v", snapshot)
 	}
 }
 

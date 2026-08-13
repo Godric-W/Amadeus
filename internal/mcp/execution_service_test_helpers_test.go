@@ -23,7 +23,7 @@ func testApprovalCoordinator(ctx context.Context) *policy.ApprovalCoordinator {
 	coordinator, _ := policy.NewApprovalCoordinator(&mcpApprovalStub{decision: policy.ApprovalDecision{
 		Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce,
 		Source: policy.ApprovalSourceUser, Reason: "test MCP call approved",
-	}}, policy.NewSessionPermissionContext(), nil)
+	}}, policy.NewSessionPermissionContext())
 	return coordinator
 }
 

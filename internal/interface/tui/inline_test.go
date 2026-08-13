@@ -5,8 +5,9 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
@@ -17,10 +18,11 @@ func TestInlineRendererKeepsTextAndStatusBlocksSeparate(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := renderer.Publish(ctx, event.TextDelta{Delta: "hello"}); err != nil {
+	if err := renderer.Publish(ctx, protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.AssistantMessageDelta{ItemID: "assistant-1", Delta: "hello"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := renderer.Publish(ctx, event.ToolCallStarted{ToolName: "read"}); err != nil {
+	started := toolStartedMessage("read", "read", "read", "Read file", "")
+	if err := renderer.Publish(ctx, protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: started}); err != nil {
 		t.Fatal(err)
 	}
 	if text.String() != "hello\n" || !strings.Contains(status.String(), "tool started: read") || !strings.Contains(status.String(), "status: phase=executing") {
@@ -35,15 +37,14 @@ func TestInlineRendererRendersPlanApprovalAndSafeToolSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	events := []event.Event{
-		event.PlanUpdated{TurnID: "run-1", Revision: 1, Items: []event.PlanItem{{Step: "Read source", Status: "pending"}}},
-		event.TurnStatusChanged{TurnID: "run-1", Entity: "run", EntityID: "run-1", From: "starting", To: "running"},
-		event.ApprovalRequested{ToolName: "write_file", Risk: "high", Reason: "Authorization: Bearer should-not-leak"},
-		event.ApprovalResolved{ToolName: "write_file", Outcome: "allow", Scope: "once", Source: "user"},
-		event.ToolCallStarted{ToolName: "write_file"},
-		event.ToolCallCompleted{ToolName: "write_file", Success: true, Summary: "token=should-not-leak"},
-		event.UsageUpdated{Usage: llm.Usage{InputTokens: 3, OutputTokens: 5}},
-		event.TurnCompleted{Status: "completed", Reason: "done"},
+	started := toolStartedMessage("write-1", "write", "write", "Write file", "")
+	completed := toolCompletedMessage(started, protocol.ItemStatusCompleted, "token=should-not-leak", "0s", false)
+	events := []protocol.SessionEvent{
+		{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.PlanUpdated{Revision: 1, Items: []protocol.PlanItem{{Step: "Read source", Status: "pending"}}}},
+		{ThreadID: "thread-1", TurnID: "turn-1", Message: started},
+		{ThreadID: "thread-1", TurnID: "turn-1", Message: completed},
+		{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.ThreadTokenUsageUpdated{Usage: llm.Usage{InputTokens: 3, OutputTokens: 5}}},
+		{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.TurnCompleted{Status: "completed", FinishedAt: time.Now().UTC()}},
 	}
 	for _, runtimeEvent := range events {
 		if err := renderer.Publish(ctx, runtimeEvent); err != nil {
@@ -51,7 +52,7 @@ func TestInlineRendererRendersPlanApprovalAndSafeToolSummary(t *testing.T) {
 		}
 	}
 	output := status.String()
-	for _, fragment := range []string{"plan 1:", "plan-1 [pending]: Read source", "approval required: write_file", "tool completed: write_file", "usage: input=3 output=5 total=8", "status: phase=idle"} {
+	for _, fragment := range []string{"plan 1:", "plan-1 [pending]: Read source", "tool started: write", "tool completed: write", "usage: input=3 output=5 total=8", "status: phase=idle"} {
 		if !strings.Contains(output, fragment) {
 			t.Fatalf("inline transcript omitted %q: %s", fragment, output)
 		}
@@ -68,10 +69,11 @@ func TestInlineRendererSuppressesGenericUpdatePlanToolStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	for _, runtimeEvent := range []event.Event{
-		event.ToolCallStarted{CallID: "plan-1", ToolName: "update_plan"},
-		event.PlanUpdated{Revision: 1, Items: []event.PlanItem{{Step: "Inspect", Status: "in_progress"}}},
-		event.ToolCallCompleted{CallID: "plan-1", ToolName: "update_plan", Success: true},
+	started := toolStartedMessage("plan-1", "update_plan", "none", "Update plan", "")
+	for _, runtimeEvent := range []protocol.SessionEvent{
+		{ThreadID: "thread-1", TurnID: "turn-1", Message: started},
+		{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.PlanUpdated{Revision: 1, Items: []protocol.PlanItem{{Step: "Inspect", Status: "in_progress"}}}},
+		{ThreadID: "thread-1", TurnID: "turn-1", Message: toolCompletedMessage(started, protocol.ItemStatusCompleted, "", "0s", false)},
 	} {
 		if err := renderer.Publish(ctx, runtimeEvent); err != nil {
 			t.Fatalf("publish %T: %v", runtimeEvent, err)
@@ -82,21 +84,20 @@ func TestInlineRendererSuppressesGenericUpdatePlanToolStatus(t *testing.T) {
 	}
 }
 
-func TestInlineRendererKeepsDiffStateOutOfTranscript(t *testing.T) {
+func TestInlineRendererIgnoresNonProtocolDiffState(t *testing.T) {
 	var text, status bytes.Buffer
 	renderer, err := NewInlineRenderer(&text, &status)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, runtimeEvent := range []event.Event{
-		event.RunDiffUpdated{Revision: 1, Changes: []event.RunDiffChange{{Path: "/work/a.go", Kind: "updated"}}},
-		event.RunDiffInvalidated{Revision: 2, Reason: "malformed Patch delta"},
+	for _, runtimeEvent := range []protocol.SessionEvent{
+		{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.Warning{Message: "diff is shown during approval"}},
 	} {
 		if err := renderer.Publish(context.Background(), runtimeEvent); err != nil {
 			t.Fatalf("publish %T: %v", runtimeEvent, err)
 		}
 	}
-	if text.Len() != 0 || status.Len() != 0 {
+	if text.Len() != 0 || !strings.Contains(status.String(), "warning: diff is shown during approval") {
 		t.Fatalf("Diff state leaked into inline transcript: text=%q status=%q", text.String(), status.String())
 	}
 }
@@ -108,15 +109,15 @@ func TestInlineRendererGoldenTranscript(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	for _, runtimeEvent := range []event.Event{
-		event.TurnStarted{TurnID: "run-1"},
-		event.PlanUpdated{TurnID: "run-1", Revision: 1, Items: []event.PlanItem{{Step: "Read README", Status: "pending"}}},
-		event.TurnStatusChanged{TurnID: "run-1", Entity: "run", EntityID: "run-1", From: "starting", To: "running"},
-		event.TextDelta{LLMCallID: "turn-1", Delta: "answer"},
-		event.ToolCallStarted{TurnID: "run-1", CallID: "read-1", ToolName: "read"},
-		event.ToolCallCompleted{TurnID: "run-1", CallID: "read-1", ToolName: "read", Success: true, Summary: "README contents"},
-		event.LLMCallCompleted{LLMCallID: "turn-1"},
-		event.TurnCompleted{TurnID: "run-1", Status: "completed", Reason: "done"},
+	started := toolStartedMessage("read-1", "read", "read", "Read README", "")
+	for _, runtimeEvent := range []protocol.SessionEvent{
+		{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.TurnStarted{StartedAt: time.Now().UTC()}},
+		{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.PlanUpdated{Revision: 1, Items: []protocol.PlanItem{{Step: "Read README", Status: "pending"}}}},
+		{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.AssistantMessageDelta{ItemID: "assistant-1", Delta: "answer"}},
+		{ThreadID: "thread-1", TurnID: "turn-1", Message: started},
+		{ThreadID: "thread-1", TurnID: "turn-1", Message: toolCompletedMessage(started, protocol.ItemStatusCompleted, "README contents", "0s", false)},
+		{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.ItemCompleted{Item: protocol.TurnItem{ID: "assistant-1", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemStatusCompleted, CreatedAt: time.Now().UTC(), CompletedAt: time.Now().UTC()}}},
+		{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.TurnCompleted{Status: "completed", FinishedAt: time.Now().UTC()}},
 	} {
 		if err := renderer.Publish(ctx, runtimeEvent); err != nil {
 			t.Fatalf("publish %T: %v", runtimeEvent, err)
@@ -126,18 +127,16 @@ func TestInlineRendererGoldenTranscript(t *testing.T) {
 		t.Fatalf("unexpected golden text: %q", text.String())
 	}
 	want := "" +
-		"run started: run-1\n" +
+		"turn started\n" +
 		"status: phase=starting tools=0 usage=0/0\n" +
 		"plan 1:\n" +
 		"  plan-1 [pending]: Read README\n" +
 		"status: phase=planning tools=0 usage=0/0\n" +
-		"run run-1: starting -> running\n" +
-		"status: phase=executing tools=0 usage=0/0\n" +
 		"tool started: read\n" +
 		"status: phase=executing tools=1 usage=0/0\n" +
-		"tool completed: read in 0s: README contents\n" +
+		"tool completed: read: README contents\n" +
 		"status: phase=executing tools=1 usage=0/0\n" +
-		"run completed: done\n" +
+		"turn completed:\n" +
 		"status: phase=idle tools=1 usage=0/0\n"
 	if status.String() != want {
 		t.Fatalf("unexpected golden status:\n%s", status.String())

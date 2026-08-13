@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
@@ -44,7 +44,7 @@ func (client *bootstrapClient) Capabilities() llm.Capabilities {
 func TestNewAgentBuildsDefaultComposition(t *testing.T) {
 	configured := validBootstrapConfig()
 	root := newBootstrapProjectRoot(t)
-	sink := event.NewMemorySink()
+	sink := protocol.NewMemorySink()
 
 	agent, err := NewAgent(configured, root, sink, allowBootstrapApproval{}, audit.NewMemorySink())
 	if err != nil {
@@ -84,7 +84,7 @@ func TestNewAgentRegistersOnlyEnabledWebTools(t *testing.T) {
 	configured := validBootstrapConfig()
 	configured.Web.Fetch.Enabled = true
 	configured.Web.Search.Enabled = true
-	agent, err := NewAgentWithOptions(configured, newBootstrapProjectRoot(t), event.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink(), AgentOptions{
+	agent, err := NewAgentWithOptions(configured, newBootstrapProjectRoot(t), protocol.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink(), AgentOptions{
 		ClientFactory: successfulBootstrapFactory,
 		WebFetcher:    bootstrapWebFetcher{document: webfetch.Document{URL: "https://example.test", Text: "ok"}},
 		WebSearch:     bootstrapWebSearch{results: []websearch.Result{{Title: "One", URL: "https://example.test", Snippet: "ok"}}},
@@ -112,7 +112,7 @@ func (provider bootstrapWebSearch) Search(context.Context, string, int) ([]webse
 
 func TestNewAgentWithOptionsUsesStructuredWriteTool(t *testing.T) {
 	root := newBootstrapProjectRoot(t)
-	agent, err := NewAgentWithOptions(validBootstrapConfig(), root, event.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink(), AgentOptions{ClientFactory: successfulBootstrapFactory})
+	agent, err := NewAgentWithOptions(validBootstrapConfig(), root, protocol.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink(), AgentOptions{ClientFactory: successfulBootstrapFactory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestNewAgentUsesOneSelectedProviderClient(t *testing.T) {
 	var factoryProviderName string
 	var factoryProvider config.ProviderConfig
 	root := newBootstrapProjectRoot(t)
-	agent, err := newAgent(configured, root, event.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink(), func(providerName string, provider config.ProviderConfig) (llm.Client, error) {
+	agent, err := newAgent(configured, root, protocol.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink(), func(providerName string, provider config.ProviderConfig) (llm.Client, error) {
 		factoryProviderName = providerName
 		factoryProvider = provider
 		return client, nil
@@ -157,7 +157,7 @@ func TestNewAgentUsesOneSelectedProviderClient(t *testing.T) {
 func TestAgentCompositionExecutesStructuredWorkspaceWriteWithoutOperationApproval(t *testing.T) {
 	configured := validBootstrapConfig()
 	root := newBootstrapProjectRoot(t)
-	agent, err := newAgent(configured, root, event.NewMemorySink(), denyBootstrapApproval{}, audit.NewMemorySink(), successfulBootstrapFactory)
+	agent, err := newAgent(configured, root, protocol.NewMemorySink(), denyBootstrapApproval{}, audit.NewMemorySink(), successfulBootstrapFactory)
 	if err != nil {
 		t.Fatalf("build secured Agent composition: %v", err)
 	}
@@ -173,14 +173,14 @@ func TestAgentCompositionExecutesStructuredWorkspaceWriteWithoutOperationApprova
 }
 
 func TestAgentCompositionRequiresApprovalPort(t *testing.T) {
-	_, err := newAgent(validBootstrapConfig(), newBootstrapProjectRoot(t), event.NewMemorySink(), nil, audit.NewMemorySink(), successfulBootstrapFactory)
+	_, err := newAgent(validBootstrapConfig(), newBootstrapProjectRoot(t), protocol.NewMemorySink(), nil, audit.NewMemorySink(), successfulBootstrapFactory)
 	if err == nil || !strings.Contains(err.Error(), "approval port is nil") {
 		t.Fatalf("unexpected nil approval port error: %v", err)
 	}
 }
 
 func TestAgentCompositionRequiresAuditSink(t *testing.T) {
-	_, err := newAgent(validBootstrapConfig(), newBootstrapProjectRoot(t), event.NewMemorySink(), allowBootstrapApproval{}, nil, successfulBootstrapFactory)
+	_, err := newAgent(validBootstrapConfig(), newBootstrapProjectRoot(t), protocol.NewMemorySink(), allowBootstrapApproval{}, nil, successfulBootstrapFactory)
 	if err == nil || !strings.Contains(err.Error(), "audit sink is nil") {
 		t.Fatalf("unexpected nil audit sink error: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestAgentCompositionFailsClosedBeforeCommandWhenAuditFails(t *testing.T) {
 	auditSink := audit.NewMemorySink()
 	expected := errors.New("audit disk unavailable")
 	auditSink.SetError(expected)
-	agent, err := newAgent(configured, root, event.NewMemorySink(), allowBootstrapApproval{}, auditSink, successfulBootstrapFactory)
+	agent, err := newAgent(configured, root, protocol.NewMemorySink(), allowBootstrapApproval{}, auditSink, successfulBootstrapFactory)
 	if err != nil {
 		t.Fatalf("build audited Agent composition: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestAgentCompositionFailsClosedBeforeCommandWhenAuditFails(t *testing.T) {
 
 func TestAgentAvailableToolsReturnsIndependentCopies(t *testing.T) {
 	configured := validBootstrapConfig()
-	agent, err := NewAgent(configured, newBootstrapProjectRoot(t), event.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink())
+	agent, err := NewAgent(configured, newBootstrapProjectRoot(t), protocol.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink())
 	if err != nil {
 		t.Fatalf("build Agent composition: %v", err)
 	}
@@ -226,14 +226,14 @@ func TestAgentAvailableToolsReturnsIndependentCopies(t *testing.T) {
 func TestNewAgentRejectsInvalidInputs(t *testing.T) {
 	configured := validBootstrapConfig()
 	root := newBootstrapProjectRoot(t)
-	sink := event.NewMemorySink()
+	sink := protocol.NewMemorySink()
 	factoryErr := errors.New("factory failed")
 
 	tests := []struct {
 		name       string
 		configured config.Config
 		root       project.Root
-		events     event.Sink
+		events     protocol.EventSink
 		factory    ClientFactory
 		contains   string
 	}{
@@ -272,7 +272,7 @@ func TestNewAgentRejectsInvalidInputs(t *testing.T) {
 
 func TestNewAgentReportsProviderConstructionErrors(t *testing.T) {
 	configured := config.Default()
-	_, err := NewAgent(configured, newBootstrapProjectRoot(t), event.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink())
+	_, err := NewAgent(configured, newBootstrapProjectRoot(t), protocol.NewMemorySink(), allowBootstrapApproval{}, audit.NewMemorySink())
 	if err == nil || !strings.Contains(err.Error(), "create Provider client: provider model is empty") {
 		t.Fatalf("unexpected missing model error: %v", err)
 	}

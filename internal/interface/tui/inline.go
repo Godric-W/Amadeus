@@ -11,7 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 )
 
 const maxInlineEventTextRunes = 240
@@ -36,7 +36,7 @@ func NewInlineRenderer(output, status io.Writer) (*InlineRenderer, error) {
 	return &InlineRenderer{output: output, status: status, phase: "idle"}, nil
 }
 
-func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent event.Event) error {
+func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent protocol.SessionEvent) error {
 	if renderer == nil {
 		return errors.New("inline renderer is nil")
 	}
@@ -46,13 +46,13 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent event.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if runtimeEvent == nil {
-		return event.ErrNilEvent
+	if err := runtimeEvent.Validate(); err != nil {
+		return err
 	}
 	renderer.mutex.Lock()
 	defer renderer.mutex.Unlock()
-	switch typed := runtimeEvent.(type) {
-	case event.TextDelta:
+	switch typed := runtimeEvent.Message.(type) {
+	case protocol.AssistantMessageDelta:
 		if typed.Delta == "" {
 			return nil
 		}
@@ -61,53 +61,35 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent event.
 		}
 		renderer.openText = true
 		return nil
-	case event.LLMCallCompleted:
-		return renderer.finishText()
-	case event.PlanUpdated:
+	case protocol.ItemCompleted:
+		if typed.Item.Kind == protocol.ItemAssistantMessage {
+			return renderer.finishText()
+		}
+		if typed.Item.ToolName == "update_plan" {
+			return nil
+		}
+		state := "completed"
+		if typed.Item.Status != protocol.ItemStatusCompleted {
+			state = string(typed.Item.Status)
+		}
+		return renderer.statusLine("tool %s: %s: %s", state, typed.Item.ToolName, typed.Item.Text)
+	case protocol.PlanUpdated:
 		renderer.phase = "planning"
 		if typed.Revision > 1 {
 			renderer.phase = "replanning"
 		}
 		return renderer.planBlock(typed)
-	case event.RunDiffUpdated:
-		return nil
-	case event.RunDiffInvalidated:
-		return nil
-	case event.TurnStarted:
-		renderer.phase = "starting"
-		return renderer.statusLine("run started: %s", typed.TurnID)
-	case event.TurnStatusChanged:
-		if typed.Entity == "run" {
-			renderer.phase = inlinePhase(typed.To)
-		}
-		return renderer.statusLine("%s %s: %s -> %s", typed.Entity, typed.EntityID, typed.From, typed.To)
-	case event.ToolCallStarted:
-		if typed.ToolName == "update_plan" {
+	case protocol.ItemStarted:
+		if typed.Item.ToolName == "update_plan" {
 			return nil
 		}
 		renderer.phase = "executing"
 		renderer.toolCalls++
-		return renderer.statusLine("tool started: %s", typed.ToolName)
-	case event.ToolCallCompleted:
-		if typed.ToolName == "update_plan" {
-			return nil
-		}
-		state := "completed"
-		if !typed.Success {
-			state = "failed"
-		}
-		partial := ""
-		if typed.Partial {
-			partial = " partial"
-		}
-		return renderer.statusLine("tool %s: %s%s in %s: %s", state, typed.ToolName, partial, typed.Duration, typed.Summary)
-	case event.ApprovalRequested:
-		renderer.phase = "awaiting_approval"
-		return renderer.statusLine("approval required: %s (risk=%s): %s", typed.ToolName, typed.Risk, typed.Reason)
-	case event.ApprovalResolved:
-		renderer.phase = "executing"
-		return renderer.statusLine("approval %s: %s (scope=%s, source=%s)", typed.Outcome, typed.ToolName, typed.Scope, typed.Source)
-	case event.UsageUpdated:
+		return renderer.statusLine("tool started: %s", typed.Item.ToolName)
+	case protocol.TurnStarted:
+		renderer.phase = "starting"
+		return renderer.statusLine("turn started")
+	case protocol.ThreadTokenUsageUpdated:
 		renderer.inputTokens = typed.Usage.InputTokens
 		renderer.outputTokens = typed.Usage.OutputTokens
 		total := typed.Usage.TotalTokens
@@ -115,22 +97,23 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent event.
 			total = typed.Usage.InputTokens + typed.Usage.OutputTokens
 		}
 		return renderer.statusLine("usage: input=%d output=%d total=%d", typed.Usage.InputTokens, typed.Usage.OutputTokens, total)
-	case event.TurnCompleted:
+	case protocol.TurnCompleted:
 		renderer.phase = "idle"
-		return renderer.statusLine("run %s: %s", typed.Status, typed.Reason)
-	case event.ErrorOccurred:
+		return renderer.statusLine("turn completed: %s", typed.Error)
+	case protocol.TurnAborted:
+		renderer.phase = "idle"
+		return renderer.statusLine("turn aborted: %s", typed.Reason)
+	case protocol.StreamError:
 		renderer.phase = "error"
-		return renderer.statusLine("error: %s", typed.Error.Message)
-	case event.StatusChanged:
-		return renderer.statusLine("%s %s: %s -> %s", typed.Entity, typed.EntityID, typed.From, typed.To)
-	case event.DiagnosticPublished:
-		return renderer.statusLine("diagnostic[%s/%s]: %s", typed.Severity, typed.Code, typed.Message)
+		return renderer.statusLine("error: %s", typed.Error)
+	case protocol.Warning:
+		return renderer.statusLine("warning: %s", typed.Message)
 	default:
 		return nil
 	}
 }
 
-func (renderer *InlineRenderer) planBlock(plan event.PlanUpdated) error {
+func (renderer *InlineRenderer) planBlock(plan protocol.PlanUpdated) error {
 	if err := renderer.finishText(); err != nil {
 		return err
 	}
@@ -218,4 +201,4 @@ func sanitizeInlineEventText(value string) string {
 	return strings.TrimSpace(result.String())
 }
 
-var _ event.Sink = (*InlineRenderer)(nil)
+var _ protocol.EventSink = (*InlineRenderer)(nil)

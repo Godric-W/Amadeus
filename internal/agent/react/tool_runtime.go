@@ -4,16 +4,17 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type toolEventObserver struct {
-	events event.Sink
+	events protocol.EventSink
 }
 
-func NewToolEventObserver(events event.Sink) tool.LifecycleObserver {
+func NewToolEventObserver(events protocol.EventSink) tool.LifecycleObserver {
 	if events == nil {
 		return nil
 	}
@@ -22,18 +23,44 @@ func NewToolEventObserver(events event.Sink) tool.LifecycleObserver {
 
 func (observer *toolEventObserver) ToolCallStarted(ctx context.Context, spec tool.ToolSpec, call tool.ToolCall) error {
 	presentation := tool.PresentCall(spec, call)
-	return observer.events.Publish(ctx, event.ToolCallStarted{
-		CallID: call.ID, ToolName: call.Name, SideEffect: string(spec.SideEffect),
-		ActionSummary: presentation.ActionSummary, Detail: presentation.Detail,
-	})
+	kind := protocol.ItemToolCall
+	if call.Name == "execute_command" || call.Name == "write_stdin" {
+		kind = protocol.ItemCommandExecution
+	} else if spec.SideEffect == tool.SideEffectWrite {
+		kind = protocol.ItemFileChange
+	}
+	item := protocol.TurnItem{ID: call.ID, Kind: kind, Status: protocol.ItemInProgress, CreatedAt: time.Now().UTC(), ToolName: call.Name, CallID: call.ID, Payload: map[string]any{
+		"action_summary": presentation.ActionSummary,
+		"detail":         presentation.Detail,
+		"side_effect":    string(spec.SideEffect),
+	}}
+	return observer.events.Publish(ctx, protocol.SessionEvent{Message: protocol.ItemStarted{Item: item}})
 }
 
 func (observer *toolEventObserver) ToolCallCompleted(ctx context.Context, execution tool.ToolExecution) error {
-	return observer.events.Publish(ctx, event.ToolCallCompleted{
-		CallID: execution.Call.ID, ToolName: execution.Call.Name,
-		Success: execution.Outcome.Status == tool.ToolCallCompleted, Partial: execution.Output.Partial,
-		Summary: toolExecutionSummary(execution), Duration: execution.Outcome.Duration,
-	})
+	status := protocol.ItemStatusCompleted
+	switch execution.Outcome.Status {
+	case tool.ToolCallDenied:
+		status = protocol.ItemDeclined
+	case tool.ToolCallFailed, tool.ToolCallInterrupted:
+		status = protocol.ItemFailed
+	}
+	now := time.Now().UTC()
+	item := protocol.TurnItem{ID: execution.Call.ID, Kind: toolItemKind(execution.Call.Name), Status: status, CreatedAt: now, CompletedAt: now, Text: toolExecutionSummary(execution), ToolName: execution.Call.Name, CallID: execution.Call.ID, Payload: map[string]any{
+		"duration": execution.Outcome.Duration.String(),
+		"partial":  execution.Output.Partial,
+	}}
+	return observer.events.Publish(context.WithoutCancel(ctx), protocol.SessionEvent{Message: protocol.ItemCompleted{Item: item}})
+}
+
+func toolItemKind(name string) protocol.ItemKind {
+	if name == "execute_command" || name == "write_stdin" {
+		return protocol.ItemCommandExecution
+	}
+	if name == "edit" || name == "write" || name == "apply_patch" {
+		return protocol.ItemFileChange
+	}
+	return protocol.ItemToolCall
 }
 
 func toolExecutionSummary(execution tool.ToolExecution) string {

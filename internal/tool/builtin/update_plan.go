@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
 	"github.com/Godric-W/Amadeus/internal/agent/plan"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -18,7 +18,7 @@ type PlanUpdater interface {
 }
 
 type UpdatePlanOptions struct {
-	Events event.Sink
+	Events protocol.EventSink
 }
 
 type UpdatePlan struct {
@@ -54,13 +54,13 @@ func (updatePlan *UpdatePlan) Call(ctx context.Context, invocation tool.Invocati
 	if err != nil {
 		return tool.Output{}, fmt.Errorf("update session plan: %w", err)
 	}
-	items := make([]event.PlanItem, 0, len(snapshot.Items))
+	items := make([]protocol.PlanItem, 0, len(snapshot.Items))
 	for _, item := range snapshot.Items {
-		items = append(items, event.PlanItem{Step: item.Step, Status: string(item.Status)})
+		items = append(items, protocol.PlanItem{Step: item.Step, Status: string(item.Status)})
 	}
-	if err := updatePlan.options.Events.Publish(ctx, event.PlanUpdated{
+	if err := updatePlan.options.Events.Publish(ctx, protocol.SessionEvent{Message: protocol.PlanUpdated{
 		Explanation: snapshot.Explanation, Items: items, Revision: snapshot.Revision, UpdatedAt: snapshot.UpdatedAt,
-	}); err != nil {
+	}}); err != nil {
 		return tool.Output{}, fmt.Errorf("publish plan update: %w", err)
 	}
 	encoded, err := json.Marshal(snapshot)

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
@@ -91,12 +91,12 @@ func TestTranscriptStateFlushesActiveHistoryCellOnce(t *testing.T) {
 
 func TestTranscriptStateBumpsActiveCellRevision(t *testing.T) {
 	model := fullscreenModel{transcript: TranscriptState{ActiveCell: newToolHistoryCell()}}
-	model.applyEvent(toolStarted("call"))
+	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: toolStarted("call")})
 	if model.transcript.ActiveCellRevision == 0 {
 		t.Fatal("active cell revision did not change after mutation")
 	}
 	before := model.transcript.ActiveCellRevision
-	model.applyEvent(toolCompleted("call"))
+	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: toolCompleted("call")})
 	if model.transcript.ActiveCellRevision <= before {
 		t.Fatalf("revision = %d, want > %d", model.transcript.ActiveCellRevision, before)
 	}
@@ -148,10 +148,10 @@ func TestHistoryCellArchitectureHasNoLegacyMainChain(t *testing.T) {
 	}
 }
 
-func toolStarted(callID string) event.ToolCallStarted {
-	return event.ToolCallStarted{CallID: callID, ToolName: "read", SideEffect: "read", ActionSummary: "Read file"}
+func toolStarted(callID string) protocol.ItemStarted {
+	return toolStartedMessage(callID, "read", "read", "Read file", "")
 }
 
-func toolCompleted(callID string) event.ToolCallCompleted {
-	return event.ToolCallCompleted{CallID: callID, ToolName: "read", Success: true}
+func toolCompleted(callID string) protocol.ItemCompleted {
+	return toolCompletedMessage(toolStarted(callID), protocol.ItemStatusCompleted, "", "0s", false)
 }

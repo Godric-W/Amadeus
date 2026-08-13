@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
@@ -55,7 +55,7 @@ type HistoryCell interface {
 
 type ActiveHistoryCell interface {
 	HistoryCell
-	Apply(event.Event) bool
+	Apply(protocol.EventMessage) bool
 	Complete() HistoryCell
 	IsComplete() bool
 }
@@ -217,13 +217,13 @@ func (FinalMessageSeparator) IsStreamContinuation() bool { return false }
 
 type PlanUpdateCell struct {
 	Explanation string
-	Items       []event.PlanItem
+	Items       []protocol.PlanItem
 }
 
-func NewPlanUpdateCell(update event.PlanUpdated) HistoryCell {
+func NewPlanUpdateCell(update protocol.PlanUpdated) HistoryCell {
 	return PlanUpdateCell{
 		Explanation: strings.TrimSpace(update.Explanation),
-		Items:       append([]event.PlanItem(nil), update.Items...),
+		Items:       append([]protocol.PlanItem(nil), update.Items...),
 	}
 }
 

@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -63,10 +64,10 @@ type ModelIterator interface {
 
 type Iterator struct {
 	client llm.Client
-	events event.Sink
+	events protocol.EventSink
 }
 
-func NewIterator(client llm.Client, events event.Sink) (*Iterator, error) {
+func NewIterator(client llm.Client, events protocol.EventSink) (*Iterator, error) {
 	if client == nil {
 		return nil, errors.New("model iterator LLM client is nil")
 	}
@@ -83,10 +84,6 @@ func (iterator *Iterator) Run(ctx context.Context, input IterationInput) (Iterat
 	if err := input.Validate(); err != nil {
 		return IterationResult{}, err
 	}
-	if err := iterator.events.Publish(ctx, event.LLMCallStarted{LLMCallID: input.ID, Model: iterator.client.Model()}); err != nil {
-		return IterationResult{}, fmt.Errorf("publish model iteration started: %w", err)
-	}
-
 	definitions := toolDefinitions(input.AvailableTools)
 	request := llm.Request{
 		Model: iterator.client.Model().Name,
@@ -115,20 +112,15 @@ func (iterator *Iterator) Run(ctx context.Context, input IterationInput) (Iterat
 	if err != nil {
 		return IterationResult{Response: response}, iterator.fail(ctx, input.ID, err)
 	}
-	if err := iterator.events.Publish(ctx, event.LLMCallCompleted{
-		LLMCallID:            input.ID,
-		ResponseID:           response.ID,
-		RequestID:            response.RequestID,
-		FinishReason:         response.FinishReason,
-		ProviderFinishReason: response.ProviderFinishReason,
-	}); err != nil {
-		return result, fmt.Errorf("publish model iteration completed: %w", err)
-	}
 	return result, nil
 }
 
 func (iterator *Iterator) consume(ctx context.Context, iterationID string, stream llm.Stream) (llm.Response, error) {
 	response := llm.Response{Message: llm.AssistantMessage("")}
+	assistantItemID := inputItemID(iterationID, "assistant")
+	reasoningItemID := inputItemID(iterationID, "reasoning")
+	assistantStarted := false
+	reasoningStarted := false
 	for {
 		chunk, err := stream.Recv()
 		if err != nil {
@@ -145,13 +137,25 @@ func (iterator *Iterator) consume(ctx context.Context, iterationID string, strea
 		}
 		if chunk.ReasoningDelta != "" {
 			response.Message.Reasoning += chunk.ReasoningDelta
-			if err := iterator.events.Publish(ctx, event.ReasoningDelta{LLMCallID: iterationID, ResponseID: response.ID, Delta: chunk.ReasoningDelta}); err != nil {
+			if !reasoningStarted {
+				if err := iterator.publishItemStarted(ctx, reasoningItemID, protocol.ItemReasoning); err != nil {
+					return response, err
+				}
+				reasoningStarted = true
+			}
+			if err := iterator.events.Publish(ctx, protocol.SessionEvent{Message: protocol.ReasoningDelta{ItemID: reasoningItemID, Delta: chunk.ReasoningDelta}}); err != nil {
 				return response, fmt.Errorf("publish model reasoning delta: %w", err)
 			}
 		}
 		if chunk.ContentDelta != "" {
 			response.Message.Content += chunk.ContentDelta
-			if err := iterator.events.Publish(ctx, event.TextDelta{LLMCallID: iterationID, ResponseID: response.ID, Delta: chunk.ContentDelta}); err != nil {
+			if !assistantStarted {
+				if err := iterator.publishItemStarted(ctx, assistantItemID, protocol.ItemAssistantMessage); err != nil {
+					return response, err
+				}
+				assistantStarted = true
+			}
+			if err := iterator.events.Publish(ctx, protocol.SessionEvent{Message: protocol.AssistantMessageDelta{ItemID: assistantItemID, Delta: chunk.ContentDelta}}); err != nil {
 				return response, fmt.Errorf("publish model text delta: %w", err)
 			}
 		}
@@ -160,11 +164,21 @@ func (iterator *Iterator) consume(ctx context.Context, iterationID string, strea
 		}
 		if chunk.Usage != nil {
 			response.Usage = *chunk.Usage
-			if err := iterator.events.Publish(ctx, event.UsageUpdated{LLMCallID: iterationID, ResponseID: response.ID, Usage: response.Usage}); err != nil {
+			if err := iterator.events.Publish(ctx, protocol.SessionEvent{Message: protocol.ThreadTokenUsageUpdated{Usage: response.Usage}}); err != nil {
 				return response, fmt.Errorf("publish model usage: %w", err)
 			}
 		}
 		if chunk.Completed() {
+			if assistantStarted {
+				if err := iterator.publishItemCompleted(ctx, assistantItemID, protocol.ItemAssistantMessage, response.Message.Content); err != nil {
+					return response, err
+				}
+			}
+			if reasoningStarted {
+				if err := iterator.publishItemCompleted(ctx, reasoningItemID, protocol.ItemReasoning, response.Message.Reasoning); err != nil {
+					return response, err
+				}
+			}
 			response.FinishReason = chunk.FinishReason
 			response.ProviderFinishReason = chunk.ProviderFinishReason
 			return response, nil
@@ -209,14 +223,31 @@ func (iterator *Iterator) fail(ctx context.Context, iterationID string, iteratio
 	if iterationErr == nil {
 		return nil
 	}
-	publishErr := iterator.events.Publish(context.WithoutCancel(ctx), event.ErrorOccurred{
-		LLMCallID: iterationID,
-		Error:     event.NewErrorInfo(iterationErr),
-	})
+	publishErr := iterator.events.Publish(context.WithoutCancel(ctx), protocol.SessionEvent{Message: protocol.StreamError{Error: iterationErr.Error()}})
 	if publishErr != nil {
 		return errors.Join(iterationErr, fmt.Errorf("publish model iteration error: %w", publishErr))
 	}
 	return iterationErr
+}
+
+func inputItemID(iterationID, kind string) string { return iterationID + ":" + kind }
+
+func (iterator *Iterator) publishItemStarted(ctx context.Context, id string, kind protocol.ItemKind) error {
+	now := time.Now().UTC()
+	item := protocol.TurnItem{ID: id, Kind: kind, Status: protocol.ItemInProgress, CreatedAt: now}
+	if err := iterator.events.Publish(ctx, protocol.SessionEvent{Message: protocol.ItemStarted{Item: item}}); err != nil {
+		return fmt.Errorf("publish %s item start: %w", kind, err)
+	}
+	return nil
+}
+
+func (iterator *Iterator) publishItemCompleted(ctx context.Context, id string, kind protocol.ItemKind, text string) error {
+	now := time.Now().UTC()
+	item := protocol.TurnItem{ID: id, Kind: kind, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now, Text: text}
+	if err := iterator.events.Publish(context.WithoutCancel(ctx), protocol.SessionEvent{Message: protocol.ItemCompleted{Item: item}}); err != nil {
+		return fmt.Errorf("publish %s item completion: %w", kind, err)
+	}
+	return nil
 }
 
 var _ ModelIterator = (*Iterator)(nil)

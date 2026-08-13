@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Godric-W/Amadeus/internal/agent/event"
 	patchtool "github.com/Godric-W/Amadeus/internal/tool/patch"
 )
 
@@ -39,22 +38,18 @@ type Snapshot struct {
 type Projector struct {
 	mutex       sync.RWMutex
 	cwd         string
-	events      event.Sink
 	changes     map[string]Change
 	invalidated bool
 	reason      string
 	revision    int64
 }
 
-func NewProjector(cwd string, events event.Sink) (*Projector, error) {
+func NewProjector(cwd string) (*Projector, error) {
 	cwd = filepath.Clean(strings.TrimSpace(cwd))
 	if cwd == "" || !filepath.IsAbs(cwd) {
 		return nil, errors.New("Run Diff Tracker cwd must be absolute")
 	}
-	if events == nil {
-		return nil, errors.New("Run Diff Tracker event sink is nil")
-	}
-	return &Projector{cwd: cwd, events: events, changes: make(map[string]Change)}, nil
+	return &Projector{cwd: cwd, changes: make(map[string]Change)}, nil
 }
 
 func (tracker *Projector) ProjectPatch(ctx context.Context, deltas []patchtool.AppliedPatchDelta) error {
@@ -77,9 +72,8 @@ func (tracker *Projector) ProjectPatch(ctx context.Context, deltas []patchtool.A
 		}
 	}
 	tracker.revision++
-	snapshot := tracker.snapshotLocked()
 	tracker.mutex.Unlock()
-	return tracker.events.Publish(ctx, event.RunDiffUpdated{Revision: snapshot.Revision, Changes: eventChanges(snapshot.Changes)})
+	return nil
 }
 
 func (tracker *Projector) validateDelta(delta patchtool.AppliedPatchDelta) error {
@@ -190,9 +184,8 @@ func (tracker *Projector) invalidate(ctx context.Context, reason string) error {
 	tracker.invalidated = true
 	tracker.reason = reason
 	tracker.revision++
-	revision := tracker.revision
 	tracker.mutex.Unlock()
-	return tracker.events.Publish(ctx, event.RunDiffInvalidated{Revision: revision, Reason: reason})
+	return nil
 }
 
 func (tracker *Projector) snapshotLocked() Snapshot {
@@ -202,14 +195,6 @@ func (tracker *Projector) snapshotLocked() Snapshot {
 	}
 	sort.Slice(changes, func(left, right int) bool { return changes[left].Path < changes[right].Path })
 	return Snapshot{Changes: changes, Invalidated: tracker.invalidated, Reason: tracker.reason, Revision: tracker.revision}
-}
-
-func eventChanges(changes []Change) []event.RunDiffChange {
-	result := make([]event.RunDiffChange, 0, len(changes))
-	for _, change := range changes {
-		result = append(result, event.RunDiffChange{Path: change.Path, PreviousPath: change.PreviousPath, Kind: string(change.Kind), Bytes: change.Bytes})
-	}
-	return result
 }
 
 var _ interface {
