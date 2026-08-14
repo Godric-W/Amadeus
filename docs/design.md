@@ -1,7 +1,7 @@
 # Amadeus 架构设计
 
 > 状态：Target Architecture v1
-> 最近修订：2026-08-11
+> 最近修订：2026-08-14
 > 目标语言：Go
 > 产品形态：面向真实软件工程任务的本地 Coding Agent CLI
 > 架构骨架：`../codex-main`
@@ -1542,7 +1542,19 @@ Composer
 |---|---|---|
 | TUI Local | `/copy` | 复制最近 Assistant 回复，不创建 Turn |
 | Application Command/Query | `/resume`、`/skills`、`/rename`、`/delete`、`/status`、`/mcp`、`/clear`、`/exit` | 由当前 TUI 分发到 Application/Thread 服务 |
-| Session/Turn Operation | `/compact`、`/plan` | 提交 `CompactOp` 或正式 Turn Setting；`/plan <task>` 再提交用户输入 |
+| Session/Turn Operation | `/compact`、`/plan` | 提交 `CompactOp` 或 `ThreadSettingsOp`；设置成功后 `/plan <task>` 再提交用户输入 |
+
+`/plan` 不直接修改 TUI 的本地模式变量。Fullscreen TUI 通过一个明确的 `SetPermissionMode` 回调向当前 `AmadeusThread` 提交 `ThreadSettingsOp`；Session 接受设置后，TUI 才更新模式投影。带参数的 `/plan <task>` 严格遵循：
+
+```text
+SetPermissionMode(plan)
+→ ThreadSettingsOp
+→ Session 更新 PermissionMode
+→ TUI 收到设置成功结果
+→ UserInputOp(task)
+```
+
+快捷模式切换复用同一回调；设置失败时保留原模式，不启动任务。
 
 Slash Command 不是 SessionEvent。命令执行引发的状态变化才通过 SessionEvent、Rollout 和 TUI Projection 传播；纯 TUI 操作不写入 canonical history。
 

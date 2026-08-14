@@ -1,9 +1,9 @@
 # Amadeus 开发进度
 
-> 最近更新：2026-08-13
+> 最近更新：2026-08-14
 > 唯一目标架构：`docs/design.md`
-> 当前阶段：E. Slash Command 重构
-> 下一任务：E-01 Codex 风格命令模型
+> 当前阶段：E. Slash Command 重构已完成
+> 下一任务：F-01 Plan-guided ReAct
 
 ## 1. 文档规则
 
@@ -45,7 +45,7 @@
 | C. Tool + Approval | Tool Contract、Edit/Write、Permission、Approval、Command | 已冻结 | `DONE` |
 | C-R. Tool Runtime Refactor | Claude Code 风格 Tool Contract、SessionPermissionContext、ApprovalCoordinator、统一执行链 | 已冻结 | `DONE` |
 | D. Event + TUI | SessionEvent、InteractiveRequest、TurnItem、HistoryCell、Rich Inline Projection | 已冻结 | `DONE` |
-| E. Slash Command | Codex 风格 SlashCommand、InputResult、单一 TUI 分发与 Application/Session 操作 | 待 D 接入 | `DOING` |
+| E. Slash Command | Codex 风格 SlashCommand、InputResult、单一 TUI 分发与 Application/Session 操作 | 已冻结 | `DONE` |
 | F. Agent Engine | Plan-guided ReAct、`update_plan`、Plan Mode、中断与终态 | 待 E 接入 | 未开始 |
 | G. Extensions + Release | MCP、Skill、Web、兼容迁移、发布验证 | 待主链稳定 | 未开始 |
 
@@ -56,7 +56,7 @@ A Runtime Contract + Canonical Persistence
 → B Context/Prompt 与 C Tool/Approval 可并行推进
 → C-R Tool Runtime、SessionPermissionContext 与 ApprovalCoordinator 重构（`DONE`）
 → D Event Protocol 与 TUI Projection（`DONE`）
-→ E Codex 风格 Slash Command 重构
+→ E Codex 风格 Slash Command 重构（`DONE`）
 → F Plan-guided ReAct 整合
 → G Extensions/Release
 ```
@@ -544,40 +544,43 @@ Composer
 
 ### E-01：Codex 风格命令模型
 
-- `TODO`：将命令身份收敛为 `SlashCommand`，通过类型方法提供名称、描述、参数能力、运行期间可用性和展示顺序。
-- `TODO`：删除 `SlashCommandSpec`、`slashCommandCatalog` 及其业务无关的独立 Catalog API。
-- `TODO`：保留 `/resume /skills /rename /delete /compact /plan /copy /status /mcp /clear /exit`，顺序与说明集中在命令类型附近。
+- `DONE`：将命令身份收敛为 `SlashCommand`，通过类型方法提供名称、描述、参数能力、运行期间可用性和展示顺序。
+- `DONE`：删除 `SlashCommandSpec`、`slashCommandCatalog` 及其业务无关的独立 Catalog API。
+- `DONE`：保留 `/resume /skills /rename /delete /compact /plan /copy /status /mcp /clear /exit`，顺序与说明集中在命令类型附近。
 
 ### E-02：Composer 与 InputResult
 
-- `TODO`：输入框统一解析普通文本、裸命令和带参数命令，不让 Plain/Fullscreen 各自解析。
-- `TODO`：Popup 只负责过滤、展示、方向键选择和 Enter/Esc，不直接访问 Session、Store 或 Runtime。
-- `TODO`：命令只有分发成功后才写入本地输入回忆；参数校验失败不污染命令历史。
+- `DONE`：输入框统一解析普通文本、裸命令和带参数命令，不让不同交互模式各自解析。
+- `DONE`：Popup 只负责过滤、展示、方向键选择和 Enter/Esc，不直接访问 Session、Store 或 Runtime。
+- `DONE`：命令只有解析和分发成功后才写入本地输入回忆；未知命令和参数校验失败不污染命令历史。
 
 ### E-03：单一 Slash Dispatch
 
-- `TODO`：由 Fullscreen TUI 活动模型承担类似 Codex `ChatWidget` 的唯一 Slash 分发职责。
-- `TODO`：删除 `cmd/amadeus` 的 Slash Command `switch`，cmd 只保留 CLI 参数、依赖装配和 TUI 启动。
-- `TODO`：`/copy` 作为 TUI Local；`/status`、`/mcp`、`/resume`、`/skills`、`/rename`、`/delete`、`/clear`、`/exit` 调用 Application 服务；`/compact`、`/plan` 提交正式 Session/Turn 操作。
+- `DONE`：由 Fullscreen TUI 活动模型承担类似 Codex `ChatWidget` 的唯一 Slash 分发职责。
+- `DONE`：删除 `cmd/amadeus` 的 Slash Command `switch`，cmd 只保留 CLI 参数、依赖装配和 TUI 启动。
+- `DONE`：`/copy` 作为 TUI Local；`/status`、`/mcp`、`/resume`、`/skills`、`/rename`、`/delete`、`/clear`、`/exit` 调用 Application 服务；`/compact`、`/plan` 提交正式 Session/Turn 操作。
+- `DONE`：`/plan` 和快捷模式切换通过 `SetPermissionMode` 提交 `ThreadSettingsOp`，成功后才更新 TUI 投影或启动带参数任务。
 
 ### E-04：删除 Plain 第二主链
 
-- `TODO`：删除 `--plain`、`TerminalInteractionController`、Plain 专用 Command/Task Handler 和 Plain Slash 路由。
-- `TODO`：清理 Plain 专用状态、输出、Approval 和测试，避免同一命令维护两套语义。
-- `TODO`：保留必要的非交互能力时另行设计机器可读输出，不恢复第二套交互运行时。
+- `DONE`：删除 `--plain`、`TerminalInteractionController`、Plain 专用命令/任务处理器和 Plain Slash 路由。
+- `DONE`：清理 Plain 专用状态、输出、Approval 和测试，避免同一命令维护两套语义。
+- `DONE`：非 TTY 交互直接返回终端要求错误；一次性任务仍使用独立 Agent Renderer，不恢复第二套交互运行时。
 
 ### E-05：Slash 与 Event/Runtime 验收
 
-- `TODO`：命令本身不进入 SessionEvent；命令引起的状态变化通过 Session Op/Application Result、SessionEvent 和 TUI Projection 传播。
-- `TODO`：验证 `/plan <task>` 先提交正式设置再提交用户输入，`/compact` 走 CompactOp，`/resume` 与 `/clear` 正确刷新 Thread 和 Transcript。
-- `TODO`：验证 Plain/Fullscreen 路径删除后，Popup、命令历史、错误和运行期间可用性只有一个事实源。
+- `DONE`：命令本身不进入 SessionEvent；命令引起的状态变化通过 Session Op/Application Result、SessionEvent 和 TUI Projection 传播。
+- `DONE`：验证 `/plan <task>` 先提交正式设置再提交用户输入，`/compact` 走 CompactOp，`/resume` 与 `/clear` 正确刷新 Thread 和 Transcript。
+- `DONE`：验证旧交互路径删除后，Popup、命令历史、错误和运行期间可用性只有一个事实源；补充模式设置失败和无效命令历史回归测试。
+- `DONE`：`go build ./...` 通过，TUI、Session、Thread 相关测试与竞态测试通过。全仓测试在受限环境中会受到 IPv6 listener 限制；解除该限制后曾通过绝大多数包，但偶发暴露既有 `internal/process` PTY 快照时序问题，以及全仓 `-race` 中 `cmd/amadeus` 测试使用同一个 `bytes.Buffer` 被 Reactor 与 InlineRenderer 并发写入的问题；两者均不属于本阶段改动，已保留为后续验证项。
 
 ### E 出口
 
-- [ ] Slash Command 使用 Codex 风格强类型命令与 InputResult。
-- [ ] 只有一个 TUI Slash Dispatch，不存在 cmd 或 Plain 的第二套 switch。
-- [ ] 命令业务通过 Application Command 或 Session Op 执行，TUI 不直接管理 Session 状态。
-- [ ] `--plain`、Plain Controller 和旧 Catalog 主链已删除。
+- [x] Slash Command 使用 Codex 风格强类型命令与 InputResult。
+- [x] 只有一个 TUI Slash Dispatch，不存在 cmd 或 Plain 的第二套 switch。
+- [x] 命令业务通过 Application Command 或 Session Op 执行，TUI 不直接管理 Session 状态。
+- [x] `/plan` 通过正式 `ThreadSettingsOp` 更新 Session，成功后再更新投影或提交任务。
+- [x] `--plain`、Plain Controller 和旧 Catalog 主链已删除。
 
 ## 9. F. Plan-guided ReAct
 
@@ -665,11 +668,11 @@ Composer
 ```text
 C-R Tool Runtime Refactor（DONE）
 → D Event Protocol 与 TUI Projection（DONE）
-→ E Codex 风格 Slash Command 重构
+→ E Codex 风格 Slash Command 重构（DONE）
 → F Plan-guided ReAct 端到端验收
 ```
 
-下一项开发任务：**E-01：Plan-guided ReAct 端到端验收。**
+下一项开发任务：**F-01：Plan-guided ReAct 端到端验收。**
 
 ## 13. 更新模板
 

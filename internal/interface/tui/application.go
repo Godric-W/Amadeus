@@ -33,8 +33,8 @@ type FullscreenStartup struct {
 	ContextWindow int64
 }
 
-type FullscreenTaskHandler func(context.Context, TaskSubmission) error
-type FullscreenTaskContextFactory func(context.Context) (context.Context, context.CancelFunc, error)
+type FullscreenTaskRunner func(context.Context, TaskSubmission) error
+type FullscreenTurnContextFactory func(context.Context) (context.Context, context.CancelFunc, error)
 
 type FullscreenSessionLister func(context.Context) ([]SessionOption, error)
 type FullscreenSessionResumer func(context.Context, string) (string, error)
@@ -49,6 +49,7 @@ type FullscreenClipboardWriter func(string) error
 type FullscreenStatusReader func(context.Context) (string, error)
 type FullscreenMCPReader func(context.Context, bool) (string, error)
 type FullscreenClearer func(context.Context) error
+type FullscreenPermissionModeSetter func(context.Context, CollaborationMode) error
 
 type SessionOption struct {
 	ID      string
@@ -68,11 +69,12 @@ type FullscreenOptions struct {
 	Output              io.Writer
 	Startup             FullscreenStartup
 	InitialItems        []protocol.TurnItem
-	Task                FullscreenTaskHandler
-	NewTask             FullscreenTaskContextFactory
+	Task                FullscreenTaskRunner
+	NewTask             FullscreenTurnContextFactory
 	Status              FullscreenStatusReader
 	MCP                 FullscreenMCPReader
 	Clear               FullscreenClearer
+	SetPermissionMode   FullscreenPermissionModeSetter
 	Sessions            FullscreenSessionLister
 	Resume              FullscreenSessionResumer
 	CurrentSession      FullscreenCurrentSession
@@ -196,6 +198,11 @@ type fullscreenCommandDoneMsg struct {
 	output  string
 	err     error
 }
+type fullscreenPermissionModeDoneMsg struct {
+	mode CollaborationMode
+	task string
+	err  error
+}
 type fullscreenSessionsMsg struct {
 	sessions []SessionOption
 	err      error
@@ -244,7 +251,7 @@ func NewFullscreenApplication(options FullscreenOptions) (*FullscreenApplication
 		return nil, errors.New("fullscreen TUI streams are nil")
 	}
 	if options.Task == nil {
-		return nil, errors.New("fullscreen TUI task handler is nil")
+		return nil, errors.New("fullscreen TUI task runner is nil")
 	}
 	if options.NewTask == nil {
 		options.NewTask = defaultFullscreenTaskContext
@@ -519,6 +526,34 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		model.status = "idle"
 		return model, model.flushHistory()
+	case fullscreenPermissionModeDoneMsg:
+		if message.err != nil {
+			model.status = "idle"
+			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
+			return model, model.flushHistory()
+		}
+		model.collaboration = message.mode
+		if strings.TrimSpace(message.task) == "" {
+			if message.mode == CollaborationPlan {
+				model.status = "plan mode"
+				model.insertHistoryCell(NewNoticeHistoryCell("Switched to Plan mode"))
+			} else {
+				model.status = "idle"
+				model.insertHistoryCell(NewNoticeHistoryCell("Switched to Execute mode"))
+			}
+			return model, model.flushHistory()
+		}
+		model.insertHistoryCell(NewUserMessageCell(message.task))
+		model.details = newTranscriptDetailStore(0, 0)
+		model.running = true
+		model.runStartedAt = time.Now()
+		model.motionStartedAt = model.runStartedAt
+		model.transcript.HadWorkActivity = false
+		model.transcript.NeedsFinalMessageSeparator = false
+		submission := TaskSubmission{Content: message.task, Mode: message.mode}
+		model.status = taskPhase(submission)
+		model.draft = ""
+		return model, tea.Sequence(model.flushHistory(), tea.Batch(model.runTask(submission), model.workingTick()))
 	case fullscreenSessionsMsg:
 		model.status = "idle"
 		if message.err != nil {
@@ -662,16 +697,19 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 			model.insertHistoryCell(NewNoticeHistoryCell("Collaboration mode cannot change while a task is in progress."))
 			return model, model.flushHistory()
 		}
-		if model.collaboration == CollaborationPlan {
-			model.collaboration = CollaborationExecute
-			model.status = "idle"
-			model.insertHistoryCell(NewNoticeHistoryCell("Switched to Execute mode"))
-		} else {
-			model.collaboration = CollaborationPlan
-			model.status = "plan mode"
-			model.insertHistoryCell(NewNoticeHistoryCell("Switched to Plan mode"))
+		if model.app.options.SetPermissionMode == nil {
+			model.insertHistoryCell(NewErrorHistoryCell("Permission mode control is unavailable"))
+			return model, model.flushHistory()
 		}
-		return model, model.flushHistory()
+		nextMode := CollaborationPlan
+		if model.collaboration == CollaborationPlan {
+			nextMode = CollaborationExecute
+		}
+		model.status = "switching mode"
+		return model, func() tea.Msg {
+			err := model.app.options.SetPermissionMode(model.ctx, nextMode)
+			return fullscreenPermissionModeDoneMsg{mode: nextMode, err: err}
+		}
 	case "ctrl+c":
 		if model.running {
 			model.status = "cancelling"
@@ -740,41 +778,49 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		}
 	case "enter":
 		if selected, ok := model.slashPopup.selectedItem(); ok {
-			command := "/" + selected.Name()
+			invocation := SlashInvocation{Command: selected}
+			command := invocation.String()
 			model.input.Reset()
 			model.slashPopup.dismiss("")
 			model.updateInputLayout()
 			model.history = append(model.history, command)
 			model.historyPos = -1
-			return model.submitCommand(command)
+			return model.dispatchCommand(invocation)
 		}
 		text := strings.TrimSpace(model.input.Value())
 		if text == "" {
 			return model, nil
 		}
+		input, err := ParseInput(text)
+		if err != nil {
+			model.input.Reset()
+			model.slashPopup.dismiss("")
+			model.updateInputLayout()
+			model.insertHistoryCell(NewErrorHistoryCell(err.Error()))
+			return model, model.flushHistory()
+		}
+		if input.Command != nil {
+			model.input.Reset()
+			model.slashPopup.dismiss("")
+			model.updateInputLayout()
+			if model.running && !input.Command.Command.AvailableDuringTask() {
+				model.insertHistoryCell(NewNoticeHistoryCell("This command is disabled while a task is in progress."))
+				return model, model.flushHistory()
+			}
+			model.history = append(model.history, text)
+			model.historyPos = -1
+			return model.dispatchCommand(*input.Command)
+		}
+		text = input.Text
 		model.input.Reset()
 		model.updateInputLayout()
 		model.history = append(model.history, text)
 		model.historyPos = -1
 		if model.running {
-			if strings.HasPrefix(text, "/") {
-				invocation, err := ParseSlashInvocation(text)
-				if err != nil || !invocation.Command.AvailableDuringTask() {
-					model.insertHistoryCell(NewNoticeHistoryCell("This command is disabled while a task is in progress."))
-					return model, model.flushHistory()
-				}
-				return model.submitCommand(text)
-			}
-			if strings.HasPrefix(text, "/") {
-				return model, model.flushHistory()
-			}
 			model.insertHistoryCell(NewUserMessageCell(text))
 			model.queuedTasks = append(model.queuedTasks, TaskSubmission{Content: text, Mode: model.collaboration})
 			model.status = fmt.Sprintf("%s · %d queued", model.status, len(model.queuedTasks))
 			return model, model.flushHistory()
-		}
-		if strings.HasPrefix(text, "/") {
-			return model.submitCommand(text)
 		}
 		model.insertHistoryCell(NewUserMessageCell(text))
 		model.details = newTranscriptDetailStore(0, 0)

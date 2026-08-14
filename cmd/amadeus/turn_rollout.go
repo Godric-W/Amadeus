@@ -28,17 +28,25 @@ func (recorder *turnRolloutRecorder) RecordToolCalls(ctx context.Context, messag
 	items := make([]rollout.Item, 0, len(message.ToolCalls)+1)
 	content := strings.TrimSpace(message.Content)
 	if content != "" {
-		item, err := newResponseItem(map[string]any{"type": "assistant_message", "role": "assistant", "content": content})
+		payload := map[string]any{"type": "assistant_message", "role": "assistant", "content": content}
+		if reasoning := strings.TrimSpace(message.Reasoning); reasoning != "" {
+			payload["reasoning_content"] = reasoning
+		}
+		item, err := newResponseItem(payload)
 		if err != nil {
 			return err
 		}
 		items = append(items, item)
 	}
 	for _, call := range message.ToolCalls {
-		item, err := newResponseItem(map[string]any{
+		payload := map[string]any{
 			"type": "tool_call", "role": "assistant", "call_id": call.ID,
 			"name": call.Name, "arguments": json.RawMessage(call.Arguments),
-		})
+		}
+		if reasoning := strings.TrimSpace(message.Reasoning); reasoning != "" {
+			payload["reasoning_content"] = reasoning
+		}
+		item, err := newResponseItem(payload)
 		if err != nil {
 			return err
 		}

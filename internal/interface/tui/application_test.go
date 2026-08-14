@@ -19,7 +19,8 @@ func newTestFullscreen(t *testing.T, configure func(*FullscreenOptions)) (*Fulls
 	t.Helper()
 	options := FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{}, Width: 100, DisableAnimations: true,
-		Task: func(context.Context, TaskSubmission) error { return nil },
+		Task:              func(context.Context, TaskSubmission) error { return nil },
+		SetPermissionMode: func(context.Context, CollaborationMode) error { return nil },
 	}
 	if configure != nil {
 		configure(&options)
@@ -91,12 +92,20 @@ func TestFullscreenAcceptsAndQueuesInputWhileRunning(t *testing.T) {
 
 func TestFullscreenPlanAndShiftTabModes(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
-	updated, _ := model.submitCommand("/plan")
+	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashPlan})
+	if command == nil {
+		t.Fatal("plan command did not submit permission mode")
+	}
+	updated, _ = updated.(fullscreenModel).Update(command())
 	model = updated.(fullscreenModel)
 	if model.collaboration != CollaborationPlan {
 		t.Fatalf("plan mode = %q", model.collaboration)
 	}
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if command == nil {
+		t.Fatal("shift-tab did not submit permission mode")
+	}
+	updated, _ = updated.(fullscreenModel).Update(command())
 	model = updated.(fullscreenModel)
 	if model.collaboration != CollaborationExecute {
 		t.Fatalf("shift-tab mode = %q", model.collaboration)
@@ -106,6 +115,72 @@ func TestFullscreenPlanAndShiftTabModes(t *testing.T) {
 	model = updated.(fullscreenModel)
 	if model.collaboration != CollaborationExecute || !strings.Contains(lastCellContent(model), "cannot change") {
 		t.Fatalf("running mode changed")
+	}
+}
+
+func TestFullscreenPlanTaskSetsSessionModeBeforeStartingTask(t *testing.T) {
+	var modes []CollaborationMode
+	_, model := newTestFullscreen(t, func(options *FullscreenOptions) {
+		options.SetPermissionMode = func(_ context.Context, mode CollaborationMode) error {
+			modes = append(modes, mode)
+			return nil
+		}
+	})
+	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashPlan, Args: "inspect the repository"})
+	if command == nil {
+		t.Fatal("plan task did not create a permission mode command")
+	}
+	if len(modes) != 0 {
+		t.Fatalf("permission mode changed before command execution: %v", modes)
+	}
+
+	updatedModel := updated.(fullscreenModel)
+	modeMessage := command()
+	if len(modes) != 1 || modes[0] != CollaborationPlan {
+		t.Fatalf("permission mode calls = %v, want [plan]", modes)
+	}
+	updated, taskCommand := updatedModel.Update(modeMessage)
+	model = updated.(fullscreenModel)
+	if model.collaboration != CollaborationPlan || !model.running {
+		t.Fatalf("plan task did not enter plan mode: mode=%q running=%v", model.collaboration, model.running)
+	}
+	if taskCommand == nil {
+		t.Fatal("plan task did not start after permission mode update")
+	}
+}
+
+func TestFullscreenPlanModeFailureDoesNotChangeProjection(t *testing.T) {
+	_, model := newTestFullscreen(t, func(options *FullscreenOptions) {
+		options.SetPermissionMode = func(context.Context, CollaborationMode) error {
+			return fmt.Errorf("session is unavailable")
+		}
+	})
+	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashPlan})
+	if command == nil {
+		t.Fatal("plan command did not create a permission mode command")
+	}
+	updated, _ = updated.(fullscreenModel).Update(command())
+	model = updated.(fullscreenModel)
+	if model.collaboration != CollaborationExecute {
+		t.Fatalf("failed plan changed local mode to %q", model.collaboration)
+	}
+	if !strings.Contains(lastCellContent(model), "session is unavailable") {
+		t.Fatalf("missing mode failure: %q", lastCellContent(model))
+	}
+}
+
+func TestFullscreenInvalidSlashInputDoesNotEnterHistory(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	model.input.SetValue("/unknown")
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(fullscreenModel)
+	for _, entry := range model.history {
+		if entry == "/unknown" {
+			t.Fatal("invalid slash command entered input history")
+		}
+	}
+	if !strings.Contains(lastCellContent(model), "unknown command") {
+		t.Fatalf("missing invalid slash command error: %q", lastCellContent(model))
 	}
 }
 
@@ -412,12 +487,12 @@ func TestFullscreenResumeOverlayAndCopyClear(t *testing.T) {
 		options.Resume = func(context.Context, string) (string, error) { return "resumed", nil }
 	})
 	model.transcript.LastAgentMarkdown = "**done**"
-	updated, _ := model.submitCommand("/copy")
+	updated, _ := model.dispatchCommand(SlashInvocation{Command: SlashCopy})
 	model = updated.(fullscreenModel)
 	if copied != "**done**" || !strings.Contains(lastCellContent(model), "Copied") {
 		t.Fatalf("copy failed")
 	}
-	updated, command := model.submitCommand("/resume")
+	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashResume})
 	model = updated.(fullscreenModel)
 	message := command()
 	updated, _ = model.Update(message)

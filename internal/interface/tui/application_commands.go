@@ -8,22 +8,21 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func (model fullscreenModel) submitCommand(command string) (tea.Model, tea.Cmd) {
-	invocation, err := ParseSlashInvocation(command)
-	if err != nil {
-		model.insertHistoryCell(NewErrorHistoryCell(err.Error()))
+func (model fullscreenModel) dispatchCommand(invocation SlashInvocation) (tea.Model, tea.Cmd) {
+	slashCommand, arguments := invocation.Command, invocation.Args
+	if command, ok := FindSlashCommand(slashCommand.Name()); !ok || command != slashCommand {
+		model.insertHistoryCell(NewErrorHistoryCell(fmt.Sprintf("unknown command %q", invocation.String())))
 		return model, model.flushHistory()
 	}
-	slashCommand, arguments := invocation.Command, invocation.Args
 	if model.running && !slashCommand.AvailableDuringTask() {
 		model.insertHistoryCell(NewErrorHistoryCell(fmt.Sprintf("'/%s' is disabled while a task is in progress.", slashCommand)))
 		return model, model.flushHistory()
 	}
-	spec := slashCommand
-	if err := ValidateSlashCommandArguments(spec, arguments); err != nil {
+	if err := ValidateSlashCommandArguments(slashCommand, arguments); err != nil {
 		model.insertHistoryCell(NewErrorHistoryCell(err.Error()))
 		return model, model.flushHistory()
 	}
+	command := invocation.String()
 	switch slashCommand {
 	case SlashStatus:
 		localStatus := model.commandStatus()
@@ -41,23 +40,15 @@ func (model fullscreenModel) submitCommand(command string) (tea.Model, tea.Cmd) 
 			return fullscreenCommandDoneMsg{command: command, output: output, err: err}
 		}
 	case SlashPlan:
-		model.collaboration = CollaborationPlan
-		model.status = "plan mode"
-		if arguments == "" {
-			model.insertHistoryCell(NewNoticeHistoryCell("Switched to Plan mode"))
+		if model.app.options.SetPermissionMode == nil {
+			model.insertHistoryCell(NewErrorHistoryCell("Permission mode control is unavailable"))
 			return model, model.flushHistory()
 		}
-		model.insertHistoryCell(NewUserMessageCell(arguments))
-		model.details = newTranscriptDetailStore(0, 0)
-		model.running = true
-		model.runStartedAt = time.Now()
-		model.motionStartedAt = model.runStartedAt
-		model.transcript.HadWorkActivity = false
-		model.transcript.NeedsFinalMessageSeparator = false
-		model.status = "planning"
-		model.draft = ""
-		task := TaskSubmission{Content: arguments, Mode: CollaborationPlan}
-		return model, tea.Sequence(model.flushHistory(), tea.Batch(model.runTask(task), model.workingTick()))
+		model.status = "switching to Plan mode"
+		return model, func() tea.Msg {
+			err := model.app.options.SetPermissionMode(model.ctx, CollaborationPlan)
+			return fullscreenPermissionModeDoneMsg{mode: CollaborationPlan, task: arguments, err: err}
+		}
 	case SlashExit:
 		return model, tea.Quit
 	case SlashCopy:

@@ -21,6 +21,7 @@ type rolloutResponseItem struct {
 	Type      string          `json:"type"`
 	Role      llm.Role        `json:"role,omitempty"`
 	Content   string          `json:"content,omitempty"`
+	Reasoning string          `json:"reasoning_content,omitempty"`
 	CallID    string          `json:"call_id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
@@ -97,7 +98,7 @@ func (projection *RolloutMessageProjection) appendResponse(line rollout.Line) er
 	case "user_message":
 		projection.append(llm.UserMessage(item.Content), line.Sequence)
 	case "assistant_message":
-		projection.append(llm.AssistantMessage(item.Content), line.Sequence)
+		projection.append(llm.Message{Role: llm.RoleAssistant, Content: item.Content, Reasoning: item.Reasoning}, line.Sequence)
 	case "tool_call":
 		callID := strings.TrimSpace(item.CallID)
 		if callID == "" {
@@ -111,7 +112,10 @@ func (projection *RolloutMessageProjection) appendResponse(line rollout.Line) er
 		if len(arguments) == 0 {
 			arguments = json.RawMessage(`{}`)
 		}
-		projection.append(llm.AssistantToolCallMessage(item.Content, llm.ToolCall{ID: callID, Name: name, Arguments: arguments}), line.Sequence)
+		projection.appendAssistantToolCall(llm.Message{
+			Role: llm.RoleAssistant, Content: item.Content, Reasoning: item.Reasoning,
+			ToolCalls: []llm.ToolCall{{ID: callID, Name: name, Arguments: arguments}},
+		}, line.Sequence)
 	case "tool_result":
 		if strings.TrimSpace(item.CallID) == "" {
 			return nil
@@ -123,6 +127,23 @@ func (projection *RolloutMessageProjection) appendResponse(line rollout.Line) er
 		projection.append(llm.ToolResultMessageWithParts(item.CallID, item.Content, parts...), line.Sequence)
 	}
 	return nil
+}
+
+func (projection *RolloutMessageProjection) appendAssistantToolCall(message llm.Message, sequence uint64) {
+	last := len(projection.Messages) - 1
+	if last >= 0 && projection.Messages[last].Role == llm.RoleAssistant &&
+		projection.SourceSequences[last]+1 == int64(sequence) {
+		if projection.Messages[last].Reasoning == "" {
+			projection.Messages[last].Reasoning = message.Reasoning
+		}
+		if projection.Messages[last].Content == "" {
+			projection.Messages[last].Content = message.Content
+		}
+		projection.Messages[last].ToolCalls = append(projection.Messages[last].ToolCalls, message.ToolCalls...)
+		projection.SourceSequences[last] = int64(sequence)
+		return
+	}
+	projection.append(message, sequence)
 }
 
 func (projection *RolloutMessageProjection) append(message llm.Message, sequence uint64) {

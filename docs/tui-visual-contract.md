@@ -27,7 +27,7 @@
 - Slash Popup、Resume、Approval、Skills 等列表共用同一 Selection Renderer。选中行的 cursor、名称与说明全部使用 selection，即 accent + bold；未选中名称使用默认前景，说明使用 dim，禁用项整体 dim。
 - Slash Command 列表不整体染成青色，也不使用黄色 selected row；搜索命中字符可额外 bold，但不能破坏 selected row 的统一样式。
 - Footer/Status Bar 对齐 Codex StatusLineAccent fallback：model/state/metadata 使用 cyan，project/path 与 context usage 使用 green，branch/thread 与 Plan mode 使用 magenta，分隔符使用 dim；context 达到警告/失败阈值后覆盖为 yellow/red。
-- Rich TUI 不因父进程为 shell Tool 注入 `NO_COLOR` 而静默退化成黑白；No Color 仍由 Plain/non-TTY/`TERM=dumb` 或显式 Renderer 选项覆盖并测试。
+- Rich TUI 不因父进程为 shell Tool 注入 `NO_COLOR` 而静默退化成黑白；No Color 由终端能力或显式 Renderer 选项控制，非 TTY 交互直接拒绝，不再切换 Plain 交互主链。
 - 当前动态范围是终端颜色能力、明暗背景、ANSI 最近色与 Markdown 深浅 Chroma 主题；尚未复制 Codex 基于语法 scope 为所有 UI 语义动态解析颜色的通用 resolver。状态栏现阶段采用 Codex 的稳定 fallback 分类，不宣称与用户自定义 Codex 语法主题逐色一致。
 
 ## Markdown And Code
@@ -71,4 +71,4 @@
 - 已完成 Cell 提交到 main-screen scrollback 时不得附加尾部空行；空闲 Bottom Pane 独占最终回复到 Composer 的两次换行，避免提交空行与 View 前导空行叠加成三行距离。
 - 40～59 列使用紧凑 Logo/面板；60 列以上使用宽布局并保留右侧 margin。
 - 中文、emoji 和宽字符不破坏截断、换行、选择器或输入光标。
-- Plain fallback、No Color、ANSI16、ANSI256、True Color、Reduced Motion 都必须有确定性测试。
+- No Color、ANSI16、ANSI256、True Color、Reduced Motion 和非 TTY 拒绝行为都必须有确定性测试。

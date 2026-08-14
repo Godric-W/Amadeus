@@ -93,6 +93,14 @@ type SlashInvocation struct {
 	Args    string
 }
 
+func (invocation SlashInvocation) String() string {
+	command := "/" + invocation.Command.Name()
+	if arguments := strings.TrimSpace(invocation.Args); arguments != "" {
+		command += " " + arguments
+	}
+	return command
+}
+
 type InputResult struct {
 	Text    string
 	Command *SlashInvocation

@@ -70,21 +70,32 @@ func TestGLMChatDialectRejectsPreserveWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestDeepSeekChatDialectKeepsStandardRequestShape(t *testing.T) {
+func TestDeepSeekChatDialectPreservesThinkingHistory(t *testing.T) {
 	request := dialectChatRequest()
-	request.Prompt.Input[0].Reasoning = "must not be replayed"
+	request.Prompt.Input[0].Reasoning = "preserved DeepSeek reasoning"
 
 	body := marshalDialectChatRequest(t, config.DialectDeepSeek, request)
 	assertCompatibleTokenAndToolFields(t, body)
 	assistant := body["messages"].([]any)[0].(map[string]any)
-	if _, ok := assistant["reasoning_content"]; ok {
-		t.Fatalf("DeepSeek request replayed reasoning history: %#v", assistant)
+	if assistant["reasoning_content"] != "preserved DeepSeek reasoning" {
+		t.Fatalf("DeepSeek request did not preserve reasoning history: %#v", assistant)
 	}
 	if _, ok := body["enable_thinking"]; ok {
 		t.Fatalf("DeepSeek request used Qwen field: %#v", body)
 	}
 	if _, ok := body["thinking"]; ok {
 		t.Fatalf("DeepSeek request used GLM field: %#v", body)
+	}
+}
+
+func TestStandardChatDialectPreservesThinkingHistory(t *testing.T) {
+	request := dialectChatRequest()
+	request.Prompt.Input[0].Reasoning = "preserved custom-provider reasoning"
+
+	body := marshalDialectChatRequest(t, config.DialectStandard, request)
+	assistant := body["messages"].([]any)[0].(map[string]any)
+	if assistant["reasoning_content"] != "preserved custom-provider reasoning" {
+		t.Fatalf("standard request did not preserve reasoning history: %#v", assistant)
 	}
 }
 

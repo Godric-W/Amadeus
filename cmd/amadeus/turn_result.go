@@ -41,8 +41,12 @@ func (runner *agentController) executeReactorTurn(ctx context.Context, invocatio
 		outcome, code = runOutcomeCancelled, exitCodeCancelled
 	}
 	items := make([]rollout.Item, 0, 2)
-	if result.FinalMessage != nil && strings.TrimSpace(result.FinalMessage.Content) != "" {
-		item, err := newResponseItem(map[string]any{"type": "assistant_message", "role": "assistant", "content": strings.TrimSpace(result.FinalMessage.Content)})
+	if result.FinalMessage != nil && (strings.TrimSpace(result.FinalMessage.Content) != "" || strings.TrimSpace(result.FinalMessage.Reasoning) != "") {
+		payload := map[string]any{"type": "assistant_message", "role": "assistant", "content": strings.TrimSpace(result.FinalMessage.Content)}
+		if reasoning := strings.TrimSpace(result.FinalMessage.Reasoning); reasoning != "" {
+			payload["reasoning_content"] = reasoning
+		}
+		item, err := newResponseItem(payload)
 		if err != nil {
 			runErr = errors.Join(runErr, err)
 		} else {

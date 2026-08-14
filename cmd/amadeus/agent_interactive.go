@@ -95,6 +95,17 @@ func (runner *agentController) runFullscreenInteractive(ctx context.Context, inv
 			err := runner.writeInteractiveMCP(commandCtx, invocation, &output, verbose)
 			return strings.TrimSpace(output.String()), err
 		},
+		SetPermissionMode: func(commandCtx context.Context, mode tui.CollaborationMode) error {
+			activeThread, _, err := runner.ensureActiveThread(commandCtx, invocation)
+			if err != nil {
+				return err
+			}
+			permissionMode := turn.PermissionModeDefault
+			if mode == tui.CollaborationPlan {
+				permissionMode = turn.PermissionModePlan
+			}
+			return activeThread.Submit(commandCtx, protocol.ThreadSettingsOp{PermissionMode: string(permissionMode)})
+		},
 		Clear: func(commandCtx context.Context) error {
 			return runner.newDraft(commandCtx)
 		},

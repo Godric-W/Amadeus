@@ -95,15 +95,15 @@ func resolveDialect(name config.ProviderDialect) (Dialect, error) {
 
 	switch name {
 	case config.DialectStandard:
-		return dialect{name: name, supportedAPIs: bothAPIs, capabilities: standardCapabilities, supportsStrictToolSchema: true}, nil
+		return dialect{name: name, supportedAPIs: bothAPIs, capabilities: standardCapabilities, prepareChatMessage: prepareReasoningChatMessage, supportsStrictToolSchema: true}, nil
 	case config.DialectOpenAI:
 		return dialect{name: name, supportedAPIs: bothAPIs, capabilities: openAICapabilities, supportsStrictToolSchema: true}, nil
 	case config.DialectDeepSeek:
-		return dialect{name: name, supportedAPIs: chatOnly, capabilities: reasoningChatCapabilities}, nil
+		return dialect{name: name, supportedAPIs: chatOnly, capabilities: reasoningChatCapabilities, prepareChatMessage: prepareReasoningChatMessage}, nil
 	case config.DialectQwen:
 		return dialect{name: name, supportedAPIs: chatOnly, capabilities: reasoningChatCapabilities, prepareChatRequest: prepareQwenChatRequest}, nil
 	case config.DialectGLM:
-		return dialect{name: name, supportedAPIs: chatOnly, capabilities: reasoningChatCapabilities, prepareChatRequest: prepareGLMChatRequest, prepareChatMessage: prepareGLMChatMessage}, nil
+		return dialect{name: name, supportedAPIs: chatOnly, capabilities: reasoningChatCapabilities, prepareChatRequest: prepareGLMChatRequest, prepareChatMessage: prepareReasoningChatMessage}, nil
 	default:
 		return nil, &DialectError{Dialect: name}
 	}
@@ -154,12 +154,12 @@ func prepareGLMChatRequest(request llm.Request, params *openaisdk.ChatCompletion
 	return nil
 }
 
-func prepareGLMChatMessage(message llm.Message, converted *openaisdk.ChatCompletionMessageParamUnion) error {
+func prepareReasoningChatMessage(message llm.Message, converted *openaisdk.ChatCompletionMessageParamUnion) error {
 	if message.Role != llm.RoleAssistant || message.Reasoning == "" {
 		return nil
 	}
 	if converted.OfAssistant == nil {
-		return fmt.Errorf("provider dialect %q expected an assistant message", config.DialectGLM)
+		return fmt.Errorf("assistant reasoning history requires an assistant message")
 	}
 	converted.OfAssistant.SetExtraFields(map[string]any{"reasoning_content": message.Reasoning})
 	return nil

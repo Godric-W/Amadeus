@@ -78,7 +78,7 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 
 	covered := []llm.Message{
 		llm.UserMessage("initial objective"),
-		llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
+		{Role: llm.RoleAssistant, Reasoning: "inspect first", ToolCalls: []llm.ToolCall{{ID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`)}}},
 		llm.ToolResultMessage("call-1", "full contents"),
 		llm.AssistantMessage("inspection complete"),
 	}
@@ -89,7 +89,7 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 	digest := sha256.Sum256(encoded)
 	lines := []rollout.Line{
 		contextTestLine(t, 1, rollout.KindResponseItem, map[string]any{"type": "user_message", "role": "user", "content": "initial objective"}),
-		contextTestLine(t, 2, rollout.KindResponseItem, map[string]any{"type": "tool_call", "role": "assistant", "call_id": "call-1", "name": "read", "arguments": map[string]any{"path": "README.md"}}),
+		contextTestLine(t, 2, rollout.KindResponseItem, map[string]any{"type": "tool_call", "role": "assistant", "call_id": "call-1", "name": "read", "arguments": map[string]any{"path": "README.md"}, "reasoning_content": "inspect first"}),
 		contextTestLine(t, 3, rollout.KindResponseItem, map[string]any{"type": "tool_result", "role": "tool", "call_id": "call-1", "content": "full contents"}),
 		contextTestLine(t, 4, rollout.KindResponseItem, map[string]any{"type": "assistant_message", "role": "assistant", "content": "inspection complete"}),
 		contextTestLine(t, 5, rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(UpdateAgents), Content: "project agents"}),
@@ -129,6 +129,52 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 		if strings.Contains(item.Content, "stale") {
 			t.Fatalf("stale ContextManager state survived Rebuild: %#v", snapshot.Items)
 		}
+	}
+}
+
+func TestProjectRolloutMessagesRestoresAssistantReasoningContent(t *testing.T) {
+	lines := []rollout.Line{
+		contextTestLine(t, 1, rollout.KindResponseItem, map[string]any{
+			"type": "tool_call", "role": "assistant", "call_id": "call-1", "name": "read",
+			"arguments": map[string]any{"path": "README.md"}, "reasoning_content": "inspect first",
+		}),
+	}
+	projection, err := ProjectRolloutMessages(lines)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Messages) != 1 || projection.Messages[0].Reasoning != "inspect first" {
+		t.Fatalf("reasoning projection = %#v", projection.Messages)
+	}
+}
+
+func TestProjectRolloutMessagesCombinesAssistantToolCalls(t *testing.T) {
+	lines := []rollout.Line{
+		contextTestLine(t, 1, rollout.KindResponseItem, map[string]any{
+			"type": "assistant_message", "role": "assistant", "content": "I will inspect both files",
+		}),
+		contextTestLine(t, 2, rollout.KindResponseItem, map[string]any{
+			"type": "tool_call", "role": "assistant", "call_id": "call-1", "name": "read",
+			"arguments": map[string]any{"path": "a.txt"}, "reasoning_content": "inspect files",
+		}),
+		contextTestLine(t, 3, rollout.KindResponseItem, map[string]any{
+			"type": "tool_call", "role": "assistant", "call_id": "call-2", "name": "read",
+			"arguments": map[string]any{"path": "b.txt"}, "reasoning_content": "inspect files",
+		}),
+	}
+	projection, err := ProjectRolloutMessages(lines)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Messages) != 1 {
+		t.Fatalf("expected one assistant message, got %#v", projection.Messages)
+	}
+	message := projection.Messages[0]
+	if len(message.ToolCalls) != 2 || message.ToolCalls[0].ID != "call-1" || message.ToolCalls[1].ID != "call-2" {
+		t.Fatalf("assistant tool calls were not combined: %#v", message)
+	}
+	if message.Reasoning != "inspect files" || message.Content != "I will inspect both files" {
+		t.Fatalf("assistant metadata was not preserved: %#v", message)
 	}
 }
 

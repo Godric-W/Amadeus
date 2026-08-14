@@ -87,8 +87,13 @@ func TestChatCompletionsRequestSerializesCompatibleTextFields(t *testing.T) {
 		if message["role"] != expectation.role || message["content"] != expectation.content {
 			t.Fatalf("unexpected message %d: %#v", index, message)
 		}
-		if _, exists := message["reasoning_content"]; exists {
-			t.Fatalf("provider reasoning leaked into standard chat request: %#v", message)
+		if index == 3 && message["reasoning_content"] != "provider-only reasoning" {
+			t.Fatalf("standard chat request did not preserve assistant reasoning: %#v", message)
+		}
+		if index != 3 {
+			if _, exists := message["reasoning_content"]; exists {
+				t.Fatalf("provider reasoning leaked into non-assistant chat request: %#v", message)
+			}
 		}
 	}
 }
