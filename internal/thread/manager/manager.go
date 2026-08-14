@@ -129,11 +129,7 @@ func (manager *ThreadManager) spawn(ctx context.Context, id thread.ID, live *thr
 	manager.mu.Unlock()
 	go func() {
 		<-io.Terminated
-		manager.mu.Lock()
-		if manager.threads[id] == value {
-			delete(manager.threads, id)
-		}
-		manager.mu.Unlock()
+		manager.removeThread(id, value)
 	}()
 	return value, nil
 }
@@ -193,7 +189,19 @@ func (manager *ThreadManager) ShutdownThread(ctx context.Context, id thread.ID) 
 	if !ok {
 		return nil
 	}
-	return value.Shutdown(ctx)
+	if err := value.Shutdown(ctx); err != nil {
+		return err
+	}
+	manager.removeThread(id, value)
+	return nil
+}
+
+func (manager *ThreadManager) removeThread(id thread.ID, expected *AmadeusThread) {
+	manager.mu.Lock()
+	if manager.threads[id] == expected {
+		delete(manager.threads, id)
+	}
+	manager.mu.Unlock()
 }
 
 func (manager *ThreadManager) Close(ctx context.Context) error {
@@ -235,6 +243,13 @@ func (threadRuntime *AmadeusThread) History() []rollout.Line {
 		return nil
 	}
 	return threadRuntime.session.History()
+}
+
+func (threadRuntime *AmadeusThread) Capabilities() (task.Capabilities, bool) {
+	if threadRuntime == nil || threadRuntime.session == nil {
+		return nil, false
+	}
+	return threadRuntime.session.Capabilities()
 }
 
 func (threadRuntime *AmadeusThread) Submit(ctx context.Context, op protocol.Op) error {

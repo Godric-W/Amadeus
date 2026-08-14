@@ -71,10 +71,9 @@ func (thread *LiveThread) AppendItems(ctx context.Context, turnID TurnID, items 
 	return thread.store.AppendItems(ctx, thread.id, turnID, items...)
 }
 
-// AppendItemsBuffered appends facts and updates the in-memory/index view but
-// lets the store defer its fsync. Session uses this only for high-frequency
-// intermediate response facts; terminal persistence still calls Flush before
-// publishing the terminal SessionEvent.
+// AppendItemsBuffered appends facts without advancing the durable metadata
+// index. Session uses this only for high-frequency intermediate response facts;
+// a later durable append flushes the buffered tail before synchronizing SQLite.
 func (thread *LiveThread) AppendItemsBuffered(ctx context.Context, turnID TurnID, items ...rollout.Item) (AppendResult, error) {
 	thread.mu.Lock()
 	defer thread.mu.Unlock()

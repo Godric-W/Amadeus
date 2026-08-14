@@ -2,11 +2,11 @@ package thread
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 func RecoverInterruptedTurn(ctx context.Context, live *LiveThread, history InitialHistory) (InitialHistory, error) {
@@ -20,10 +20,12 @@ func RecoverInterruptedTurn(ctx context.Context, live *LiveThread, history Initi
 	pending := pendingToolCalls(history.Lines, turnID)
 	items := make([]rollout.Item, 0, len(pending)+1)
 	for _, call := range pending {
-		item, err := rollout.NewRawItem(rollout.KindResponseItem, mustEncode(map[string]any{
-			"type": "tool_result", "call_id": call.ID, "name": call.Name,
-			"status": "cancelled", "content": "Tool call cancelled because the previous process ended before completion.",
-		}))
+		message := "Tool call cancelled because the previous process ended before completion."
+		item, err := rollout.NewResponseItem(rollout.ResponseItem{
+			Type: rollout.ResponseToolResult, Role: "tool", CallID: call.ID,
+			Name: call.Name, Status: "cancelled", Content: message,
+			Result: &tool.ToolResult{CallID: call.ID, ToolName: call.Name, Text: message},
+		})
 		if err != nil {
 			return InitialHistory{}, err
 		}
@@ -73,28 +75,20 @@ func pendingToolCalls(lines []rollout.Line, turnID rollout.TurnID) []recoveredCa
 		if line.TurnID != turnID || line.Item.Kind != rollout.KindResponseItem {
 			continue
 		}
-		var payload struct {
-			Type   string `json:"type"`
-			CallID string `json:"call_id"`
-			ID     string `json:"id"`
-			Name   string `json:"name"`
-		}
-		if json.Unmarshal(line.Item.Payload, &payload) != nil {
+		payload, err := rollout.DecodeResponseItem(line.Item)
+		if err != nil {
 			continue
 		}
 		callID := strings.TrimSpace(payload.CallID)
-		if callID == "" {
-			callID = strings.TrimSpace(payload.ID)
-		}
 		switch payload.Type {
-		case "tool_call":
+		case rollout.ResponseToolCall:
 			if callID != "" {
 				if _, exists := seen[callID]; !exists {
 					seen[callID] = struct{}{}
 					calls = append(calls, recoveredCall{ID: callID, Name: strings.TrimSpace(payload.Name)})
 				}
 			}
-		case "tool_result":
+		case rollout.ResponseToolResult:
 			if callID != "" {
 				completed[callID] = struct{}{}
 			}
@@ -107,12 +101,4 @@ func pendingToolCalls(lines []rollout.Line, turnID rollout.TurnID) []recoveredCa
 		}
 	}
 	return pending
-}
-
-func mustEncode(value any) json.RawMessage {
-	content, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
-	}
-	return content
 }

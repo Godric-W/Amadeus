@@ -2,8 +2,8 @@
 
 > 最近更新：2026-08-14
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：F. Plan-guided ReAct
-> 下一任务：F-01 唯一 RegularTask/Reactor
+> 当前阶段：B-CL. Context Architecture Closure
+> 下一任务：B-CL-01 ContextManager 唯一写入边界
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
@@ -26,11 +26,13 @@ A Runtime + Persistence
 → C Tool + Approval
 → D Event + TUI
 → E Slash Command
+→ A-CL Runtime Architecture Closure
+→ B-CL Context Architecture Closure
 → F Plan-guided ReAct
 → G Extensions + Release
 ```
 
-Codex 作为 Runtime、Persistence、Context、Plan-guided ReAct、Slash Command 和 TUI 的主要架构参考；Claude Code 作为 Tool 内层协议、文件 Diff 和 Approval 行为的主要参考。A、B、D、E 的基线设计已冻结；C-T 实施若发现 Contract 问题，先更新 `docs/design.md`。
+Codex 作为 Runtime、Persistence、Context、Plan-guided ReAct、Slash Command 和 TUI 的主要架构参考；Claude Code 作为 Tool 内层协议、文件 Diff 和 Approval 行为的主要参考。2026-08-14 架构审计确认 A/B 的外层骨架已经建立，但执行所有权、唯一终态、durability、typed rollout、Context 封装和 scoped instructions 尚未完全收口，因此重新打开 A/B Architecture Closure；A-CL、B-CL 完成前不进入 F。实施发现 Contract 问题时先更新 `docs/design.md`。
 
 ## 3. A. Runtime + Persistence — `DONE`
 
@@ -51,22 +53,61 @@ ThreadManager
 
 JSONL 是完整历史的唯一事实源，SQLite 只保存可重建的 Thread metadata 和索引。
 
-### 已完成
+### 基线已完成
 
-- 统一 `Thread`、`Session`、`Turn`、`Task`、`Iteration` 和运行时所有权。
+- 建立 `Thread`、`Session`、`Turn`、`Task` 和 `Iteration` 的目标类型与基础生命周期。
 - 完成 `AmadeusThread`、`SessionIo`、`Session`、`ActiveTurn` 和 `SessionTask` 主链。
 - 实现 JSONL Rollout 的版本、序列号、追加、刷新、关闭、尾行修复和损坏检测。
 - 实现 ThreadStore、LocalThreadStore、SQLite metadata index、List、Rename、Archive、Resume 和恢复重建。
-- 完成 Turn 终态、取消、持久化顺序和并发追加验收。
+- 完成 Turn 终态、取消和并发追加的基础实现。
+
+### A-CL-01：SessionTask 执行所有权 — `DONE`
+
+- 将生产 RegularTask/CompactTask 的真实执行入口迁入 `internal/agent/task` 与 Reactor 主链；Task 直接使用 TaskHost、TurnContext 和 Session capability，不回调 `cmd/amadeus` controller。
+- 删除 `codingTaskFactory → agentController.execute*Turn` 反向依赖；`cmd/amadeus` 只保留配置解析、Composition Root、Thread/Application 启动和 Interface 适配。
+- CLI invocation 在跨越 Runtime 边界前归一化为 typed Session configuration、Submission 和 Turn input；生产 Task/Factory 不持有 Cobra command、TUI model 或完整 invocation。
+- 增加无 CLI/TUI controller 的 Runtime fixture，证明 SessionTaskFactory 可独立完成 regular/compact Turn。
+
+### A-CL-02：唯一 Completion 与终态协议 — `DONE`
+
+- 删除 `Prepare → requests channel → result chan` 时序 side channel，Task 输入通过 Factory 方法参数和 immutable task value 传递。
+- RunningTask completion 只由 Session 消费；CLI/TUI/Application 只通过 SessionIo Event/Status/Terminated 观察生命周期。
+- 固化 accepted、rejected、completed、aborted、panic、submit failure 和 interrupt 的唯一终态测试，确保没有双完成、旧 request 残留或永久 Working。
+
+### A-CL-03：Session Capability 与 TurnContext — `DONE`
+
+- 将 Provider、Tool Registry、Prompt/Instruction、Approval、Extension、Web/MCP/Skill 等可复用能力收进 SessionTaskFactory/SessionServices 生命周期，禁止每 Turn 由 CLI 重新装配执行核心。
+- 在实际 Provider、ModelInfo、Permission Mode、Tool Registry、OutputSchema 和环境解析完成后冻结 TurnContext；ToolNames 必须是本 Turn 真实可见 Tool snapshot。
+- 为 BaseInstructions、PreviousTurnSettings、CurrentDate、Timezone、Personality 和 OutputSchema 建立明确生产消费点；删除仅为贴合设计存在的占位字段或死状态。
+
+### A-CL-04：Durability 与 Metadata Watermark — `DONE`
+
+- 重构 LocalThreadStore，使 Durable Append 严格执行 write → flush → MetadataSync；Buffered Append 不更新 SQLite。
+- 为 Recorder 建立 durable watermark，Metadata projection 只能读取不超过 watermark 的 RolloutLine。
+- 增加 append、flush、SQLite upsert 各阶段 fault injection/crash test，验证 SQLite 只能落后 JSONL、不能领先，并验证 backfill/reconciliation。
+
+### A-CL-05：Typed Canonical Rollout — `DONE`
+
+- 为所有 Rollout kind 建立唯一 typed payload contract、集中 encoder/decoder 和版本策略；raw payload 只允许存在于 JSONL codec envelope 边界。
+- 删除生产 writer 中的 `map[string]any` 和 writer/projector 各自维护的 ad-hoc schema，统一 response item、tool result、turn item、context update 和 terminal payload。
+- 增加所有 canonical item 的 round-trip、unknown version、resume projection 和 writer/reader schema 一致性测试。
+
+### A-CL-06：Architecture Guards 与旧链删除 — `DONE`
+
+- 增加依赖方向测试，阻止 production TaskFactory/Task 引用 CLI controller、TUI model、Cobra command、完整 invocation 或 request/result channel 模式。
+- 增加唯一终态、durability ordering 和 Session capability ownership 的行为测试，不能只扫描旧 symbol/package 名称。
+- 新主链验收后立即删除 `cmd/amadeus` 中旧 Turn executor、兼容 wrapper、side channel 和无消费状态，不把删除工作推迟到 G cleanup。
 
 ### 出口
 
-- [x] Thread/Session/Turn 生命周期只有一套主链。
-- [x] Rollout 可独立重建 Session 状态和 Context。
-- [x] SQLite 不保存不可重建的完整对话事实。
-- [x] Resume、取消和异常终态可恢复。
+- [x] Thread/Session/Turn 生命周期只有一套主链，生产 SessionTask 不反向依赖 CLI/Application executor。
+- [x] Session Event 是 Interface 唯一 Turn 终态来源，不存在 invocation/result completion side channel。
+- [x] SessionTaskFactory 是 Session capability owner，TurnContext 是真实冻结 snapshot，不含无消费占位状态。
+- [x] Rollout 可独立重建 Session 状态和 Context，所有 canonical payload 使用统一 typed contract。
+- [x] SQLite 不保存不可重建事实，也不包含超过 JSONL durable watermark 的 metadata。
+- [x] Resume、取消、panic、submit failure 和异常终态均可恢复且只完成一次。
 
-## 4. B. Context + Prompt — `DONE`
+## 4. B. Context + Prompt — `TODO`
 
 ### 目标
 
@@ -83,7 +124,7 @@ Base Instructions
 → Compact / Replacement History
 ```
 
-### 已完成
+### 基线已完成
 
 - 收敛 Prompt、Message、Tool Definition、ModelInfo 和 ContextManager Contract。
 - 将系统提示词和 Prompt 资产纳入统一构建链，删除旧的多套上下文事实源。
@@ -92,12 +133,44 @@ Base Instructions
 - 实现 Provider Usage、估算 Token、Context Window、Auto Compact 和 Replacement History。
 - 完成上下文截断、工具结果归一化、历史压缩和中断 Turn 的上下文重建。
 
+### B-CL-01：ContextManager 唯一写入边界 — `TODO`
+
+- ContextManager 只由 Session 根据已接纳 canonical facts 执行 append projection、replace、rebuild 和 usage update。
+- 收紧 TaskHost，移除可变 `Context() *Manager` 暴露和无 Rollout 对应事实的 Record/Replace fallback；Task/Reactor 只获取 immutable prompt/history snapshot。
+- 统一 live execution 与 Resume 的 projector，验证同一 Rollout history 得到语义等价 Context。
+
+### B-CL-02：Tool Result 统一语义投影 — `TODO`
+
+- 即时 Reactor replay、canonical Rollout、Resume rebuild 和 `ForPrompt` 共享同一个 typed Tool Result projector。
+- 模型投影稳定保留 ok/status、text/parts、error、partial/truncated 和允许暴露的 metadata，不静默丢失 declined、failed、cancelled、stale 或 partial 语义。
+- 增加多 Iteration、interrupted Turn、compaction 和 Resume 前后的 semantic-equivalence 测试。
+
+### B-CL-03：Target-scoped Instructions — `TODO`
+
+- 将 AGENTS.md Resolver 接入 Read/Search/Edit/Write 的目标路径和 Command 的目标 CWD，而不是只在 Turn 开始时解析初始 CWD。
+- 新 scope 指令以 typed resolution 交给 Session，并通过 canonical Context Update 进入下一次 Prompt；Tool 不直接修改 ContextManager。
+- 副作用 Tool 在模型尚未看到新 scope 指令时返回 `context_refresh_required`，更新 Context 并重新采样后才能继续。
+- 增加根目录/嵌套目录/跨工作目录/命令 CWD 的 precedence、scope 和 mutation gate 端到端测试。
+
+### B-CL-04：ModelInfo 与 Token 一致性 — `TODO`
+
+- 为 ModelInfo 增加 input modalities 等真实模型能力，Context projection 在 Adapter 调用前过滤或拒绝不支持内容。
+- 统一 Iteration、Turn、Thread、canonical `token_usage` 和 Resume 的累计语义，禁止单次 usage 覆盖多 Iteration 累计值。
+- 验证 Prompt estimate、Provider usage、auto compact 和 replacement history 使用同一 ModelInfo 与预算口径。
+
+### B-CL-05：Projection 等价与旧链删除 — `TODO`
+
+- 允许基础版本继续使用正确的原子全量 rebuild，不为性能提前引入第二缓存事实源；只有基准证明必要时才增加由 durable sequence 驱动的增量 projection。
+- 增加长会话、超大 Tool Result、Compaction、Resume 和多模型 modality 的一致性测试。
+- 删除旧 projector、重复 prompt assembly、直接 rollout/history 读取入口和无生产消费的 Context compatibility API。
+
 ### 出口
 
-- [x] ContextManager 是唯一 Prompt 历史入口。
-- [x] Prompt、Token 和 Compaction 使用同一套 ModelInfo 预算。
-- [x] 历史可从 Rollout 重建，不依赖内存残留。
-- [x] Provider reasoning、Tool Call 和 Tool Result 的顺序可正确回放。
+- [ ] ContextManager 是唯一 Prompt 历史入口和唯一派生投影，只有 Session 可以更新。
+- [ ] Prompt、Token、modality 和 Compaction 使用同一套 ModelInfo 与累计 Usage 语义。
+- [ ] 历史可从 Rollout 重建，不依赖内存残留，live 与 Resume projection 语义等价。
+- [ ] Provider reasoning、Tool Call 和 Tool Result 的顺序与 status/error/partial/metadata 可正确回放。
+- [ ] AGENTS.md 目录作用域接入真实 Tool target，副作用不会绕过模型尚未看到的 scoped instructions。
 
 ## 5. C. Tool + Approval — `DONE`
 
@@ -267,6 +340,8 @@ Composer
 
 ## 8. F. Plan-guided ReAct — `TODO`
 
+前置条件：A-CL 与 B-CL 全部完成。F 只在唯一 SessionTask 执行链、唯一 Context projector 和 typed canonical Rollout 上增加 Plan-guided 行为，不负责继续包裹或兼容旧 `cmd/amadeus` Turn executor。
+
 ### F-01：唯一 RegularTask/Reactor
 
 - `TODO`：以 Codex 风格的 Plan-guided ReAct 作为默认 Agent Engine 主链。
@@ -298,7 +373,7 @@ Composer
 - `G-01 MCP`：按当前 ToolDefinition、Approval 和 Event Contract 接入 MCP 工具。
 - `G-02 Skill`：实现 Skill 发现、说明、调用和脚本执行边界。
 - `G-03 Web`：完善可配置 Web Search Provider、超时、重试和结果归一化。
-- `G-04 Persistence Cleanup`：清理 F 阶段确认不再需要的旧持久化和兼容代码。
+- `G-04 Release Cleanup`：清理 Extensions 与发布阶段产生的临时适配代码；A/B 旧 Runtime、Persistence 和 Context 主链必须已在 A-CL/B-CL 内删除，不推迟到 G。
 - `G-05 Release Validation`：跨平台构建、端到端测试、文档同步和发布验收。
 
 ## 10. 当前保留能力
@@ -307,13 +382,13 @@ Composer
 - 当前配置链和 Provider Adapter 已可使用 OpenAI Responses/Chat Completions 及兼容 Provider。
 - JSONL Canonical Rollout + SQLite Metadata Index 已可支持 Session 恢复。
 - TUI 和 Inline 输出以当前代码和 `docs/design.md` 为准。
-- 内置 Tool、Approval 和 Diff 已进入 A-E 基础主链，但 Tool 内层协议、typed result、Approval Dialog 与 Diff viewport 仍以 C-T 为当前重构任务；AGENTS.md、Web Search 和 Slash Command 保持现有能力。
+- 内置 Tool、Approval、Diff、Web Search 和 Slash Command 已进入基础主链；A/B Architecture Closure 期间保持用户可见能力，同时收口 Tool Result projection、AGENTS.md target scope 和 Session capability ownership。
 
 ## 11. 当前执行规则
 
 1. 每次只推进一个 `TODO`/`DOING` 主任务。
 2. 先修改 `docs/design.md`，再修改代码；实现发现设计问题时暂停并同步 Contract。
-3. 新主链验收后立即删除对应旧主链，不保留长期双实现。
+3. 每个 Architecture Closure 任务必须在同一任务内完成 ownership 迁移、调用方切换和对应旧主链删除；不接受“新接口包住旧 executor/projector”作为阶段性完成，不保留长期双实现。
 4. 任务完成必须运行针对性测试和构建；环境限制导致的测试失败要单独记录。
 5. 本文只更新任务状态和出口，不复制架构设计、源码审计或长篇讨论。
 
@@ -321,7 +396,11 @@ Composer
 
 ### 已完成
 
-- 审计当前目录与 `docs/design.md` 的目标 package 边界，确认顶层目录仍按 Runtime、Protocol、Tool、Policy、Interface 和 Infrastructure 分层，无需进行高风险 package 搬迁。
+- 审计当前目录与 `docs/design.md` 的目标 package 边界，保留 Runtime、Protocol、Tool、Policy、Interface 和 Infrastructure 分层，同时将真实 Application 生命周期从 CLI controller 迁入 `internal/app`。
+- 新增 `ThreadWorkspace` 作为当前 Thread 的唯一选择 owner；CLI 不再分别保存 `ThreadManager`、`currentThread` 和锁，Thread 切换、Resume、New Draft、Rename、Delete 与 metadata 查询均通过 Application Service。
+- 修正 ThreadManager shutdown 后仅异步移除实例的问题，`ShutdownThread` 现在同步移除已终止 Runtime，立即 Resume 不会重新取得 terminated Thread。
+- 将 internal Session 按 runtime loop、TaskHost/history 和 event/request interaction 拆为 `session.go`、`host.go` 与 `interaction.go`。
+- 将 CLI Composition Root、Turn interface、Fullscreen wiring、interactive command adapter 和 history replay 分成准确命名的文件。
 - 将 Fullscreen TUI 聚合文件拆为 lifecycle/model、update/input、event projection 和 view rendering，Slash Command 与 selection 保持原有独立文件。
 - 将 Approval 核心拆为 types、request、decision 和 port，Presentation 与 Coordinator 保持独立职责。
 - 将 FileTools 拆为 read、edit、write 和共享 file-change pipeline，并移除字符串分支入口与未使用的旧 Approval reason helper。
@@ -329,6 +408,6 @@ Composer
 
 ### 保留判断
 
-- `internal/agent/session/session.go` 仍然较大，但当前内容围绕唯一 Session runtime loop、active turn 和 history lifecycle，暂不为行数机械拆包。
-- `internal/app/bootstrap/agent.go` 仍承担 Composition Root 装配；后续只有在依赖组形成稳定子系统后才引入更细的 dependency bundle，避免为了缩短构造器产生隐藏 Service Locator。
-- `cmd/amadeus` 文件数量较多，但已按 command、flags、thread/session lifecycle、turn execution 和 interactive request 命名，继续维持扁平 main package，避免无收益的内部 CLI 子包。
+- `internal/agent/session/session.go` 保留约 500 行的核心状态机与 Turn 生命周期；History/TaskHost 和 Event/Request 已拆出，不再包含互不相关的 adapter 或 persistence 实现。
+- Composition Root 明确保留在 `cmd/amadeus/composition.go`；`internal/app` 只承载界面无关的 Application Service，不重新引入 bootstrap Service Locator。
+- `cmd/amadeus` 继续维持扁平 main package，但只保留 command、flags、Composition Root 和 Interface adaptation；Runtime、当前 Thread 选择和 Session capability 均由 internal package 持有。

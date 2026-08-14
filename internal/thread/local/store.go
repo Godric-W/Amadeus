@@ -2,7 +2,6 @@ package local
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -22,7 +21,14 @@ type Store struct {
 	home      string
 	state     state.DB
 	clock     rollout.Clock
-	recorders map[thread.ID]*rollout.Recorder
+	recorders map[thread.ID]durableRecorder
+}
+
+type durableRecorder interface {
+	Append(context.Context, rollout.TurnID, ...rollout.Item) ([]rollout.Line, error)
+	Flush(context.Context) error
+	Close(context.Context) error
+	Path() string
 }
 
 func NewStore(home string, stateDB state.DB, clock rollout.Clock) (*Store, error) {
@@ -35,7 +41,7 @@ func NewStore(home string, stateDB state.DB, clock rollout.Clock) (*Store, error
 	if clock == nil {
 		clock = time.Now
 	}
-	return &Store{home: home, state: stateDB, clock: clock, recorders: make(map[thread.ID]*rollout.Recorder)}, nil
+	return &Store{home: home, state: stateDB, clock: clock, recorders: make(map[thread.ID]durableRecorder)}, nil
 }
 
 func (store *Store) Materialize(ctx context.Context, input thread.CreateInput) (thread.AppendResult, error) {
@@ -110,43 +116,44 @@ func (store *Store) OpenWriter(ctx context.Context, id thread.ID) (thread.Initia
 }
 
 func (store *Store) AppendItems(ctx context.Context, id thread.ID, turnID thread.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
-	result, err := store.appendItems(ctx, id, turnID, items...)
-	if err != nil {
-		return thread.AppendResult{}, err
-	}
-	recorder, err := store.recorder(id)
+	result, recorder, err := store.appendItems(ctx, id, turnID, items...)
 	if err != nil {
 		return thread.AppendResult{}, err
 	}
 	if err := recorder.Flush(ctx); err != nil {
 		return thread.AppendResult{}, err
 	}
+	result.MetadataWarning = store.syncMetadata(ctx, id, recorder)
 	return result, nil
 }
 
 func (store *Store) AppendItemsBuffered(ctx context.Context, id thread.ID, turnID thread.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
-	return store.appendItems(ctx, id, turnID, items...)
+	result, _, err := store.appendItems(ctx, id, turnID, items...)
+	return result, err
 }
 
-func (store *Store) appendItems(ctx context.Context, id thread.ID, turnID thread.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
+func (store *Store) appendItems(ctx context.Context, id thread.ID, turnID thread.TurnID, items ...rollout.Item) (thread.AppendResult, durableRecorder, error) {
 	recorder, err := store.recorder(id)
 	if err != nil {
-		return thread.AppendResult{}, err
+		return thread.AppendResult{}, nil, err
 	}
 	lines, err := recorder.Append(ctx, turnID, items...)
 	if err != nil {
-		return thread.AppendResult{}, err
+		return thread.AppendResult{}, nil, err
 	}
+	return thread.AppendResult{Lines: lines}, recorder, nil
+}
+
+func (store *Store) syncMetadata(ctx context.Context, id thread.ID, recorder durableRecorder) error {
 	history, err := rollout.Read(recorder.Path(), id)
 	if err != nil {
-		return thread.AppendResult{Lines: lines, MetadataWarning: err}, nil
+		return err
 	}
 	projected, err := projectMetadata(recorder.Path(), history)
 	if err != nil {
-		return thread.AppendResult{Lines: lines, MetadataWarning: err}, nil
+		return err
 	}
-	warning := store.state.UpsertThread(ctx, projected)
-	return thread.AppendResult{Lines: lines, MetadataWarning: warning}, nil
+	return store.state.UpsertThread(ctx, projected)
 }
 
 func (store *Store) Flush(ctx context.Context, id thread.ID) error {
@@ -253,7 +260,7 @@ func (store *Store) RebuildIndex(ctx context.Context) error {
 
 func (store *Store) Close() error {
 	store.mu.Lock()
-	recorders := make([]*rollout.Recorder, 0, len(store.recorders))
+	recorders := make([]durableRecorder, 0, len(store.recorders))
 	for id, recorder := range store.recorders {
 		recorders = append(recorders, recorder)
 		delete(store.recorders, id)
@@ -266,7 +273,7 @@ func (store *Store) Close() error {
 	return errors.Join(result, store.state.Close())
 }
 
-func (store *Store) recorder(id thread.ID) (*rollout.Recorder, error) {
+func (store *Store) recorder(id thread.ID) (durableRecorder, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	recorder, exists := store.recorders[id]
@@ -330,23 +337,19 @@ func projectMetadata(path string, lines []rollout.Line) (state.StoredThread, err
 			thread.TokensUsed += usage.TotalTokens
 		case rollout.KindResponseItem:
 			if thread.Preview == "" {
-				thread.Preview = responsePreview(line.Item.Payload)
+				thread.Preview = responsePreview(line.Item)
 			}
 		}
 	}
 	return thread, thread.Validate()
 }
 
-func responsePreview(payload json.RawMessage) string {
-	var value struct {
-		Role    string `json:"role"`
-		Type    string `json:"type"`
-		Content string `json:"content"`
-	}
-	if json.Unmarshal(payload, &value) != nil {
+func responsePreview(item rollout.Item) string {
+	value, err := rollout.DecodeResponseItem(item)
+	if err != nil {
 		return ""
 	}
-	if value.Role != "user" && value.Type != "user_message" {
+	if value.Type != rollout.ResponseUserMessage {
 		return ""
 	}
 	content := strings.TrimSpace(value.Content)

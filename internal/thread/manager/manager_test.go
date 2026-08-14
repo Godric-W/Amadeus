@@ -37,30 +37,35 @@ type materializeFailStore struct {
 	thread.ThreadStore
 }
 
-func (factory testFactory) RegularTask(string) (task.SessionTask, error) {
-	return task.FuncTask{TaskKind: task.KindRegular, RunFunc: func(ctx context.Context, _ task.Host, _ *turn.Context, _ []task.Input) (task.Result, error) {
+type turnStartFailStore struct {
+	thread.ThreadStore
+}
+
+type terminalModeFactory struct{ mode string }
+
+type abortTrackingFactory struct{ aborts *atomic.Int32 }
+
+func (factory testFactory) Prepare(_ context.Context, _ task.Host, request task.PrepareRequest) (task.Prepared, error) {
+	sessionTask := task.FuncTask{TaskKind: request.Kind, RunFunc: func(ctx context.Context, _ task.Host, _ *turn.Context, _ []task.Input) (task.Result, error) {
 		if factory.block {
 			<-ctx.Done()
 			return task.Result{}, ctx.Err()
 		}
-		item, err := rollout.NewRawItem(rollout.KindResponseItem, json.RawMessage(`{"type":"assistant_message","role":"assistant","content":"done"}`))
+		item, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "done"})
 		return task.Result{Items: []rollout.Item{item}}, err
-	}}, nil
+	}}
+	return task.Prepared{Task: sessionTask, Context: request.Context}, nil
 }
 
-func (factory testFactory) CompactTask() (task.SessionTask, error) {
-	return factory.RegularTask("")
-}
-
-func (factory concurrentHistoryFactory) RegularTask(string) (task.SessionTask, error) {
-	return task.FuncTask{TaskKind: task.KindRegular, RunFunc: func(ctx context.Context, host task.Host, turnContext *turn.Context, _ []task.Input) (task.Result, error) {
+func (factory concurrentHistoryFactory) Prepare(_ context.Context, _ task.Host, request task.PrepareRequest) (task.Prepared, error) {
+	sessionTask := task.FuncTask{TaskKind: request.Kind, RunFunc: func(ctx context.Context, host task.Host, turnContext *turn.Context, _ []task.Input) (task.Result, error) {
 		var wait sync.WaitGroup
 		errorsChannel := make(chan error, 16)
 		for index := range 16 {
 			wait.Add(1)
 			go func(index int) {
 				defer wait.Done()
-				item, err := rollout.NewRawItem(rollout.KindResponseItem, json.RawMessage(`{"type":"assistant_message","role":"assistant","content":"parallel"}`))
+				item, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "parallel"})
 				if err == nil {
 					err = host.AppendItems(ctx, turnContext.TurnID, item)
 				}
@@ -76,11 +81,8 @@ func (factory concurrentHistoryFactory) RegularTask(string) (task.SessionTask, e
 		}
 		factory.observed <- len(host.History())
 		return task.Result{}, nil
-	}}, nil
-}
-
-func (factory concurrentHistoryFactory) CompactTask() (task.SessionTask, error) {
-	return factory.RegularTask("")
+	}}
+	return task.Prepared{Task: sessionTask, Context: request.Context}, nil
 }
 
 func (store terminalFailStore) AppendItems(ctx context.Context, id thread.ID, turnID thread.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
@@ -94,6 +96,43 @@ func (store terminalFailStore) AppendItems(ctx context.Context, id thread.ID, tu
 
 func (store materializeFailStore) Materialize(context.Context, thread.CreateInput) (thread.AppendResult, error) {
 	return thread.AppendResult{}, errors.New("materialize failed")
+}
+
+func (store turnStartFailStore) AppendItems(ctx context.Context, id thread.ID, turnID thread.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
+	for _, item := range items {
+		if item.Kind == rollout.KindTurnContext || item.Kind == rollout.KindTurnStarted {
+			return thread.AppendResult{}, errors.New("turn start append failed")
+		}
+	}
+	return store.ThreadStore.AppendItems(ctx, id, turnID, items...)
+}
+
+func (factory terminalModeFactory) Prepare(_ context.Context, _ task.Host, request task.PrepareRequest) (task.Prepared, error) {
+	value := task.FuncTask{TaskKind: request.Kind, RunFunc: func(context.Context, task.Host, *turn.Context, []task.Input) (task.Result, error) {
+		switch factory.mode {
+		case "failed":
+			return task.Result{Summary: "failed summary"}, errors.New("task failed")
+		case "panic":
+			panic("task panic")
+		default:
+			return task.Result{Summary: "completed summary"}, nil
+		}
+	}}
+	return task.Prepared{Task: value, Context: request.Context}, nil
+}
+
+func (factory abortTrackingFactory) Prepare(_ context.Context, _ task.Host, request task.PrepareRequest) (task.Prepared, error) {
+	value := task.FuncTask{
+		TaskKind: request.Kind,
+		RunFunc: func(context.Context, task.Host, *turn.Context, []task.Input) (task.Result, error) {
+			return task.Result{}, errors.New("task must not run")
+		},
+		AbortFunc: func(context.Context, task.Host, *turn.Context) error {
+			factory.aborts.Add(1)
+			return nil
+		},
+	}
+	return task.Prepared{Task: value, Context: request.Context}, nil
 }
 
 func TestThreadManagerMaterializesOnFirstInput(t *testing.T) {
@@ -275,6 +314,95 @@ func TestTurnStartFailurePublishesRejectedWithoutBlockingSession(t *testing.T) {
 	}
 }
 
+func TestSessionPublishesAndPersistsExactlyOneTerminal(t *testing.T) {
+	for _, mode := range []string{"completed", "failed", "panic"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			manager, store := newTestManager(t, ctx, terminalModeFactory{mode: mode})
+			defer manager.Close(context.Background())
+			value, err := manager.StartThread(ctx, StartInput{Configuration: testConfiguration(t)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := value.Submit(ctx, protocol.UserInputOp{Content: "run"}); err != nil {
+				t.Fatal(err)
+			}
+			terminalEvents := 0
+			timeout := time.After(5 * time.Second)
+			for terminalEvents == 0 {
+				select {
+				case event := <-value.Io().Events:
+					switch event.Message.(type) {
+					case protocol.TurnCompleted, protocol.TurnAborted:
+						terminalEvents++
+					}
+				case <-timeout:
+					t.Fatal("timed out waiting for terminal")
+				}
+			}
+			if err := value.Submit(ctx, protocol.ShutdownOp{}); err != nil {
+				t.Fatal(err)
+			}
+			for event := range value.Io().Events {
+				switch event.Message.(type) {
+				case protocol.TurnCompleted, protocol.TurnAborted:
+					terminalEvents++
+				}
+			}
+			if terminalEvents != 1 {
+				t.Fatalf("terminal event count = %d", terminalEvents)
+			}
+			history, err := store.LoadHistory(ctx, value.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			terminalLines := 0
+			for _, line := range history.Lines {
+				if line.Item.Kind == rollout.KindTurnCompleted || line.Item.Kind == rollout.KindTurnAborted {
+					terminalLines++
+				}
+			}
+			if terminalLines != 1 {
+				t.Fatalf("terminal rollout count = %d", terminalLines)
+			}
+		})
+	}
+}
+
+func TestPreparedTaskAbortsWhenDurableTurnStartFails(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var aborts atomic.Int32
+	manager, baseStore := newTestManager(t, ctx, abortTrackingFactory{aborts: &aborts})
+	manager.store = turnStartFailStore{ThreadStore: baseStore}
+	defer manager.Close(context.Background())
+	value, err := manager.StartThread(ctx, StartInput{Configuration: testConfiguration(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := value.Submit(ctx, protocol.UserInputOp{Content: "fail durable start"}); err != nil {
+		t.Fatal(err)
+	}
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case event := <-value.Io().Events:
+			if rejected, ok := event.Message.(protocol.TurnRejected); ok {
+				if rejected.Error != "turn start append failed" {
+					t.Fatalf("rejected = %#v", rejected)
+				}
+				if aborts.Load() != 1 {
+					t.Fatalf("prepared task abort count = %d", aborts.Load())
+				}
+				return
+			}
+		case <-timeout:
+			t.Fatal("timed out waiting for rejected turn")
+		}
+	}
+}
+
 func TestResumeRecoversIncompleteToolCall(t *testing.T) {
 	ctx := context.Background()
 	manager, store := newTestManager(t, ctx, testFactory{})
@@ -288,9 +416,9 @@ func TestResumeRecoversIncompleteToolCall(t *testing.T) {
 	}
 	turnContext := testTurnContext(t, "thread-recover", "turn-old")
 	contextItem, _ := rollout.NewItem(rollout.KindTurnContext, turnContext)
-	userItem, _ := rollout.NewRawItem(rollout.KindResponseItem, json.RawMessage(`{"type":"user_message","role":"user","content":"run"}`))
+	userItem, _ := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "run"})
 	startedItem, _ := rollout.NewItem(rollout.KindTurnStarted, rollout.TurnStarted{Input: "run"})
-	toolCall, _ := rollout.NewRawItem(rollout.KindResponseItem, json.RawMessage(`{"type":"tool_call","call_id":"call-1","name":"execute_command"}`))
+	toolCall, _ := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-1", Name: "execute_command", Arguments: json.RawMessage(`{}`)})
 	if _, err := live.AppendItems(ctx, "turn-old", contextItem, userItem, startedItem, toolCall); err != nil {
 		t.Fatal(err)
 	}

@@ -1,4 +1,4 @@
-package main
+package task
 
 import (
 	"context"
@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/agent/task"
+	agentruntime "github.com/Godric-W/Amadeus/internal/agent/runtime"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
-	bootstrap "github.com/Godric-W/Amadeus/internal/app/bootstrap"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	extensionruntime "github.com/Godric-W/Amadeus/internal/extension"
 	"github.com/Godric-W/Amadeus/internal/instruction"
@@ -21,8 +20,8 @@ import (
 type contextPreparationOptions struct {
 	Task             string
 	TurnContext      *turn.Context
-	Host             task.Host
-	Agent            *bootstrap.Agent
+	Host             Host
+	Agent            *agentruntime.Agent
 	Extensions       *extensionruntime.Runtime
 	FileSystemPolicy *project.FileSystemPolicy
 	Instructions     *instruction.WorkspaceResolver
@@ -30,7 +29,7 @@ type contextPreparationOptions struct {
 }
 
 func prepareTurnContext(ctx context.Context, options contextPreparationOptions) error {
-	host, ok := options.Host.(task.ContextHost)
+	host, ok := options.Host.(ContextHost)
 	if !ok || host.Context() == nil {
 		return nil
 	}

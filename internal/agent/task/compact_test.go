@@ -1,4 +1,4 @@
-package main
+package task
 
 import (
 	"context"
@@ -53,8 +53,8 @@ func (host *compactTestHost) History() []rollout.Line {
 }
 
 func TestCompactTaskProducesSemanticReplacementHistory(t *testing.T) {
-	runner, factory, host, client := newCompactionTestRuntime(t)
-	result, err := runner.executeCompactTurn(context.Background(), factory, host, &turn.Context{})
+	factory, host, client := newCompactionTestRuntime(t)
+	result, err := (&compactTask{factory: factory}).Run(context.Background(), host, &turn.Context{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,15 +74,15 @@ func TestCompactTaskProducesSemanticReplacementHistory(t *testing.T) {
 }
 
 func TestCompactTaskPreservesLatestUserTurnOutsideReplacement(t *testing.T) {
-	runner, factory, host, _ := newCompactionTestRuntime(t)
-	latest, err := rollout.NewRawItem(rollout.KindResponseItem, mustMarshalRaw(map[string]any{"type": "user_message", "role": "user", "content": "now run the tests"}))
+	factory, host, _ := newCompactionTestRuntime(t)
+	latest, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "now run the tests"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := host.AppendItems(context.Background(), "turn-2", latest); err != nil {
 		t.Fatal(err)
 	}
-	result, err := runner.executeCompactTurn(context.Background(), factory, host, &turn.Context{})
+	result, err := (&compactTask{factory: factory}).Run(context.Background(), host, &turn.Context{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,25 +99,24 @@ func TestCompactTaskPreservesLatestUserTurnOutsideReplacement(t *testing.T) {
 }
 
 func TestCompactTaskFailureDoesNotReturnItems(t *testing.T) {
-	runner, factory, host, client := newCompactionTestRuntime(t)
+	factory, host, client := newCompactionTestRuntime(t)
 	client.err = errors.New("provider unavailable")
-	result, err := runner.executeCompactTurn(context.Background(), factory, host, &turn.Context{})
+	result, err := (&compactTask{factory: factory}).Run(context.Background(), host, &turn.Context{}, nil)
 	if err == nil || len(result.Items) != 0 {
 		t.Fatalf("failed compaction result=%#v err=%v", result, err)
 	}
 }
 
-func newCompactionTestRuntime(t *testing.T) (*agentController, *codingTaskFactory, *compactTestHost, *interactiveCompactionClient) {
+func newCompactionTestRuntime(t *testing.T) (*CodingFactory, *compactTestHost, *interactiveCompactionClient) {
 	t.Helper()
 	client := &interactiveCompactionClient{}
-	runner := &agentController{runtime: commandRuntime{llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil }}}
 	configured := config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "compact-model", MaxOutputTokens: 1024}}}
-	factory := &codingTaskFactory{runner: runner, configured: configured}
-	user, err := rollout.NewRawItem(rollout.KindResponseItem, mustMarshalRaw(map[string]any{"type": "user_message", "role": "user", "content": "inspect project"}))
+	factory := &CodingFactory{configured: configured, clientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil }}
+	user, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "inspect project"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	assistant, err := rollout.NewRawItem(rollout.KindResponseItem, mustMarshalRaw(map[string]any{"type": "assistant_message", "role": "assistant", "content": "inspection completed"}))
+	assistant, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "inspection completed"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,5 +124,5 @@ func newCompactionTestRuntime(t *testing.T) (*agentController, *codingTaskFactor
 	if err := host.AppendItems(context.Background(), "turn-1", user, assistant); err != nil {
 		t.Fatal(err)
 	}
-	return runner, factory, host, client
+	return factory, host, client
 }

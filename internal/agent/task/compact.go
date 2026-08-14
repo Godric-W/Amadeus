@@ -1,4 +1,4 @@
-package main
+package task
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/agent/task"
+	agentruntime "github.com/Godric-W/Amadeus/internal/agent/runtime"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
@@ -17,30 +17,33 @@ import (
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
-func (runner *agentController) executeCompactTurn(ctx context.Context, factory *codingTaskFactory, host task.Host, _ *turn.Context) (task.Result, error) {
+func (sessionTask *compactTask) Run(ctx context.Context, host Host, _ *turn.Context, _ []Input) (Result, error) {
+	if sessionTask == nil || sessionTask.factory == nil {
+		return Result{}, errors.New("compact task is nil")
+	}
 	projection, err := projectCompactionSource(host.History())
 	if err != nil {
-		return task.Result{}, err
+		return Result{}, err
 	}
 	if len(projection.Messages) == 0 || len(projection.SourceSequences) != len(projection.Messages) {
-		return task.Result{}, errors.New("there is no conversation to compact")
+		return Result{}, errors.New("there is no conversation to compact")
 	}
-	providerName := factory.configured.DefaultProvider
-	provider, ok := factory.configured.Providers[providerName]
+	providerName := sessionTask.factory.configured.DefaultProvider
+	provider, ok := sessionTask.factory.configured.Providers[providerName]
 	if !ok {
-		return task.Result{}, fmt.Errorf("default Provider %q is not configured", providerName)
+		return Result{}, fmt.Errorf("default Provider %q is not configured", providerName)
 	}
-	createClient := runner.runtime.llmClientFactory
+	createClient := sessionTask.factory.clientFactory
 	if createClient == nil {
-		createClient = defaultLLMClientFactory
+		createClient = agentruntime.DefaultClientFactory
 	}
 	client, err := createClient(providerName, provider)
 	if err != nil {
-		return task.Result{}, err
+		return Result{}, err
 	}
 	assets, err := internalprompt.LoadAssets()
 	if err != nil {
-		return task.Result{}, err
+		return Result{}, err
 	}
 	compactionContext := agentcontext.NewManager(nil)
 	compactionContext.Record(projection.Covered...)
@@ -51,35 +54,34 @@ func (runner *agentController) executeCompactTurn(ctx context.Context, factory *
 		maxOutputTokens = 4096
 	}
 	response, err := client.Complete(ctx, llm.Request{
-		Model:       provider.Model,
-		Prompt:      llm.Prompt{BaseInstructions: assets.Compaction, Input: input},
+		Model: provider.Model, Prompt: llm.Prompt{BaseInstructions: assets.Compaction, Input: input},
 		Temperature: 0, MaxOutputTokens: maxOutputTokens,
 	})
 	if err != nil {
-		return task.Result{}, fmt.Errorf("generate conversation summary: %w", err)
+		return Result{}, fmt.Errorf("generate conversation summary: %w", err)
 	}
 	summary := strings.TrimSpace(response.Message.Content)
 	if summary == "" || len(response.Message.ToolCalls) > 0 {
-		return task.Result{}, errors.New("compaction model returned no usable summary")
+		return Result{}, errors.New("compaction model returned no usable summary")
 	}
 	checkpoint := "## Compaction Checkpoint\n\n" + summary
-	replacement := make([]map[string]any, 0, 2)
+	replacement := make([]rollout.ReplacementMessage, 0, 2)
 	if initial := firstUser(projection.Covered); initial != nil {
-		replacement = append(replacement, map[string]any{"role": initial.Role, "content": initial.Content})
+		replacement = append(replacement, rollout.ReplacementMessage{Role: string(initial.Role), Content: initial.Content})
 	}
-	replacement = append(replacement, map[string]any{"role": llm.RoleAssistant, "content": checkpoint})
+	replacement = append(replacement, rollout.ReplacementMessage{Role: string(llm.RoleAssistant), Content: checkpoint})
 	encodedSource, err := json.Marshal(projection.Covered)
 	if err != nil {
-		return task.Result{}, fmt.Errorf("encode compaction source: %w", err)
+		return Result{}, fmt.Errorf("encode compaction source: %w", err)
 	}
 	digest := sha256.Sum256(encodedSource)
-	compactionItem, err := rollout.NewRawItem(rollout.KindCompaction, mustMarshalRaw(map[string]any{
-		"summary": summary, "replacement_history": replacement,
-		"covered_through_sequence": projection.SourceSequences[len(projection.Covered)-1],
-		"source_hash":              hex.EncodeToString(digest[:]), "provider": providerName, "model": provider.Model,
-	}))
+	compactionItem, err := rollout.NewItem(rollout.KindCompaction, rollout.Compaction{
+		Summary: summary, ReplacementHistory: replacement,
+		CoveredThroughSequence: projection.SourceSequences[len(projection.Covered)-1],
+		SourceHash:             hex.EncodeToString(digest[:]), Provider: providerName, Model: provider.Model,
+	})
 	if err != nil {
-		return task.Result{}, err
+		return Result{}, err
 	}
 	usageItem, err := rollout.NewItem(rollout.KindTokenUsage, rollout.TokenUsage{
 		InputTokens: response.Usage.InputTokens, CachedInputTokens: response.Usage.CachedInputTokens,
@@ -87,9 +89,9 @@ func (runner *agentController) executeCompactTurn(ctx context.Context, factory *
 		TotalTokens: response.Usage.TotalTokens,
 	})
 	if err != nil {
-		return task.Result{}, err
+		return Result{}, err
 	}
-	return task.Result{Items: []rollout.Item{compactionItem, usageItem}}, nil
+	return Result{Items: []rollout.Item{compactionItem, usageItem}}, nil
 }
 
 type compactionProjection struct {
@@ -99,7 +101,7 @@ type compactionProjection struct {
 }
 
 func projectCompactionSource(lines []rollout.Line) (compactionProjection, error) {
-	projection, err := projectRolloutMessagesForCompaction(lines)
+	projection, err := agentcontext.ProjectRolloutMessages(lines)
 	if err != nil {
 		return compactionProjection{}, err
 	}
@@ -133,8 +135,4 @@ func firstUser(messages []llm.Message) *llm.Message {
 		}
 	}
 	return nil
-}
-
-func projectRolloutMessagesForCompaction(lines []rollout.Line) (agentcontext.RolloutMessageProjection, error) {
-	return agentcontext.ProjectRolloutMessages(lines)
 }

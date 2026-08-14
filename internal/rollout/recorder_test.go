@@ -21,7 +21,7 @@ func TestRecorderConcurrentAppendAndReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item, err := NewRawItem(KindResponseItem, json.RawMessage(`{"role":"assistant","content":"ok"}`))
+	item, err := NewResponseItem(ResponseItem{Type: ResponseAssistantMessage, Role: "assistant", Content: "ok"})
 	if err != nil {
 		t.Fatal(err)
 	}

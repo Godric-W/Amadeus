@@ -78,8 +78,14 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent protoco
 	case protocol.TurnStarted:
 		return renderer.writeStatus("turn: started")
 	case protocol.TurnCompleted:
+		if typed.Summary != "" {
+			return renderer.writeStatus("%s", typed.Summary)
+		}
 		return renderer.writeStatus("turn: completed: %s", typed.Error)
 	case protocol.TurnAborted:
+		if typed.Summary != "" {
+			return renderer.writeStatus("%s", typed.Summary)
+		}
 		return renderer.writeStatus("turn: aborted: %s", typed.Reason)
 	case protocol.Warning:
 		return renderer.writeStatus("warning: %s", typed.Message)

@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/state"
+	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type legacySession struct {
@@ -170,7 +172,13 @@ func exportLegacySession(ctx context.Context, home string, database *sql.DB, leg
 				if preview == "" {
 					preview = truncateRunes(input, 160)
 				}
-				canonical = append(canonical, rawResponse("user_message", "user", payload.Content, "", "", item.Payload))
+				response, responseErr := newLegacyResponse(rollout.ResponseItem{
+					Type: rollout.ResponseUserMessage, Role: "user", Content: payload.Content,
+				}, item.Payload)
+				if responseErr != nil {
+					return closeWithError(responseErr)
+				}
+				canonical = append(canonical, response)
 				break
 			}
 		}
@@ -233,12 +241,8 @@ func migratedMetadata(path string, legacy legacySession) (state.StoredThread, er
 			}
 		}
 		if line.Item.Kind == rollout.KindResponseItem && metadata.Preview == "" {
-			var response struct {
-				Type    string `json:"type"`
-				Role    string `json:"role"`
-				Content string `json:"content"`
-			}
-			if json.Unmarshal(line.Item.Payload, &response) == nil && (response.Type == "user_message" || response.Role == "user") {
+			response, decodeErr := rollout.DecodeResponseItem(line.Item)
+			if decodeErr == nil && response.Type == rollout.ResponseUserMessage {
 				metadata.Preview = truncateRunes(response.Content, 160)
 			}
 		}
@@ -314,7 +318,10 @@ func convertLegacyItem(item legacyItem) ([]rollout.Item, error) {
 		if err := json.Unmarshal(item.Payload, &payload); err != nil {
 			return nil, err
 		}
-		return []rollout.Item{rawResponse("assistant_message", "assistant", payload.Content, "", "", item.Payload)}, nil
+		value, err := newLegacyResponse(rollout.ResponseItem{
+			Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: payload.Content,
+		}, item.Payload)
+		return []rollout.Item{value}, err
 	case "tool_call":
 		var payload struct {
 			Content string `json:"content"`
@@ -329,12 +336,23 @@ func convertLegacyItem(item legacyItem) ([]rollout.Item, error) {
 		}
 		values := make([]rollout.Item, 0, len(payload.Calls)+1)
 		if strings.TrimSpace(payload.Content) != "" {
-			values = append(values, rawResponse("assistant_message", "assistant", payload.Content, "", "", item.Payload))
+			value, err := newLegacyResponse(rollout.ResponseItem{
+				Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: payload.Content,
+			}, item.Payload)
+			if err != nil {
+				return nil, err
+			}
+			values = append(values, value)
 		}
 		for _, call := range payload.Calls {
-			value, err := rollout.NewRawItem(rollout.KindResponseItem, encodeRaw(map[string]any{
-				"type": "tool_call", "call_id": call.ID, "name": call.Name, "arguments": call.Arguments,
-			}))
+			arguments := call.Arguments
+			if len(arguments) == 0 || !json.Valid(arguments) {
+				arguments = json.RawMessage(`{}`)
+			}
+			value, err := newLegacyResponse(rollout.ResponseItem{
+				Type: rollout.ResponseToolCall, Role: "assistant", CallID: call.ID,
+				Name: fallback(call.Name, "unknown_tool"), Arguments: arguments,
+			}, item.Payload)
 			if err != nil {
 				return nil, err
 			}
@@ -342,21 +360,48 @@ func convertLegacyItem(item legacyItem) ([]rollout.Item, error) {
 		}
 		return values, nil
 	case "tool_result":
-		var payload map[string]any
+		var payload struct {
+			CallID   string           `json:"call_id"`
+			Name     string           `json:"name"`
+			ToolName string           `json:"tool_name"`
+			Content  string           `json:"content"`
+			Text     string           `json:"text"`
+			Status   string           `json:"status"`
+			Error    json.RawMessage  `json:"error"`
+			Partial  bool             `json:"partial"`
+			Metadata map[string]any   `json:"metadata"`
+			Result   *tool.ToolResult `json:"result"`
+		}
 		if err := json.Unmarshal(item.Payload, &payload); err != nil {
 			return nil, err
 		}
-		payload["type"] = "tool_result"
-		if callID, ok := payload["call_id"]; !ok || strings.TrimSpace(fmt.Sprint(callID)) == "" {
+		if strings.TrimSpace(payload.CallID) == "" {
 			return nil, nil
 		}
-		value, err := rollout.NewRawItem(rollout.KindResponseItem, encodeRaw(payload))
+		name := fallback(payload.Name, fallback(payload.ToolName, "unknown_tool"))
+		content := fallback(payload.Content, payload.Text)
+		status := fallback(payload.Status, "succeeded")
+		result := payload.Result
+		if result == nil {
+			result = &tool.ToolResult{CallID: payload.CallID, ToolName: name, Text: content, Partial: payload.Partial, Metadata: payload.Metadata}
+		}
+		result.CallID = fallback(result.CallID, payload.CallID)
+		result.ToolName = fallback(result.ToolName, name)
+		responseError := decodeLegacyResponseError(payload.Error)
+		if responseError != nil && payload.Status == "" {
+			status = "failed"
+		}
+		value, err := newLegacyResponse(rollout.ResponseItem{
+			Type: rollout.ResponseToolResult, Role: "tool", Content: content,
+			CallID: payload.CallID, Name: name, Status: status, Result: result,
+			Error: responseError, Partial: payload.Partial, Metadata: payload.Metadata,
+		}, item.Payload)
 		return []rollout.Item{value}, err
 	case "plan_update":
 		value, err := rollout.NewRawItem(rollout.KindPlanUpdate, item.Payload)
 		return []rollout.Item{value}, err
 	case "context_compaction":
-		value, err := rollout.NewRawItem(rollout.KindCompaction, item.Payload)
+		value, err := convertLegacyCompaction(item.Payload)
 		return []rollout.Item{value}, err
 	case "run_interrupted", "run_failed":
 		return nil, nil
@@ -433,22 +478,48 @@ func legacyRolloutPath(home string, id rollout.ThreadID, at time.Time) string {
 	return filepath.Join(home, "sessions", at.UTC().Format("2006"), at.UTC().Format("01"), at.UTC().Format("02"), fmt.Sprintf("rollout-%s-%s.jsonl", stamp, id))
 }
 
-func rawResponse(itemType, role, content, callID, name string, original json.RawMessage) rollout.Item {
-	payload := map[string]any{"type": itemType, "role": role, "content": content}
-	if callID != "" {
-		payload["call_id"] = callID
-	}
-	if name != "" {
-		payload["name"] = name
-	}
+func newLegacyResponse(payload rollout.ResponseItem, original json.RawMessage) (rollout.Item, error) {
 	if len(original) > 0 {
-		payload["legacy_payload"] = original
+		if payload.Metadata == nil {
+			payload.Metadata = make(map[string]any)
+		}
+		payload.Metadata["legacy_payload"] = json.RawMessage(append([]byte(nil), original...))
 	}
-	value, err := rollout.NewRawItem(rollout.KindResponseItem, encodeRaw(payload))
-	if err != nil {
-		panic(err)
+	return rollout.NewResponseItem(payload)
+}
+
+func decodeLegacyResponseError(raw json.RawMessage) *rollout.ResponseError {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
 	}
-	return value
+	var message string
+	if json.Unmarshal(raw, &message) == nil && strings.TrimSpace(message) != "" {
+		return &rollout.ResponseError{Message: strings.TrimSpace(message)}
+	}
+	var value rollout.ResponseError
+	if json.Unmarshal(raw, &value) == nil && strings.TrimSpace(value.Message) != "" {
+		return &value
+	}
+	return &rollout.ResponseError{Message: string(raw)}
+}
+
+func convertLegacyCompaction(raw json.RawMessage) (rollout.Item, error) {
+	var payload rollout.Compaction
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return rollout.Item{}, err
+	}
+	payload.Summary = fallback(payload.Summary, "Legacy conversation history was compacted.")
+	if len(payload.ReplacementHistory) == 0 {
+		payload.ReplacementHistory = []rollout.ReplacementMessage{{Role: "assistant", Content: payload.Summary}}
+	}
+	if payload.CoveredThroughSequence <= 0 {
+		payload.CoveredThroughSequence = 1
+	}
+	if strings.TrimSpace(payload.SourceHash) == "" {
+		digest := sha256.Sum256(raw)
+		payload.SourceHash = fmt.Sprintf("%x", digest[:])
+	}
+	return rollout.NewItem(rollout.KindCompaction, payload)
 }
 
 func encodeRaw(value any) json.RawMessage {

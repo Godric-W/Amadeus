@@ -22,7 +22,8 @@ type Input struct {
 }
 
 type Result struct {
-	Items []rollout.Item
+	Items   []rollout.Item
+	Summary string
 }
 
 type Host interface {
@@ -46,9 +47,19 @@ type SessionTask interface {
 	Abort(context.Context, Host, *turn.Context) error
 }
 
+type PrepareRequest struct {
+	Kind    Kind
+	Input   string
+	Context turn.Context
+}
+
+type Prepared struct {
+	Task    SessionTask
+	Context turn.Context
+}
+
 type Factory interface {
-	RegularTask(string) (SessionTask, error)
-	CompactTask() (SessionTask, error)
+	Prepare(context.Context, Host, PrepareRequest) (Prepared, error)
 }
 
 type FuncTask struct {

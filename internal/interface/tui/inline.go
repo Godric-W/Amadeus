@@ -99,9 +99,15 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent protoc
 		return renderer.statusLine("usage: input=%d output=%d total=%d", typed.Usage.InputTokens, typed.Usage.OutputTokens, total)
 	case protocol.TurnCompleted:
 		renderer.phase = "idle"
+		if typed.Summary != "" {
+			return renderer.statusLine("%s", typed.Summary)
+		}
 		return renderer.statusLine("turn completed: %s", typed.Error)
 	case protocol.TurnAborted:
 		renderer.phase = "idle"
+		if typed.Summary != "" {
+			return renderer.statusLine("%s", typed.Summary)
+		}
 		return renderer.statusLine("turn aborted: %s", typed.Reason)
 	case protocol.StreamError:
 		renderer.phase = "error"

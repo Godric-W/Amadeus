@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 const CurrentVersion = 1
@@ -61,6 +63,51 @@ type TurnStarted struct {
 	Input string `json:"input"`
 }
 
+type ResponseItemType string
+
+const (
+	ResponseUserMessage      ResponseItemType = "user_message"
+	ResponseAssistantMessage ResponseItemType = "assistant_message"
+	ResponseToolCall         ResponseItemType = "tool_call"
+	ResponseToolResult       ResponseItemType = "tool_result"
+)
+
+type ResponseError struct {
+	Kind    string `json:"kind,omitempty"`
+	Message string `json:"message"`
+}
+
+type ResponseItem struct {
+	Type      ResponseItemType   `json:"type"`
+	Role      string             `json:"role,omitempty"`
+	Content   string             `json:"content,omitempty"`
+	Reasoning string             `json:"reasoning_content,omitempty"`
+	CallID    string             `json:"call_id,omitempty"`
+	Name      string             `json:"name,omitempty"`
+	Arguments json.RawMessage    `json:"arguments,omitempty"`
+	Status    string             `json:"status,omitempty"`
+	Result    *tool.ToolResult   `json:"result,omitempty"`
+	Error     *ResponseError     `json:"error,omitempty"`
+	Metadata  map[string]any     `json:"metadata,omitempty"`
+	Partial   bool               `json:"partial,omitempty"`
+	Duration  int64              `json:"duration_nanos,omitempty"`
+	Parts     []tool.ContentPart `json:"parts,omitempty"`
+}
+
+type ReplacementMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type Compaction struct {
+	Summary                string               `json:"summary"`
+	ReplacementHistory     []ReplacementMessage `json:"replacement_history"`
+	CoveredThroughSequence int64                `json:"covered_through_sequence"`
+	SourceHash             string               `json:"source_hash"`
+	Provider               string               `json:"provider,omitempty"`
+	Model                  string               `json:"model,omitempty"`
+}
+
 type TurnTerminalStatus string
 
 const (
@@ -69,12 +116,14 @@ const (
 )
 
 type TurnCompleted struct {
-	Status TurnTerminalStatus `json:"status"`
-	Error  string             `json:"error,omitempty"`
+	Status  TurnTerminalStatus `json:"status"`
+	Summary string             `json:"summary,omitempty"`
+	Error   string             `json:"error,omitempty"`
 }
 
 type TurnAborted struct {
-	Reason string `json:"reason"`
+	Summary string `json:"summary,omitempty"`
+	Reason  string `json:"reason"`
 }
 
 // TurnItemCompleted is the durable, self-contained projection of one user-visible
@@ -199,6 +248,26 @@ func DecodePayload[T any](item Item) (T, error) {
 	return payload, nil
 }
 
+func NewResponseItem(payload ResponseItem) (Item, error) {
+	return NewItem(KindResponseItem, payload)
+}
+
+func DecodeResponseItem(item Item) (ResponseItem, error) {
+	payload, err := DecodePayload[ResponseItem](item)
+	if err != nil {
+		return ResponseItem{}, err
+	}
+	if payload.Type == "" {
+		switch payload.Role {
+		case "user":
+			payload.Type = ResponseUserMessage
+		case "assistant":
+			payload.Type = ResponseAssistantMessage
+		}
+	}
+	return payload, validateResponseItem(payload)
+}
+
 func IsKnownKind(kind Kind) bool {
 	switch kind {
 	case KindSessionMeta, KindTurnContext, KindTurnStarted, KindResponseItem,
@@ -227,6 +296,17 @@ func validateKnownPayload(item Item) error {
 		}
 		if strings.TrimSpace(payload.Input) == "" {
 			return errors.New("turn_started input is empty")
+		}
+	case KindResponseItem:
+		_, err := DecodeResponseItem(item)
+		return err
+	case KindCompaction:
+		payload, err := DecodePayload[Compaction](item)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(payload.Summary) == "" || len(payload.ReplacementHistory) == 0 || payload.CoveredThroughSequence <= 0 || strings.TrimSpace(payload.SourceHash) == "" {
+			return errors.New("compaction payload is incomplete")
 		}
 	case KindTurnCompleted:
 		payload, err := DecodePayload[TurnCompleted](item)
@@ -282,6 +362,33 @@ func validateKnownPayload(item Item) error {
 		if strings.TrimSpace(payload.Key) != "" && payload.Content == "" {
 			return errors.New("dynamic context_update content is empty")
 		}
+	}
+	return nil
+}
+
+func validateResponseItem(payload ResponseItem) error {
+	switch payload.Type {
+	case ResponseUserMessage:
+		if strings.TrimSpace(payload.Content) == "" {
+			return errors.New("user response item content is empty")
+		}
+	case ResponseAssistantMessage:
+		if strings.TrimSpace(payload.Content) == "" && strings.TrimSpace(payload.Reasoning) == "" {
+			return errors.New("assistant response item is empty")
+		}
+	case ResponseToolCall:
+		if strings.TrimSpace(payload.CallID) == "" || strings.TrimSpace(payload.Name) == "" {
+			return errors.New("tool call response item identity is incomplete")
+		}
+		if len(payload.Arguments) == 0 || !json.Valid(payload.Arguments) {
+			return errors.New("tool call response item arguments are invalid")
+		}
+	case ResponseToolResult:
+		if strings.TrimSpace(payload.CallID) == "" || strings.TrimSpace(payload.Name) == "" || strings.TrimSpace(payload.Status) == "" || payload.Result == nil {
+			return errors.New("tool result response item is incomplete")
+		}
+	default:
+		return fmt.Errorf("response item type %q is invalid", payload.Type)
 	}
 	return nil
 }

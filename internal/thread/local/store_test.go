@@ -2,7 +2,7 @@ package local
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -38,7 +38,7 @@ func TestStoreDurableHistoryAndRebuild(t *testing.T) {
 	if result.MetadataWarning != nil {
 		t.Fatal(result.MetadataWarning)
 	}
-	response, err := rollout.NewRawItem(rollout.KindResponseItem, json.RawMessage(`{"role":"user","content":"inspect files"}`))
+	response, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "inspect files"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,5 +138,189 @@ func TestStoreRejectsSecondActiveWriter(t *testing.T) {
 	}
 	if _, err := store.OpenWriter(ctx, "thread-1"); err == nil {
 		t.Fatal("second active writer was accepted")
+	}
+}
+
+func TestBufferedAppendDoesNotAdvanceSQLiteBeforeDurableAppend(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	database, err := statesqlite.Open(ctx, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateStore, err := statesqlite.NewStore(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(home, stateStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.Materialize(ctx, thread.CreateInput{ID: "thread-buffered", CWD: "/workspace", Title: "Thread", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "buffered preview"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, err := rollout.NewItem(rollout.KindTokenUsage, rollout.TokenUsage{TotalTokens: 17})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendItemsBuffered(ctx, "thread-buffered", "turn-1", response, usage); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := store.GetThread(ctx, "thread-buffered")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Preview != "" || metadata.TokensUsed != 0 {
+		t.Fatalf("buffered metadata advanced before flush: %#v", metadata)
+	}
+	terminal, err := rollout.NewItem(rollout.KindTurnCompleted, rollout.TurnCompleted{Status: rollout.TurnStatusCompleted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendItems(ctx, "thread-buffered", "turn-1", terminal); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err = store.GetThread(ctx, "thread-buffered")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Preview != "buffered preview" || metadata.TokensUsed != 17 {
+		t.Fatalf("durable metadata omitted buffered facts: %#v", metadata)
+	}
+}
+
+type orderedRecorder struct {
+	durableRecorder
+	calls       *[]string
+	appendError error
+	flushError  error
+}
+
+func (recorder orderedRecorder) Append(ctx context.Context, turnID rollout.TurnID, items ...rollout.Item) ([]rollout.Line, error) {
+	*recorder.calls = append(*recorder.calls, "append")
+	if recorder.appendError != nil {
+		return nil, recorder.appendError
+	}
+	return recorder.durableRecorder.Append(ctx, turnID, items...)
+}
+
+func (recorder orderedRecorder) Flush(ctx context.Context) error {
+	*recorder.calls = append(*recorder.calls, "flush")
+	if recorder.flushError != nil {
+		return recorder.flushError
+	}
+	return recorder.durableRecorder.Flush(ctx)
+}
+
+type orderedStateDB struct {
+	state.DB
+	calls       *[]string
+	upsertError error
+}
+
+func (database orderedStateDB) UpsertThread(ctx context.Context, metadata state.StoredThread) error {
+	*database.calls = append(*database.calls, "upsert")
+	if database.upsertError != nil {
+		return database.upsertError
+	}
+	return database.DB.UpsertThread(ctx, metadata)
+}
+
+func TestDurableAppendOrdersAppendFlushAndMetadataSync(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	database, err := statesqlite.Open(ctx, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateStore, err := statesqlite.NewStore(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(home, stateStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.Materialize(ctx, thread.CreateInput{ID: "thread-order", CWD: "/workspace", Title: "Thread", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "durable preview"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := store.recorders["thread-order"]
+
+	calls := []string{}
+	store.recorders["thread-order"] = orderedRecorder{durableRecorder: original, calls: &calls, appendError: errors.New("append failed")}
+	store.state = orderedStateDB{DB: stateStore, calls: &calls}
+	if _, err := store.AppendItems(ctx, "thread-order", "turn-1", response); err == nil {
+		t.Fatal("append failure was ignored")
+	}
+	if len(calls) != 1 || calls[0] != "append" {
+		t.Fatalf("append failure ordering = %v", calls)
+	}
+
+	calls = nil
+	store.recorders["thread-order"] = orderedRecorder{durableRecorder: original, calls: &calls, flushError: errors.New("flush failed")}
+	store.state = orderedStateDB{DB: stateStore, calls: &calls}
+	if _, err := store.AppendItems(ctx, "thread-order", "turn-1", response); err == nil {
+		t.Fatal("flush failure was ignored")
+	}
+	if len(calls) != 2 || calls[0] != "append" || calls[1] != "flush" {
+		t.Fatalf("flush failure ordering = %v", calls)
+	}
+	metadata, err := stateStore.GetThread(ctx, "thread-order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Preview != "" {
+		t.Fatalf("metadata advanced beyond failed flush: %#v", metadata)
+	}
+
+	calls = nil
+	store.recorders["thread-order"] = orderedRecorder{durableRecorder: original, calls: &calls}
+	store.state = orderedStateDB{DB: stateStore, calls: &calls, upsertError: errors.New("upsert failed")}
+	terminal, err := rollout.NewItem(rollout.KindTurnCompleted, rollout.TurnCompleted{Status: rollout.TurnStatusCompleted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.AppendItems(ctx, "thread-order", "turn-1", terminal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MetadataWarning == nil {
+		t.Fatal("metadata upsert failure was not surfaced")
+	}
+	if len(calls) != 3 || calls[0] != "append" || calls[1] != "flush" || calls[2] != "upsert" {
+		t.Fatalf("durable ordering = %v", calls)
+	}
+	metadata, err = stateStore.GetThread(ctx, "thread-order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Preview != "" {
+		t.Fatalf("failed metadata upsert advanced SQLite: %#v", metadata)
+	}
+
+	store.state = stateStore
+	usage, err := rollout.NewItem(rollout.KindTokenUsage, rollout.TokenUsage{TotalTokens: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendItems(ctx, "thread-order", "turn-2", usage); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err = stateStore.GetThread(ctx, "thread-order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Preview != "durable preview" || metadata.TokensUsed != 3 {
+		t.Fatalf("metadata reconciliation lost durable facts: %#v", metadata)
 	}
 }

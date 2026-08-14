@@ -6,20 +6,17 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/Godric-W/Amadeus/internal/thread"
-	threadmanager "github.com/Godric-W/Amadeus/internal/thread/manager"
+	"github.com/Godric-W/Amadeus/internal/app"
 	"github.com/spf13/cobra"
 )
 
 type agentController struct {
-	command       *cobra.Command
-	flags         *configFlags
-	runtime       commandRuntime
-	threadManager *threadmanager.ThreadManager
-	currentThread *threadmanager.AmadeusThread
-	taskFactories map[thread.ID]*codingTaskFactory
-	threadMutex   sync.Mutex
-	lifecycleCtx  context.Context
+	command      *cobra.Command
+	flags        *configFlags
+	runtime      commandRuntime
+	workspace    *app.ThreadWorkspace
+	workspaceMu  sync.Mutex
+	lifecycleCtx context.Context
 }
 
 func defaultAgentCommandFactory(command *cobra.Command, flags *configFlags, runtime commandRuntime) (agentCommand, error) {
@@ -29,7 +26,7 @@ func defaultAgentCommandFactory(command *cobra.Command, flags *configFlags, runt
 	if flags == nil {
 		return nil, errors.New("Coding Agent config flags are nil")
 	}
-	return &agentController{command: command, flags: flags, runtime: runtime, taskFactories: make(map[thread.ID]*codingTaskFactory)}, nil
+	return &agentController{command: command, flags: flags, runtime: runtime}, nil
 }
 
 func (runner *agentController) Run(ctx context.Context, invocation agentInvocation) error {
@@ -42,9 +39,9 @@ func (runner *agentController) Run(ctx context.Context, invocation agentInvocati
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	runner.threadMutex.Lock()
+	runner.workspaceMu.Lock()
 	runner.lifecycleCtx = ctx
-	runner.threadMutex.Unlock()
+	runner.workspaceMu.Unlock()
 	defer runner.closeSessionStore()
 	switch invocation.Mode {
 	case agentInvocationInteractive:

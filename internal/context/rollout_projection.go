@@ -10,33 +10,11 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
-	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type RolloutMessageProjection struct {
 	Messages        []llm.Message
 	SourceSequences []int64
-}
-
-type rolloutResponseItem struct {
-	Type      string             `json:"type"`
-	Role      llm.Role           `json:"role,omitempty"`
-	Content   string             `json:"content,omitempty"`
-	Reasoning string             `json:"reasoning_content,omitempty"`
-	CallID    string             `json:"call_id,omitempty"`
-	Name      string             `json:"name,omitempty"`
-	Arguments json.RawMessage    `json:"arguments,omitempty"`
-	Result    *tool.ToolResult   `json:"result,omitempty"`
-	Parts     []tool.ContentPart `json:"parts,omitempty"`
-}
-
-type rolloutCompaction struct {
-	ReplacementHistory []struct {
-		Role    llm.Role `json:"role"`
-		Content string   `json:"content"`
-	} `json:"replacement_history"`
-	CoveredThroughSequence int64  `json:"covered_through_sequence"`
-	SourceHash             string `json:"source_hash"`
 }
 
 func ProjectRolloutMessages(lines []rollout.Line) (RolloutMessageProjection, error) {
@@ -74,9 +52,9 @@ func ProjectRolloutMessages(lines []rollout.Line) (RolloutMessageProjection, err
 				continue
 			}
 		case rollout.KindCompaction:
-			var payload rolloutCompaction
-			if err := json.Unmarshal(line.Item.Payload, &payload); err != nil {
-				return RolloutMessageProjection{}, fmt.Errorf("decode compaction at sequence %d: %w", line.Sequence, err)
+			payload, err := rollout.DecodePayload[rollout.Compaction](line.Item)
+			if err != nil {
+				return RolloutMessageProjection{}, err
 			}
 			if err := projection.applyCompaction(payload); err != nil {
 				return RolloutMessageProjection{}, fmt.Errorf("apply compaction at sequence %d: %w", line.Sequence, err)
@@ -87,16 +65,16 @@ func ProjectRolloutMessages(lines []rollout.Line) (RolloutMessageProjection, err
 }
 
 func (projection *RolloutMessageProjection) appendResponse(line rollout.Line) error {
-	var item rolloutResponseItem
-	if err := json.Unmarshal(line.Item.Payload, &item); err != nil {
+	item, err := rollout.DecodeResponseItem(line.Item)
+	if err != nil {
 		return fmt.Errorf("decode response_item at sequence %d: %w", line.Sequence, err)
 	}
 	switch item.Type {
-	case "user_message":
+	case rollout.ResponseUserMessage:
 		projection.append(llm.UserMessage(item.Content), line.Sequence)
-	case "assistant_message":
+	case rollout.ResponseAssistantMessage:
 		projection.append(llm.Message{Role: llm.RoleAssistant, Content: item.Content, Reasoning: item.Reasoning}, line.Sequence)
-	case "tool_call":
+	case rollout.ResponseToolCall:
 		callID := strings.TrimSpace(item.CallID)
 		if callID == "" {
 			callID = fmt.Sprintf("incomplete-call-%d", line.Sequence)
@@ -113,7 +91,7 @@ func (projection *RolloutMessageProjection) appendResponse(line rollout.Line) er
 			Role: llm.RoleAssistant, Content: item.Content, Reasoning: item.Reasoning,
 			ToolCalls: []llm.ToolCall{{ID: callID, Name: name, Arguments: arguments}},
 		}, line.Sequence)
-	case "tool_result":
+	case rollout.ResponseToolResult:
 		if strings.TrimSpace(item.CallID) == "" {
 			return nil
 		}
@@ -154,7 +132,7 @@ func (projection *RolloutMessageProjection) append(message llm.Message, sequence
 	projection.SourceSequences = append(projection.SourceSequences, int64(sequence))
 }
 
-func (projection *RolloutMessageProjection) applyCompaction(payload rolloutCompaction) error {
+func (projection *RolloutMessageProjection) applyCompaction(payload rollout.Compaction) error {
 	covered := 0
 	for covered < len(projection.SourceSequences) && projection.SourceSequences[covered] <= payload.CoveredThroughSequence {
 		covered++
@@ -173,7 +151,7 @@ func (projection *RolloutMessageProjection) applyCompaction(payload rolloutCompa
 	replacements := make([]llm.Message, 0, len(payload.ReplacementHistory))
 	sequences := make([]int64, 0, len(payload.ReplacementHistory))
 	for _, replacement := range payload.ReplacementHistory {
-		replacements = append(replacements, llm.Message{Role: replacement.Role, Content: replacement.Content})
+		replacements = append(replacements, llm.Message{Role: llm.Role(replacement.Role), Content: replacement.Content})
 		sequences = append(sequences, payload.CoveredThroughSequence)
 	}
 	projection.Messages = append(replacements, projection.Messages[covered:]...)

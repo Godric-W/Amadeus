@@ -1,20 +1,19 @@
-package main
+package task
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/agent/react"
-	"github.com/Godric-W/Amadeus/internal/agent/task"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type turnRolloutRecorder struct {
-	host   task.Host
+	host   Host
 	turnID turn.ID
 }
 
@@ -28,25 +27,19 @@ func (recorder *turnRolloutRecorder) RecordToolCalls(ctx context.Context, messag
 	items := make([]rollout.Item, 0, len(message.ToolCalls)+1)
 	content := strings.TrimSpace(message.Content)
 	if content != "" {
-		payload := map[string]any{"type": "assistant_message", "role": "assistant", "content": content}
-		if reasoning := strings.TrimSpace(message.Reasoning); reasoning != "" {
-			payload["reasoning_content"] = reasoning
-		}
-		item, err := newResponseItem(payload)
+		item, err := rollout.NewResponseItem(rollout.ResponseItem{
+			Type: rollout.ResponseAssistantMessage, Role: string(llm.RoleAssistant), Content: content, Reasoning: strings.TrimSpace(message.Reasoning),
+		})
 		if err != nil {
 			return err
 		}
 		items = append(items, item)
 	}
 	for _, call := range message.ToolCalls {
-		payload := map[string]any{
-			"type": "tool_call", "role": "assistant", "call_id": call.ID,
-			"name": call.Name, "arguments": json.RawMessage(call.Arguments),
-		}
-		if reasoning := strings.TrimSpace(message.Reasoning); reasoning != "" {
-			payload["reasoning_content"] = reasoning
-		}
-		item, err := newResponseItem(payload)
+		item, err := rollout.NewResponseItem(rollout.ResponseItem{
+			Type: rollout.ResponseToolCall, Role: string(llm.RoleAssistant), CallID: call.ID,
+			Name: call.Name, Arguments: append([]byte(nil), call.Arguments...), Reasoning: strings.TrimSpace(message.Reasoning),
+		})
 		if err != nil {
 			return err
 		}
@@ -61,18 +54,16 @@ func (recorder *turnRolloutRecorder) RecordToolOutcomes(ctx context.Context, out
 	}
 	items := make([]rollout.Item, 0, len(outcomes)*2)
 	for _, outcome := range outcomes {
-		payload := map[string]any{
-			"type": "tool_result", "call_id": outcome.CallID, "name": outcome.ToolName,
-			"status": outcome.Status, "content": outcome.Result.Text, "metadata": outcome.Metadata,
-			"partial": outcome.Partial, "duration_nanos": int64(outcome.Duration), "result": outcome.Result,
-		}
-		if len(outcome.Result.Parts) > 0 {
-			payload["parts"] = outcome.Result.Parts
+		result := outcome.Result.Clone()
+		payload := rollout.ResponseItem{
+			Type: rollout.ResponseToolResult, Role: string(llm.RoleTool), CallID: outcome.CallID, Name: outcome.ToolName,
+			Status: string(outcome.Status), Content: result.Text, Result: &result, Metadata: outcome.Metadata,
+			Partial: outcome.Partial, Duration: int64(outcome.Duration), Parts: append([]tool.ContentPart(nil), result.Parts...),
 		}
 		if outcome.Error != nil {
-			payload["error"] = outcome.Error
+			payload.Error = &rollout.ResponseError{Kind: outcome.Error.Kind, Message: outcome.Error.Message}
 		}
-		item, err := newResponseItem(payload)
+		item, err := rollout.NewResponseItem(payload)
 		if err != nil {
 			return err
 		}
@@ -82,16 +73,4 @@ func (recorder *turnRolloutRecorder) RecordToolOutcomes(ctx context.Context, out
 		return nil
 	}
 	return recorder.host.AppendItems(ctx, recorder.turnID, items...)
-}
-
-func newResponseItem(payload any) (rollout.Item, error) {
-	return rollout.NewRawItem(rollout.KindResponseItem, mustMarshalRaw(payload))
-}
-
-func mustMarshalRaw(value any) json.RawMessage {
-	content, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
-	}
-	return content
 }

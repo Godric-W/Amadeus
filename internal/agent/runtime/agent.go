@@ -1,9 +1,10 @@
-package bootstrap
+package runtime
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/react"
@@ -39,6 +40,7 @@ type AgentOptions struct {
 	WebSearch        websearch.Provider
 	FileSystemPolicy *project.FileSystemPolicy
 	Permissions      *policy.SessionPermissionContext
+	BaseInstructions llm.BaseInstructions
 }
 
 type Agent struct {
@@ -72,9 +74,9 @@ func NewAgent(configured config.Config, root project.Root, events protocol.Event
 func NewAgentWithOptions(configured config.Config, root project.Root, events protocol.EventSink, approvals policy.ApprovalPort, auditSink audit.Sink, options AgentOptions) (*Agent, error) {
 	createClient := options.ClientFactory
 	if createClient == nil {
-		createClient = defaultClientFactory
+		createClient = DefaultClientFactory
 	}
-	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, options.RolloutRecorder, options.PlanUpdater, options.UserSkillRoot, options.UserMCPRoot, options.MCPClientFactory, options.Skills, options.SkillWarnings, options.MCP, options.WebFetcher, options.WebSearch, options.FileSystemPolicy, options.Permissions)
+	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, options.RolloutRecorder, options.PlanUpdater, options.UserSkillRoot, options.UserMCPRoot, options.MCPClientFactory, options.Skills, options.SkillWarnings, options.MCP, options.WebFetcher, options.WebSearch, options.FileSystemPolicy, options.Permissions, options.BaseInstructions)
 }
 
 func (agent *Agent) AvailableTools() []tool.ToolSpec {
@@ -90,10 +92,10 @@ func (agent *Agent) AvailableTools() []tool.ToolSpec {
 }
 
 func newAgent(configured config.Config, root project.Root, events protocol.EventSink, approvals policy.ApprovalPort, auditSink audit.Sink, createClient ClientFactory) (*Agent, error) {
-	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, nil, nil, "", "", nil, nil, nil, nil, nil, nil, nil, nil)
+	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, nil, nil, "", "", nil, nil, nil, nil, nil, nil, nil, nil, llm.BaseInstructions{})
 }
 
-func newAgentWithOptions(configured config.Config, root project.Root, events protocol.EventSink, approvals policy.ApprovalPort, auditSink audit.Sink, createClient ClientFactory, rolloutRecorder react.RolloutRecorder, planUpdater builtin.PlanUpdater, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, externalSkills *skill.Catalog, externalSkillWarnings []error, externalMCP *mcp.Manager, webFetcher webfetch.Fetcher, webSearch websearch.Provider, fileSystemPolicy *project.FileSystemPolicy, permissions *policy.SessionPermissionContext) (*Agent, error) {
+func newAgentWithOptions(configured config.Config, root project.Root, events protocol.EventSink, approvals policy.ApprovalPort, auditSink audit.Sink, createClient ClientFactory, rolloutRecorder react.RolloutRecorder, planUpdater builtin.PlanUpdater, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, externalSkills *skill.Catalog, externalSkillWarnings []error, externalMCP *mcp.Manager, webFetcher webfetch.Fetcher, webSearch websearch.Provider, fileSystemPolicy *project.FileSystemPolicy, permissions *policy.SessionPermissionContext, baseInstructions llm.BaseInstructions) (*Agent, error) {
 	if err := config.Validate(configured); err != nil {
 		return nil, fmt.Errorf("validate Agent configuration: %w", err)
 	}
@@ -131,6 +133,9 @@ func newAgentWithOptions(configured config.Config, root project.Root, events pro
 	assets, err := internalprompt.LoadAssets()
 	if err != nil {
 		return nil, fmt.Errorf("load prompt assets: %w", err)
+	}
+	if strings.TrimSpace(baseInstructions.Text) == "" {
+		baseInstructions = assets.Base
 	}
 	coreOptions := builtin.DefaultCoreToolOptions()
 	if fileSystemPolicy == nil {
@@ -292,7 +297,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events pro
 		Client:           client,
 		Events:           events,
 		Audit:            auditSink,
-		BaseInstructions: assets.Base,
+		BaseInstructions: baseInstructions,
 		Registry:         registry,
 		ToolService:      toolService,
 		Iterator:         iterator,
@@ -353,6 +358,6 @@ func (agent *Agent) Close() error {
 	return agent.MCP.Close()
 }
 
-func defaultClientFactory(providerName string, provider config.ProviderConfig) (llm.Client, error) {
+func DefaultClientFactory(providerName string, provider config.ProviderConfig) (llm.Client, error) {
 	return openaiadapter.NewAdapter(providerName, provider)
 }

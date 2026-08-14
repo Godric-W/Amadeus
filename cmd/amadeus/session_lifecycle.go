@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/app"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/state"
 	"github.com/Godric-W/Amadeus/internal/thread"
@@ -17,37 +18,26 @@ import (
 )
 
 func (runner *agentController) ensureActiveThread(ctx context.Context, invocation agentInvocation) (*threadmanager.AmadeusThread, config.Config, error) {
-	manager, configured, err := runner.ensureThreadManager(ctx, invocation)
+	workspace, configured, err := runner.ensureWorkspace(ctx, invocation)
 	if err != nil {
 		return nil, config.Config{}, err
 	}
-	runner.threadMutex.Lock()
-	active := runner.currentThread
-	runner.threadMutex.Unlock()
-	if active != nil {
-		return active, configured, nil
-	}
-	active, err = manager.StartThread(ctx, threadmanager.StartInput{Configuration: sessionConfiguration(configured, invocation)})
+	active, err := workspace.EnsureCurrent(ctx, sessionConfiguration(configured, invocation))
 	if err != nil {
 		return nil, config.Config{}, err
 	}
-	runner.threadMutex.Lock()
-	runner.currentThread = active
-	runner.threadMutex.Unlock()
 	return active, configured, nil
 }
 
 func (runner *agentController) closeSessionStore() {
-	runner.threadMutex.Lock()
-	manager := runner.threadManager
-	runner.threadManager = nil
-	runner.currentThread = nil
-	runner.taskFactories = make(map[thread.ID]*codingTaskFactory)
-	runner.threadMutex.Unlock()
-	if manager != nil {
+	runner.workspaceMu.Lock()
+	workspace := runner.workspace
+	runner.workspace = nil
+	runner.workspaceMu.Unlock()
+	if workspace != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = manager.Close(ctx)
+		_ = workspace.Close(ctx)
 	}
 }
 
@@ -57,7 +47,8 @@ func (runner *agentController) writeInteractiveStatus(ctx context.Context, invoc
 		return err
 	}
 	provider := configured.Providers[configured.DefaultProvider]
-	metadata, metadataErr := runner.currentThreadMetadata(ctx)
+	workspace := runner.currentWorkspace()
+	metadata, metadataErr := workspace.CurrentMetadata(ctx)
 	title := "draft"
 	sessionID := "draft"
 	rolloutItems := 0
@@ -66,18 +57,13 @@ func (runner *agentController) writeInteractiveStatus(ctx context.Context, invoc
 		title = metadata.Title
 		rolloutItems = len(active.History())
 	}
-	runner.threadMutex.Lock()
-	factory := runner.taskFactories[active.ID()]
-	runner.threadMutex.Unlock()
 	permissionCount := 0
 	skillRevision := "unloaded"
 	mcpRevision := "unloaded"
-	if factory != nil {
-		permissionCount = factory.permissions.GrantCount()
-		if extensions, extensionErr := factory.ensureExtensions(); extensionErr == nil {
-			skillRevision = shortRevision(extensions.SkillRevision())
-			mcpRevision = shortRevision(extensions.MCPRevision())
-		}
+	if capabilities, ok := active.Capabilities(); ok {
+		permissionCount = capabilities.PermissionGrantCount()
+		skillRevision = shortRevision(capabilities.SkillRevision())
+		mcpRevision = shortRevision(capabilities.MCPRevision())
 	}
 	_, err = fmt.Fprintf(invocation.ErrorOutput,
 		"project: %s\nsession: %s\ntitle: %s\nprovider: %s\nmodel: %s\nrollout items: %d\nsession permissions: %d\nskills revision: %s\nmcp revision: %s\n",
@@ -100,11 +86,11 @@ func (runner *agentController) prepareSession(ctx context.Context, invocation ag
 	case "", sessionStartDraft:
 		return nil
 	case sessionStartContinue:
-		manager, configured, err := runner.ensureThreadManager(ctx, invocation)
+		workspace, configured, err := runner.ensureWorkspace(ctx, invocation)
 		if err != nil {
 			return err
 		}
-		threads, err := manager.ListThreads(ctx, state.ListQuery{CWD: invocation.Project.Path(), Limit: 1})
+		threads, err := workspace.List(ctx, state.ListQuery{CWD: invocation.Project.Path(), Limit: 1})
 		if err != nil {
 			return err
 		}
@@ -112,18 +98,18 @@ func (runner *agentController) prepareSession(ctx context.Context, invocation ag
 			fmt.Fprintln(invocation.ErrorOutput, "session: no previous session; using a new draft")
 			return nil
 		}
-		active, err := runner.resumeThread(ctx, manager, configured, invocation, threads[0].ID)
+		active, err := workspace.Resume(ctx, threads[0].ID, sessionConfiguration(configured, invocation))
 		if err != nil {
 			return err
 		}
 		fmt.Fprintf(invocation.ErrorOutput, "session: continued %s (%s)\n", active.ID(), threads[0].Title)
 		return nil
 	case sessionStartResume:
-		manager, configured, err := runner.ensureThreadManager(ctx, invocation)
+		workspace, configured, err := runner.ensureWorkspace(ctx, invocation)
 		if err != nil {
 			return err
 		}
-		metadata, err := manager.ListThreads(ctx, state.ListQuery{CWD: invocation.Project.Path(), IncludeArchived: true})
+		metadata, err := workspace.List(ctx, state.ListQuery{CWD: invocation.Project.Path(), IncludeArchived: true})
 		if err != nil {
 			return err
 		}
@@ -134,7 +120,7 @@ func (runner *agentController) prepareSession(ctx context.Context, invocation ag
 				break
 			}
 		}
-		if _, err := runner.resumeThread(ctx, manager, configured, invocation, invocation.SessionID); err != nil {
+		if _, err := workspace.Resume(ctx, invocation.SessionID, sessionConfiguration(configured, invocation)); err != nil {
 			return err
 		}
 		fmt.Fprintf(invocation.ErrorOutput, "session: resumed %s (%s)\n", invocation.SessionID, title)
@@ -149,34 +135,12 @@ func (runner *agentController) prepareSession(ctx context.Context, invocation ag
 	}
 }
 
-func (runner *agentController) resumeThread(ctx context.Context, manager *threadmanager.ThreadManager, configured config.Config, invocation agentInvocation, id thread.ID) (*threadmanager.AmadeusThread, error) {
-	runner.threadMutex.Lock()
-	current := runner.currentThread
-	runner.threadMutex.Unlock()
-	if current != nil && current.ID() != id {
-		if err := current.Shutdown(ctx); err != nil {
-			return nil, err
-		}
-	}
-	active, err := manager.ResumeThread(ctx, id, threadmanager.StartInput{Configuration: sessionConfiguration(configured, invocation)})
-	if err != nil {
-		return nil, err
-	}
-	runner.threadMutex.Lock()
-	runner.currentThread = active
-	runner.threadMutex.Unlock()
-	return active, nil
-}
-
 func (runner *agentController) newDraft(ctx context.Context) error {
-	runner.threadMutex.Lock()
-	current := runner.currentThread
-	runner.currentThread = nil
-	runner.threadMutex.Unlock()
-	if current != nil {
-		return current.Shutdown(ctx)
+	workspace := runner.currentWorkspace()
+	if workspace == nil {
+		return nil
 	}
-	return nil
+	return workspace.NewDraft(ctx)
 }
 
 func (runner *agentController) renameCurrent(ctx context.Context, title string) (string, error) {
@@ -184,48 +148,42 @@ func (runner *agentController) renameCurrent(ctx context.Context, title string) 
 	if title == "" {
 		return "", errors.New("session title is empty")
 	}
-	runner.threadMutex.Lock()
-	manager := runner.threadManager
-	current := runner.currentThread
-	runner.threadMutex.Unlock()
-	if manager == nil || current == nil {
+	workspace := runner.currentWorkspace()
+	if workspace == nil {
 		return "", errors.New("there is no active session to rename")
 	}
-	if err := manager.RenameThread(ctx, current.ID(), title); err != nil {
+	if err := workspace.RenameCurrent(ctx, title); err != nil {
 		return "", err
 	}
 	return title, nil
 }
 
 func (runner *agentController) deleteCurrent(ctx context.Context) (thread.ID, error) {
-	runner.threadMutex.Lock()
-	manager := runner.threadManager
-	current := runner.currentThread
-	runner.currentThread = nil
-	runner.threadMutex.Unlock()
-	if manager == nil || current == nil {
+	workspace := runner.currentWorkspace()
+	if workspace == nil {
 		return "", nil
 	}
-	if err := manager.DeleteThread(ctx, current.ID()); err != nil {
-		return "", err
+	deleted, err := workspace.DeleteCurrent(ctx)
+	if errors.Is(err, app.ErrNoActiveThread) {
+		return "", nil
 	}
-	return current.ID(), nil
+	return deleted, err
 }
 
 func (runner *agentController) listThreads(ctx context.Context, invocation agentInvocation) ([]state.StoredThread, error) {
-	manager, _, err := runner.ensureThreadManager(ctx, invocation)
+	workspace, _, err := runner.ensureWorkspace(ctx, invocation)
 	if err != nil {
 		return nil, err
 	}
-	return manager.ListThreads(ctx, state.ListQuery{CWD: invocation.Project.Path()})
+	return workspace.List(ctx, state.ListQuery{CWD: invocation.Project.Path()})
 }
 
 func (runner *agentController) selectSession(ctx context.Context, invocation agentInvocation, reader *bufio.Reader) error {
-	manager, configured, err := runner.ensureThreadManager(ctx, invocation)
+	workspace, configured, err := runner.ensureWorkspace(ctx, invocation)
 	if err != nil {
 		return err
 	}
-	threads, err := manager.ListThreads(ctx, state.ListQuery{CWD: invocation.Project.Path()})
+	threads, err := workspace.List(ctx, state.ListQuery{CWD: invocation.Project.Path()})
 	if err != nil {
 		return err
 	}
@@ -234,9 +192,7 @@ func (runner *agentController) selectSession(ctx context.Context, invocation age
 		return nil
 	}
 	fmt.Fprintln(invocation.ErrorOutput, "Select a session (Esc or empty input cancels):")
-	runner.threadMutex.Lock()
-	current := runner.currentThread
-	runner.threadMutex.Unlock()
+	current, _ := workspace.Current()
 	for index, metadata := range threads {
 		marker := " "
 		if current != nil && metadata.ID == current.ID() {
@@ -261,11 +217,11 @@ func (runner *agentController) selectSession(ctx context.Context, invocation age
 		}
 		selected = threads[index-1].ID
 	}
-	active, err := runner.resumeThread(ctx, manager, configured, invocation, selected)
+	active, err := workspace.Resume(ctx, selected, sessionConfiguration(configured, invocation))
 	if err != nil {
 		return err
 	}
-	metadata, _ := runner.currentThreadMetadata(ctx)
+	metadata, _ := workspace.CurrentMetadata(ctx)
 	fmt.Fprintf(invocation.ErrorOutput, "session: resumed %s (%s)\n", active.ID(), metadata.Title)
 	return nil
 }

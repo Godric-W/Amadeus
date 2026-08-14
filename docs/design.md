@@ -19,6 +19,13 @@
 4. 外层 Runtime 不照搬 Claude Code；内层 Tool 的数据模型和阶段划分尽量与 Claude Code 对齐，再通过 Go 类型和 Codex Event/InteractiveRequest 边界适配。
 5. 不引入 Claude Code 的用户级、项目级或本地权限持久化；Approval grant 只保存在当前 Session 内存中，Session 结束或 Resume 后清空。
 
+架构迁移以所有权、依赖方向和运行时不变量为完成标准，不以 package、类型或字段改名为完成标准：
+
+- `cmd/amadeus` 只作为 Composition Root 和 Interface 启动入口，不拥有 Turn executor、Context history、Session capability 或 Turn 终态协调逻辑。
+- 生产 `SessionTask` 必须是可独立运行的 Agent Runtime 任务，不得回调 CLI/Application controller，不得通过 invocation/request/result channel 从旧执行器临时取得依赖。
+- 同一业务事实只能有一个 owner 和一套完成协议；新增 Session、Task、Event 或 Context 外壳后，旧 side channel、旧历史源和旧执行入口必须删除，而不是继续包裹。
+- 架构验收必须验证依赖方向和失败顺序，不能只扫描旧 symbol、旧 package 名称或目录结构。
+
 `../claude-code-main` 是源码还原项目，因此用于理解产品行为和局部机制，不作为未经验证的实现权威。涉及关键安全行为时，必须用 Amadeus 自身测试固化契约。
 
 核心设计域：
@@ -238,9 +245,37 @@ internal/config/             配置加载、校验、脱敏
 - 测试与被测 package 共置；架构约束测试必须扫描同一主链的全部拆分文件，不能只检查历史入口文件。
 - 约 400–500 行是需要重新审视职责的软阈值，不作为机械拆分标准；Runtime 状态机或协议编解码在保持单一职责时可以超过该阈值。
 
+生产依赖方向固定为：
+
+```text
+cmd/amadeus (Composition Root)
+├─→ internal/interface + internal/app + internal/thread/manager
+│   → internal/agent/session + internal/agent/task
+│   → internal/context + internal/tool + internal/llm domain ports
+└─→ infrastructure adapters
+    → internal/thread + internal/state + internal/tool + internal/llm domain ports
+```
+
+Domain/Runtime 不依赖 infrastructure adapter 或上层具体 controller/model；adapter 依赖并实现 domain port，再由 Composition Root 注入。Composition Root 可以引用所有装配对象，但不得因此成为执行 owner；若 Runtime 只能通过回调 `cmd/amadeus` 才能完成 Turn，即使类型位于目标目录，也视为架构未迁移完成。
+
 当前关键文件布局：
 
 ```text
+cmd/amadeus/
+  composition.go             Composition Root：配置、Store、Factory 与 ThreadManager 装配
+  turn_interface.go          CLI/TUI 对 SessionIo 的提交、等待与终态适配
+  agent_interactive.go       Fullscreen TUI 启动与 callback wiring
+  interactive_commands.go    Slash Command 对 Application/Capability 的调用适配
+  interactive_history.go     persisted TurnItem 的界面恢复投影
+
+internal/app/
+  thread_workspace.go        当前 Thread 选择、切换、恢复、重命名和删除生命周期
+
+internal/agent/session/
+  session.go                 Session 状态机、submission loop 与 Turn 生命周期
+  host.go                    TaskHost、History、Plan 与 canonical append 边界
+  interaction.go             SessionEvent、InteractiveRequest 与 completed item queue
+
 internal/interface/tui/
   application.go             Fullscreen Application 类型、生命周期与模型装配
   application_update.go      Bubble Tea Update 与输入状态转换
@@ -324,6 +359,12 @@ type ThreadManager struct {
 CLI/TUI 只通过 ThreadManager 和 AmadeusThread 使用 Runtime，不直接装配 Session 级依赖或 Rollout Writer。
 
 Go 为避免 `thread → agent/session → thread` 包循环，将持久化边界放在 `internal/thread`，将需要 spawn internal Session 的管理层放在 `internal/thread/manager`。这是同一个 Thread Runtime 边界的无环包拆分，不建立第二套 ThreadManager。
+
+#### Application ThreadWorkspace
+
+`internal/app.ThreadWorkspace` 是界面无关的 Application Service，拥有“当前选中的 AmadeusThread”及其切换生命周期。ThreadManager 继续拥有进程内全部已加载 Thread；ThreadWorkspace 只负责 `EnsureCurrent`、`Resume`、`NewDraft`、`RenameCurrent`、`DeleteCurrent` 和当前 metadata 查询。
+
+`cmd/amadeus` 只持有一个 ThreadWorkspace，不再分别保存 `ThreadManager`、`currentThread` 和对应 mutex。切换或清空当前 Thread 必须通过 ThreadWorkspace，并由 ThreadManager 同步完成 shutdown 与已加载实例移除，避免 Resume 重新取得已经终止的 Runtime 对象。
 
 ### 8.4 AmadeusThread
 
@@ -410,6 +451,8 @@ type Session struct {
 
 同一 Session 最多只有一个前台 ActiveTurn。
 
+Session 是 Turn 接纳、运行和终态的唯一协调者。`SessionTask.Run` 的返回值只回到 Session，由 Session 完成 canonical terminal append、flush、ActiveTurn 清理和终态 Event 发布；CLI、TUI、Application 或 TaskFactory 不得建立第二套 `result chan`、done callback 或终态等待协议。Interface 只等待 SessionIo 中的 Event/Status/Terminated，不同时等待私有 Task completion。
+
 ### 8.7 SessionState
 
 `SessionState` 是跨多个 Turn 持续存在的会话级可变内存状态，不是数据库记录：
@@ -440,6 +483,14 @@ type SessionServices struct {
 
 具体 `SessionTaskFactory` 是 Session 级 capability owner。当前 `RegularTask` 工厂持有 Provider、Prompt/Context、Tool、Approval、MCP、Skill 和 Web 的组合依赖，并由 Session 统一关闭；B、C、D、F 工作流分别收敛这些 capability 的 typed contract，但不会把生命周期重新交还给 CLI/TUI。这样 internal Session 只调度 SessionTask，不直接耦合每一种能力。
 
+生产 `SessionTaskFactory` 必须满足以下依赖规则：
+
+- Composition Root 可以创建 Factory 并注入配置与外部 Adapter，但 Factory 和 Task 不得持有 `cmd/amadeus` controller、Cobra command、TUI model 或完整 CLI invocation。
+- CLI flags 和 invocation 必须先归一化为 typed Session configuration、Submission 或 Turn input，再跨越 Runtime 边界。
+- Factory 在 Session 生命周期内持有并关闭 Provider、Tool Registry、Instruction Resolver、Approval、Extension 和其他 capability；不得在每个 Turn 中由 CLI 重新拼装同一组服务。
+- `RegularTask`、`CompactTask` 和后续 Plan/Review Task 直接使用 TaskHost、TurnContext 与 Factory capability 执行，不反向调用 Application 的 `execute*Turn` 方法。
+- Factory 创建 Task 不依赖 `Prepare → channel → nextRequest` 一类时序 side channel；Task 所需输入由 `SessionTaskFactory` 方法参数和 immutable task value 明确传递。
+
 SessionServices 不直接持有 SQLite Repository、JSONL 文件句柄或 Rollout Path；这些细节封装在 LiveThread → ThreadStore → LocalThreadStore 中。
 
 ### 8.9 LiveThread、ThreadStore 与 LocalThreadStore
@@ -460,7 +511,8 @@ SessionServices.LiveThread
 - `RolloutRecorder` 负责 JSONL 创建、append、flush、resume 和 shutdown。
 - `StateDB` 负责 StoredThread 的 SQLite 查询索引。
 - 每个 Thread 只有一个活动 Writer，并使用 Thread 级锁串行化 append/flush/shutdown。
-- Append 必须先 durable write + flush JSONL，再由 MetadataSync 更新 SQLite。
+- Durable Append 必须先 write + flush JSONL，再由 MetadataSync 更新 SQLite。
+- Buffered Append 可以只推进 Recorder 的内存/文件缓冲区和 Session 内存投影，但不得把未 flush 的 Rollout 事实写入 SQLite；Flush 成功后才允许按 durable watermark 执行 MetadataSync。
 - Metadata 更新失败不能让 SQLite 超前于 Rollout；后续通过 backfill/reconciliation 补齐。
 
 Session 不知道 ThreadStore 的具体实现，RolloutRecorder 也不推导 Runtime metadata。
@@ -495,6 +547,8 @@ type TurnContext struct {
 
 TurnContext 创建后不再修改。它不包含 Client、API Key、Mutex、Cancellation、Telemetry 或其他进程对象，因此可以直接作为 `turn_context` RolloutItem payload 持久化。
 
+TurnContext 必须在本 Turn 的 Provider、ModelInfo、Permission Mode、Tool Registry、OutputSchema 和环境事实解析完成后创建。`ToolNames` 必须来自该 Turn 实际暴露给模型的 Registry snapshot；CurrentDate、Timezone、Personality 和 OutputSchema 要么记录真实生效值，要么明确为空，不能为了贴合结构而填充未接线占位值。Resume 恢复的 `PreviousTurnSettings` 必须存在明确消费点，否则不得作为已完成 capability 保留。
+
 以下内容明确不属于 TurnContext：
 
 - BaseInstructions 和 ContextManager 属于 SessionConfiguration/SessionState。
@@ -527,7 +581,7 @@ type SessionTask interface {
 }
 ```
 
-`TaskHost` 只暴露 canonical append 与 history snapshot，不暴露 SessionState 或 Channel 所有权。`RunningTask` 是 SessionTask 的一次真实运行实例，持有 SessionTask、TurnContext、CancelCause、单次 buffered done channel 和 cleanup；Task panic 也必须转换为唯一 Completion，不能让 Session 永久停留在 Working。
+`TaskHost` 只暴露 typed canonical append、不可变 history/prompt snapshot 和必要的 Session 交互能力，不暴露 SessionState、可变 ContextManager、Session Channel 或终态所有权。ContextManager 的 Record、Replace、Rebuild 和 Usage 更新只能由 Session 对已接纳的 canonical facts 执行。`RunningTask` 是 SessionTask 的一次真实运行实例，持有 SessionTask、TurnContext、CancelCause、单次内部 completion 和 cleanup；该 completion 只由 Session 消费。Task panic 也必须转换为唯一 Completion，不能让 Session 永久停留在 Working。
 
 首批 SessionTask：
 
@@ -566,6 +620,8 @@ RolloutItem 至少包括：
 - `context_update`
 
 `response_item` 保存模型可见的 User/Assistant/Reasoning/Tool Call/Tool Result 事实；`turn_item_completed` 保存可独立 Replay 的完成态 TurnItem。未决 Approval/User Input Request、ItemStarted、Delta 和 Working 不进入 canonical Rollout。TUI 可以显示更丰富的瞬时 Event，但恢复上下文和历史展示只依赖持久化 RolloutItem。
+
+Rollout envelope 可以在 JSONL codec 边界使用 `kind + raw payload`，但每一种 payload 必须对应唯一的 typed Go contract、集中注册的 encoder/decoder 和版本化 round-trip 测试。生产 writer 不得用 `map[string]any` 或本地 ad-hoc struct 手工制造 canonical payload，Context、TUI 和 Resume 也不得各自定义同名解码结构。未知 kind/version 必须显式报错或按声明的 forward-compatible 规则保留，不能静默降级成缺字段消息。
 
 ### 8.14 Iteration
 
@@ -873,6 +929,13 @@ Prompt 资产位于 `internal/prompt`，按 BaseInstructions、Context Update、
 - Context 中注入生效内容，不只提供文件路径让模型自行读取。
 - 指令文件来源、作用域和 Hash 可进入诊断信息，但 Hash 不是加密或隐藏内容。
 
+目录作用域必须接入真实 Tool target，而不只在 Turn 开始时对初始 CWD 解析一次：
+
+- Read/Search 可以在发现新目录作用域后完成只读操作，但必须把新生效的 scoped instructions 作为 canonical Context Update 提交给 Session，使下一次模型采样可见。
+- Edit/Write 和带目标 CWD 的 Command 在 Prepare 阶段必须解析目标文件、目标目录或 command CWD 的有效指令集合。
+- 如果目标作用域相对当前 Prompt snapshot 新增或改变了指令，副作用 Tool 不得在模型尚未看到这些指令时继续执行；它返回 typed `context_refresh_required`，由 Session 更新 Context 后让 Reactor 重新采样。
+- Tool 不直接修改 ContextManager；Instruction Resolver 返回 typed resolution，由 Session 决定 canonical append 和 replace key。
+
 ### 12.3 ContextManager
 
 ContextManager 属于 SessionState，是当前模型可见历史的唯一所有者：
@@ -898,6 +961,8 @@ Canonical Rollout
 
 ContextManager 是 canonical Rollout 的派生投影，不是第二事实源。Reactor、TUI、CLI 和 CompactTask 不得各自实现第二套历史裁剪或消息投影。
 
+只有 Session 可以提交 ContextManager mutation。Task/Reactor 通过 TaskHost 请求 canonical append 并获取 immutable `ForPrompt` snapshot，不得持有 `*ContextManager` 或调用无 Rollout 对应事实的 Record/Replace fallback。每次 append 后可以增量投影或原子 rebuild，但 live execution 与 Resume 必须经过同一 projector 并得到等价结果。
+
 ### 12.4 Token Accounting
 
 Token 预算来源按优先级处理：
@@ -915,12 +980,14 @@ auto_compact_token_limit
 max_output_tokens
 supports_parallel_tool_calls
 tool_output_max_tokens
+input_modalities
 ```
 
 - `provider.max_output_tokens` 只表示单次模型请求最大输出。
 - `max_output_tokens` 只由 ModelInfo/Provider Request 定义。
 - `context_window` 是模型硬上限；`auto_compact_token_limit` 默认取 context window 的 90%，显式配置只能进一步收紧。
 - Provider Usage 只作为已完成请求的权威统计；下一次请求容量判断始终重新估算当前完整 Prompt，避免把上次请求 Usage 当成不同 Prompt 的容量值。
+- ContextManager 中的 live Usage、canonical `token_usage` 和 Resume 重建使用同一累计语义；单次 Iteration usage 只能先累加到 Turn/Thread usage，再更新投影，不能覆盖前序 Iteration。
 - 完整 Prompt 估算包含 BaseInstructions、ContextManager 输入、模型可见 Tool Specs 与 OutputSchema。
 - `base_tokens_remaining = min(auto_compact_token_limit - active_context_tokens, context_window - active_context_tokens)`。
 - 单次请求还必须满足 estimated input + max output 不超过 context window。
@@ -937,6 +1004,8 @@ tool_output_max_tokens
 - 搜索保留匹配路径、行号和总匹配数。
 - canonical Rollout 保存完整原始 Tool Result；`ContextManager.ForPrompt` 只返回模型安全投影。
 - 投影失败必须产生显式 Context Error，不允许静默丢失。
+
+Tool Result 的即时 Reactor replay、canonical Rollout、Resume rebuild 和 `ForPrompt` 必须共享同一个 typed projector。模型可见 payload 至少稳定表达 `ok/status`、文本或 parts、error、partial/truncated 和允许暴露的 metadata；任何阶段不得只取 `Text/Parts` 而静默丢失 declined、failed、cancelled、stale 或 partial 语义。完整 canonical result 与受预算约束的模型投影可以不同，但差异必须由同一 projector 显式产生并有 round-trip/semantic-equivalence 测试。
 
 ### 12.6 Compaction
 
@@ -1914,6 +1983,8 @@ LiveThread.AppendItems
 ```
 
 - SQLite 可以暂时落后 JSONL，但不能包含尚未 durable 的 Rollout 事实。
+- Recorder 必须维护 durable watermark；MetadataSync 只能读取不超过该 watermark 的 RolloutLine。Buffered Append 不触发 SQLite upsert，显式 Flush 或 Durable Append 成功后才能同步索引。
+- `append → SQLite upsert → flush` 在任何路径都属于非法顺序；进程在 flush 前崩溃时，恢复结果允许缺少 buffered tail，但 SQLite 不能引用该 tail。
 - Metadata 更新失败必须记录警告并保留可重建状态，不能回滚已经 durable 的 canonical history。
 - 启动时执行 reconciliation/backfill，从 SessionMeta、ContextUpdate、UserMessage 和 TokenUsage 重建 StoredThread；活动 Thread 即使索引被清空，下一次 canonical append 也能直接重新 upsert。
 - `/resume`、列表和搜索优先查询 SQLite；索引缺失或漂移时可扫描 Rollout 修复。
@@ -2162,7 +2233,7 @@ type InteractiveApprovalRequest struct {
 - 持久化 TurnStarted、TurnCompleted/TurnAborted、Completed TurnItem、`plan_update`、Token Usage、Compaction 和恢复所需 Context Facts。
 - 不持久化 ItemStarted、Delta、Working、未决 InteractiveRequest、Popup 和动画 Tick。
 - Resume 从 canonical Completed Item 重建 HistoryCell，不重放旧 Delta。
-- 高频 Completed Item 先由 Session 串行追加到 JSONL，并更新内存/SQLite 索引；Session 在 TurnStarted 和 TurnCompleted/TurnAborted 前执行强制 flush，确保终态 Event 只在 canonical facts durable 后发布。这样不会让每个工具事件都独占一次 `fsync`，但不改变持久化顺序和终态不变量。
+- 高频 Completed Item 先由 Session 串行 buffered append 到 JSONL，并更新 Session 内存投影；SQLite 只保持到最近 durable watermark。Session 在 TurnStarted、TurnCompleted/TurnAborted 和其他 durability boundary 执行 flush，随后 MetadataSync 才推进 SQLite，确保终态 Event 只在 canonical facts durable 且索引不超前后发布。这样不会让每个工具事件都独占一次 `fsync`，也不破坏持久化顺序。
 
 Turn 终态顺序固定为：
 
@@ -2212,11 +2283,16 @@ Runtime 正确性不能依赖 TUI 消费速度：
 ### 27.1 Runtime Contract
 
 - 一个用户输入只创建一个 Turn。
+- 生产 RegularTask/CompactTask 不持有或回调 CLI/Application controller，不通过 request/result side channel 取得执行依赖。
+- CLI invocation 在进入 Session 前已归一化；SessionTaskFactory 可以在没有 Cobra/TUI 对象的测试中独立运行完整 Turn。
 - Turn 在模型调用前持久化。
 - ItemStarted/ItemCompleted 使用相同 ItemID；Completed Item 足以独立 Replay。
 - Completed/Aborted 终态唯一，失败信息进入唯一终态。
+- Interface 只依赖 SessionEvent 识别 Turn terminal，不同时等待私有 Task completion。
 - Rollout append/flush 和 ActiveTurn 清理先于终态 Event。
 - Resume 后 Rollout 顺序稳定。
+- crash/fault injection 验证 SQLite 永不超过 JSONL durable watermark，Buffered Append 不提前 upsert metadata。
+- architecture test 验证 production TaskFactory/Task 不引用 `cmd/amadeus` controller、TUI model、Cobra command、完整 invocation 或 Prepare/request channel 模式。
 
 ### 27.2 Event Protocol
 
@@ -2231,10 +2307,14 @@ Runtime 正确性不能依赖 TUI 消费速度：
 
 - 超大 `docs/design.md` 不导致静默停止。
 - 读取整个 `docs` 目录后仍可继续对话。
-- Tool Result 被安全投影。
+- Tool Result 被安全投影，live replay 与 Rollout/Resume projection 对 status、error、partial、metadata 保持语义等价。
+- canonical Rollout payload 通过统一 typed encoder/decoder round-trip；writer 与 projector 不使用彼此独立的 ad-hoc schema。
+- ContextManager 只能由 Session 根据 canonical facts 更新；Task/Reactor 只取得 immutable prompt snapshot。
+- 访问嵌套目录后应用对应 AGENTS.md；副作用 Tool 在模型未看到新 scope 指令时返回 `context_refresh_required` 而不是继续执行。
 - Compaction 保留目标、修改、失败和待办。
 - Compaction 后 Tool 协议合法。
-- Provider usage 可以校准 estimator。
+- Provider usage 可以校准 estimator；多 Iteration live usage 与 Resume 后累计 usage 一致。
+- ModelInfo input modalities 控制不支持内容的投影，不把能力检查推迟到 Provider Adapter 报错。
 
 ### 27.4 Tool 与 Approval
 
@@ -2289,6 +2369,10 @@ Amadeus 至少通过以下真实场景：
 10. Provider、Context 或 Tool 失败时 TUI 明确显示错误，不静默卡死。
 11. `/resume` 恢复 Session 后 Plan、Compaction 和 Tool 历史语义一致。
 12. Rich Inline TUI 在正常终端中完成完整 Runtime 流程。
+13. 无 TUI/Cobra controller 的 Runtime fixture 可以通过 SessionTaskFactory 独立完成 regular Turn，且 Interface 只观察一套 Session 终态。
+14. 在 buffered append 后、flush 前模拟崩溃，SQLite 不包含未 durable 的 preview、title、usage 或 terminal metadata；backfill 后与 JSONL 一致。
+15. Tool Result 在即时迭代、下一次迭代和 Resume 后保持 status/error/partial/metadata 语义一致。
+16. Agent 首次进入带更深层 AGENTS.md 的目录时，副作用操作在新指令进入 Prompt 前不会执行。
 
 ## 29. 最终架构结论
 
@@ -2305,3 +2389,5 @@ Amadeus 至少通过以下真实场景：
 11. TurnItem 是 Event、Rollout Replay 和 HistoryCell 的稳定业务项；Delta 只服务实时更新，Completed Item 才是恢复事实。
 12. Slash Command 分为 TUI Local、Application Action 与 Core Op，不直接拥有 Runtime 或持久化状态。
 13. internal Session 是 SessionTask、ActiveTurn、Context History、Event Delivery 和终态收尾的唯一所有者。
+14. 生产 SessionTask 在 Agent Runtime 内直接执行，不反向调用 CLI/Application executor；TaskFactory 是 Session capability owner，不使用 invocation/result side channel。
+15. canonical Rollout payload 使用统一 typed contract；live、replay、Context 和 TUI 对同一业务事实共享 schema 与语义。

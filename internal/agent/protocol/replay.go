@@ -82,23 +82,17 @@ func LegacyResponseItemsToCompleted(lines []rollout.Line) ([]TurnItem, error) {
 		if line.Item.Kind != rollout.KindResponseItem {
 			continue
 		}
-		var payload struct {
-			Type    string `json:"type"`
-			Content string `json:"content,omitempty"`
-			CallID  string `json:"call_id,omitempty"`
-			Name    string `json:"name,omitempty"`
-			Status  string `json:"status,omitempty"`
-		}
-		if err := json.Unmarshal(line.Item.Payload, &payload); err != nil {
+		payload, err := rollout.DecodeResponseItem(line.Item)
+		if err != nil {
 			return nil, fmt.Errorf("decode legacy response item at sequence %d: %w", line.Sequence, err)
 		}
 		kind := ItemAssistantMessage
 		status := ItemStatusCompleted
 		toolName := ""
-		if payload.Type == "tool_call" || payload.Type == "tool_result" {
+		if payload.Type == rollout.ResponseToolCall || payload.Type == rollout.ResponseToolResult {
 			kind = ItemToolCall
 			toolName = payload.Name
-			if payload.Type == "tool_result" {
+			if payload.Type == rollout.ResponseToolResult {
 				if payload.Status == "denied" {
 					status = ItemDeclined
 				} else if payload.Status == "failed" || payload.Status == "cancelled" {
@@ -106,7 +100,7 @@ func LegacyResponseItemsToCompleted(lines []rollout.Line) ([]TurnItem, error) {
 				}
 			}
 		}
-		if payload.Type != "assistant_message" && payload.Type != "tool_call" && payload.Type != "tool_result" {
+		if payload.Type != rollout.ResponseAssistantMessage && payload.Type != rollout.ResponseToolCall && payload.Type != rollout.ResponseToolResult {
 			continue
 		}
 		created := line.Timestamp

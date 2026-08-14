@@ -10,6 +10,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 func TestManagerNormalizesToolProtocolAndProjectsLargeResults(t *testing.T) {
@@ -88,21 +89,21 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 	}
 	digest := sha256.Sum256(encoded)
 	lines := []rollout.Line{
-		contextTestLine(t, 1, rollout.KindResponseItem, map[string]any{"type": "user_message", "role": "user", "content": "initial objective"}),
-		contextTestLine(t, 2, rollout.KindResponseItem, map[string]any{"type": "tool_call", "role": "assistant", "call_id": "call-1", "name": "read", "arguments": map[string]any{"path": "README.md"}, "reasoning_content": "inspect first"}),
-		contextTestLine(t, 3, rollout.KindResponseItem, map[string]any{"type": "tool_result", "role": "tool", "call_id": "call-1", "content": "full contents"}),
-		contextTestLine(t, 4, rollout.KindResponseItem, map[string]any{"type": "assistant_message", "role": "assistant", "content": "inspection complete"}),
+		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "initial objective"}),
+		contextResponseLine(t, 2, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`), Reasoning: "inspect first"}),
+		contextResponseLine(t, 3, rollout.ResponseItem{Type: rollout.ResponseToolResult, Role: "tool", CallID: "call-1", Name: "read", Status: "succeeded", Content: "full contents", Result: &tool.ToolResult{CallID: "call-1", ToolName: "read", Text: "full contents"}}),
+		contextResponseLine(t, 4, rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "inspection complete"}),
 		contextTestLine(t, 5, rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(UpdateAgents), Content: "project agents"}),
-		contextTestLine(t, 6, rollout.KindCompaction, map[string]any{
-			"covered_through_sequence": 4,
-			"source_hash":              hex.EncodeToString(digest[:]),
-			"replacement_history": []map[string]any{
-				{"role": "user", "content": "initial objective"},
-				{"role": "assistant", "content": "## Compaction Checkpoint\n\ninspection complete"},
+		contextTestLine(t, 6, rollout.KindCompaction, rollout.Compaction{
+			Summary: "inspection complete", CoveredThroughSequence: 4,
+			SourceHash: hex.EncodeToString(digest[:]),
+			ReplacementHistory: []rollout.ReplacementMessage{
+				{Role: "user", Content: "initial objective"},
+				{Role: "assistant", Content: "## Compaction Checkpoint\n\ninspection complete"},
 			},
 		}),
-		contextTestLine(t, 7, rollout.KindResponseItem, map[string]any{"type": "user_message", "role": "user", "content": "now run tests"}),
-		contextTestLine(t, 8, rollout.KindResponseItem, map[string]any{"type": "tool_call", "role": "assistant", "call_id": "call-2", "name": "execute_command", "arguments": map[string]any{"command": "go test ./..."}}),
+		contextResponseLine(t, 7, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "now run tests"}),
+		contextResponseLine(t, 8, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-2", Name: "execute_command", Arguments: json.RawMessage(`{"command":"go test ./..."}`)}),
 		contextTestLine(t, 9, rollout.KindTurnAborted, rollout.TurnAborted{Reason: "interrupted"}),
 		contextTestLine(t, 10, rollout.KindTokenUsage, rollout.TokenUsage{InputTokens: 40, OutputTokens: 8, TotalTokens: 48}),
 	}
@@ -134,10 +135,7 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 
 func TestProjectRolloutMessagesRestoresAssistantReasoningContent(t *testing.T) {
 	lines := []rollout.Line{
-		contextTestLine(t, 1, rollout.KindResponseItem, map[string]any{
-			"type": "tool_call", "role": "assistant", "call_id": "call-1", "name": "read",
-			"arguments": map[string]any{"path": "README.md"}, "reasoning_content": "inspect first",
-		}),
+		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`), Reasoning: "inspect first"}),
 	}
 	projection, err := ProjectRolloutMessages(lines)
 	if err != nil {
@@ -150,17 +148,9 @@ func TestProjectRolloutMessagesRestoresAssistantReasoningContent(t *testing.T) {
 
 func TestProjectRolloutMessagesCombinesAssistantToolCalls(t *testing.T) {
 	lines := []rollout.Line{
-		contextTestLine(t, 1, rollout.KindResponseItem, map[string]any{
-			"type": "assistant_message", "role": "assistant", "content": "I will inspect both files",
-		}),
-		contextTestLine(t, 2, rollout.KindResponseItem, map[string]any{
-			"type": "tool_call", "role": "assistant", "call_id": "call-1", "name": "read",
-			"arguments": map[string]any{"path": "a.txt"}, "reasoning_content": "inspect files",
-		}),
-		contextTestLine(t, 3, rollout.KindResponseItem, map[string]any{
-			"type": "tool_call", "role": "assistant", "call_id": "call-2", "name": "read",
-			"arguments": map[string]any{"path": "b.txt"}, "reasoning_content": "inspect files",
-		}),
+		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "I will inspect both files"}),
+		contextResponseLine(t, 2, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"a.txt"}`), Reasoning: "inspect files"}),
+		contextResponseLine(t, 3, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-2", Name: "read", Arguments: json.RawMessage(`{"path":"b.txt"}`), Reasoning: "inspect files"}),
 	}
 	projection, err := ProjectRolloutMessages(lines)
 	if err != nil {
@@ -213,6 +203,15 @@ func TestManagerCompactionThresholdAccountsForFullPromptAndOutputReserve(t *test
 func contextTestLine(t *testing.T, sequence uint64, kind rollout.Kind, payload any) rollout.Line {
 	t.Helper()
 	item, err := rollout.NewItem(kind, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rollout.Line{Version: rollout.CurrentVersion, Sequence: sequence, Timestamp: time.Unix(int64(sequence), 0).UTC(), ThreadID: "thread-1", TurnID: "turn-1", Item: item}
+}
+
+func contextResponseLine(t *testing.T, sequence uint64, payload rollout.ResponseItem) rollout.Line {
+	t.Helper()
+	item, err := rollout.NewResponseItem(payload)
 	if err != nil {
 		t.Fatal(err)
 	}

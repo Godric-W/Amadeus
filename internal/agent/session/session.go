@@ -39,12 +39,11 @@ type PermissionState struct {
 }
 
 type SessionState struct {
-	Configuration        Configuration
-	History              []rollout.Line
-	PreviousTurnSettings *Configuration
-	Permissions          PermissionState
-	Context              *agentcontext.Manager
-	Plan                 *plan.State
+	Configuration Configuration
+	History       []rollout.Line
+	Permissions   PermissionState
+	Context       *agentcontext.Manager
+	Plan          *plan.State
 }
 
 type SessionServices struct {
@@ -138,7 +137,6 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 			return nil, SessionIo{}, fmt.Errorf("restore plan from initial history: %w", err)
 		}
 	}
-	value.state.PreviousTurnSettings = previousTurnSettings(args.History.Lines)
 	value.state.Permissions = PermissionState{Mode: value.state.Configuration.PermissionMode}
 	io := SessionIo{
 		Submissions: value.submissions, Events: value.events, Requests: value.requests,
@@ -270,27 +268,12 @@ func (session *Session) startTurn(input string, compact bool) {
 	}
 	now := session.services.Clock().UTC()
 	turnID := turn.ID(session.services.NextID("turn"))
-	turnContext := &turn.Context{
+	baseContext := turn.Context{
 		ThreadID: session.threadID, TurnID: turnID, Provider: session.state.Configuration.Provider,
 		Model: session.state.Configuration.Model, CWD: session.state.Configuration.CWD, Shell: session.state.Configuration.Shell,
 		CurrentDate: session.state.Configuration.CurrentDate, Timezone: session.state.Configuration.Timezone,
 		InitialPermissionMode: session.state.Permissions.Mode, Personality: session.state.Configuration.Personality,
 		ToolNames: append([]string(nil), session.state.Configuration.ToolNames...), OutputSchema: append(json.RawMessage(nil), session.state.Configuration.OutputSchema...),
-	}
-	if err := turnContext.Validate(); err != nil {
-		session.rejectTurn(turnID, err, false)
-		return
-	}
-	var sessionTask task.SessionTask
-	var err error
-	if compact {
-		sessionTask, err = session.services.TaskFactory.CompactTask()
-	} else {
-		sessionTask, err = session.services.TaskFactory.RegularTask(input)
-	}
-	if err != nil {
-		session.rejectTurn(turnID, err, false)
-		return
 	}
 	materialized, err := session.services.LiveThread.Materialize(session.ctx, thread.CreateInput{
 		ID: session.threadID, CWD: session.state.Configuration.CWD, Title: titleFromInput(input),
@@ -304,20 +287,42 @@ func (session *Session) startTurn(input string, compact bool) {
 	if materialized.MetadataWarning != nil {
 		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.Warning{Message: materialized.MetadataWarning.Error()}})
 	}
+	kind := task.KindRegular
+	if compact {
+		kind = task.KindCompact
+	}
+	prepared, err := session.services.TaskFactory.Prepare(session.ctx, session, task.PrepareRequest{Kind: kind, Input: input, Context: baseContext})
+	if err != nil {
+		session.rejectTurn(turnID, err, false)
+		return
+	}
+	if prepared.Task == nil {
+		session.rejectTurn(turnID, errors.New("task factory returned nil task"), false)
+		return
+	}
+	turnContext := &prepared.Context
+	abortPrepared := func() {
+		abortCtx, cancel := context.WithTimeout(context.WithoutCancel(session.ctx), 2*time.Second)
+		defer cancel()
+		_ = prepared.Task.Abort(abortCtx, session, turnContext)
+	}
 	contextItem, err := rollout.NewItem(rollout.KindTurnContext, turnContext)
 	if err != nil {
+		abortPrepared()
 		session.rejectTurn(turnID, err, false)
 		return
 	}
 	startedItem, err := rollout.NewItem(rollout.KindTurnStarted, rollout.TurnStarted{Input: input})
 	if err != nil {
+		abortPrepared()
 		session.rejectTurn(turnID, err, false)
 		return
 	}
 	items := []rollout.Item{contextItem}
 	if !compact {
-		responseItem, responseErr := rollout.NewRawItem(rollout.KindResponseItem, mustJSON(map[string]any{"type": "user_message", "role": "user", "content": input}))
+		responseItem, responseErr := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: string(llm.RoleUser), Content: input})
 		if responseErr != nil {
+			abortPrepared()
 			session.rejectTurn(turnID, responseErr, false)
 			return
 		}
@@ -325,12 +330,13 @@ func (session *Session) startTurn(input string, compact bool) {
 	}
 	items = append(items, startedItem)
 	if err := session.appendItemsDurable(session.ctx, turnID, items...); err != nil {
+		abortPrepared()
 		session.rejectTurn(turnID, err, true)
 		return
 	}
-	session.state.PreviousTurnSettings = configurationFromTurnContext(*turnContext)
-	running, err := task.NewRunningTask(session.ctx, session, sessionTask, turnContext, []task.Input{{Content: input}})
+	running, err := task.NewRunningTask(session.ctx, session, prepared.Task, turnContext, []task.Input{{Content: input}})
 	if err != nil {
+		abortPrepared()
 		session.completeWithoutTask(turnID, err)
 		return
 	}
@@ -362,106 +368,6 @@ func (session *Session) rejectTurn(turnID turn.ID, err error, fatal bool) {
 	}
 }
 
-func (session *Session) AppendItems(ctx context.Context, turnID turn.ID, items ...rollout.Item) error {
-	return session.appendItems(ctx, turnID, false, items...)
-}
-
-func (session *Session) appendItemsDurable(ctx context.Context, turnID turn.ID, items ...rollout.Item) error {
-	return session.appendItems(ctx, turnID, true, items...)
-}
-
-func (session *Session) appendItems(ctx context.Context, turnID turn.ID, durable bool, items ...rollout.Item) error {
-	if session == nil {
-		return errors.New("session is nil")
-	}
-	if ctx == nil {
-		return errors.New("append rollout context is nil")
-	}
-	var result thread.AppendResult
-	var err error
-	if durable {
-		result, err = session.services.LiveThread.AppendItems(ctx, turnID, items...)
-	} else {
-		result, err = session.services.LiveThread.AppendItemsBuffered(ctx, turnID, items...)
-	}
-	if err != nil {
-		return err
-	}
-	session.appendHistory(result.Lines)
-	session.contextMu.Lock()
-	rebuildErr := session.state.Context.Rebuild(session.History())
-	session.contextMu.Unlock()
-	if rebuildErr != nil {
-		return fmt.Errorf("rebuild context after rollout append: %w", rebuildErr)
-	}
-	if result.MetadataWarning != nil {
-		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.Warning{Message: result.MetadataWarning.Error()}})
-	}
-	return nil
-}
-
-func (session *Session) UpdatePlan(ctx context.Context, turnID turn.ID, update plan.Update) (plan.Snapshot, error) {
-	if session == nil || session.state.Plan == nil {
-		return plan.Snapshot{}, errors.New("session plan state is unavailable")
-	}
-	return session.state.Plan.ApplyPersistent(update, session.services.Clock().UTC(), func(snapshot plan.Snapshot) error {
-		item, err := rollout.NewItem(rollout.KindPlanUpdate, snapshot)
-		if err != nil {
-			return err
-		}
-		return session.appendItemsDurable(ctx, turnID, item)
-	})
-}
-
-func (session *Session) Context() *agentcontext.Manager {
-	return session.state.Context
-}
-
-func (session *Session) History() []rollout.Line {
-	if session == nil {
-		return nil
-	}
-	session.historyMu.RLock()
-	defer session.historyMu.RUnlock()
-	return cloneLines(session.state.History)
-}
-
-func (session *Session) appendHistory(lines []rollout.Line) {
-	if len(lines) == 0 {
-		return
-	}
-	session.historyMu.Lock()
-	session.state.History = append(session.state.History, cloneLines(lines)...)
-	session.historyMu.Unlock()
-}
-
-func latestPlanSnapshot(lines []rollout.Line) (plan.Snapshot, bool) {
-	for index := len(lines) - 1; index >= 0; index-- {
-		if lines[index].Item.Kind != rollout.KindPlanUpdate {
-			continue
-		}
-		var snapshot plan.Snapshot
-		if json.Unmarshal(lines[index].Item.Payload, &snapshot) == nil {
-			return snapshot, true
-		}
-	}
-	return plan.Snapshot{}, false
-}
-
-func (session *Session) Rename(ctx context.Context, title string, at time.Time) error {
-	if session == nil {
-		return errors.New("session is nil")
-	}
-	if at.IsZero() {
-		return errors.New("session rename time is zero")
-	}
-	item, err := rollout.NewItem(rollout.KindContextUpdate, rollout.ContextUpdate{Title: strings.TrimSpace(title)})
-	if err != nil {
-		return err
-	}
-	return session.appendItemsDurable(ctx, "", item)
-}
-
 func (session *Session) finishTurn(completion task.Completion) {
 	if session.active == nil || session.active.Task.Context().TurnID != completion.TurnID {
 		return
@@ -481,7 +387,11 @@ func (session *Session) finishTurn(completion task.Completion) {
 	finishedAt := session.services.Clock().UTC()
 	if errors.Is(completion.Cause, ErrInterrupted) || errors.Is(completion.Error, context.Canceled) && completion.Cause != nil {
 		reason := completion.Cause.Error()
-		terminal, _ := rollout.NewItem(rollout.KindTurnAborted, rollout.TurnAborted{Reason: reason})
+		summary := completion.Result.Summary
+		if summary == "" {
+			summary = "result: cancelled"
+		}
+		terminal, _ := rollout.NewItem(rollout.KindTurnAborted, rollout.TurnAborted{Summary: summary, Reason: reason})
 		cleanupCtx, cancel := session.cleanupContext()
 		persistErr := session.appendItemsDurable(cleanupCtx, completion.TurnID, terminal)
 		cancel()
@@ -493,7 +403,7 @@ func (session *Session) finishTurn(completion task.Completion) {
 			session.cancel(fmt.Errorf("persist aborted turn: %w", persistErr))
 			return
 		}
-		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: protocol.TurnAborted{Reason: reason, FinishedAt: finishedAt}})
+		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: protocol.TurnAborted{Summary: summary, Reason: reason, FinishedAt: finishedAt}})
 		return
 	}
 	status := rollout.TurnStatusCompleted
@@ -502,7 +412,7 @@ func (session *Session) finishTurn(completion task.Completion) {
 		status = rollout.TurnStatusFailed
 		errorText = completion.Error.Error()
 	}
-	terminal, _ := rollout.NewItem(rollout.KindTurnCompleted, rollout.TurnCompleted{Status: status, Error: errorText})
+	terminal, _ := rollout.NewItem(rollout.KindTurnCompleted, rollout.TurnCompleted{Status: status, Summary: completion.Result.Summary, Error: errorText})
 	cleanupCtx, cancel := session.cleanupContext()
 	persistErr := session.appendItemsDurable(cleanupCtx, completion.TurnID, terminal)
 	cancel()
@@ -518,27 +428,7 @@ func (session *Session) finishTurn(completion task.Completion) {
 		session.cancel(fmt.Errorf("persist completed turn: %w", persistErr))
 		return
 	}
-	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: protocol.TurnCompleted{Status: status, Error: errorText, FinishedAt: finishedAt}})
-}
-
-func (session *Session) queueCompletedItem(turnID turn.ID, item rollout.Item) {
-	if session == nil || turnID == "" {
-		return
-	}
-	session.completedMu.Lock()
-	session.queuedItems[turnID] = append(session.queuedItems[turnID], item)
-	session.completedMu.Unlock()
-}
-
-func (session *Session) takeCompletedItems(turnID turn.ID) []rollout.Item {
-	if session == nil {
-		return nil
-	}
-	session.completedMu.Lock()
-	items := append([]rollout.Item(nil), session.queuedItems[turnID]...)
-	delete(session.queuedItems, turnID)
-	session.completedMu.Unlock()
-	return items
+	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: protocol.TurnCompleted{Status: status, Summary: completion.Result.Summary, Error: errorText, FinishedAt: finishedAt}})
 }
 
 func (session *Session) completeWithoutTask(turnID turn.ID, taskErr error) {
@@ -563,87 +453,6 @@ func (session *Session) cancelActive(cause error) {
 	defer cancel()
 	if err := session.active.Task.Abort(abortCtx); err != nil {
 		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: session.active.Task.Context().TurnID, Message: protocol.Warning{Message: err.Error()}})
-	}
-}
-
-func (session *Session) publish(event protocol.SessionEvent) {
-	_ = session.Publish(context.WithoutCancel(session.ctx), event)
-}
-
-// Publish is the Session-owned event boundary used by a running task. Events
-// produced below the Session boundary are scoped here before they reach the
-// SessionIo channel; callers do not need to carry routing metadata through
-// tool or reactor internals.
-func (session *Session) Publish(ctx context.Context, event protocol.SessionEvent) error {
-	if session == nil {
-		return errors.New("session event publisher is nil")
-	}
-	if ctx == nil {
-		return errors.New("session event context is nil")
-	}
-	if event.ThreadID == "" {
-		event.ThreadID = session.threadID
-	}
-	if err := event.Validate(); err != nil {
-		return err
-	}
-	if completed, ok := event.Message.(protocol.ItemCompleted); ok {
-		item, err := protocol.NewCompletedItem(completed.Item)
-		if err != nil {
-			return fmt.Errorf("encode completed event for rollout: %w", err)
-		}
-		session.queueCompletedItem(turn.ID(event.TurnID), item)
-	}
-	select {
-	case session.events <- event:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-session.terminated:
-		return errors.New("session event channel is closed")
-	}
-}
-
-// Request is the Session-owned request/response boundary for approvals and
-// other interactive tool interactions. The Session loop remains the sole
-// owner of pending requests and routes the response back to the caller.
-func (session *Session) Request(ctx context.Context, request protocol.InteractiveRequest) (protocol.Op, error) {
-	if session == nil {
-		return nil, errors.New("session request publisher is nil")
-	}
-	if ctx == nil {
-		return nil, errors.New("session request context is nil")
-	}
-	if err := request.Validate(); err != nil {
-		return nil, err
-	}
-	result := make(chan protocol.Op, 1)
-	envelope := requestDelivery{request: request, result: result}
-	select {
-	case session.requestsIn <- envelope:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-session.terminated:
-		return nil, errors.New("session is terminated")
-	}
-	select {
-	case op := <-result:
-		if op == nil {
-			return nil, errors.New("interactive request was rejected")
-		}
-		return op, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-session.terminated:
-		return nil, errors.New("session is terminated")
-	}
-}
-
-func (session *Session) publishStatus(turnID turn.ID, working bool) {
-	status := protocol.AgentStatus{ThreadID: session.threadID, TurnID: turnID, Working: working}
-	select {
-	case session.status <- status:
-	default:
 	}
 }
 
@@ -674,27 +483,4 @@ func cloneLines(source []rollout.Line) []rollout.Line {
 		lines[index] = line
 	}
 	return lines
-}
-
-func previousTurnSettings(lines []rollout.Line) *Configuration {
-	for index := len(lines) - 1; index >= 0; index-- {
-		if lines[index].Item.Kind != rollout.KindTurnContext {
-			continue
-		}
-		var turnContext turn.Context
-		if json.Unmarshal(lines[index].Item.Payload, &turnContext) != nil || turnContext.Validate() != nil {
-			return nil
-		}
-		return configurationFromTurnContext(turnContext)
-	}
-	return nil
-}
-
-func configurationFromTurnContext(turnContext turn.Context) *Configuration {
-	return &Configuration{
-		CWD: turnContext.CWD, Provider: turnContext.Provider, Model: turnContext.Model, Shell: turnContext.Shell,
-		CurrentDate: turnContext.CurrentDate, Timezone: turnContext.Timezone,
-		PermissionMode: turnContext.InitialPermissionMode, Personality: turnContext.Personality,
-		ToolNames: append([]string(nil), turnContext.ToolNames...), OutputSchema: append(json.RawMessage(nil), turnContext.OutputSchema...),
-	}
 }

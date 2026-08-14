@@ -1,11 +1,10 @@
-package main
+package task
 
 import (
 	"context"
 	"encoding/json"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/task"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
@@ -22,7 +21,7 @@ func (host *reasoningRolloutHost) AppendItems(_ context.Context, _ turn.ID, item
 
 func (*reasoningRolloutHost) History() []rollout.Line { return nil }
 
-var _ task.Host = (*reasoningRolloutHost)(nil)
+var _ Host = (*reasoningRolloutHost)(nil)
 
 func TestTurnRolloutRecorderPreservesAssistantReasoning(t *testing.T) {
 	host := &reasoningRolloutHost{}

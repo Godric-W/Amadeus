@@ -27,7 +27,7 @@ func TestIncompleteTurnFindsLatestStillOpenTurn(t *testing.T) {
 }
 
 func TestPendingToolCallsDeduplicatesCallIDs(t *testing.T) {
-	call, err := rollout.NewRawItem(rollout.KindResponseItem, json.RawMessage(`{"type":"tool_call","call_id":"call-1","name":"read"}`))
+	call, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-1", Name: "read", Arguments: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
