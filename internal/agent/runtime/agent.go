@@ -40,6 +40,7 @@ type AgentOptions struct {
 	WebSearch        websearch.Provider
 	FileSystemPolicy *project.FileSystemPolicy
 	Permissions      *policy.SessionPermissionContext
+	ContextScope     tool.ContextScope
 	BaseInstructions llm.BaseInstructions
 }
 
@@ -76,7 +77,7 @@ func NewAgentWithOptions(configured config.Config, root project.Root, events pro
 	if createClient == nil {
 		createClient = DefaultClientFactory
 	}
-	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, options.RolloutRecorder, options.PlanUpdater, options.UserSkillRoot, options.UserMCPRoot, options.MCPClientFactory, options.Skills, options.SkillWarnings, options.MCP, options.WebFetcher, options.WebSearch, options.FileSystemPolicy, options.Permissions, options.BaseInstructions)
+	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, options.RolloutRecorder, options.PlanUpdater, options.UserSkillRoot, options.UserMCPRoot, options.MCPClientFactory, options.Skills, options.SkillWarnings, options.MCP, options.WebFetcher, options.WebSearch, options.FileSystemPolicy, options.Permissions, options.ContextScope, options.BaseInstructions)
 }
 
 func (agent *Agent) AvailableTools() []tool.ToolSpec {
@@ -92,10 +93,10 @@ func (agent *Agent) AvailableTools() []tool.ToolSpec {
 }
 
 func newAgent(configured config.Config, root project.Root, events protocol.EventSink, approvals policy.ApprovalPort, auditSink audit.Sink, createClient ClientFactory) (*Agent, error) {
-	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, nil, nil, "", "", nil, nil, nil, nil, nil, nil, nil, nil, llm.BaseInstructions{})
+	return newAgentWithOptions(configured, root, events, approvals, auditSink, createClient, nil, nil, "", "", nil, nil, nil, nil, nil, nil, nil, nil, nil, llm.BaseInstructions{})
 }
 
-func newAgentWithOptions(configured config.Config, root project.Root, events protocol.EventSink, approvals policy.ApprovalPort, auditSink audit.Sink, createClient ClientFactory, rolloutRecorder react.RolloutRecorder, planUpdater builtin.PlanUpdater, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, externalSkills *skill.Catalog, externalSkillWarnings []error, externalMCP *mcp.Manager, webFetcher webfetch.Fetcher, webSearch websearch.Provider, fileSystemPolicy *project.FileSystemPolicy, permissions *policy.SessionPermissionContext, baseInstructions llm.BaseInstructions) (*Agent, error) {
+func newAgentWithOptions(configured config.Config, root project.Root, events protocol.EventSink, approvals policy.ApprovalPort, auditSink audit.Sink, createClient ClientFactory, rolloutRecorder react.RolloutRecorder, planUpdater builtin.PlanUpdater, userSkillRoot, userMCPRoot string, mcpClientFactory mcp.ClientFactory, externalSkills *skill.Catalog, externalSkillWarnings []error, externalMCP *mcp.Manager, webFetcher webfetch.Fetcher, webSearch websearch.Provider, fileSystemPolicy *project.FileSystemPolicy, permissions *policy.SessionPermissionContext, contextScope tool.ContextScope, baseInstructions llm.BaseInstructions) (*Agent, error) {
 	if err := config.Validate(configured); err != nil {
 		return nil, fmt.Errorf("validate Agent configuration: %w", err)
 	}
@@ -267,6 +268,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events pro
 	}
 	toolService, err := tool.NewToolExecutionService(registry, tool.NewArgumentValidator(), tool.ToolExecutionServiceOptions{
 		Observer: react.NewToolEventObserver(events), MaxParallel: configured.Agent.MaxParallelTools, Visibility: visibility, Approvals: coordinator, Permissions: permissions,
+		ContextScope: contextScope,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create tool execution service: %w", err)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
+	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 func TestExecuteCommandApprovalUsesClearClaudeStylePresentation(t *testing.T) {
@@ -59,6 +60,25 @@ func TestExecuteCommandUsesFixedProjectCWDAndCombinedOutput(t *testing.T) {
 	}
 	if !strings.HasPrefix(result.Text, "out\nerr\n") || !strings.Contains(result.Text, filepath.Join(rootPath, "sub")) || result.Metadata["exit_code"] != 0 {
 		t.Fatalf("unexpected command result: %#v", result)
+	}
+}
+
+func TestExecuteCommandPreparesCanonicalInstructionTarget(t *testing.T) {
+	rootPath := t.TempDir()
+	subdirectory := filepath.Join(rootPath, "sub")
+	if err := os.Mkdir(subdirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executeCommand := newTestExecuteCommand(t, rootPath, 5*time.Second, 1024, 100)
+	call := tool.NewCall("target", "execute_command", json.RawMessage(`{"command":"pwd","cwd":"sub"}`))
+	invocation := tool.Invocation{Call: call, Source: tool.ToolCallSourceModel}
+	toolContext := tool.ToolUseContext{Context: context.Background(), Invocation: invocation}
+	prepared, err := executeCommand.Prepare(toolContext, invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Target == nil || prepared.Target.Path != subdirectory || prepared.Target.Kind != tool.ContextTargetCommandCWD || prepared.Target.SideEffect != tool.SideEffectExecute {
+		t.Fatalf("command context target = %#v", prepared.Target)
 	}
 }
 

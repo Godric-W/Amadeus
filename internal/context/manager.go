@@ -109,11 +109,11 @@ func (manager *Manager) Rebuild(lines []rollout.Line) error {
 		if decodeErr != nil {
 			return decodeErr
 		}
-		providerUsage = llm.Usage{
+		providerUsage = addUsage(providerUsage, llm.Usage{
 			InputTokens: usage.InputTokens, CachedInputTokens: usage.CachedInputTokens,
 			OutputTokens: usage.OutputTokens, ReasoningTokens: usage.ReasoningTokens,
 			TotalTokens: usage.TotalTokens,
-		}
+		})
 		hasUsage = true
 	}
 	manager.mu.Lock()
@@ -126,45 +126,6 @@ func (manager *Manager) Rebuild(lines []rollout.Line) error {
 	return nil
 }
 
-func (manager *Manager) Record(items ...llm.ResponseItem) {
-	if manager == nil || len(items) == 0 {
-		return
-	}
-	manager.mu.Lock()
-	manager.items = append(manager.items, cloneResponseItems(items)...)
-	manager.historyVersion++
-	manager.mu.Unlock()
-}
-
-func (manager *Manager) Replace(items ...llm.ResponseItem) {
-	if manager == nil {
-		return
-	}
-	manager.mu.Lock()
-	manager.items = cloneResponseItems(items)
-	manager.historyVersion++
-	manager.mu.Unlock()
-}
-
-func (manager *Manager) ReplaceUpdate(key UpdateKey, content string) bool {
-	if manager == nil || !validUpdateKey(key) {
-		return false
-	}
-	content = strings.TrimSpace(content)
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	if manager.updates[key] == content {
-		return false
-	}
-	if content == "" {
-		delete(manager.updates, key)
-	} else {
-		manager.updates[key] = content
-	}
-	manager.historyVersion++
-	return true
-}
-
 func (manager *Manager) Update(key UpdateKey) string {
 	if manager == nil || !validUpdateKey(key) {
 		return ""
@@ -174,97 +135,14 @@ func (manager *Manager) Update(key UpdateKey) string {
 	return manager.updates[key]
 }
 
-func (manager *Manager) ForPrompt(model llm.ModelInfo) PromptSnapshot {
-	if manager == nil {
-		return PromptSnapshot{}
+func addUsage(left, right llm.Usage) llm.Usage {
+	return llm.Usage{
+		InputTokens:       left.InputTokens + right.InputTokens,
+		CachedInputTokens: left.CachedInputTokens + right.CachedInputTokens,
+		OutputTokens:      left.OutputTokens + right.OutputTokens,
+		ReasoningTokens:   left.ReasoningTokens + right.ReasoningTokens,
+		TotalTokens:       left.TotalTokens + right.TotalTokens,
 	}
-	manager.mu.RLock()
-	items := cloneResponseItems(manager.items)
-	updates := make(map[UpdateKey]string, len(manager.updates))
-	for key, value := range manager.updates {
-		updates[key] = value
-	}
-	version := manager.historyVersion
-	usage := UsageSnapshot{ProviderUsage: manager.providerUsage, HasProviderUsage: manager.hasUsage}
-	estimator := manager.estimator
-	manager.mu.RUnlock()
-
-	model = model.Normalized()
-	normalized := normalizeHistory(items, model, estimator)
-	result := make([]llm.ResponseItem, 0, len(normalized)+len(updates))
-	for _, key := range updateOrder {
-		if content := strings.TrimSpace(updates[key]); content != "" {
-			result = append(result, llm.DeveloperMessage(content))
-		}
-	}
-	result = append(result, normalized...)
-	usage.EstimatedInputTokens = estimateResponseItems(result, estimator)
-	return PromptSnapshot{Items: result, Usage: usage, HistoryVersion: version}
-}
-
-func (manager *Manager) RawItems() []llm.ResponseItem {
-	if manager == nil {
-		return nil
-	}
-	manager.mu.RLock()
-	defer manager.mu.RUnlock()
-	return cloneResponseItems(manager.items)
-}
-
-func (manager *Manager) UpdateUsage(usage llm.Usage) {
-	if manager == nil {
-		return
-	}
-	manager.mu.Lock()
-	manager.providerUsage = usage
-	manager.hasUsage = true
-	manager.mu.Unlock()
-}
-
-func (manager *Manager) Usage() UsageSnapshot {
-	if manager == nil {
-		return UsageSnapshot{}
-	}
-	manager.mu.RLock()
-	defer manager.mu.RUnlock()
-	return UsageSnapshot{ProviderUsage: manager.providerUsage, HasProviderUsage: manager.hasUsage}
-}
-
-func (manager *Manager) HistoryVersion() uint64 {
-	if manager == nil {
-		return 0
-	}
-	manager.mu.RLock()
-	defer manager.mu.RUnlock()
-	return manager.historyVersion
-}
-
-func (manager *Manager) EstimatePromptTokens(model llm.ModelInfo, prompt llm.Prompt) int64 {
-	if manager == nil {
-		return 0
-	}
-	snapshot := manager.ForPrompt(model)
-	additional := estimateResponseItems(prompt.Input, manager.estimator)
-	overhead := manager.estimator.EstimateText(prompt.BaseInstructions.Text)
-	if encoded, err := json.Marshal(prompt.Tools); err == nil {
-		overhead += manager.estimator.EstimateText(string(encoded))
-	}
-	if len(prompt.OutputSchema) > 0 {
-		overhead += manager.estimator.EstimateText(string(prompt.OutputSchema))
-	}
-	return snapshot.Usage.EstimatedInputTokens + additional + overhead
-}
-
-func (manager *Manager) NeedsCompaction(model llm.ModelInfo, prompt llm.Prompt) bool {
-	model = model.Normalized()
-	if model.AutoCompactTokenLimit <= 0 && model.ContextWindow <= 0 {
-		return false
-	}
-	estimated := manager.EstimatePromptTokens(model, prompt)
-	if model.AutoCompactTokenLimit > 0 && estimated >= model.AutoCompactTokenLimit {
-		return true
-	}
-	return model.ContextWindow > 0 && estimated+int64(model.MaxOutputTokens) >= model.ContextWindow
 }
 
 func validUpdateKey(key UpdateKey) bool {
@@ -291,6 +169,7 @@ func normalizeHistory(items []llm.ResponseItem, model llm.ModelInfo, estimator E
 		order = order[:0]
 	}
 	for _, item := range items {
+		item = filterResponseItemModalities(item, model)
 		if item.Role != llm.RoleTool && len(pending) > 0 {
 			flushMissing()
 		}
@@ -326,6 +205,7 @@ func normalizeHistory(items []llm.ResponseItem, model llm.ModelInfo, estimator E
 			}
 			projected := cloneResponseItems([]llm.ResponseItem{item})[0]
 			projected.Content = projectToolOutput(name, projected.Content, model.ToolOutputMaxTokens, estimator)
+			projected.Parts = projectToolContentParts(name, projected.Content, projected.Parts, model.ToolOutputMaxTokens, estimator)
 			result = append(result, projected)
 			delete(pending, callID)
 			continue
@@ -336,10 +216,70 @@ func normalizeHistory(items []llm.ResponseItem, model llm.ModelInfo, estimator E
 	return result
 }
 
+func projectToolContentParts(toolName, content string, parts []llm.ContentPart, maximumTokens int64, estimator Estimator) []llm.ContentPart {
+	if len(parts) == 0 || maximumTokens <= 0 {
+		return parts
+	}
+	remaining := maximumTokens - estimator.EstimateText(content)
+	textParts := 0
+	for _, part := range parts {
+		if part.Kind == llm.ContentText && part.Text != "" {
+			textParts++
+		}
+	}
+	if textParts == 0 {
+		return parts
+	}
+	perPart := remaining / int64(textParts)
+	for index := range parts {
+		if parts[index].Kind == llm.ContentText && parts[index].Text != "" {
+			parts[index].Text = truncateToolText(toolName, parts[index].Text, perPart, estimator)
+		}
+	}
+	return parts
+}
+
+func filterResponseItemModalities(item llm.ResponseItem, model llm.ModelInfo) llm.ResponseItem {
+	if model.SupportsInput(llm.InputModalityImage) {
+		return item
+	}
+	filtered := item.Parts[:0]
+	omittedImage := false
+	for _, part := range item.Parts {
+		if part.Kind == llm.ContentImage {
+			omittedImage = true
+			continue
+		}
+		filtered = append(filtered, part)
+	}
+	item.Parts = filtered
+	if !omittedImage {
+		return item
+	}
+	if item.Role == llm.RoleTool {
+		item.Content = filterToolResultModalities(item.Content, model)
+		return item
+	}
+	marker := "[Image content omitted because the current model does not support image input.]"
+	if strings.TrimSpace(item.Content) == "" {
+		item.Content = marker
+	} else {
+		item.Content = strings.TrimSpace(item.Content) + "\n\n" + marker
+	}
+	return item
+}
+
 func projectToolOutput(toolName, content string, maximumTokens int64, estimator Estimator) string {
 	if maximumTokens <= 0 || estimator.EstimateText(content) <= maximumTokens {
 		return content
 	}
+	if projected, ok := truncateToolResultProjection(toolName, content, maximumTokens, estimator); ok {
+		return projected
+	}
+	return truncateToolText(toolName, content, maximumTokens, estimator)
+}
+
+func truncateToolText(toolName, content string, maximumTokens int64, estimator Estimator) string {
 	label := "tool output"
 	switch {
 	case strings.Contains(toolName, "search"):

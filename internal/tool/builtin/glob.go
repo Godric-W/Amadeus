@@ -140,7 +140,8 @@ func (glob *Glob) Prepare(_ tool.ToolUseContext, invocation tool.Invocation) (to
 		limit = arguments.Limit
 	}
 	state := preparedGlob{arguments: arguments, pattern: pattern, absoluteBase: absoluteBase, displayBase: base, limit: limit}
-	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: state, Permission: tool.AllowPermission()}, nil
+	target := tool.ContextTarget{Path: resolved.Canonical, Kind: tool.ContextTargetDirectory, SideEffect: tool.SideEffectRead}
+	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: state, Target: &target, Permission: tool.AllowPermission()}, nil
 }
 
 func (glob *Glob) Execute(toolContext tool.ToolUseContext, prepared tool.PreparedToolUse) (tool.ToolResult, error) {

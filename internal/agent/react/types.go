@@ -148,13 +148,13 @@ func newLoopState(request Request) LoopState {
 type Request struct {
 	TurnID           string
 	Goal             string
-	Context          *agentcontext.Manager
+	PromptSource     PromptSource
 	BaseInstructions llm.BaseInstructions
 	ModelInfo        llm.ModelInfo
 	AvailableTools   []tool.ToolSpec
 	OutputSchema     llm.OutputSchema
 	RequestSnapshot  tool.RequestSnapshot
-	BeforeSample     func(context.Context, *agentcontext.Manager) error
+	BeforeSample     func(context.Context) error
 	PriorIterations  []Iteration
 	Budget           BudgetState
 }
@@ -166,8 +166,8 @@ func (request Request) Validate() error {
 	if strings.TrimSpace(request.Goal) == "" {
 		return errors.New("Reactor request goal is empty")
 	}
-	if request.Context == nil {
-		return errors.New("Reactor request ContextManager is nil")
+	if request.PromptSource == nil {
+		return errors.New("Reactor request PromptSource is nil")
 	}
 	if strings.TrimSpace(request.BaseInstructions.Text) == "" {
 		return errors.New("Reactor request BaseInstructions are empty")
@@ -179,6 +179,10 @@ func (request Request) Validate() error {
 		return err
 	}
 	return nil
+}
+
+type PromptSource interface {
+	Snapshot(llm.ModelInfo, llm.Prompt) agentcontext.PromptSnapshot
 }
 
 type Result struct {

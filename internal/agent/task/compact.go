@@ -45,9 +45,7 @@ func (sessionTask *compactTask) Run(ctx context.Context, host Host, _ *turn.Cont
 	if err != nil {
 		return Result{}, err
 	}
-	compactionContext := agentcontext.NewManager(nil)
-	compactionContext.Record(projection.Covered...)
-	input := compactionContext.ForPrompt(client.Model()).Items
+	input := agentcontext.NormalizeResponseItems(projection.Covered, client.Model(), nil)
 	input = append(input, llm.UserMessage("Compact the covered canonical history into a continuation summary now. Return only Markdown summary; do not call tools."))
 	maxOutputTokens := provider.MaxOutputTokens
 	if maxOutputTokens <= 0 || maxOutputTokens > 4096 {

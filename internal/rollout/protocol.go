@@ -142,10 +142,23 @@ type TurnItemCompleted struct {
 }
 
 type ContextUpdate struct {
-	Title    string `json:"title,omitempty"`
-	Archived *bool  `json:"archived,omitempty"`
-	Key      string `json:"key,omitempty"`
-	Content  string `json:"content,omitempty"`
+	Title                 string                      `json:"title,omitempty"`
+	Archived              *bool                       `json:"archived,omitempty"`
+	Key                   string                      `json:"key,omitempty"`
+	Content               string                      `json:"content,omitempty"`
+	InstructionResolution *InstructionScopeResolution `json:"instruction_resolution,omitempty"`
+}
+
+type InstructionDocumentRef struct {
+	Path   string `json:"path"`
+	Scope  string `json:"scope"`
+	SHA256 string `json:"sha256"`
+}
+
+type InstructionScopeResolution struct {
+	TargetPath string                   `json:"target_path"`
+	TargetKind string                   `json:"target_kind"`
+	Documents  []InstructionDocumentRef `json:"documents,omitempty"`
 }
 
 type TokenUsage struct {
@@ -359,8 +372,15 @@ func validateKnownPayload(item Item) error {
 		if strings.TrimSpace(payload.Title) == "" && payload.Archived == nil && strings.TrimSpace(payload.Key) == "" {
 			return errors.New("context_update payload is empty")
 		}
-		if strings.TrimSpace(payload.Key) != "" && payload.Content == "" {
-			return errors.New("dynamic context_update content is empty")
+		if resolution := payload.InstructionResolution; resolution != nil {
+			if strings.TrimSpace(resolution.TargetPath) == "" || strings.TrimSpace(resolution.TargetKind) == "" {
+				return errors.New("instruction context resolution target is incomplete")
+			}
+			for _, document := range resolution.Documents {
+				if strings.TrimSpace(document.Path) == "" || strings.TrimSpace(document.Scope) == "" || strings.TrimSpace(document.SHA256) == "" {
+					return errors.New("instruction context resolution document is incomplete")
+				}
+			}
 		}
 	}
 	return nil

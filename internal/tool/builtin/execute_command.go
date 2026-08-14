@@ -163,7 +163,8 @@ func (executeCommand *ExecuteCommand) Prepare(toolContext tool.ToolUseContext, i
 		return executeCommand.writeCommandAudit(toolContext.Context, invocation.Call, assessment.Risk, decision.Outcome, decision.Source, decision.Reason)
 	}
 	if assessment.Disposition == policy.CommandDeny {
-		return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: request, Permission: tool.PermissionEvaluation{Decision: tool.PermissionDeny, Reason: assessment.Reason, Observe: auditDecision}}, nil
+		target := tool.ContextTarget{Path: cwd, Kind: tool.ContextTargetCommandCWD, SideEffect: tool.SideEffectExecute}
+		return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: request, Target: &target, Permission: tool.PermissionEvaluation{Decision: tool.PermissionDeny, Reason: assessment.Reason, Observe: auditDecision}}, nil
 	}
 	grant := policy.CommandGrant(key)
 	approval, err := policy.NewApprovalRequestForPurpose(invocation.Call.ID, invocation.Call.Name, invocation.Call.Payload, policy.ApprovalPurposeCommand, assessment.Risk, policy.ApprovalCause{Kind: policy.ApprovalCauseCommand, Code: "host_command"})
@@ -173,7 +174,8 @@ func (executeCommand *ExecuteCommand) Prepare(toolContext tool.ToolUseContext, i
 	approval.Command = command
 	approval.CWD = cwd
 	approval.Presentation = policy.CommandApprovalPresentation(command, cwd)
-	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: request, Permission: tool.PermissionEvaluation{Decision: tool.PermissionAsk, Request: &approval, Grant: grant, Observe: auditDecision}}, nil
+	target := tool.ContextTarget{Path: cwd, Kind: tool.ContextTargetCommandCWD, SideEffect: tool.SideEffectExecute}
+	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: request, Target: &target, Permission: tool.PermissionEvaluation{Decision: tool.PermissionAsk, Request: &approval, Grant: grant, Observe: auditDecision}}, nil
 }
 
 func (executeCommand *ExecuteCommand) Execute(toolContext tool.ToolUseContext, prepared tool.PreparedToolUse) (tool.ToolResult, error) {

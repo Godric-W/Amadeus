@@ -42,18 +42,33 @@ func (closer *factoryTestCloser) Close() error {
 	return nil
 }
 
-type factoryTestHost struct{ context *agentcontext.Manager }
+type factoryTestHost struct {
+	context *agentcontext.Manager
+	lines   []rollout.Line
+}
 
-func (*factoryTestHost) AppendItems(context.Context, turn.ID, ...rollout.Item) error { return nil }
-func (*factoryTestHost) History() []rollout.Line                                     { return nil }
-func (*factoryTestHost) Publish(context.Context, protocol.SessionEvent) error        { return nil }
+func (host *factoryTestHost) AppendItems(_ context.Context, turnID turn.ID, items ...rollout.Item) error {
+	for _, item := range items {
+		host.lines = append(host.lines, rollout.Line{Sequence: uint64(len(host.lines) + 1), TurnID: turnID, Item: item})
+	}
+	return host.context.Rebuild(host.lines)
+}
+func (host *factoryTestHost) History() []rollout.Line {
+	return append([]rollout.Line(nil), host.lines...)
+}
+func (*factoryTestHost) Publish(context.Context, protocol.SessionEvent) error { return nil }
 func (*factoryTestHost) Request(context.Context, protocol.InteractiveRequest) (protocol.Op, error) {
 	return nil, errors.New("unexpected interactive request")
 }
 func (*factoryTestHost) UpdatePlan(context.Context, turn.ID, plan.Update) (plan.Snapshot, error) {
 	return plan.Snapshot{}, nil
 }
-func (host *factoryTestHost) Context() *agentcontext.Manager { return host.context }
+func (host *factoryTestHost) Snapshot(model llm.ModelInfo, prompt llm.Prompt) agentcontext.PromptSnapshot {
+	return host.context.Snapshot(model, prompt)
+}
+func (host *factoryTestHost) ContextUpdate(key agentcontext.UpdateKey) string {
+	return host.context.Update(key)
+}
 
 func TestCodingFactoryPreparesIndependentRegularTask(t *testing.T) {
 	configured := config.Default()

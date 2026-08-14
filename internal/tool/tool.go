@@ -18,6 +18,39 @@ type ToolUseContext struct {
 	Snapshot      RequestSnapshot
 }
 
+type ContextTargetKind string
+
+const (
+	ContextTargetFile       ContextTargetKind = "file"
+	ContextTargetDirectory  ContextTargetKind = "directory"
+	ContextTargetCommandCWD ContextTargetKind = "command_cwd"
+)
+
+type ContextTarget struct {
+	Path       string
+	Kind       ContextTargetKind
+	SideEffect SideEffect
+}
+
+func (target ContextTarget) Validate() error {
+	if target.Path == "" {
+		return errors.New("tool context target path is empty")
+	}
+	switch target.Kind {
+	case ContextTargetFile, ContextTargetDirectory, ContextTargetCommandCWD:
+	default:
+		return errors.New("tool context target kind is invalid")
+	}
+	if !target.SideEffect.Valid() {
+		return errors.New("tool context target side effect is invalid")
+	}
+	return nil
+}
+
+type ContextScope interface {
+	Ensure(context.Context, ContextTarget) error
+}
+
 func (toolContext ToolUseContext) Validate() error {
 	if toolContext.Context == nil {
 		return errors.New("tool use context has no context")
@@ -38,12 +71,18 @@ type PreparedToolUse struct {
 	Invocation Invocation
 	Input      any
 	State      any
+	Target     *ContextTarget
 	Permission PermissionEvaluation
 }
 
 func (prepared PreparedToolUse) Validate() error {
 	if prepared.Invocation.Call.ID == "" || prepared.Invocation.Call.Name == "" {
 		return errors.New("prepared tool use has an invalid invocation")
+	}
+	if prepared.Target != nil {
+		if err := prepared.Target.Validate(); err != nil {
+			return err
+		}
 	}
 	return prepared.Permission.Validate()
 }

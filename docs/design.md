@@ -907,7 +907,7 @@ SessionConfiguration.BaseInstructions
 
 禁止把动态路径、当前权限、模型名或 Tool 列表硬编码进静态模板。
 
-Session 使用固定的 `buildContextUpdates` 流程，按 Developer Instructions、AGENTS.md、Environment、Permission Mode、Skills 和 MCP 的稳定顺序生成 ResponseItem。
+SessionTask 使用固定的 Context preparation 流程生成 typed `ContextUpdate` facts，并只通过 Session Host 执行 canonical append；Session 接纳事实后重建 ContextManager。Developer Instructions、AGENTS.md、Environment、Permission Mode、Skills 和 MCP 在 immutable Prompt snapshot 中按稳定顺序投影。
 
 动态 Context Update 使用稳定的 replace key。Session 初始化、Resume 或 SessionPermissionContext 变化时，下一次模型采样可以看到新的临时 Permission Context Update；该 Update 只描述当前 Session 能力，不把 grant 变成持久化权限。历史 Approval Decision 可以作为事实保留，但 Resume 时不会重新授予权限。
 
@@ -934,7 +934,7 @@ Prompt 资产位于 `internal/prompt`，按 BaseInstructions、Context Update、
 - Read/Search 可以在发现新目录作用域后完成只读操作，但必须把新生效的 scoped instructions 作为 canonical Context Update 提交给 Session，使下一次模型采样可见。
 - Edit/Write 和带目标 CWD 的 Command 在 Prepare 阶段必须解析目标文件、目标目录或 command CWD 的有效指令集合。
 - 如果目标作用域相对当前 Prompt snapshot 新增或改变了指令，副作用 Tool 不得在模型尚未看到这些指令时继续执行；它返回 typed `context_refresh_required`，由 Session 更新 Context 后让 Reactor 重新采样。
-- Tool 不直接修改 ContextManager；Instruction Resolver 返回 typed resolution，由 Session 决定 canonical append 和 replace key。
+- Tool 不直接修改 ContextManager；`PreparedToolUse` 只携带 typed target，统一的 target instruction scope service 调用 Resolver，并把带 `InstructionScopeResolution` 的 canonical Context Update 交给 Session。
 
 ### 12.3 ContextManager
 
@@ -943,9 +943,9 @@ ContextManager 属于 SessionState，是当前模型可见历史的唯一所有�
 ```text
 Canonical Rollout
 → SessionState.ContextManager
-→ Record / Replace / Atomic Rebuild / UpdateUsage
-→ ForPrompt(ModelInfo)
-→ []ResponseItem
+→ Session-owned Atomic Rebuild
+→ Snapshot(ModelInfo, PromptShape)
+→ immutable PromptSnapshot
 ```
 
 它负责：
@@ -961,7 +961,7 @@ Canonical Rollout
 
 ContextManager 是 canonical Rollout 的派生投影，不是第二事实源。Reactor、TUI、CLI 和 CompactTask 不得各自实现第二套历史裁剪或消息投影。
 
-只有 Session 可以提交 ContextManager mutation。Task/Reactor 通过 TaskHost 请求 canonical append 并获取 immutable `ForPrompt` snapshot，不得持有 `*ContextManager` 或调用无 Rollout 对应事实的 Record/Replace fallback。每次 append 后可以增量投影或原子 rebuild，但 live execution 与 Resume 必须经过同一 projector 并得到等价结果。
+只有 Session 可以提交 ContextManager mutation。Task/Reactor 通过 TaskHost 请求 canonical append 并获取 immutable `PromptSnapshot`，不得持有 `*ContextManager` 或调用无 Rollout 对应事实的 Record/Replace fallback。基础版本在每次 append 后执行正确的原子全量 rebuild；live execution 与 Resume 必须经过同一 projector 并得到等价结果，未经基准证明不引入第二缓存事实源。
 
 ### 12.4 Token Accounting
 
@@ -1002,10 +1002,10 @@ input_modalities
 - 文件修改保留 Typed `FileChangeResult` 的操作、路径、统计、Diff 摘要和最终状态；模型投影不能丢失 declined、stale 或 partial failure。
 - Shell 保留命令、退出码、关键 stdout/stderr 和截断信息。
 - 搜索保留匹配路径、行号和总匹配数。
-- canonical Rollout 保存完整原始 Tool Result；`ContextManager.ForPrompt` 只返回模型安全投影。
+- canonical Rollout 保存完整原始 Tool Result；`ContextManager.Snapshot` 只返回模型安全投影。
 - 投影失败必须产生显式 Context Error，不允许静默丢失。
 
-Tool Result 的即时 Reactor replay、canonical Rollout、Resume rebuild 和 `ForPrompt` 必须共享同一个 typed projector。模型可见 payload 至少稳定表达 `ok/status`、文本或 parts、error、partial/truncated 和允许暴露的 metadata；任何阶段不得只取 `Text/Parts` 而静默丢失 declined、failed、cancelled、stale 或 partial 语义。完整 canonical result 与受预算约束的模型投影可以不同，但差异必须由同一 projector 显式产生并有 round-trip/semantic-equivalence 测试。
+Tool Result 不保留独立的即时 replay 历史：Tool Call/Result 先 canonical append，Session 立即 rebuild，Reactor 下一次采样与 Resume 都读取同一 `PromptSnapshot`。唯一 typed projector 的模型可见 payload 至少稳定表达 `ok/status`、文本或 parts、error、partial/truncated 和允许暴露的 metadata；任何阶段不得只取 `Text/Parts` 而静默丢失 declined、failed、cancelled、stale 或 partial 语义。完整 canonical result 与受预算约束的模型投影可以不同，但差异必须由同一 projector 显式产生并有 round-trip/semantic-equivalence 测试。
 
 ### 12.6 Compaction
 

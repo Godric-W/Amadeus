@@ -7,6 +7,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
+	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
@@ -36,9 +37,10 @@ type PlanHost interface {
 	UpdatePlan(context.Context, turn.ID, plan.Update) (plan.Snapshot, error)
 }
 
-type ContextHost interface {
+type PromptHost interface {
 	Host
-	Context() *agentcontext.Manager
+	Snapshot(llm.ModelInfo, llm.Prompt) agentcontext.PromptSnapshot
+	ContextUpdate(agentcontext.UpdateKey) string
 }
 
 type SessionTask interface {

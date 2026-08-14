@@ -10,7 +10,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	extensionruntime "github.com/Godric-W/Amadeus/internal/extension"
-	"github.com/Godric-W/Amadeus/internal/instruction"
 	"github.com/Godric-W/Amadeus/internal/project"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/rollout"
@@ -24,13 +23,13 @@ type contextPreparationOptions struct {
 	Agent            *agentruntime.Agent
 	Extensions       *extensionruntime.Runtime
 	FileSystemPolicy *project.FileSystemPolicy
-	Instructions     *instruction.WorkspaceResolver
+	InstructionScope *targetInstructionScope
 	ApprovalCount    func() int
 }
 
 func prepareTurnContext(ctx context.Context, options contextPreparationOptions) error {
-	host, ok := options.Host.(ContextHost)
-	if !ok || host.Context() == nil {
+	host, ok := options.Host.(PromptHost)
+	if !ok {
 		return nil
 	}
 	tools := options.Agent.AvailableTools()
@@ -43,11 +42,10 @@ func prepareTurnContext(ctx context.Context, options contextPreparationOptions) 
 	if err != nil {
 		return err
 	}
-	contextManager := host.Context()
 	var contextItems []rollout.Item
 	setUpdate := func(key agentcontext.UpdateKey, content string) error {
 		content = strings.TrimSpace(content)
-		if contextManager.Update(key) == content {
+		if host.ContextUpdate(key) == content {
 			return nil
 		}
 		item, err := rollout.NewItem(rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(key), Content: content})
@@ -61,27 +59,8 @@ func prepareTurnContext(ctx context.Context, options contextPreparationOptions) 
 		return err
 	}
 
-	request, resolved, err := options.Instructions.ResolveTarget(ctx, options.TurnContext.CWD, instruction.TargetCommandCWD)
+	request, err := options.InstructionScope.Initialize(ctx, options.TurnContext.CWD)
 	if err != nil {
-		return err
-	}
-	var agents strings.Builder
-	for _, document := range resolved.Documents {
-		if content := strings.TrimSpace(document.Content); content != "" {
-			if agents.Len() > 0 {
-				agents.WriteString("\n\n")
-			}
-			agents.WriteString("Instructions from ")
-			agents.WriteString(document.Path)
-			agents.WriteString(":\n")
-			agents.WriteString(content)
-		}
-	}
-	agentsText := "## Persistent Instructions\n\n{\"type\":\"amadeus.instructions.v1\"}"
-	if content := strings.TrimSpace(agents.String()); content != "" {
-		agentsText += "\n\n" + content
-	}
-	if err := setUpdate(agentcontext.UpdateAgents, agentsText); err != nil {
 		return err
 	}
 	if err := setUpdate(agentcontext.UpdateEnvironment, fmt.Sprintf("## Workspace Context\n\nCurrent working directory: %s\nInstruction target: %s", options.TurnContext.CWD, request.TargetPath)); err != nil {

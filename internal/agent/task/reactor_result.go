@@ -8,24 +8,28 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/react"
 	agentruntime "github.com/Godric-W/Amadeus/internal/agent/runtime"
 	"github.com/Godric-W/Amadeus/internal/config"
-	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
-func (sessionTask *regularTask) executeReactor(ctx context.Context, agent *agentruntime.Agent, contextManager *agentcontext.Manager, compact func(context.Context) error, availableTools []tool.ToolSpec, outputSchema llm.OutputSchema, turnID rollout.TurnID) (Result, error) {
+func (sessionTask *regularTask) executeReactor(ctx context.Context, agent *agentruntime.Agent, promptSource react.PromptSource, compact func(context.Context) error, availableTools []tool.ToolSpec, outputSchema llm.OutputSchema, turnID rollout.TurnID) (Result, error) {
 	provider := sessionTask.factory.configured.Providers[sessionTask.factory.configured.DefaultProvider]
 	modelInfo := normalizedModelInfo(agent.Client.Model(), provider)
 	result, runErr := agent.Runner.Run(ctx, react.Request{
-		TurnID: string(turnID), Goal: sessionTask.goal, Context: contextManager,
+		TurnID: string(turnID), Goal: sessionTask.goal, PromptSource: promptSource,
 		BaseInstructions: agent.BaseInstructions,
 		ModelInfo:        modelInfo, AvailableTools: availableTools, OutputSchema: append(llm.OutputSchema(nil), outputSchema...),
-		BeforeSample: func(sampleCtx context.Context, _ *agentcontext.Manager) error {
+		BeforeSample: func(sampleCtx context.Context) error {
 			if compact == nil {
+				sessionTask.instructions.MarkSampled()
 				return nil
 			}
-			return compact(sampleCtx)
+			if err := compact(sampleCtx); err != nil {
+				return err
+			}
+			sessionTask.instructions.MarkSampled()
+			return nil
 		},
 		Budget: configuredReactorBudget(sessionTask.factory.configured.Agent),
 	})

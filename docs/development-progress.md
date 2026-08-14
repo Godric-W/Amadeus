@@ -2,8 +2,8 @@
 
 > 最近更新：2026-08-14
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：B-CL. Context Architecture Closure
-> 下一任务：B-CL-01 ContextManager 唯一写入边界
+> 当前阶段：F. Plan-guided ReAct
+> 下一任务：F-01 唯一 RegularTask/Reactor
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
@@ -107,7 +107,7 @@ JSONL 是完整历史的唯一事实源，SQLite 只保存可重建的 Thread me
 - [x] SQLite 不保存不可重建事实，也不包含超过 JSONL durable watermark 的 metadata。
 - [x] Resume、取消、panic、submit failure 和异常终态均可恢复且只完成一次。
 
-## 4. B. Context + Prompt — `TODO`
+## 4. B. Context + Prompt — `DONE`
 
 ### 目标
 
@@ -133,32 +133,32 @@ Base Instructions
 - 实现 Provider Usage、估算 Token、Context Window、Auto Compact 和 Replacement History。
 - 完成上下文截断、工具结果归一化、历史压缩和中断 Turn 的上下文重建。
 
-### B-CL-01：ContextManager 唯一写入边界 — `TODO`
+### B-CL-01：ContextManager 唯一写入边界 — `DONE`
 
-- ContextManager 只由 Session 根据已接纳 canonical facts 执行 append projection、replace、rebuild 和 usage update。
+- ContextManager 只由 Session 根据已接纳 canonical facts 执行原子 rebuild；usage、updates 与 history 均从同一 Rollout projection 派生。
 - 收紧 TaskHost，移除可变 `Context() *Manager` 暴露和无 Rollout 对应事实的 Record/Replace fallback；Task/Reactor 只获取 immutable prompt/history snapshot。
 - 统一 live execution 与 Resume 的 projector，验证同一 Rollout history 得到语义等价 Context。
 
-### B-CL-02：Tool Result 统一语义投影 — `TODO`
+### B-CL-02：Tool Result 统一语义投影 — `DONE`
 
-- 即时 Reactor replay、canonical Rollout、Resume rebuild 和 `ForPrompt` 共享同一个 typed Tool Result projector。
+- Tool Result 先进入 canonical Rollout；live 下一轮与 Resume rebuild 共享同一个 typed projector 和 immutable `PromptSnapshot`，不保留独立即时 replay 链。
 - 模型投影稳定保留 ok/status、text/parts、error、partial/truncated 和允许暴露的 metadata，不静默丢失 declined、failed、cancelled、stale 或 partial 语义。
 - 增加多 Iteration、interrupted Turn、compaction 和 Resume 前后的 semantic-equivalence 测试。
 
-### B-CL-03：Target-scoped Instructions — `TODO`
+### B-CL-03：Target-scoped Instructions — `DONE`
 
 - 将 AGENTS.md Resolver 接入 Read/Search/Edit/Write 的目标路径和 Command 的目标 CWD，而不是只在 Turn 开始时解析初始 CWD。
 - 新 scope 指令以 typed resolution 交给 Session，并通过 canonical Context Update 进入下一次 Prompt；Tool 不直接修改 ContextManager。
 - 副作用 Tool 在模型尚未看到新 scope 指令时返回 `context_refresh_required`，更新 Context 并重新采样后才能继续。
 - 增加根目录/嵌套目录/跨工作目录/命令 CWD 的 precedence、scope 和 mutation gate 端到端测试。
 
-### B-CL-04：ModelInfo 与 Token 一致性 — `TODO`
+### B-CL-04：ModelInfo 与 Token 一致性 — `DONE`
 
 - 为 ModelInfo 增加 input modalities 等真实模型能力，Context projection 在 Adapter 调用前过滤或拒绝不支持内容。
 - 统一 Iteration、Turn、Thread、canonical `token_usage` 和 Resume 的累计语义，禁止单次 usage 覆盖多 Iteration 累计值。
 - 验证 Prompt estimate、Provider usage、auto compact 和 replacement history 使用同一 ModelInfo 与预算口径。
 
-### B-CL-05：Projection 等价与旧链删除 — `TODO`
+### B-CL-05：Projection 等价与旧链删除 — `DONE`
 
 - 允许基础版本继续使用正确的原子全量 rebuild，不为性能提前引入第二缓存事实源；只有基准证明必要时才增加由 durable sequence 驱动的增量 projection。
 - 增加长会话、超大 Tool Result、Compaction、Resume 和多模型 modality 的一致性测试。
@@ -166,11 +166,11 @@ Base Instructions
 
 ### 出口
 
-- [ ] ContextManager 是唯一 Prompt 历史入口和唯一派生投影，只有 Session 可以更新。
-- [ ] Prompt、Token、modality 和 Compaction 使用同一套 ModelInfo 与累计 Usage 语义。
-- [ ] 历史可从 Rollout 重建，不依赖内存残留，live 与 Resume projection 语义等价。
-- [ ] Provider reasoning、Tool Call 和 Tool Result 的顺序与 status/error/partial/metadata 可正确回放。
-- [ ] AGENTS.md 目录作用域接入真实 Tool target，副作用不会绕过模型尚未看到的 scoped instructions。
+- [x] ContextManager 是唯一 Prompt 历史入口和唯一派生投影，只有 Session 可以更新。
+- [x] Prompt、Token、modality 和 Compaction 使用同一套 ModelInfo 与累计 Usage 语义。
+- [x] 历史可从 Rollout 重建，不依赖内存残留，live 与 Resume projection 语义等价。
+- [x] Provider reasoning、Tool Call 和 Tool Result 的顺序与 status/error/partial/metadata 可正确回放。
+- [x] AGENTS.md 目录作用域接入真实 Tool target，副作用不会绕过模型尚未看到的 scoped instructions。
 
 ## 5. C. Tool + Approval — `DONE`
 

@@ -91,6 +91,10 @@ func requestHasImages(request llm.Request) bool {
 }
 
 func (adapter *Adapter) Model() llm.ModelInfo {
+	modalities := []llm.InputModality{llm.InputModalityText}
+	if adapter.Capabilities().SupportsImages {
+		modalities = append(modalities, llm.InputModalityImage)
+	}
 	return llm.ModelInfo{
 		Provider:                  adapter.providerName,
 		Name:                      adapter.provider.Model,
@@ -99,6 +103,7 @@ func (adapter *Adapter) Model() llm.ModelInfo {
 		MaxOutputTokens:           adapter.provider.MaxOutputTokens,
 		ToolOutputMaxTokens:       adapter.provider.ToolOutputMaxTokens,
 		SupportsParallelToolCalls: adapter.dialect.Capabilities(adapter.provider.API).SupportsParallelToolCalls,
+		InputModalities:           modalities,
 	}
 }
 

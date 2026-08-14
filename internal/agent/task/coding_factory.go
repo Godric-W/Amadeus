@@ -255,6 +255,7 @@ type regularTask struct {
 	agent          *agentruntime.Agent
 	availableTools []tool.ToolSpec
 	auditCloser    io.Closer
+	instructions   *targetInstructionScope
 	closeOnce      sync.Once
 	closeErr       error
 }

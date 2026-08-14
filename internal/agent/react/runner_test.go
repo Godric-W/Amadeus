@@ -11,6 +11,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -96,6 +97,66 @@ func (recorder *orderingRolloutRecorder) RecordToolOutcomes(_ context.Context, o
 
 type orderingExecutor struct {
 	recorder *orderingRolloutRecorder
+}
+
+type canonicalPromptFixture struct {
+	mutex sync.Mutex
+	items []rollout.ResponseItem
+}
+
+func newCanonicalPromptFixture(content string) *canonicalPromptFixture {
+	return &canonicalPromptFixture{items: []rollout.ResponseItem{{Type: rollout.ResponseUserMessage, Role: string(llm.RoleUser), Content: content}}}
+}
+
+func (fixture *canonicalPromptFixture) Snapshot(model llm.ModelInfo, prompt llm.Prompt) agentcontext.PromptSnapshot {
+	fixture.mutex.Lock()
+	items := append([]rollout.ResponseItem(nil), fixture.items...)
+	fixture.mutex.Unlock()
+	lines := make([]rollout.Line, 0, len(items))
+	for index, payload := range items {
+		item, err := rollout.NewResponseItem(payload)
+		if err != nil {
+			return agentcontext.PromptSnapshot{}
+		}
+		lines = append(lines, rollout.Line{Sequence: uint64(index + 1), Item: item})
+	}
+	manager := agentcontext.NewManager(nil)
+	if err := manager.Rebuild(lines); err != nil {
+		return agentcontext.PromptSnapshot{}
+	}
+	return manager.Snapshot(model, prompt)
+}
+
+func (fixture *canonicalPromptFixture) RecordToolCalls(_ context.Context, message llm.Message) error {
+	fixture.mutex.Lock()
+	defer fixture.mutex.Unlock()
+	if strings.TrimSpace(message.Content) != "" {
+		fixture.items = append(fixture.items, rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: string(llm.RoleAssistant), Content: message.Content, Reasoning: message.Reasoning})
+	}
+	for _, call := range message.ToolCalls {
+		fixture.items = append(fixture.items, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: string(llm.RoleAssistant), CallID: call.ID, Name: call.Name, Arguments: append([]byte(nil), call.Arguments...), Reasoning: message.Reasoning})
+	}
+	return nil
+}
+
+func (fixture *canonicalPromptFixture) RecordToolOutcomes(_ context.Context, outcomes []ToolOutcome) error {
+	fixture.mutex.Lock()
+	defer fixture.mutex.Unlock()
+	for _, outcome := range outcomes {
+		result := outcome.Result.Clone()
+		payload := rollout.ResponseItem{Type: rollout.ResponseToolResult, Role: string(llm.RoleTool), CallID: outcome.CallID, Name: outcome.ToolName, Status: string(outcome.Status), Result: &result, Partial: outcome.Partial, Metadata: outcome.Metadata}
+		if outcome.Error != nil {
+			payload.Error = &rollout.ResponseError{Kind: outcome.Error.Kind, Message: outcome.Error.Message}
+		}
+		fixture.items = append(fixture.items, payload)
+	}
+	return nil
+}
+
+func (fixture *canonicalPromptFixture) replaceUser(content string) {
+	fixture.mutex.Lock()
+	fixture.items = []rollout.ResponseItem{{Type: rollout.ResponseUserMessage, Role: string(llm.RoleUser), Content: content}}
+	fixture.mutex.Unlock()
 }
 
 func (executor orderingExecutor) ExecuteBatch(ctx context.Context, calls []tool.ToolCall, recorder tool.NormalizedCallRecorder) ([]tool.ToolExecution, error) {
@@ -184,10 +245,10 @@ func TestRunnerInvokesBeforeSampleAndUsesReplacedContextEveryIteration(t *testin
 	runner := newTestRunner(t, iterator, &scriptedCallExecutor{executions: map[string]ToolOutcome{call.ID: successfulExecution(call, "contents")}, errors: map[string]error{}}, &scriptedProgress{})
 	request := validRequest()
 	samples := 0
-	request.BeforeSample = func(_ context.Context, manager *agentcontext.Manager) error {
+	request.BeforeSample = func(_ context.Context) error {
 		samples++
 		if samples == 1 {
-			manager.Replace(llm.UserMessage("compacted objective"))
+			request.PromptSource.(*canonicalPromptFixture).replaceUser("compacted objective")
 		}
 		return nil
 	}
@@ -207,7 +268,7 @@ func TestRunnerRejectsPromptThatStillExceedsContextWindow(t *testing.T) {
 	iterator := &scriptedIterator{results: []IterationResult{candidateIteration("must not run")}}
 	runner := newTestRunner(t, iterator, &scriptedCallExecutor{executions: map[string]ToolOutcome{}, errors: map[string]error{}}, &scriptedProgress{})
 	request := validRequest()
-	request.Context.Replace(llm.UserMessage(strings.Repeat("x", 3000)))
+	request.PromptSource.(*canonicalPromptFixture).replaceUser(strings.Repeat("x", 3000))
 	request.ModelInfo = llm.ModelInfo{ContextWindow: 1000, AutoCompactTokenLimit: 900, MaxOutputTokens: 400}
 	result, err := runner.Run(context.Background(), request)
 	if err != nil {
@@ -424,10 +485,8 @@ func newTestRunner(t *testing.T, iterator ModelIterator, executor CallExecutor, 
 }
 
 func validRequest() Request {
-	contextManager := agentcontext.NewManager(nil)
-	contextManager.Record(llm.UserMessage("inspect repository"))
 	return Request{
-		TurnID: "run-1", Goal: "inspect repository", Context: contextManager,
+		TurnID: "run-1", Goal: "inspect repository", PromptSource: newCanonicalPromptFixture("inspect repository"),
 		BaseInstructions: llm.BaseInstructions{Text: "You are Amadeus."},
 		ModelInfo:        llm.ModelInfo{ContextWindow: 128_000, AutoCompactTokenLimit: 115_200, MaxOutputTokens: 512},
 		AvailableTools:   []tool.ToolSpec{{Name: "read", Description: "read", InputSchema: []byte(`{"type":"object"}`), SideEffect: tool.SideEffectRead, Idempotent: true}},

@@ -13,6 +13,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/task"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
+	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/thread"
 )
@@ -68,8 +69,18 @@ func (session *Session) UpdatePlan(ctx context.Context, turnID turn.ID, update p
 	})
 }
 
-func (session *Session) Context() *agentcontext.Manager {
-	return session.state.Context
+func (session *Session) Snapshot(model llm.ModelInfo, prompt llm.Prompt) agentcontext.PromptSnapshot {
+	if session == nil || session.state.Context == nil {
+		return agentcontext.PromptSnapshot{}
+	}
+	return session.state.Context.Snapshot(model, prompt)
+}
+
+func (session *Session) ContextUpdate(key agentcontext.UpdateKey) string {
+	if session == nil || session.state.Context == nil {
+		return ""
+	}
+	return session.state.Context.Update(key)
 }
 
 func (session *Session) History() []rollout.Line {

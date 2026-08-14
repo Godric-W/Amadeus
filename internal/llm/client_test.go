@@ -134,7 +134,7 @@ func TestFakeStreamImplementsRecvContract(t *testing.T) {
 
 func TestModelInfoNormalizedDefaultsAndOnlyTightensAutoCompactLimit(t *testing.T) {
 	defaulted := (ModelInfo{ContextWindow: 1000}).Normalized()
-	if defaulted.AutoCompactTokenLimit != 900 || defaulted.ToolOutputMaxTokens != 16_384 {
+	if defaulted.AutoCompactTokenLimit != 900 || defaulted.ToolOutputMaxTokens != 16_384 || !defaulted.SupportsInput(InputModalityText) || defaulted.SupportsInput(InputModalityImage) {
 		t.Fatalf("unexpected ModelInfo defaults: %#v", defaulted)
 	}
 	tightened := (ModelInfo{ContextWindow: 1000, AutoCompactTokenLimit: 700}).Normalized()

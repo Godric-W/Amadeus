@@ -14,6 +14,7 @@ import (
 type executionServiceTestTool struct {
 	name     string
 	parallel bool
+	target   *ContextTarget
 	handle   func(context.Context, Invocation) (ToolResult, error)
 	check    func(context.Context, Invocation) (PermissionEvaluation, error)
 }
@@ -41,7 +42,24 @@ func (toolImpl *executionServiceTestTool) Prepare(toolContext ToolUseContext, in
 			return PreparedToolUse{}, err
 		}
 	}
-	return PreparedToolUse{Invocation: invocation, Permission: evaluation}, nil
+	return PreparedToolUse{Invocation: invocation, Target: toolImpl.target, Permission: evaluation}, nil
+}
+
+type executionServiceScope struct {
+	err     error
+	targets []ContextTarget
+}
+
+func (scope *executionServiceScope) Ensure(_ context.Context, target ContextTarget) error {
+	scope.targets = append(scope.targets, target)
+	return scope.err
+}
+
+type executionServiceContextRefreshError struct{}
+
+func (executionServiceContextRefreshError) Error() string { return "context refresh required" }
+func (executionServiceContextRefreshError) ToolErrorKind() string {
+	return "context_refresh_required"
 }
 
 func (toolImpl *executionServiceTestTool) Execute(toolContext ToolUseContext, prepared PreparedToolUse) (ToolResult, error) {
@@ -206,6 +224,27 @@ func TestToolExecutionServiceRecordsNormalizedCallsBeforeAnySideEffect(t *testin
 	})
 	if !errors.Is(err, want) || handled.Load() != 0 {
 		t.Fatalf("record failure did not fail closed: handled=%d err=%v", handled.Load(), err)
+	}
+}
+
+func TestToolExecutionServiceChecksTargetScopeBeforePermissionAndExecution(t *testing.T) {
+	var handled atomic.Int32
+	target := &ContextTarget{Path: "/workspace/nested/file.go", Kind: ContextTargetFile, SideEffect: SideEffectWrite}
+	toolImpl := &executionServiceTestTool{name: "write_test", target: target, handle: func(context.Context, Invocation) (ToolResult, error) {
+		handled.Add(1)
+		return ToolResult{Text: "changed"}, nil
+	}}
+	scope := &executionServiceScope{err: executionServiceContextRefreshError{}}
+	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{ContextScope: scope}, toolImpl)
+	execution, err := service.Execute(context.Background(), executionServiceCall("call-1", toolImpl.name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handled.Load() != 0 || len(scope.targets) != 1 || scope.targets[0] != *target {
+		t.Fatalf("scope gate did not fail closed: execution=%#v targets=%#v handled=%d", execution, scope.targets, handled.Load())
+	}
+	if execution.Outcome.Status != ToolCallFailed || execution.Outcome.Blocking || execution.Outcome.Error == nil || execution.Outcome.Error.Kind != "context_refresh_required" {
+		t.Fatalf("context refresh outcome = %#v", execution.Outcome)
 	}
 }
 

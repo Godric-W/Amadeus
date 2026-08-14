@@ -35,7 +35,8 @@ func (toolImpl readTool) Prepare(_ tool.ToolUseContext, invocation tool.Invocati
 	if err != nil {
 		return tool.PreparedToolUse{}, err
 	}
-	return tool.PreparedToolUse{Invocation: invocation, Input: args, State: preparedRead{args: args, resolved: resolved}, Permission: tool.AllowPermission()}, nil
+	target := tool.ContextTarget{Path: resolved.Canonical, Kind: tool.ContextTargetFile, SideEffect: tool.SideEffectRead}
+	return tool.PreparedToolUse{Invocation: invocation, Input: args, State: preparedRead{args: args, resolved: resolved}, Target: &target, Permission: tool.AllowPermission()}, nil
 }
 func (toolImpl readTool) Execute(toolContext tool.ToolUseContext, use tool.PreparedToolUse) (tool.ToolResult, error) {
 	prepared, ok := use.State.(preparedRead)

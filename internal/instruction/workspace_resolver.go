@@ -11,6 +11,8 @@ import (
 	"github.com/Godric-W/Amadeus/internal/project"
 )
 
+var ErrTargetOutsideWorkspace = errors.New("instruction target is outside workspace roots")
+
 type WorkspaceResolver struct {
 	user    *UserLoader
 	roots   []project.Root
@@ -54,7 +56,7 @@ func (resolver *WorkspaceResolver) ResolveTarget(ctx context.Context, target str
 	absolute = filepath.Clean(absolute)
 	root, ok := resolver.matchRoot(absolute)
 	if !ok {
-		return ResolveRequest{}, Resolution{}, fmt.Errorf("instruction target %q is outside WorkspaceRoots", absolute)
+		return ResolveRequest{}, Resolution{}, fmt.Errorf("%w: %q", ErrTargetOutsideWorkspace, absolute)
 	}
 	relative, err := filepath.Rel(root.Path(), absolute)
 	if err != nil {

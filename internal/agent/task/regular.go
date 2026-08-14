@@ -45,6 +45,13 @@ func (factory *CodingFactory) prepareRegular(ctx context.Context, host Host, sna
 		}
 		return Prepared{}, errors.New("turn host does not support session plans")
 	}
+	instructionScope, err := newTargetInstructionScope(host, factory.instructions, snapshot.TurnID)
+	if err != nil {
+		if auditCloser != nil {
+			_ = auditCloser.Close()
+		}
+		return Prepared{}, err
+	}
 	options := agentruntime.AgentOptions{
 		ClientFactory:   factory.clientFactory,
 		RolloutRecorder: &turnRolloutRecorder{host: host, turnID: snapshot.TurnID},
@@ -54,6 +61,7 @@ func (factory *CodingFactory) prepareRegular(ctx context.Context, host Host, sna
 		Skills:           factory.extensions.Skills(), SkillWarnings: factory.extensions.SkillWarnings(), MCP: factory.extensions.MCP(),
 		WebFetcher: factory.webFetcher, WebSearch: factory.webSearch,
 		FileSystemPolicy: factory.fileSystemPolicy, Permissions: factory.permissions,
+		ContextScope:     instructionScope,
 		BaseInstructions: factory.baseInstructions,
 	}
 	agent, err := agentruntime.NewAgentWithOptions(factory.configured, factory.project, events, approvals, auditSink, options)
@@ -75,7 +83,7 @@ func (factory *CodingFactory) prepareRegular(ctx context.Context, host Host, sna
 		}
 		return Prepared{}, err
 	}
-	sessionTask := &regularTask{factory: factory, goal: goal, agent: agent, availableTools: availableTools, auditCloser: auditCloser}
+	sessionTask := &regularTask{factory: factory, goal: goal, agent: agent, availableTools: availableTools, auditCloser: auditCloser, instructions: instructionScope}
 	return Prepared{Task: sessionTask, Context: snapshot}, nil
 }
 
@@ -97,13 +105,13 @@ func (sessionTask *regularTask) run(ctx context.Context, host Host, turnContext 
 	if err := prepareTurnContext(ctx, contextPreparationOptions{
 		Task: sessionTask.goal, TurnContext: turnContext, Host: host, Agent: sessionTask.agent,
 		Extensions: sessionTask.factory.extensions, FileSystemPolicy: sessionTask.factory.fileSystemPolicy,
-		Instructions: sessionTask.factory.instructions, ApprovalCount: sessionTask.factory.permissions.GrantCount,
+		InstructionScope: sessionTask.instructions, ApprovalCount: sessionTask.factory.permissions.GrantCount,
 	}); err != nil {
 		return Result{}, err
 	}
-	contextHost, ok := host.(ContextHost)
-	if !ok || contextHost.Context() == nil {
-		return Result{}, errors.New("session task host does not expose ContextManager")
+	promptHost, ok := host.(PromptHost)
+	if !ok {
+		return Result{}, errors.New("session task host does not expose prompt snapshots")
 	}
 	provider := sessionTask.factory.configured.Providers[sessionTask.factory.configured.DefaultProvider]
 	modelInfo := normalizedModelInfo(sessionTask.agent.Client.Model(), provider)
@@ -113,7 +121,7 @@ func (sessionTask *regularTask) run(ctx context.Context, host Host, turnContext 
 		OutputSchema:     append(llm.OutputSchema(nil), turnContext.OutputSchema...),
 	}
 	autoCompact := func(compactCtx context.Context) error {
-		if !contextHost.Context().NeedsCompaction(modelInfo, promptShape) {
+		if !promptHost.Snapshot(modelInfo, promptShape).NeedsCompaction(modelInfo) {
 			return nil
 		}
 		compactResult, compactErr := (&compactTask{factory: sessionTask.factory}).Run(compactCtx, host, turnContext, nil)
@@ -128,7 +136,7 @@ func (sessionTask *regularTask) run(ctx context.Context, host Host, turnContext 
 		}
 		return host.AppendItems(compactCtx, turnContext.TurnID, compactResult.Items...)
 	}
-	return sessionTask.executeReactor(ctx, sessionTask.agent, contextHost.Context(), autoCompact, sessionTask.availableTools, llm.OutputSchema(turnContext.OutputSchema), turnContext.TurnID)
+	return sessionTask.executeReactor(ctx, sessionTask.agent, promptHost, autoCompact, sessionTask.availableTools, llm.OutputSchema(turnContext.OutputSchema), turnContext.TurnID)
 }
 
 func (sessionTask *regularTask) close() error {

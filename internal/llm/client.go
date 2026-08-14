@@ -17,6 +17,24 @@ type ModelInfo struct {
 	MaxOutputTokens           int
 	SupportsParallelToolCalls bool
 	ToolOutputMaxTokens       int64
+	InputModalities           []InputModality
+}
+
+type InputModality string
+
+const (
+	InputModalityText  InputModality = "text"
+	InputModalityImage InputModality = "image"
+)
+
+func (info ModelInfo) SupportsInput(modality InputModality) bool {
+	info = info.Normalized()
+	for _, candidate := range info.InputModalities {
+		if candidate == modality {
+			return true
+		}
+	}
+	return false
 }
 
 func (info ModelInfo) Normalized() ModelInfo {
@@ -28,6 +46,23 @@ func (info ModelInfo) Normalized() ModelInfo {
 	}
 	if info.ToolOutputMaxTokens <= 0 {
 		info.ToolOutputMaxTokens = 16_384
+	}
+	if len(info.InputModalities) == 0 {
+		info.InputModalities = []InputModality{InputModalityText}
+	} else {
+		seen := make(map[InputModality]struct{}, len(info.InputModalities)+1)
+		normalized := make([]InputModality, 0, len(info.InputModalities)+1)
+		for _, modality := range append([]InputModality{InputModalityText}, info.InputModalities...) {
+			if modality != InputModalityText && modality != InputModalityImage {
+				continue
+			}
+			if _, exists := seen[modality]; exists {
+				continue
+			}
+			seen[modality] = struct{}{}
+			normalized = append(normalized, modality)
+		}
+		info.InputModalities = normalized
 	}
 	return info
 }

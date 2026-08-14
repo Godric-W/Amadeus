@@ -202,6 +202,49 @@ func TestPromptArchitectureKeepsAssetsInternalAndReactorDecoupled(t *testing.T) 
 	}
 }
 
+func TestContextArchitectureHasOneCanonicalWriteAndProjectionChain(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, relative := range []string{"internal/agent/react", "internal/agent/task"} {
+		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, forbidden := range []string{"*agentcontext.Manager", "Context() *agentcontext.Manager", "ReplayToolResults", "observed.Replay"} {
+				if strings.Contains(string(content), forbidden) {
+					t.Errorf("Context write/replay compatibility %q remains in %s", forbidden, filepath.ToSlash(path[len(root)+1:]))
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager, err := os.ReadFile(filepath.Join(root, "internal", "context", "manager.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"func (manager *Manager) Record", "func (manager *Manager) Replace", "func (manager *Manager) ReplaceUpdate", "func (manager *Manager) UpdateUsage", "func (manager *Manager) ForPrompt", "func (manager *Manager) EstimatePromptTokens"} {
+		if strings.Contains(string(manager), forbidden) {
+			t.Errorf("legacy ContextManager mutation/projection API remains: %s", forbidden)
+		}
+	}
+	sessionHost, err := os.ReadFile(filepath.Join(root, "internal", "agent", "session", "host.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sessionHost), "session.state.Context.Rebuild(session.History())") {
+		t.Fatal("Session is not the canonical ContextManager rebuild owner")
+	}
+}
+
 func TestToolServiceOwnsArgumentValidation(t *testing.T) {
 	root := repositoryRoot(t)
 	servicePath := filepath.Join(root, "internal", "tool", "execution_service.go")

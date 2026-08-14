@@ -27,6 +27,7 @@ type ToolExecutionServiceOptions struct {
 	Approvals     *policy.ApprovalCoordinator
 	Permissions   *policy.SessionPermissionContext
 	FileReadState *FileReadStateStore
+	ContextScope  ContextScope
 }
 
 type ToolExecutionService struct {
@@ -38,6 +39,7 @@ type ToolExecutionService struct {
 	now           func() time.Time
 	permissions   *PermissionService
 	fileReadState *FileReadStateStore
+	contextScope  ContextScope
 }
 
 func NewToolExecutionService(registry *Registry, validator *ArgumentValidator, options ToolExecutionServiceOptions) (*ToolExecutionService, error) {
@@ -57,7 +59,7 @@ func NewToolExecutionService(registry *Registry, validator *ArgumentValidator, o
 		registry: registry, validator: validator, observer: options.Observer,
 		maxParallel: options.MaxParallel, visibility: cloneVisibility(options.Visibility),
 		now: time.Now, permissions: NewPermissionService(options.Permissions, options.Approvals),
-		fileReadState: options.FileReadState,
+		fileReadState: options.FileReadState, contextScope: options.ContextScope,
 	}, nil
 }
 
@@ -219,6 +221,12 @@ func (service *ToolExecutionService) executeCall(ctx context.Context, routed exe
 	if prepared.Invocation.Call.ID != invocation.Call.ID || prepared.Invocation.Call.Name != invocation.Call.Name {
 		execution := service.complete(routed.call, ToolResult{}, &phaseError{kind: "preparation_failed", err: errors.New("prepared invocation does not match routed invocation")}, routed.startedAt)
 		return service.publishCompleted(ctx, execution)
+	}
+	if prepared.Target != nil && service.contextScope != nil {
+		if err := service.contextScope.Ensure(ctx, *prepared.Target); err != nil {
+			execution := service.complete(routed.call, ToolResult{}, err, routed.startedAt)
+			return service.publishCompleted(ctx, execution)
+		}
 	}
 	if err := service.permissions.Evaluate(ctx, invocation.Call.Name, prepared.Permission); err != nil {
 		execution := service.complete(routed.call, ToolResult{}, err, routed.startedAt)

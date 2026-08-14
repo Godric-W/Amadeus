@@ -109,7 +109,8 @@ func (files *FileTools) finalizePreparedChange(invocation tool.Invocation, resol
 		presentationOperation = "write-new"
 	}
 	request.Presentation = policy.FileApprovalPresentation(presentationOperation, resolved.Canonical, &change)
-	return tool.PreparedToolUse{Invocation: invocation, State: prepared, Permission: tool.PermissionEvaluation{Decision: tool.PermissionAsk, Request: &request, Grant: grant}}, nil
+	target := tool.ContextTarget{Path: resolved.Canonical, Kind: tool.ContextTargetFile, SideEffect: tool.SideEffectWrite}
+	return tool.PreparedToolUse{Invocation: invocation, State: prepared, Target: &target, Permission: tool.PermissionEvaluation{Decision: tool.PermissionAsk, Request: &request, Grant: grant}}, nil
 }
 
 func (files *FileTools) applyPrepared(toolContext tool.ToolUseContext, invocation tool.Invocation, prepared preparedChange) (tool.ToolResult, error) {

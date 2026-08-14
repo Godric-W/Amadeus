@@ -4,25 +4,24 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/react"
+	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
-func TestToolResultReplayPreservesCallOrderAcrossProtocols(t *testing.T) {
-	assistant := llm.AssistantToolCallMessage("",
-		llm.ToolCall{ID: "call_1", Name: "first", Arguments: json.RawMessage(`{"value":1}`)},
-		llm.ToolCall{ID: "call_2", Name: "second", Arguments: json.RawMessage(`{"value":2}`)},
-	)
-	outcomes := []react.ToolOutcome{
-		toolReplayExecution("call_2", "second", "two"),
-		toolReplayExecution("call_1", "first", "one"),
+func TestCanonicalToolProjectionPreservesCallOrderAcrossProtocols(t *testing.T) {
+	lines := []rollout.Line{
+		toolProjectionLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call_1", Name: "first", Arguments: json.RawMessage(`{"value":1}`)}),
+		toolProjectionLine(t, 2, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call_2", Name: "second", Arguments: json.RawMessage(`{"value":2}`)}),
+		toolProjectionLine(t, 3, rollout.ResponseItem{Type: rollout.ResponseToolResult, Role: "tool", CallID: "call_1", Name: "first", Status: "succeeded", Result: &tool.ToolResult{CallID: "call_1", ToolName: "first", Text: "one"}}),
+		toolProjectionLine(t, 4, rollout.ResponseItem{Type: rollout.ResponseToolResult, Role: "tool", CallID: "call_2", Name: "second", Status: "succeeded", Result: &tool.ToolResult{CallID: "call_2", ToolName: "second", Text: "two"}}),
 	}
-	messages, err := react.ReplayToolResults(assistant, outcomes)
+	projection, err := agentcontext.ProjectRolloutMessages(lines)
 	if err != nil {
-		t.Fatalf("build replay messages: %v", err)
+		t.Fatalf("project canonical tool messages: %v", err)
 	}
-	request := llm.Request{Model: "test-model", Prompt: llm.Prompt{Input: messages}, Temperature: 0.2, MaxOutputTokens: 100}
+	request := llm.Request{Model: "test-model", Prompt: llm.Prompt{Input: projection.Messages}, Temperature: 0.2, MaxOutputTokens: 100}
 
 	responsesParams, err := newResponsesRequest(request)
 	if err != nil {
@@ -46,8 +45,13 @@ func TestToolResultReplayPreservesCallOrderAcrossProtocols(t *testing.T) {
 	}
 }
 
-func toolReplayExecution(callID, toolName, text string) react.ToolOutcome {
-	return react.ToolOutcome{CallID: callID, ToolName: toolName, Status: react.ToolOutcomeSucceeded, Result: tool.ToolResult{CallID: callID, ToolName: toolName, Text: text}}
+func toolProjectionLine(t *testing.T, sequence uint64, payload rollout.ResponseItem) rollout.Line {
+	t.Helper()
+	item, err := rollout.NewResponseItem(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rollout.Line{Sequence: sequence, Item: item}
 }
 
 func marshalRequestBody(t *testing.T, value any) map[string]any {

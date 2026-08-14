@@ -81,7 +81,6 @@ type ObserveInput struct {
 
 type ObserveOutput struct {
 	Iteration     Iteration
-	Replay        []llm.Message
 	BlockedReason string
 	StalledReason string
 }
@@ -242,10 +241,5 @@ func (observer *defaultObserver) Observe(input ObserveInput) (ObserveOutput, err
 			output.StalledReason = signal.Reason
 		}
 	}
-	replay, err := ReplayToolResults(response, outcomes)
-	if err != nil {
-		return ObserveOutput{}, err
-	}
-	output.Replay = replay
 	return output, nil
 }

@@ -166,8 +166,13 @@ func (grep *Grep) Prepare(_ tool.ToolUseContext, invocation tool.Invocation) (to
 	if err != nil {
 		return tool.PreparedToolUse{}, err
 	}
+	targetKind := tool.ContextTargetFile
+	if info, statErr := os.Stat(resolved.Canonical); statErr == nil && info.IsDir() {
+		targetKind = tool.ContextTargetDirectory
+	}
 	state := preparedGrep{arguments: arguments, matcher: matcher, resolvedPath: resolved.Canonical, displayPath: searchPath, contextLines: contextLines, limit: limit, caseSensitive: caseSensitive}
-	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: state, Permission: tool.AllowPermission()}, nil
+	target := tool.ContextTarget{Path: resolved.Canonical, Kind: targetKind, SideEffect: tool.SideEffectRead}
+	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: state, Target: &target, Permission: tool.AllowPermission()}, nil
 }
 
 func (grep *Grep) Execute(toolContext tool.ToolUseContext, prepared tool.PreparedToolUse) (tool.ToolResult, error) {

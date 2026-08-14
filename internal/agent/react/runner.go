@@ -85,6 +85,10 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 		return Result{}, err
 	}
 	state := newLoopState(request)
+	rolloutRecorder := runner.options.Rollout
+	if rolloutRecorder == nil {
+		rolloutRecorder, _ = request.PromptSource.(RolloutRecorder)
+	}
 	startedAt := runner.now()
 	finish := func(result Result) (Result, error) {
 		state.Budget.Elapsed += runner.durationSince(startedAt)
@@ -121,21 +125,22 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 		completeIteration := func(string, string) error { return nil }
 
 		if request.BeforeSample != nil {
-			if err := request.BeforeSample(iterationCtx, request.Context); err != nil {
+			if err := request.BeforeSample(iterationCtx); err != nil {
 				if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
 					err = errors.Join(err, publishErr)
 				}
 				return finish(Result{Iterations: state.Iterations, Usage: state.Usage, StopReason: StopFailed, Reason: err.Error()})
 			}
 		}
-		snapshot := request.Context.ForPrompt(request.ModelInfo)
+		promptShape := llm.Prompt{
+			BaseInstructions: request.BaseInstructions,
+			Tools:            toolDefinitions(request.AvailableTools),
+			OutputSchema:     request.OutputSchema,
+		}
+		snapshot := request.PromptSource.Snapshot(request.ModelInfo, promptShape)
 		messages := snapshot.Items
 		availableTools := request.AvailableTools
-		estimated := request.Context.EstimatePromptTokens(request.ModelInfo, llm.Prompt{
-			BaseInstructions: request.BaseInstructions,
-			Tools:            toolDefinitions(availableTools),
-			OutputSchema:     request.OutputSchema,
-		})
+		estimated := snapshot.Usage.EstimatedInputTokens
 		contextWindow := request.ModelInfo.ContextWindow
 		if len(messages) == 0 {
 			err := errors.New("ContextManager produced an empty Prompt")
@@ -172,7 +177,6 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 			return finish(Result{Iterations: state.Iterations, Usage: state.Usage, StopReason: StopFailed, Reason: err.Error()})
 		}
 		state.Usage = addUsage(state.Usage, think.Response.Usage)
-		request.Context.UpdateUsage(think.Response.Usage)
 		state.Budget.IterationsUsed++
 		state.Budget.InputTokensUsed += think.Response.Usage.InputTokens
 		state.Budget.OutputTokensUsed += think.Response.Usage.OutputTokens
@@ -197,12 +201,14 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 			}
 			toolCtx := tool.WithRequestSnapshot(iterationCtx, request.RequestSnapshot)
 			var recorder tool.NormalizedCallRecorder
-			if runner.options.Rollout != nil {
+			if rolloutRecorder != nil {
 				message := analysis.Response.Message
 				recorder = func(recordCtx context.Context, calls []tool.ToolCall) error {
 					message.ToolCalls = normalizedMessageToolCalls(message.ToolCalls, calls)
-					return runner.options.Rollout.RecordToolCalls(recordCtx, message)
+					return rolloutRecorder.RecordToolCalls(recordCtx, message)
 				}
+			} else {
+				return finish(Result{Iterations: state.Iterations, Usage: state.Usage, StopReason: StopFailed, Reason: "tool execution requires a canonical rollout recorder"})
 			}
 			act, err = runner.act.Act(toolCtx, ActInput{Calls: analysis.Calls, AvailableTools: availableTools, RecordCalls: recorder})
 			if err != nil {
@@ -213,12 +219,12 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 			}
 			state.Budget.ToolCallsUsed += act.Attempted
 		}
-		if analysis.Kind != AnalysisFinal && runner.options.Rollout != nil {
+		if analysis.Kind != AnalysisFinal && rolloutRecorder != nil {
 			outcomes := act.Outcomes
 			if analysis.Kind == AnalysisArgumentError {
 				outcomes = analysis.ArgumentFailures
 			}
-			if err := runner.options.Rollout.RecordToolOutcomes(iterationCtx, outcomes); err != nil {
+			if err := rolloutRecorder.RecordToolOutcomes(iterationCtx, outcomes); err != nil {
 				if publishErr := completeIteration("failed", err.Error()); publishErr != nil {
 					err = errors.Join(err, publishErr)
 				}
@@ -260,9 +266,6 @@ func (runner *Runner) Run(ctx context.Context, request Request) (Result, error) 
 			}
 			message := *analysis.FinalMessage
 			return finish(Result{FinalMessage: &message, Iterations: state.Iterations, Usage: state.Usage, StopReason: StopCompleted})
-		}
-		if runner.options.Rollout == nil {
-			request.Context.Record(observed.Replay...)
 		}
 	}
 }

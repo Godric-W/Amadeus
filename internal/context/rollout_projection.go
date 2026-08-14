@@ -10,6 +10,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type RolloutMessageProjection struct {
@@ -95,17 +96,22 @@ func (projection *RolloutMessageProjection) appendResponse(line rollout.Line) er
 		if strings.TrimSpace(item.CallID) == "" {
 			return nil
 		}
-		content := item.Content
-		toolParts := item.Parts
+		result := tool.ToolResult{CallID: item.CallID, ToolName: item.Name, Text: item.Content, Parts: append([]tool.ContentPart(nil), item.Parts...)}
 		if item.Result != nil {
-			content = item.Result.Text
-			toolParts = item.Result.Parts
+			result = item.Result.Clone()
 		}
-		parts := make([]llm.ContentPart, 0, len(toolParts))
-		for _, part := range toolParts {
-			parts = append(parts, llm.ContentPart{Kind: llm.ContentKind(part.Kind), Text: part.Text, MediaType: part.MediaType, Data: part.Data})
+		var projectedError *ToolResultError
+		if item.Error != nil {
+			projectedError = &ToolResultError{Kind: item.Error.Kind, Message: item.Error.Message}
 		}
-		projection.append(llm.ToolResultMessageWithParts(item.CallID, content, parts...), line.Sequence)
+		message, projectErr := ProjectToolResult(ToolResultProjection{
+			CallID: item.CallID, Status: item.Status, Result: result, Error: projectedError,
+			Partial: item.Partial, Metadata: item.Metadata,
+		})
+		if projectErr != nil {
+			return projectErr
+		}
+		projection.append(message, line.Sequence)
 	}
 	return nil
 }
