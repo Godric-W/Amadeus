@@ -14,9 +14,10 @@
 设计遵循以下约束：
 
 1. Codex 作为 Session、Turn、Runtime、Rollout、Context、Plan-guided ReAct、Slash Command 和 TUI 的主要架构骨架。
-2. Claude Code 作为内置文件工具、文件修改确认、Diff Preview、Read-before-write 和权限交互的主要行为参考。
+2. Claude Code 作为 Tool 内层协议、ToolUseContext、文件工具、文件修改确认、Diff Preview、Read-before-write、权限评估和 Approval 交互的主要行为参考。
 3. Amadeus 保留多 Provider、本地配置、Go 实现和跨模型安全默认值等自身产品要求。
-4. 不把任一参考项目完整照搬；只采用与 Amadeus 目标一致、可测试、可交付的部分。
+4. 外层 Runtime 不照搬 Claude Code；内层 Tool 的数据模型和阶段划分尽量与 Claude Code 对齐，再通过 Go 类型和 Codex Event/InteractiveRequest 边界适配。
+5. 不引入 Claude Code 的用户级、项目级或本地权限持久化；Approval grant 只保存在当前 Session 内存中，Session 结束或 Resume 后清空。
 
 `../claude-code-main` 是源码还原项目，因此用于理解产品行为和局部机制，不作为未经验证的实现权威。涉及关键安全行为时，必须用 Amadeus 自身测试固化契约。
 
@@ -55,9 +56,10 @@ Amadeus 的目标是成为一个真正可用于日常软件开发的通用 Codin
 | Plan | Codex | `update_plan` 是软状态；`/plan` 是显式 Plan Mode |
 | Context Manager | Codex 为骨架 | 统一历史投影、Token Accounting 和 Compaction 生命周期 |
 | Prompt Assembly | Codex 与 Claude Code | 稳定规则分层，动态事实不写入静态模板 |
+| Tool 内层协议 | Claude Code | ToolUseContext、Validate、Prepare、Permission、Approval、Execute 和 Typed ToolResult |
 | 文件 Tool | Claude Code | Read-before-write、staleness 校验、Structured Diff、确认后落盘 |
 | Command Tool | Claude Code 行为，按 Amadeus 跨平台目标收敛 | 默认 Ask、Session 精确规则、应用层保护与宿主执行 |
-| Approval TUI | Claude Code | 展示操作和 Diff，使用范围明确的动态选项与键盘交互 |
+| Approval TUI | Claude Code | 展示操作和结构化 Diff，使用范围明确的动态选项与键盘交互；不直接修改权限状态 |
 | Event Protocol | Codex | Submission、SessionEvent、InteractiveRequest、TurnItem 生命周期与 Delta |
 | TUI 数据模型与视觉 | Codex | EventReducer、HistoryCell、ActiveHistoryCell、Working、Slash Popup、状态栏 |
 | Slash Command | Codex | 命令分为 TUI Local、Application Action 与 Core Op，不拥有业务状态 |
@@ -178,7 +180,8 @@ Agent Runtime 负责：
 Capabilities 是 Runtime 可调用的外部能力：
 
 - LLM Provider Adapter。
-- Tool Registry 与 Tool Contract。
+- Tool Registry、ToolDefinition、ToolUseContext 与 ToolExecutionService。
+- Validate/Prepare/Permission/Approval/Execute 生命周期。
 - 结构化文件 Tool、Diff Preview 与 Approval。
 - Host Process Runner。
 - MCP、Skill、Web Search、Web Fetch。
@@ -208,7 +211,7 @@ internal/context/            ContextManager、Token Accounting、Projection 与 
 internal/prompt/             BaseInstructions、Prompt 与内置 Prompt 资产
 internal/llm/                LLM Domain Port
 internal/llm/openai/         OpenAI-compatible Adapter
-internal/tool/               Tool Contract、Registry、ToolExecutionService 与 Permission Check
+internal/tool/               ToolDefinition、Registry、ToolUseContext、ToolExecutionService 与 PermissionService
 internal/policy/             ApprovalPort、ApprovalCoordinator、SessionPermissionContext 与静态策略
 internal/tool/builtin/       Read、Edit、Write、Glob、Grep、Command 等内置 Tool
 internal/process/            Host Process Runner
@@ -378,11 +381,11 @@ type SessionState struct {
     Configuration        SessionConfiguration
     CanonicalHistory     []RolloutLine
     PreviousTurnSettings *PreviousTurnSettings
-    Permissions          SessionPermissionState
+    Permissions          SessionPermissionContext
 }
 ```
 
-Runtime + Persistence 阶段先保存经过深拷贝和并发保护的 canonical history，并从 `InitialHistory` 恢复 `PreviousTurnSettings`；B 工作流再以这份 canonical history 构建正式 `ContextManager`。SessionPermissionState 每次启动都重新初始化。ContextManager 只能是 Rollout 的派生投影，不能成为第二历史源；StoredThread 只用于定位 Rollout 和展示索引元数据。
+Runtime + Persistence 阶段先保存经过深拷贝和并发保护的 canonical history，并从 `InitialHistory` 恢复 `PreviousTurnSettings`；B 工作流再以这份 canonical history 构建正式 `ContextManager`。SessionPermissionContext 每次启动都重新初始化。ContextManager 只能是 Rollout 的派生投影，不能成为第二历史源；StoredThread 只用于定位 Rollout 和展示索引元数据。
 
 ### 8.8 SessionServices
 
@@ -472,7 +475,7 @@ type ActiveTurn struct {
 }
 ```
 
-TurnState 保存 Usage、Tool Call 计数、Pending Approval、Pending User Input 和终态标记；当前可见 Plan 由 SessionState 持有。SessionPermissionState 属于 SessionState，不进入单个 TurnState；Turn 完成后，Session 清除 ActiveTurn，历史 Turn 生命周期继续保存在 canonical Rollout 中。
+TurnState 保存 Usage、Tool Call 计数、Pending Approval、Pending User Input 和终态标记；当前可见 Plan 由 SessionState 持有。SessionPermissionContext 属于 SessionState，不进入单个 TurnState；Turn 完成后，Session 清除 ActiveTurn，历史 Turn 生命周期继续保存在 canonical Rollout 中。
 
 ### 8.12 RunningTask 与 SessionTask
 
@@ -669,7 +672,8 @@ Reactor Iteration 保持串行；只有同一次模型响应中由 Tool 的 `Sup
 - 使用带 Context 的有界 task group，限制并发数并在错误或取消时停止剩余任务。
 - 结果按原 Tool Call 顺序回灌模型，不按 goroutine 完成顺序改变协议。
 - `read/glob/grep/view_image/web_search/web_fetch` 可以有界并行。
-- `edit/write/execute_command/write_stdin/update_plan/MCP Call` 串行。
+- `write_stdin` 在 Tool Registry 层声明可并行，但 ProcessManager 必须按 `process_id` 串行化同一进程的输入与轮询；不同进程可以并行。
+- `edit/write/execute_command/update_plan/MCP Call` 串行。
 - 不建立长期 Worker Pool、DAG Scheduler、资源级读写图或自定义共享/独占 Gate。
 
 #### 同步持久化与进程 goroutine
@@ -758,11 +762,15 @@ type PlanState struct {
 
 `update_plan`：
 
+- 输入 Schema 使用 `plan` 条目和可选 `explanation`；Handler 校验状态值、空步骤和“至多一个 `in_progress`”，不接受多套等价字段。
 - Handler 只解析参数并调用 Session 提供的 `UpdatePlan` capability，不持有独立 PlanState 或 Recorder。
 - Session 先将 `plan_update` 写入 canonical JSONL Rollout，持久化成功后再提交 `SessionState.Plan` 内存投影。
 - 不需要用户 Approval，也不经过文件权限检查。
 - 持久化完成后产生 `PlanUpdated` Event，TUI 使用 Codex 风格 `Updated Plan` HistoryCell 展示。
+- ToolResult 只返回类似 `Plan updated` 的简短确认；完整计划只通过 `PlanUpdated` Event、TurnItem 和 SessionState 投影传播，避免模型结果与 Runtime 状态形成双事实源。
 - Resume 时 Session 从最近的 `plan_update` 恢复投影，并从已有 revision 继续递增。
+
+C-T 只负责 `update_plan` 的 ToolDefinition、输入校验、Session capability 调用、Event handoff 和 concise result；Plan State、Resume、Plan Mode 与 Reactor 的端到端完成仍属于 F 阶段。
 
 ## 12. Prompt 与 Context
 
@@ -807,7 +815,7 @@ SessionConfiguration.BaseInstructions
 
 Session 使用固定的 `buildContextUpdates` 流程，按 Developer Instructions、AGENTS.md、Environment、Permission Mode、Skills 和 MCP 的稳定顺序生成 ResponseItem。
 
-动态 Context Update 使用稳定的 replace key。Session 初始化、Resume 或 SessionPermissionState 变化时生成新的 Permission Context Update，并在下一次模型采样中替换旧值；历史 Approval Decision 保留在 Rollout 中，但不会在 Resume 时重新授予权限。
+动态 Context Update 使用稳定的 replace key。Session 初始化、Resume 或 SessionPermissionContext 变化时，下一次模型采样可以看到新的临时 Permission Context Update；该 Update 只描述当前 Session 能力，不把 grant 变成持久化权限。历史 Approval Decision 可以作为事实保留，但 Resume 时不会重新授予权限。
 
 Prompt 资产位于 `internal/prompt`，按 BaseInstructions、Context Update、Tool Spec 和 Compaction Prompt 分层。
 
@@ -886,6 +894,7 @@ tool_output_max_tokens
 
 - 保留 Tool 名、状态、关键摘要和输出边界。
 - 文件读取保留相关片段、行号和截断信息。
+- 文件修改保留 Typed `FileChangeResult` 的操作、路径、统计、Diff 摘要和最终状态；模型投影不能丢失 declined、stale 或 partial failure。
 - Shell 保留命令、退出码、关键 stdout/stderr 和截断信息。
 - 搜索保留匹配路径、行号和总匹配数。
 - canonical Rollout 保存完整原始 Tool Result；`ContextManager.ForPrompt` 只返回模型安全投影。
@@ -984,69 +993,119 @@ Dialect 只处理经过验证的协议差异，不根据域名猜测：
 
 ### 14.1 目标模型
 
-Tool 主链收敛为：
+Amadeus 保留 Codex 的 Registry、Session、Turn、Event 和 Rollout 边界，但将 Tool 内层协议改为 Claude Code 风格的显式阶段。`ToolExecutionService` 仍是唯一编排入口，不新增第二套 Router、Handler 或 Permission Engine。
 
 ```text
 Model Tool Call
-→ Tool Registry
-→ ToolExecutionService
-→ Normalize / Backfill Input
-→ Schema Validate
-→ Tool.CheckPermissions
-→ SessionPermissionContext
+→ Tool Registry.Lookup
+→ NormalizeInput
+→ ToolDefinition.ValidateInput
+→ ToolDefinition.Prepare
+→ PermissionService.Evaluate
 → Allow / Ask / Deny
 → ApprovalCoordinator（仅 Ask）
-→ Tool.Call
-→ ToolResult
-→ Event / Canonical Rollout
-→ ContextManager / HistoryCell
+→ ToolDefinition.Execute(prepared)
+→ Typed ToolResult
+→ ToolDisplayResult / FileChangeItem
+→ SessionEvent / Canonical Rollout / ContextManager / TUI
 ```
 
-这是 Amadeus 的目标主链。`Registry` 负责工具注册与查找，`ToolExecutionService` 是唯一执行入口。
-
-当前 Go 生产代码统一使用 `Tool`、`ToolSpec`、`ToolCall`、`Invocation`、`Output` 和可选的 `PermissionChecker` 接口；不再新增第二套 Router、Handler 或 Permission Engine。参数校验与 Normalize 由 `ToolExecutionService` 统一完成，只有需要权限判断的 Tool 才实现 `CheckPermissions`。
-
-`ToolExecutionService` 是所有工具的唯一执行编排入口，固定执行以下顺序：
-
-```text
-Lookup Tool
-→ Normalize / Backfill Input
-→ Schema Validate
-→ CheckPermissions
-→ SessionPermissionContext.Match
-→ allow / ask / deny
-→ ApprovalCoordinator.Decide（ask 时）
-→ SessionPermissionContext.ApplyGrant
-→ Tool.Call
-→ ToolResult + Tool Events
-```
-
-四类结果必须明确区分：
-
-```text
-Validation Failure   参数或客观输入无效，不进入审批、不执行
-Permission Deny      当前权限规则明确拒绝，不执行
-Approval Ask         需要用户选择，等待 InteractiveRequest
-Execution Failure    已获准执行但 Tool.Call 失败
-```
-
-`Tool` 可以实现工具特定的权限准备和执行细节，但不能直接读取 TUI、解析键盘输入、更新 Session 权限上下文或自行发布审批交互。文件 Diff 由文件 Tool 生成，ApprovalCoordinator 传递，TUI 展示，ToolResult 和 Rollout 保存。
-
-### 14.2 SessionPermissionContext 与 FileSystemPolicy
-
-`FileSystemPolicy` 只表示客观文件系统边界，不再承担用户授权状态：
+每个 Tool 必须表达同一组概念：
 
 ```go
-type FileSystemPolicy struct {
-    CWD             string
-    ReadHost        bool
-    WorkspaceRoots  []string
-    ReadOnlyRoots   []string
-    DeniedRoots     []string
+type ToolDefinition interface {
+    Name() string
+    Spec() ToolSpec
+    ValidateInput(ToolUseContext, any) error
+    Prepare(ToolUseContext, any) (PreparedToolUse, error)
+    Execute(ToolUseContext, PreparedToolUse) (ToolResult, error)
+    SupportsParallelToolCalls() bool
 }
 ```
 
-它只负责：路径解析后的 canonical path 是否越界、是否命中 DeniedRoots、是否允许读取，以及是否具备客观写入条件。它不保存 `allow once`、`allow for session`、Run grant 或 Session grant。
+`ValidateInput` 只负责 Schema、类型、字段关系和工具输入的客观合法性；`Prepare` 负责解析路径、读取必要快照、计算副作用、生成 Approval 所需的结构化预览，但不得产生最终文件副作用；`Execute` 只能执行已经通过权限和 Approval 的 `PreparedToolUse`。工具不得在 `Execute` 中重新解释原始模型输入，也不得通过隐式全局状态恢复准备数据。
+
+```go
+type ToolUseContext struct {
+    SessionID     string
+    TurnID        string
+    CWD           string
+    Permission    *SessionPermissionContext
+    FileReadState *FileReadStateStore
+    FileSystem    FileSystemPolicy
+    Abort         <-chan struct{}
+    Events        EventSink
+}
+
+type PreparedToolUse struct {
+    Invocation Invocation
+    Input      any
+    State      any
+    Approval   *policy.ApprovalRequest
+}
+
+type ToolResult struct {
+    CallID      ToolCallID
+    Status      ToolResultStatus
+    Data        any
+    Error       *ToolError
+    Display     ToolDisplayResult
+}
+
+type FileChangeResult struct {
+    Path           string
+    Operation      FileOperation
+    OriginalFile   *string
+    UpdatedFile    *string
+    Diff           *FileChangePreview
+    UserModified   bool
+}
+```
+
+`PreparedToolUse.State` 是 Tool 私有的、显式传递的准备态；核心链不得依赖 `context.WithValue` 注入准备数据。`ToolUseContext` 是一次 Tool Use 的运行时上下文，不等同于可持久化的 `TurnContext`；它可以引用 Session 内存状态，但不能把权限 grant 或未决 Approval 写入 Rollout。
+
+`ToolExecutionService` 固定执行以下顺序：
+
+```text
+Lookup
+→ NormalizeInput
+→ ValidateInput
+→ Prepare
+→ PermissionService.Evaluate(prepared)
+→ ApprovalCoordinator.Decide（ask 时）
+→ Apply in-memory grant（如有）
+→ Execute(prepared)
+→ Build typed result and display projection
+```
+
+以下状态必须明确区分：
+
+```text
+Validation Failure   参数或客观输入无效，不进入审批、不执行
+Preparation Failure  无法读取快照、计算 Diff 或建立安全执行态，不执行
+Permission Deny      客观边界或 Session 规则明确拒绝，不执行
+Approval Ask         需要用户选择，等待 InteractiveRequest
+Approval Decline     用户拒绝，零副作用并返回 declined ToolResult
+Execution Failure    已获准执行但 Execute 失败
+```
+
+文件 Diff 由 `Prepare` 生成，`ApprovalCoordinator` 原样传递，InteractiveRequest 保留其结构化数据，TUI 只展示并返回决定；Typed ToolResult 和 Rollout 保存最终事实。Tool 定义不能读取 TUI、解析键盘输入、直接更新 Session 权限上下文或自行发布审批交互。
+
+### 14.2 SessionPermissionContext 与 FileSystemPolicy
+
+`FileSystemPolicy` 只表示客观文件系统边界，不承担用户授权状态：
+
+```go
+type FileSystemPolicy struct {
+    CWD           string
+    ReadHost      bool
+    WorkspaceRoots []string
+    ReadOnlyRoots []string
+    DeniedRoots   []string
+}
+```
+
+它负责 canonical path 是否越界、是否命中 DeniedRoots、是否允许读取，以及是否具备客观写入条件。它不保存 `allow once`、`allow for session`、Run grant 或 Session grant。
 
 路径与用户授权分成三层：
 
@@ -1057,23 +1116,31 @@ PathResolver
 FileSystemPolicy
 → 客观 workspace/read-only/denied 边界检查
 
-SessionPermissionContext
-→ 当前 Session 的 grant 匹配
+PermissionService + SessionPermissionContext
+→ 当前 Tool Use 的权限评估与 Session 内存 grant 匹配
 ```
 
-目标权限上下文借鉴 Claude Code 的运行时语义，但不实现其持久化权限来源：
+权限数据模型必须区分授权能力，不能用一个宽泛的“文件权限”覆盖所有操作：
 
 ```go
 type SessionPermissionContext struct {
-    Mode                PermissionMode
-    FileEditDirectories []string
-    CommandGrants       map[CommandApprovalKey]struct{}
-    ExternalGrants      map[string]struct{}
+    Mode             PermissionMode
+    ReadDirectories  []string
+    EditDirectories  []string
+    CommandGrants    map[CommandApprovalKey]struct{}
+    ExternalGrants   map[string]struct{}
+}
+
+type PermissionGrant struct {
+    Kind      GrantKind
+    Scope     GrantScope
+    ExpiresAt *time.Time // 第一版为 nil；Session 结束即失效
 }
 ```
 
-`SessionPermissionContext` 由 Session 持有；`ToolExecutionService` 读取它并应用 ApprovalCoordinator 返回的运行时 `PermissionGrant`。不再让每个 Tool 直接组合不同的授权 Store。Amadeus 不实现 Claude Code 的用户级、项目级或本地权限持久化，因此这里的 Context 只表达当前 Session 的内存状态。
+至少区分 `read directory`、`edit directory`、`exact command` 和 `external host/tool` 四种 Grant。Read grant 不能隐式允许 edit；edit grant 不能隐式允许 command；每种 Grant 只能由对应 Tool 的 `PermissionService` 匹配。
 
+`SessionPermissionContext` 由 internal Session 持有；`PermissionService` 只读取它并返回 `PermissionDecision`，`ApprovalCoordinator` 只负责等待用户决定，最终由 Session 统一应用内存中的 `PermissionGrant`。Amadeus 不实现 Claude Code 的用户级、项目级或本地权限持久化；Session Close、进程退出和 Resume 后都恢复默认权限状态。
 ### 14.3 Tool 分类
 
 ```text
@@ -1084,7 +1151,7 @@ Runtime Tools
 Remote Tools
 ```
 
-工具分类只描述默认的验证、权限和并发倾向，不创建多套执行器。每个 Tool 仍然通过同一个 `ToolExecutionService` 执行；并发能力由 `SupportsParallelToolCalls` 声明，参数验证由 Service 的 Schema Validator 统一完成，需要权限判断的 Tool 通过 `PermissionChecker` 返回 `PermissionCheck`。
+工具分类只描述默认的验证、权限和并发倾向，不创建多套执行器。每个 Tool 仍然通过同一个 `ToolExecutionService` 执行；并发能力由 `SupportsParallelToolCalls` 声明，输入校验和准备由 ToolDefinition 显式完成，权限由 `PermissionService` 统一评估。
 
 ### 14.4 初始内置 Tool 集
 
@@ -1113,11 +1180,90 @@ MCP Tools
 request_user_input
 ```
 
-模型可见 Tool Catalog 和默认 Core Registry 只包含当前公开工具：`read`、`edit`、`write`、`glob`、`grep`、`execute_command`、`write_stdin`、`update_plan`，以及按配置启用的条件工具。旧 `read_file`、`list_dir`、`glob_files`、`grep_code`、`request_permissions` 已物理删除，不再提供兼容注册。`apply_patch` 与 sandbox 实现可以保留用于独立实验和测试，但不得进入默认 Core Registry、模型可见快照或正式执行主链。
+模型可见 Tool Catalog 和默认 Core Registry 只包含当前公开工具：`read`、`edit`、`write`、`glob`、`grep`、`execute_command`、`write_stdin`、`update_plan`，以及按配置启用的条件工具。旧 `read_file`、`list_dir`、`glob_files`、`grep_code`、`request_permissions` 已物理删除，不再提供兼容注册。
 
 保留 `execute_command` 而不命名为 `Bash`，因为 Amadeus 面向多平台；Skill Script 统一通过它执行。
 
+### 14.5 内置 Tool 的源码参考与优化边界
+
+Amadeus 不按单一项目整套复制 Tool，而是按 Tool 的真实职责选择行为来源：
+
+| Tool/能力 | 主要源码参考 | Amadeus 应复刻的核心语义 | 不复制的产品耦合 |
+|---|---|---|---|
+| `read` | Claude Code `FileReadTool` | canonical path、offset/limit、文本/图片分流、完整读取后记录 FileReadState、bounded output、typed truncation | LSP、IDE 通知、Analytics、文件历史 |
+| `edit` | Claude Code `FileEditTool` | old/new string 校验、唯一匹配、`replace_all`、Read-before-write、Prepare Diff、Approval 后 stale check、原子写入、structured patch/result | React 展示组件、VS Code 集成、产品遥测 |
+| `write` | Claude Code `FileWriteTool` | create/update 区分、已有文件完整 Read、覆盖 Diff、Approval 后重新校验、typed create/update result | 文件历史服务、IDE 刷新、持久化权限来源 |
+| `glob/grep` | Claude Code `GlobTool` / `GrepTool` | read-only、concurrency safe、稳定排序、数量/字节/Token 上限、`truncated` 与截断原因 | Claude Code 特有搜索服务和 UI 组件 |
+| `view_image` | Claude Code 只读 Tool 约束 | MIME/尺寸/路径校验、工作目录内默认 Allow、typed media result | IDE 图片预览与外部产品通知 |
+| `execute_command` | Claude Code Permission UX + Codex Process Lifecycle | 默认 Ask、exact command grant、进程 ID、输出/退出码/截断、取消和 lifecycle event | Codex OS Sandbox、Guardian、Remote Environment、网络审批 |
+| `write_stdin` | Codex unified exec `write_stdin` | 续接已有进程、不重复 Approval/PreToolUse、绑定 OriginCallID、同进程串行、不同进程可并行、typed process result | Codex Remote Shell 与 sandbox orchestration |
+| `update_plan` | Codex `plan` handler/spec | 参数校验、至多一个 `in_progress`、更新 Session Plan、发布 `PlanUpdated`、Tool 返回简短确认 | 独立 Planner、DAG 调度器、Tool 自持 PlanState |
+| `request_user_input` | Codex Interactive Request | 业务输入请求与 Permission Approval 分离、结构化问题/选项、通过 Response Op 返回 | 将普通问答写入权限上下文 |
+| Web/MCP/Skill | Codex Registry + Amadeus Provider | 统一 ToolUse 生命周期、typed result、host/tool 最小 Grant、bounded output | 完整远端执行环境和持久化授权 |
+
+“复刻核心语义”指按 Go 和 Amadeus Runtime 重写相同行为契约，而不是把 TypeScript/Rust 类型、UI 组件、Sandbox 或产品服务直接搬入。每个内置 Tool 必须使用同一 `ToolExecutionService`，但可以拥有不同的输入、准备态、权限策略和 typed result；不得为了形式统一而把所有 Tool 强塞进文件 Diff 或 Approval 流程。
+
+内置 Tool 的结果至少分成三层：
+
+```text
+Execution Result
+→ ToolResult.Data            给 Runtime 和模型的稳定事实
+→ ToolDisplayResult          给 Event/TUI 的展示投影
+→ Canonical TurnItem         给 Rollout/Resume 的完成事实
+```
+
+`ToolDisplayResult` 不能反向成为执行事实，模型侧文本也不能作为 TUI 重新解析结构化结果的来源。只读 Tool 必须显式返回截断状态；文件 Tool 必须返回 `FileChangeResult`；进程 Tool 必须返回 `ProcessResult`；Runtime Tool 必须通过 Session capability 修改状态并发布对应 Event。
+
+### 14.6 遗留 `apply_patch` 与 sandbox 隔离
+
+`apply_patch` 只是遗留代码，不是 Amadeus 内置 Tool；sandbox 也不是正式执行主链。两者可以暂时保留用于独立实验、兼容性研究或测试，但必须满足：
+
+- 不注册到默认 Core Registry，也不进入模型可见 Tool Catalog、Prompt Tool Snapshot 或 Skill/MCP Tool Projection。
+- 不接入 `ToolExecutionService`、PermissionService、ApprovalCoordinator、SessionEvent、Rollout 或 TUI 的正式链路。
+- 不作为 `edit/write` 的底层执行器；结构化文件修改只通过 Claude Code 风格的 `Prepare → Approval → Revalidate → Atomic Apply` 实现。
+- 不以 Codex `apply_patch` 的 Sandbox、Guardian、Remote Environment、Network Approval 或 Diff Tracker 反向塑造 Amadeus 当前 Tool Contract。
+- 遗留代码能否编译可单独维护，但不作为 C-T 完成条件；若其共享类型阻碍正式主链，应先解除依赖，而不是把遗留能力重新接回主链。
+
 ## 15. Claude Code 风格文件修改链
+
+文件修改 Tool 是 ToolUse 协议的第一个完整实现：`ValidateInput` 不产生副作用，`Prepare` 建立可审阅的快照和 Diff，Approval 只决定是否继续，`Execute` 只执行已经重新验证的准备态。
+
+```go
+type FileReadState struct {
+    CanonicalPath string
+    Exists        bool
+    ContentHash   string
+    Mode          fs.FileMode
+    IsSymlink     bool
+}
+
+type FileReadStateStore interface {
+    Record(FileReadState)
+    Lookup(canonicalPath string) (FileReadState, bool)
+}
+
+type FileChangePreview struct {
+    Operation    FileOperation
+    Path         string
+    DisplayPath  string
+    BeforeExists bool
+    BeforeHash   string
+    AfterHash    string
+    Stats        DiffStats
+    Hunks        []DiffHunk
+    Truncated    bool
+}
+
+type DiffHunk struct {
+    OldStart int
+    OldLines int
+    NewStart int
+    NewLines int
+    Lines    []DiffLine
+}
+```
+
+`FileChangePreview` 是 Approval、InteractiveRequest、TUI 和 FileChangeItem 之间的唯一结构化 Diff Contract。它不是最终写入结果，也不能由 TUI 根据文本重新解析；展示可以截断，但底层 Preview 必须保留完整的 Hash、统计和可滚动 Hunks。
 
 ### 15.1 Read-before-write
 
@@ -1162,8 +1308,8 @@ Hash 用于判断内容是否变化，不用于加密文件。
 
 - 修改已有文件时优先使用 `edit`。
 - `old_string` 默认必须唯一存在；零匹配或多匹配返回明确错误。
-- Tool Input 本身就是待确认的修改内容，内部只生成轻量 FileChangePreview。
-- Tool 内部生成轻量 `FileChangePreview`，包含 StructuredDiff、DiffStats 和原始文件 Hash。
+- Tool Input 本身就是待确认的修改内容，`Prepare` 生成完整的 `FileChangePreview`。
+- Preview 包含操作类型、canonical/display path、前后存在性与 Hash、DiffStats、DiffHunk 和截断标记；默认限制 TUI 展示大小，但不丢失 stale check 所需事实。
 - Approval 后重新读取文件并执行 stale check，成功后再原子写入。
 
 ### 15.3 `write`
@@ -1209,7 +1355,8 @@ type ApprovalRequest struct {
     Path               string
     Command            string
     CWD                string
-    Diff               *StructuredDiff
+    Operation          FileOperation
+    Diff               *FileChangePreview
     Presentation       ApprovalPresentation
 }
 
@@ -1217,7 +1364,9 @@ type ApprovalPresentation struct {
     Title    string
     Subtitle string
     Question string
+    Path     string
     Details  []DisplayLine
+    Diff     *FileChangePreview
     Options  []ApprovalOption
 }
 
@@ -1253,7 +1402,7 @@ Approval TUI 不得把所有 Tool 硬编码为 `Allow / Allow for this session /
 - `No` 不执行 Tool，并把拒绝及可选反馈作为 ToolResult 返回模型。
 - Session Permission State 只存在于当前进程内存，Resume 后恢复为默认权限状态。
 
-当前实现中 CLI/TUI 将选项解析为完整 `ApprovalDecision`，由 `ApprovalCoordinator` 统一消费 Decision、发布审批事件并应用 `PermissionGrant`；D 阶段再将同一数据模型接入 `InteractiveRequest`/`ApprovalDecisionOp`。
+ApprovalDecision 由 TUI 作为 `ApprovalDecisionOp` 返回 Session；Session 将其交给 `ApprovalCoordinator`，由 Coordinator 应用内存 grant 并唤醒等待中的 Tool。Approval 请求、决定和结果使用同一 typed Contract，但未决请求不进入 canonical history。
 
 #### Claude Code 对齐的 Approval 文案
 
@@ -1296,84 +1445,47 @@ Esc to reject · Tab to add feedback
 
 ### 15.5 SessionPermissionContext 与默认规则
 
-当前 Session 只持有一个 `SessionPermissionContext`。它是进程内存中的运行时权限状态，不是数据库表，也不是 Rollout 历史的一部分。Session 创建时初始化，Session Close 时清空；Resume 一个历史 Session 时不会恢复此前的用户授权。
+当前 Session 只持有一个 `SessionPermissionContext`。它是进程内存中的运行时权限状态，不是数据库表，也不是 Rollout 历史的一部分。Session 创建时初始化，Session Close、进程退出或 Resume 一个历史 Session 时清空；Approval Request、文件内容、Diff 和用户反馈都不写入权限 Context。
 
-Amadeus 不实现 Claude Code 的 Approval 持久化，不写入：
-
-- SQLite；
-- JSONL Rollout；
-- `config.yaml`；
-- 用户级、项目级或本地权限文件。
-
-因此 Amadeus 不需要 Claude Code 的 `userSettings`、`projectSettings`、`localSettings`、`policySettings` 等权限来源，也不需要权限来源合并或 settings 更新器。
-
-Context 只保存“用户选择允许当前 Session 后”的 grant，不保存完整 `ApprovalRequest`、文件内容、Diff 或用户输入：
+Amadeus 不实现 Claude Code 的 `userSettings`、`projectSettings`、`localSettings` 或其他权限持久化来源，也不建立 Approval Persistence Store。`SessionPermissionContext` 只保存当前 Session 已获准的最小 Grant：
 
 ```go
 type SessionPermissionContext struct {
-    Mode              PermissionMode
-    FileEditDirectories []string
-    CommandGrants     map[CommandApprovalKey]struct{}
-    ExternalGrants    map[string]struct{}
+    Mode             PermissionMode
+    ReadDirectories  []string
+    EditDirectories  []string
+    CommandGrants    map[CommandApprovalKey]struct{}
+    ExternalGrants   map[string]struct{}
 }
 ```
 
-第一阶段只保存 Session grant，不保存用户产生的 deny/ask 规则：
+Grant 的应用规则固定为：
 
-- `allow once`：只允许当前 Tool 调用，不写入 Context。
-- `allow for this session`：写入 Context，供后续匹配。
+- `allow once`：只允许当前 PreparedToolUse，不写入 Context。
+- `allow for this session`：只写入与 Tool 能力匹配的最小 Grant。
 - `deny`：默认只拒绝当前调用，不写入 Context。
-- 默认 `ask`：由 Tool 的权限检查结果触发，不需要存储。
-- 确定性危险检查：由 `CommandGuard` 等安全检查直接 deny，不依赖用户 grant。
+- 确定性危险检查：由 `FileSystemPolicy`、`CommandGuard` 等直接 deny，不可被用户 grant 绕过。
+- Read grant 不能允许 edit；edit grant 不能允许 command；external host/tool grant 不能扩大到其他 Host 或 Tool。
 
-Context 内部仍保留不同工具的匹配粒度，但共用同一个 Session 生命周期：
+匹配粒度由 PermissionService 决定，但生命周期统一由 Session 持有：
 
-- 文件 `edit/write`：保存 canonical directory；目录内后续编辑复用授权。
-- `execute_command`：保存 canonical CWD + 完整规范化 command；只匹配同一工作目录下的同一命令。
-- `web_fetch` / MCP：保存工具定义的外部资源 key，例如 `web:example.com`、`mcp:filesystem/write_file`。
+- `read/glob/grep/view_image`：canonical read directory。
+- `edit/write`：canonical edit directory。
+- `execute_command`：canonical CWD + 完整规范化 command 或明确安全 prefix。
+- `web_fetch` / MCP：精确 hostname、resource 或 tool key。
 
-因此不再存在 `FileApprovalStore`、`SessionApprovalStore`、`SessionRuleStore` 或 `SessionPermissionStore`。当前正式类型是 `SessionPermissionContext`，由 `ApprovalCoordinator` 应用运行时 grant，Tool 不直接更新 Context。
-
-`FileSystemPolicy` 仍然只负责静态的 workspace/read-only/denied roots 和符号链接安全检查；它不保存 Session 授权。Approval 通过后，仍必须重新执行这些客观检查、stale check 和必要的命令危险检查。
-
-C-R 阶段只增加一个薄的 `SessionPermissionContext` 与 `ApprovalCoordinator` Facade，不恢复大而全的 Permission Engine，也不增加任何 Approval 持久化层。
-
-历史设计草案中的 Permission State 仅作为语义参考，不是当前必须存在的 Go 类型：
-
-```go
-type PermissionMode string
-
-const (
-    PermissionModeDefault     PermissionMode = "default"
-    PermissionModeAcceptEdits PermissionMode = "accept_edits"
-    PermissionModePlan        PermissionMode = "plan"
-)
-
-type PermissionGrant interface {
-    applies(toolName string, input any) bool
-}
-
-type SessionPermissionContext struct {
-    Mode                PermissionMode
-    FileEditDirectories []string
-    CommandGrants       map[CommandApprovalKey]struct{}
-    ExternalGrants      map[string]struct{}
-}
-```
-
-`FileEditDirectories`、`CommandGrants` 和 `ExternalGrants` 是运行时实现细节；不提供配置规则 DSL，也不引入持久化 destination。
+`FileSystemPolicy` 仍只负责 workspace/read-only/denied roots、canonicalization 和符号链接安全检查。Approval 通过后，`Execute` 前必须重新执行这些客观检查、stale check 和必要的命令危险检查。
 
 #### Claude Code 对齐的文件 Session Approval
 
-`edit` 与 `write` 共用同一文件修改权限语义；其他结构化文件编辑 Tool 复用该语义：
+`edit` 与 `write` 的 Approval 文案可以相同，但其 Grant 必须按能力区分：
 
 - 默认模式下，结构化文件修改返回 Ask。
-- 用户对文件选择 `Yes, allow all edits during this session` 或 `Yes, allow all edits in <directory>/ during this session` 时，将目标 canonical directory 写入当前 Session 的 `SessionPermissionContext`。
-- 后续位于已授权目录内的 `edit/write` 自动允许，但仍执行路径 canonicalization、Denied/ReadOnly roots、符号链接和 stale check。
-- 当前不实现 Claude Code 的用户级/项目级权限持久化，也不实现用户产生的通用 Deny/Ask Rule；这些不是当前 Amadeus 的运行时 API。
-- 对 `$AMADEUS_HOME`、版本控制元数据和 Shell 启动文件等受保护位置，可以只提供窄范围 Session Rule，而不是扩大整个工作目录。
-
-因此文件 Tool 的 Session Allow 不是“同一文件规则”，也不是分别为 `edit` 与 `write` 缓存授权；它是共享的 canonical directory 规则。
+- `Yes, allow all edits during this session` 写入当前工作目录的 `edit directory` Grant。
+- `Yes, allow all edits in <directory>/ during this session` 写入指定 canonical directory 的 `edit directory` Grant。
+- 后续位于已授权目录内的 `edit/write` 可以自动 Allow，但仍执行路径 canonicalization、Denied/ReadOnly roots、符号链接和 stale check。
+- 对工作目录外的 `read`，使用独立的 `read directory` Grant；该 Grant 不能让文件修改静默通过。
+- 对 `$AMADEUS_HOME`、版本控制元数据和 Shell 启动文件等受保护位置，只提供窄范围 Grant，不扩大整个工作目录。
 
 默认规则：
 
@@ -1395,7 +1507,7 @@ type SessionPermissionContext struct {
 | Web Fetch 已授权域名 | Allow |
 | Web Fetch 未授权域名 | Ask |
 
-Plan Mode 由当前 Agent 的可见 Tool 投影禁止实施副作用；它不修改上述三个 Store，也不自动批准任意 `execute_command`。
+Plan Mode 由当前 Agent 的可见 Tool 投影禁止实施副作用；它不修改 Session grant，也不自动批准任意 `execute_command`。
 
 ### 15.6 Apply 与 Verify
 
@@ -1406,7 +1518,7 @@ Plan Mode 由当前 Agent 的可见 Tool 投影禁止实施副作用；它不修
 - 写入尽量采用同目录临时文件和原子替换。
 - 不允许静默 partial success；若发生部分修改，ToolResult 必须明确列出。
 
-每个 `edit/write` ToolResult 自己返回准确 StructuredDiff。`execute_command` 只返回命令、输出和退出状态，不提供文件修改归因。
+`edit/write` 返回 Typed `FileChangeResult`；`ToolDisplayResult` 再生成模型和 TUI 所需的安全摘要。`execute_command` 只返回命令、输出和退出状态，不提供文件修改归因。
 
 ## 16. Command Execution 与 Approval
 
@@ -1462,11 +1574,31 @@ execute_command
 
 安全边界由默认 Ask、Session Rule、灾难性命令硬拒绝、进程取消、超时、输出限制和显式用户 Approval 共同提供。Amadeus 不宣称提供 OS Sandbox 隔离。
 
+### 16.4 `write_stdin` 与 ProcessManager
+
+`write_stdin` 不是新的 Shell 执行，也不是独立的权限请求；它是对已有 `execute_command` 进程的输入、轮询或关闭操作：
+
+```text
+write_stdin(process_id, input, poll/close options)
+→ ProcessManager.Lookup
+→ Reuse OriginCallID and approval state
+→ Serialize per process_id
+→ Write / Poll / Close
+→ Typed ProcessResult
+```
+
+- `PreparedToolUse` 必须包含 `process_id`、`OriginCallID`、操作类型和输出预算，不重新解析或批准原始命令。
+- 找不到进程、进程已退出、输入已关闭或操作非法时返回稳定的 typed error，不创建新的 Approval Request。
+- 不重复执行原 `execute_command` 的 PreToolUse/Permission 流程；Post Tool lifecycle 仍归属于原始 CommandExecutionItem，`write_stdin` 只产生续接事实。
+- ProcessManager 对同一 `process_id` 的写入、轮询和关闭串行化；不同进程可以并行，因此 `write_stdin.SupportsParallelToolCalls()` 可以为 `true`。
+- 结果包含 process/session ID、增量输出、exit code、running/completed 状态和 truncation；不得只返回无归属的字符串输出。
+
 ## 17. Tool 并发
 
 - 并发能力由 `SupportsParallelToolCalls` 声明，不使用额外的资源级锁模型或旧的 `IsConcurrencySafe(input)` 抽象。
 - `read/glob/grep/view_image/web_search/web_fetch` 可以按 9.2 定义的 task group 有界并行。
-- `edit/write/execute_command/write_stdin/update_plan/MCP Call` 串行。
+- `write_stdin` 在 Registry 层可并行，ProcessManager 按 `process_id` 保证同一进程串行；不同进程的续接操作可以并行。
+- `edit/write/execute_command/update_plan/MCP Call` 串行。
 - 并行结果必须恢复为原 Tool Call 顺序后再写入 Rollout 和回灌模型。
 - 不建立资源级读写锁、路径依赖图或共享/独占 Permission Gate。
 
@@ -1629,18 +1761,26 @@ Working 是 Turn 生命周期的派生 UI 状态：
 
 ### 19.4 Approval 与 Diff
 
-ApprovalCell 是 Rich Inline TUI 的正式状态：
+Approval Dialog 是 Rich Inline TUI 的专用交互状态，不复用只显示文字的通用 selection overlay：
 
-- 上方展示操作摘要和 Diff。
-- 下方展示可选项。
-- 上下方向键移动选择。
-- Enter 确认。
-- Esc 不应隐式 Allow；按产品规则取消或返回 Deny。
-- Tab 可以为 Yes/No 添加反馈。
-- 选项文本完全来自 ApprovalPresentation，不由 TUI 改写或泛化。
+```text
+Approval Dialog
+├── Title / Question / Path or Command
+├── Details
+├── scrollable structured Diff viewport（文件 Tool）
+├── selectable Options
+└── feedback / keyboard hints
+```
+
+- 上方展示操作摘要、目标和 Claude Code 风格 Question。
+- 文件修改展示结构化 Diff、增删统计和必要的截断提示；Diff viewport 有界且可滚动。
+- 下方展示由 ApprovalPresentation 提供的完整选项。
+- 上下方向键移动选择，Enter 确认，Esc 不隐式 Allow，Tab 添加反馈。
+- 选项文本、范围和 Grant 类型完全来自 ApprovalPresentation，不由 TUI 改写或泛化。
+- TUI 只返回 `ApprovalDecisionOp`，不直接更新 SessionPermissionContext。
 - 等待 Approval 时 ActiveTurn 与 RunningTask 保持活动，Working 状态不能错误消失。
 
-Approval 与模型主动询问用户通过 `InteractiveRequest` 进入 TUI，不作为普通 `SessionEvent`。TUI 将选择结果转换为 `ApprovalDecisionOp` 或 `UserInputResponseOp` 返回 Session；Tool 的 Completed Item 记录最终 completed/declined/failed 状态。
+Approval 与模型主动询问用户通过 `InteractiveRequest` 进入 TUI，不作为普通 `SessionEvent`。TUI 将选择结果返回 Session；Session 由 ApprovalCoordinator 应用内存 grant，Tool 的 Completed Item 记录最终 completed/declined/failed/stale 状态。
 
 ## 20. Session、Resume 与中断
 
@@ -1657,7 +1797,7 @@ Approval 与模型主动询问用户通过 `InteractiveRequest` 进入 TUI，不
 - `amadeus --resume <id>` 从终端直接恢复。
 - ThreadManager 先读取 StoredThread 定位 Rollout，再通过 ThreadStore.LoadHistory 构造 `InitialHistory::Resumed`。
 - Session spawn 使用 InitialHistory 恢复 canonical Rollout、Replacement History 和最近的 Session Plan 投影。
-- SessionPermissionState 在 Resume 时重置为 `default`、空 Additional Working Directories 和空 Session Rules，并生成新的 Permission Context Update 覆盖历史权限描述。
+- SessionPermissionContext 在 Resume 时重置为 `default`、空 Read/Edit Directories 和空 Command/External Grants，并生成新的临时 Permission Context Update。
 - 不恢复旧 goroutine、文件句柄或进行中的进程。
 
 ### 20.3 中断后继续
@@ -1694,7 +1834,7 @@ $AMADEUS_HOME/
 - 恢复时逐行解析；只有最后一条不完整记录可以被安全忽略或截断，完整但缺少末尾换行的最后一条记录会被补齐后再追加，其他解析错误必须显式报告。
 - append batch 必须先完整编码再写入；部分写失败时回滚到 batch 起始 offset，flush 使用文件同步保证 durable 顺序。
 - ToolCall/ToolResult 使用稳定 CallID 配对。
-- Compaction、Plan Update、Approval、TurnContext 和 Turn 终态均进入 Rollout。
+- Compaction、Plan Update、Approval 结果、TurnContext 和 Turn 终态均进入 Rollout；未决 Approval Request 与 ApprovalDecision 不作为独立 canonical history。
 - Runtime 临时状态、goroutine、进程句柄和 Pending Future 不持久化。
 - `session_meta` 保存重建索引所需的 CWD、标题、模型、Git metadata、归档初态和创建时间；后续标题/归档变化使用 `context_update`。
 
@@ -1936,6 +2076,7 @@ in_progress
 completed
 failed
 declined
+stale
 ```
 
 ### 25.5 Item 生命周期与 Delta
@@ -1964,7 +2105,15 @@ ApprovalRequest
 UserInputRequest
 ```
 
-每个 Request 带稳定 RequestID、ThreadID、TurnID 和完整 Presentation。TUI 只渲染 Presentation，不重新解释权限语义；回答通过 `ApprovalDecisionOp` 或 `UserInputResponseOp` 返回。
+每个 Request 带稳定 RequestID、ThreadID、TurnID 和完整 typed Presentation。Approval Request 至少包含 Tool 名、操作类型、Title、Subtitle、Question、目标路径/命令/CWD、Details、`*FileChangePreview` 和 typed Options；Diff 不得在协议桥接时转换为 `string` 或 `any` 的扁平文本。TUI 只渲染 Presentation，不重新解释权限语义；回答通过 `ApprovalDecisionOp` 或 `UserInputResponseOp` 返回。
+
+```go
+type InteractiveApprovalRequest struct {
+    RequestID    RequestID
+    Approval     ApprovalRequest
+    Presentation ApprovalPresentation
+}
+```
 
 未决 Request 不作为 canonical history。最终 completed/declined/failed 结果进入对应 Tool/File/Command Completed Item；安全审计可以单独记录，但不与 TUI Event 混为一体。
 
@@ -2051,6 +2200,7 @@ Runtime 正确性不能依赖 TUI 消费速度：
 
 ### 27.4 Tool 与 Approval
 
+- `read/glob/grep` 的输出上限、稳定排序、截断标记和截断原因可预测。
 - 未完整 Read 的已有文件 Edit/Write 被拒绝或要求读取。
 - 文件外部变化触发 stale_file。
 - Diff Preview 在落盘前产生。
@@ -2061,7 +2211,10 @@ Runtime 正确性不能依赖 TUI 消费速度：
 - `write` 覆盖已有文件前展示完整覆盖 Diff。
 - Session Command Rule 只匹配相同 canonical CWD 和最小规范化后的完整命令。
 - `execute_command` 不伪造结构化文件 Diff 或修改归因。
+- `write_stdin` 复用原命令 Approval 和 OriginCallID，不重复 Permission/PreToolUse；同一进程串行、不同进程可并行。
+- `update_plan` 最多一个 `in_progress`，通过 `PlanUpdated` 展示完整状态，ToolResult 只返回简短确认。
 - Approval Presentation 快照覆盖工作目录内/外 Edit、Create、Overwrite、External Read、Command、Skill、Web Fetch 和 MCP。
+- 默认 Tool Catalog、Prompt Snapshot、Registry、Event 和 Rollout 中均不存在 `apply_patch` 或 sandbox Tool。
 
 ### 27.5 TUI
 
