@@ -352,12 +352,12 @@ func (runner *agentController) turnInterface(invocation agentInvocation) (protoc
 		detectTerminal = isTerminalInput
 	}
 	capabilities := tui.DetectTerminalCapabilitiesWithOptions(invocation.Input, invocation.Output, tui.TerminalCapabilityOptions{
-		IsTerminal: func(input io.Reader) bool { return detectTerminal(input) }, ForcePlain: invocation.Plain,
+		IsTerminal: func(input io.Reader) bool { return detectTerminal(input) },
 	})
 	var renderer protocol.EventSink
 	var approvals policy.ApprovalPort
 	var err error
-	if capabilities.TTY && !capabilities.Plain {
+	if capabilities.TTY {
 		renderer, err = tui.NewInlineRenderer(invocation.Output, invocation.ErrorOutput)
 		if err == nil {
 			approvals, err = tui.NewInlineApprovalPrompt(tui.InlineApprovalPromptOptions{Input: invocation.Input, Output: invocation.ErrorOutput, IsTerminal: func(input io.Reader) bool { return detectTerminal(input) }})

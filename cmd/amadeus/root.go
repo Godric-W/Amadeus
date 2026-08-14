@@ -16,7 +16,6 @@ import (
 )
 
 const envAmadeusHome = "AMADEUS_HOME"
-const flagPlain = "plain"
 
 type commandRuntime struct {
 	amadeusRoot         string
@@ -53,7 +52,6 @@ func newRootCommandWithRuntime(flags *configFlags, runtime commandRuntime) *cobr
 
 func newRootCommandWithFlags(configFlags *configFlags, projectFlags *projectFlags, runtime commandRuntime) *cobra.Command {
 	sessionFlags := &sessionFlags{}
-	plain := false
 	command := &cobra.Command{
 		Use:           "amadeus [task]",
 		Short:         "Amadeus agent CLI",
@@ -70,14 +68,13 @@ func newRootCommandWithFlags(configFlags *configFlags, projectFlags *projectFlag
 				sessionFlags.resume = arguments[0]
 				arguments = arguments[1:]
 			}
-			return runRootAgent(command, arguments, configFlags, projectFlags, sessionFlags, plain, runtime)
+			return runRootAgent(command, arguments, configFlags, projectFlags, sessionFlags, runtime)
 		},
 	}
 
 	configFlags.bind(command)
 	projectFlags.bind(command)
 	sessionFlags.bind(command)
-	command.PersistentFlags().BoolVar(&plain, flagPlain, false, "use plain line-oriented terminal output")
 	command.AddCommand(newConfigCommand(configFlags, runtime))
 	command.AddCommand(newToolsCommand())
 	command.AddCommand(newSessionsCommand(projectFlags, runtime))

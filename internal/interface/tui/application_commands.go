@@ -9,28 +9,30 @@ import (
 )
 
 func (model fullscreenModel) submitCommand(command string) (tea.Model, tea.Cmd) {
-	spec, arguments, ok := ParseSlashCommand(command)
-	if !ok {
-		model.insertHistoryCell(NewErrorHistoryCell(fmt.Sprintf("Unknown command %q", strings.Fields(command)[0])))
+	invocation, err := ParseSlashInvocation(command)
+	if err != nil {
+		model.insertHistoryCell(NewErrorHistoryCell(err.Error()))
 		return model, model.flushHistory()
 	}
+	slashCommand, arguments := invocation.Command, invocation.Args
+	if model.running && !slashCommand.AvailableDuringTask() {
+		model.insertHistoryCell(NewErrorHistoryCell(fmt.Sprintf("'/%s' is disabled while a task is in progress.", slashCommand)))
+		return model, model.flushHistory()
+	}
+	spec := slashCommand
 	if err := ValidateSlashCommandArguments(spec, arguments); err != nil {
 		model.insertHistoryCell(NewErrorHistoryCell(err.Error()))
 		return model, model.flushHistory()
 	}
-	if model.running && !spec.AvailableDuringRun {
-		model.insertHistoryCell(NewErrorHistoryCell(fmt.Sprintf("'/%s' is disabled while a task is in progress.", spec.Command)))
-		return model, model.flushHistory()
-	}
-	switch spec.Command {
+	switch slashCommand {
 	case SlashStatus:
 		localStatus := model.commandStatus()
-		if model.app.options.Command == nil {
+		if model.app.options.Status == nil {
 			model.insertHistoryCell(NewNoticeHistoryCell(localStatus))
 			return model, model.flushHistory()
 		}
 		return model, func() tea.Msg {
-			output, err := model.app.options.Command(model.ctx, command)
+			output, err := model.app.options.Status(model.ctx)
 			if strings.TrimSpace(output) == "" {
 				output = localStatus
 			} else {
@@ -41,8 +43,21 @@ func (model fullscreenModel) submitCommand(command string) (tea.Model, tea.Cmd) 
 	case SlashPlan:
 		model.collaboration = CollaborationPlan
 		model.status = "plan mode"
-		model.insertHistoryCell(NewNoticeHistoryCell("Switched to Plan mode"))
-		return model, model.flushHistory()
+		if arguments == "" {
+			model.insertHistoryCell(NewNoticeHistoryCell("Switched to Plan mode"))
+			return model, model.flushHistory()
+		}
+		model.insertHistoryCell(NewUserMessageCell(arguments))
+		model.details = newTranscriptDetailStore(0, 0)
+		model.running = true
+		model.runStartedAt = time.Now()
+		model.motionStartedAt = model.runStartedAt
+		model.transcript.HadWorkActivity = false
+		model.transcript.NeedsFinalMessageSeparator = false
+		model.status = "planning"
+		model.draft = ""
+		task := TaskSubmission{Content: arguments, Mode: CollaborationPlan}
+		return model, tea.Sequence(model.flushHistory(), tea.Batch(model.runTask(task), model.workingTick()))
 	case SlashExit:
 		return model, tea.Quit
 	case SlashCopy:
@@ -122,16 +137,28 @@ func (model fullscreenModel) submitCommand(command string) (tea.Model, tea.Cmd) 
 		}}
 		model.selectionKind = "skills-menu"
 		return model, nil
-	default:
-		if model.app.options.Command == nil {
-			model.insertHistoryCell(NewErrorHistoryCell(fmt.Sprintf("Command /%s is unavailable", spec.Command)))
+	case SlashMCP:
+		if model.app.options.MCP == nil {
+			model.insertHistoryCell(NewErrorHistoryCell("MCP status is unavailable"))
 			return model, model.flushHistory()
 		}
-		model.status = "running command"
+		model.status = "loading MCP"
 		return model, func() tea.Msg {
-			output, err := model.app.options.Command(model.ctx, command)
+			output, err := model.app.options.MCP(model.ctx, strings.EqualFold(arguments, "verbose"))
 			return fullscreenCommandDoneMsg{command: command, output: output, err: err}
 		}
+	case SlashClear:
+		if model.app.options.Clear == nil {
+			model.insertHistoryCell(NewErrorHistoryCell("New chat is unavailable"))
+			return model, model.flushHistory()
+		}
+		return model, func() tea.Msg {
+			err := model.app.options.Clear(model.ctx)
+			return fullscreenCommandDoneMsg{command: command, output: "Started a new chat", err: err}
+		}
+	default:
+		model.insertHistoryCell(NewErrorHistoryCell(fmt.Sprintf("Command /%s is unavailable", slashCommand)))
+		return model, model.flushHistory()
 	}
 }
 
@@ -161,7 +188,7 @@ func (model fullscreenModel) loadSessions() tea.Cmd {
 func (model fullscreenModel) runTask(task TaskSubmission) tea.Cmd {
 	return func() tea.Msg {
 		startedAt := time.Now()
-		ctx, cancel, err := model.app.options.NewTask(model.ctx)
+		taskContext, cancel, err := model.app.options.NewTask(model.ctx)
 		if err != nil {
 			return fullscreenTaskDoneMsg{err: err, elapsed: time.Since(startedAt)}
 		}
@@ -170,7 +197,7 @@ func (model fullscreenModel) runTask(task TaskSubmission) tea.Cmd {
 			cancel()
 			model.app.clearActiveRun(cancel)
 		}()
-		taskErr := model.app.options.Task(ctx, task)
+		taskErr := model.app.options.Task(taskContext, task)
 		session := ""
 		if model.app.options.CurrentSession != nil {
 			session = model.app.options.CurrentSession()

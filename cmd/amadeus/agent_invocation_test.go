@@ -84,20 +84,6 @@ func TestRootCommandEntersInteractiveModeForTTY(t *testing.T) {
 	}
 }
 
-func TestRootCommandPropagatesPlainFlag(t *testing.T) {
-	runner := &recordingAgentCommand{}
-	runtime := testAgentCommandRuntime(t.TempDir(), runner, true)
-	command := newRootCommandWithRuntime(&configFlags{}, runtime)
-	command.SetIn(&countingCommandReader{reader: strings.NewReader("unused")})
-	command.SetArgs([]string{"--plain"})
-	if err := command.Execute(); err != nil {
-		t.Fatalf("execute plain interactive Agent entry: %v", err)
-	}
-	if len(runner.invocations) != 1 || !runner.invocations[0].Plain || runner.invocations[0].Mode != agentInvocationInteractive {
-		t.Fatalf("plain flag was not propagated: %#v", runner.invocations)
-	}
-}
-
 func TestRootCommandUsesExplicitProjectForAgent(t *testing.T) {
 	startupDirectory := t.TempDir()
 	explicitDirectory := filepath.Join(startupDirectory, "workspace")

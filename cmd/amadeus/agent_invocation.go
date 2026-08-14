@@ -34,7 +34,6 @@ type agentInvocation struct {
 	SessionMode    sessionStartMode
 	SessionID      thread.ID
 	Interactive    bool
-	Plain          bool
 	EventSink      protocol.EventSink
 	Approvals      policy.ApprovalPort
 	Input          io.Reader
@@ -58,7 +57,7 @@ type agentCommandFactory func(*cobra.Command, *configFlags, commandRuntime) (age
 
 type terminalDetector func(io.Reader) bool
 
-func runRootAgent(command *cobra.Command, arguments []string, configFlags *configFlags, projectFlags *projectFlags, sessionFlags *sessionFlags, plain bool, runtime commandRuntime) error {
+func runRootAgent(command *cobra.Command, arguments []string, configFlags *configFlags, projectFlags *projectFlags, sessionFlags *sessionFlags, runtime commandRuntime) error {
 	invocation, err := resolveAgentInvocation(command, arguments, runtime)
 	if err != nil {
 		return err
@@ -72,7 +71,6 @@ func runRootAgent(command *cobra.Command, arguments []string, configFlags *confi
 	if err != nil {
 		return err
 	}
-	invocation.Plain = plain
 	invocation.SessionMode, invocation.SessionID, err = sessionFlags.resolve(command)
 	if err != nil {
 		return err

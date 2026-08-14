@@ -33,7 +33,9 @@ type FullscreenStartup struct {
 	ContextWindow int64
 }
 
-type FullscreenCommandHandler func(context.Context, string) (string, error)
+type FullscreenTaskHandler func(context.Context, TaskSubmission) error
+type FullscreenTaskContextFactory func(context.Context) (context.Context, context.CancelFunc, error)
+
 type FullscreenSessionLister func(context.Context) ([]SessionOption, error)
 type FullscreenSessionResumer func(context.Context, string) (string, error)
 type FullscreenCurrentSession func() string
@@ -44,6 +46,9 @@ type FullscreenCompactor func(context.Context) (string, error)
 type FullscreenSkillLister func(context.Context) ([]SkillOption, error)
 type FullscreenSkillSetter func(context.Context, string, bool) error
 type FullscreenClipboardWriter func(string) error
+type FullscreenStatusReader func(context.Context) (string, error)
+type FullscreenMCPReader func(context.Context, bool) (string, error)
+type FullscreenClearer func(context.Context) error
 
 type SessionOption struct {
 	ID      string
@@ -63,9 +68,11 @@ type FullscreenOptions struct {
 	Output              io.Writer
 	Startup             FullscreenStartup
 	InitialItems        []protocol.TurnItem
-	Task                TaskHandler
-	NewTask             TaskContextFactory
-	Command             FullscreenCommandHandler
+	Task                FullscreenTaskHandler
+	NewTask             FullscreenTaskContextFactory
+	Status              FullscreenStatusReader
+	MCP                 FullscreenMCPReader
+	Clear               FullscreenClearer
 	Sessions            FullscreenSessionLister
 	Resume              FullscreenSessionResumer
 	CurrentSession      FullscreenCurrentSession
@@ -240,12 +247,20 @@ func NewFullscreenApplication(options FullscreenOptions) (*FullscreenApplication
 		return nil, errors.New("fullscreen TUI task handler is nil")
 	}
 	if options.NewTask == nil {
-		options.NewTask = defaultTaskContext
+		options.NewTask = defaultFullscreenTaskContext
 	}
 	if options.ClipboardWrite == nil {
 		options.ClipboardWrite = clipboard.WriteAll
 	}
 	return &FullscreenApplication{options: options, done: make(chan struct{})}, nil
+}
+
+func defaultFullscreenTaskContext(parent context.Context) (context.Context, context.CancelFunc, error) {
+	if parent == nil {
+		return nil, nil, errors.New("fullscreen task parent context is nil")
+	}
+	ctx, cancel := context.WithCancel(parent)
+	return ctx, cancel, nil
 }
 
 func (app *FullscreenApplication) Run(ctx context.Context) error {
@@ -713,8 +728,8 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		}
 	case "tab":
 		if selected, ok := model.slashPopup.selectedItem(); ok {
-			value := "/" + string(selected.Command)
-			if selected.SupportsInlineArgs {
+			value := "/" + selected.Name()
+			if selected.SupportsInlineArgs() {
 				value += " "
 			}
 			model.input.SetValue(value)
@@ -725,7 +740,7 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		}
 	case "enter":
 		if selected, ok := model.slashPopup.selectedItem(); ok {
-			command := "/" + string(selected.Command)
+			command := "/" + selected.Name()
 			model.input.Reset()
 			model.slashPopup.dismiss("")
 			model.updateInputLayout()
@@ -743,8 +758,8 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		model.historyPos = -1
 		if model.running {
 			if strings.HasPrefix(text, "/") {
-				spec, _, ok := ParseSlashCommand(text)
-				if !ok || !spec.AvailableDuringRun {
+				invocation, err := ParseSlashInvocation(text)
+				if err != nil || !invocation.Command.AvailableDuringTask() {
 					model.insertHistoryCell(NewNoticeHistoryCell("This command is disabled while a task is in progress."))
 					return model, model.flushHistory()
 				}
@@ -1211,9 +1226,9 @@ func (model fullscreenModel) inputBox() string {
 	if model.slashPopup.active() {
 		visible, start := model.slashPopup.visibleItems()
 		items := make([]listVisualItem, 0, len(visible))
-		for index, spec := range visible {
+		for index, command := range visible {
 			items = append(items, listVisualItem{
-				Name: "/" + string(spec.Command), Description: spec.Description,
+				Name: "/" + command.Name(), Description: command.Description(),
 				Selected: start+index == model.slashPopup.selected,
 			})
 		}

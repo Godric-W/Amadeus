@@ -11,7 +11,6 @@ type TerminalCapabilities struct {
 	TTY       bool
 	Color     bool
 	Width     int
-	Plain     bool
 	Alternate bool
 	Mouse     bool
 }
@@ -19,7 +18,6 @@ type TerminalCapabilities struct {
 type TerminalCapabilityOptions struct {
 	IsTerminal func(io.Reader) bool
 	LookupEnv  func(string) (string, bool)
-	ForcePlain bool
 }
 
 func DetectTerminalCapabilities(input io.Reader, output io.Writer) TerminalCapabilities {
@@ -39,11 +37,7 @@ func DetectTerminalCapabilitiesWithOptions(input io.Reader, output io.Writer, op
 	}
 	term, _ := lookupEnv("TERM")
 	term = strings.ToLower(strings.TrimSpace(term))
-	capabilities.Plain = !capabilities.TTY || term == "dumb" || options.ForcePlain
 	if term == "" {
-		capabilities.Color = false
-	}
-	if capabilities.Plain {
 		capabilities.Color = false
 	}
 	return capabilities

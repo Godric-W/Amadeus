@@ -13,54 +13,8 @@ import (
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
-	"github.com/Godric-W/Amadeus/internal/state"
 	"github.com/Godric-W/Amadeus/internal/thread"
 )
-
-func TestInteractiveDraftCommandsDoNotCreateSession(t *testing.T) {
-	home := t.TempDir()
-	projectDirectory := t.TempDir()
-	runtime := commandRuntime{amadeusRoot: home, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup, terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory}
-	command := newRootCommandWithRuntime(&configFlags{}, runtime)
-	var stderr bytes.Buffer
-	command.SetIn(strings.NewReader("/status\n/clear\n"))
-	command.SetOut(io.Discard)
-	command.SetErr(&stderr)
-	command.SetArgs([]string{"--plain"})
-	if err := command.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := defaultThreadStoreFactory(context.Background(), home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	threads, err := store.ListThreads(context.Background(), state.ListQuery{CWD: projectDirectory})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(threads) != 0 || !strings.Contains(stderr.String(), "session: draft") {
-		t.Fatalf("draft commands persisted a thread: threads=%#v stderr=%s", threads, stderr.String())
-	}
-}
-
-func TestContinueWithoutHistoryKeepsDraft(t *testing.T) {
-	home := t.TempDir()
-	projectDirectory := t.TempDir()
-	runtime := commandRuntime{amadeusRoot: home, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup, terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory}
-	command := newRootCommandWithRuntime(&configFlags{}, runtime)
-	var stderr bytes.Buffer
-	command.SetIn(strings.NewReader(""))
-	command.SetOut(io.Discard)
-	command.SetErr(&stderr)
-	command.SetArgs([]string{"--plain", "--continue"})
-	if err := command.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(stderr.String(), "no previous session") {
-		t.Fatalf("missing continue notice: %s", stderr.String())
-	}
-}
 
 func TestSessionsListShowsOnlyCurrentProject(t *testing.T) {
 	home := t.TempDir()
@@ -136,33 +90,5 @@ func TestSessionPersistsAcrossCommandsAndContinueReplaysHistory(t *testing.T) {
 	contents := messageContents(secondClient.streamRequests[0].Prompt.Input)
 	if !strings.Contains(contents, "first task") || !strings.Contains(contents, "second task") {
 		t.Fatalf("continued request omitted canonical history: %s", contents)
-	}
-}
-
-func TestResumeSelectorEscReturnsToDraftConversation(t *testing.T) {
-	home := t.TempDir()
-	projectDirectory := t.TempDir()
-	store, err := defaultThreadStoreFactory(context.Background(), home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Materialize(context.Background(), thread.CreateInput{ID: "thread-one", CWD: projectDirectory, Title: "one", CreatedAt: time.Now().UTC()}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	runtime := commandRuntime{amadeusRoot: home, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup, terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory}
-	command := newRootCommandWithRuntime(&configFlags{}, runtime)
-	var stderr bytes.Buffer
-	command.SetIn(strings.NewReader("\n"))
-	command.SetOut(io.Discard)
-	command.SetErr(&stderr)
-	command.SetArgs([]string{"--plain", "--resume"})
-	if err := command.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(stderr.String(), "selection cancelled") {
-		t.Fatalf("selector did not cancel: %s", stderr.String())
 	}
 }

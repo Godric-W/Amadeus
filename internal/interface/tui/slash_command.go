@@ -33,51 +33,82 @@ const (
 	SlashExit    SlashCommand = "exit"
 )
 
-type SlashCommandSpec struct {
-	Command            SlashCommand
-	Description        string
-	SupportsInlineArgs bool
-	AvailableDuringRun bool
-	Destructive        bool
+func BuiltinSlashCommands() []SlashCommand {
+	return []SlashCommand{
+		SlashResume, SlashSkills, SlashRename, SlashDelete, SlashCompact,
+		SlashPlan, SlashCopy, SlashStatus, SlashMCP, SlashClear, SlashExit,
+	}
 }
 
-var slashCommandCatalog = []SlashCommandSpec{
-	{Command: SlashResume, Description: "resume a saved chat", SupportsInlineArgs: true},
-	{Command: SlashSkills, Description: "use skills to improve how Amadeus performs specific tasks", AvailableDuringRun: true},
-	{Command: SlashRename, Description: "rename the current session", SupportsInlineArgs: true},
-	{Command: SlashDelete, Description: "permanently delete this session and exit", Destructive: true},
-	{Command: SlashCompact, Description: "summarize conversation to prevent hitting the context limit"},
-	{Command: SlashPlan, Description: "switch to Plan mode"},
-	{Command: SlashCopy, Description: "copy last response as markdown", AvailableDuringRun: true},
-	{Command: SlashStatus, Description: "show current session configuration and token usage", AvailableDuringRun: true},
-	{Command: SlashMCP, Description: "list configured MCP tools; use /mcp verbose for details", SupportsInlineArgs: true, AvailableDuringRun: true},
-	{Command: SlashClear, Description: "clear the terminal and start a new chat"},
-	{Command: SlashExit, Description: "exit Amadeus"},
+func (command SlashCommand) Name() string { return string(command) }
+
+func (command SlashCommand) Description() string {
+	switch command {
+	case SlashResume:
+		return "resume a saved chat"
+	case SlashSkills:
+		return "use skills to improve how Amadeus performs specific tasks"
+	case SlashRename:
+		return "rename the current session"
+	case SlashDelete:
+		return "permanently delete this session and exit"
+	case SlashCompact:
+		return "summarize conversation to prevent hitting the context limit"
+	case SlashPlan:
+		return "switch to Plan mode"
+	case SlashCopy:
+		return "copy last response as markdown"
+	case SlashStatus:
+		return "show current session configuration and token usage"
+	case SlashMCP:
+		return "list configured MCP tools; use /mcp verbose for details"
+	case SlashClear:
+		return "clear the terminal and start a new chat"
+	case SlashExit:
+		return "exit Amadeus"
+	default:
+		return ""
+	}
 }
 
-func SlashCommandCatalog() []SlashCommandSpec {
-	return append([]SlashCommandSpec(nil), slashCommandCatalog...)
+func (command SlashCommand) SupportsInlineArgs() bool {
+	return command == SlashResume || command == SlashRename || command == SlashMCP || command == SlashPlan
+}
+
+func (command SlashCommand) AvailableDuringTask() bool {
+	return command == SlashSkills || command == SlashCopy || command == SlashStatus || command == SlashMCP
 }
 
 func SlashCommands() []string {
-	result := make([]string, 0, len(slashCommandCatalog))
-	for _, spec := range slashCommandCatalog {
-		result = append(result, "/"+string(spec.Command))
+	commands := BuiltinSlashCommands()
+	result := make([]string, 0, len(commands))
+	for _, command := range commands {
+		result = append(result, "/"+command.Name())
 	}
 	return result
 }
 
-func FindSlashCommand(name string) (SlashCommandSpec, bool) {
-	name = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "/")
-	for _, spec := range slashCommandCatalog {
-		if string(spec.Command) == name {
-			return spec, true
-		}
-	}
-	return SlashCommandSpec{}, false
+type SlashInvocation struct {
+	Command SlashCommand
+	Args    string
 }
 
-func FilterSlashCommands(input string, running bool) []SlashCommandSpec {
+type InputResult struct {
+	Text    string
+	Command *SlashInvocation
+}
+
+func FindSlashCommand(name string) (SlashCommand, bool) {
+	name = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "/")
+	for _, command := range BuiltinSlashCommands() {
+		if command.Name() == name {
+			return command, true
+		}
+	}
+	return "", false
+}
+
+func FilterSlashCommands(input string, running bool) []SlashCommand {
 	input = strings.TrimSpace(input)
 	if !strings.HasPrefix(input, "/") || strings.Contains(strings.TrimPrefix(input, "/"), "/") {
 		return nil
@@ -86,80 +117,82 @@ func FilterSlashCommands(input string, running bool) []SlashCommandSpec {
 	if strings.ContainsAny(trimmed, " \t\r\n") {
 		return nil
 	}
-	query := ""
-	if fields := strings.Fields(trimmed); len(fields) > 0 {
-		query = strings.ToLower(fields[0])
-	}
-	exact := make([]SlashCommandSpec, 0, 1)
-	prefix := make([]SlashCommandSpec, 0, len(slashCommandCatalog))
-	for _, spec := range slashCommandCatalog {
-		if running && !spec.AvailableDuringRun {
+	query := strings.ToLower(trimmed)
+	commands := BuiltinSlashCommands()
+	result := make([]SlashCommand, 0, len(commands))
+	for _, command := range commands {
+		if running && !command.AvailableDuringTask() {
 			continue
 		}
-		name := string(spec.Command)
-		switch {
-		case query == "":
-			prefix = append(prefix, spec)
-		case name == query:
-			exact = append(exact, spec)
-		case strings.HasPrefix(name, query):
-			prefix = append(prefix, spec)
+		if query == "" || strings.HasPrefix(command.Name(), query) {
+			result = append(result, command)
 		}
 	}
-	return append(exact, prefix...)
+	return result
 }
 
 func CompleteSlashCommand(prefix string) []string {
 	matches := FilterSlashCommands(prefix, false)
 	result := make([]string, 0, len(matches))
-	for _, spec := range matches {
-		result = append(result, "/"+string(spec.Command))
+	for _, command := range matches {
+		result = append(result, "/"+command.Name())
 	}
 	return result
 }
 
-func ParseSlashCommand(value string) (SlashCommandSpec, string, bool) {
+func ParseInput(value string) (InputResult, error) {
 	value = strings.TrimSpace(value)
+	if value == "" {
+		return InputResult{}, nil
+	}
 	if !strings.HasPrefix(value, "/") {
-		return SlashCommandSpec{}, "", false
+		return InputResult{Text: value}, nil
 	}
-	fields := strings.Fields(value)
-	if len(fields) == 0 {
-		return SlashCommandSpec{}, "", false
+	invocation, err := ParseSlashInvocation(value)
+	if err != nil {
+		return InputResult{}, err
 	}
-	spec, ok := FindSlashCommand(fields[0])
-	if !ok {
-		return SlashCommandSpec{}, "", false
-	}
-	arguments := strings.TrimSpace(strings.TrimPrefix(value, fields[0]))
-	return spec, arguments, true
+	return InputResult{Command: &invocation}, nil
 }
 
-func ValidateSlashCommandArguments(spec SlashCommandSpec, arguments string) error {
-	arguments = strings.TrimSpace(arguments)
-	if arguments != "" && !spec.SupportsInlineArgs {
-		return fmt.Errorf("/%s does not accept arguments", spec.Command)
+func ParseSlashInvocation(value string) (SlashInvocation, error) {
+	value = strings.TrimSpace(value)
+	fields := strings.Fields(value)
+	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
+		return SlashInvocation{}, fmt.Errorf("invalid slash command %q", value)
 	}
-	if spec.Command == SlashMCP && arguments != "" && !strings.EqualFold(arguments, "verbose") {
-		return errorsForSlashUsage(spec, "expected /mcp or /mcp verbose")
+	command, ok := FindSlashCommand(fields[0])
+	if !ok {
+		return SlashInvocation{}, fmt.Errorf("unknown command %q", fields[0])
+	}
+	arguments := strings.TrimSpace(strings.TrimPrefix(value, fields[0]))
+	if err := ValidateSlashCommandArguments(command, arguments); err != nil {
+		return SlashInvocation{}, err
+	}
+	return SlashInvocation{Command: command, Args: arguments}, nil
+}
+
+func ValidateSlashCommandArguments(command SlashCommand, arguments string) error {
+	arguments = strings.TrimSpace(arguments)
+	if arguments != "" && !command.SupportsInlineArgs() {
+		return fmt.Errorf("/%s does not accept arguments", command)
+	}
+	if command == SlashMCP && arguments != "" && !strings.EqualFold(arguments, "verbose") {
+		return fmt.Errorf("invalid /%s arguments: expected /mcp or /mcp verbose", command)
 	}
 	return nil
 }
 
-func errorsForSlashUsage(spec SlashCommandSpec, message string) error {
-	return fmt.Errorf("invalid /%s arguments: %s", spec.Command, message)
-}
-
-func FormatSlashCatalog() string {
+func FormatSlashCommands() string {
 	var builder strings.Builder
-	for index, spec := range slashCommandCatalog {
+	for index, command := range BuiltinSlashCommands() {
 		if index > 0 {
 			builder.WriteByte('\n')
 		}
 		builder.WriteString("/")
-		builder.WriteString(string(spec.Command))
+		builder.WriteString(command.Name())
 		builder.WriteString("  ")
-		builder.WriteString(spec.Description)
+		builder.WriteString(command.Description())
 	}
 	return builder.String()
 }

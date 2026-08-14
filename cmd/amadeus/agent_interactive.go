@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -18,144 +16,28 @@ import (
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/thread"
 	"github.com/Godric-W/Amadeus/internal/tool/builtin"
-	"github.com/atotto/clipboard"
 )
 
 func (runner *agentController) runInteractive(ctx context.Context, invocation agentInvocation) error {
 	if invocation.Input == nil || invocation.Output == nil || invocation.ErrorOutput == nil {
 		return errors.New("interactive Coding Agent streams are nil")
 	}
-	reader := bufio.NewReader(invocation.Input)
 	detectTerminal := runner.runtime.terminalDetector
 	if detectTerminal == nil {
 		detectTerminal = isTerminalInput
 	}
 	capabilities := tui.DetectTerminalCapabilitiesWithOptions(invocation.Input, invocation.Output, tui.TerminalCapabilityOptions{
-		IsTerminal: func(input io.Reader) bool { return detectTerminal(input) }, ForcePlain: invocation.Plain,
+		IsTerminal: func(input io.Reader) bool { return detectTerminal(input) },
 	})
-	fullscreen := capabilities.TTY && !capabilities.Plain
-	if !(fullscreen && invocation.SessionMode == sessionStartSelect) {
-		if err := runner.prepareSession(ctx, invocation, reader); err != nil {
+	if !capabilities.TTY {
+		return errors.New("interactive Amadeus requires a terminal")
+	}
+	if invocation.SessionMode != sessionStartSelect {
+		if err := runner.prepareSession(ctx, invocation, nil); err != nil {
 			return err
 		}
 	}
-	if fullscreen {
-		return runner.runFullscreenInteractive(ctx, invocation, capabilities)
-	}
-	return runner.runPlainInteractive(ctx, invocation, reader, capabilities)
-}
-
-func (runner *agentController) runPlainInteractive(ctx context.Context, invocation agentInvocation, reader *bufio.Reader, capabilities tui.TerminalCapabilities) error {
-	interactionInput := io.Reader(reader)
-	var lastAssistantMarkdown string
-	controller, err := tui.NewTerminalInteractionController(interactionInput, invocation.Output, invocation.ErrorOutput,
-		func(commandCtx context.Context, command string) error {
-			spec, arguments, ok := tui.ParseSlashCommand(command)
-			if !ok {
-				return fmt.Errorf("unknown command %q", command)
-			}
-			switch spec.Command {
-			case tui.SlashClear:
-				if err := runner.newDraft(commandCtx); err != nil {
-					return err
-				}
-				lastAssistantMarkdown = ""
-				_, err := fmt.Fprint(invocation.ErrorOutput, "\x1b[2J\x1b[H")
-				return err
-			case tui.SlashResume:
-				return runner.selectSession(commandCtx, invocation, reader)
-			case tui.SlashStatus:
-				return runner.writeInteractiveStatus(commandCtx, invocation)
-			case tui.SlashSkills:
-				return runner.writeInteractiveSkills(commandCtx, invocation, invocation.ErrorOutput)
-			case tui.SlashMCP:
-				return runner.writeInteractiveMCP(commandCtx, invocation, invocation.ErrorOutput, strings.EqualFold(arguments, "verbose"))
-			case tui.SlashRename:
-				if arguments == "" {
-					return errors.New("/rename requires a session name in plain mode")
-				}
-				title, err := runner.renameCurrent(commandCtx, arguments)
-				if err == nil {
-					_, err = fmt.Fprintf(invocation.ErrorOutput, "Session renamed to %s\n", title)
-				}
-				return err
-			case tui.SlashDelete:
-				if _, err := fmt.Fprint(invocation.ErrorOutput, "Permanently delete this session and exit? [y/N] "); err != nil {
-					return err
-				}
-				answer, readErr := reader.ReadString('\n')
-				if readErr != nil && !errors.Is(readErr, io.EOF) {
-					return readErr
-				}
-				if !strings.EqualFold(strings.TrimSpace(answer), "y") && !strings.EqualFold(strings.TrimSpace(answer), "yes") {
-					_, err := fmt.Fprintln(invocation.ErrorOutput, "Session deletion cancelled")
-					return err
-				}
-				deleted, err := runner.deleteCurrent(commandCtx)
-				if err != nil {
-					return err
-				}
-				if deleted == "" {
-					fmt.Fprintln(invocation.ErrorOutput, "Draft session discarded")
-				} else {
-					fmt.Fprintf(invocation.ErrorOutput, "Session deleted: %s\n", deleted)
-				}
-				return tui.ErrQuit
-			case tui.SlashCompact:
-				message, err := runner.compactInteractiveSession(commandCtx, invocation)
-				if err == nil {
-					_, err = fmt.Fprintln(invocation.ErrorOutput, message)
-				}
-				return err
-			case tui.SlashCopy:
-				if strings.TrimSpace(lastAssistantMarkdown) == "" {
-					return errors.New("No agent response to copy")
-				}
-				if err := clipboard.WriteAll(lastAssistantMarkdown); err != nil {
-					return fmt.Errorf("copy last response: %w", err)
-				}
-				_, err := fmt.Fprintln(invocation.ErrorOutput, "Copied last response to clipboard")
-				return err
-			case tui.SlashExit:
-				return tui.ErrQuit
-			default:
-				return fmt.Errorf("/%s is unavailable in plain mode", spec.Command)
-			}
-		},
-		func(runCtx context.Context, submission tui.TaskSubmission) error {
-			if len(submission.Content) > maxRootTaskBytes {
-				return fmt.Errorf("interactive task exceeds %d bytes", maxRootTaskBytes)
-			}
-			runInvocation := invocation
-			runInvocation.Mode = agentInvocationOnce
-			runInvocation.Task = submission.Content
-			runInvocation.RunMode = turn.PermissionModeDefault
-			if submission.Mode == tui.CollaborationPlan {
-				runInvocation.RunMode = turn.PermissionModePlan
-			}
-			runInvocation.Input = interactionInput
-			var response bytes.Buffer
-			runInvocation.Output = io.MultiWriter(invocation.Output, &response)
-			err := runner.runOnce(runCtx, runInvocation)
-			if errorAlreadyReported(err) {
-				return nil
-			}
-			if err == nil {
-				lastAssistantMarkdown = strings.TrimSpace(response.String())
-			}
-			return err
-		},
-	)
-	if err != nil {
-		return err
-	}
-	controller.WithTaskContextFactory(runner.newTurnContext)
-	controller.WithCapabilities(capabilities)
-	if err := controller.Run(ctx); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintln(invocation.ErrorOutput, "session: closed")
-	return err
+	return runner.runFullscreenInteractive(ctx, invocation, capabilities)
 }
 
 func (runner *agentController) runFullscreenInteractive(ctx context.Context, invocation agentInvocation, capabilities tui.TerminalCapabilities) error {
@@ -201,26 +83,20 @@ func (runner *agentController) runFullscreenInteractive(ctx context.Context, inv
 			}
 			return err
 		},
-		Command: func(commandCtx context.Context, command string) (string, error) {
+		Status: func(commandCtx context.Context) (string, error) {
 			var output strings.Builder
-			spec, arguments, ok := tui.ParseSlashCommand(command)
-			if !ok {
-				return "", fmt.Errorf("unknown command %q", command)
-			}
-			switch spec.Command {
-			case tui.SlashStatus:
-				statusInvocation := invocation
-				statusInvocation.ErrorOutput = &output
-				err := runner.writeInteractiveStatus(commandCtx, statusInvocation)
-				return strings.TrimSpace(output.String()), err
-			case tui.SlashMCP:
-				err := runner.writeInteractiveMCP(commandCtx, invocation, &output, strings.EqualFold(arguments, "verbose"))
-				return strings.TrimSpace(output.String()), err
-			case tui.SlashClear:
-				return "Started a new chat", runner.newDraft(commandCtx)
-			default:
-				return "", fmt.Errorf("command /%s is not delegated through the generic handler", spec.Command)
-			}
+			statusInvocation := invocation
+			statusInvocation.ErrorOutput = &output
+			err := runner.writeInteractiveStatus(commandCtx, statusInvocation)
+			return strings.TrimSpace(output.String()), err
+		},
+		MCP: func(commandCtx context.Context, verbose bool) (string, error) {
+			var output strings.Builder
+			err := runner.writeInteractiveMCP(commandCtx, invocation, &output, verbose)
+			return strings.TrimSpace(output.String()), err
+		},
+		Clear: func(commandCtx context.Context) error {
+			return runner.newDraft(commandCtx)
 		},
 		Sessions: func(commandCtx context.Context) ([]tui.SessionOption, error) {
 			threads, err := runner.listThreads(commandCtx, invocation)

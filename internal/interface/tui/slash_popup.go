@@ -3,7 +3,7 @@ package tui
 const slashPopupMaxVisible = commandListMaxVisible
 
 type slashCommandPopup struct {
-	items     []SlashCommandSpec
+	items     []SlashCommand
 	selected  int
 	dismissed string
 }
@@ -29,14 +29,14 @@ func (popup *slashCommandPopup) move(delta int) {
 	popup.selected = (popup.selected + delta + len(popup.items)) % len(popup.items)
 }
 
-func (popup *slashCommandPopup) selectedItem() (SlashCommandSpec, bool) {
+func (popup *slashCommandPopup) selectedItem() (SlashCommand, bool) {
 	if popup.selected < 0 || popup.selected >= len(popup.items) {
-		return SlashCommandSpec{}, false
+		return "", false
 	}
 	return popup.items[popup.selected], true
 }
 
-func (popup *slashCommandPopup) visibleItems() ([]SlashCommandSpec, int) {
+func (popup *slashCommandPopup) visibleItems() ([]SlashCommand, int) {
 	if popup == nil || len(popup.items) <= slashPopupMaxVisible {
 		return popup.items, 0
 	}
