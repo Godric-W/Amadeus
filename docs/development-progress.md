@@ -2,8 +2,8 @@
 
 > 最近更新：2026-08-14
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：C-T. Claude-style Tool Domain Refactor
-> 下一任务：C-T-01 ToolUseContext 与 Prepare/Execute 主链
+> 当前阶段：F. Plan-guided ReAct
+> 下一任务：F-01 唯一 RegularTask/Reactor
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
@@ -99,7 +99,7 @@ Base Instructions
 - [x] 历史可从 Rollout 重建，不依赖内存残留。
 - [x] Provider reasoning、Tool Call 和 Tool Result 的顺序可正确回放。
 
-## 5. C. Tool + Approval — `DOING`
+## 5. C. Tool + Approval — `DONE`
 
 ### 目标
 
@@ -139,72 +139,72 @@ C-R 只完成了基础统一，作为 C-T 的起点：
 - [x] 迁移文件工具、命令工具、Web/MCP/Skill 入口，清理 Router/Legacy Tool 双事实源。
 - [x] 删除旧的 Path Guard、Legacy Registry 和旧 Permission 主链。
 
-### C-T：Claude-style Tool Domain Refactor — `DOING`
+### C-T：Claude-style Tool Domain Refactor — `DONE`
 
 #### C-T-01：Tool Runtime Contract
 
-- [ ] 将 `Tool` 目标概念统一为 `ToolDefinition`、`ToolUseContext`、`PreparedToolUse`、typed `ToolResult` 和 `ToolDisplayResult`。
-- [ ] 将调用链拆成 `Normalize`、`ValidateInput`、`Prepare`、Permission evaluation、Approval、`Execute(prepared)` 六个显式阶段。
-- [ ] 以显式 `PreparedToolUse.State` 传递快照和准备态，移除核心执行链对 `context.WithValue` 的依赖。
-- [ ] 为现有 Tool 提供短期 Adapter，迁移完成后删除旧 `Tool.Call`/`PermissionCheck.Prepared any` 主链，不长期保留双协议。
+- [x] 将 `Tool` 目标概念统一为 `ToolDefinition`、`ToolUseContext`、`PreparedToolUse`、typed `ToolResult` 和 `ToolDisplayResult`。
+- [x] 将调用链拆成 `Normalize`、`ValidateInput`、`Prepare`、Permission evaluation、Approval、`Execute(prepared)` 六个显式阶段。
+- [x] 以显式 `PreparedToolUse.State` 传递快照和准备态，移除核心执行链对 `context.WithValue` 的依赖。
+- [x] 为现有 Tool 提供短期 Adapter，迁移完成后删除旧 `Tool.Call`/`PermissionCheck.Prepared any` 主链，不长期保留双协议。
 
 #### C-T-02：Claude-style Read-only Tools
 
-- [ ] 按 Claude Code `FileReadTool` 语义重构 `read`：canonical path、offset/limit、文本/图片分流、完整读取后记录 `FileReadState`。
-- [ ] 按 Claude Code `GlobTool/GrepTool` 语义重构 `glob/grep`：read-only、并发安全、稳定排序、数量/字节/Token 上限、typed `truncated` 和截断原因。
-- [ ] 收敛 `view_image` 的路径、MIME、大小、权限和 typed media result；工作目录外读取走独立 read-directory Approval。
+- [x] 按 Claude Code `FileReadTool` 语义重构 `read`：canonical path、offset/limit、文本读取与 `view_image` 图片通道分流、完整读取后记录 `FileReadState`。
+- [x] 按 Claude Code `GlobTool/GrepTool` 语义重构 `glob/grep`：read-only、并发安全、稳定排序、数量/字节/Token 上限、typed `truncated` 和截断原因。
+- [x] 收敛 `view_image` 的路径、MIME、大小、权限和 typed media result；工作目录外读取走独立 read-directory Approval。
 
 #### C-T-03：Claude-style File Mutation Tools
 
-- [ ] 增加 `FileReadStateStore`，记录 canonical path、存在性、内容 Hash、mode 和 symlink 状态，严格执行 Read-before-write。
-- [ ] 按 Claude Code `FileEditTool` 语义重构 `edit`：唯一匹配、`replace_all`、Prepare Diff、stale check、原子写入和 typed result。
-- [ ] 按 Claude Code `FileWriteTool` 语义重构 `write`：create/update 区分、已有文件完整 Read、覆盖 Diff、重新校验和 typed result。
-- [ ] 增加 typed `FileChangePreview`、`DiffHunk`、`DiffStats` 和 `FileChangeResult`，保证 Deny/Decline 零副作用、Apply 与 Preview 一致。
+- [x] 增加 `FileReadStateStore`，记录 canonical path、存在性、内容 Hash、mode 和 symlink 状态，严格执行 Read-before-write。
+- [x] 按 Claude Code `FileEditTool` 语义重构 `edit`：唯一匹配、`replace_all`、Prepare Diff、stale check、原子写入和 typed result。
+- [x] 按 Claude Code `FileWriteTool` 语义重构 `write`：create/update 区分、已有文件完整 Read、覆盖 Diff、重新校验和 typed result。
+- [x] 增加 typed `FileChangePreview`、`DiffHunk`、`DiffStats` 和 `FileChangeResult`，保证 Deny/Decline 零副作用、Apply 与 Preview 一致。
 
 #### C-T-04：Permission、Approval 与 TUI Diff
 
-- [ ] 将权限 Grant 拆分为 read directory、edit directory、exact command、external host/tool，禁止跨能力复用授权。
-- [ ] 将结构化 Diff 原样贯通 `ApprovalRequest` → `InteractiveRequest` → TUI，禁止桥接为 `string` 或扁平 `any`。
-- [ ] 将通用 selection overlay 改为专用 Approval Dialog，提供有界、可滚动 Diff viewport 和 Claude Code 风格的清晰 Question/Options。
-- [ ] ApprovalCoordinator 只等待决定，Session 只在内存应用 grant；Session Close、进程退出或 Resume 后清空。
+- [x] 将权限 Grant 拆分为 read directory、edit directory、exact command、external host/tool，禁止跨能力复用授权。
+- [x] 将结构化 Diff 原样贯通 `ApprovalRequest` → `InteractiveRequest` → TUI，禁止桥接为 `string` 或扁平 `any`。
+- [x] 将通用 selection overlay 改为专用 Approval Dialog，提供有界、可滚动 Diff viewport 和 Claude Code 风格的清晰 Question/Options。
+- [x] ApprovalCoordinator 只等待决定，Session 只在内存应用 grant；Session Close、进程退出或 Resume 后清空。
 
 #### C-T-05：Codex-style Process Tools
 
-- [ ] 为 `execute_command` 增加 typed `ProcessResult`、ProcessManager、process/session ID、输出预算、exit code、truncation、取消和 lifecycle event。
-- [ ] 按 Codex unified exec 重构 `write_stdin`：绑定 `OriginCallID`，继承原命令 Approval，不重复 Permission/PreToolUse。
-- [ ] `write_stdin` 在 Registry 层声明可并行；ProcessManager 保证同一 `process_id` 串行、不同进程并行。
-- [ ] 保持宿主执行边界，不把 Codex Sandbox、Guardian、Remote Environment 或 Network Approval 引入主链。
+- [x] 为 `execute_command` 增加 typed `ProcessResult`、ProcessManager、process/session ID、输出预算、exit code、truncation、取消和 lifecycle event。
+- [x] 按 Codex unified exec 重构 `write_stdin`：绑定 `OriginCallID`，继承原命令 Approval，不重复 Permission/PreToolUse。
+- [x] `write_stdin` 在 Registry 层声明可并行；ProcessManager 保证同一 `process_id` 串行、不同进程并行。
+- [x] 保持宿主执行边界，不把 Codex Sandbox、Guardian、Remote Environment 或 Network Approval 引入主链。
 
 #### C-T-06：Codex-style Runtime Tools
 
-- [ ] 将 `update_plan` 输入统一为 Codex 风格 `plan` + optional `explanation`，校验至多一个 `in_progress`。
-- [ ] `update_plan` 只调用 Session `UpdatePlan` capability、发布 `PlanUpdated` 并返回简短 `Plan updated`；完整计划不塞入通用 ToolResult 文本。
-- [ ] 将 `request_user_input` 保持为独立 Interactive Request，不复用 Permission Approval 或修改权限上下文。
-- [ ] C-T 只完成 Tool 层 Contract；Plan State、Resume、Plan Mode 与 Reactor 的端到端实现继续由 F-03/F-04 完成。
+- [x] 将 `update_plan` 输入统一为 Codex 风格 `plan` + optional `explanation`，校验至多一个 `in_progress`。
+- [x] `update_plan` 只调用 Session `UpdatePlan` capability、发布 `PlanUpdated` 并返回简短 `Plan updated`；完整计划不塞入通用 ToolResult 文本。
+- [x] 将 `request_user_input` 保持为独立 Interactive Request，不复用 Permission Approval 或修改权限上下文。
+- [x] C-T 只完成 Tool 层 Contract；Plan State、Resume、Plan Mode 与 Reactor 的端到端实现继续由 F-03/F-04 完成。
 
 #### C-T-07：Result Projection 与外部 Tool
 
-- [ ] 分离 Execution Result、模型侧 ToolResult、展示侧 ToolDisplayResult 和 canonical TurnItem，禁止 TUI 从模型文本反解析结果。
-- [ ] Web/MCP/Skill 迁移到同一 ToolUse 生命周期，统一 bounded output、typed error 和最小 host/tool grant。
-- [ ] Runtime、TUI、Rollout 和 ContextManager 对同一 Tool 结果使用一致 typed semantics。
+- [x] 分离 Execution Result、模型侧 ToolResult、展示侧 ToolDisplayResult 和 canonical TurnItem，禁止 TUI 从模型文本反解析结果。
+- [x] Web/MCP/Skill 迁移到同一 ToolUse 生命周期，统一 bounded output、typed error 和最小 host/tool grant。
+- [x] Runtime、TUI、Rollout 和 ContextManager 对同一 Tool 结果使用一致 typed semantics。
 
 #### C-T-08：遗留隔离与验证
 
-- [ ] 明确 `apply_patch` 与 sandbox 仅为遗留代码：不注册、不暴露给模型、不接入 ToolExecutionService/Approval/Event/Rollout/TUI 主链。
-- [ ] 增加 Tool/Approval/TUI Contract 测试：请求文案、目标范围、Grant 作用域、拒绝、stale conflict、Diff 截断/滚动和 Resume 后权限清空。
-- [ ] 增加只读截断、`write_stdin` Approval 复用与并发、`update_plan` concise result/Event、默认 Catalog 无 `apply_patch` 的测试。
-- [ ] 完成 C-T 后重新核对 D 的 Event/TUI 结果模型和当前进度断言，删除“已完成 Diff/Approval”一类过度承诺。
+- [x] 明确 `apply_patch` 与 sandbox 仅为遗留代码：不注册、不暴露给模型、不接入 ToolExecutionService/Approval/Event/Rollout/TUI 主链。
+- [x] 增加 Tool/Approval/TUI Contract 测试：请求文案、目标范围、Grant 作用域、拒绝、stale conflict、Diff 截断/滚动和 Resume 后权限清空。
+- [x] 增加只读截断、`write_stdin` Approval 复用与并发、`update_plan` concise result/Event、默认 Catalog 无 `apply_patch` 的测试。
+- [x] 完成 C-T 后重新核对 D 的 Event/TUI 结果模型和当前进度断言，删除“已完成 Diff/Approval”一类过度承诺。
 
 ### C-T 出口
 
-- [ ] 所有内置 Tool 使用同一 ToolUse 生命周期，Tool 定义不直接访问 TUI 或更新 Session 权限。
-- [ ] 文件修改遵循 `Read → Prepare Diff → Approval → Revalidate → Atomic Apply → Verify`。
-- [ ] Approval 文案、范围和选项对齐 Claude Code；grant 仅存在于当前 Session 内存。
-- [ ] TUI 可以在写入前展示结构化、可滚动 Diff，并只返回用户决定。
-- [ ] Typed ToolResult、ToolDisplayResult、TurnItem、Rollout 和 ContextManager 对同一 Tool 结果保持一致语义。
-- [ ] `write_stdin` 正确续接原命令且不重复 Approval；`update_plan` 通过 Event 展示完整计划并只返回简短 ToolResult。
-- [ ] `apply_patch` 与 sandbox 不出现在默认 Tool Catalog、Registry、Prompt、Event、Rollout 或 TUI 主链。
-- [ ] 针对性测试和构建通过后，C 才能恢复为 `DONE`。
+- [x] 所有内置 Tool 使用同一 ToolUse 生命周期，Tool 定义不直接访问 TUI 或更新 Session 权限。
+- [x] 文件修改遵循 `Read → Prepare Diff → Approval → Revalidate → Atomic Apply → Verify`。
+- [x] Approval 文案、范围和选项对齐 Claude Code；grant 仅存在于当前 Session 内存。
+- [x] TUI 可以在写入前展示结构化、可滚动 Diff，并只返回用户决定。
+- [x] Typed ToolResult、ToolDisplayResult、TurnItem、Rollout 和 ContextManager 对同一 Tool 结果保持一致语义。
+- [x] `write_stdin` 正确续接原命令且不重复 Approval；`update_plan` 通过 Event 展示完整计划并只返回简短 ToolResult。
+- [x] `apply_patch` 与 sandbox 不出现在默认 Tool Catalog、Registry、Prompt、Event、Rollout 或 TUI 主链。
+- [x] 针对性测试、`go test ./...`、`go vet ./...` 和构建均通过，C 恢复为 `DONE`。
 ## 6. D. Event + TUI — `DONE`
 
 ### 目标
@@ -234,7 +234,7 @@ SessionIo
 - [x] Live、Replay 和 HistoryCell 使用同一套 TurnItem 语义。
 - [x] Runtime 是 Working、终态和业务事实的唯一来源。
 - [x] TUI 不直接持有 Agent 业务状态。
-- [x] Approval、Diff、Plan、Compaction、Tool 和 Turn 终态已有统一事件承载与基础投影；typed payload、Approval Dialog 和可滚动 Diff 由 C-T-04/C-T-07 收敛。
+- [x] Approval、Diff、Plan、Compaction、Tool 和 Turn 终态使用统一事件承载；typed ToolResult、专用 Approval Dialog 和可滚动结构化 Diff 已由 C-T 收敛。
 
 ## 7. E. Slash Command — `DONE`
 
@@ -316,3 +316,19 @@ Composer
 3. 新主链验收后立即删除对应旧主链，不保留长期双实现。
 4. 任务完成必须运行针对性测试和构建；环境限制导致的测试失败要单独记录。
 5. 本文只更新任务状态和出口，不复制架构设计、源码审计或长篇讨论。
+
+## 12. 源码结构清理 — `DONE`
+
+### 已完成
+
+- 审计当前目录与 `docs/design.md` 的目标 package 边界，确认顶层目录仍按 Runtime、Protocol、Tool、Policy、Interface 和 Infrastructure 分层，无需进行高风险 package 搬迁。
+- 将 Fullscreen TUI 聚合文件拆为 lifecycle/model、update/input、event projection 和 view rendering，Slash Command 与 selection 保持原有独立文件。
+- 将 Approval 核心拆为 types、request、decision 和 port，Presentation 与 Coordinator 保持独立职责。
+- 将 FileTools 拆为 read、edit、write 和共享 file-change pipeline，并移除字符串分支入口与未使用的旧 Approval reason helper。
+- 扩展 HistoryCell 架构约束测试，使其覆盖所有拆分后的 Application 主链文件。
+
+### 保留判断
+
+- `internal/agent/session/session.go` 仍然较大，但当前内容围绕唯一 Session runtime loop、active turn 和 history lifecycle，暂不为行数机械拆包。
+- `internal/app/bootstrap/agent.go` 仍承担 Composition Root 装配；后续只有在依赖组形成稳定子系统后才引入更细的 dependency bundle，避免为了缩短构造器产生隐藏 Service Locator。
+- `cmd/amadeus` 文件数量较多，但已按 command、flags、thread/session lifecycle、turn execution 和 interactive request 命名，继续维持扁平 main package，避免无收益的内部 CLI 子包。

@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,20 +63,39 @@ func (value *LazyListTool) Spec() tool.ToolSpec { return value.spec.Clone() }
 
 func (value *LazyListTool) SupportsParallelToolCalls() bool { return true }
 
-func (value *LazyListTool) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+func (value *LazyListTool) ValidateInput(_ tool.ToolUseContext, invocation tool.Invocation) error {
 	if value == nil || value.manager == nil {
-		return tool.Output{}, errors.New("lazy MCP list tool is nil")
+		return errors.New("lazy MCP list tool is nil")
 	}
 	var arguments lazyListArguments
 	if err := json.Unmarshal(invocation.Call.Payload, &arguments); err != nil {
-		return tool.Output{}, err
+		return err
 	}
-	if err := validateSampleBinding(ctx, value.manager); err != nil {
-		return tool.Output{}, err
+	if strings.TrimSpace(arguments.Server) == "" {
+		return errors.New("MCP server is empty")
 	}
-	remote, err := value.manager.ListTools(ctx, arguments.Server)
+	return nil
+}
+
+func (value *LazyListTool) Prepare(toolContext tool.ToolUseContext, invocation tool.Invocation) (tool.PreparedToolUse, error) {
+	var arguments lazyListArguments
+	if err := json.Unmarshal(invocation.Call.Payload, &arguments); err != nil {
+		return tool.PreparedToolUse{}, err
+	}
+	if err := validateSampleBinding(toolContext, value.manager); err != nil {
+		return tool.PreparedToolUse{}, err
+	}
+	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: arguments, Permission: tool.AllowPermission()}, nil
+}
+
+func (value *LazyListTool) Execute(toolContext tool.ToolUseContext, prepared tool.PreparedToolUse) (tool.ToolResult, error) {
+	arguments, ok := prepared.State.(lazyListArguments)
+	if !ok {
+		return tool.ToolResult{}, errors.New("mcp_list_tools preparation state is invalid")
+	}
+	remote, err := value.manager.ListTools(toolContext.Context, arguments.Server)
 	if err != nil {
-		return tool.Output{}, err
+		return tool.ToolResult{}, err
 	}
 	type listedTool struct {
 		Name        string          `json:"name"`
@@ -88,7 +106,7 @@ func (value *LazyListTool) Call(ctx context.Context, invocation tool.Invocation)
 	for _, candidate := range remote {
 		schema, schemaErr := sanitizeSchema(candidate.InputSchema)
 		if schemaErr != nil {
-			return tool.Output{}, fmt.Errorf("sanitize MCP tool %q schema: %w", candidate.Name, schemaErr)
+			return tool.ToolResult{}, fmt.Errorf("sanitize MCP tool %q schema: %w", candidate.Name, schemaErr)
 		}
 		listed = append(listed, listedTool{Name: candidate.Name, Description: strings.TrimSpace(candidate.Description), InputSchema: schema})
 	}
@@ -97,89 +115,92 @@ func (value *LazyListTool) Call(ctx context.Context, invocation tool.Invocation)
 		Tools  []listedTool `json:"tools"`
 	}{Server: arguments.Server, Tools: listed})
 	if err != nil {
-		return tool.Output{}, err
+		return tool.ToolResult{}, err
 	}
-	return tool.Output{Text: "Untrusted MCP tool catalog:\n" + string(encoded), Metadata: map[string]any{"server": arguments.Server, "tool_count": len(listed)}}, nil
+	return tool.ToolResult{Text: "Untrusted MCP tool catalog:\n" + string(encoded), Data: listed, Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayText, Title: arguments.Server + " tools", Summary: fmt.Sprintf("%d tools", len(listed))}, Metadata: map[string]any{"server": arguments.Server, "tool_count": len(listed)}}, nil
 }
 
 func (value *LazyCallTool) Spec() tool.ToolSpec { return value.spec.Clone() }
 
 func (value *LazyCallTool) SupportsParallelToolCalls() bool { return false }
 
-func (value *LazyCallTool) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+func (value *LazyCallTool) ValidateInput(_ tool.ToolUseContext, invocation tool.Invocation) error {
 	if value == nil || value.manager == nil {
-		return tool.Output{}, errors.New("lazy MCP call tool is nil")
+		return errors.New("lazy MCP call tool is nil")
 	}
-	check, ok := tool.PermissionCheckFromContext(ctx)
-	if !ok {
-		return tool.Output{}, errors.New("mcp_call must execute through ToolExecutionService")
+	var arguments lazyCallArguments
+	if err := json.Unmarshal(invocation.Call.Payload, &arguments); err != nil {
+		return err
 	}
-	prepared, ok := check.Prepared.(preparedMCPCall)
-	if !ok {
-		return tool.Output{}, errors.New("mcp_call permission preparation is missing")
+	if strings.TrimSpace(arguments.Server) == "" || strings.TrimSpace(arguments.Name) == "" {
+		return errors.New("MCP server and tool name are required")
 	}
-	result, err := value.manager.CallTool(ctx, prepared.Server, prepared.Name, prepared.Arguments)
+	return nil
+}
+
+func (value *LazyCallTool) Prepare(toolContext tool.ToolUseContext, invocation tool.Invocation) (tool.PreparedToolUse, error) {
+	var arguments lazyCallArguments
+	if err := json.Unmarshal(invocation.Call.Payload, &arguments); err != nil {
+		return tool.PreparedToolUse{}, err
+	}
+	if err := validateSampleBinding(toolContext, value.manager); err != nil {
+		return tool.PreparedToolUse{}, err
+	}
+	arguments.Server, arguments.Name = strings.TrimSpace(arguments.Server), strings.TrimSpace(arguments.Name)
+	if len(arguments.Arguments) == 0 {
+		arguments.Arguments = json.RawMessage(`{}`)
+	}
+	remote, err := value.manager.ListTools(toolContext.Context, arguments.Server)
 	if err != nil {
-		return tool.Output{}, err
+		return tool.PreparedToolUse{}, err
+	}
+	found := false
+	description := ""
+	for _, candidate := range remote {
+		if candidate.Name == arguments.Name {
+			found = true
+			description = candidate.Description
+			break
+		}
+	}
+	if !found {
+		return tool.PreparedToolUse{}, fmt.Errorf("MCP tool %q is not exposed by server %q", arguments.Name, arguments.Server)
+	}
+	grant := policy.ExternalGrant(policy.MCPApprovalKey(arguments.Server, arguments.Name))
+	state := preparedMCPCall{Server: arguments.Server, Name: arguments.Name, Arguments: append(json.RawMessage(nil), arguments.Arguments...)}
+	request, err := policy.NewApprovalRequestForPurpose(invocation.Call.ID, invocation.Call.Name, invocation.Call.Payload, policy.ApprovalPurposeExternal, policy.CommandRiskHigh, policy.ApprovalCause{Kind: policy.ApprovalCauseExternalTool, Code: "mcp_tool", Detail: arguments.Server + "/" + arguments.Name})
+	if err != nil {
+		return tool.PreparedToolUse{}, err
+	}
+	request.PermissionKey = grant.Key
+	request.Presentation = policy.MCPToolApprovalPresentation(arguments.Server, arguments.Name, description)
+	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: state, Permission: tool.PermissionEvaluation{Decision: tool.PermissionAsk, Request: &request, Grant: grant}}, nil
+}
+
+func (value *LazyCallTool) Execute(toolContext tool.ToolUseContext, prepared tool.PreparedToolUse) (tool.ToolResult, error) {
+	state, ok := prepared.State.(preparedMCPCall)
+	if !ok {
+		return tool.ToolResult{}, errors.New("mcp_call preparation state is invalid")
+	}
+	result, err := value.manager.CallTool(toolContext.Context, state.Server, state.Name, state.Arguments)
+	if err != nil {
+		return tool.ToolResult{}, err
 	}
 	text, partial := boundText(result.Text, value.maxBytes)
-	text = "Untrusted external MCP result from " + prepared.Server + "/" + prepared.Name + ":\n" + text
-	toolResult := tool.Output{Text: text, Partial: partial, Metadata: map[string]any{"server": prepared.Server, "tool": prepared.Name, "is_error": result.IsError}}
+	text = "Untrusted external MCP result from " + state.Server + "/" + state.Name + ":\n" + text
+	toolResult := tool.ToolResult{Text: text, Partial: partial, Data: result, Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayText, Title: state.Server + "/" + state.Name}, Metadata: map[string]any{"server": state.Server, "tool": state.Name, "is_error": result.IsError}}
 	if result.IsError {
 		return toolResult, errors.New("MCP server returned tool error")
 	}
 	return toolResult, nil
 }
 
-func (value *LazyCallTool) CheckPermissions(ctx context.Context, invocation tool.Invocation) (tool.PermissionCheck, error) {
-	var arguments lazyCallArguments
-	if err := json.Unmarshal(invocation.Call.Payload, &arguments); err != nil {
-		return tool.PermissionCheck{}, err
-	}
-	if err := validateSampleBinding(ctx, value.manager); err != nil {
-		return tool.PermissionCheck{}, err
-	}
-	arguments.Server = strings.TrimSpace(arguments.Server)
-	arguments.Name = strings.TrimSpace(arguments.Name)
-	if arguments.Name == "" {
-		return tool.PermissionCheck{}, errors.New("MCP tool name is empty")
-	}
-	if len(arguments.Arguments) == 0 {
-		arguments.Arguments = json.RawMessage(`{}`)
-	}
-	remote, err := value.manager.ListTools(ctx, arguments.Server)
-	if err != nil {
-		return tool.PermissionCheck{}, err
-	}
-	found := false
-	for _, candidate := range remote {
-		if candidate.Name == arguments.Name {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return tool.PermissionCheck{}, fmt.Errorf("MCP tool %q is not exposed by server %q", arguments.Name, arguments.Server)
-	}
-	grant := policy.ExternalGrant(policy.MCPApprovalKey(arguments.Server, arguments.Name))
-	prepared := preparedMCPCall{Server: arguments.Server, Name: arguments.Name, Arguments: append(json.RawMessage(nil), arguments.Arguments...)}
-	request, err := policy.NewApprovalRequestForPurpose(invocation.Call.ID, invocation.Call.Name, invocation.Call.Payload, policy.ApprovalPurposeExternal, policy.CommandRiskHigh, "external MCP tool call requires approval")
-	if err != nil {
-		return tool.PermissionCheck{}, err
-	}
-	label := arguments.Server + "/" + arguments.Name
-	request.PermissionKey = grant.Key
-	request.Presentation = policy.ExternalApprovalPresentation("Tool use", "Do you want to proceed?", "Yes, and don't ask again for "+label, label)
-	return tool.PermissionCheck{Decision: tool.PermissionAsk, Request: &request, Grant: grant, Prepared: prepared}, nil
-}
-
-func validateSampleBinding(ctx context.Context, manager *Manager) error {
-	snapshot, ok := tool.RequestSnapshotFromContext(ctx)
-	if !ok {
+func validateSampleBinding(toolContext tool.ToolUseContext, manager *Manager) error {
+	if toolContext.Snapshot.MCPBindingRevision == "" {
 		return nil
 	}
-	return manager.ValidateBindingRevision(snapshot.MCPBindingRevision)
+	return manager.ValidateBindingRevision(toolContext.Snapshot.MCPBindingRevision)
 }
 
-var _ tool.Tool = (*LazyListTool)(nil)
-var _ tool.Tool = (*LazyCallTool)(nil)
+var _ tool.ToolDefinition = (*LazyListTool)(nil)
+var _ tool.ToolDefinition = (*LazyCallTool)(nil)

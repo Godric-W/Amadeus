@@ -14,8 +14,8 @@ func TestReplayToolResultsUsesAssistantCallOrder(t *testing.T) {
 		llm.ToolCall{ID: "call_2", Name: "read", Arguments: json.RawMessage(`{"path":"b"}`)},
 	)
 	outcomes := []ToolOutcome{
-		replayExecution("call_2", "read", tool.Output{Text: "B"}, ""),
-		replayExecution("call_1", "read", tool.Output{Text: "A"}, ""),
+		replayExecution("call_2", "read", tool.ToolResult{Text: "B"}, ""),
+		replayExecution("call_1", "read", tool.ToolResult{Text: "A"}, ""),
 	}
 
 	messages, err := ReplayToolResults(assistant, outcomes)
@@ -36,7 +36,7 @@ func TestReplayToolResultsUsesAssistantCallOrder(t *testing.T) {
 
 func TestReplayToolResultsIncludesFailureAndPartialOutput(t *testing.T) {
 	assistant := llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call_1", Name: "execute_command", Arguments: json.RawMessage(`{"command":"test"}`)})
-	execution := replayExecution("call_1", "execute_command", tool.Output{Text: "partial", Partial: true}, "exit status 1")
+	execution := replayExecution("call_1", "execute_command", tool.ToolResult{Text: "partial", Partial: true}, "exit status 1")
 
 	messages, err := ReplayToolResults(assistant, []ToolOutcome{execution})
 	if err != nil {
@@ -59,8 +59,8 @@ func TestReplayToolResultsRejectsIncompleteMappings(t *testing.T) {
 		match    string
 	}{
 		{name: "missing", match: "missing result"},
-		{name: "duplicate", outcomes: []ToolOutcome{replayExecution("call_1", "read", tool.Output{}, ""), replayExecution("call_1", "read", tool.Output{}, "")}, match: "duplicate"},
-		{name: "unknown", outcomes: []ToolOutcome{replayExecution("call_1", "read", tool.Output{}, ""), replayExecution("call_2", "read", tool.Output{}, "")}, match: "unknown call"},
+		{name: "duplicate", outcomes: []ToolOutcome{replayExecution("call_1", "read", tool.ToolResult{}, ""), replayExecution("call_1", "read", tool.ToolResult{}, "")}, match: "duplicate"},
+		{name: "unknown", outcomes: []ToolOutcome{replayExecution("call_1", "read", tool.ToolResult{}, ""), replayExecution("call_2", "read", tool.ToolResult{}, "")}, match: "unknown call"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -72,7 +72,7 @@ func TestReplayToolResultsRejectsIncompleteMappings(t *testing.T) {
 	}
 }
 
-func replayExecution(callID, toolName string, result tool.Output, outcomeError string) ToolOutcome {
+func replayExecution(callID, toolName string, result tool.ToolResult, outcomeError string) ToolOutcome {
 	result.CallID = callID
 	result.ToolName = toolName
 	outcome := ToolOutcome{CallID: callID, ToolName: toolName, Status: ToolOutcomeSucceeded, Result: result}

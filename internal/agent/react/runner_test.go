@@ -450,7 +450,7 @@ func toolIteration(calls ...tool.ToolCall) IterationResult {
 }
 
 func successfulExecution(call tool.ToolCall, text string) ToolOutcome {
-	result := tool.Output{CallID: call.ID, ToolName: call.Name, Text: text}
+	result := tool.ToolResult{CallID: call.ID, ToolName: call.Name, Text: text}
 	return ToolOutcome{CallID: call.ID, ToolName: call.Name, Status: ToolOutcomeSucceeded,
 		Result: result,
 	}

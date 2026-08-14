@@ -66,25 +66,27 @@ func applyPatchSpec() tool.ToolSpec {
 
 func (applyPatch *ApplyPatch) SupportsParallelToolCalls() bool { return false }
 
-func (applyPatch *ApplyPatch) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+// Apply executes the retired apply_patch implementation directly. It is not a
+// ToolDefinition and cannot enter the model-visible registry.
+func (applyPatch *ApplyPatch) Apply(ctx context.Context, invocation tool.Invocation) (tool.ToolResult, error) {
 	call := invocation.Call
 	if err := ctx.Err(); err != nil {
-		return tool.Output{}, err
+		return tool.ToolResult{}, err
 	}
 	var arguments applyPatchArguments
 	if err := decodeArguments(call.Payload, &arguments); err != nil {
-		return tool.Output{}, err
+		return tool.ToolResult{}, err
 	}
 	if strings.TrimSpace(arguments.Patch) == "" {
-		return tool.Output{}, errors.New("apply_patch patch is empty")
+		return tool.ToolResult{}, errors.New("apply_patch patch is empty")
 	}
 	document, err := patchtool.Parse([]byte(arguments.Patch), applyPatch.parseOptions)
 	if err != nil {
-		return tool.Output{}, err
+		return tool.ToolResult{}, err
 	}
 	preparedPatch, err := applyPatch.executor.PreparePatch(ctx, document)
 	if err != nil {
-		return tool.Output{}, err
+		return tool.ToolResult{}, err
 	}
 	applied, applyErr := applyPatch.executor.ApplyPrepared(ctx, preparedPatch)
 	result := patchToolResult(document, applied, applyErr)
@@ -100,7 +102,7 @@ func (applyPatch *ApplyPatch) Call(ctx context.Context, invocation tool.Invocati
 	return result, applyErr
 }
 
-func patchToolResult(document patchtool.Document, applied patchtool.ApplyResult, applyErr error) tool.Output {
+func patchToolResult(document patchtool.Document, applied patchtool.ApplyResult, applyErr error) tool.ToolResult {
 	operations := make([]map[string]any, len(applied.Applied))
 	for index, operation := range applied.Applied {
 		operations[index] = map[string]any{
@@ -112,7 +114,7 @@ func patchToolResult(document patchtool.Document, applied patchtool.ApplyResult,
 	if applyErr != nil {
 		text = fmt.Sprintf("applied %d of %d patch operation(s) before failure", len(applied.Applied), len(document.Operations))
 	}
-	return tool.Output{
+	return tool.ToolResult{
 		ToolName: "apply_patch", Text: text, Partial: applied.Partial,
 		Metadata: map[string]any{
 			"operations": operations, "operation_count": len(applied.Applied),
@@ -120,5 +122,3 @@ func patchToolResult(document patchtool.Document, applied patchtool.ApplyResult,
 		},
 	}
 }
-
-var _ tool.Tool = (*ApplyPatch)(nil)

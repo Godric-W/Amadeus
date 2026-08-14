@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/filechange"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
@@ -125,13 +126,15 @@ func (kind InteractiveRequestKind) Valid() bool {
 type ApprovalPresentation struct {
 	Title       string
 	Description string
+	Details     []string
 	Options     []ApprovalOption
-	Diff        string
+	Diff        *filechange.Preview
 }
 
 type ApprovalOption struct {
-	ID    string
-	Label string
+	ID          string
+	Label       string
+	Description string
 }
 
 type ApprovalRequest struct {

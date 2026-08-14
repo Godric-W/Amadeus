@@ -21,20 +21,23 @@ type LifecycleObserver interface {
 type NormalizedCallRecorder func(context.Context, []ToolCall) error
 
 type ToolExecutionServiceOptions struct {
-	Observer    LifecycleObserver
-	MaxParallel int
-	Visibility  map[string]bool
-	Approvals   *policy.ApprovalCoordinator
+	Observer      LifecycleObserver
+	MaxParallel   int
+	Visibility    map[string]bool
+	Approvals     *policy.ApprovalCoordinator
+	Permissions   *policy.SessionPermissionContext
+	FileReadState *FileReadStateStore
 }
 
 type ToolExecutionService struct {
-	registry    *Registry
-	validator   *ArgumentValidator
-	observer    LifecycleObserver
-	maxParallel int
-	visibility  map[string]bool
-	now         func() time.Time
-	approvals   *policy.ApprovalCoordinator
+	registry      *Registry
+	validator     *ArgumentValidator
+	observer      LifecycleObserver
+	maxParallel   int
+	visibility    map[string]bool
+	now           func() time.Time
+	permissions   *PermissionService
+	fileReadState *FileReadStateStore
 }
 
 func NewToolExecutionService(registry *Registry, validator *ArgumentValidator, options ToolExecutionServiceOptions) (*ToolExecutionService, error) {
@@ -47,10 +50,14 @@ func NewToolExecutionService(registry *Registry, validator *ArgumentValidator, o
 	if options.MaxParallel <= 0 {
 		options.MaxParallel = 1
 	}
+	if options.FileReadState == nil {
+		options.FileReadState = NewFileReadStateStore()
+	}
 	return &ToolExecutionService{
 		registry: registry, validator: validator, observer: options.Observer,
 		maxParallel: options.MaxParallel, visibility: cloneVisibility(options.Visibility),
-		now: time.Now, approvals: options.Approvals,
+		now: time.Now, permissions: NewPermissionService(options.Permissions, options.Approvals),
+		fileReadState: options.FileReadState,
 	}, nil
 }
 
@@ -128,7 +135,7 @@ type executionCall struct {
 	index     int
 	call      ToolCall
 	spec      ToolSpec
-	tool      Tool
+	tool      ToolDefinition
 	startedAt time.Time
 	repairs   []ArgumentRepairKind
 	failure   *ToolExecution
@@ -184,13 +191,41 @@ func (service *ToolExecutionService) executeCall(ctx context.Context, routed exe
 		SessionID: metadata.SessionID, TurnID: metadata.TurnID,
 		Call: routed.call, Source: metadata.Source,
 	}
-	permissionCtx, permissionErr := service.authorize(ctx, routed.tool, invocation)
-	if permissionErr != nil {
-		execution := service.complete(routed.call, Output{}, permissionErr, routed.startedAt)
+	toolContext := ToolUseContext{
+		Context: ctx, Invocation: invocation,
+		Permissions:   service.permissions.permissions,
+		FileReadState: service.fileReadState,
+	}
+	if snapshot, ok := RequestSnapshotFromContext(ctx); ok {
+		toolContext.Snapshot = snapshot
+	}
+	if err := toolContext.Validate(); err != nil {
+		execution := service.complete(routed.call, ToolResult{}, err, routed.startedAt)
 		return service.publishCompleted(ctx, execution)
 	}
-	output, handleErr := routed.tool.Call(permissionCtx, invocation)
-	execution := service.complete(routed.call, output, handleErr, routed.startedAt)
+	if err := routed.tool.ValidateInput(toolContext, invocation); err != nil {
+		execution := service.complete(routed.call, ToolResult{}, &phaseError{kind: "validation_failed", err: err}, routed.startedAt)
+		return service.publishCompleted(ctx, execution)
+	}
+	prepared, err := routed.tool.Prepare(toolContext, invocation)
+	if err != nil {
+		execution := service.complete(routed.call, ToolResult{}, &phaseError{kind: "preparation_failed", err: err}, routed.startedAt)
+		return service.publishCompleted(ctx, execution)
+	}
+	if err := prepared.Validate(); err != nil {
+		execution := service.complete(routed.call, ToolResult{}, &phaseError{kind: "preparation_failed", err: err}, routed.startedAt)
+		return service.publishCompleted(ctx, execution)
+	}
+	if prepared.Invocation.Call.ID != invocation.Call.ID || prepared.Invocation.Call.Name != invocation.Call.Name {
+		execution := service.complete(routed.call, ToolResult{}, &phaseError{kind: "preparation_failed", err: errors.New("prepared invocation does not match routed invocation")}, routed.startedAt)
+		return service.publishCompleted(ctx, execution)
+	}
+	if err := service.permissions.Evaluate(ctx, invocation.Call.Name, prepared.Permission); err != nil {
+		execution := service.complete(routed.call, ToolResult{}, err, routed.startedAt)
+		return service.publishCompleted(ctx, execution)
+	}
+	result, handleErr := routed.tool.Execute(toolContext, prepared)
+	execution := service.complete(routed.call, result, handleErr, routed.startedAt)
 	if len(routed.repairs) > 0 {
 		if execution.Outcome.Metadata == nil {
 			execution.Outcome.Metadata = make(map[string]any)
@@ -202,64 +237,6 @@ func (service *ToolExecutionService) executeCall(ctx context.Context, routed exe
 		execution.Outcome.Metadata["argument_repairs"] = repairs
 	}
 	return service.publishCompleted(ctx, execution)
-}
-
-func (service *ToolExecutionService) authorize(ctx context.Context, candidate Tool, invocation Invocation) (context.Context, error) {
-	checker, ok := candidate.(PermissionChecker)
-	if !ok {
-		return ctx, nil
-	}
-	check, err := checker.CheckPermissions(ctx, invocation)
-	if err != nil {
-		return ctx, fmt.Errorf("check tool permissions: %w", err)
-	}
-	if err := check.Validate(); err != nil {
-		return ctx, fmt.Errorf("validate tool permissions: %w", err)
-	}
-	switch check.Decision {
-	case PermissionAllow:
-		if check.OnDecision != nil {
-			if err := check.OnDecision(ctx, policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceGrant, Reason: "matching session permission grant"}); err != nil {
-				return ctx, err
-			}
-		}
-		return WithPermissionCheck(ctx, check), nil
-	case PermissionDeny:
-		if check.OnDecision != nil {
-			if err := check.OnDecision(ctx, policy.ApprovalDecision{Outcome: policy.ApprovalDeny, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourcePolicy, Reason: check.Reason}); err != nil {
-				return ctx, err
-			}
-		}
-		return ctx, &PermissionDeniedError{ToolName: invocation.Call.Name, Reason: check.Reason}
-	case PermissionAsk:
-		if service.approvals == nil {
-			return ctx, errors.New("tool permission requires approval coordinator")
-		}
-		if service.approvals.Permissions().Match(check.Grant) {
-			decision := policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalSession, Source: policy.ApprovalSourceGrant, Reason: "matching session permission grant"}
-			if check.OnDecision != nil {
-				if err := check.OnDecision(ctx, decision); err != nil {
-					return ctx, err
-				}
-			}
-			return WithPermissionCheck(ctx, check), nil
-		}
-		decision, err := service.approvals.DecideForGrant(ctx, *check.Request, check.Grant)
-		if err != nil {
-			return ctx, err
-		}
-		if check.OnDecision != nil {
-			if err := check.OnDecision(ctx, decision); err != nil {
-				return ctx, err
-			}
-		}
-		if !decision.Allowed() {
-			return ctx, &PermissionDeniedError{ToolName: invocation.Call.Name, Reason: decision.Reason}
-		}
-		return WithPermissionCheck(ctx, check), nil
-	default:
-		return ctx, errors.New("unsupported tool permission decision")
-	}
 }
 
 func (service *ToolExecutionService) publishFailure(ctx context.Context, execution ToolExecution) (ToolExecution, error) {
@@ -339,7 +316,7 @@ func (service *ToolExecutionService) executeParallel(ctx context.Context, calls 
 	return completed, nil
 }
 
-func (service *ToolExecutionService) complete(call ToolCall, output Output, handleErr error, startedAt time.Time) ToolExecution {
+func (service *ToolExecutionService) complete(call ToolCall, output ToolResult, handleErr error, startedAt time.Time) ToolExecution {
 	output.CallID = call.ID
 	output.ToolName = call.Name
 	status := ToolCallCompleted
@@ -363,10 +340,19 @@ func (service *ToolExecutionService) complete(call ToolCall, output Output, hand
 	}
 }
 
+type phaseError struct {
+	kind string
+	err  error
+}
+
+func (err *phaseError) Error() string         { return err.err.Error() }
+func (err *phaseError) Unwrap() error         { return err.err }
+func (err *phaseError) ToolErrorKind() string { return err.kind }
+
 func (service *ToolExecutionService) failure(call ToolCall, kind string, err error, startedAt time.Time) ToolExecution {
 	status, blocking := statusForError(err)
 	return ToolExecution{
-		Call: call.Clone(), Output: Output{CallID: call.ID, ToolName: call.Name, Text: err.Error()},
+		Call: call.Clone(), Output: ToolResult{CallID: call.ID, ToolName: call.Name, Text: err.Error()},
 		Outcome: ToolCallOutcome{Status: status, Error: &ToolError{Kind: kind, Message: err.Error()}, Blocking: blocking, Duration: service.durationSince(startedAt)},
 	}
 }

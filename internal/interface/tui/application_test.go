@@ -464,7 +464,7 @@ func TestFullscreenNoColorAndWidthMatrix(t *testing.T) {
 func TestFullscreenApprovalUsesKeyboardDecision(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	response := make(chan fullscreenApprovalResult, 1)
-	request := policy.ApprovalRequest{ID: "approval", ToolName: "write_file", Risk: policy.CommandRiskHigh, Reason: "writes a file"}
+	request := policy.ApprovalRequest{ID: "approval", ToolName: "write_file", Risk: policy.CommandRiskHigh, Cause: policy.ApprovalCause{Kind: policy.ApprovalCausePolicy, Code: "writes_file"}}
 	updated, _ := model.Update(fullscreenApprovalMsg{prompt: &fullscreenApproval{request: request, response: response}})
 	model = updated.(fullscreenModel)
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})

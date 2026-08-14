@@ -36,7 +36,8 @@ func TestInlineApprovalPromptChoicesAndRedaction(t *testing.T) {
 		if decision.Outcome != test.outcome || decision.Scope != test.scope || decision.Source != policy.ApprovalSourceUser {
 			t.Fatalf("unexpected decision: %#v", decision)
 		}
-		if strings.Contains(output.String(), "secret-value") || !strings.Contains(output.String(), "[REDACTED]") || !strings.Contains(output.String(), "[y] once / [s] session / [n] deny") {
+		lowerOutput := strings.ToLower(output.String())
+		if strings.Contains(output.String(), "secret-value") || strings.Contains(lowerOutput, "unsandbox") || strings.Contains(lowerOutput, "arguments_sha256") || strings.Contains(lowerOutput, "reason:") || !strings.Contains(output.String(), "[y] once / [s] session / [n] no") {
 			t.Fatalf("unexpected inline approval transcript: %q", output.String())
 		}
 	}
@@ -62,7 +63,7 @@ func TestInlineApprovalPromptDeniesNonTTYAndRetriesInvalidInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	decision, err = prompt.Decide(context.Background(), inlineApprovalRequest(t, "writes a file"))
-	if err != nil || !decision.Allowed() || !strings.Contains(output.String(), "Invalid choice. Enter y, s, or n") {
+	if err != nil || !decision.Allowed() || !strings.Contains(output.String(), "Invalid choice. Enter 1, 2, 3, y, s, or n") {
 		t.Fatalf("unexpected retry decision: %#v output=%q err=%v", decision, output.String(), err)
 	}
 }
@@ -77,7 +78,7 @@ func TestInlineApprovalPromptPermissionChoiceUsesRunScope(t *testing.T) {
 	}
 	request, err := policy.NewApprovalRequestForPurpose(
 		"permission-1", "execute_command", json.RawMessage(`{"command":"touch /outside/file"}`),
-		policy.ApprovalPurposePermission, policy.CommandRiskHigh, "write outside the workspace",
+		policy.ApprovalPurposePermission, policy.CommandRiskHigh, policy.ApprovalCause{Kind: policy.ApprovalCauseFilesystemRead, Code: "outside_workspace"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +90,7 @@ func TestInlineApprovalPromptPermissionChoiceUsesRunScope(t *testing.T) {
 	if decision.Outcome != policy.ApprovalAllow || decision.Scope != policy.ApprovalOnce || decision.Source != policy.ApprovalSourceUser {
 		t.Fatalf("unexpected permission decision: %#v", decision)
 	}
-	if !strings.Contains(output.String(), "[y] once / [s] session / [n] deny") {
+	if !strings.Contains(output.String(), "[y] once / [s] session / [n] no") {
 		t.Fatalf("permission prompt omitted once scope: %q", output.String())
 	}
 }
@@ -97,7 +98,7 @@ func TestInlineApprovalPromptPermissionChoiceUsesRunScope(t *testing.T) {
 func TestFullscreenApprovalPermissionChoicesUseOnceThenSession(t *testing.T) {
 	request, err := policy.NewApprovalRequestForPurpose(
 		"permission-1", "execute_command", json.RawMessage(`{"command":"touch /outside/file"}`),
-		policy.ApprovalPurposePermission, policy.CommandRiskHigh, "write outside the workspace",
+		policy.ApprovalPurposePermission, policy.CommandRiskHigh, policy.ApprovalCause{Kind: policy.ApprovalCauseFilesystemRead, Code: "outside_workspace"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +107,7 @@ func TestFullscreenApprovalPermissionChoicesUseOnceThenSession(t *testing.T) {
 	if len(choices) != 3 {
 		t.Fatalf("unexpected permission choices: %#v", choices)
 	}
-	if choices[0].decision.Outcome != policy.ApprovalAllow || choices[0].decision.Scope != policy.ApprovalOnce || !strings.Contains(choices[0].label, "once") {
+	if choices[0].decision.Outcome != policy.ApprovalAllow || choices[0].decision.Scope != policy.ApprovalOnce || !strings.Contains(choices[0].description, "once") {
 		t.Fatalf("unexpected once choice: %#v", choices[0])
 	}
 	if choices[1].decision.Outcome != policy.ApprovalAllow || choices[1].decision.Scope != policy.ApprovalSession || !strings.Contains(choices[1].label, "this session") {
@@ -119,7 +120,7 @@ func TestFullscreenApprovalPermissionChoicesUseOnceThenSession(t *testing.T) {
 
 func inlineApprovalRequest(t *testing.T, reason string) policy.ApprovalRequest {
 	t.Helper()
-	request, err := policy.NewApprovalRequest("approval-1", "write_file", json.RawMessage(`{"path":"a.txt"}`), policy.CommandRiskHigh, reason)
+	request, err := policy.NewApprovalRequest("approval-1", "write_file", json.RawMessage(`{"path":"a.txt"}`), policy.CommandRiskHigh, policy.ApprovalCause{Kind: policy.ApprovalCausePolicy, Code: "test", Detail: reason})
 	if err != nil {
 		t.Fatalf("create approval request: %v", err)
 	}

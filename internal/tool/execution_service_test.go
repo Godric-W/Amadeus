@@ -14,8 +14,8 @@ import (
 type executionServiceTestTool struct {
 	name     string
 	parallel bool
-	handle   func(context.Context, Invocation) (Output, error)
-	check    func(context.Context, Invocation) (PermissionCheck, error)
+	handle   func(context.Context, Invocation) (ToolResult, error)
+	check    func(context.Context, Invocation) (PermissionEvaluation, error)
 }
 
 func (toolImpl *executionServiceTestTool) Spec() ToolSpec {
@@ -30,18 +30,25 @@ func (toolImpl *executionServiceTestTool) Spec() ToolSpec {
 
 func (toolImpl *executionServiceTestTool) SupportsParallelToolCalls() bool { return toolImpl.parallel }
 
-func (toolImpl *executionServiceTestTool) Call(ctx context.Context, invocation Invocation) (Output, error) {
-	if toolImpl.handle == nil {
-		return Output{Text: string(invocation.Call.Payload)}, nil
+func (toolImpl *executionServiceTestTool) ValidateInput(ToolUseContext, Invocation) error { return nil }
+
+func (toolImpl *executionServiceTestTool) Prepare(toolContext ToolUseContext, invocation Invocation) (PreparedToolUse, error) {
+	evaluation := AllowPermission()
+	if toolImpl.check != nil {
+		var err error
+		evaluation, err = toolImpl.check(toolContext.Context, invocation)
+		if err != nil {
+			return PreparedToolUse{}, err
+		}
 	}
-	return toolImpl.handle(ctx, invocation)
+	return PreparedToolUse{Invocation: invocation, Permission: evaluation}, nil
 }
 
-func (toolImpl *executionServiceTestTool) CheckPermissions(ctx context.Context, invocation Invocation) (PermissionCheck, error) {
-	if toolImpl.check == nil {
-		return PermissionCheck{Decision: PermissionAllow}, nil
+func (toolImpl *executionServiceTestTool) Execute(toolContext ToolUseContext, prepared PreparedToolUse) (ToolResult, error) {
+	if toolImpl.handle == nil {
+		return ToolResult{Text: string(prepared.Invocation.Call.Payload)}, nil
 	}
-	return toolImpl.check(ctx, invocation)
+	return toolImpl.handle(toolContext.Context, prepared.Invocation)
 }
 
 type executionServiceApprovalPort struct {
@@ -107,12 +114,12 @@ func (observer *recordingLifecycleObserver) ToolCallCompleted(_ context.Context,
 
 func TestToolExecutionServiceRepairsValidatesAndExecutesOnce(t *testing.T) {
 	var calls atomic.Int32
-	toolImpl := &executionServiceTestTool{name: "read_test", parallel: true, handle: func(_ context.Context, invocation Invocation) (Output, error) {
+	toolImpl := &executionServiceTestTool{name: "read_test", parallel: true, handle: func(_ context.Context, invocation Invocation) (ToolResult, error) {
 		calls.Add(1)
 		if string(invocation.Call.Payload) != `{"value":"ok"}` {
 			t.Fatalf("arguments were not normalized: %s", invocation.Call.Payload)
 		}
-		return Output{Text: "done", Metadata: map[string]any{"path": "README.md"}}, nil
+		return ToolResult{Text: "done", Metadata: map[string]any{"path": "README.md"}}, nil
 	}}
 	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{}, toolImpl)
 	execution, err := service.Execute(context.Background(), NewCall("call-1", toolImpl.name, json.RawMessage(`{"value":"ok",`)))
@@ -153,15 +160,15 @@ func TestToolExecutionServiceReturnsModelVisibleLookupAndArgumentFailures(t *tes
 }
 
 func TestToolExecutionServiceClassifiesDeniedPartialAndInterruptedCalls(t *testing.T) {
-	tools := []Tool{
-		&executionServiceTestTool{name: "denied", handle: func(context.Context, Invocation) (Output, error) {
-			return Output{}, executionServicePermissionError{message: "outside writable roots"}
+	tools := []ToolDefinition{
+		&executionServiceTestTool{name: "denied", handle: func(context.Context, Invocation) (ToolResult, error) {
+			return ToolResult{}, executionServicePermissionError{message: "outside writable roots"}
 		}},
-		&executionServiceTestTool{name: "partial", handle: func(context.Context, Invocation) (Output, error) {
-			return Output{Text: "first operation applied", Partial: true}, errors.New("second operation failed")
+		&executionServiceTestTool{name: "partial", handle: func(context.Context, Invocation) (ToolResult, error) {
+			return ToolResult{Text: "first operation applied", Partial: true}, errors.New("second operation failed")
 		}},
-		&executionServiceTestTool{name: "cancelled", handle: func(ctx context.Context, _ Invocation) (Output, error) {
-			return Output{}, ctx.Err()
+		&executionServiceTestTool{name: "cancelled", handle: func(ctx context.Context, _ Invocation) (ToolResult, error) {
+			return ToolResult{}, ctx.Err()
 		}},
 	}
 	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{}, tools...)
@@ -183,9 +190,9 @@ func TestToolExecutionServiceClassifiesDeniedPartialAndInterruptedCalls(t *testi
 
 func TestToolExecutionServiceRecordsNormalizedCallsBeforeAnySideEffect(t *testing.T) {
 	var handled atomic.Int32
-	toolImpl := &executionServiceTestTool{name: "write_test", parallel: false, handle: func(context.Context, Invocation) (Output, error) {
+	toolImpl := &executionServiceTestTool{name: "write_test", parallel: false, handle: func(context.Context, Invocation) (ToolResult, error) {
 		handled.Add(1)
-		return Output{Text: "changed"}, nil
+		return ToolResult{Text: "changed"}, nil
 	}}
 	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{}, toolImpl)
 	want := errors.New("rollout unavailable")
@@ -204,9 +211,9 @@ func TestToolExecutionServiceRecordsNormalizedCallsBeforeAnySideEffect(t *testin
 
 func TestToolExecutionServiceInvalidCallDoesNotCancelValidSibling(t *testing.T) {
 	var handled atomic.Int32
-	toolImpl := &executionServiceTestTool{name: "read_test", parallel: true, handle: func(context.Context, Invocation) (Output, error) {
+	toolImpl := &executionServiceTestTool{name: "read_test", parallel: true, handle: func(context.Context, Invocation) (ToolResult, error) {
 		handled.Add(1)
-		return Output{Text: "ok"}, nil
+		return ToolResult{Text: "ok"}, nil
 	}}
 	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{MaxParallel: 2}, toolImpl)
 	var recorded []ToolCall
@@ -231,27 +238,27 @@ func TestToolExecutionServiceInvalidCallDoesNotCancelValidSibling(t *testing.T) 
 func TestToolExecutionServiceAppliesPermissionDecisionsAndSessionGrant(t *testing.T) {
 	permissions := policy.NewSessionPermissionContext()
 	approvalPort := &executionServiceApprovalPort{decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalSession, Source: policy.ApprovalSourceUser, Reason: "trusted"}}
-	coordinator, err := policy.NewApprovalCoordinator(approvalPort, permissions)
+	coordinator, err := policy.NewApprovalCoordinator(approvalPort)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var calls atomic.Int32
 	grant := policy.ExternalGrant("test:shared")
-	ask := func(invocation Invocation) PermissionCheck {
-		request, requestErr := policy.NewApprovalRequestForPurpose(invocation.Call.ID, invocation.Call.Name, invocation.Call.Payload, policy.ApprovalPurposeExternal, policy.CommandRiskModerate, "test approval")
+	ask := func(invocation Invocation) PermissionEvaluation {
+		request, requestErr := policy.NewApprovalRequestForPurpose(invocation.Call.ID, invocation.Call.Name, invocation.Call.Payload, policy.ApprovalPurposeExternal, policy.CommandRiskModerate, policy.ApprovalCause{Kind: policy.ApprovalCausePolicy, Code: "test_approval"})
 		if requestErr != nil {
 			t.Fatal(requestErr)
 		}
 		request.PermissionKey = grant.Key
-		return PermissionCheck{Decision: PermissionAsk, Request: &request, Grant: grant}
+		return PermissionEvaluation{Decision: PermissionAsk, Request: &request, Grant: grant}
 	}
-	toolImpl := &executionServiceTestTool{name: "approved", parallel: false, check: func(_ context.Context, invocation Invocation) (PermissionCheck, error) {
+	toolImpl := &executionServiceTestTool{name: "approved", parallel: false, check: func(_ context.Context, invocation Invocation) (PermissionEvaluation, error) {
 		return ask(invocation), nil
-	}, handle: func(context.Context, Invocation) (Output, error) {
+	}, handle: func(context.Context, Invocation) (ToolResult, error) {
 		calls.Add(1)
-		return Output{Text: "ok"}, nil
+		return ToolResult{Text: "ok"}, nil
 	}}
-	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{Approvals: coordinator}, toolImpl)
+	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{Approvals: coordinator, Permissions: permissions}, toolImpl)
 	for _, id := range []string{"first", "second"} {
 		execution, executeErr := service.Execute(context.Background(), executionServiceCall(id, toolImpl.name))
 		if executeErr != nil || execution.Outcome.Status != ToolCallCompleted {
@@ -263,11 +270,11 @@ func TestToolExecutionServiceAppliesPermissionDecisionsAndSessionGrant(t *testin
 	}
 
 	deniedCalls := atomic.Int32{}
-	denied := &executionServiceTestTool{name: "denied_by_check", check: func(context.Context, Invocation) (PermissionCheck, error) {
-		return PermissionCheck{Decision: PermissionDeny, Reason: "blocked"}, nil
-	}, handle: func(context.Context, Invocation) (Output, error) {
+	denied := &executionServiceTestTool{name: "denied_by_check", check: func(context.Context, Invocation) (PermissionEvaluation, error) {
+		return PermissionEvaluation{Decision: PermissionDeny, Reason: "blocked"}, nil
+	}, handle: func(context.Context, Invocation) (ToolResult, error) {
 		deniedCalls.Add(1)
-		return Output{}, nil
+		return ToolResult{}, nil
 	}}
 	deniedService := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{}, denied)
 	execution, err := deniedService.Execute(context.Background(), executionServiceCall("denied", denied.name))
@@ -291,12 +298,12 @@ func TestToolExecutionServicePublishesLifecycleAroundNormalizedExecution(t *test
 
 func TestToolExecutionServiceRejectsInvisibleHandlerAndPopulatesInvocationMetadata(t *testing.T) {
 	var received Invocation
-	toolImpl := &executionServiceTestTool{name: "conditional", parallel: true, handle: func(_ context.Context, invocation Invocation) (Output, error) {
+	toolImpl := &executionServiceTestTool{name: "conditional", parallel: true, handle: func(_ context.Context, invocation Invocation) (ToolResult, error) {
 		received = invocation
-		return Output{Text: "ok"}, nil
+		return ToolResult{Text: "ok"}, nil
 	}}
 	registry := NewRegistry()
-	if err := registry.RegisterWithRegistration(toolImpl, Registration{Exposure: ExposureConditional, Condition: "enabled"}); err != nil {
+	if err := registry.RegisterDefinitionWithRegistration(toolImpl, Registration{Exposure: ExposureConditional, Condition: "enabled"}); err != nil {
 		t.Fatal(err)
 	}
 	hidden, err := NewToolExecutionService(registry, NewArgumentValidator(), ToolExecutionServiceOptions{})
@@ -321,11 +328,11 @@ func TestToolExecutionServiceRejectsInvisibleHandlerAndPopulatesInvocationMetada
 	}
 }
 
-func newToolExecutionServiceForTest(t *testing.T, options ToolExecutionServiceOptions, tools ...Tool) *ToolExecutionService {
+func newToolExecutionServiceForTest(t *testing.T, options ToolExecutionServiceOptions, tools ...ToolDefinition) *ToolExecutionService {
 	t.Helper()
 	registry := NewRegistry()
 	for _, candidate := range tools {
-		if err := registry.Register(candidate); err != nil {
+		if err := registry.RegisterDefinition(candidate); err != nil {
 			t.Fatal(err)
 		}
 	}

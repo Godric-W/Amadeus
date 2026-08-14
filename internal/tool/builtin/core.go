@@ -25,8 +25,8 @@ type CoreToolOptions struct {
 func DefaultCoreToolOptions() CoreToolOptions {
 	return CoreToolOptions{
 		ReadMaxBytes: 2 << 20, ReadMaxLineBytes: 32 << 10,
-		Glob: GlobOptions{MaxResults: 1_000, MaxRGOutputBytes: 4 << 20},
-		Grep: GrepOptions{MaxResults: 200, MaxFileBytes: 2 << 20, MaxContextLines: 5, MaxRGOutputBytes: 4 << 20},
+		Glob: GlobOptions{MaxResults: 1_000, MaxOutputBytes: 256 << 10, MaxOutputTokens: 64_000, MaxRGOutputBytes: 4 << 20},
+		Grep: GrepOptions{MaxResults: 200, MaxFileBytes: 2 << 20, MaxContextLines: 5, MaxOutputBytes: 256 << 10, MaxOutputTokens: 64_000, MaxRGOutputBytes: 4 << 20},
 		ExecuteCommand: ExecuteCommandOptions{
 			DefaultTimeout: 2 * time.Minute, MaxTimeout: 10 * time.Minute,
 			DefaultYield: 10 * time.Second, MaxYield: 30 * time.Second,
@@ -84,20 +84,18 @@ func RegisterCoreTools(registry *tool.Registry, root project.Root, options CoreT
 	if err != nil {
 		return err
 	}
-	candidates := []tool.Tool{
-		fileTools.ReadTool(), fileTools.EditTool(), fileTools.WriteTool(), glob, grep,
-		executeCommand, writeStdin,
+	for _, definition := range []tool.ToolDefinition{fileTools.ReadTool(), fileTools.EditTool(), fileTools.WriteTool(), glob, grep, executeCommand, writeStdin} {
+		if err := registry.RegisterDefinition(definition); err != nil {
+			return fmt.Errorf("register core tool %q: %w", definition.Spec().Name, err)
+		}
 	}
 	if options.PlanUpdater != nil {
 		updatePlan, planErr := NewUpdatePlan(options.PlanUpdater, UpdatePlanOptions{Events: options.Events})
 		if planErr != nil {
 			return planErr
 		}
-		candidates = append(candidates, updatePlan)
-	}
-	for _, candidate := range candidates {
-		if err := registry.Register(candidate); err != nil {
-			return fmt.Errorf("register core tool %q: %w", candidate.Spec().Name, err)
+		if err := registry.RegisterDefinition(updatePlan); err != nil {
+			return fmt.Errorf("register core tool %q: %w", updatePlan.Spec().Name, err)
 		}
 	}
 	return nil

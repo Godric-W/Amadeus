@@ -29,6 +29,7 @@ var ErrNotFound = errors.New("process not found")
 var ErrOwnerMismatch = errors.New("process owner mismatch")
 
 type Command struct {
+	OriginCallID   string
 	Shell          string
 	Command        string
 	Executable     string
@@ -41,6 +42,7 @@ type Command struct {
 
 type Snapshot struct {
 	ID               ID
+	OriginCallID     string
 	Owner            string
 	State            State
 	Output           string
@@ -58,19 +60,21 @@ type Manager struct {
 }
 
 type managed struct {
-	mutex      sync.Mutex
-	id         ID
-	owner      string
-	command    *exec.Cmd
-	stdin      io.WriteCloser
-	cancel     context.CancelFunc
-	output     *transcript
-	state      State
-	exitCode   int
-	startedAt  time.Time
-	finishedAt time.Time
-	err        error
-	done       chan struct{}
+	mutex        sync.Mutex
+	ioMutex      sync.Mutex
+	id           ID
+	originCallID string
+	owner        string
+	command      *exec.Cmd
+	stdin        io.WriteCloser
+	cancel       context.CancelFunc
+	output       *transcript
+	state        State
+	exitCode     int
+	startedAt    time.Time
+	finishedAt   time.Time
+	err          error
+	done         chan struct{}
 }
 
 func NewManager() *Manager {
@@ -108,7 +112,7 @@ func (manager *Manager) Start(owner string, command Command, configure func(*exe
 		return "", err
 	}
 	value := &managed{
-		id: id, owner: owner, command: cmd, stdin: stdin, cancel: cancel, output: output,
+		id: id, originCallID: command.OriginCallID, owner: owner, command: cmd, stdin: stdin, cancel: cancel, output: output,
 		state: StateRunning, exitCode: -1, startedAt: time.Now(), done: make(chan struct{}),
 	}
 	manager.mutex.Lock()
@@ -154,6 +158,8 @@ func (manager *Manager) WriteContext(ctx context.Context, id ID, owner, chars st
 	if err != nil {
 		return Snapshot{}, err
 	}
+	value.ioMutex.Lock()
+	defer value.ioMutex.Unlock()
 	value.mutex.Lock()
 	if value.state != StateRunning {
 		value.mutex.Unlock()
@@ -258,7 +264,7 @@ func (value *managed) snapshot() Snapshot {
 	defer value.mutex.Unlock()
 	output, total, truncated := value.output.snapshot()
 	result := Snapshot{
-		ID: value.id, Owner: value.owner, State: value.state, Output: output, ExitCode: value.exitCode,
+		ID: value.id, OriginCallID: value.originCallID, Owner: value.owner, State: value.state, Output: output, ExitCode: value.exitCode,
 		StartedAt: value.startedAt, FinishedAt: value.finishedAt, TotalOutputBytes: total, OutputTruncated: truncated,
 	}
 	if value.err != nil {

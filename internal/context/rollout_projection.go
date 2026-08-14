@@ -10,6 +10,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type RolloutMessageProjection struct {
@@ -18,19 +19,15 @@ type RolloutMessageProjection struct {
 }
 
 type rolloutResponseItem struct {
-	Type      string          `json:"type"`
-	Role      llm.Role        `json:"role,omitempty"`
-	Content   string          `json:"content,omitempty"`
-	Reasoning string          `json:"reasoning_content,omitempty"`
-	CallID    string          `json:"call_id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Arguments json.RawMessage `json:"arguments,omitempty"`
-	Parts     []struct {
-		Kind      string `json:"kind"`
-		Text      string `json:"text,omitempty"`
-		MediaType string `json:"media_type,omitempty"`
-		Data      string `json:"data,omitempty"`
-	} `json:"parts,omitempty"`
+	Type      string             `json:"type"`
+	Role      llm.Role           `json:"role,omitempty"`
+	Content   string             `json:"content,omitempty"`
+	Reasoning string             `json:"reasoning_content,omitempty"`
+	CallID    string             `json:"call_id,omitempty"`
+	Name      string             `json:"name,omitempty"`
+	Arguments json.RawMessage    `json:"arguments,omitempty"`
+	Result    *tool.ToolResult   `json:"result,omitempty"`
+	Parts     []tool.ContentPart `json:"parts,omitempty"`
 }
 
 type rolloutCompaction struct {
@@ -120,11 +117,17 @@ func (projection *RolloutMessageProjection) appendResponse(line rollout.Line) er
 		if strings.TrimSpace(item.CallID) == "" {
 			return nil
 		}
-		parts := make([]llm.ContentPart, 0, len(item.Parts))
-		for _, part := range item.Parts {
+		content := item.Content
+		toolParts := item.Parts
+		if item.Result != nil {
+			content = item.Result.Text
+			toolParts = item.Result.Parts
+		}
+		parts := make([]llm.ContentPart, 0, len(toolParts))
+		for _, part := range toolParts {
 			parts = append(parts, llm.ContentPart{Kind: llm.ContentKind(part.Kind), Text: part.Text, MediaType: part.MediaType, Data: part.Data})
 		}
-		projection.append(llm.ToolResultMessageWithParts(item.CallID, item.Content, parts...), line.Sequence)
+		projection.append(llm.ToolResultMessageWithParts(item.CallID, content, parts...), line.Sequence)
 	}
 	return nil
 }

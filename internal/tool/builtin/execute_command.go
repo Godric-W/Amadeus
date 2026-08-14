@@ -63,6 +63,19 @@ type ExecRequest struct {
 	command    processdomain.Command
 }
 
+type ProcessResult struct {
+	ProcessID       string              `json:"process_id"`
+	OriginCallID    string              `json:"origin_call_id"`
+	State           processdomain.State `json:"state"`
+	Output          string              `json:"output"`
+	ExitCode        int                 `json:"exit_code"`
+	StartedAt       time.Time           `json:"started_at"`
+	FinishedAt      time.Time           `json:"finished_at,omitempty"`
+	DurationMS      int64               `json:"duration_ms"`
+	OutputBytes     int64               `json:"output_bytes"`
+	OutputTruncated bool                `json:"output_truncated"`
+}
+
 func NewExecuteCommand(root project.Root, options ExecuteCommandOptions) (*ExecuteCommand, error) {
 	if root.Path() == "" {
 		return nil, errors.New("execute_command project root is empty")
@@ -110,52 +123,65 @@ func (executeCommand *ExecuteCommand) ProcessManager() *processdomain.Manager {
 
 func (executeCommand *ExecuteCommand) SupportsParallelToolCalls() bool { return false }
 
-func (executeCommand *ExecuteCommand) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
-	check, ok := tool.PermissionCheckFromContext(ctx)
-	if !ok {
-		return tool.Output{}, errors.New("execute_command must execute through ToolExecutionService")
-	}
-	request, ok := check.Prepared.(ExecRequest)
-	if !ok {
-		return tool.Output{}, errors.New("execute_command permission preparation is missing")
-	}
-	return executeCommand.executeExecRequest(ctx, request)
-}
-
-func (executeCommand *ExecuteCommand) CheckPermissions(ctx context.Context, invocation tool.Invocation) (tool.PermissionCheck, error) {
+func (executeCommand *ExecuteCommand) ValidateInput(_ tool.ToolUseContext, invocation tool.Invocation) error {
 	var arguments executeCommandArguments
 	if err := decodeArguments(invocation.Call.Payload, &arguments); err != nil {
-		return tool.PermissionCheck{}, err
+		return err
 	}
-	request, err := executeCommand.prepareExecRequest(ctx, invocation, arguments)
+	if strings.TrimSpace(arguments.Command) == "" {
+		return errors.New("execute_command command is empty")
+	}
+	if strings.ContainsRune(arguments.Command, '\x00') {
+		return errors.New("execute_command command contains NUL")
+	}
+	if arguments.TimeoutMS < 0 || arguments.YieldTimeMS < 0 || arguments.MaxOutputTokens < 0 {
+		return errors.New("execute_command timeout, yield and output limits cannot be negative")
+	}
+	return nil
+}
+
+func (executeCommand *ExecuteCommand) Prepare(toolContext tool.ToolUseContext, invocation tool.Invocation) (tool.PreparedToolUse, error) {
+	var arguments executeCommandArguments
+	if err := decodeArguments(invocation.Call.Payload, &arguments); err != nil {
+		return tool.PreparedToolUse{}, err
+	}
+	request, err := executeCommand.prepareExecRequest(toolContext.Context, invocation, arguments)
 	if err != nil {
-		return tool.PermissionCheck{}, err
+		return tool.PreparedToolUse{}, err
 	}
 	command := arguments.Command
 	cwd := request.command.Directory
 	assessment, err := executeCommand.guard.Assess(command)
 	if err != nil {
-		return tool.PermissionCheck{}, fmt.Errorf("assess execute_command: %w", err)
+		return tool.PreparedToolUse{}, fmt.Errorf("assess execute_command: %w", err)
 	}
 	key, ok := policy.NewCommandApprovalKey(command, cwd)
 	if !ok {
-		return tool.PermissionCheck{}, errors.New("execute_command approval key is invalid")
+		return tool.PreparedToolUse{}, errors.New("execute_command approval key is invalid")
 	}
 	auditDecision := func(_ context.Context, decision policy.ApprovalDecision) error {
-		return executeCommand.writeCommandAudit(ctx, invocation.Call, assessment.Risk, decision.Outcome, decision.Source, decision.Reason)
+		return executeCommand.writeCommandAudit(toolContext.Context, invocation.Call, assessment.Risk, decision.Outcome, decision.Source, decision.Reason)
 	}
 	if assessment.Disposition == policy.CommandDeny {
-		return tool.PermissionCheck{Decision: tool.PermissionDeny, Prepared: request, Reason: assessment.Reason, OnDecision: auditDecision}, nil
+		return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: request, Permission: tool.PermissionEvaluation{Decision: tool.PermissionDeny, Reason: assessment.Reason, Observe: auditDecision}}, nil
 	}
 	grant := policy.CommandGrant(key)
-	approval, err := policy.NewApprovalRequestForPurpose(invocation.Call.ID, invocation.Call.Name, invocation.Call.Payload, policy.ApprovalPurposeCommand, assessment.Risk, assessment.Reason)
+	approval, err := policy.NewApprovalRequestForPurpose(invocation.Call.ID, invocation.Call.Name, invocation.Call.Payload, policy.ApprovalPurposeCommand, assessment.Risk, policy.ApprovalCause{Kind: policy.ApprovalCauseCommand, Code: "host_command"})
 	if err != nil {
-		return tool.PermissionCheck{}, err
+		return tool.PreparedToolUse{}, err
 	}
 	approval.Command = command
 	approval.CWD = cwd
 	approval.Presentation = policy.CommandApprovalPresentation(command, cwd)
-	return tool.PermissionCheck{Decision: tool.PermissionAsk, Request: &approval, Grant: grant, Prepared: request, OnDecision: auditDecision}, nil
+	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: request, Permission: tool.PermissionEvaluation{Decision: tool.PermissionAsk, Request: &approval, Grant: grant, Observe: auditDecision}}, nil
+}
+
+func (executeCommand *ExecuteCommand) Execute(toolContext tool.ToolUseContext, prepared tool.PreparedToolUse) (tool.ToolResult, error) {
+	request, ok := prepared.State.(ExecRequest)
+	if !ok {
+		return tool.ToolResult{}, errors.New("execute_command preparation state is invalid")
+	}
+	return executeCommand.executeExecRequest(toolContext.Context, request)
 }
 
 func (executeCommand *ExecuteCommand) prepareExecRequest(ctx context.Context, invocation tool.Invocation, arguments executeCommandArguments) (ExecRequest, error) {
@@ -194,7 +220,8 @@ func (executeCommand *ExecuteCommand) prepareExecRequest(ctx context.Context, in
 	return ExecRequest{
 		owner: owner, displayCWD: relativeCWD, yield: yield,
 		command: processdomain.Command{
-			Shell: executeCommand.options.Shell, Command: arguments.Command,
+			OriginCallID: invocation.Call.ID,
+			Shell:        executeCommand.options.Shell, Command: arguments.Command,
 			Executable: shell, Arguments: []string{"-c", arguments.Command}, Directory: resolved.Canonical,
 			Timeout: timeout, TTY: arguments.TTY, MaxOutputBytes: maxBytes,
 		},
@@ -217,21 +244,21 @@ func (executeCommand *ExecuteCommand) writeCommandAudit(ctx context.Context, cal
 	return nil
 }
 
-func (executeCommand *ExecuteCommand) executeExecRequest(ctx context.Context, request ExecRequest) (tool.Output, error) {
+func (executeCommand *ExecuteCommand) executeExecRequest(ctx context.Context, request ExecRequest) (tool.ToolResult, error) {
 	startedAt := time.Now()
 	processID, err := executeCommand.manager.Start(request.owner, request.command, configureCommandProcess)
 	if err != nil {
-		return tool.Output{}, fmt.Errorf("start execute_command: %w", err)
+		return tool.ToolResult{}, fmt.Errorf("start execute_command: %w", err)
 	}
 	snapshot, err := executeCommand.manager.SnapshotContext(ctx, processID, request.owner, request.yield)
 	if err != nil {
 		_ = executeCommand.manager.Cancel(processID, request.owner)
-		return tool.Output{}, err
+		return tool.ToolResult{}, err
 	}
 	return commandSnapshotResult("execute_command", request.displayCWD, snapshot, time.Since(startedAt))
 }
 
-var _ tool.Tool = (*ExecuteCommand)(nil)
+var _ tool.ToolDefinition = (*ExecuteCommand)(nil)
 
 func durationFromMilliseconds(value int64, fallback, maximum time.Duration) time.Duration {
 	if value <= 0 {
@@ -244,13 +271,16 @@ func durationFromMilliseconds(value int64, fallback, maximum time.Duration) time
 	return result
 }
 
-func commandSnapshotResult(toolName, cwd string, snapshot processdomain.Snapshot, duration time.Duration) (tool.Output, error) {
-	result := tool.Output{
+func commandSnapshotResult(toolName, cwd string, snapshot processdomain.Snapshot, duration time.Duration) (tool.ToolResult, error) {
+	processResult := ProcessResult{ProcessID: string(snapshot.ID), OriginCallID: snapshot.OriginCallID, State: snapshot.State, Output: snapshot.Output, ExitCode: snapshot.ExitCode, StartedAt: snapshot.StartedAt, FinishedAt: snapshot.FinishedAt, DurationMS: duration.Milliseconds(), OutputBytes: snapshot.TotalOutputBytes, OutputTruncated: snapshot.OutputTruncated}
+	result := tool.ToolResult{
 		ToolName: toolName, Text: snapshot.Output,
+		Data: processResult, Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayProcess, Title: toolName, Summary: string(snapshot.State), Data: processResult},
 		Partial: snapshot.OutputTruncated || snapshot.State == processdomain.StateRunning || snapshot.State == processdomain.StateTimedOut || snapshot.State == processdomain.StateCancelled,
 		Metadata: map[string]any{
 			"process_id": string(snapshot.ID), "status": string(snapshot.State), "cwd": cwd, "exit_code": snapshot.ExitCode,
-			"duration_ms": duration.Milliseconds(), "timed_out": snapshot.State == processdomain.StateTimedOut,
+			"origin_call_id": snapshot.OriginCallID,
+			"duration_ms":    duration.Milliseconds(), "timed_out": snapshot.State == processdomain.StateTimedOut,
 			"cancelled": snapshot.State == processdomain.StateCancelled, "output_bytes": snapshot.TotalOutputBytes,
 			"output_truncated": snapshot.OutputTruncated,
 		},
@@ -269,4 +299,4 @@ func commandSnapshotResult(toolName, cwd string, snapshot processdomain.Snapshot
 	}
 }
 
-var _ tool.Tool = (*ExecuteCommand)(nil)
+var _ tool.ToolDefinition = (*ExecuteCommand)(nil)

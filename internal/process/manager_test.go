@@ -3,6 +3,7 @@ package process
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -76,4 +77,89 @@ func TestManagerReportsNonZeroExitAndCancelIsIdempotent(t *testing.T) {
 	if err != nil || cancelled.State != StateCancelled {
 		t.Fatalf("unexpected cancelled snapshot: %#v err=%v", cancelled, err)
 	}
+}
+
+func TestManagerSerializesWritesPerProcess(t *testing.T) {
+	writer := &blockingWriteCloser{entered: make(chan struct{}, 2), release: make(chan struct{}, 2)}
+	manager := managerWithManagedProcess("process", writer)
+	done := make(chan error, 2)
+	go func() {
+		_, err := manager.WriteContext(context.Background(), "process", "owner", "first", false, 0)
+		done <- err
+	}()
+	<-writer.entered
+	go func() {
+		_, err := manager.WriteContext(context.Background(), "process", "owner", "second", false, 0)
+		done <- err
+	}()
+	select {
+	case <-writer.entered:
+		t.Fatal("second write entered before the first released its process lock")
+	case <-time.After(20 * time.Millisecond):
+	}
+	writer.release <- struct{}{}
+	<-writer.entered
+	writer.release <- struct{}{}
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestManagerAllowsWritesToDifferentProcessesInParallel(t *testing.T) {
+	first := &blockingWriteCloser{entered: make(chan struct{}, 1), release: make(chan struct{}, 1)}
+	second := &blockingWriteCloser{entered: make(chan struct{}, 1), release: make(chan struct{}, 1)}
+	manager := NewManager()
+	manager.processes["first"] = testManagedProcess("first", first)
+	manager.processes["second"] = testManagedProcess("second", second)
+	done := make(chan error, 2)
+	go func() {
+		_, err := manager.WriteContext(context.Background(), "first", "owner", "a", false, 0)
+		done <- err
+	}()
+	go func() {
+		_, err := manager.WriteContext(context.Background(), "second", "owner", "b", false, 0)
+		done <- err
+	}()
+	select {
+	case <-first.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first process write did not enter")
+	}
+	select {
+	case <-second.entered:
+	case <-time.After(time.Second):
+		t.Fatal("second process write was blocked by another process")
+	}
+	first.release <- struct{}{}
+	second.release <- struct{}{}
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+type blockingWriteCloser struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (writer *blockingWriteCloser) Write(content []byte) (int, error) {
+	writer.entered <- struct{}{}
+	<-writer.release
+	return len(content), nil
+}
+
+func (*blockingWriteCloser) Close() error { return nil }
+
+func managerWithManagedProcess(id ID, stdin io.WriteCloser) *Manager {
+	manager := NewManager()
+	manager.processes[id] = testManagedProcess(id, stdin)
+	return manager
+}
+
+func testManagedProcess(id ID, stdin io.WriteCloser) *managed {
+	return &managed{id: id, owner: "owner", stdin: stdin, output: newTranscript(1024), state: StateRunning, startedAt: time.Now(), done: make(chan struct{})}
 }

@@ -38,7 +38,7 @@ func TestTerminalApprovalInteractiveChoices(t *testing.T) {
 			if decision.Outcome != test.outcome || decision.Scope != test.scope || decision.Source != policy.ApprovalSourceUser {
 				t.Fatalf("unexpected decision: %#v", decision)
 			}
-			if !strings.Contains(output.String(), "[y] once / [s] session / [n] deny") || strings.Contains(output.String(), "always") {
+			if !strings.Contains(output.String(), "[y] once / [s] session / [n] no") || strings.Contains(output.String(), "always") || approvalTranscriptLeaksInternals(output.String()) {
 				t.Fatalf("unexpected prompt: %q", output.String())
 			}
 		})
@@ -73,7 +73,7 @@ func TestTerminalApprovalRejectsInvalidChoiceThenAccepts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decide approval: %v", err)
 	}
-	if !decision.Allowed() || !strings.Contains(output.String(), "Invalid choice. Enter y, s, or n") {
+	if !decision.Allowed() || !strings.Contains(output.String(), "Invalid choice. Enter 1, 2, 3, y, s, or n") {
 		t.Fatalf("unexpected retry result: decision=%#v output=%q", decision, output.String())
 	}
 }
@@ -88,7 +88,7 @@ func TestTerminalApprovalPermissionChoiceUsesOnceScope(t *testing.T) {
 	}
 	request, err := policy.NewApprovalRequestForPurpose(
 		"permission-1", "execute_command", json.RawMessage(`{"command":"touch /outside/file"}`),
-		policy.ApprovalPurposePermission, policy.CommandRiskHigh, "write outside the workspace",
+		policy.ApprovalPurposePermission, policy.CommandRiskHigh, policy.ApprovalCause{Kind: policy.ApprovalCauseFilesystemRead, Code: "outside_workspace"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -100,16 +100,21 @@ func TestTerminalApprovalPermissionChoiceUsesOnceScope(t *testing.T) {
 	if decision.Outcome != policy.ApprovalAllow || decision.Scope != policy.ApprovalOnce || decision.Source != policy.ApprovalSourceUser {
 		t.Fatalf("unexpected permission decision: %#v", decision)
 	}
-	if !strings.Contains(output.String(), "[y] once / [s] session / [n] deny") {
+	if !strings.Contains(output.String(), "[y] once / [s] session / [n] no") {
 		t.Fatalf("permission prompt omitted once scope: %q", output.String())
 	}
 }
 
 func testApprovalRequest(t *testing.T) policy.ApprovalRequest {
 	t.Helper()
-	request, err := policy.NewApprovalRequest("approval-1", "write_file", json.RawMessage(`{"path":"a.txt"}`), policy.CommandRiskHigh, "writes a project file")
+	request, err := policy.NewApprovalRequest("approval-1", "write_file", json.RawMessage(`{"path":"a.txt"}`), policy.CommandRiskHigh, policy.ApprovalCause{Kind: policy.ApprovalCausePolicy, Code: "writes_project_file", Detail: "unsandboxed internal detail"})
 	if err != nil {
 		t.Fatalf("create approval request: %v", err)
 	}
 	return request
+}
+
+func approvalTranscriptLeaksInternals(transcript string) bool {
+	lower := strings.ToLower(transcript)
+	return strings.Contains(lower, "unsandbox") || strings.Contains(lower, "arguments_sha256") || strings.Contains(lower, "reason:")
 }

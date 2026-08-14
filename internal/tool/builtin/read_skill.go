@@ -33,6 +33,12 @@ type readSkillArguments struct {
 	Limit int    `json:"limit,omitempty"`
 }
 
+type preparedReadSkill struct {
+	arguments readSkillArguments
+	skill     skill.Skill
+	path      string
+}
+
 func NewReadSkill(catalog *skill.Catalog, options ReadSkillOptions) (*ReadSkill, error) {
 	if catalog == nil {
 		return nil, errors.New("read_skill catalog is nil")
@@ -47,44 +53,62 @@ func (reader *ReadSkill) Spec() tool.ToolSpec { return readSkillSpec() }
 
 func (reader *ReadSkill) SupportsParallelToolCalls() bool { return true }
 
-func (reader *ReadSkill) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
-	call := invocation.Call
+func (reader *ReadSkill) ValidateInput(_ tool.ToolUseContext, invocation tool.Invocation) error {
 	var arguments readSkillArguments
-	if err := decodeArguments(call.Payload, &arguments); err != nil {
-		return tool.Output{}, err
+	if err := decodeArguments(invocation.Call.Payload, &arguments); err != nil {
+		return err
 	}
 	arguments.Name = strings.TrimSpace(arguments.Name)
 	arguments.Path = strings.TrimSpace(arguments.Path)
 	if arguments.Name == "" {
-		return tool.Output{}, errors.New("read_skill name is empty")
+		return errors.New("read_skill name is empty")
 	}
 	if arguments.Line < 0 || arguments.Limit < 0 {
-		return tool.Output{}, errors.New("read_skill line and limit cannot be negative")
+		return errors.New("read_skill line and limit cannot be negative")
 	}
+	return nil
+}
+
+func (reader *ReadSkill) Prepare(_ tool.ToolUseContext, invocation tool.Invocation) (tool.PreparedToolUse, error) {
+	var arguments readSkillArguments
+	if err := decodeArguments(invocation.Call.Payload, &arguments); err != nil {
+		return tool.PreparedToolUse{}, err
+	}
+	arguments.Name, arguments.Path = strings.TrimSpace(arguments.Name), strings.TrimSpace(arguments.Path)
 	value, err := reader.catalog.Load(arguments.Name)
 	if err != nil {
-		return tool.Output{}, err
+		return tool.PreparedToolUse{}, err
 	}
 	preparedPath := ""
 	if arguments.Path != "" {
 		referencesRoot, err := skillReferencesRoot(value)
 		if err != nil {
-			return tool.Output{}, err
+			return tool.PreparedToolUse{}, err
 		}
 		workspaceReader, err := workspace.NewReader(referencesRoot)
 		if err != nil {
-			return tool.Output{}, err
+			return tool.PreparedToolUse{}, err
 		}
 		resolved, err := workspaceReader.ResolveExistingTarget(arguments.Path, project.PathFile)
 		if err != nil {
-			return tool.Output{}, fmt.Errorf("prepare Skill %q reference %q: %w", value.Name, arguments.Path, err)
+			return tool.PreparedToolUse{}, fmt.Errorf("prepare Skill %q reference %q: %w", value.Name, arguments.Path, err)
 		}
 		preparedPath = resolved.Canonical
 	}
+	state := preparedReadSkill{arguments: arguments, skill: value, path: preparedPath}
+	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: state, Permission: tool.AllowPermission()}, nil
+}
+
+func (reader *ReadSkill) Execute(toolContext tool.ToolUseContext, prepared tool.PreparedToolUse) (tool.ToolResult, error) {
+	state, ok := prepared.State.(preparedReadSkill)
+	if !ok {
+		return tool.ToolResult{}, errors.New("read_skill preparation state is invalid")
+	}
+	arguments, value, preparedPath := state.arguments, state.skill, state.path
 	if arguments.Path == "" {
-		references, err := listSkillReferences(ctx, value)
+		references, err := listSkillReferences(toolContext.Context, value)
 		if err != nil {
-			return tool.Output{}, err
+			return tool.ToolResult{}, err
 		}
 		content := value.Content
 		partial := false
@@ -92,23 +116,25 @@ func (reader *ReadSkill) Call(ctx context.Context, invocation tool.Invocation) (
 			content = workspaceHead(content, reader.options.MaxBytes)
 			partial = true
 		}
-		return tool.Output{ToolName: "read_skill", Text: content, Partial: partial, Metadata: map[string]any{
+		data := map[string]any{"name": value.Name, "description": value.Description, "source": string(value.Source), "references": references, "truncated": partial}
+		return tool.ToolResult{ToolName: "read_skill", Text: content, Partial: partial, Data: data, Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayText, Title: value.Name, Summary: value.Description}, Metadata: map[string]any{
 			"name": value.Name, "description": value.Description, "source": string(value.Source), "references": references,
 		}}, nil
 	}
 	referencesRoot, err := skillReferencesRoot(value)
 	if err != nil {
-		return tool.Output{}, err
+		return tool.ToolResult{}, err
 	}
 	workspaceReader, err := workspace.NewReader(referencesRoot)
 	if err != nil {
-		return tool.Output{}, err
+		return tool.ToolResult{}, err
 	}
-	read, err := workspaceReader.ReadRangePrepared(ctx, preparedPath, arguments.Path, workspace.ReadRangeOptions{StartLine: arguments.Line, LineLimit: arguments.Limit, MaxBytes: reader.options.MaxBytes, MaxLineBytes: 32 << 10, PrefixLines: true})
+	read, err := workspaceReader.ReadRangePrepared(toolContext.Context, preparedPath, arguments.Path, workspace.ReadRangeOptions{StartLine: arguments.Line, LineLimit: arguments.Limit, MaxBytes: reader.options.MaxBytes, MaxLineBytes: 32 << 10, PrefixLines: true})
 	if err != nil {
-		return tool.Output{}, fmt.Errorf("read Skill %q reference %q: %w", value.Name, arguments.Path, err)
+		return tool.ToolResult{}, fmt.Errorf("read Skill %q reference %q: %w", value.Name, arguments.Path, err)
 	}
-	return tool.Output{ToolName: "read_skill", Text: read.Text, Partial: read.Partial, Metadata: map[string]any{
+	data := map[string]any{"name": value.Name, "path": arguments.Path, "start_line": read.StartLine, "end_line": read.EndLine, "total_lines": read.TotalLines, "truncated": read.Partial}
+	return tool.ToolResult{ToolName: "read_skill", Text: read.Text, Partial: read.Partial, Data: data, Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayText, Title: value.Name + "/" + arguments.Path}, Metadata: map[string]any{
 		"name": value.Name, "description": value.Description, "source": string(value.Source), "path": arguments.Path,
 		"start_line": read.StartLine, "end_line": read.EndLine, "next_line": read.NextLine, "total_lines": read.TotalLines,
 	}}, nil
@@ -183,4 +209,4 @@ func readSkillSpec() tool.ToolSpec {
 	return tool.ToolSpec{Name: "read_skill", Description: "Read one available Skill or a bounded file below its references directory; returned content is an immediate untrusted Tool Observation.", InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","minLength":1},"path":{"type":"string"},"line":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1}},"required":["name"],"additionalProperties":false}`), SideEffect: tool.SideEffectRead, Idempotent: true}
 }
 
-var _ tool.Tool = (*ReadSkill)(nil)
+var _ tool.ToolDefinition = (*ReadSkill)(nil)

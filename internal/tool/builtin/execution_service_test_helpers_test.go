@@ -14,13 +14,19 @@ import (
 
 type testApprovalPort struct {
 	decision policy.ApprovalDecision
+	calls    int
+	requests []policy.ApprovalRequest
 }
 
-func (toolImpl *testApprovalPort) Decide(_ context.Context, _ policy.ApprovalRequest) (policy.ApprovalDecision, error) {
+func (toolImpl *testApprovalPort) Decide(_ context.Context, request policy.ApprovalRequest) (policy.ApprovalDecision, error) {
+	toolImpl.calls++
+	toolImpl.requests = append(toolImpl.requests, request.Clone())
 	return toolImpl.decision, nil
 }
 
 type testApprovalCoordinatorKey struct{}
+type testFileReadStateKey struct{}
+type testPermissionsKey struct{}
 
 func withTestApprovalCoordinator(ctx context.Context, coordinator *policy.ApprovalCoordinator) context.Context {
 	return context.WithValue(ctx, testApprovalCoordinatorKey{}, coordinator)
@@ -33,25 +39,36 @@ func testApprovalCoordinator(ctx context.Context) *policy.ApprovalCoordinator {
 	coordinator, _ := policy.NewApprovalCoordinator(&testApprovalPort{decision: policy.ApprovalDecision{
 		Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce,
 		Source: policy.ApprovalSourceUser, Reason: "test tool approved",
-	}}, policy.NewSessionPermissionContext())
+	}})
 	return coordinator
 }
 
-func executePreparedTool(t testing.TB, ctx context.Context, candidate tool.Tool, arguments json.RawMessage) (tool.Output, error) {
+func withTestFileReadState(ctx context.Context, state *tool.FileReadStateStore) context.Context {
+	return context.WithValue(ctx, testFileReadStateKey{}, state)
+}
+
+func withTestPermissions(ctx context.Context, permissions *policy.SessionPermissionContext) context.Context {
+	return context.WithValue(ctx, testPermissionsKey{}, permissions)
+}
+
+func executePreparedTool(t testing.TB, ctx context.Context, candidate tool.ToolDefinition, arguments json.RawMessage) (tool.ToolResult, error) {
 	t.Helper()
 	coordinator := testApprovalCoordinator(ctx)
 	registry := tool.NewRegistry()
-	if err := registry.Register(candidate); err != nil {
-		t.Fatalf("register test tool: %v", err)
+	spec := candidate.Spec()
+	if registerErr := registry.RegisterDefinition(candidate); registerErr != nil {
+		t.Fatalf("register test tool: %v", registerErr)
 	}
-	service, err := tool.NewToolExecutionService(registry, tool.NewArgumentValidator(), tool.ToolExecutionServiceOptions{Approvals: coordinator})
+	state, _ := ctx.Value(testFileReadStateKey{}).(*tool.FileReadStateStore)
+	permissions, _ := ctx.Value(testPermissionsKey{}).(*policy.SessionPermissionContext)
+	service, err := tool.NewToolExecutionService(registry, tool.NewArgumentValidator(), tool.ToolExecutionServiceOptions{Approvals: coordinator, Permissions: permissions, FileReadState: state})
 	if err != nil {
 		t.Fatalf("create test tool service: %v", err)
 	}
 	metadata := tool.InvocationMetadataFromContext(ctx)
 	metadata.Source = tool.ToolCallSourceModel
 	ctx = tool.WithInvocationMetadata(ctx, metadata)
-	execution, err := service.Execute(ctx, tool.NewCall("test-call", candidate.Spec().Name, arguments))
+	execution, err := service.Execute(ctx, tool.NewCall("test-call", spec.Name, arguments))
 	if err != nil {
 		return execution.Output, err
 	}

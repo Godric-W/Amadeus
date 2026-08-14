@@ -21,7 +21,7 @@ func TestToolCallAndSpecCloneIsolateMutableFields(t *testing.T) {
 }
 
 func TestToolOutputAndExecutionCloneMetadata(t *testing.T) {
-	output := Output{CallID: "call-1", ToolName: "read", Metadata: map[string]any{"path": "a"}}
+	output := ToolResult{CallID: "call-1", ToolName: "read", Metadata: map[string]any{"path": "a"}}
 	cloned := output.Clone()
 	cloned.Metadata["path"] = "b"
 	if output.Metadata["path"] != "a" {

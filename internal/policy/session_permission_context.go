@@ -31,10 +31,11 @@ func NewCommandApprovalKey(command, cwd string) (CommandApprovalKey, bool) {
 // The rule shape remains tool-specific: commands match an exact CWD/command,
 // file edits match a canonical directory, and external tools match a key.
 type SessionPermissionContext struct {
-	mu          sync.RWMutex
-	commands    map[CommandApprovalKey]struct{}
-	directories []string
-	rules       map[string]struct{}
+	mu              sync.RWMutex
+	commands        map[CommandApprovalKey]struct{}
+	readDirectories []string
+	editDirectories []string
+	rules           map[string]struct{}
 }
 
 func (context *SessionPermissionContext) Match(grant PermissionGrant) bool {
@@ -42,8 +43,10 @@ func (context *SessionPermissionContext) Match(grant PermissionGrant) bool {
 		return false
 	}
 	switch grant.Kind {
-	case GrantFileDirectory:
-		return context.MatchFileDirectory(grant.Directory)
+	case GrantReadDirectory:
+		return context.MatchReadDirectory(grant.Directory)
+	case GrantEditDirectory:
+		return context.MatchEditDirectory(grant.Directory)
 	case GrantCommandExact:
 		return context.MatchCommand(*grant.Command)
 	case GrantExternalKey:
@@ -58,8 +61,10 @@ func (context *SessionPermissionContext) ApplyGrant(grant PermissionGrant) {
 		return
 	}
 	switch grant.Kind {
-	case GrantFileDirectory:
-		context.ApplyFileDirectoryGrant(grant.Directory)
+	case GrantReadDirectory:
+		context.ApplyReadDirectoryGrant(grant.Directory)
+	case GrantEditDirectory:
+		context.ApplyEditDirectoryGrant(grant.Directory)
 	case GrantCommandExact:
 		context.ApplyCommandGrant(*grant.Command)
 	case GrantExternalKey:
@@ -93,14 +98,22 @@ func (context *SessionPermissionContext) ApplyCommandGrant(key CommandApprovalKe
 	context.mu.Unlock()
 }
 
-func (context *SessionPermissionContext) MatchFileDirectory(path string) bool {
+func (context *SessionPermissionContext) MatchReadDirectory(path string) bool {
+	return context.matchDirectory(context.readDirectories, path)
+}
+
+func (context *SessionPermissionContext) MatchEditDirectory(path string) bool {
+	return context.matchDirectory(context.editDirectories, path)
+}
+
+func (context *SessionPermissionContext) matchDirectory(directories []string, path string) bool {
 	if context == nil {
 		return false
 	}
 	canonical := filepath.Clean(path)
 	context.mu.RLock()
 	defer context.mu.RUnlock()
-	for _, root := range context.directories {
+	for _, root := range directories {
 		if canonical == root || strings.HasPrefix(canonical, root+string(filepath.Separator)) {
 			return true
 		}
@@ -108,26 +121,34 @@ func (context *SessionPermissionContext) MatchFileDirectory(path string) bool {
 	return false
 }
 
-func (context *SessionPermissionContext) ApplyFileDirectoryGrant(path string) {
+func (context *SessionPermissionContext) ApplyReadDirectoryGrant(path string) {
+	context.applyDirectory(&context.readDirectories, path)
+}
+
+func (context *SessionPermissionContext) ApplyEditDirectoryGrant(path string) {
+	context.applyDirectory(&context.editDirectories, path)
+}
+
+func (context *SessionPermissionContext) applyDirectory(directories *[]string, path string) {
 	if context == nil || strings.TrimSpace(path) == "" {
 		return
 	}
 	canonical := filepath.Clean(path)
 	context.mu.Lock()
 	defer context.mu.Unlock()
-	for _, existing := range context.directories {
+	for _, existing := range *directories {
 		if canonical == existing || strings.HasPrefix(canonical, existing+string(filepath.Separator)) {
 			return
 		}
 	}
-	filtered := context.directories[:0]
-	for _, existing := range context.directories {
+	filtered := (*directories)[:0]
+	for _, existing := range *directories {
 		if !strings.HasPrefix(existing, canonical+string(filepath.Separator)) {
 			filtered = append(filtered, existing)
 		}
 	}
-	context.directories = append(filtered, canonical)
-	sort.Slice(context.directories, func(i, j int) bool { return len(context.directories[i]) > len(context.directories[j]) })
+	*directories = append(filtered, canonical)
+	sort.Slice(*directories, func(i, j int) bool { return len((*directories)[i]) > len((*directories)[j]) })
 }
 
 func (context *SessionPermissionContext) MatchExternal(key string) bool {
@@ -163,7 +184,8 @@ func (context *SessionPermissionContext) Clear() {
 	}
 	context.mu.Lock()
 	context.commands = make(map[CommandApprovalKey]struct{})
-	context.directories = nil
+	context.readDirectories = nil
+	context.editDirectories = nil
 	context.rules = make(map[string]struct{})
 	context.mu.Unlock()
 }
@@ -173,7 +195,7 @@ func (context *SessionPermissionContext) GrantCount() int {
 		return 0
 	}
 	context.mu.RLock()
-	count := len(context.commands) + len(context.directories) + len(context.rules)
+	count := len(context.commands) + len(context.readDirectories) + len(context.editDirectories) + len(context.rules)
 	context.mu.RUnlock()
 	return count
 }

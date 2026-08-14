@@ -95,7 +95,7 @@ type ToolOutcome struct {
 	CallID    string            `json:"call_id"`
 	ToolName  string            `json:"tool_name"`
 	Status    ToolOutcomeStatus `json:"status"`
-	Result    tool.Output       `json:"result"`
+	Result    tool.ToolResult   `json:"result"`
 	Error     *ToolError        `json:"error,omitempty"`
 	Blocking  bool              `json:"blocking,omitempty"`
 	Partial   bool              `json:"partial,omitempty"`

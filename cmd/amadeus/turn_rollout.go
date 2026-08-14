@@ -64,7 +64,7 @@ func (recorder *turnRolloutRecorder) RecordToolOutcomes(ctx context.Context, out
 		payload := map[string]any{
 			"type": "tool_result", "call_id": outcome.CallID, "name": outcome.ToolName,
 			"status": outcome.Status, "content": outcome.Result.Text, "metadata": outcome.Metadata,
-			"partial": outcome.Partial, "duration_nanos": int64(outcome.Duration),
+			"partial": outcome.Partial, "duration_nanos": int64(outcome.Duration), "result": outcome.Result,
 		}
 		if len(outcome.Result.Parts) > 0 {
 			payload["parts"] = outcome.Result.Parts

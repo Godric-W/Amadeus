@@ -69,11 +69,11 @@ func TestWebFetchApprovalDenialPreventsFetch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinator, err := policy.NewApprovalCoordinator(approvals, policy.NewSessionPermissionContext())
+	coordinator, err := policy.NewApprovalCoordinator(approvals)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := withTestApprovalCoordinator(context.Background(), coordinator)
+	ctx := withTestPermissions(withTestApprovalCoordinator(context.Background(), coordinator), policy.NewSessionPermissionContext())
 	if _, err := executePreparedTool(t, ctx, fetch, json.RawMessage(`{"url":"https://example.com/page"}`)); err == nil {
 		t.Fatal("denied web fetch succeeded")
 	}
@@ -89,11 +89,11 @@ func TestWebFetchSessionApprovalIsScopedByHostname(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinator, err := policy.NewApprovalCoordinator(approvals, policy.NewSessionPermissionContext())
+	coordinator, err := policy.NewApprovalCoordinator(approvals)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := withTestApprovalCoordinator(context.Background(), coordinator)
+	ctx := withTestPermissions(withTestApprovalCoordinator(context.Background(), coordinator), policy.NewSessionPermissionContext())
 	for _, raw := range []string{`{"url":"https://example.com/one"}`, `{"url":"https://example.com/two"}`, `{"url":"https://other.example/two"}`} {
 		if _, err := executePreparedTool(t, ctx, fetch, json.RawMessage(raw)); err != nil {
 			t.Fatalf("web fetch %s failed: %v", raw, err)

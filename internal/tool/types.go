@@ -156,14 +156,54 @@ type ContentPart struct {
 	Data      string      `json:"data,omitempty"`
 }
 
-type Output struct {
-	CallID    string         `json:"call_id"`
-	ToolName  string         `json:"tool_name"`
-	Text      string         `json:"text,omitempty"`
-	Parts     []ContentPart  `json:"parts,omitempty"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
-	Partial   bool           `json:"partial,omitempty"`
-	Artifacts []ArtifactRef  `json:"artifacts,omitempty"`
+// ToolResult is the model-facing result of one prepared tool execution. Data
+// carries the typed domain result while Text and Parts are the bounded model
+// projection. Display is a separate UI projection and must not be reconstructed
+// from Text.
+type ToolResult struct {
+	CallID    string            `json:"call_id"`
+	ToolName  string            `json:"tool_name"`
+	Text      string            `json:"text,omitempty"`
+	Parts     []ContentPart     `json:"parts,omitempty"`
+	Metadata  map[string]any    `json:"metadata,omitempty"`
+	Partial   bool              `json:"partial,omitempty"`
+	Artifacts []ArtifactRef     `json:"artifacts,omitempty"`
+	Data      any               `json:"data,omitempty"`
+	Display   ToolDisplayResult `json:"display,omitempty"`
+}
+
+type ToolDisplayKind string
+
+const (
+	ToolDisplayNone       ToolDisplayKind = "none"
+	ToolDisplayText       ToolDisplayKind = "text"
+	ToolDisplayFileChange ToolDisplayKind = "file_change"
+	ToolDisplayProcess    ToolDisplayKind = "process"
+	ToolDisplayMedia      ToolDisplayKind = "media"
+)
+
+type ToolDisplayResult struct {
+	Kind    ToolDisplayKind `json:"kind,omitempty"`
+	Title   string          `json:"title,omitempty"`
+	Summary string          `json:"summary,omitempty"`
+	Data    any             `json:"data,omitempty"`
+}
+
+type TruncationReason string
+
+const (
+	TruncationNone        TruncationReason = ""
+	TruncationResultLimit TruncationReason = "result_limit"
+	TruncationByteLimit   TruncationReason = "byte_limit"
+	TruncationTokenLimit  TruncationReason = "token_limit"
+)
+
+type BoundedResult[T any] struct {
+	Items         []T              `json:"items"`
+	Truncated     bool             `json:"truncated"`
+	Reason        TruncationReason `json:"truncation_reason,omitempty"`
+	Bytes         int              `json:"bytes"`
+	TokenEstimate int              `json:"token_estimate"`
 }
 
 type ToolCallStatus string
@@ -205,7 +245,7 @@ type ToolCallOutcome struct {
 
 type ToolExecution struct {
 	Call    ToolCall        `json:"call"`
-	Output  Output          `json:"output"`
+	Output  ToolResult      `json:"output"`
 	Outcome ToolCallOutcome `json:"outcome"`
 }
 
@@ -213,7 +253,7 @@ type ErrorKindProvider interface {
 	ToolErrorKind() string
 }
 
-func (result Output) Clone() Output {
+func (result ToolResult) Clone() ToolResult {
 	result.Parts = append([]ContentPart(nil), result.Parts...)
 	result.Artifacts = append([]ArtifactRef(nil), result.Artifacts...)
 	if result.Metadata != nil {

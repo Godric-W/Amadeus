@@ -46,7 +46,8 @@ func (observer *toolEventObserver) ToolCallCompleted(ctx context.Context, execut
 		status = protocol.ItemFailed
 	}
 	now := time.Now().UTC()
-	item := protocol.TurnItem{ID: execution.Call.ID, Kind: toolItemKind(execution.Call.Name), Status: status, CreatedAt: now, CompletedAt: now, Text: toolExecutionSummary(execution), ToolName: execution.Call.Name, CallID: execution.Call.ID, Payload: map[string]any{
+	result := execution.Output.Clone()
+	item := protocol.TurnItem{ID: execution.Call.ID, Kind: toolItemKind(execution.Call.Name), Status: status, CreatedAt: now, CompletedAt: now, Text: toolExecutionSummary(execution), ToolName: execution.Call.Name, CallID: execution.Call.ID, ToolResult: &result, Payload: map[string]any{
 		"duration": execution.Outcome.Duration.String(),
 		"partial":  execution.Output.Partial,
 	}}

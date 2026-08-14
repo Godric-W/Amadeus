@@ -1,13 +1,13 @@
 package mcp
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"unicode"
 
+	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -54,21 +54,43 @@ func (adapter *ToolAdapter) Spec() tool.ToolSpec { return adapter.spec.Clone() }
 
 func (adapter *ToolAdapter) SupportsParallelToolCalls() bool { return false }
 
-func (adapter *ToolAdapter) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
+func (adapter *ToolAdapter) ValidateInput(_ tool.ToolUseContext, _ tool.Invocation) error {
 	if adapter == nil || adapter.manager == nil {
-		return tool.Output{}, errors.New("MCP tool adapter is nil")
+		return errors.New("MCP tool adapter is nil")
+	}
+	return nil
+}
+
+func (adapter *ToolAdapter) Prepare(toolContext tool.ToolUseContext, invocation tool.Invocation) (tool.PreparedToolUse, error) {
+	if err := adapter.manager.ValidateBindingRevision(toolContext.Snapshot.MCPBindingRevision); err != nil && toolContext.Snapshot.MCPBindingRevision != "" {
+		return tool.PreparedToolUse{}, err
 	}
 	input := append(json.RawMessage(nil), invocation.Call.Payload...)
-	result, err := adapter.manager.CallTool(ctx, adapter.server, adapter.original, input)
+	grant := policy.ExternalGrant(policy.MCPApprovalKey(adapter.server, adapter.original))
+	request, err := policy.NewApprovalRequestForPurpose(invocation.Call.ID, invocation.Call.Name, invocation.Call.Payload, policy.ApprovalPurposeExternal, policy.CommandRiskHigh, policy.ApprovalCause{Kind: policy.ApprovalCauseExternalTool, Code: "mcp_tool", Detail: adapter.server + "/" + adapter.original})
 	if err != nil {
-		return tool.Output{}, err
+		return tool.PreparedToolUse{}, err
+	}
+	request.PermissionKey = grant.Key
+	request.Presentation = policy.MCPToolApprovalPresentation(adapter.server, adapter.original, adapter.spec.Description)
+	return tool.PreparedToolUse{Invocation: invocation, Input: input, State: input, Permission: tool.PermissionEvaluation{Decision: tool.PermissionAsk, Request: &request, Grant: grant}}, nil
+}
+
+func (adapter *ToolAdapter) Execute(toolContext tool.ToolUseContext, prepared tool.PreparedToolUse) (tool.ToolResult, error) {
+	input, ok := prepared.State.(json.RawMessage)
+	if !ok {
+		return tool.ToolResult{}, errors.New("MCP adapter preparation state is invalid")
+	}
+	result, err := adapter.manager.CallTool(toolContext.Context, adapter.server, adapter.original, input)
+	if err != nil {
+		return tool.ToolResult{}, err
 	}
 	text, partial := boundText(result.Text, adapter.maxBytes)
 	text = "Untrusted external MCP result from " + adapter.server + "/" + adapter.original + ":\n" + text
 	if result.IsError {
-		return tool.Output{Text: text, Partial: partial, Metadata: map[string]any{"server": adapter.server, "tool": adapter.original, "is_error": true}}, errors.New("MCP server returned tool error")
+		return tool.ToolResult{Text: text, Partial: partial, Data: result, Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayText, Title: adapter.server + "/" + adapter.original}, Metadata: map[string]any{"server": adapter.server, "tool": adapter.original, "is_error": true}}, errors.New("MCP server returned tool error")
 	}
-	return tool.Output{Text: text, Partial: partial, Metadata: map[string]any{"server": adapter.server, "tool": adapter.original}}, nil
+	return tool.ToolResult{Text: text, Partial: partial, Data: result, Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayText, Title: adapter.server + "/" + adapter.original}, Metadata: map[string]any{"server": adapter.server, "tool": adapter.original}}, nil
 }
 
 func sanitizeSchema(raw json.RawMessage) (json.RawMessage, error) {
@@ -130,4 +152,4 @@ func safeName(value string) bool {
 	return true
 }
 
-var _ tool.Tool = (*ToolAdapter)(nil)
+var _ tool.ToolDefinition = (*ToolAdapter)(nil)

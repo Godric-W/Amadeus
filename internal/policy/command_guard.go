@@ -55,5 +55,5 @@ func (guard *CommandGuard) Assess(command string) (CommandAssessment, error) {
 			return CommandAssessment{Risk: CommandRiskBlocked, Disposition: CommandDeny, Reason: "command matches the minimal catastrophic deny set"}, nil
 		}
 	}
-	return CommandAssessment{Risk: CommandRiskHigh, Disposition: CommandRequireApproval, Reason: "unsandboxed host command requires operation approval"}, nil
+	return CommandAssessment{Risk: CommandRiskHigh, Disposition: CommandRequireApproval, Reason: "command requires user confirmation"}, nil
 }

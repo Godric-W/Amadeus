@@ -44,11 +44,11 @@ func TestProgressMonitorDoesNotTreatDifferentCallsWithSameOutputAsRepeated(t *te
 	monitor := DefaultProgressMonitor()
 	first := ProgressSample{
 		Calls:    []tool.ToolCall{tool.NewCall("first", "read", json.RawMessage(`{"path":"a.go"}`))},
-		Outcomes: []ToolOutcome{{CallID: "first", ToolName: "read", Status: ToolOutcomeSucceeded, Result: tool.Output{Text: "same"}}},
+		Outcomes: []ToolOutcome{{CallID: "first", ToolName: "read", Status: ToolOutcomeSucceeded, Result: tool.ToolResult{Text: "same"}}},
 	}
 	second := ProgressSample{
 		Calls:    []tool.ToolCall{tool.NewCall("second", "read", json.RawMessage(`{"path":"b.go"}`))},
-		Outcomes: []ToolOutcome{{CallID: "second", ToolName: "read", Status: ToolOutcomeSucceeded, Result: tool.Output{Text: "same"}}},
+		Outcomes: []ToolOutcome{{CallID: "second", ToolName: "read", Status: ToolOutcomeSucceeded, Result: tool.ToolResult{Text: "same"}}},
 	}
 	if _, err := monitor.Observe(first); err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestProgressMonitorAllowsPermissionRequiredCallToBeRetried(t *testing.T) {
 	retry := tool.NewCall("patch-2", "apply_patch", json.RawMessage(`{"patch":"same"}`))
 	signals, err = monitor.Observe(ProgressSample{
 		Calls:    []tool.ToolCall{retry},
-		Outcomes: []ToolOutcome{{CallID: retry.ID, ToolName: retry.Name, Status: ToolOutcomeSucceeded, Result: tool.Output{Text: "applied"}}},
+		Outcomes: []ToolOutcome{{CallID: retry.ID, ToolName: retry.Name, Status: ToolOutcomeSucceeded, Result: tool.ToolResult{Text: "applied"}}},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -35,7 +35,8 @@ func TestSessionPermissionContextUnifiedGrantAPI(t *testing.T) {
 		t.Fatal("command key rejected")
 	}
 	grants := []PermissionGrant{
-		FileDirectoryGrant("/workspace/pkg"),
+		ReadDirectoryGrant("/workspace/pkg"),
+		EditDirectoryGrant("/workspace/pkg"),
 		CommandGrant(command),
 		ExternalGrant("web:example.com"),
 	}
@@ -48,8 +49,13 @@ func TestSessionPermissionContextUnifiedGrantAPI(t *testing.T) {
 			t.Fatalf("grant did not match after apply: %#v", grant)
 		}
 	}
-	if context.Match(FileDirectoryGrant("/workspace/other")) {
+	if context.Match(ReadDirectoryGrant("/workspace/other")) || context.Match(EditDirectoryGrant("/workspace/other")) {
 		t.Fatal("file grant escaped its directory")
+	}
+	readOnly := NewSessionPermissionContext()
+	readOnly.ApplyGrant(ReadDirectoryGrant("/workspace/pkg"))
+	if readOnly.Match(EditDirectoryGrant("/workspace/pkg/file.go")) {
+		t.Fatal("read grant unexpectedly allowed edit")
 	}
 	context.Clear()
 	for _, grant := range grants {

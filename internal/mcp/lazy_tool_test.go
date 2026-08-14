@@ -86,11 +86,12 @@ func TestLazyCallApprovalDenialPreventsRemoteCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinator, err := policy.NewApprovalCoordinator(approvals, policy.NewSessionPermissionContext())
+	coordinator, err := policy.NewApprovalCoordinator(approvals)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := withTestApprovalCoordinator(context.Background(), coordinator)
+	ctx = withTestPermissions(ctx, policy.NewSessionPermissionContext())
 	if _, err := executePreparedTool(t, ctx, call, json.RawMessage(`{"server":"demo","name":"echo","arguments":{}}`)); err == nil {
 		t.Fatal("denied MCP call succeeded")
 	}
@@ -112,11 +113,12 @@ func TestLazyCallSessionApprovalIsScopedByServerAndTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinator, err := policy.NewApprovalCoordinator(approvals, policy.NewSessionPermissionContext())
+	coordinator, err := policy.NewApprovalCoordinator(approvals)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := withTestApprovalCoordinator(context.Background(), coordinator)
+	ctx = withTestPermissions(ctx, policy.NewSessionPermissionContext())
 	for _, raw := range []string{
 		`{"server":"demo","name":"echo","arguments":{}}`,
 		`{"server":"demo","name":"echo","arguments":{}}`,

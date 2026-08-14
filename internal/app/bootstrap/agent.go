@@ -112,7 +112,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events pro
 	if permissions == nil {
 		permissions = policy.NewSessionPermissionContext()
 	}
-	coordinator, err := policy.NewApprovalCoordinator(approvals, permissions)
+	coordinator, err := policy.NewApprovalCoordinator(approvals)
 	if err != nil {
 		return nil, fmt.Errorf("create approval coordinator: %w", err)
 	}
@@ -142,18 +142,12 @@ func newAgentWithOptions(configured config.Config, root project.Root, events pro
 	coreOptions.FileSystemPolicy = fileSystemPolicy
 	coreOptions.Events = events
 	coreOptions.ExecuteCommand.Audit = auditSink
+	processManager := processdomain.NewManager()
+	coreOptions.ExecuteCommand.ProcessManager = processManager
 	coreOptions.PlanUpdater = planUpdater
 	registry, err := builtin.NewCoreRegistry(root, coreOptions)
 	if err != nil {
 		return nil, fmt.Errorf("create core tool registry: %w", err)
-	}
-	executeTool, exists := registry.Lookup("execute_command")
-	if !exists {
-		return nil, errors.New("create core tool registry: execute_command is missing")
-	}
-	executeCommand, ok := executeTool.(*builtin.ExecuteCommand)
-	if !ok {
-		return nil, errors.New("create core tool registry: execute_command has unexpected type")
 	}
 	visibility := make(map[string]bool)
 	if client.Capabilities().SupportsImages {
@@ -161,7 +155,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events pro
 		if imageErr != nil {
 			return nil, fmt.Errorf("create view_image tool: %w", imageErr)
 		}
-		if imageErr := registry.RegisterWithRegistration(viewImage, tool.Registration{Exposure: tool.ExposureConditional, Condition: "provider.images"}); imageErr != nil {
+		if imageErr := registry.RegisterDefinitionWithRegistration(viewImage, tool.Registration{Exposure: tool.ExposureConditional, Condition: "provider.images"}); imageErr != nil {
 			return nil, fmt.Errorf("register view_image tool: %w", imageErr)
 		}
 		visibility["provider.images"] = true
@@ -177,7 +171,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events pro
 		if toolErr != nil {
 			return nil, fmt.Errorf("create web_fetch tool: %w", toolErr)
 		}
-		if toolErr := registry.RegisterWithRegistration(webFetchTool, tool.Registration{Exposure: tool.ExposureConditional, Condition: "web.fetch.configured"}); toolErr != nil {
+		if toolErr := registry.RegisterDefinitionWithRegistration(webFetchTool, tool.Registration{Exposure: tool.ExposureConditional, Condition: "web.fetch.configured"}); toolErr != nil {
 			return nil, fmt.Errorf("register web_fetch tool: %w", toolErr)
 		}
 		visibility["web.fetch.configured"] = true
@@ -197,7 +191,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events pro
 		if toolErr != nil {
 			return nil, fmt.Errorf("create web_search tool: %w", toolErr)
 		}
-		if toolErr := registry.RegisterWithRegistration(webSearchTool, tool.Registration{Exposure: tool.ExposureConditional, Condition: "web.search.configured"}); toolErr != nil {
+		if toolErr := registry.RegisterDefinitionWithRegistration(webSearchTool, tool.Registration{Exposure: tool.ExposureConditional, Condition: "web.search.configured"}); toolErr != nil {
 			return nil, fmt.Errorf("register web_search tool: %w", toolErr)
 		}
 		visibility["web.search.configured"] = true
@@ -215,7 +209,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events pro
 		if err != nil {
 			return nil, fmt.Errorf("create read_skill tool: %w", err)
 		}
-		if err := registry.RegisterWithRegistration(readSkill, tool.Registration{Exposure: tool.ExposureConditional, Condition: "skills.available"}); err != nil {
+		if err := registry.RegisterDefinitionWithRegistration(readSkill, tool.Registration{Exposure: tool.ExposureConditional, Condition: "skills.available"}); err != nil {
 			return nil, fmt.Errorf("register read_skill tool: %w", err)
 		}
 		visibility["skills.available"] = true
@@ -238,12 +232,12 @@ func newAgentWithOptions(configured config.Config, root project.Root, events pro
 		return nil, fmt.Errorf("create lazy MCP tools: %w", err)
 	}
 	if mcpListTool != nil {
-		if err := registry.RegisterWithRegistration(mcpListTool, tool.Registration{Exposure: tool.ExposureConditional, Condition: "mcp.configured"}); err != nil {
+		if err := registry.RegisterDefinitionWithRegistration(mcpListTool, tool.Registration{Exposure: tool.ExposureConditional, Condition: "mcp.configured"}); err != nil {
 			return nil, fmt.Errorf("register lazy MCP tool: %w", err)
 		}
 	}
 	if mcpCallTool != nil {
-		if err := registry.RegisterWithRegistration(mcpCallTool, tool.Registration{Exposure: tool.ExposureDeferred, Condition: "mcp.catalog"}); err != nil {
+		if err := registry.RegisterDefinitionWithRegistration(mcpCallTool, tool.Registration{Exposure: tool.ExposureDeferred, Condition: "mcp.catalog"}); err != nil {
 			return nil, fmt.Errorf("register lazy MCP tool: %w", err)
 		}
 	}
@@ -252,12 +246,12 @@ func newAgentWithOptions(configured config.Config, root project.Root, events pro
 		return nil, fmt.Errorf("create MCP resource tools: %w", err)
 	}
 	if mcpListResources != nil {
-		if err := registry.RegisterWithRegistration(mcpListResources, tool.Registration{Exposure: tool.ExposureConditional, Condition: "mcp.resources"}); err != nil {
+		if err := registry.RegisterDefinitionWithRegistration(mcpListResources, tool.Registration{Exposure: tool.ExposureConditional, Condition: "mcp.resources"}); err != nil {
 			return nil, fmt.Errorf("register MCP resource list tool: %w", err)
 		}
 	}
 	if mcpReadResource != nil {
-		if err := registry.RegisterWithRegistration(mcpReadResource, tool.Registration{Exposure: tool.ExposureDeferred, Condition: "mcp.resources"}); err != nil {
+		if err := registry.RegisterDefinitionWithRegistration(mcpReadResource, tool.Registration{Exposure: tool.ExposureDeferred, Condition: "mcp.resources"}); err != nil {
 			return nil, fmt.Errorf("register MCP resource read tool: %w", err)
 		}
 	}
@@ -267,7 +261,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events pro
 		visibility["mcp.resources"] = true
 	}
 	toolService, err := tool.NewToolExecutionService(registry, tool.NewArgumentValidator(), tool.ToolExecutionServiceOptions{
-		Observer: react.NewToolEventObserver(events), MaxParallel: configured.Agent.MaxParallelTools, Visibility: visibility, Approvals: coordinator,
+		Observer: react.NewToolEventObserver(events), MaxParallel: configured.Agent.MaxParallelTools, Visibility: visibility, Approvals: coordinator, Permissions: permissions,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create tool execution service: %w", err)
@@ -309,7 +303,7 @@ func newAgentWithOptions(configured config.Config, root project.Root, events pro
 		MCP:              mcpManager,
 		WebFetcher:       webFetcher,
 		WebSearch:        webSearch,
-		Processes:        executeCommand.ProcessManager(),
+		Processes:        processManager,
 		ownMCP:           ownMCP,
 		tools:            availableTools,
 		visibility:       visibility,
@@ -334,11 +328,11 @@ func (agent *Agent) RefreshMCP(ctx context.Context) []error {
 			warnings = append(warnings, fmt.Errorf("refresh MCP server %q: %w", server, err))
 			continue
 		}
-		values := make([]tool.Tool, len(tools))
+		definitions := make([]tool.ToolDefinition, len(tools))
 		for index, value := range tools {
-			values[index] = value
+			definitions[index] = value
 		}
-		if err := agent.Registry.ReplaceGroupWithRegistration("mcp:"+server, values, tool.Registration{Exposure: tool.ExposureDeferred, Condition: "mcp.catalog"}); err != nil {
+		if err := agent.Registry.ReplaceDefinitionGroupWithRegistration("mcp:"+server, definitions, tool.Registration{Exposure: tool.ExposureDeferred, Condition: "mcp.catalog"}); err != nil {
 			warnings = append(warnings, fmt.Errorf("register MCP server %q tools: %w", server, err))
 		}
 	}

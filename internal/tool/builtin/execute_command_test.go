@@ -10,8 +10,42 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
 )
+
+func TestExecuteCommandApprovalUsesClearClaudeStylePresentation(t *testing.T) {
+	rootPath := t.TempDir()
+	executeCommand := newTestExecuteCommand(t, rootPath, 5*time.Second, 1024, 100)
+	approvalPort := &testApprovalPort{decision: policy.ApprovalDecision{
+		Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "test approved once",
+	}}
+	coordinator, err := policy.NewApprovalCoordinator(approvalPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := withTestApprovalCoordinator(context.Background(), coordinator)
+	if _, err := executePreparedTool(t, ctx, executeCommand, json.RawMessage(`{"command":"printf ok"}`)); err != nil {
+		t.Fatalf("execute command: %v", err)
+	}
+	if len(approvalPort.requests) != 1 {
+		t.Fatalf("unexpected approval requests: %#v", approvalPort.requests)
+	}
+	request := approvalPort.requests[0]
+	if request.Cause.Kind != policy.ApprovalCauseCommand || request.Cause.Code != "host_command" {
+		t.Fatalf("unexpected command approval cause: %#v", request.Cause)
+	}
+	if request.Presentation.Title != "Bash command" || request.Presentation.Question != "Do you want to proceed?" {
+		t.Fatalf("unexpected command approval presentation: %#v", request.Presentation)
+	}
+	text := request.Presentation.Title + " " + request.Presentation.Question + " " + strings.Join(request.Presentation.Details, " ")
+	for _, option := range request.Presentation.Options {
+		text += " " + option.Label + " " + option.Description
+	}
+	if strings.Contains(strings.ToLower(text), "unsandbox") || !strings.Contains(text, "this exact command during this session") {
+		t.Fatalf("unclear command approval presentation: %q", text)
+	}
+}
 
 func TestExecuteCommandUsesFixedProjectCWDAndCombinedOutput(t *testing.T) {
 	rootPath := t.TempDir()

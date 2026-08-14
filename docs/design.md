@@ -227,6 +227,44 @@ internal/diff/               Structured Diff
 internal/config/             配置加载、校验、脱敏
 ```
 
+### 7.1 Package 内源码组织规则
+
+目录负责表达稳定的领域或适配器边界，文件负责表达该目录内的一项内聚职责。为避免持续重构后重新形成“历史聚合文件”，源码遵循以下约束：
+
+- 不为单纯缩短文件而新增 package；只有出现独立依赖方向、生命周期或可替换适配器边界时才拆目录。
+- 同一 package 内优先按行为拆文件，文件名直接表达职责，例如 `approval_request.go`、`approval_decision.go`、`application_events.go`。
+- Tool 实现按用户可见 Tool 拆分；多个 Tool 共用的安全写入、Diff、Approval 与 revalidate 流水线放入明确命名的共享文件。
+- TUI Application 的状态与生命周期、Bubble Tea 更新、Runtime Event 投影和 View 渲染分别组织，不把业务事件归约与字符串渲染重新合并。
+- 测试与被测 package 共置；架构约束测试必须扫描同一主链的全部拆分文件，不能只检查历史入口文件。
+- 约 400–500 行是需要重新审视职责的软阈值，不作为机械拆分标准；Runtime 状态机或协议编解码在保持单一职责时可以超过该阈值。
+
+当前关键文件布局：
+
+```text
+internal/interface/tui/
+  application.go             Fullscreen Application 类型、生命周期与模型装配
+  application_update.go      Bubble Tea Update 与输入状态转换
+  application_events.go      SessionEvent / TurnItem 投影与历史状态更新
+  application_view.go        View、状态栏、输入框与终端内容清理
+  application_commands.go    Slash Command 分发
+  application_selection.go   Session / Skill 选择流程
+
+internal/policy/
+  approval_types.go          Approval 公共枚举、Cause 与 Presentation 类型
+  approval_request.go        Request 构造、校验、克隆与参数完整性
+  approval_decision.go       Decision 校验与终端输入解析
+  approval_port.go           ApprovalPort 边界
+  approval_coordinator.go    并发请求协调
+  presentation.go            用户可见 Approval 文案构建
+
+internal/tool/builtin/
+  file_tools.go              FileTools 配置、工厂与 ToolDefinition 暴露
+  read_file.go               read Tool
+  edit_file.go               edit Tool
+  write_file.go              write Tool
+  file_change.go             共享 Diff、Approval、revalidate 与原子写入流水线
+```
+
 ## 8. 核心语义
 
 ### 8.1 Thread Identity 与 Project Context

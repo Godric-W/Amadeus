@@ -3,6 +3,8 @@ package tool
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 
 	"github.com/Godric-W/Amadeus/internal/policy"
 )
@@ -15,53 +17,96 @@ const (
 	PermissionDeny  PermissionDecision = "deny"
 )
 
-type PermissionCheck struct {
-	Decision   PermissionDecision
-	Request    *policy.ApprovalRequest
-	Grant      policy.PermissionGrant
-	Prepared   any
-	Reason     string
-	OnDecision func(context.Context, policy.ApprovalDecision) error
+// PermissionEvaluation is the prepared, side-effect-free permission request
+// consumed by PermissionService. Tool preparation state remains exclusively
+// in PreparedToolUse.
+type PermissionEvaluation struct {
+	Decision PermissionDecision
+	Request  *policy.ApprovalRequest
+	Grant    policy.PermissionGrant
+	Reason   string
+	Observe  func(context.Context, policy.ApprovalDecision) error
 }
 
-func (check PermissionCheck) Validate() error {
-	switch check.Decision {
-	case PermissionAllow:
+func AllowPermission() PermissionEvaluation {
+	return PermissionEvaluation{Decision: PermissionAllow}
+}
+
+func (evaluation PermissionEvaluation) Validate() error {
+	switch evaluation.Decision {
+	case PermissionAllow, PermissionDeny:
 		return nil
 	case PermissionAsk:
-		if check.Request == nil {
+		if evaluation.Request == nil {
 			return errors.New("permission ask has no approval request")
 		}
-		if err := check.Request.Validate(); err != nil {
+		if err := evaluation.Request.Validate(); err != nil {
 			return err
 		}
-		if !check.Grant.Valid() {
+		if !evaluation.Grant.Valid() {
 			return errors.New("permission ask has no valid session grant")
 		}
-		return nil
-	case PermissionDeny:
 		return nil
 	default:
 		return errors.New("permission decision is invalid")
 	}
 }
 
-type PermissionChecker interface {
-	CheckPermissions(context.Context, Invocation) (PermissionCheck, error)
+type PermissionService struct {
+	permissions *policy.SessionPermissionContext
+	approvals   *policy.ApprovalCoordinator
+	mutex       sync.Mutex
 }
 
-type permissionCheckContextKey struct{}
-
-func WithPermissionCheck(ctx context.Context, check PermissionCheck) context.Context {
-	return context.WithValue(ctx, permissionCheckContextKey{}, check)
+func NewPermissionService(permissions *policy.SessionPermissionContext, approvals *policy.ApprovalCoordinator) *PermissionService {
+	return &PermissionService{permissions: permissions, approvals: approvals}
 }
 
-func PermissionCheckFromContext(ctx context.Context) (PermissionCheck, bool) {
-	if ctx == nil {
-		return PermissionCheck{}, false
+func (service *PermissionService) Evaluate(ctx context.Context, toolName string, evaluation PermissionEvaluation) error {
+	if err := evaluation.Validate(); err != nil {
+		return fmt.Errorf("validate permission evaluation: %w", err)
 	}
-	check, ok := ctx.Value(permissionCheckContextKey{}).(PermissionCheck)
-	return check, ok
+	observe := func(decision policy.ApprovalDecision) error {
+		if evaluation.Observe == nil {
+			return nil
+		}
+		return evaluation.Observe(ctx, decision)
+	}
+	switch evaluation.Decision {
+	case PermissionAllow:
+		return observe(policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceGrant, Reason: "permission allowed"})
+	case PermissionDeny:
+		decision := policy.ApprovalDecision{Outcome: policy.ApprovalDeny, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourcePolicy, Reason: evaluation.Reason}
+		if err := observe(decision); err != nil {
+			return err
+		}
+		return &PermissionDeniedError{ToolName: toolName, Reason: evaluation.Reason}
+	case PermissionAsk:
+		if service == nil || service.approvals == nil {
+			return errors.New("tool permission requires approval coordinator")
+		}
+		service.mutex.Lock()
+		defer service.mutex.Unlock()
+		if service.permissions != nil && service.permissions.Match(evaluation.Grant) {
+			return observe(policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalSession, Source: policy.ApprovalSourceGrant, Reason: "matching session permission grant"})
+		}
+		decision, err := service.approvals.Decide(ctx, *evaluation.Request)
+		if err != nil {
+			return err
+		}
+		if err := observe(decision); err != nil {
+			return err
+		}
+		if !decision.Allowed() {
+			return &PermissionDeniedError{ToolName: toolName, Reason: decision.Reason}
+		}
+		if decision.Scope == policy.ApprovalSession && service.permissions != nil {
+			service.permissions.ApplyGrant(evaluation.Grant)
+		}
+		return nil
+	default:
+		return errors.New("unsupported tool permission decision")
+	}
 }
 
 type PermissionDeniedError struct {

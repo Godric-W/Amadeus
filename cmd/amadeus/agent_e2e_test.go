@@ -81,7 +81,7 @@ func (client *planGuidedWorkflowClient) Stream(_ context.Context, request llm.Re
 	if client.streams == 1 {
 		return &codingCommandStream{chunks: []llm.StreamChunk{
 			{ID: "plan-guided-tool", ToolCalls: []llm.ToolCall{{
-				ID: "plan-1", Name: "update_plan", Arguments: json.RawMessage(`{"explanation":"Coordinate the multi-step change","items":[{"step":"Inspect implementation","status":"in_progress"},{"step":"Apply focused fix","status":"pending"},{"step":"Run verification","status":"pending"}]}`),
+				ID: "plan-1", Name: "update_plan", Arguments: json.RawMessage(`{"explanation":"Coordinate the multi-step change","plan":[{"step":"Inspect implementation","status":"in_progress"},{"step":"Apply focused fix","status":"pending"},{"step":"Run verification","status":"pending"}]}`),
 			}}},
 			{ID: "plan-guided-tool", FinishReason: llm.FinishReasonToolCalls, ProviderFinishReason: "tool_calls"},
 		}}, nil

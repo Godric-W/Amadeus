@@ -43,12 +43,13 @@ func (port *sessionApprovalPort) Decide(ctx context.Context, request policy.Appr
 			Presentation: protocol.ApprovalPresentation{
 				Title:       request.Presentation.Title,
 				Description: request.Presentation.Question,
-				Diff:        fmt.Sprint(request.Diff),
+				Details:     append([]string(nil), request.Presentation.Details...),
+				Diff:        request.Diff,
 			},
 		},
 	}
 	for _, option := range request.Presentation.Options {
-		interactive.Approval.Presentation.Options = append(interactive.Approval.Presentation.Options, protocol.ApprovalOption{ID: option.ID, Label: option.Label})
+		interactive.Approval.Presentation.Options = append(interactive.Approval.Presentation.Options, protocol.ApprovalOption{ID: option.ID, Label: option.Label, Description: option.Description})
 	}
 	op, err := port.requester.Request(ctx, interactive)
 	if err != nil {

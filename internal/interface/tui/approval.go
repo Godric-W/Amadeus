@@ -58,25 +58,8 @@ func (prompt *InlineApprovalPrompt) Decide(ctx context.Context, request policy.A
 	if !prompt.isTerminal(prompt.input) {
 		return inlinePolicyDecision("approval requires a TTY; non-interactive input was denied"), nil
 	}
-	first := "once"
-	if request.Presentation.Title != "" {
-		if _, err := fmt.Fprintf(prompt.output, "%s\n", sanitizeInlineEventText(request.Presentation.Title)); err != nil {
-			return policy.ApprovalDecision{}, fmt.Errorf("write inline approval title: %w", err)
-		}
-		for _, detail := range request.Presentation.Details {
-			if _, err := fmt.Fprintf(prompt.output, "  %s\n", sanitizeInlineEventText(detail)); err != nil {
-				return policy.ApprovalDecision{}, fmt.Errorf("write inline approval detail: %w", err)
-			}
-		}
-		question := request.Presentation.Question
-		if question == "" {
-			question = "Do you want to proceed?"
-		}
-		if _, err := fmt.Fprintf(prompt.output, "%s [y] Yes / [s] session / [n] No: ", sanitizeInlineEventText(question)); err != nil {
-			return policy.ApprovalDecision{}, fmt.Errorf("write inline approval question: %w", err)
-		}
-	} else if _, err := fmt.Fprintf(prompt.output, "approval input\n  tool: %s\n  risk: %s\n  reason: %s\n  arguments_sha256: %s\nAllow? [y] %s / [s] session / [n] deny: ", sanitizeInlineEventText(request.ToolName), request.Risk, sanitizeInlineEventText(request.Reason), request.ArgumentsSHA256, first); err != nil {
-		return policy.ApprovalDecision{}, fmt.Errorf("write inline approval prompt: %w", err)
+	if err := writeInlineApprovalPrompt(prompt.output, request); err != nil {
+		return policy.ApprovalDecision{}, err
 	}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -92,10 +75,52 @@ func (prompt *InlineApprovalPrompt) Decide(ctx context.Context, request policy.A
 		if decision, ok := policy.ResolveApprovalInput(request, line); ok {
 			return decision, nil
 		}
-		if _, err := io.WriteString(prompt.output, "Invalid choice. Enter y, s, or n: "); err != nil {
+		if _, err := io.WriteString(prompt.output, "Invalid choice. Enter 1, 2, 3, y, s, or n: "); err != nil {
 			return policy.ApprovalDecision{}, fmt.Errorf("write inline approval retry prompt: %w", err)
 		}
 	}
+}
+
+func writeInlineApprovalPrompt(writer io.Writer, request policy.ApprovalRequest) error {
+	title := strings.TrimSpace(request.Presentation.Title)
+	if title == "" {
+		title = "Tool use"
+	}
+	if _, err := fmt.Fprintln(writer, sanitizeInlineEventText(title)); err != nil {
+		return fmt.Errorf("write inline approval title: %w", err)
+	}
+	for _, detail := range request.Presentation.Details {
+		if _, err := fmt.Fprintf(writer, "  %s\n", sanitizeInlineEventText(detail)); err != nil {
+			return fmt.Errorf("write inline approval detail: %w", err)
+		}
+	}
+	if len(request.Presentation.Details) == 0 {
+		if _, err := fmt.Fprintf(writer, "  Tool: %s\n", sanitizeInlineEventText(request.ToolName)); err != nil {
+			return fmt.Errorf("write inline approval tool: %w", err)
+		}
+	}
+	question := strings.TrimSpace(request.Presentation.Question)
+	if question == "" {
+		question = "Do you want to proceed?"
+	}
+	if _, err := fmt.Fprintln(writer, sanitizeInlineEventText(question)); err != nil {
+		return fmt.Errorf("write inline approval question: %w", err)
+	}
+	for index, option := range request.Presentation.Options {
+		if _, err := fmt.Fprintf(writer, "  %d. %s\n", index+1, sanitizeInlineEventText(option.Label)); err != nil {
+			return fmt.Errorf("write inline approval option: %w", err)
+		}
+		if description := strings.TrimSpace(option.Description); description != "" {
+			if _, err := fmt.Fprintf(writer, "     %s\n", sanitizeInlineEventText(description)); err != nil {
+				return fmt.Errorf("write inline approval option description: %w", err)
+			}
+		}
+	}
+	_, err := io.WriteString(writer, "Choose [1-3] ([y] once / [s] session / [n] no): ")
+	if err != nil {
+		return fmt.Errorf("write inline approval choice prompt: %w", err)
+	}
+	return nil
 }
 
 func parseInlineApprovalChoice(input string) (policy.ApprovalDecision, bool) {

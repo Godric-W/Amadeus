@@ -17,6 +17,8 @@ import (
 
 type GlobOptions struct {
 	MaxResults       int
+	MaxOutputBytes   int
+	MaxOutputTokens  int
 	RipgrepPath      string
 	DisableRipgrep   bool
 	MaxRGOutputBytes int64
@@ -38,6 +40,14 @@ type globArguments struct {
 	Limit         int    `json:"limit,omitempty"`
 }
 
+type preparedGlob struct {
+	arguments    globArguments
+	pattern      string
+	absoluteBase string
+	displayBase  string
+	limit        int
+}
+
 var ignoredGlobDirectories = map[string]struct{}{
 	".git": {}, ".hg": {}, ".svn": {}, "node_modules": {}, "vendor": {}, "dist": {}, "build": {}, "target": {},
 }
@@ -51,6 +61,12 @@ func NewGlob(root project.Root, options GlobOptions) (*Glob, error) {
 	}
 	if options.MaxRGOutputBytes <= 0 {
 		options.MaxRGOutputBytes = 4 << 20
+	}
+	if options.MaxOutputBytes <= 0 {
+		options.MaxOutputBytes = 256 << 10
+	}
+	if options.MaxOutputTokens <= 0 {
+		options.MaxOutputTokens = 64_000
 	}
 	reader, err := workspace.NewReaderWithPolicy(root, options.FileSystemPolicy)
 	if options.FileSystemPolicy == nil {
@@ -87,18 +103,28 @@ func (glob *Glob) Spec() tool.ToolSpec {
 
 func (glob *Glob) SupportsParallelToolCalls() bool { return true }
 
-func (glob *Glob) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
-	call := invocation.Call
+func (glob *Glob) ValidateInput(_ tool.ToolUseContext, invocation tool.Invocation) error {
 	var arguments globArguments
-	if err := decodeArguments(call.Payload, &arguments); err != nil {
-		return tool.Output{}, err
+	if err := decodeArguments(invocation.Call.Payload, &arguments); err != nil {
+		return err
+	}
+	if _, err := workspace.NormalizeGlob(arguments.Pattern); err != nil {
+		return fmt.Errorf("glob pattern is invalid: %w", err)
+	}
+	if arguments.Limit < 0 {
+		return errors.New("glob limit cannot be negative")
+	}
+	return nil
+}
+
+func (glob *Glob) Prepare(_ tool.ToolUseContext, invocation tool.Invocation) (tool.PreparedToolUse, error) {
+	var arguments globArguments
+	if err := decodeArguments(invocation.Call.Payload, &arguments); err != nil {
+		return tool.PreparedToolUse{}, err
 	}
 	pattern, err := workspace.NormalizeGlob(arguments.Pattern)
 	if err != nil {
-		return tool.Output{}, fmt.Errorf("glob pattern is invalid: %w", err)
-	}
-	if arguments.Limit < 0 {
-		return tool.Output{}, errors.New("glob limit cannot be negative")
+		return tool.PreparedToolUse{}, fmt.Errorf("glob pattern is invalid: %w", err)
 	}
 	base := strings.TrimSpace(arguments.Path)
 	if base == "" {
@@ -106,27 +132,46 @@ func (glob *Glob) Call(ctx context.Context, invocation tool.Invocation) (tool.Ou
 	}
 	resolved, err := glob.reader.ResolveExistingTarget(base, project.PathDirectory)
 	if err != nil {
-		return tool.Output{}, err
+		return tool.PreparedToolUse{}, err
 	}
 	absoluteBase := resolved.Canonical
 	limit := glob.options.MaxResults
 	if arguments.Limit > 0 && arguments.Limit < limit {
 		limit = arguments.Limit
 	}
-	matches, partial, backend, err := glob.ripgrepMatches(ctx, absoluteBase, pattern, arguments.IncludeHidden, limit)
-	if err != nil && ctx.Err() != nil {
-		return tool.Output{}, ctx.Err()
+	state := preparedGlob{arguments: arguments, pattern: pattern, absoluteBase: absoluteBase, displayBase: base, limit: limit}
+	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: state, Permission: tool.AllowPermission()}, nil
+}
+
+func (glob *Glob) Execute(toolContext tool.ToolUseContext, prepared tool.PreparedToolUse) (tool.ToolResult, error) {
+	state, ok := prepared.State.(preparedGlob)
+	if !ok {
+		return tool.ToolResult{}, errors.New("glob preparation state is invalid")
+	}
+	matches, partial, backend, err := glob.ripgrepMatches(toolContext.Context, state.absoluteBase, state.pattern, state.arguments.IncludeHidden, state.limit)
+	if err != nil && toolContext.Context.Err() != nil {
+		return tool.ToolResult{}, toolContext.Context.Err()
 	}
 	if err != nil || glob.ripgrep == "" {
-		matches, partial, err = glob.goMatches(ctx, absoluteBase, pattern, arguments.IncludeHidden, limit)
+		matches, partial, err = glob.goMatches(toolContext.Context, state.absoluteBase, state.pattern, state.arguments.IncludeHidden, state.limit)
 		backend = "go"
 		if err != nil {
-			return tool.Output{}, err
+			return tool.ToolResult{}, err
 		}
 	}
-	return tool.Output{
+	matches, text, outputPartial, outputReason := boundRenderedItems(matches, func(items []string) string { return strings.Join(items, "\n") }, glob.options.MaxOutputBytes, glob.options.MaxOutputTokens)
+	reason := tool.TruncationNone
+	partial = partial || outputPartial
+	if outputPartial {
+		reason = outputReason
+	} else if partial {
+		reason = tool.TruncationResultLimit
+	}
+	data := tool.BoundedResult[string]{Items: matches, Truncated: partial, Reason: reason, Bytes: len(text), TokenEstimate: (len(text) + 3) / 4}
+	return tool.ToolResult{
 		ToolName: "glob", Text: strings.Join(matches, "\n"), Partial: partial,
-		Metadata: map[string]any{"path": base, "pattern": pattern, "matches_returned": len(matches), "backend": backend},
+		Data: data, Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayText, Title: "Files", Summary: fmt.Sprintf("%d matches", len(matches))},
+		Metadata: map[string]any{"path": state.displayBase, "pattern": state.pattern, "matches_returned": len(matches), "backend": backend, "truncation_reason": reason},
 	}, nil
 }
 
@@ -220,4 +265,4 @@ func (glob *Glob) goMatches(ctx context.Context, absoluteBase, pattern string, i
 	return matches, partial, nil
 }
 
-var _ tool.Tool = (*Glob)(nil)
+var _ tool.ToolDefinition = (*Glob)(nil)

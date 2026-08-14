@@ -11,6 +11,7 @@ import (
 func (model fullscreenModel) resolveApproval(decision policy.ApprovalDecision) (tea.Model, tea.Cmd) {
 	prompt := model.approval
 	model.approval = nil
+	model.approvalDialog = nil
 	model.selection = nil
 	model.selectionKind = ""
 	model.status = "executing"
@@ -74,10 +75,6 @@ func (model fullscreenModel) handleSelectionKey(key tea.KeyMsg) (tea.Model, tea.
 	}
 	switch key.String() {
 	case "esc", "ctrl+c":
-		if model.selectionKind == "approval" && model.approval != nil {
-			choices := approvalChoices(model.approval.request)
-			return model.resolveApproval(choices[len(choices)-1].decision)
-		}
 		model.selection = nil
 		model.selectionKind = ""
 		model.sessions = nil
@@ -94,11 +91,6 @@ func (model fullscreenModel) handleSelectionKey(key tea.KeyMsg) (tea.Model, tea.
 			return model, nil
 		}
 		switch model.selectionKind {
-		case "approval":
-			choices := approvalChoices(model.approval.request)
-			if selected >= 0 && selected < len(choices) {
-				return model.resolveApproval(choices[selected].decision)
-			}
 		case "resume":
 			if selected >= 0 && selected < len(model.sessions) {
 				model.status = "resuming session"
@@ -168,14 +160,6 @@ func (model fullscreenModel) renderSelectionOverlay(width int) string {
 		hint = "↑/↓ select · Enter confirm · Esc cancel"
 	}
 	visual := listVisual{Title: overlay.Title, Subtitle: overlay.Subtitle, Hint: hint}
-	if model.selectionKind == "approval" && model.approval != nil {
-		request := model.approval.request
-		visual.Details = append(visual.Details,
-			"Tool: "+sanitizeInlineEventText(request.ToolName),
-			fmt.Sprintf("Risk: %s", request.Risk),
-			"Reason: "+sanitizeInlineEventText(request.Reason),
-		)
-	}
 	if overlay.Input || overlay.Search {
 		visual.InputLabel = "› "
 		if overlay.Search {

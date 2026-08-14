@@ -11,7 +11,8 @@ import (
 type PermissionGrantKind string
 
 const (
-	GrantFileDirectory PermissionGrantKind = "file_directory"
+	GrantReadDirectory PermissionGrantKind = "read_directory"
+	GrantEditDirectory PermissionGrantKind = "edit_directory"
 	GrantCommandExact  PermissionGrantKind = "command_exact"
 	GrantExternalKey   PermissionGrantKind = "external_key"
 )
@@ -23,8 +24,12 @@ type PermissionGrant struct {
 	Key       string
 }
 
-func FileDirectoryGrant(path string) PermissionGrant {
-	return PermissionGrant{Kind: GrantFileDirectory, Directory: filepath.Clean(strings.TrimSpace(path))}
+func ReadDirectoryGrant(path string) PermissionGrant {
+	return PermissionGrant{Kind: GrantReadDirectory, Directory: filepath.Clean(strings.TrimSpace(path))}
+}
+
+func EditDirectoryGrant(path string) PermissionGrant {
+	return PermissionGrant{Kind: GrantEditDirectory, Directory: filepath.Clean(strings.TrimSpace(path))}
 }
 
 func CommandGrant(key CommandApprovalKey) PermissionGrant {
@@ -37,7 +42,7 @@ func ExternalGrant(key string) PermissionGrant {
 
 func (grant PermissionGrant) Valid() bool {
 	switch grant.Kind {
-	case GrantFileDirectory:
+	case GrantReadDirectory, GrantEditDirectory:
 		return grant.Directory != "" && grant.Directory != "."
 	case GrantCommandExact:
 		return grant.Command != nil && grant.Command.CWD != "" && grant.Command.Command != ""

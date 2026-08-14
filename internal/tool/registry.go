@@ -17,7 +17,7 @@ var (
 
 type Entry struct {
 	Spec      ToolSpec
-	Tool      Tool
+	Tool      ToolDefinition
 	Exposure  Exposure
 	Condition string
 }
@@ -32,11 +32,11 @@ func NewRegistry() *Registry {
 	return &Registry{tools: make(map[string]Entry), groups: make(map[string]map[string]struct{})}
 }
 
-func (registry *Registry) ReplaceGroup(group string, candidates []Tool) error {
-	return registry.ReplaceGroupWithRegistration(group, candidates, DirectRegistration())
+func (registry *Registry) ReplaceDefinitionGroup(group string, candidates []ToolDefinition) error {
+	return registry.ReplaceDefinitionGroupWithRegistration(group, candidates, DirectRegistration())
 }
 
-func (registry *Registry) ReplaceGroupWithRegistration(group string, candidates []Tool, registration Registration) error {
+func (registry *Registry) ReplaceDefinitionGroupWithRegistration(group string, candidates []ToolDefinition, registration Registration) error {
 	group = strings.TrimSpace(group)
 	if group == "" {
 		return errors.New("tool registry group is empty")
@@ -47,11 +47,11 @@ func (registry *Registry) ReplaceGroupWithRegistration(group string, candidates 
 	}
 	entries := make([]Entry, 0, len(candidates))
 	seen := make(map[string]struct{}, len(candidates))
-	for _, candidate := range candidates {
-		if candidate == nil || isNilTool(candidate) {
+	for _, definition := range candidates {
+		if definition == nil || isNilDefinition(definition) {
 			return ErrNilTool
 		}
-		spec := candidate.Spec().Clone()
+		spec := definition.Spec().Clone()
 		if err := validateSpec(spec); err != nil {
 			return err
 		}
@@ -59,9 +59,8 @@ func (registry *Registry) ReplaceGroupWithRegistration(group string, candidates 
 			return fmt.Errorf("%w: %s", ErrDuplicateTool, spec.Name)
 		}
 		seen[spec.Name] = struct{}{}
-		entries = append(entries, Entry{Spec: spec, Tool: candidate, Exposure: registration.Exposure, Condition: registration.Condition})
+		entries = append(entries, Entry{Spec: spec, Tool: definition, Exposure: registration.Exposure, Condition: registration.Condition})
 	}
-
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
 	for _, entry := range entries {
@@ -76,47 +75,45 @@ func (registry *Registry) ReplaceGroupWithRegistration(group string, candidates 
 	}
 	owned := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
-		registry.tools[entry.Spec.Name] = entry
-		owned[entry.Spec.Name] = struct{}{}
+		registry.tools[entry.Spec.Name], owned[entry.Spec.Name] = entry, struct{}{}
 	}
 	registry.groups[group] = owned
 	return nil
 }
 
-func (registry *Registry) Register(candidate Tool) error {
-	return registry.RegisterWithRegistration(candidate, DirectRegistration())
+func (registry *Registry) RegisterDefinition(definition ToolDefinition) error {
+	return registry.RegisterDefinitionWithRegistration(definition, DirectRegistration())
 }
 
-func (registry *Registry) RegisterWithRegistration(candidate Tool, registration Registration) error {
-	if candidate == nil || isNilTool(candidate) {
+func (registry *Registry) RegisterDefinitionWithRegistration(definition ToolDefinition, registration Registration) error {
+	if definition == nil || isNilDefinition(definition) {
 		return ErrNilTool
 	}
 	registration, err := normalizeRegistration(registration)
 	if err != nil {
 		return err
 	}
-	spec := candidate.Spec().Clone()
+	spec := definition.Spec().Clone()
 	if err := validateSpec(spec); err != nil {
 		return err
 	}
-
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
 	if _, exists := registry.tools[spec.Name]; exists {
 		return fmt.Errorf("%w: %s", ErrDuplicateTool, spec.Name)
 	}
-	registry.tools[spec.Name] = Entry{Spec: spec, Tool: candidate, Exposure: registration.Exposure, Condition: registration.Condition}
+	registry.tools[spec.Name] = Entry{Spec: spec, Tool: definition, Exposure: registration.Exposure, Condition: registration.Condition}
 	return nil
 }
 
-func (registry *Registry) Lookup(name string) (Tool, bool) {
+func (registry *Registry) Lookup(name string) (ToolDefinition, bool) {
 	registry.mutex.RLock()
 	entry, exists := registry.tools[strings.TrimSpace(name)]
 	registry.mutex.RUnlock()
 	return entry.Tool, exists
 }
 
-func (registry *Registry) LookupVisible(name string, conditions map[string]bool) (Tool, bool) {
+func (registry *Registry) LookupVisible(name string, conditions map[string]bool) (ToolDefinition, bool) {
 	registry.mutex.RLock()
 	entry, exists := registry.tools[strings.TrimSpace(name)]
 	registry.mutex.RUnlock()
@@ -204,8 +201,8 @@ func ValidateSpec(spec ToolSpec) error {
 	return validateSpec(spec)
 }
 
-func isNilTool(candidate Tool) bool {
-	value := reflect.ValueOf(candidate)
+func isNilDefinition(definition ToolDefinition) bool {
+	value := reflect.ValueOf(definition)
 	switch value.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
 		return value.IsNil()

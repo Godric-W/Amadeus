@@ -1,7 +1,6 @@
 package tool
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,27 +13,31 @@ type fakeTool struct {
 	parallel bool
 }
 
-func (toolImpl *fakeTool) Spec() ToolSpec                  { return toolImpl.spec }
-func (toolImpl *fakeTool) SupportsParallelToolCalls() bool { return toolImpl.parallel }
-func (toolImpl *fakeTool) Call(_ context.Context, invocation Invocation) (Output, error) {
-	return Output{CallID: invocation.Call.ID, ToolName: toolImpl.spec.Name}, nil
+func (toolImpl *fakeTool) Spec() ToolSpec                                 { return toolImpl.spec }
+func (toolImpl *fakeTool) SupportsParallelToolCalls() bool                { return toolImpl.parallel }
+func (toolImpl *fakeTool) ValidateInput(ToolUseContext, Invocation) error { return nil }
+func (toolImpl *fakeTool) Prepare(_ ToolUseContext, invocation Invocation) (PreparedToolUse, error) {
+	return PreparedToolUse{Invocation: invocation, Permission: AllowPermission()}, nil
+}
+func (toolImpl *fakeTool) Execute(_ ToolUseContext, prepared PreparedToolUse) (ToolResult, error) {
+	return ToolResult{CallID: prepared.Invocation.Call.ID, ToolName: toolImpl.spec.Name}, nil
 }
 
 func TestRegistryRegisterLookupDuplicateAndSnapshot(t *testing.T) {
 	registry := NewRegistry()
 	readTool := newFakeTool("read", true)
 	writeTool := newFakeTool("write_file", false)
-	if err := registry.Register(writeTool); err != nil {
+	if err := registry.RegisterDefinition(writeTool); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Register(readTool); err != nil {
+	if err := registry.RegisterDefinition(readTool); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Register(newFakeTool("read", true)); !errors.Is(err, ErrDuplicateTool) {
+	if err := registry.RegisterDefinition(newFakeTool("read", true)); !errors.Is(err, ErrDuplicateTool) {
 		t.Fatalf("unexpected duplicate error: %v", err)
 	}
 	got, exists := registry.Lookup(" read ")
-	if !exists || got != readTool {
+	if !exists || got.Spec().Name != readTool.Spec().Name {
 		t.Fatalf("unexpected lookup result: %#v, %v", got, exists)
 	}
 	entries := registry.Snapshot()
@@ -49,14 +52,14 @@ func TestRegistryRegisterLookupDuplicateAndSnapshot(t *testing.T) {
 
 func TestRegistryRejectsNilAndInvalidTools(t *testing.T) {
 	registry := NewRegistry()
-	if err := registry.Register(nil); !errors.Is(err, ErrNilTool) {
+	if err := registry.RegisterDefinition(nil); !errors.Is(err, ErrNilTool) {
 		t.Fatalf("unexpected nil tool error: %v", err)
 	}
 	var typedNil *fakeTool
-	if err := registry.Register(typedNil); !errors.Is(err, ErrNilTool) {
+	if err := registry.RegisterDefinition(typedNil); !errors.Is(err, ErrNilTool) {
 		t.Fatalf("unexpected typed nil error: %v", err)
 	}
-	if err := registry.Register(newFakeTool("", false)); !errors.Is(err, ErrInvalidSpec) {
+	if err := registry.RegisterDefinition(newFakeTool("", false)); !errors.Is(err, ErrInvalidSpec) {
 		t.Fatalf("unexpected invalid spec error: %v", err)
 	}
 }
@@ -71,7 +74,7 @@ func TestRegistrySupportsConcurrentRegistrationAndLookup(t *testing.T) {
 		go func() {
 			defer waitGroup.Done()
 			name := fmt.Sprintf("tool_%03d", index)
-			if err := registry.Register(newFakeTool(name, true)); err != nil {
+			if err := registry.RegisterDefinition(newFakeTool(name, true)); err != nil {
 				t.Errorf("register %s: %v", name, err)
 				return
 			}
@@ -88,13 +91,13 @@ func TestRegistrySupportsConcurrentRegistrationAndLookup(t *testing.T) {
 
 func TestRegistryReplaceGroupIsAtomicAndLeavesOtherTools(t *testing.T) {
 	registry := NewRegistry()
-	if err := registry.Register(newFakeTool("read", true)); err != nil {
+	if err := registry.RegisterDefinition(newFakeTool("read", true)); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.ReplaceGroup("mcp:demo", []Tool{newFakeTool("mcp__demo__one", false)}); err != nil {
+	if err := registry.ReplaceDefinitionGroup("mcp:demo", []ToolDefinition{newFakeTool("mcp__demo__one", false)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.ReplaceGroup("mcp:demo", []Tool{newFakeTool("mcp__demo__two", false)}); err != nil {
+	if err := registry.ReplaceDefinitionGroup("mcp:demo", []ToolDefinition{newFakeTool("mcp__demo__two", false)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := registry.Lookup("mcp__demo__one"); ok {
@@ -106,14 +109,14 @@ func TestRegistryReplaceGroupIsAtomicAndLeavesOtherTools(t *testing.T) {
 	if _, ok := registry.Lookup("read"); !ok {
 		t.Fatal("group replacement removed unrelated tool")
 	}
-	if err := registry.ReplaceGroup("mcp:demo", []Tool{newFakeTool("read", true)}); !errors.Is(err, ErrDuplicateTool) {
+	if err := registry.ReplaceDefinitionGroup("mcp:demo", []ToolDefinition{newFakeTool("read", true)}); !errors.Is(err, ErrDuplicateTool) {
 		t.Fatalf("group replacement accepted collision: %v", err)
 	}
 }
 
 func TestRegistryStoresExposureMetadata(t *testing.T) {
 	registry := NewRegistry()
-	if err := registry.RegisterWithRegistration(newFakeTool("view_image", true), Registration{Exposure: ExposureConditional, Condition: "provider.images"}); err != nil {
+	if err := registry.RegisterDefinitionWithRegistration(newFakeTool("view_image", true), Registration{Exposure: ExposureConditional, Condition: "provider.images"}); err != nil {
 		t.Fatal(err)
 	}
 	entries := registry.Snapshot()
@@ -132,4 +135,4 @@ func newFakeTool(name string, parallel bool) *fakeTool {
 	return &fakeTool{parallel: parallel, spec: ToolSpec{Name: name, Description: "test tool", InputSchema: json.RawMessage(`{"type":"object"}`), SideEffect: SideEffectRead, Idempotent: true}}
 }
 
-var _ Tool = (*fakeTool)(nil)
+var _ ToolDefinition = (*fakeTool)(nil)

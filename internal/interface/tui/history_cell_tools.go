@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type ToolHistoryCell struct {
@@ -82,6 +83,9 @@ func (cell *ToolHistoryCell) Apply(message protocol.EventMessage) bool {
 			return false
 		}
 		activity.Result = strings.TrimSpace(item.Item.Text)
+		if item.Item.ToolResult != nil {
+			activity.Result = displayResultText(*item.Item.ToolResult)
+		}
 		activity.Success = item.Item.Status == protocol.ItemStatusCompleted
 		if payload, ok := item.Item.Payload.(map[string]any); ok {
 			if duration, ok := payload["duration"].(string); ok {
@@ -94,6 +98,13 @@ func (cell *ToolHistoryCell) Apply(message protocol.EventMessage) bool {
 	default:
 		return false
 	}
+}
+
+func displayResultText(result tool.ToolResult) string {
+	if summary := strings.TrimSpace(result.Display.Summary); summary != "" {
+		return summary
+	}
+	return strings.TrimSpace(result.Text)
 }
 func (cell *ToolHistoryCell) Complete() HistoryCell {
 	if cell == nil {

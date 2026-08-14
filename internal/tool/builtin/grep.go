@@ -22,6 +22,8 @@ type GrepOptions struct {
 	MaxResults       int
 	MaxFileBytes     int64
 	MaxContextLines  int
+	MaxOutputBytes   int
+	MaxOutputTokens  int
 	RipgrepPath      string
 	DisableRipgrep   bool
 	MaxRGOutputBytes int64
@@ -55,6 +57,16 @@ type grepLine struct {
 	Context bool
 }
 
+type preparedGrep struct {
+	arguments     grepArguments
+	matcher       *regexp.Regexp
+	resolvedPath  string
+	displayPath   string
+	contextLines  int
+	limit         int
+	caseSensitive bool
+}
+
 func NewGrep(root project.Root, options GrepOptions) (*Grep, error) {
 	if root.Path() == "" {
 		return nil, errors.New("grep project root is empty")
@@ -64,6 +76,12 @@ func NewGrep(root project.Root, options GrepOptions) (*Grep, error) {
 	}
 	if options.MaxRGOutputBytes <= 0 {
 		options.MaxRGOutputBytes = 4 << 20
+	}
+	if options.MaxOutputBytes <= 0 {
+		options.MaxOutputBytes = 256 << 10
+	}
+	if options.MaxOutputTokens <= 0 {
+		options.MaxOutputTokens = 64_000
 	}
 	reader, err := workspace.NewReaderWithPolicy(root, options.FileSystemPolicy)
 	if options.FileSystemPolicy == nil {
@@ -98,22 +116,34 @@ func (grep *Grep) Spec() tool.ToolSpec { return grepSpec() }
 
 func (grep *Grep) SupportsParallelToolCalls() bool { return true }
 
-func (grep *Grep) Call(ctx context.Context, invocation tool.Invocation) (tool.Output, error) {
-	call := invocation.Call
+func (grep *Grep) ValidateInput(_ tool.ToolUseContext, invocation tool.Invocation) error {
 	var arguments grepArguments
-	if err := decodeArguments(call.Payload, &arguments); err != nil {
-		return tool.Output{}, err
+	if err := decodeArguments(invocation.Call.Payload, &arguments); err != nil {
+		return err
 	}
 	if arguments.Query == "" {
-		return tool.Output{}, errors.New("grep query is empty")
+		return errors.New("grep query is empty")
 	}
 	if arguments.Context < 0 || arguments.Limit < 0 {
-		return tool.Output{}, errors.New("grep context and limit cannot be negative")
+		return errors.New("grep context and limit cannot be negative")
 	}
 	if arguments.Glob != "" {
 		if _, err := workspace.NormalizeGlob(arguments.Glob); err != nil {
-			return tool.Output{}, fmt.Errorf("grep glob is invalid: %w", err)
+			return fmt.Errorf("grep glob is invalid: %w", err)
 		}
+	}
+	caseSensitive := true
+	if arguments.CaseSensitive != nil {
+		caseSensitive = *arguments.CaseSensitive
+	}
+	_, err := compileGrepMatcher(arguments.Query, arguments.Regex, caseSensitive)
+	return err
+}
+
+func (grep *Grep) Prepare(_ tool.ToolUseContext, invocation tool.Invocation) (tool.PreparedToolUse, error) {
+	var arguments grepArguments
+	if err := decodeArguments(invocation.Call.Payload, &arguments); err != nil {
+		return tool.PreparedToolUse{}, err
 	}
 	contextLines := min(arguments.Context, grep.options.MaxContextLines)
 	limit := grep.options.MaxResults
@@ -126,7 +156,7 @@ func (grep *Grep) Call(ctx context.Context, invocation tool.Invocation) (tool.Ou
 	}
 	matcher, err := compileGrepMatcher(arguments.Query, arguments.Regex, caseSensitive)
 	if err != nil {
-		return tool.Output{}, err
+		return tool.PreparedToolUse{}, err
 	}
 	searchPath := strings.TrimSpace(arguments.Path)
 	if searchPath == "" {
@@ -134,29 +164,47 @@ func (grep *Grep) Call(ctx context.Context, invocation tool.Invocation) (tool.Ou
 	}
 	resolved, err := grep.reader.ResolveExistingTarget(searchPath, project.PathAny)
 	if err != nil {
-		return tool.Output{}, err
+		return tool.PreparedToolUse{}, err
 	}
-	lines, matches, files, skipped, partial, backend, err := grep.ripgrepSearch(ctx, resolved.Canonical, arguments, contextLines, limit, caseSensitive)
-	if err != nil && ctx.Err() != nil {
-		return tool.Output{}, ctx.Err()
+	state := preparedGrep{arguments: arguments, matcher: matcher, resolvedPath: resolved.Canonical, displayPath: searchPath, contextLines: contextLines, limit: limit, caseSensitive: caseSensitive}
+	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: state, Permission: tool.AllowPermission()}, nil
+}
+
+func (grep *Grep) Execute(toolContext tool.ToolUseContext, prepared tool.PreparedToolUse) (tool.ToolResult, error) {
+	state, ok := prepared.State.(preparedGrep)
+	if !ok {
+		return tool.ToolResult{}, errors.New("grep preparation state is invalid")
+	}
+	lines, matches, files, skipped, partial, backend, err := grep.ripgrepSearch(toolContext.Context, state.resolvedPath, state.arguments, state.contextLines, state.limit, state.caseSensitive)
+	if err != nil && toolContext.Context.Err() != nil {
+		return tool.ToolResult{}, toolContext.Context.Err()
 	}
 	if err != nil || grep.ripgrep == "" {
-		lines, matches, files, skipped, partial, err = grep.goSearch(ctx, resolved.Canonical, arguments, matcher, contextLines, limit)
+		lines, matches, files, skipped, partial, err = grep.goSearch(toolContext.Context, state.resolvedPath, state.arguments, state.matcher, state.contextLines, state.limit)
 		backend = "go"
 		if err != nil {
-			return tool.Output{}, err
+			return tool.ToolResult{}, err
 		}
 	}
-	return tool.Output{
-		ToolName: "grep", Text: formatGrepLines(lines), Partial: partial,
+	lines, text, outputPartial, outputReason := boundRenderedItems(lines, formatGrepLines, grep.options.MaxOutputBytes, grep.options.MaxOutputTokens)
+	reason := tool.TruncationNone
+	partial = partial || outputPartial
+	if outputPartial {
+		reason = outputReason
+	} else if partial {
+		reason = tool.TruncationResultLimit
+	}
+	data := tool.BoundedResult[grepLine]{Items: lines, Truncated: partial, Reason: reason, Bytes: len(text), TokenEstimate: (len(text) + 3) / 4}
+	return tool.ToolResult{
+		ToolName: "grep", Text: text, Partial: partial, Data: data, Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayText, Title: "Search results", Summary: fmt.Sprintf("%d matches", matches)},
 		Metadata: map[string]any{
-			"query": arguments.Query, "path": searchPath, "glob": arguments.Glob, "type": arguments.Type,
-			"matches_returned": matches, "files_searched": files, "files_skipped": skipped, "backend": backend,
+			"query": state.arguments.Query, "path": state.displayPath, "glob": state.arguments.Glob, "type": state.arguments.Type,
+			"matches_returned": matches, "files_searched": files, "files_skipped": skipped, "backend": backend, "truncation_reason": reason,
 		},
 	}, nil
 }
 
-var _ tool.Tool = (*Grep)(nil)
+var _ tool.ToolDefinition = (*Grep)(nil)
 
 type rgJSONEvent struct {
 	Type string `json:"type"`
@@ -389,4 +437,4 @@ func (buffer *limitedCommandBuffer) Write(content []byte) (int, error) {
 func (buffer *limitedCommandBuffer) Bytes() []byte  { return buffer.buffer.Bytes() }
 func (buffer *limitedCommandBuffer) String() string { return buffer.buffer.String() }
 
-var _ tool.Tool = (*Grep)(nil)
+var _ tool.ToolDefinition = (*Grep)(nil)

@@ -127,7 +127,14 @@ func TestHistoryStreamContinuationDoesNotInsertBlankLine(t *testing.T) {
 }
 
 func TestHistoryCellArchitectureHasNoLegacyMainChain(t *testing.T) {
-	for _, path := range []string{"history_cell.go", "history_cell_tools.go", "application.go"} {
+	for _, path := range []string{
+		"history_cell.go",
+		"history_cell_tools.go",
+		"application.go",
+		"application_update.go",
+		"application_events.go",
+		"application_view.go",
+	} {
 		content, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)

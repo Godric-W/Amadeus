@@ -47,7 +47,7 @@ func TestToolResultReplayPreservesCallOrderAcrossProtocols(t *testing.T) {
 }
 
 func toolReplayExecution(callID, toolName, text string) react.ToolOutcome {
-	return react.ToolOutcome{CallID: callID, ToolName: toolName, Status: react.ToolOutcomeSucceeded, Result: tool.Output{CallID: callID, ToolName: toolName, Text: text}}
+	return react.ToolOutcome{CallID: callID, ToolName: toolName, Status: react.ToolOutcomeSucceeded, Result: tool.ToolResult{CallID: callID, ToolName: toolName, Text: text}}
 }
 
 func marshalRequestBody(t *testing.T, value any) map[string]any {

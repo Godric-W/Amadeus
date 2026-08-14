@@ -2,7 +2,6 @@ package builtin
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -43,14 +42,15 @@ func TestUpdatePlanAppliesAndPublishes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := candidate.Call(context.Background(), toolInvocation(candidate.Spec().Name, "turn-1", `{"explanation":"implementation","items":[{"step":"Inspect","status":"completed"},{"step":"Patch","status":"in_progress"}]}`))
+	ctx := tool.WithInvocationMetadata(context.Background(), tool.InvocationMetadata{TurnID: "turn-1"})
+	result, err := executePreparedTool(t, ctx, candidate, []byte(`{"explanation":"implementation","plan":[{"step":"Inspect","status":"completed"},{"step":"Patch","status":"in_progress"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if updater.snapshot.Revision != 1 || len(updater.snapshot.Items) != 2 || updater.snapshot.Items[1].Status != plan.ItemInProgress {
 		t.Fatalf("unexpected recorded plan: %#v", updater.snapshot)
 	}
-	if result.ToolName != "update_plan" || result.Metadata["revision"] != int64(1) {
+	if result.ToolName != "update_plan" || result.Text != "Plan updated" || result.Metadata["revision"] != int64(1) {
 		t.Fatalf("unexpected Tool result: %#v", result)
 	}
 	published := rootEvents.Snapshot()
@@ -68,7 +68,8 @@ func TestUpdatePlanRejectsMultipleInProgressItems(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = candidate.Call(context.Background(), toolInvocation(candidate.Spec().Name, "turn-1", `{"items":[{"step":"A","status":"in_progress"},{"step":"B","status":"in_progress"}]}`))
+	ctx := tool.WithInvocationMetadata(context.Background(), tool.InvocationMetadata{TurnID: "turn-1"})
+	_, err = executePreparedTool(t, ctx, candidate, []byte(`{"plan":[{"step":"A","status":"in_progress"},{"step":"B","status":"in_progress"}]}`))
 	if err == nil {
 		t.Fatal("multiple in-progress items were accepted")
 	}
@@ -83,12 +84,8 @@ func TestUpdatePlanRequiresTurnID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = candidate.Call(context.Background(), toolInvocation(candidate.Spec().Name, "", `{"items":[{"step":"A","status":"pending"}]}`))
+	_, err = executePreparedTool(t, context.Background(), candidate, []byte(`{"plan":[{"step":"A","status":"pending"}]}`))
 	if err == nil {
 		t.Fatal("empty turn ID was accepted")
 	}
-}
-
-func toolInvocation(name, turnID, arguments string) tool.Invocation {
-	return tool.Invocation{TurnID: turnID, Call: tool.NewCall("test-call", name, json.RawMessage(arguments)), Source: tool.ToolCallSourceModel}
 }
