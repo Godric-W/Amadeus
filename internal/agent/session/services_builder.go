@@ -38,7 +38,7 @@ type ServicesOptions struct {
 	WebFetcher       webfetch.Fetcher
 	WebSearch        websearch.Provider
 	AuditFactory     AuditFactory
-	BaseInstructions llm.BaseInstructions
+	ModelMessages    llm.ModelMessages
 	Clock            func() time.Time
 }
 
@@ -56,7 +56,7 @@ type ServicesBuilder struct {
 	permissions      *policy.SessionPermissionContext
 	fileSystemPolicy *project.FileSystemPolicy
 	instructions     *instruction.WorkspaceResolver
-	baseInstructions llm.BaseInstructions
+	modelMessages    llm.ModelMessages
 	clock            func() time.Time
 	runtime          *engine.Services
 	closed           bool
@@ -72,8 +72,8 @@ func NewServicesBuilder(options ServicesOptions) (*ServicesBuilder, error) {
 	if options.AuditFactory == nil {
 		return nil, errors.New("session audit factory is nil")
 	}
-	if strings.TrimSpace(options.BaseInstructions.Text) == "" {
-		return nil, errors.New("session base instructions are empty")
+	if !options.ModelMessages.HasInstructions() {
+		return nil, errors.New("session model messages are empty")
 	}
 	if options.Clock == nil {
 		options.Clock = time.Now
@@ -115,7 +115,7 @@ func NewServicesBuilder(options ServicesOptions) (*ServicesBuilder, error) {
 		mcpClientFactory: options.MCPClientFactory, webFetcher: options.WebFetcher, webSearch: options.WebSearch,
 		auditFactory: options.AuditFactory, extensions: extensions, permissions: policy.NewSessionPermissionContext(),
 		fileSystemPolicy: fileSystemPolicy, instructions: instructions,
-		baseInstructions: options.BaseInstructions, clock: options.Clock,
+		modelMessages: options.ModelMessages, clock: options.Clock,
 	}, nil
 }
 
@@ -200,7 +200,7 @@ func (builder *ServicesBuilder) BuildServices(ctx context.Context, session *Sess
 		Audit: auditSink, AuditCloser: auditCloser, Extensions: builder.extensions,
 		WebFetcher: builder.webFetcher, WebSearch: builder.webSearch,
 		FileSystemPolicy: builder.fileSystemPolicy, Permissions: builder.permissions,
-		Instructions: builder.instructions, BaseInstructions: builder.baseInstructions,
+		Instructions: builder.instructions, ModelMessages: builder.modelMessages,
 	})
 	if err != nil {
 		if auditCloser != nil {

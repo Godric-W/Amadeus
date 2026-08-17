@@ -15,7 +15,7 @@ const (
 	RoleTool      Role = "tool"
 )
 
-type Message struct {
+type ResponseItem struct {
 	Role       Role
 	Content    string
 	Parts      []ContentPart
@@ -50,32 +50,32 @@ type ToolCall struct {
 	Arguments json.RawMessage
 }
 
-func SystemMessage(content string) Message {
-	return Message{Role: RoleSystem, Content: content}
+func SystemMessage(content string) ResponseItem {
+	return ResponseItem{Role: RoleSystem, Content: content}
 }
 
-func DeveloperMessage(content string) Message {
-	return Message{Role: RoleDeveloper, Content: content}
+func DeveloperMessage(content string) ResponseItem {
+	return ResponseItem{Role: RoleDeveloper, Content: content}
 }
 
-func UserMessage(content string) Message {
-	return Message{Role: RoleUser, Content: content}
+func UserMessage(content string) ResponseItem {
+	return ResponseItem{Role: RoleUser, Content: content}
 }
 
-func AssistantMessage(content string) Message {
-	return Message{Role: RoleAssistant, Content: content}
+func AssistantMessage(content string) ResponseItem {
+	return ResponseItem{Role: RoleAssistant, Content: content}
 }
 
-func AssistantToolCallMessage(content string, calls ...ToolCall) Message {
-	return Message{Role: RoleAssistant, Content: content, ToolCalls: cloneToolCalls(calls)}
+func AssistantToolCallMessage(content string, calls ...ToolCall) ResponseItem {
+	return ResponseItem{Role: RoleAssistant, Content: content, ToolCalls: cloneToolCalls(calls)}
 }
 
-func ToolResultMessage(callID, content string) Message {
-	return Message{Role: RoleTool, ToolCallID: callID, Content: content}
+func ToolResultMessage(callID, content string) ResponseItem {
+	return ResponseItem{Role: RoleTool, ToolCallID: callID, Content: content}
 }
 
-func ToolResultMessageWithParts(callID, content string, parts ...ContentPart) Message {
-	return Message{Role: RoleTool, ToolCallID: callID, Content: content, Parts: cloneContentParts(parts)}
+func ToolResultMessageWithParts(callID, content string, parts ...ContentPart) ResponseItem {
+	return ResponseItem{Role: RoleTool, ToolCallID: callID, Content: content, Parts: cloneContentParts(parts)}
 }
 
 func cloneToolCalls(calls []ToolCall) []ToolCall {

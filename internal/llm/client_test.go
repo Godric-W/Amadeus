@@ -74,7 +74,7 @@ func TestFakeClientImplementsCompleteContract(t *testing.T) {
 			SupportsReasoning: true,
 		},
 	}
-	request := NewRequest("fake-model", []Message{UserMessage("hello")})
+	request := NewRequest("fake-model", []ResponseItem{UserMessage("hello")})
 
 	response, err := client.Complete(context.Background(), request)
 	if err != nil {

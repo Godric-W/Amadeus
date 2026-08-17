@@ -350,3 +350,39 @@ func repositoryRoot(t *testing.T) string {
 	}
 	return filepath.Clean(filepath.Join(filepath.Dir(current), "..", ".."))
 }
+
+func TestPromptConstructionHasCodexOwnershipBoundaries(t *testing.T) {
+	root := repositoryRoot(t)
+	checks := []struct {
+		relative  string
+		forbidden []string
+	}{
+		{relative: "internal/agent/session", forbidden: []string{"BaseInstructions llm.BaseInstructions", "baseInstructions:"}},
+		{relative: "cmd/amadeus", forbidden: []string{"BaseInstructions:", "mustBaseInstructions"}},
+		{relative: "internal/llm/openai", forbidden: []string{"llm.Prompt{"}},
+		{relative: "internal/interface/tui", forbidden: []string{"llm.Prompt{"}},
+	}
+	for _, check := range checks {
+		err := filepath.WalkDir(filepath.Join(root, check.relative), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, forbidden := range check.forbidden {
+				if strings.Contains(string(content), forbidden) {
+					t.Errorf("Prompt ownership violation %q in %s", forbidden, filepath.ToSlash(path[len(root)+1:]))
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan %s: %v", check.relative, err)
+		}
+	}
+}

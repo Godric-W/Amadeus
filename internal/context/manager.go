@@ -12,16 +12,16 @@ import (
 type UpdateKey string
 
 const (
-	UpdateDeveloperInstructions UpdateKey = "developer_instructions"
-	UpdateAgents                UpdateKey = "agents"
-	UpdateEnvironment           UpdateKey = "environment"
-	UpdatePermissionMode        UpdateKey = "permission_mode"
-	UpdateSkills                UpdateKey = "skills"
-	UpdateMCP                   UpdateKey = "mcp"
+	UpdateCollaborationMode UpdateKey = "collaboration_mode"
+	UpdateAgents            UpdateKey = "agents"
+	UpdateEnvironment       UpdateKey = "environment"
+	UpdatePermissionMode    UpdateKey = "permission_mode"
+	UpdateSkills            UpdateKey = "skills"
+	UpdateMCP               UpdateKey = "mcp"
 )
 
 var updateOrder = [...]UpdateKey{
-	UpdateDeveloperInstructions,
+	UpdateCollaborationMode,
 	UpdateAgents,
 	UpdateEnvironment,
 	UpdatePermissionMode,
@@ -36,9 +36,16 @@ type UsageSnapshot struct {
 }
 
 type PromptSnapshot struct {
-	Items          []llm.ResponseItem
-	Usage          UsageSnapshot
-	HistoryVersion uint64
+	Items              []llm.ResponseItem
+	Usage              UsageSnapshot
+	HistoryVersion     uint64
+	WorldStateRevision string
+	Revision           string
+}
+
+type contextUpdateState struct {
+	Content  string
+	Revision string
 }
 
 // SkillInjection is the explicitly requested portion of a Skill that becomes
@@ -53,7 +60,7 @@ type SkillInjection struct {
 type Manager struct {
 	mu             sync.RWMutex
 	items          []llm.ResponseItem
-	updates        map[UpdateKey]string
+	updates        map[UpdateKey]contextUpdateState
 	historyVersion uint64
 	providerUsage  llm.Usage
 	hasUsage       bool
@@ -64,7 +71,7 @@ func NewManager(estimator Estimator) *Manager {
 	if estimator == nil {
 		estimator = ConservativeEstimator{}
 	}
-	return &Manager{updates: make(map[UpdateKey]string), estimator: estimator}
+	return &Manager{updates: make(map[UpdateKey]contextUpdateState), estimator: estimator}
 }
 
 func NewManagerFromRollout(lines []rollout.Line, estimator Estimator) (*Manager, error) {
@@ -83,7 +90,7 @@ func (manager *Manager) Rebuild(lines []rollout.Line) error {
 	if err != nil {
 		return err
 	}
-	updates := make(map[UpdateKey]string)
+	updates := make(map[UpdateKey]contextUpdateState)
 	var providerUsage llm.Usage
 	hasUsage := false
 	for _, line := range lines {
@@ -98,7 +105,7 @@ func (manager *Manager) Rebuild(lines []rollout.Line) error {
 				if content == "" {
 					delete(updates, key)
 				} else {
-					updates[key] = content
+					updates[key] = contextUpdateState{Content: content, Revision: strings.TrimSpace(update.Revision)}
 				}
 			}
 		}
@@ -132,7 +139,16 @@ func (manager *Manager) Update(key UpdateKey) string {
 	}
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	return manager.updates[key]
+	return manager.updates[key].Content
+}
+
+func (manager *Manager) UpdateRevision(key UpdateKey) string {
+	if manager == nil || !validUpdateKey(key) {
+		return ""
+	}
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return manager.updates[key].Revision
 }
 
 func addUsage(left, right llm.Usage) llm.Usage {

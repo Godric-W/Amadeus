@@ -69,7 +69,7 @@ func RunTurn(ctx context.Context, runtime *Services, request RunRequest) (RunRes
 		request.Instructions.MarkSampled()
 		stepCtx := tool.WithRequestSnapshot(ctx, step.RequestSnapshot)
 		stepCtx = tool.WithInvocationMetadata(stepCtx, tool.InvocationMetadata{SessionID: string(request.Turn.ThreadID), TurnID: string(request.Turn.TurnID), Source: tool.ToolCallSourceModel})
-		sample, sampleErr := modelSession.Sample(stepCtx, SampleRequest{ID: sampleID, Messages: step.Prompt.Items, BaseInstructions: step.BaseInstructions, Tools: step.Tools, OutputSchema: llm.OutputSchema(request.Turn.OutputSchema), Temperature: runtime.provider.Temperature, MaxOutputTokens: step.Model.MaxOutputTokens, Events: request.Events})
+		sample, sampleErr := modelSession.Sample(stepCtx, SampleRequest{ID: sampleID, Messages: step.Prompt.Items, BaseInstructions: step.BaseInstructions, Tools: step.Tools, OutputSchema: llm.OutputSchema(request.Turn.OutputSchema), OutputSchemaStrict: request.Turn.OutputSchemaStrict, Temperature: runtime.provider.Temperature, MaxOutputTokens: step.Model.MaxOutputTokens, Events: request.Events})
 		usage = addUsage(usage, sample.Response.Usage)
 		if request.Progress != nil {
 			request.Progress(sample.Response.Usage, 0)

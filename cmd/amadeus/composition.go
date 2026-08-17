@@ -55,7 +55,7 @@ func (runner *agentController) ensureWorkspace(ctx context.Context, invocation a
 	if clock == nil {
 		clock = time.Now
 	}
-	assets, err := internalprompt.LoadAssets()
+	modelMessages, err := internalprompt.LoadModelMessages()
 	if err != nil {
 		_ = store.Close()
 		return nil, config.Config{}, err
@@ -73,7 +73,7 @@ func (runner *agentController) ensureWorkspace(ctx context.Context, invocation a
 			Config: configured, Project: invocation.Project, WorkspaceRoots: append([]string(nil), invocation.WorkspaceRoots...),
 			AmadeusRoot: runner.runtime.amadeusRoot, MCPClientFactory: runner.runtime.mcpClientFactory,
 			WebFetcher: runner.runtime.webFetcher, WebSearch: runner.runtime.webSearch,
-			AuditFactory: agentsession.AuditFactory(auditFactory), BaseInstructions: assets.Base, Clock: clock,
+			AuditFactory: agentsession.AuditFactory(auditFactory), ModelMessages: modelMessages, Clock: clock,
 		}
 		if runner.runtime.llmClientFactory != nil {
 			options.ClientFactory = func(providerName string, providerConfig config.ProviderConfig) (llm.Client, error) {
@@ -125,9 +125,8 @@ func sessionConfiguration(configured config.Config, invocation agentInvocation) 
 	if invocation.RunMode == "plan" {
 		mode = turn.ModeKindPlan
 	}
-	assets, _ := internalprompt.LoadAssets()
 	return agentsession.Configuration{
 		CWD: invocation.Project.Path(), Provider: configured.DefaultProvider, Model: provider.Model,
-		Mode: mode, BaseInstructions: assets.Base,
+		Mode: mode,
 	}
 }

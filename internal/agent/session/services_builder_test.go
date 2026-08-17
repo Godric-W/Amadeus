@@ -16,6 +16,7 @@ import (
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/project"
+	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
@@ -88,9 +89,12 @@ func TestServicesBuilderReusesSessionServicesAcrossRegularTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	closer := &builderTestCloser{}
-	baseInstructions := llm.BaseInstructions{Text: "builder-owned base instructions"}
+	modelMessages, err := internalprompt.LoadModelMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
 	builder, err := NewServicesBuilder(ServicesOptions{
-		Config: configured, Project: root, AmadeusRoot: t.TempDir(), BaseInstructions: baseInstructions,
+		Config: configured, Project: root, AmadeusRoot: t.TempDir(), ModelMessages: modelMessages,
 		ClientFactory: func(providerName string, provider config.ProviderConfig) (llm.Client, error) {
 			return &builderTestClient{model: llm.ModelInfo{Provider: providerName, Name: provider.Model}}, nil
 		},

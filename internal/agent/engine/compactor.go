@@ -23,18 +23,22 @@ func (runtime *Services) Compact(ctx context.Context, lines []rollout.Line) ([]r
 	if err != nil {
 		return nil, err
 	}
-	assets, err := internalprompt.LoadAssets()
+	modelMessages, err := runtime.ModelMessages(runtime.ModelInfo())
+	if err != nil {
+		return nil, err
+	}
+	compactionInstructions, summaryPrefix, err := internalprompt.CompactionMessages(modelMessages)
 	if err != nil {
 		return nil, err
 	}
 	input := agentcontext.NormalizeResponseItems(projection.Covered, runtime.client.Model(), nil)
-	input = append(input, llm.UserMessage("Compact the covered canonical history into a continuation summary now. Return only Markdown summary; do not call tools."))
+	input = append(input, llm.UserMessage("Create the handoff summary now. Return only the summary and do not call tools."))
 	maxOutputTokens := runtime.provider.MaxOutputTokens
 	if maxOutputTokens <= 0 || maxOutputTokens > 4096 {
 		maxOutputTokens = 4096
 	}
 	response, err := runtime.client.Complete(ctx, llm.Request{
-		Model: runtime.provider.Model, Prompt: llm.Prompt{BaseInstructions: assets.Compaction, Input: input},
+		Model: runtime.provider.Model, Prompt: llm.Prompt{BaseInstructions: compactionInstructions, Input: input},
 		Temperature: 0, MaxOutputTokens: maxOutputTokens,
 	})
 	if err != nil {
@@ -48,7 +52,7 @@ func (runtime *Services) Compact(ctx context.Context, lines []rollout.Line) ([]r
 	if initial := firstUser(projection.Covered); initial != nil {
 		replacement = append(replacement, rollout.ReplacementMessage{Role: string(initial.Role), Content: initial.Content})
 	}
-	replacement = append(replacement, rollout.ReplacementMessage{Role: string(llm.RoleAssistant), Content: "## Compaction Checkpoint\n\n" + summary})
+	replacement = append(replacement, rollout.ReplacementMessage{Role: string(llm.RoleAssistant), Content: summaryPrefix + "\n\n" + summary})
 	encodedSource, err := json.Marshal(projection.Covered)
 	if err != nil {
 		return nil, fmt.Errorf("encode compaction source: %w", err)
@@ -70,9 +74,9 @@ func (runtime *Services) Compact(ctx context.Context, lines []rollout.Line) ([]r
 }
 
 type compactionProjection struct {
-	Messages        []llm.Message
+	Messages        []llm.ResponseItem
 	SourceSequences []int64
-	Covered         []llm.Message
+	Covered         []llm.ResponseItem
 }
 
 func projectCompactionSource(lines []rollout.Line) (compactionProjection, error) {
@@ -99,10 +103,10 @@ func projectCompactionSource(lines []rollout.Line) (compactionProjection, error)
 	if coveredEnd == 0 {
 		return compactionProjection{}, errors.New("conversation has no safely compactable history")
 	}
-	return compactionProjection{Messages: projection.Messages, SourceSequences: projection.SourceSequences, Covered: append([]llm.Message(nil), projection.Messages[:coveredEnd]...)}, nil
+	return compactionProjection{Messages: projection.Messages, SourceSequences: projection.SourceSequences, Covered: append([]llm.ResponseItem(nil), projection.Messages[:coveredEnd]...)}, nil
 }
 
-func firstUser(messages []llm.Message) *llm.Message {
+func firstUser(messages []llm.ResponseItem) *llm.ResponseItem {
 	for index := range messages {
 		if messages[index].Role == llm.RoleUser {
 			message := messages[index]

@@ -38,7 +38,7 @@ func TestChatCompletionsRequestSerializesCompatibleTextFields(t *testing.T) {
 
 	domainRequest := llm.Request{
 		Model: "test-model",
-		Prompt: llm.Prompt{BaseInstructions: llm.BaseInstructions{Text: "system prompt"}, Input: []llm.Message{
+		Prompt: llm.Prompt{BaseInstructions: llm.BaseInstructions{Text: "system prompt"}, Input: []llm.ResponseItem{
 			llm.DeveloperMessage("developer prompt"), llm.UserMessage("hello"),
 			{Role: llm.RoleAssistant, Content: "previous answer", Reasoning: "provider-only reasoning"},
 		}},
@@ -106,7 +106,7 @@ func TestChatCompletionsRequestPreservesDeveloperRoleWhenDialectSupportsIt(t *te
 	providerCapabilities := dialect.Capabilities(config.APIChatCompletions)
 	if providerCapabilities.SupportsDeveloperRole {
 		params, err := newChatCompletionsRequestForDialect(llm.Request{
-			Model: "test-model", Prompt: llm.Prompt{Input: []llm.Message{llm.DeveloperMessage("developer prompt")}},
+			Model: "test-model", Prompt: llm.Prompt{Input: []llm.ResponseItem{llm.DeveloperMessage("developer prompt")}},
 			MaxOutputTokens: 128,
 		}, dialect)
 		if err != nil {
@@ -142,11 +142,11 @@ func TestChatCompletionsRequestSerializesStandardToolProtocol(t *testing.T) {
 	domainRequest := llm.Request{
 		Model: "test-model",
 		Prompt: llm.Prompt{
-			Input: []llm.Message{
+			Input: []llm.ResponseItem{
 				llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call_1", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
 				llm.ToolResultMessage("call_1", "file contents"),
 			},
-			Tools: []llm.ToolDefinition{{
+			Tools: []llm.ToolSpec{{
 				Name: "read", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`), Strict: true,
 			}},
 		},
@@ -196,7 +196,7 @@ func TestChatCompletionsRequestSerializesUserAndSyntheticToolImages(t *testing.T
 	}
 	domainRequest := llm.Request{
 		Model: "test-model", Temperature: 0.2, MaxOutputTokens: 100,
-		Prompt: llm.Prompt{Input: []llm.Message{
+		Prompt: llm.Prompt{Input: []llm.ResponseItem{
 			{Role: llm.RoleUser, Content: "inspect", Parts: []llm.ContentPart{llm.ImagePart("image/png", "YQ==")}},
 			llm.ToolResultMessageWithParts("call_image", "tool image", llm.ImagePart("image/jpeg", "Yg==")),
 		}},
@@ -235,11 +235,11 @@ func TestChatCompletionsRequestRejectsUnsupportedInput(t *testing.T) {
 	}{
 		{name: "missing model", request: validChatCompletionsDomainRequest(), errorMatch: "model"},
 		{name: "missing messages", request: llm.Request{Model: "model", Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "messages"},
-		{name: "temperature below range", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.Message{llm.UserMessage("hello")}}, Temperature: -0.1, MaxOutputTokens: 10}, errorMatch: "temperature"},
-		{name: "temperature above range", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.Message{llm.UserMessage("hello")}}, Temperature: 2.1, MaxOutputTokens: 10}, errorMatch: "temperature"},
-		{name: "missing max tokens", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.Message{llm.UserMessage("hello")}}, Temperature: 0.2}, errorMatch: "max output tokens"},
-		{name: "tool role missing call ID", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.Message{{Role: llm.RoleTool, Content: "result"}}}, Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "call ID"},
-		{name: "unknown role", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.Message{{Role: llm.Role("observer"), Content: "hello"}}}, Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "unsupported role"},
+		{name: "temperature below range", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{llm.UserMessage("hello")}}, Temperature: -0.1, MaxOutputTokens: 10}, errorMatch: "temperature"},
+		{name: "temperature above range", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{llm.UserMessage("hello")}}, Temperature: 2.1, MaxOutputTokens: 10}, errorMatch: "temperature"},
+		{name: "missing max tokens", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{llm.UserMessage("hello")}}, Temperature: 0.2}, errorMatch: "max output tokens"},
+		{name: "tool role missing call ID", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{{Role: llm.RoleTool, Content: "result"}}}, Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "call ID"},
+		{name: "unknown role", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{{Role: llm.Role("observer"), Content: "hello"}}}, Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "unsupported role"},
 	}
 	tests[0].request.Model = ""
 
@@ -259,7 +259,7 @@ func TestChatCompletionsRequestRejectsUnsupportedInput(t *testing.T) {
 func validChatCompletionsDomainRequest() llm.Request {
 	return llm.Request{
 		Model:           "model",
-		Prompt:          llm.Prompt{Input: []llm.Message{llm.UserMessage("hello")}},
+		Prompt:          llm.Prompt{Input: []llm.ResponseItem{llm.UserMessage("hello")}},
 		Temperature:     0.2,
 		MaxOutputTokens: 10,
 	}

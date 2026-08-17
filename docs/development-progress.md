@@ -31,6 +31,7 @@ A Runtime + Persistence
 → F Codex-style Agent Engine Rewrite
 → G Runtime Architecture Convergence
 → H Extensions + Release
+→ I Prompt Construction + Optimization
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command 和 TUI 的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A/B Architecture Closure 已完成，F 已删除早期经典 ReAct Engine 并建立可工作的 continuation loop；G 负责消除 F 中为快速落地引入的 `CodingFactory/CodingRuntime`、通用 TaskFactory、Host interface 和 PermissionMode 过渡结构，把 capability 所有权与 Codex 术语归位，同时保留已经稳定的 ToolExecutionService 与 Claude-style Approval。实施发现 Contract 问题时先更新 `docs/design.md`。
@@ -472,7 +473,76 @@ G 不重写已经稳定的 Tool、Approval、Diff、MCP、Skill 或 Web 行为�
 - `H-05 Release Cleanup`：清理 Extensions 与发布阶段产生的临时适配代码；A/B/F/G 的旧 Runtime、Persistence、Context 和 Agent Engine 过渡主链必须在对应 Closure 内删除，不推迟到 H。
 - `H-06 Release Validation`：跨平台构建、端到端测试、文档同步和发布验收。
 
-## 11. 当前保留能力
+## 11. I. Prompt Construction + Optimization — `DONE`
+
+I 阶段专门完成 Prompt 构造架构、数据模型、命名、职责和 Prompt 资产迁移。I 不接受在旧 Prompt 主链外再包一层新接口；必须按照 `docs/design.md` 的 Codex 同构目标完成 ownership 迁移、调用方切换和旧实现删除。
+
+### I-01：Codex Prompt 数据模型与所有权 — `DONE`
+
+- [x] 将 Prompt 构造收敛到 Codex 风格 `Prompt`、`BaseInstructions`、`ResponseItem`、`ToolSpec`、`ModelMessages` 职责。
+- [x] 统一 `Prompt` 字段语义，补齐 `OutputSchemaStrict` 等 Codex Prompt Contract；Prompt 在 StepContext/采样边界使用 immutable snapshot。
+- [x] 将 `llm.Message`、`llm.ToolDefinition`、`prompt.Assets` 等旧 owner 迁移并删除，不保留 type alias、wrapper、fallback 或双写兼容路径。
+- [x] 增加 architecture guard，禁止 `RegularTask`、`CompactTask`、Provider adapter、TUI 或 CLI 私自拼装 Prompt。
+
+### I-02：ModelMessages 与 BaseInstructions — `DONE`
+
+- [x] 引入模型级 `ModelMessages`/instruction template 解析，支持 Codex 风格 personality 模板变量。
+- [x] 将 Codex 模型 Base Instructions 迁入对应内置 Prompt 资产或模型配置来源，明确 revision、来源和覆盖优先级。
+- [x] 删除旧 Prompt asset owner 作为生产 BaseInstructions owner 的路径；BaseInstructions 只在当前 ModelInfo/StepContext 解析。
+- [x] 验证不同 ModelInfo、Personality 和 Provider 下 BaseInstructions 稳定、可追踪且不混入动态 Workspace/Permission/Tool 事实。
+
+### I-03：WorldState 与 Collaboration Mode — `DONE`
+
+- [x] 建立 Codex 风格 WorldState/ContextualUserFragment owner，覆盖 collaboration mode、permissions、environment、AGENTS.md、skills 和 MCP。
+- [x] 以 `CollaborationModeMessages` 选择 Default/Execute 与 Plan Developer Instructions；Plan 文本从 collaboration mode 资产迁移，不新增独立 Plan Task Prompt。
+- [x] 以 Codex 风格稳定 marker、replace key 和 revision 生成 `ContextualUserFragment`/ContextUpdate，并通过 ContextManager canonical history 投影。
+- [x] 删除 `DeveloperInstructions(mode, toolNames)` 字符串拼接主链，不将动态事实继续写入静态 Base Prompt。
+
+### I-04：统一 Prompt Assembly 与 StepContext — `DONE`
+
+- [x] 将 Prompt 主链固定为 `ModelMessages/BaseInstructions + Dynamic Context + ContextManager ResponseItems + StepContext ToolSpecs + TurnContext OutputSchema → Prompt`。
+- [x] 确保普通 Turn 没有独立 `RegularTaskPrompt`；`RegularTask` 只创建任务并调用 Session 内唯一 `run_turn`。
+- [x] 确保每个 Model Step 重新 capture immutable StepContext、ToolRouter snapshot、PromptSnapshot 和 capability revisions。
+- [x] 删除旧 Prompt 资产组合器和调用方，保证 Live/Resume 使用同一 projector 和 Prompt Snapshot 语义。
+
+### I-05：Codex 普通、Plan 与 Compact Prompt — `DONE`
+
+- [x] 按 Codex 模型指令模板迁移普通 Agent 工作指引和最终交付规则，不混入 Claude Code 的系统提示词。
+- [x] 按 Codex Collaboration Mode 迁移 Plan Prompt；复用同一 RegularTask、Context、Tool Mask、Event 和 Rollout 主链。
+- [x] 迁移 Codex `SUMMARIZATION_PROMPT` 与 `SUMMARY_PREFIX`，使 CompactTask 只执行无 Tool 的 Summary 请求。
+- [x] 保留 Amadeus `rollout.Compaction`、SourceHash、CoveredThroughSequence 和 Replacement History Contract，并删除旧短版 Compaction Prompt owner。
+
+### I-06：Claude Code 文件与搜索 Tool Guidance — `DONE`
+
+- [x] 按 Claude Code `FileReadTool` 迁移 `read` Prompt，适配 Amadeus 实际路径、行号和截断能力。
+- [x] 按 Claude Code `FileEditTool` 迁移 `edit` Prompt，覆盖 Read-before-write、唯一匹配、`replace_all`、缩进和文件路径边界。
+- [x] 按 Claude Code `FileWriteTool` 迁移 `write` Prompt，覆盖已有文件先读、Edit 优先、创建/完整重写和覆盖行为。
+- [x] 按 Claude Code `GlobTool`/`GrepTool` 迁移 `glob`/`grep` Prompt，覆盖文件发现、正则、过滤、输出模式和 Amadeus 实际搜索能力。
+- [x] Tool Guidance 只在对应 Tool 暴露时注入，且不声明 Amadeus 未实现的 PDF、Notebook、任意主机路径或其他能力。
+
+### I-07：Codex Runtime Tool Guidance — `DONE`
+
+- [x] 按 Codex Plan Tool 迁移 `update_plan` Prompt，保持 concise `Plan updated`、Event/Session Plan owner、软计划和非调度语义。
+- [x] 按 Codex unified exec 迁移 `write_stdin` Prompt，保持 `process_id`、`origin_call_id`、轮询、取消、输出预算和 Approval 复用语义。
+- [x] 按 Codex unified exec 与 Amadeus Contract 收敛 `execute_command` Prompt，不引入 Claude Code Bash 的 Commit/PR 或不适用的 Sandbox 规则。
+- [x] 对照 ToolSpec、ToolExecutionService、ProcessManager 和 TUI Projection，删除提示词与真实 Tool Contract 不一致的旧描述。
+
+### I-08：Prompt Cache、Token、Debug 与 Contract 验证 — `DONE`
+
+- [x] 为 BaseInstructions、WorldState Fragment、ToolSpec、Prompt Snapshot 和 ModelMessages 增加稳定 revision/hash，明确 Prompt cache 的失效边界。
+- [x] Token Accounting 同时计算 BaseInstructions、ContextualUserFragment、ResponseItems、ToolSpecs 和 OutputSchema；Prompt 变更不能绕过 ContextManager 预算判断。
+- [x] 增加普通/Plan/Compact Prompt Snapshot、Tool Guidance exposure、Live/Resume projection 和无旧路径 architecture tests。
+- [x] 完成受影响包测试、`make check`、全量测试、race、vet、build、architecture grep、`git diff --check` 和文档一致性检查；全量测试在授权环境通过，沙箱内 IPv6 loopback 限制不影响代码验证。
+
+### I 出口
+
+- Prompt 构造只有一条 Codex 同构生产主链，不存在旧 `Assets`、`DeveloperInstructions` 或 Task/Provider/TUI 私有 Prompt owner。
+- 普通模式、Plan Mode、Compact 分别使用 Codex 对应机制；Plan 不新增第二套 Task/Prompt Engine，Compact 不使用普通 Tool Prompt。
+- `read`、`edit`、`write`、`glob`、`grep` 使用 Claude Code Tool Guidance；`update_plan`、`write_stdin` 和命令续接使用 Codex Tool Guidance。
+- Tool Guidance、ToolSpec、ToolExecutionService 和 Approval Contract 对同一 Tool 的能力边界一致；提示词不能替代 Runtime 安全校验。
+- Prompt 资产、动态 Context、canonical Rollout、ContextManager、Resume、Token Accounting 和 Provider Request 的语义一致。
+
+## 12. 当前保留能力
 
 - 默认启动：`amadeus` 或 `amadeus "<task>"`。
 - 当前配置链和 Provider Adapter 已可使用 OpenAI Responses/Chat Completions 及兼容 Provider。
@@ -480,7 +550,7 @@ G 不重写已经稳定的 Tool、Approval、Diff、MCP、Skill 或 Web 行为�
 - TUI 和 Inline 输出以当前代码和 `docs/design.md` 为准。
 - 内置 Tool、Approval、Diff、Web Search 和 Slash Command 已进入基础主链；A/B Architecture Closure 期间保持用户可见能力，同时收口 Tool Result projection、AGENTS.md target scope 和 Session capability ownership。
 
-## 12. 当前执行规则
+## 13. 当前执行规则
 
 1. 每次只推进一个 `TODO`/`DOING` 主任务。
 2. 先修改 `docs/design.md`，再修改代码；实现发现设计问题时暂停并同步 Contract。
@@ -488,7 +558,7 @@ G 不重写已经稳定的 Tool、Approval、Diff、MCP、Skill 或 Web 行为�
 4. 任务完成必须运行针对性测试和构建；环境限制导致的测试失败要单独记录。
 5. 本文只更新任务状态和出口，不复制架构设计、源码审计或长篇讨论。
 
-## 13. 源码结构清理 — `DONE`
+## 14. 源码结构清理 — `DONE`
 
 ### 已完成
 

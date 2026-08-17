@@ -26,7 +26,7 @@ func TestResponsePreservesNormalizedAndProviderMetadata(t *testing.T) {
 	response := Response{
 		ID:                   "response-1",
 		RequestID:            "request-1",
-		Message:              Message{Role: RoleAssistant, Content: "done", Reasoning: "opaque reasoning"},
+		Message:              ResponseItem{Role: RoleAssistant, Content: "done", Reasoning: "opaque reasoning"},
 		FinishReason:         FinishReasonError,
 		ProviderFinishReason: "insufficient_system_resource",
 		Usage: Usage{

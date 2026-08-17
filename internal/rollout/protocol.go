@@ -166,6 +166,7 @@ type ContextUpdate struct {
 	Archived              *bool                       `json:"archived,omitempty"`
 	Key                   string                      `json:"key,omitempty"`
 	Content               string                      `json:"content,omitempty"`
+	Revision              string                      `json:"revision,omitempty"`
 	InstructionResolution *InstructionScopeResolution `json:"instruction_resolution,omitempty"`
 }
 

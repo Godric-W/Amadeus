@@ -51,7 +51,7 @@ func newChatCompletionsRequestForDialect(request llm.Request, dialect Dialect) (
 		}
 		messages = append(messages, converted...)
 	}
-	tools, err := chatCompletionTools(request.ToolDefinitions(), dialect.SupportsStrictToolSchema())
+	tools, err := chatCompletionTools(request.ToolSpecs(), dialect.SupportsStrictToolSchema())
 	if err != nil {
 		return openaisdk.ChatCompletionNewParams{}, err
 	}
@@ -69,7 +69,7 @@ func newChatCompletionsRequestForDialect(request llm.Request, dialect Dialect) (
 	return params, nil
 }
 
-func chatCompletionMessages(message llm.Message) ([]openaisdk.ChatCompletionMessageParamUnion, error) {
+func chatCompletionMessages(message llm.ResponseItem) ([]openaisdk.ChatCompletionMessageParamUnion, error) {
 	switch message.Role {
 	case llm.RoleSystem:
 		if len(message.Parts) != 0 {
@@ -118,7 +118,7 @@ func chatCompletionMessages(message llm.Message) ([]openaisdk.ChatCompletionMess
 		}
 		messages := []openaisdk.ChatCompletionMessageParamUnion{openaisdk.ToolMessage(message.Content, message.ToolCallID)}
 		if len(message.Parts) != 0 {
-			parts, err := chatContentParts(llm.Message{Content: "Image output from tool call " + message.ToolCallID + ".", Parts: message.Parts})
+			parts, err := chatContentParts(llm.ResponseItem{Content: "Image output from tool call " + message.ToolCallID + ".", Parts: message.Parts})
 			if err != nil {
 				return nil, err
 			}
@@ -130,7 +130,7 @@ func chatCompletionMessages(message llm.Message) ([]openaisdk.ChatCompletionMess
 	}
 }
 
-func chatContentParts(message llm.Message) ([]openaisdk.ChatCompletionContentPartUnionParam, error) {
+func chatContentParts(message llm.ResponseItem) ([]openaisdk.ChatCompletionContentPartUnionParam, error) {
 	if len(message.Parts) == 0 {
 		return nil, nil
 	}
@@ -155,7 +155,7 @@ func chatContentParts(message llm.Message) ([]openaisdk.ChatCompletionContentPar
 	return parts, nil
 }
 
-func chatCompletionTools(definitions []llm.ToolDefinition, supportsStrict bool) ([]openaisdk.ChatCompletionToolUnionParam, error) {
+func chatCompletionTools(definitions []llm.ToolSpec, supportsStrict bool) ([]openaisdk.ChatCompletionToolUnionParam, error) {
 	tools := make([]openaisdk.ChatCompletionToolUnionParam, 0, len(definitions))
 	seen := make(map[string]struct{}, len(definitions))
 	for index, definition := range definitions {

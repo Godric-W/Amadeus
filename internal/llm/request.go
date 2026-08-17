@@ -11,17 +11,16 @@ type BaseInstructions struct {
 
 type OutputSchema json.RawMessage
 
-type ResponseItem = Message
-
 type Prompt struct {
-	BaseInstructions  BaseInstructions
-	Input             []ResponseItem
-	Tools             []ToolDefinition
-	ParallelToolCalls bool
-	OutputSchema      OutputSchema
+	Input              []ResponseItem
+	Tools              []ToolSpec
+	ParallelToolCalls  bool
+	BaseInstructions   BaseInstructions
+	OutputSchema       OutputSchema
+	OutputSchemaStrict bool
 }
 
-type ToolDefinition struct {
+type ToolSpec struct {
 	Name        string
 	Description string
 	InputSchema json.RawMessage
@@ -41,24 +40,24 @@ type Request struct {
 	Reasoning       *ReasoningConfig
 }
 
-func NewRequest(model string, messages []Message) Request {
+func NewRequest(model string, messages []ResponseItem) Request {
 	return Request{
 		Model:  model,
-		Prompt: Prompt{Input: cloneMessages(messages)},
+		Prompt: Prompt{Input: cloneResponseItems(messages)},
 	}
 }
 
-func (request Request) InputMessages() []Message {
-	messages := make([]Message, 0, len(request.Prompt.Input)+1)
+func (request Request) InputMessages() []ResponseItem {
+	messages := make([]ResponseItem, 0, len(request.Prompt.Input)+1)
 	if text := strings.TrimSpace(request.Prompt.BaseInstructions.Text); text != "" {
 		messages = append(messages, SystemMessage(text))
 	}
-	messages = append(messages, cloneMessages(request.Prompt.Input)...)
+	messages = append(messages, cloneResponseItems(request.Prompt.Input)...)
 	return messages
 }
 
-func (request Request) ToolDefinitions() []ToolDefinition {
-	return cloneToolDefinitions(request.Prompt.Tools)
+func (request Request) ToolSpecs() []ToolSpec {
+	return cloneToolSpecs(request.Prompt.Tools)
 }
 
 func (request Request) RequestedOutputSchema() json.RawMessage {
@@ -68,8 +67,8 @@ func (request Request) RequestedOutputSchema() json.RawMessage {
 	return nil
 }
 
-func cloneMessages(messages []Message) []Message {
-	cloned := make([]Message, len(messages))
+func cloneResponseItems(messages []ResponseItem) []ResponseItem {
+	cloned := make([]ResponseItem, len(messages))
 	for index, message := range messages {
 		cloned[index] = message
 		cloned[index].Parts = cloneContentParts(message.Parts)
@@ -78,8 +77,8 @@ func cloneMessages(messages []Message) []Message {
 	return cloned
 }
 
-func cloneToolDefinitions(definitions []ToolDefinition) []ToolDefinition {
-	cloned := make([]ToolDefinition, len(definitions))
+func cloneToolSpecs(definitions []ToolSpec) []ToolSpec {
+	cloned := make([]ToolSpec, len(definitions))
 	for index, definition := range definitions {
 		cloned[index] = definition
 		cloned[index].InputSchema = append(json.RawMessage(nil), definition.InputSchema...)

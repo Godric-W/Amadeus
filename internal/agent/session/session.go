@@ -20,16 +20,16 @@ import (
 )
 
 type Configuration struct {
-	CWD              string
-	Provider         string
-	Model            string
-	Shell            string
-	CurrentDate      string
-	Timezone         string
-	Mode             turn.ModeKind
-	Personality      turn.Personality
-	OutputSchema     json.RawMessage
-	BaseInstructions llm.BaseInstructions
+	CWD                string
+	Provider           string
+	Model              string
+	Shell              string
+	CurrentDate        string
+	Timezone           string
+	Mode               turn.ModeKind
+	Personality        turn.Personality
+	OutputSchema       json.RawMessage
+	OutputSchemaStrict bool
 }
 
 type ModeState struct {
@@ -297,7 +297,8 @@ func (session *Session) startTurn(input string, compact bool) {
 		Model: session.state.Configuration.Model, CWD: session.state.Configuration.CWD, Shell: session.state.Configuration.Shell,
 		CurrentDate: session.state.Configuration.CurrentDate, Timezone: session.state.Configuration.Timezone,
 		Mode: session.state.Mode.Mode, Personality: session.state.Configuration.Personality,
-		OutputSchema: append(json.RawMessage(nil), session.state.Configuration.OutputSchema...),
+		OutputSchema:       append(json.RawMessage(nil), session.state.Configuration.OutputSchema...),
+		OutputSchemaStrict: session.state.Configuration.OutputSchemaStrict,
 	}
 	materialized, err := session.services.LiveThread.Materialize(session.ctx, thread.CreateInput{
 		ID: session.threadID, CWD: session.state.Configuration.CWD, Title: titleFromInput(input),

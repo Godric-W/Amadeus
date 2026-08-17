@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"sync"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
@@ -43,7 +42,7 @@ type ServicesOptions struct {
 	FileSystemPolicy *project.FileSystemPolicy
 	Permissions      *policy.SessionPermissionContext
 	Instructions     *instruction.WorkspaceResolver
-	BaseInstructions llm.BaseInstructions
+	ModelMessages    llm.ModelMessages
 }
 
 // Services owns the capabilities shared by every Turn in one Session.
@@ -54,7 +53,7 @@ type Services struct {
 	providerName     string
 	provider         config.ProviderConfig
 	client           llm.Client
-	baseInstructions llm.BaseInstructions
+	modelMessages    llm.ModelMessages
 	registry         *tool.Registry
 	toolService      *tool.ToolExecutionService
 	processes        *processdomain.Manager
@@ -80,8 +79,8 @@ func NewServices(options ServicesOptions) (*Services, error) {
 	if options.Extensions == nil || options.FileSystemPolicy == nil || options.Permissions == nil || options.Instructions == nil {
 		return nil, errors.New("session services are incomplete")
 	}
-	if strings.TrimSpace(options.BaseInstructions.Text) == "" {
-		return nil, errors.New("services base instructions are empty")
+	if !options.ModelMessages.HasInstructions() {
+		return nil, errors.New("services model messages are empty")
 	}
 	createClient := options.ClientFactory
 	if createClient == nil {
@@ -118,7 +117,7 @@ func NewServices(options ServicesOptions) (*Services, error) {
 	}
 	return &Services{
 		configured: options.Config, project: options.Project, providerName: providerName, provider: provider,
-		client: client, baseInstructions: options.BaseInstructions, registry: registry, toolService: toolService,
+		client: client, modelMessages: options.ModelMessages, registry: registry, toolService: toolService,
 		processes: processes, extensions: options.Extensions,
 		fileSystemPolicy: options.FileSystemPolicy, permissions: options.Permissions, instructions: options.Instructions,
 		visibility: visibility, skillWarnings: options.Extensions.SkillWarnings(), auditCloser: options.AuditCloser,
@@ -166,6 +165,19 @@ func (runtime *Services) ModelInfo() llm.ModelInfo {
 	model.AutoCompactTokenLimit = runtime.provider.AutoCompactTokenLimit
 	model.ToolOutputMaxTokens = runtime.provider.ToolOutputMaxTokens
 	return model.Normalized()
+}
+
+func (runtime *Services) ModelMessages(model llm.ModelInfo) (llm.ModelMessages, error) {
+	if runtime == nil {
+		return llm.ModelMessages{}, errors.New("model messages runtime is unavailable")
+	}
+	if model.ModelMessages.HasInstructions() {
+		return model.ModelMessages.Normalized(), nil
+	}
+	if runtime.modelMessages.HasInstructions() {
+		return runtime.modelMessages.Normalized(), nil
+	}
+	return llm.ModelMessages{}, errors.New("model messages are unavailable")
 }
 
 func (runtime *Services) AvailableTools() []tool.ToolSpec {

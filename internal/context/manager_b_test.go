@@ -47,7 +47,7 @@ func TestManagerDynamicUpdatesAreStableAndOrdered(t *testing.T) {
 	lines := []rollout.Line{
 		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "hello"}),
 		contextTestLine(t, 2, rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(UpdateMCP), Content: "mcp"}),
-		contextTestLine(t, 3, rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(UpdateDeveloperInstructions), Content: "developer"}),
+		contextTestLine(t, 3, rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(UpdateCollaborationMode), Content: "developer"}),
 		contextTestLine(t, 4, rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(UpdateAgents), Content: "agents"}),
 	}
 	if err := manager.Rebuild(lines); err != nil {
@@ -56,6 +56,33 @@ func TestManagerDynamicUpdatesAreStableAndOrdered(t *testing.T) {
 	first := manager.Snapshot(llm.ModelInfo{ContextWindow: 1000}, llm.Prompt{})
 	if first.Items[0].Content != "developer" || first.Items[1].Content != "agents" || first.Items[2].Content != "mcp" {
 		t.Fatalf("dynamic context order is unstable: %#v", first.Items)
+	}
+}
+
+func TestManagerWorldStateRevisionPreservesLiveResumePromptIdentity(t *testing.T) {
+	lines := []rollout.Line{
+		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "hello"}),
+		contextTestLine(t, 2, rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(UpdateEnvironment), Content: "<environment_context>\nworkspace\n</environment_context>", Revision: "environment-r1"}),
+		contextTestLine(t, 3, rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(UpdatePermissionMode), Content: "<permission_context>\npermission\n</permission_context>", Revision: "permission-r1"}),
+	}
+	live := NewManager(nil)
+	for index := range lines {
+		if err := live.Rebuild(lines[:index+1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resumed, err := NewManagerFromRollout(lines, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := llm.Prompt{BaseInstructions: llm.BaseInstructions{Text: "base"}, OutputSchemaStrict: true}
+	liveSnapshot := live.Snapshot(llm.ModelInfo{ContextWindow: 1000}, prompt)
+	resumeSnapshot := resumed.Snapshot(llm.ModelInfo{ContextWindow: 1000}, prompt)
+	if liveSnapshot.WorldStateRevision == "" || liveSnapshot.Revision == "" {
+		t.Fatal("prompt revisions were not generated")
+	}
+	if liveSnapshot.WorldStateRevision != resumeSnapshot.WorldStateRevision || liveSnapshot.Revision != resumeSnapshot.Revision {
+		t.Fatalf("live/resume prompt identity differs: live=%#v resume=%#v", liveSnapshot, resumeSnapshot)
 	}
 }
 
@@ -209,7 +236,7 @@ func TestManagerCompactionThresholdAccountsForFullPromptAndOutputReserve(t *test
 	}
 	prompt := llm.Prompt{
 		BaseInstructions: llm.BaseInstructions{Text: strings.Repeat("s", 900)},
-		Tools:            []llm.ToolDefinition{{Name: "large_tool", Description: strings.Repeat("d", 900), InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		Tools:            []llm.ToolSpec{{Name: "large_tool", Description: strings.Repeat("d", 900), InputSchema: json.RawMessage(`{"type":"object"}`)}},
 	}
 	fullSnapshot := manager.Snapshot(model, prompt)
 	if !fullSnapshot.NeedsCompaction(model) {

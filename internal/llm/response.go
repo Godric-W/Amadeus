@@ -23,7 +23,7 @@ type Usage struct {
 type Response struct {
 	ID                   string
 	RequestID            string
-	Message              Message
+	Message              ResponseItem
 	FinishReason         FinishReason
 	ProviderFinishReason string
 	Usage                Usage

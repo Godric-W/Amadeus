@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
@@ -23,40 +24,60 @@ func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnConte
 		return fmt.Errorf("turn context preparation is incomplete")
 	}
 	tools := runtime.AvailableTools()
-	mode := "execute"
 	if turnContext.Mode == turn.ModeKindPlan {
-		mode = "plan"
 		tools = planModeTools(tools)
 	}
 	toolNames := make([]string, len(tools))
 	for index, spec := range tools {
 		toolNames[index] = spec.Name
 	}
-	developer, err := internalprompt.DeveloperInstructions(mode, toolNames)
+	modelMessages, err := runtime.ModelMessages(runtime.ModelInfo())
+	if err != nil {
+		return err
+	}
+	developer, err := internalprompt.RenderCollaborationInstructions(modelMessages, turnContext.Mode, toolNames)
 	if err != nil {
 		return err
 	}
 	contextItems := make([]rollout.Item, 0, 6)
+	worldState := agentcontext.NewWorldState()
 	setUpdate := func(key agentcontext.UpdateKey, content string) error {
-		content = strings.TrimSpace(content)
-		if contextUpdate(key) == content {
+		if err := worldState.Set(key, content); err != nil {
+			return err
+		}
+		fragment := worldState.Fragment(key)
+		if fragment.Render() == "" {
+			if contextUpdate(key) == "" {
+				return nil
+			}
+			item, err := rollout.NewItem(rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(key)})
+			if err != nil {
+				return err
+			}
+			contextItems = append(contextItems, item)
 			return nil
 		}
-		item, err := rollout.NewItem(rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(key), Content: content})
+		rendered := fragment.Render()
+		if contextUpdate(key) == rendered {
+			return nil
+		}
+		item, err := rollout.NewItem(rollout.KindContextUpdate, rollout.ContextUpdate{
+			Key: string(key), Content: rendered, Revision: fragment.Revision(),
+		})
 		if err != nil {
 			return err
 		}
 		contextItems = append(contextItems, item)
 		return nil
 	}
-	if err := setUpdate(agentcontext.UpdateDeveloperInstructions, developer); err != nil {
+	if err := setUpdate(agentcontext.UpdateCollaborationMode, developer); err != nil {
 		return err
 	}
 	request, err := scope.Initialize(ctx, turnContext.CWD)
 	if err != nil {
 		return err
 	}
-	if err := setUpdate(agentcontext.UpdateEnvironment, fmt.Sprintf("## Workspace Context\n\nCurrent working directory: %s\nInstruction target: %s", turnContext.CWD, request.TargetPath)); err != nil {
+	if err := setUpdate(agentcontext.UpdateEnvironment, fmt.Sprintf("<cwd>%s</cwd>\n<instruction_target>%s</instruction_target>", html.EscapeString(turnContext.CWD), html.EscapeString(request.TargetPath))); err != nil {
 		return err
 	}
 	effective := runtime.fileSystemPolicy.EffectiveProfile()

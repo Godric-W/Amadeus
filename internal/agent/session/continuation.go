@@ -56,7 +56,7 @@ func (session *Session) continueTurn(ctx context.Context, runtime *engine.Servic
 		stepCtx = tool.WithInvocationMetadata(stepCtx, tool.InvocationMetadata{SessionID: string(turnContext.ThreadID), TurnID: string(turnContext.TurnID), Source: tool.ToolCallSourceModel})
 		sample, sampleErr := modelSession.Sample(stepCtx, engine.SampleRequest{
 			ID: sampleID, Messages: step.Prompt.Items, BaseInstructions: step.BaseInstructions,
-			Tools: step.Tools, OutputSchema: llm.OutputSchema(turnContext.OutputSchema),
+			Tools: step.Tools, OutputSchema: llm.OutputSchema(turnContext.OutputSchema), OutputSchemaStrict: turnContext.OutputSchemaStrict,
 			Temperature: runtime.ModelTemperature(), MaxOutputTokens: step.Model.MaxOutputTokens,
 			Events: events,
 		})

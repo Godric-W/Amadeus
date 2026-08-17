@@ -16,6 +16,7 @@ import (
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/project"
+	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
@@ -82,7 +83,7 @@ func TestCompactTaskProducesSemanticReplacementHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(client.request.Prompt.Input) < 3 || !strings.Contains(client.request.Prompt.BaseInstructions.Text, "canonical history") {
+	if len(client.request.Prompt.Input) < 3 || !strings.Contains(client.request.Prompt.BaseInstructions.Text, "CONTEXT CHECKPOINT COMPACTION") {
 		t.Fatalf("compaction request was incomplete: %#v", client.request.Prompt)
 	}
 	if len(result.Items) != 2 || result.Items[0].Kind != rollout.KindCompaction || result.Items[1].Kind != rollout.KindTokenUsage {
@@ -92,7 +93,7 @@ func TestCompactTaskProducesSemanticReplacementHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	projection, err := agentcontext.ProjectRolloutMessages(host.History())
-	if err != nil || len(projection.Messages) != 2 || projection.Messages[0].Role != llm.RoleUser || !strings.Contains(projection.Messages[1].Content, "## Compaction Checkpoint") || !strings.Contains(projection.Messages[1].Content, "Inspection completed") {
+	if err != nil || len(projection.Messages) != 2 || projection.Messages[0].Role != llm.RoleUser || !strings.Contains(projection.Messages[1].Content, "Another language model started to solve this problem") || !strings.Contains(projection.Messages[1].Content, "Inspection completed") {
 		t.Fatalf("replacement history was not authoritative: projection=%#v err=%v", projection, err)
 	}
 }
@@ -123,7 +124,7 @@ func TestCompactTaskPreservesLatestUserTurnOutsideReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(projection.Messages) != 3 || projection.Messages[0].Content != "inspect project" || !strings.Contains(projection.Messages[1].Content, "## Compaction Checkpoint") || projection.Messages[2].Content != "now run the tests" {
+	if len(projection.Messages) != 3 || projection.Messages[0].Content != "inspect project" || !strings.Contains(projection.Messages[1].Content, "Another language model started to solve this problem") || projection.Messages[2].Content != "now run the tests" {
 		t.Fatalf("latest user turn was not preserved: %#v", projection.Messages)
 	}
 }
@@ -157,7 +158,7 @@ func newCompactionTestRuntime(t *testing.T) (*ServicesBuilder, *compactTestHost,
 		t.Fatal(err)
 	}
 	builder, err := NewServicesBuilder(ServicesOptions{
-		Config: configured, Project: root, AmadeusRoot: t.TempDir(), BaseInstructions: llm.BaseInstructions{Text: "test base instructions"},
+		Config: configured, Project: root, AmadeusRoot: t.TempDir(), ModelMessages: mustLoadModelMessages(t),
 		ClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
 		AuditFactory: func() (audit.Sink, io.Closer, error) {
 			return audit.NewMemorySink(), io.NopCloser(strings.NewReader("")), nil
@@ -180,4 +181,13 @@ func newCompactionTestRuntime(t *testing.T) (*ServicesBuilder, *compactTestHost,
 		t.Fatal(err)
 	}
 	return builder, host, client
+}
+
+func mustLoadModelMessages(t *testing.T) llm.ModelMessages {
+	t.Helper()
+	messages, err := internalprompt.LoadModelMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return messages
 }

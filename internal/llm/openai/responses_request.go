@@ -37,7 +37,7 @@ func newResponsesRequest(request llm.Request) (responses.ResponseNewParams, erro
 		input = append(input, converted...)
 	}
 
-	tools, err := responsesTools(request.ToolDefinitions())
+	tools, err := responsesTools(request.ToolSpecs())
 	if err != nil {
 		return responses.ResponseNewParams{}, err
 	}
@@ -53,7 +53,7 @@ func newResponsesRequest(request llm.Request) (responses.ResponseNewParams, erro
 	}, nil
 }
 
-func responsesInputItems(message llm.Message) ([]responses.ResponseInputItemUnionParam, error) {
+func responsesInputItems(message llm.ResponseItem) ([]responses.ResponseInputItemUnionParam, error) {
 	if message.Role == llm.RoleTool {
 		if strings.TrimSpace(message.ToolCallID) == "" {
 			return nil, errors.New("tool result call ID is empty")
@@ -100,7 +100,7 @@ func responsesInputItems(message llm.Message) ([]responses.ResponseInputItemUnio
 	return items, nil
 }
 
-func responsesMessageContent(message llm.Message) (responses.ResponseInputMessageContentListParam, error) {
+func responsesMessageContent(message llm.ResponseItem) (responses.ResponseInputMessageContentListParam, error) {
 	if len(message.Parts) == 0 {
 		return nil, nil
 	}
@@ -118,7 +118,7 @@ func responsesMessageContent(message llm.Message) (responses.ResponseInputMessag
 	return parts, nil
 }
 
-func responsesToolOutput(message llm.Message) (responses.ResponseFunctionCallOutputItemListParam, error) {
+func responsesToolOutput(message llm.ResponseItem) (responses.ResponseFunctionCallOutputItemListParam, error) {
 	parts := make(responses.ResponseFunctionCallOutputItemListParam, 0, len(message.Parts)+1)
 	if message.Content != "" {
 		parts = append(parts, responses.ResponseFunctionCallOutputItemParamOfInputText(message.Content))
@@ -167,7 +167,7 @@ func imageDataURL(part llm.ContentPart) (string, error) {
 	return "data:" + part.MediaType + ";base64," + part.Data, nil
 }
 
-func responsesTools(definitions []llm.ToolDefinition) ([]responses.ToolUnionParam, error) {
+func responsesTools(definitions []llm.ToolSpec) ([]responses.ToolUnionParam, error) {
 	tools := make([]responses.ToolUnionParam, 0, len(definitions))
 	seen := make(map[string]struct{}, len(definitions))
 	for index, definition := range definitions {
@@ -184,7 +184,7 @@ func responsesTools(definitions []llm.ToolDefinition) ([]responses.ToolUnionPara
 	return tools, nil
 }
 
-func toolSchema(definition llm.ToolDefinition, seen map[string]struct{}) (map[string]any, error) {
+func toolSchema(definition llm.ToolSpec, seen map[string]struct{}) (map[string]any, error) {
 	if strings.TrimSpace(definition.Name) == "" {
 		return nil, errors.New("name is empty")
 	}

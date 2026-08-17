@@ -5,7 +5,7 @@ import "testing"
 func TestMessageConstructors(t *testing.T) {
 	tests := []struct {
 		name    string
-		message Message
+		message ResponseItem
 		role    Role
 		content string
 	}{

@@ -21,15 +21,16 @@ const (
 )
 
 type SampleRequest struct {
-	ID               string
-	Messages         []llm.Message
-	BaseInstructions llm.BaseInstructions
-	Tools            []tool.ToolSpec
-	OutputSchema     llm.OutputSchema
-	Temperature      float64
-	MaxOutputTokens  int
-	Reasoning        *llm.ReasoningConfig
-	Events           protocol.EventSink
+	ID                 string
+	Messages           []llm.ResponseItem
+	BaseInstructions   llm.BaseInstructions
+	Tools              []tool.ToolSpec
+	OutputSchema       llm.OutputSchema
+	OutputSchemaStrict bool
+	Temperature        float64
+	MaxOutputTokens    int
+	Reasoning          *llm.ReasoningConfig
+	Events             protocol.EventSink
 }
 
 type SampleResult struct {
@@ -65,17 +66,18 @@ func (session *ModelClientSession) Sample(ctx context.Context, request SampleReq
 	if request.MaxOutputTokens <= 0 {
 		return SampleResult{}, errors.New("model sample max output tokens must be greater than zero")
 	}
-	definitions := make([]llm.ToolDefinition, len(request.Tools))
+	definitions := make([]llm.ToolSpec, len(request.Tools))
 	for index, spec := range request.Tools {
-		definitions[index] = llm.ToolDefinition{Name: spec.Name, Description: spec.Description, InputSchema: append([]byte(nil), spec.InputSchema...)}
+		definitions[index] = llm.ToolSpec{Name: spec.Name, Description: spec.Description, InputSchema: append([]byte(nil), spec.InputSchema...)}
 	}
 	stream, err := session.client.Stream(ctx, llm.Request{
 		Model: session.client.Model().Name,
 		Prompt: llm.Prompt{
 			BaseInstructions: request.BaseInstructions,
 			Input:            request.Messages, Tools: definitions,
-			ParallelToolCalls: session.client.Model().SupportsParallelToolCalls,
-			OutputSchema:      append(llm.OutputSchema(nil), request.OutputSchema...),
+			ParallelToolCalls:  session.client.Model().SupportsParallelToolCalls,
+			OutputSchema:       append(llm.OutputSchema(nil), request.OutputSchema...),
+			OutputSchemaStrict: request.OutputSchemaStrict,
 		},
 		Temperature: request.Temperature, MaxOutputTokens: request.MaxOutputTokens, Reasoning: request.Reasoning,
 	})

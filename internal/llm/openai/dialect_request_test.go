@@ -103,11 +103,11 @@ func dialectChatRequest() llm.Request {
 	return llm.Request{
 		Model: "test-model",
 		Prompt: llm.Prompt{
-			Input: []llm.Message{
+			Input: []llm.ResponseItem{
 				llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call_1", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
 				llm.ToolResultMessage("call_1", "contents"),
 			},
-			Tools: []llm.ToolDefinition{{
+			Tools: []llm.ToolSpec{{
 				Name: "read", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`), Strict: false,
 			}},
 		},

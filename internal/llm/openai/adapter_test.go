@@ -137,7 +137,7 @@ func TestAdapterRejectsImagesBeforeCallingUnsupportedProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = adapter.Stream(context.Background(), llm.Request{
-		Model: provider.Model, Prompt: llm.Prompt{Input: []llm.Message{{Role: llm.RoleUser, Parts: []llm.ContentPart{llm.ImagePart("image/png", "YQ==")}}}},
+		Model: provider.Model, Prompt: llm.Prompt{Input: []llm.ResponseItem{{Role: llm.RoleUser, Parts: []llm.ContentPart{llm.ImagePart("image/png", "YQ==")}}}},
 		MaxOutputTokens: 10,
 	})
 	var providerError *llm.ProviderError

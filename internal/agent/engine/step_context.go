@@ -18,16 +18,19 @@ type StepInstructionScope interface {
 // StepContext is an immutable request snapshot. The prompt-visible tool specs
 // and the execution allow-list are derived together and must stay paired.
 type StepContext struct {
-	Turn             turn.TurnContext
-	Prompt           agentcontext.PromptSnapshot
-	Model            llm.ModelInfo
-	BaseInstructions llm.BaseInstructions
-	Tools            []tool.ToolSpec
-	ToolNames        []string
-	ToolRevision     string
-	SkillRevision    string
-	MCPRevision      string
-	RequestSnapshot  tool.RequestSnapshot
+	Turn                  turn.TurnContext
+	Prompt                agentcontext.PromptSnapshot
+	Model                 llm.ModelInfo
+	BaseInstructions      llm.BaseInstructions
+	Tools                 []tool.ToolSpec
+	ToolNames             []string
+	ToolSpecRevisions     []string
+	ToolRevision          string
+	SkillRevision         string
+	MCPRevision           string
+	ModelMessagesRevision string
+	WorldStateRevision    string
+	RequestSnapshot       tool.RequestSnapshot
 }
 
 func (runtime *Services) CaptureStep(snapshot func(llm.ModelInfo, llm.Prompt) agentcontext.PromptSnapshot, turnContext turn.TurnContext) (StepContext, error) {
@@ -39,16 +42,27 @@ func (runtime *Services) CaptureStep(snapshot func(llm.ModelInfo, llm.Prompt) ag
 		tools = planModeTools(tools)
 	}
 	toolNames := make([]string, len(tools))
-	definitions := make([]llm.ToolDefinition, len(tools))
+	definitions := make([]llm.ToolSpec, len(tools))
+	toolSpecRevisions := make([]string, len(tools))
 	for index, spec := range tools {
 		toolNames[index] = spec.Name
-		definitions[index] = llm.ToolDefinition{Name: spec.Name, Description: spec.Description, InputSchema: append([]byte(nil), spec.InputSchema...)}
+		definitions[index] = llm.ToolSpec{Name: spec.Name, Description: spec.Description, InputSchema: append([]byte(nil), spec.InputSchema...)}
+		toolSpecRevisions[index] = definitions[index].RevisionID()
 	}
 	model := runtime.ModelInfo()
+	modelMessages, err := runtime.ModelMessages(model)
+	if err != nil {
+		return StepContext{}, err
+	}
+	baseInstructions, err := modelMessages.ResolveBaseInstructions(string(turnContext.Personality))
+	if err != nil {
+		return StepContext{}, err
+	}
 	promptShape := llm.Prompt{
-		BaseInstructions: runtime.baseInstructions, Tools: definitions,
-		ParallelToolCalls: model.SupportsParallelToolCalls,
-		OutputSchema:      append(llm.OutputSchema(nil), turnContext.OutputSchema...),
+		BaseInstructions: baseInstructions, Tools: definitions,
+		ParallelToolCalls:  model.SupportsParallelToolCalls,
+		OutputSchema:       append(llm.OutputSchema(nil), turnContext.OutputSchema...),
+		OutputSchemaStrict: turnContext.OutputSchemaStrict,
 	}
 	promptSnapshot := snapshot(model, promptShape)
 	requestSnapshot := tool.RequestSnapshot{ToolRevision: runtime.registry.Revision()}
@@ -57,10 +71,12 @@ func (runtime *Services) CaptureStep(snapshot func(llm.ModelInfo, llm.Prompt) ag
 		requestSnapshot.MCPBindingRevision = runtime.extensions.MCPBinding().Revision
 	}
 	return StepContext{
-		Turn: turnContext, Prompt: promptSnapshot, Model: model, BaseInstructions: runtime.baseInstructions,
+		Turn: turnContext, Prompt: promptSnapshot, Model: model, BaseInstructions: baseInstructions,
 		Tools: cloneToolSpecs(tools), ToolNames: append([]string(nil), toolNames...),
-		ToolRevision: requestSnapshot.ToolRevision, SkillRevision: requestSnapshot.SkillRevision,
-		MCPRevision: requestSnapshot.MCPBindingRevision, RequestSnapshot: requestSnapshot,
+		ToolSpecRevisions: append([]string(nil), toolSpecRevisions...),
+		ToolRevision:      requestSnapshot.ToolRevision, SkillRevision: requestSnapshot.SkillRevision,
+		MCPRevision: requestSnapshot.MCPBindingRevision, ModelMessagesRevision: modelMessages.Revision,
+		WorldStateRevision: promptSnapshot.WorldStateRevision, RequestSnapshot: requestSnapshot,
 	}, nil
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/config"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -23,6 +24,7 @@ type engineTestClient struct {
 	mu       sync.Mutex
 	requests []llm.Request
 	streams  [][]llm.StreamChunk
+	messages llm.ModelMessages
 }
 
 func (*engineTestClient) Complete(context.Context, llm.Request) (llm.Response, error) {
@@ -41,8 +43,8 @@ func (client *engineTestClient) Stream(_ context.Context, request llm.Request) (
 	return &engineTestStream{chunks: chunks}, nil
 }
 
-func (*engineTestClient) Model() llm.ModelInfo {
-	return llm.ModelInfo{Provider: "test", Name: "test-model", ContextWindow: 100_000, MaxOutputTokens: 1024, SupportsParallelToolCalls: true}
+func (client *engineTestClient) Model() llm.ModelInfo {
+	return llm.ModelInfo{Provider: "test", Name: "test-model", ContextWindow: 100_000, MaxOutputTokens: 1024, SupportsParallelToolCalls: true, ModelMessages: client.messages}
 }
 
 func (*engineTestClient) Capabilities() llm.Capabilities {
@@ -149,7 +151,7 @@ func TestTurnEngineContinuesAfterToolFailureAndPersistsBeforeCompletion(t *testi
 	}
 	runtime := &Services{
 		providerName: "test", provider: config.ProviderConfig{Model: "test-model", MaxOutputTokens: 1024}, client: client,
-		baseInstructions: llm.BaseInstructions{Text: "test instructions"}, registry: registry,
+		modelMessages: testModelMessages(t), registry: registry,
 		toolService: service, visibility: map[string]bool{},
 	}
 	host := &engineTestHost{context: agentcontext.NewManager(nil)}
@@ -199,7 +201,7 @@ func TestStepContextDerivesPlanMaskAndRevisionFromOneRegistrySnapshot(t *testing
 			t.Fatal(err)
 		}
 	}
-	runtime := &Services{client: client, baseInstructions: llm.BaseInstructions{Text: "base"}, registry: registry, visibility: map[string]bool{}, provider: config.ProviderConfig{MaxOutputTokens: 1024}}
+	runtime := &Services{client: client, modelMessages: testModelMessages(t), registry: registry, visibility: map[string]bool{}, provider: config.ProviderConfig{MaxOutputTokens: 1024}}
 	host := &engineTestHost{context: agentcontext.NewManager(nil)}
 	regular, err := runtime.CaptureStep(host.Snapshot, turn.TurnContext{Mode: turn.ModeKindDefault})
 	if err != nil {
@@ -243,7 +245,7 @@ func TestTurnEngineWarnsThenReturnsTypedBlockedAtSafetyBudget(t *testing.T) {
 	}
 	runtime := &Services{
 		providerName: "test", provider: config.ProviderConfig{Model: "test-model", MaxOutputTokens: 1024}, client: client,
-		baseInstructions: llm.BaseInstructions{Text: "test instructions"}, registry: registry,
+		modelMessages: testModelMessages(t), registry: registry,
 		toolService: service, visibility: map[string]bool{},
 		budget: TurnBudget{MaxSamples: 2, MaxToolCalls: 100, MaxDuration: time.Hour, WarnRatio: 0.5},
 	}
@@ -276,7 +278,7 @@ func TestTurnEngineChecksAutomaticCompactionBeforeSampling(t *testing.T) {
 	}
 	runtime := &Services{
 		providerName: "test", provider: config.ProviderConfig{Model: "test-model", ContextWindow: 1_000, AutoCompactTokenLimit: 1, MaxOutputTokens: 64}, client: client,
-		baseInstructions: llm.BaseInstructions{Text: "test instructions"}, registry: registry,
+		modelMessages: testModelMessages(t), registry: registry,
 		toolService: service, visibility: map[string]bool{}, budget: DefaultTurnBudget(),
 	}
 	host := &engineTestHost{context: agentcontext.NewManager(nil)}
@@ -339,4 +341,28 @@ func lastIndex(values []string, target string) int {
 		}
 	}
 	return -1
+}
+
+func testModelMessages(t *testing.T) llm.ModelMessages {
+	t.Helper()
+	messages, err := internalprompt.LoadModelMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return messages
+}
+
+func TestServicesPreferModelMessagesFromCurrentModel(t *testing.T) {
+	catalog := testModelMessages(t)
+	modelMessages := catalog
+	modelMessages.InstructionsTemplate = "model-specific {{ personality }}"
+	modelMessages.Revision = "model-specific-revision"
+	runtime := &Services{client: &engineTestClient{messages: modelMessages}, modelMessages: catalog}
+	resolved, err := runtime.ModelMessages(runtime.ModelInfo())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Revision != "model-specific-revision" || !strings.HasPrefix(resolved.InstructionsTemplate, "model-specific") {
+		t.Fatalf("current model messages were not selected: %#v", resolved)
+	}
 }

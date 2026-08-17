@@ -18,6 +18,7 @@ type ModelInfo struct {
 	SupportsParallelToolCalls bool
 	ToolOutputMaxTokens       int64
 	InputModalities           []InputModality
+	ModelMessages             ModelMessages
 }
 
 type InputModality string

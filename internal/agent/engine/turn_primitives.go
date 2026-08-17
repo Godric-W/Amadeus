@@ -56,7 +56,7 @@ func (budget TurnBudget) Exhausted(samples, toolCalls int, elapsed time.Duration
 	}
 }
 
-func PersistAssistantResponse(ctx context.Context, appendItems func(context.Context, turn.ID, ...rollout.Item) error, turnID turn.ID, message llm.Message, normalized []tool.ToolCall) error {
+func PersistAssistantResponse(ctx context.Context, appendItems func(context.Context, turn.ID, ...rollout.Item) error, turnID turn.ID, message llm.ResponseItem, normalized []tool.ToolCall) error {
 	items := make([]rollout.Item, 0, len(normalized)+1)
 	if strings.TrimSpace(message.Content) != "" || strings.TrimSpace(message.Reasoning) != "" {
 		item, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: string(llm.RoleAssistant), Content: strings.TrimSpace(message.Content), Reasoning: strings.TrimSpace(message.Reasoning)})
@@ -78,7 +78,7 @@ func PersistAssistantResponse(ctx context.Context, appendItems func(context.Cont
 	return appendItems(ctx, turnID, items...)
 }
 
-func PublishModelCompletions(ctx context.Context, appendItems func(context.Context, turn.ID, ...rollout.Item) error, turnID turn.ID, events protocol.EventSink, sampleID string, message llm.Message) error {
+func PublishModelCompletions(ctx context.Context, appendItems func(context.Context, turn.ID, ...rollout.Item) error, turnID turn.ID, events protocol.EventSink, sampleID string, message llm.ResponseItem) error {
 	if strings.TrimSpace(message.Content) != "" {
 		if err := persistAndPublishModelCompletion(ctx, appendItems, turnID, events, sampleID+":assistant", protocol.ItemAssistantMessage, message.Content); err != nil {
 			return err

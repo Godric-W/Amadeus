@@ -33,9 +33,10 @@ type TurnContext struct {
 	CurrentDate string `json:"current_date,omitempty"`
 	Timezone    string `json:"timezone,omitempty"`
 
-	Mode         ModeKind        `json:"mode"`
-	Personality  Personality     `json:"personality,omitempty"`
-	OutputSchema json.RawMessage `json:"output_schema,omitempty"`
+	Mode               ModeKind        `json:"mode"`
+	Personality        Personality     `json:"personality,omitempty"`
+	OutputSchema       json.RawMessage `json:"output_schema,omitempty"`
+	OutputSchemaStrict bool            `json:"output_schema_strict,omitempty"`
 }
 
 func (value TurnContext) Validate() error {

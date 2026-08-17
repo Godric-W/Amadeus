@@ -14,7 +14,7 @@ import (
 )
 
 type RolloutMessageProjection struct {
-	Messages        []llm.Message
+	Messages        []llm.ResponseItem
 	SourceSequences []int64
 }
 
@@ -74,7 +74,7 @@ func (projection *RolloutMessageProjection) appendResponse(line rollout.Line) er
 	case rollout.ResponseUserMessage:
 		projection.append(llm.UserMessage(item.Content), line.Sequence)
 	case rollout.ResponseAssistantMessage:
-		projection.append(llm.Message{Role: llm.RoleAssistant, Content: item.Content, Reasoning: item.Reasoning}, line.Sequence)
+		projection.append(llm.ResponseItem{Role: llm.RoleAssistant, Content: item.Content, Reasoning: item.Reasoning}, line.Sequence)
 	case rollout.ResponseToolCall:
 		callID := strings.TrimSpace(item.CallID)
 		if callID == "" {
@@ -88,7 +88,7 @@ func (projection *RolloutMessageProjection) appendResponse(line rollout.Line) er
 		if len(arguments) == 0 {
 			arguments = json.RawMessage(`{}`)
 		}
-		projection.appendAssistantToolCall(llm.Message{
+		projection.appendAssistantToolCall(llm.ResponseItem{
 			Role: llm.RoleAssistant, Content: item.Content, Reasoning: item.Reasoning,
 			ToolCalls: []llm.ToolCall{{ID: callID, Name: name, Arguments: arguments}},
 		}, line.Sequence)
@@ -116,7 +116,7 @@ func (projection *RolloutMessageProjection) appendResponse(line rollout.Line) er
 	return nil
 }
 
-func (projection *RolloutMessageProjection) appendAssistantToolCall(message llm.Message, sequence uint64) {
+func (projection *RolloutMessageProjection) appendAssistantToolCall(message llm.ResponseItem, sequence uint64) {
 	last := len(projection.Messages) - 1
 	if last >= 0 && projection.Messages[last].Role == llm.RoleAssistant &&
 		projection.SourceSequences[last]+1 == int64(sequence) {
@@ -133,7 +133,7 @@ func (projection *RolloutMessageProjection) appendAssistantToolCall(message llm.
 	projection.append(message, sequence)
 }
 
-func (projection *RolloutMessageProjection) append(message llm.Message, sequence uint64) {
+func (projection *RolloutMessageProjection) append(message llm.ResponseItem, sequence uint64) {
 	projection.Messages = append(projection.Messages, message)
 	projection.SourceSequences = append(projection.SourceSequences, int64(sequence))
 }
@@ -154,10 +154,10 @@ func (projection *RolloutMessageProjection) applyCompaction(payload rollout.Comp
 	if strings.TrimSpace(payload.SourceHash) != "" && hex.EncodeToString(digest[:]) != payload.SourceHash {
 		return errors.New("compaction source hash does not match projected history")
 	}
-	replacements := make([]llm.Message, 0, len(payload.ReplacementHistory))
+	replacements := make([]llm.ResponseItem, 0, len(payload.ReplacementHistory))
 	sequences := make([]int64, 0, len(payload.ReplacementHistory))
 	for _, replacement := range payload.ReplacementHistory {
-		replacements = append(replacements, llm.Message{Role: llm.Role(replacement.Role), Content: replacement.Content})
+		replacements = append(replacements, llm.ResponseItem{Role: llm.Role(replacement.Role), Content: replacement.Content})
 		sequences = append(sequences, payload.CoveredThroughSequence)
 	}
 	projection.Messages = append(replacements, projection.Messages[covered:]...)

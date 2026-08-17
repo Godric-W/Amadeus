@@ -13,7 +13,7 @@ type Dialect interface {
 	SupportsAPI(config.APIMode) bool
 	Capabilities(config.APIMode) llm.Capabilities
 	PrepareChatRequest(llm.Request, *openaisdk.ChatCompletionNewParams) error
-	PrepareChatMessage(llm.Message, *openaisdk.ChatCompletionMessageParamUnion) error
+	PrepareChatMessage(llm.ResponseItem, *openaisdk.ChatCompletionMessageParamUnion) error
 	SupportsStrictToolSchema() bool
 }
 
@@ -40,7 +40,7 @@ type dialect struct {
 	supportedAPIs            map[config.APIMode]struct{}
 	capabilities             func(config.APIMode) llm.Capabilities
 	prepareChatRequest       func(llm.Request, *openaisdk.ChatCompletionNewParams) error
-	prepareChatMessage       func(llm.Message, *openaisdk.ChatCompletionMessageParamUnion) error
+	prepareChatMessage       func(llm.ResponseItem, *openaisdk.ChatCompletionMessageParamUnion) error
 	supportsStrictToolSchema bool
 }
 
@@ -70,7 +70,7 @@ func (providerDialect dialect) PrepareChatRequest(request llm.Request, params *o
 	return providerDialect.prepareChatRequest(request, params)
 }
 
-func (providerDialect dialect) PrepareChatMessage(message llm.Message, converted *openaisdk.ChatCompletionMessageParamUnion) error {
+func (providerDialect dialect) PrepareChatMessage(message llm.ResponseItem, converted *openaisdk.ChatCompletionMessageParamUnion) error {
 	if providerDialect.prepareChatMessage == nil {
 		return nil
 	}
@@ -154,7 +154,7 @@ func prepareGLMChatRequest(request llm.Request, params *openaisdk.ChatCompletion
 	return nil
 }
 
-func prepareReasoningChatMessage(message llm.Message, converted *openaisdk.ChatCompletionMessageParamUnion) error {
+func prepareReasoningChatMessage(message llm.ResponseItem, converted *openaisdk.ChatCompletionMessageParamUnion) error {
 	if message.Role != llm.RoleAssistant || message.Reasoning == "" {
 		return nil
 	}

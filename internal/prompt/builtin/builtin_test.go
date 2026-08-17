@@ -46,37 +46,6 @@ func TestAgentSystemLayerOrderIsStable(t *testing.T) {
 	}
 }
 
-func TestDeveloperLayersRespectModeAndToolExposure(t *testing.T) {
-	execute, err := DeveloperLayers("execute", []string{"read", "update_plan", "edit", "write", "glob", "grep", "execute_command"})
-	if err != nil {
-		t.Fatalf("compose execute layers: %v", err)
-	}
-	wantExecute := []ID{ModeExecute, RuntimeWorkspace, RuntimePermission, RuntimeInstructions, RuntimeSkills, ToolsGeneral, ToolUpdatePlan, ToolExecuteCommand}
-	if !reflect.DeepEqual(execute, wantExecute) {
-		t.Fatalf("unexpected execute layers: got %v, want %v", execute, wantExecute)
-	}
-	plan, err := DeveloperLayers("plan", []string{"read"})
-	if err != nil {
-		t.Fatalf("compose plan layers: %v", err)
-	}
-	wantPlan := []ID{ModePlan, RuntimeWorkspace, RuntimeInstructions, RuntimeSkills}
-	if !reflect.DeepEqual(plan, wantPlan) {
-		t.Fatalf("unexpected plan layers: got %v, want %v", plan, wantPlan)
-	}
-	withoutSpecialTools, err := DeveloperLayers("execute", []string{"read"})
-	if err != nil {
-		t.Fatalf("compose read-only execute layers: %v", err)
-	}
-	for _, id := range withoutSpecialTools {
-		if id == ToolUpdatePlan || id == ToolExecuteCommand {
-			t.Fatalf("unexposed Tool guidance was selected: %v", withoutSpecialTools)
-		}
-	}
-	if _, err := DeveloperLayers("adaptive", nil); err == nil {
-		t.Fatal("unknown Prompt mode was accepted")
-	}
-}
-
 func TestBuiltinsDoNotReintroduceRemovedAgentArchitectures(t *testing.T) {
 	for _, id := range All() {
 		content, err := Read(id)

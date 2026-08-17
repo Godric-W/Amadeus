@@ -383,7 +383,7 @@ func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 		t.Fatalf("unexpected first Agent tool count: %d", len(first.Prompt.Tools))
 	}
 	firstPrompt := messageContents(first.Prompt.Input)
-	for _, fragment := range []string{"## Execute Mode", "## Workspace Context", "## Permission And Isolation Context", "## Tool Discipline", "user instruction", "project instruction"} {
+	for _, fragment := range []string{"## Execute Mode", "<collaboration_mode>", "<environment_context>", "<permission_context>", "## `read`", "user instruction", "project instruction"} {
 		if !strings.Contains(firstPrompt, fragment) {
 			t.Fatalf("first Agent request omitted Prompt fragment %q: %s", fragment, firstPrompt)
 		}
@@ -398,7 +398,7 @@ func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 	}
 }
 
-func messageContents(messages []llm.Message) string {
+func messageContents(messages []llm.ResponseItem) string {
 	parts := make([]string, len(messages))
 	for index, message := range messages {
 		parts[index] = message.Content
@@ -511,7 +511,7 @@ func (client *plannedCodingCommandClient) Capabilities() llm.Capabilities {
 	return llm.Capabilities{SupportsStreaming: true, SupportsDeveloperRole: true}
 }
 
-func messagesContain(messages []llm.Message, fragment string) bool {
+func messagesContain(messages []llm.ResponseItem, fragment string) bool {
 	for _, message := range messages {
 		if strings.Contains(message.Content, fragment) {
 			return true

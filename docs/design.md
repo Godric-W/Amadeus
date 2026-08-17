@@ -13,11 +13,12 @@
 
 设计遵循以下约束：
 
-1. Codex 作为 Thread、Session、SessionServices、Turn、Rollout、Context、SessionTask、`run_turn`、Slash Command 和 TUI 的主要架构骨架。
+1. Codex 作为 Thread、Session、SessionServices、Turn、Rollout、Context、SessionTask、`run_turn`、Prompt 构造、Slash Command 和 TUI 的主要架构骨架。
 2. Codex 的 StepContext/ToolRouter 与 Claude Code 的 Tool 内层协议、ToolUseContext、文件工具、文件修改确认、Diff Preview、Read-before-write、权限评估和 Approval 交互共同构成 Tool 调用链。
 3. Amadeus 保留多 Provider、本地配置、Go 实现和跨模型安全默认值等自身产品要求。
 4. 外层 Runtime 不照搬 Claude Code；内层 Tool 的数据模型和阶段划分尽量与 Claude Code 对齐，再通过 Go 类型和 Codex Event/InteractiveRequest 边界适配。
 5. 不引入 Claude Code 的用户级、项目级或本地权限持久化；Approval grant 只保存在当前 Session 内存中，Session 结束或 Resume 后清空。
+6. Prompt 的架构、数据模型、命名和所有权以 Codex 为准；普通模式、Plan Mode 和 Compaction Prompt 使用 Codex 对应机制与资产。Prompt 迁移不得为旧实现增加兼容适配层，旧 Prompt owner、旧字段和旧装配入口必须在切换后删除。
 
 架构迁移以所有权、依赖方向和运行时不变量为完成标准，不以 package、类型或字段改名为完成标准：
 
@@ -40,6 +41,7 @@
 | F. Agent Engine | Codex 风格 Turn continuation loop、StepContext、Plan Tool、Plan Mode、中断与终态 |
 | G. Runtime Architecture Convergence | SessionServices 所有权归位、Codex 术语收敛、Task/run_turn 主链与混合 Tool 边界 |
 | H. Extensions + Release | MCP、Skill、Web、迁移清理与发布验收 |
+| I. Prompt Construction + Optimization | Codex Prompt 数据模型、ModelMessages、WorldState/Collaboration Mode、Prompt 资产迁移与缓存/Token/Contract 验证 |
 
 ## 2. 产品目标
 
@@ -63,10 +65,12 @@ Amadeus 的目标是成为一个真正可用于日常软件开发的通用 Codin
 | Agent Runtime | Codex | Session、SessionState、SessionServices、TurnContext、StepContext、SessionTask 与单一 `run_turn` continuation loop |
 | Plan | Codex | `update_plan` 是软状态；`/plan` 是显式 Plan Mode |
 | Context Manager | Codex 为骨架 | 统一历史投影、Token Accounting 和 Compaction 生命周期 |
-| Prompt Assembly | Codex 与 Claude Code | 稳定规则分层，动态事实不写入静态模板 |
+| Prompt Assembly | Codex | Prompt、BaseInstructions、ResponseItem、ToolSpec、ModelMessages、WorldState、CollaborationModeState 和 ContextualUserFragment 使用 Codex 同构职责；不保留旧 Prompt 构造双轨 |
+| 普通/Plan/Compact Prompt | Codex | 普通 Turn 复用 ModelInstructions + WorldState + Conversation + ToolSpec；Plan 使用 CollaborationModeMessages.plan；Compact 使用 Codex summarization prompt 与 summary prefix |
 | Tool 路由与内层协议 | Codex + Claude Code | StepContext 捕获本次 ToolRouter/ToolSet；ToolExecutionService 执行 Validate、Prepare、Permission、Approval、Execute 和 Typed ToolResult |
-| 文件 Tool | Claude Code | Read-before-write、staleness 校验、Structured Diff、确认后落盘 |
-| Command Tool | Claude Code 行为，按 Amadeus 跨平台目标收敛 | 默认 Ask、Session 精确规则、应用层保护与宿主执行 |
+| Claude-style 文件 Tool | Claude Code | `read`、`edit`、`write`、`glob`、`grep` 的模型指引和使用边界以 Claude Code 对应 Tool Prompt 为准 |
+| Codex-style Runtime Tool | Codex | `update_plan`、`write_stdin` 和命令续接提示以 Codex 对应 Tool Prompt/Contract 为准 |
+| Command Tool | Codex + Amadeus | `execute_command`、ProcessManager、Approval 复用和宿主执行边界遵循 Amadeus 已有 Contract 与 Codex unified exec 语义 |
 | Approval TUI | Claude Code | 展示操作和结构化 Diff，使用范围明确的动态选项与键盘交互；不直接修改权限状态 |
 | Event Protocol | Codex | Submission、SessionEvent、InteractiveRequest、TurnItem 生命周期与 Delta |
 | TUI 数据模型与视觉 | Codex | EventReducer、HistoryCell、ActiveHistoryCell、Working、Slash Popup、状态栏 |
@@ -1041,7 +1045,7 @@ type BaseInstructions struct {
 type Prompt struct {
     BaseInstructions  BaseInstructions
     Input             []llm.ResponseItem
-    Tools             []tool.Spec
+    Tools             []ToolSpec
     ParallelToolCalls bool
     OutputSchema      json.RawMessage
 }
@@ -1050,7 +1054,8 @@ type Prompt struct {
 Prompt 构建主链固定为：
 
 ```text
-SessionConfiguration.BaseInstructions
+ModelInfo.ModelMessages
+→ BaseInstructions (resolved for current Personality)
 + ContextManager PromptSnapshot
 + StepContext.ToolRouter.Specs
 + TurnContext.OutputSchema
@@ -1060,7 +1065,7 @@ SessionConfiguration.BaseInstructions
 
 各类内容只有一个所有者：
 
-- BaseInstructions：稳定的 Coding Agent 身份、完成标准、沟通方式和跨 Tool 行为纪律，属于 SessionConfiguration。
+- BaseInstructions：稳定的 Coding Agent 身份、完成标准、沟通方式和跨 Tool 行为纪律，由当前 `ModelInfo.ModelMessages` 在 StepContext capture 时解析；不属于 Task 或 CLI Composition。
 - Dynamic Context Updates：Developer Instructions、AGENTS.md、Environment、Collaboration Mode、Permission Profile、Skill 和 MCP 的当前事实，转换为 ResponseItem 后进入 ContextManager。
 - Conversation：User、Assistant、ToolCall 和 ToolResult，由 ContextManager 从 canonical Rollout 投影和维护。
 - Tool Guidance：Tool 名称、描述和 Input Schema 位于 Tool Spec；只有跨 Tool 纪律保留在 BaseInstructions。
@@ -1072,7 +1077,111 @@ Session 在 capture StepContext 时解析动态环境、AGENTS.md、MCP 和 Tool
 
 动态 Context Update 使用稳定的 replace key。Session 初始化、Resume 或 SessionPermissionContext 变化时，下一次 capture StepContext 可以提交新的临时 Permission Context Update；该 Update 只描述当前 Session 能力，不把 grant 变成持久化权限。历史 Approval Decision 可以作为事实保留，但 Resume 时不会重新授予权限。
 
-Prompt 资产位于 `internal/prompt`，按 BaseInstructions、Context Update、Tool Spec 和 Compaction Prompt 分层。
+Prompt 资产位于 `internal/prompt`，按 ModelMessages Catalog、Context/WorldState、Tool Guidance 和 Compaction Prompt 分层；解析后的 `llm.ModelMessages` 属于 LLM domain contract。
+
+### 12.1.1 Codex Prompt 数据模型与所有权
+
+Prompt 构造必须与 Codex 的数据模型和职责划分同构，不为旧 Amadeus Prompt 实现保留兼容入口：
+
+```go
+type BaseInstructions struct {
+    Text string
+}
+
+type Prompt struct {
+    Input              []ResponseItem
+    Tools              []ToolSpec
+    ParallelToolCalls  bool
+    BaseInstructions   BaseInstructions
+    OutputSchema       json.RawMessage
+    OutputSchemaStrict bool
+}
+```
+
+对应 Codex 参考实现为 `codex-rs/core/src/client_common.rs` 的 `Prompt`、`codex-rs/protocol/src/models.rs` 的 `BaseInstructions` 和 `ResponseItem`。Amadeus 的 Go 类型可以位于 `internal/llm`，但必须保持以下职责边界：
+
+- `BaseInstructions` 只承载模型级稳定指令，不承载当前目录、当前权限、当前 Tool 列表或当前 Turn 事实。
+- `ModelMessages` 负责模型 instruction template、模板变量、模式消息、Compaction message、来源和 revision；默认 Prompt 必须由当前 ModelInfo 解析，而不是由 `RegularTask` 选择字符串。
+- `WorldState` 负责可变运行事实的 Section 状态；每个 Section 通过 Codex 风格的 `ContextualUserFragment` 生成带稳定 marker 的 Context Update。
+- `CollaborationModeState` 负责当前 `ModeKind`、模型和该模式的 Developer Instructions；Default/Execute 与 Plan 的模式文本由 `CollaborationModeMessages` 选择。
+- `ContextManager` 只拥有 canonical `ResponseItem` 历史和 WorldState/Context Update 投影，不拥有模型 instruction template 或 Tool 执行状态；`PromptSnapshot` 同时记录 WorldState revision 和 Prompt revision。
+- `StepContext` 只捕获本次请求的 immutable ToolSpec、ToolRouter snapshot、ModelInfo、PromptSnapshot 和 revision，不拼接第二套历史。
+- `ModelClientSession` 只消费已完成的 `Prompt`，不负责决定 Prompt 内容或注入模式逻辑。
+
+`llm.Message`、`llm.ToolDefinition`、`prompt.Assets`、按 `mode/toolNames` 拼接字符串的旧入口，以及由 `RegularTask`、`CompactTask` 或 Provider adapter 私自构造 Prompt 的路径都属于待删除的旧实现。迁移完成后不得通过 wrapper、fallback 或双写继续保留这些 owner；调用方必须一次性切换到 Codex 同构模型。
+
+### 12.1.2 Codex 风格 Prompt 装配
+
+普通 Turn 不拥有独立的 `RegularTaskPrompt`。它使用 Codex 风格的统一装配：
+
+```text
+ModelInfo.ModelMessages.instructions_template
+→ BaseInstructions
+
+WorldState Sections
+├── collaboration_mode(default/execute)
+├── permissions
+├── environment
+├── AGENTS.md
+├── skills
+└── MCP
+
+Canonical ResponseItem History
++ Current ToolRouter ToolSpec Snapshot
++ TurnContext.OutputSchema
+→ Prompt
+```
+
+`RegularTask` 只负责创建 Task、提交用户输入和调用 Session 内唯一 `run_turn`；它不得选择、拼接或缓存 Prompt。每次 Model Step 都必须重新 capture `StepContext`，由当前 WorldState、ContextManager 和 ToolRouter snapshot 生成 immutable Prompt。
+
+Plan Mode 必须沿用同一条 Prompt/Context/`run_turn` 主链：
+
+```text
+ModeKind.Plan
+→ CollaborationModeState
+→ CollaborationModeMessages.plan
+→ Plan Tool Mask
+→ Prompt
+```
+
+Plan Prompt 不是独立的 Plan Task，也不是 Claude Code 风格的 plan file/`EnterPlanMode`/`ExitPlanMode` 工具。Plan Tool Mask 和 ToolExecutionService 仍然是最终安全边界；Prompt 只表达模型工作模式。
+
+### 12.1.3 Codex 风格 Compaction Prompt
+
+Compaction 使用独立于普通 BaseInstructions 的 Codex Prompt Asset：
+
+```text
+codex-rs/prompts/templates/compact/prompt.md
++ Covered Canonical ResponseItems
+→ Summary
+
+codex-rs/prompts/templates/compact/summary_prefix.md
++ Summary
+→ Replacement History
+```
+
+Amadeus 必须迁移 Codex 的 `SUMMARIZATION_PROMPT` 和 `SUMMARY_PREFIX` 语义与结构，保留自身 `rollout.Compaction`、SourceHash、CoveredThroughSequence 和原位 ContextManager rebuild Contract。Compact 请求不得调用 Tool，不得使用普通 Turn 的 CollaborationMode/Tool Guidance 代替 Compaction Prompt，也不得把摘要当成任务完成证明。
+
+Compaction Summary 至少保留：当前目标、关键决策、约束和用户偏好、已完成进度、重要文件/数据/结果、未完成事项、下一步和继续任务所需的关键引用。`CompactTask` 只调用 SessionServices 的 Compactor，不拥有第二套历史投影或 Prompt 装配逻辑。
+
+### 12.1.4 Tool Prompt 来源与装配边界
+
+Tool Prompt 的来源按 Tool 所属 Contract 固定，不在迁移时混合来源：
+
+| Tool | Prompt 主要来源 | Amadeus 边界 |
+|---|---|---|
+| `read` | Claude Code `FileReadTool` | 只声明 Amadeus 实际支持的路径、媒体和输出能力 |
+| `edit` | Claude Code `FileEditTool` | 保留 Read-before-write、唯一匹配、`replace_all`、缩进和路径规则 |
+| `write` | Claude Code `FileWriteTool` | 保留已有文件先读、创建/完整重写与 Edit 优先规则 |
+| `glob` | Claude Code `GlobTool` | 文件发现与实际排序/路径 Contract 一致 |
+| `grep` | Claude Code `GrepTool` | 专用搜索、正则、过滤、输出模式和多行规则一致 |
+| `update_plan` | Codex Plan Tool | `Plan updated` concise result、Event/State owner 和软计划语义一致 |
+| `write_stdin` | Codex unified exec | `process_id`、`origin_call_id`、轮询、取消、输出预算和 Approval 复用一致 |
+| `execute_command` | Codex unified exec + Amadeus | 以 Amadeus ProcessManager、宿主执行和 Approval Contract 为准 |
+
+Tool Spec 负责模型可见的名称、参数 Schema 和短描述；较长的使用指导作为当前可见 Tool 对应的 Prompt Fragment/Developer Context 注入。Tool Prompt 不得声明 Amadeus 没有实现的能力，也不得取代 ToolExecutionService 的 Validate、Prepare、Permission、Approval 和 Execute 约束。
+
+Prompt 装配必须只存在一条生产主链：`ModelMessages/WorldState/ContextManager/StepContext → Prompt`。旧 `Assets.Base`、`Assets.Compaction`、`DeveloperInstructions(mode, toolNames)` 或相似的字符串拼接接口必须在迁移时删除，而不是继续作为兼容层包裹新实现。
 
 ### 12.2 AGENTS.md
 
@@ -2533,6 +2642,10 @@ Runtime 正确性不能依赖 TUI 消费速度：
 - 超大 `docs/design.md` 不导致静默停止。
 - 读取整个 `docs` 目录后仍可继续对话。
 - Tool Result 被安全投影，live replay 与 Rollout/Resume projection 对 status、error、partial、metadata 保持语义等价。
+- Prompt 数据模型和装配职责与 Codex 同构：`ModelMessages`/`BaseInstructions`、`ResponseItem`、`ToolSpec`、`WorldState`、`CollaborationModeState`、`ContextualUserFragment`、`Prompt` 和 `PromptSnapshot` 各自只有一个 owner。
+- 普通 Turn 不存在独立 `RegularTaskPrompt`；Plan 使用当前模型的 `CollaborationModeMessages.plan`，Compact 使用 Codex `SUMMARIZATION_PROMPT`/`SUMMARY_PREFIX` 语义，三者都通过同一 Prompt 主链生成。
+- Prompt 资产、动态 Context Fragment、Tool Spec 和 ContextManager 历史不会通过旧 `Assets`、`DeveloperInstructions(mode, toolNames)` 或兼容 wrapper 双写；旧 Prompt 构造路径在迁移后不存在。
+- Claude Code Tool Guidance 只进入对应的 `read`/`edit`/`write`/`glob`/`grep` Tool，Codex Tool Guidance 只进入 `update_plan`/`write_stdin`/`execute_command`；未暴露 Tool 的 Prompt 不得注入。
 - 每个 Model Step 的 Prompt、Tool Specs 和 Tool execution router 来自同一 ContextManager/TurnContext/StepContext snapshot；Tool/MCP/Skill revision 变化后下一 Step 会重新 capture。
 - 空或 stale RequestSnapshot 不会被注入 ToolExecutionService；deferred/lazy capability 使用精确 revision 校验。
 - canonical Rollout payload 通过统一 typed encoder/decoder round-trip；writer 与 projector 不使用彼此独立的 ad-hoc schema。
@@ -2623,6 +2736,8 @@ Amadeus 至少通过以下真实场景：
 5. `/compact` 提交 CompactOp，由 CompactTask 调用 SessionServices.Compactor；自动压缩由 `run_turn` 调用同一 Compactor，并保留 canonical rollout。
 6. 结构化文件修改遵循 Read → Diff Preview → Approval → Revalidate → Atomic Apply → Verify。
 7. `execute_command` 默认 Ask，经 Session 精确规则复用授权后直接在宿主执行；不解析任意命令的完整路径副作用。
+8. Prompt 构造以 Codex 的 `Prompt`、`BaseInstructions`、`ResponseItem`、`ToolSpec`、`ModelMessages`、`WorldState` 和 Collaboration Mode 语义为唯一目标；不保留旧 Prompt 装配兼容层。
+9. 普通/Plan/Compact Prompt 使用 Codex 对应机制与 Prompt 资产；Claude Code 只提供 `read`、`edit`、`write`、`glob`、`grep` 的 Tool Guidance，Codex 提供 `update_plan`、`write_stdin` 和命令续接 Guidance。
 8. JSONL RolloutItem 是完整历史的唯一事实；SQLite StoredThread 只保存可重建 metadata/index。
 9. ThreadManager 是 Thread 创建和恢复入口；LiveThread → ThreadStore → LocalThreadStore 是唯一持久化链。
 10. AmadeusThread 是 Interface 唯一 Runtime 句柄；TUI 只提交 Op、消费 SessionEvent 并回答 InteractiveRequest。

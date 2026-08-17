@@ -3,7 +3,7 @@ package llm
 import "testing"
 
 func TestNewRequestCopiesMessages(t *testing.T) {
-	messages := []Message{AssistantToolCallMessage("", ToolCall{ID: "call_1", Name: "read", Arguments: []byte(`{"path":"a"}`)})}
+	messages := []ResponseItem{AssistantToolCallMessage("", ToolCall{ID: "call_1", Name: "read", Arguments: []byte(`{"path":"a"}`)})}
 	request := NewRequest("test-model", messages)
 
 	if request.Model != "test-model" {

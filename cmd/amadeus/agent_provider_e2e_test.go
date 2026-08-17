@@ -140,8 +140,8 @@ func assertProviderPromptContract(t *testing.T, api config.APIMode, body map[str
 	}
 	combined := strings.Join(contents, "\n")
 	for _, required := range []string{
-		"You are Amadeus", "## Execute Mode", "## Workspace Context", "## Permission And Isolation Context",
-		"## Persistent Instructions", "## Skills And Extensions", "## Tool Discipline", "## `execute_command`", "amadeus.instructions.v1", "Read README and report",
+		"You are Amadeus", "## Execute Mode", "<collaboration_mode>", "<environment_context>", "<permission_context>",
+		"## Persistent Instructions", "## Skills And Extensions", "## `execute_command`", "amadeus.instructions.v1", "Read README and report",
 	} {
 		if !strings.Contains(combined, required) {
 			t.Fatalf("%s Provider request omitted Prompt contract %q: %s", api, required, combined)
