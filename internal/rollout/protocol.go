@@ -115,8 +115,28 @@ const (
 	TurnStatusFailed    TurnTerminalStatus = "failed"
 )
 
+type TurnOutcome string
+
+const (
+	TurnOutcomeCompleted TurnOutcome = "completed"
+	TurnOutcomeBlocked   TurnOutcome = "blocked"
+	TurnOutcomeFailed    TurnOutcome = "failed"
+	TurnOutcomeAborted   TurnOutcome = "aborted"
+)
+
+func (outcome TurnOutcome) Valid() bool {
+	switch outcome {
+	case TurnOutcomeCompleted, TurnOutcomeBlocked, TurnOutcomeFailed, TurnOutcomeAborted:
+		return true
+	default:
+		return false
+	}
+}
+
 type TurnCompleted struct {
 	Status  TurnTerminalStatus `json:"status"`
+	Outcome TurnOutcome        `json:"outcome,omitempty"`
+	Reason  string             `json:"reason,omitempty"`
 	Summary string             `json:"summary,omitempty"`
 	Error   string             `json:"error,omitempty"`
 }
@@ -328,6 +348,9 @@ func validateKnownPayload(item Item) error {
 		}
 		if payload.Status != TurnStatusCompleted && payload.Status != TurnStatusFailed {
 			return fmt.Errorf("turn_completed status %q is invalid", payload.Status)
+		}
+		if payload.Outcome != "" && !payload.Outcome.Valid() {
+			return fmt.Errorf("turn_completed outcome %q is invalid", payload.Outcome)
 		}
 		if payload.Status == TurnStatusFailed && strings.TrimSpace(payload.Error) == "" {
 			return errors.New("failed turn_completed payload requires an error")

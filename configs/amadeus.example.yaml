@@ -98,15 +98,8 @@ providers:
 
     context_window: 128000
 agent:
-  # Structural and time limits apply to one Run. Input/output usage is tracked
-  # but is not a stable-config termination budget. Provider max_output_tokens
-  # controls one model request only.
-  max_iterations: 30
-  max_tool_calls: 120
-  max_duration: 30m
-  # Shared read-only tools may overlap up to this limit. apply_patch,
-  # execute_command, write_stdin, and unknown dynamic tools are Exclusive and
-  # form a Run-wide barrier. There is no path/resource-level lock layer.
+  # Parallel-capable tools may overlap up to this limit. Stateful or
+  # side-effecting tools still execute serially through their Tool contract.
   max_parallel_tools: 4
 
 # Web tools are conditional: disabled capabilities are not registered and are

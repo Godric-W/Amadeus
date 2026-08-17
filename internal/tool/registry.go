@@ -1,6 +1,9 @@
 package tool
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -145,6 +148,22 @@ func (registry *Registry) VisibleSnapshot(conditions map[string]bool) []Entry {
 		}
 	}
 	return visible
+}
+
+func (registry *Registry) Revision() string {
+	entries := registry.Snapshot()
+	type revisionEntry struct {
+		Spec      ToolSpec `json:"spec"`
+		Exposure  Exposure `json:"exposure"`
+		Condition string   `json:"condition,omitempty"`
+	}
+	payload := make([]revisionEntry, 0, len(entries))
+	for _, entry := range entries {
+		payload = append(payload, revisionEntry{Spec: entry.Spec, Exposure: entry.Exposure, Condition: entry.Condition})
+	}
+	encoded, _ := json.Marshal(payload)
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
 }
 
 func entryVisible(entry Entry, conditions map[string]bool) bool {

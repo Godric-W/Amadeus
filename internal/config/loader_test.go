@@ -39,9 +39,6 @@ providers:
     temperature: 0.5
     max_output_tokens: 4096
 agent:
-  max_iterations: 12
-  max_tool_calls: 24
-  max_duration: 5m
   max_parallel_tools: 2
 web:
   fetch:
@@ -75,7 +72,7 @@ logging:
 	if compatible.Timeout != 45*time.Second {
 		t.Fatalf("unexpected compatible timeout: got %s", compatible.Timeout)
 	}
-	if configured.Agent.MaxIterations != 12 || configured.Agent.MaxToolCalls != 24 || configured.Agent.MaxDuration != 5*time.Minute || configured.Agent.MaxParallelTools != 2 {
+	if configured.Agent.MaxParallelTools != 2 {
 		t.Fatalf("unexpected agent config: %#v", configured.Agent)
 	}
 	if !configured.Web.Fetch.Enabled || configured.Web.Fetch.Timeout != 20*time.Second || configured.Web.Fetch.MaxBytes != 2<<20 || configured.Web.Fetch.MaxRedirects != 2 {

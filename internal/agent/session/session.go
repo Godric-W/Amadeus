@@ -29,7 +29,6 @@ type Configuration struct {
 	Timezone         string
 	PermissionMode   turn.PermissionMode
 	Personality      turn.Personality
-	ToolNames        []string
 	OutputSchema     json.RawMessage
 	BaseInstructions llm.BaseInstructions
 }
@@ -74,15 +73,13 @@ type ActiveTurn struct {
 }
 
 type Session struct {
-	threadID    thread.ID
-	state       SessionState
-	services    SessionServices
-	active      *ActiveTurn
-	queue       []protocol.Submission
-	historyMu   sync.RWMutex
-	contextMu   sync.Mutex
-	completedMu sync.Mutex
-	queuedItems map[turn.ID][]rollout.Item
+	threadID  thread.ID
+	state     SessionState
+	services  SessionServices
+	active    *ActiveTurn
+	queue     []protocol.Submission
+	historyMu sync.RWMutex
+	contextMu sync.Mutex
 
 	ctx         context.Context
 	cancel      context.CancelCauseFunc
@@ -119,7 +116,7 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 		submissions: make(chan protocol.Submission, 32), events: make(chan protocol.SessionEvent, 128),
 		requests: make(chan protocol.InteractiveRequest, 8), status: make(chan protocol.AgentStatus, 16),
 		terminated: make(chan struct{}), completed: make(chan task.Completion, 1),
-		requestsIn: make(chan requestDelivery, 8), pending: make(map[string]chan protocol.Op), queuedItems: make(map[turn.ID][]rollout.Item),
+		requestsIn: make(chan requestDelivery, 8), pending: make(map[string]chan protocol.Op),
 	}
 	value.state.History = cloneLines(args.History.Lines)
 	contextManager, err := agentcontext.NewManagerFromRollout(args.History.Lines, nil)
@@ -273,7 +270,7 @@ func (session *Session) startTurn(input string, compact bool) {
 		Model: session.state.Configuration.Model, CWD: session.state.Configuration.CWD, Shell: session.state.Configuration.Shell,
 		CurrentDate: session.state.Configuration.CurrentDate, Timezone: session.state.Configuration.Timezone,
 		InitialPermissionMode: session.state.Permissions.Mode, Personality: session.state.Configuration.Personality,
-		ToolNames: append([]string(nil), session.state.Configuration.ToolNames...), OutputSchema: append(json.RawMessage(nil), session.state.Configuration.OutputSchema...),
+		OutputSchema: append(json.RawMessage(nil), session.state.Configuration.OutputSchema...),
 	}
 	materialized, err := session.services.LiveThread.Materialize(session.ctx, thread.CreateInput{
 		ID: session.threadID, CWD: session.state.Configuration.CWD, Title: titleFromInput(input),
@@ -372,10 +369,8 @@ func (session *Session) finishTurn(completion task.Completion) {
 	if session.active == nil || session.active.Task.Context().TurnID != completion.TurnID {
 		return
 	}
-	completedItems := session.takeCompletedItems(completion.TurnID)
-	if len(completion.Result.Items) > 0 {
-		completedItems = append(completedItems, completion.Result.Items...)
-	}
+	session.active.State.Record(completion.Result.Usage, completion.Result.ToolCallCount)
+	completedItems := append([]rollout.Item(nil), completion.Result.Items...)
 	if len(completedItems) > 0 {
 		cleanupCtx, cancel := session.cleanupContext()
 		err := session.appendItemsDurable(cleanupCtx, completion.TurnID, completedItems...)
@@ -407,12 +402,27 @@ func (session *Session) finishTurn(completion task.Completion) {
 		return
 	}
 	status := rollout.TurnStatusCompleted
+	outcome := completion.Result.Outcome
+	if !outcome.Valid() {
+		outcome = task.OutcomeCompleted
+	}
+	reason := strings.TrimSpace(completion.Result.Reason)
 	errorText := ""
 	if completion.Error != nil {
 		status = rollout.TurnStatusFailed
+		outcome = task.OutcomeFailed
 		errorText = completion.Error.Error()
+		if reason == "" {
+			reason = errorText
+		}
+	} else if outcome == task.OutcomeFailed {
+		status = rollout.TurnStatusFailed
+		errorText = reason
+		if errorText == "" {
+			errorText = "task reported failed outcome"
+		}
 	}
-	terminal, _ := rollout.NewItem(rollout.KindTurnCompleted, rollout.TurnCompleted{Status: status, Summary: completion.Result.Summary, Error: errorText})
+	terminal, _ := rollout.NewItem(rollout.KindTurnCompleted, rollout.TurnCompleted{Status: status, Outcome: outcome, Reason: reason, Summary: completion.Result.Summary, Error: errorText})
 	cleanupCtx, cancel := session.cleanupContext()
 	persistErr := session.appendItemsDurable(cleanupCtx, completion.TurnID, terminal)
 	cancel()
@@ -428,11 +438,11 @@ func (session *Session) finishTurn(completion task.Completion) {
 		session.cancel(fmt.Errorf("persist completed turn: %w", persistErr))
 		return
 	}
-	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: protocol.TurnCompleted{Status: status, Summary: completion.Result.Summary, Error: errorText, FinishedAt: finishedAt}})
+	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: protocol.TurnCompleted{Status: status, Outcome: outcome, Reason: reason, Summary: completion.Result.Summary, Error: errorText, FinishedAt: finishedAt}})
 }
 
 func (session *Session) completeWithoutTask(turnID turn.ID, taskErr error) {
-	terminal, _ := rollout.NewItem(rollout.KindTurnCompleted, rollout.TurnCompleted{Status: rollout.TurnStatusFailed, Error: taskErr.Error()})
+	terminal, _ := rollout.NewItem(rollout.KindTurnCompleted, rollout.TurnCompleted{Status: rollout.TurnStatusFailed, Outcome: task.OutcomeFailed, Reason: taskErr.Error(), Error: taskErr.Error()})
 	cleanupCtx, cancel := session.cleanupContext()
 	persistErr := session.appendItemsDurable(cleanupCtx, turnID, terminal)
 	cancel()
@@ -441,7 +451,7 @@ func (session *Session) completeWithoutTask(turnID turn.ID, taskErr error) {
 		session.cancel(fmt.Errorf("persist rejected turn: %w", persistErr))
 		return
 	}
-	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.TurnCompleted{Status: rollout.TurnStatusFailed, Error: taskErr.Error(), FinishedAt: session.services.Clock().UTC()}})
+	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.TurnCompleted{Status: rollout.TurnStatusFailed, Outcome: task.OutcomeFailed, Reason: taskErr.Error(), Error: taskErr.Error(), FinishedAt: session.services.Clock().UTC()}})
 }
 
 func (session *Session) cancelActive(cause error) {

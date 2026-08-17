@@ -91,6 +91,8 @@ func (TurnRejected) isEventMessage() {}
 
 type TurnCompleted struct {
 	Status     rollout.TurnTerminalStatus
+	Outcome    rollout.TurnOutcome
+	Reason     string
 	Summary    string
 	Error      string
 	FinishedAt time.Time

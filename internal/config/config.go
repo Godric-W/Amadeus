@@ -83,10 +83,7 @@ type ProviderConfig struct {
 }
 
 type AgentConfig struct {
-	MaxIterations    int           `yaml:"max_iterations"`
-	MaxToolCalls     int           `yaml:"max_tool_calls"`
-	MaxDuration      time.Duration `yaml:"max_duration"`
-	MaxParallelTools int           `yaml:"max_parallel_tools"`
+	MaxParallelTools int `yaml:"max_parallel_tools"`
 }
 
 type LoggingConfig struct {

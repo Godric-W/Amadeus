@@ -143,9 +143,6 @@ func writeConfigExplanation(writer io.Writer, path string, configured config.Con
 		writeExplainedValue(writer, prefix+"context_window", provider.ContextWindow, sources)
 	}
 
-	writeExplainedValue(writer, "agent.max_iterations", configured.Agent.MaxIterations, sources)
-	writeExplainedValue(writer, "agent.max_tool_calls", configured.Agent.MaxToolCalls, sources)
-	writeExplainedValue(writer, "agent.max_duration", configured.Agent.MaxDuration, sources)
 	writeExplainedValue(writer, "agent.max_parallel_tools", configured.Agent.MaxParallelTools, sources)
 	writeExplainedValue(writer, "web.fetch.enabled", configured.Web.Fetch.Enabled, sources)
 	writeExplainedValue(writer, "web.fetch.timeout", configured.Web.Fetch.Timeout, sources)

@@ -82,7 +82,7 @@ func (updatePlan *UpdatePlan) Execute(toolContext tool.ToolUseContext, prepared 
 	for _, item := range snapshot.Items {
 		items = append(items, protocol.PlanItem{Step: item.Step, Status: string(item.Status)})
 	}
-	if err := updatePlan.options.Events.Publish(toolContext.Context, protocol.SessionEvent{Message: protocol.PlanUpdated{
+	if err := updatePlan.options.Events.Publish(toolContext.Context, protocol.SessionEvent{TurnID: turnID, Message: protocol.PlanUpdated{
 		Explanation: snapshot.Explanation, Items: items, Revision: snapshot.Revision, UpdatedAt: snapshot.UpdatedAt,
 	}}); err != nil {
 		return tool.ToolResult{}, fmt.Errorf("publish plan update: %w", err)

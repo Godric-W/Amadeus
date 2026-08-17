@@ -189,7 +189,7 @@ func (stream *codingCommandStream) Recv() (llm.StreamChunk, error) {
 
 func (stream *codingCommandStream) Close() error { return nil }
 
-func TestDefaultGreetingUsesStandaloneReactorWithoutPlanner(t *testing.T) {
+func TestDefaultGreetingUsesTurnEngineWithoutPlanner(t *testing.T) {
 	amadeusHome := t.TempDir()
 	projectDirectory := t.TempDir()
 	writeCodingCommandConfig(t, amadeusHome)
@@ -215,7 +215,7 @@ func TestDefaultGreetingUsesStandaloneReactorWithoutPlanner(t *testing.T) {
 	}
 }
 
-func TestDefaultReactorRecoversFromToolFailure(t *testing.T) {
+func TestTurnEngineRecoversFromToolFailure(t *testing.T) {
 	amadeusHome := t.TempDir()
 	projectDirectory := t.TempDir()
 	writeCodingCommandConfig(t, amadeusHome)
@@ -241,7 +241,7 @@ func TestDefaultReactorRecoversFromToolFailure(t *testing.T) {
 	}
 	followUp := client.streamRequests[1]
 	if len(followUp.Prompt.Input) < 2 || followUp.Prompt.Input[len(followUp.Prompt.Input)-1].Role != llm.RoleTool || !strings.Contains(followUp.Prompt.Input[len(followUp.Prompt.Input)-1].Content, "missing_tool") {
-		t.Fatalf("tool failure was not replayed to Reactor: %#v", followUp.Prompt.Input)
+		t.Fatalf("tool failure was not returned to TurnEngine: %#v", followUp.Prompt.Input)
 	}
 }
 
@@ -476,9 +476,6 @@ providers:
     temperature: 0.1
     max_output_tokens: 512
 agent:
-  max_iterations: 8
-  max_tool_calls: 12
-  max_duration: 1m
   max_parallel_tools: 2
 logging:
   level: info

@@ -63,9 +63,6 @@ providers:
     model: mock-model
     max_retries: 0
 agent:
-  max_iterations: 8
-  max_tool_calls: 8
-  max_duration: 1m
   max_parallel_tools: 2
 `, api, dialect, server.URL))
 			if err := os.WriteFile(filepath.Join(projectDirectory, "README.md"), []byte("provider e2e readme\n"), 0o600); err != nil {

@@ -22,9 +22,22 @@ type Input struct {
 	Content string
 }
 
+type Outcome = rollout.TurnOutcome
+
+const (
+	OutcomeCompleted = rollout.TurnOutcomeCompleted
+	OutcomeBlocked   = rollout.TurnOutcomeBlocked
+	OutcomeFailed    = rollout.TurnOutcomeFailed
+	OutcomeAborted   = rollout.TurnOutcomeAborted
+)
+
 type Result struct {
-	Items   []rollout.Item
-	Summary string
+	Items         []rollout.Item
+	Summary       string
+	Outcome       Outcome
+	Reason        string
+	Usage         llm.Usage
+	ToolCallCount int
 }
 
 type Host interface {

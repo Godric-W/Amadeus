@@ -20,9 +20,6 @@ func Default() Config {
 			DefaultProviderName: openAI,
 		},
 		Agent: AgentConfig{
-			MaxIterations:    30,
-			MaxToolCalls:     120,
-			MaxDuration:      30 * time.Minute,
 			MaxParallelTools: 4,
 		},
 		Web: WebConfig{

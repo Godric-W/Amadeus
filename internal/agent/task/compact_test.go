@@ -3,14 +3,19 @@ package task
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/plan"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
@@ -38,18 +43,32 @@ func (*interactiveCompactionClient) Model() llm.ModelInfo {
 func (*interactiveCompactionClient) Capabilities() llm.Capabilities { return llm.Capabilities{} }
 
 type compactTestHost struct {
-	lines []rollout.Line
+	lines   []rollout.Line
+	context *agentcontext.Manager
 }
 
 func (host *compactTestHost) AppendItems(_ context.Context, turnID turn.ID, items ...rollout.Item) error {
 	for _, item := range items {
 		host.lines = append(host.lines, rollout.Line{Version: rollout.CurrentVersion, Sequence: uint64(len(host.lines) + 1), Timestamp: time.Now().UTC(), ThreadID: "thread-1", TurnID: turnID, Item: item})
 	}
-	return nil
+	return host.context.Rebuild(host.lines)
 }
 
 func (host *compactTestHost) History() []rollout.Line {
 	return append([]rollout.Line(nil), host.lines...)
+}
+func (*compactTestHost) Publish(context.Context, protocol.SessionEvent) error { return nil }
+func (*compactTestHost) Request(context.Context, protocol.InteractiveRequest) (protocol.Op, error) {
+	return nil, errors.New("unexpected interactive request")
+}
+func (*compactTestHost) UpdatePlan(context.Context, turn.ID, plan.Update) (plan.Snapshot, error) {
+	return plan.Snapshot{}, nil
+}
+func (host *compactTestHost) Snapshot(model llm.ModelInfo, prompt llm.Prompt) agentcontext.PromptSnapshot {
+	return host.context.Snapshot(model, prompt)
+}
+func (host *compactTestHost) ContextUpdate(key agentcontext.UpdateKey) string {
+	return host.context.Update(key)
 }
 
 func TestCompactTaskProducesSemanticReplacementHistory(t *testing.T) {
@@ -110,8 +129,28 @@ func TestCompactTaskFailureDoesNotReturnItems(t *testing.T) {
 func newCompactionTestRuntime(t *testing.T) (*CodingFactory, *compactTestHost, *interactiveCompactionClient) {
 	t.Helper()
 	client := &interactiveCompactionClient{}
-	configured := config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "compact-model", MaxOutputTokens: 1024}}}
-	factory := &CodingFactory{configured: configured, clientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil }}
+	configured := config.Default()
+	provider := configured.Providers[configured.DefaultProvider]
+	provider.APIKey = "test-key"
+	provider.Model = "compact-model"
+	provider.MaxOutputTokens = 1024
+	configured.DefaultProvider = "mock"
+	configured.Providers = map[string]config.ProviderConfig{"mock": provider}
+	root, err := project.NewRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	factory, err := NewCodingFactory(CodingFactoryOptions{
+		Config: configured, Project: root, AmadeusRoot: t.TempDir(), BaseInstructions: llm.BaseInstructions{Text: "test base instructions"},
+		ClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
+		AuditFactory: func() (audit.Sink, io.Closer, error) {
+			return audit.NewMemorySink(), io.NopCloser(strings.NewReader("")), nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = factory.Close() })
 	user, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "inspect project"})
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +159,7 @@ func newCompactionTestRuntime(t *testing.T) (*CodingFactory, *compactTestHost, *
 	if err != nil {
 		t.Fatal(err)
 	}
-	host := &compactTestHost{}
+	host := &compactTestHost{context: agentcontext.NewManager(nil)}
 	if err := host.AppendItems(context.Background(), "turn-1", user, assistant); err != nil {
 		t.Fatal(err)
 	}

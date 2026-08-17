@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"reflect"
 	"testing"
 	"time"
 
@@ -70,7 +69,7 @@ func (host *factoryTestHost) ContextUpdate(key agentcontext.UpdateKey) string {
 	return host.context.Update(key)
 }
 
-func TestCodingFactoryPreparesIndependentRegularTask(t *testing.T) {
+func TestCodingFactoryReusesSessionRuntimeAcrossRegularTasks(t *testing.T) {
 	configured := config.Default()
 	provider := configured.Providers[configured.DefaultProvider]
 	provider.APIKey = "test-key"
@@ -97,36 +96,42 @@ func TestCodingFactoryPreparesIndependentRegularTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer factory.Close()
 	host := &factoryTestHost{context: agentcontext.NewManager(nil)}
 	requestContext := turn.Context{
 		ThreadID: "thread-1", TurnID: "turn-1", Provider: configured.DefaultProvider, Model: provider.Model,
-		CWD: root.Path(), InitialPermissionMode: turn.PermissionModeDefault, ToolNames: []string{"placeholder"},
+		CWD: root.Path(), InitialPermissionMode: turn.PermissionModeDefault,
 	}
 	prepared, err := factory.Prepare(context.Background(), host, PrepareRequest{Kind: KindRegular, Input: "inspect project", Context: requestContext})
 	if err != nil {
 		t.Fatal(err)
 	}
 	regular, ok := prepared.Task.(*regularTask)
-	if !ok || regular.agent == nil {
+	if !ok || regular.runtime == nil {
 		t.Fatalf("prepared task = %#v", prepared.Task)
 	}
 	if prepared.Context.CurrentDate != "2026-08-14" || prepared.Context.Timezone != "Asia/Shanghai" {
 		t.Fatalf("resolved environment snapshot = %#v", prepared.Context)
 	}
-	if len(prepared.Context.ToolNames) == 0 || reflect.DeepEqual(prepared.Context.ToolNames, requestContext.ToolNames) {
-		t.Fatalf("tool snapshot was not derived from real registry: %v", prepared.Context.ToolNames)
+	secondContext := requestContext
+	secondContext.TurnID = "turn-2"
+	second, err := factory.Prepare(context.Background(), host, PrepareRequest{Kind: KindRegular, Input: "inspect again", Context: secondContext})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if requestContext.ToolNames[0] != "placeholder" {
-		t.Fatalf("Prepare mutated caller context: %#v", requestContext)
-	}
-	if regular.agent.BaseInstructions.Text != baseInstructions.Text {
-		t.Fatalf("agent base instructions = %q", regular.agent.BaseInstructions.Text)
+	secondRegular := second.Task.(*regularTask)
+	if secondRegular.runtime != regular.runtime {
+		t.Fatal("regular tasks did not reuse the session runtime")
 	}
 	if err := prepared.Task.Abort(context.Background(), host, &prepared.Context); err != nil {
 		t.Fatal(err)
 	}
+	if closer.closed {
+		t.Fatal("turn abort closed session-scoped audit resources")
+	}
+	if err := factory.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if !closer.closed {
-		t.Fatal("prepared task did not release audit resources")
+		t.Fatal("factory close did not release session runtime resources")
 	}
 }

@@ -13,9 +13,6 @@ const (
 	maxProviderRetries = 10
 	maxOutputTokens    = 1_000_000
 	maxContextWindow   = int64(100_000_000)
-	maxAgentIterations = 1_000
-	maxAgentToolCalls  = 10_000
-	maxAgentDuration   = 24 * time.Hour
 	maxParallelTools   = 64
 	maxWebTimeout      = 2 * time.Minute
 	maxWebBytes        = int64(16 << 20)
@@ -196,15 +193,6 @@ func validateBaseURL(path, value string, addIssue func(string, string)) {
 }
 
 func validateAgent(agent AgentConfig, addIssue func(string, string)) {
-	if agent.MaxIterations <= 0 || agent.MaxIterations > maxAgentIterations {
-		addIssue("agent.max_iterations", fmt.Sprintf("must be greater than 0 and at most %d", maxAgentIterations))
-	}
-	if agent.MaxToolCalls <= 0 || agent.MaxToolCalls > maxAgentToolCalls {
-		addIssue("agent.max_tool_calls", fmt.Sprintf("must be greater than 0 and at most %d", maxAgentToolCalls))
-	}
-	if agent.MaxDuration <= 0 || agent.MaxDuration > maxAgentDuration {
-		addIssue("agent.max_duration", fmt.Sprintf("must be greater than 0 and at most %s", maxAgentDuration))
-	}
 	if agent.MaxParallelTools <= 0 || agent.MaxParallelTools > maxParallelTools {
 		addIssue("agent.max_parallel_tools", fmt.Sprintf("must be greater than 0 and at most %d", maxParallelTools))
 	}

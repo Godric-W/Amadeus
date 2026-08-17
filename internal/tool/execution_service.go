@@ -30,6 +30,15 @@ type ToolExecutionServiceOptions struct {
 	ContextScope  ContextScope
 }
 
+// ExecutionScope binds request-scoped capabilities to one model step without
+// rebuilding the session-scoped registry, validator, permission state, or file
+// read state.
+type ExecutionScope struct {
+	Observer     LifecycleObserver
+	ContextScope ContextScope
+	AllowedTools []string
+}
+
 type ToolExecutionService struct {
 	registry      *Registry
 	validator     *ArgumentValidator
@@ -40,6 +49,7 @@ type ToolExecutionService struct {
 	permissions   *PermissionService
 	fileReadState *FileReadStateStore
 	contextScope  ContextScope
+	allowedTools  map[string]struct{}
 }
 
 func NewToolExecutionService(registry *Registry, validator *ArgumentValidator, options ToolExecutionServiceOptions) (*ToolExecutionService, error) {
@@ -120,6 +130,23 @@ func (service *ToolExecutionService) ExecuteBatch(ctx context.Context, calls []T
 		completed = append(completed, parallel...)
 		index = end
 	}
+	if cancelErr := ctx.Err(); cancelErr != nil && len(completed) < len(routed) {
+		seen := make(map[int]struct{}, len(completed))
+		for _, item := range completed {
+			seen[item.index] = struct{}{}
+		}
+		for _, pending := range routed {
+			if _, ok := seen[pending.index]; ok {
+				continue
+			}
+			execution := service.failure(pending.call, "interrupted", cancelErr, pending.startedAt)
+			published, err := service.publishFailure(context.WithoutCancel(ctx), execution)
+			if err != nil {
+				return nil, err
+			}
+			completed = append(completed, indexedExecution{index: pending.index, execution: published})
+		}
+	}
 	sort.Slice(completed, func(left, right int) bool { return completed[left].index < completed[right].index })
 	executions := make([]ToolExecution, 0, len(completed))
 	for _, item := range completed {
@@ -127,6 +154,51 @@ func (service *ToolExecutionService) ExecuteBatch(ctx context.Context, calls []T
 	}
 	return executions, nil
 }
+
+func (service *ToolExecutionService) ExecuteBatchScoped(ctx context.Context, calls []ToolCall, recorder NormalizedCallRecorder, scope ExecutionScope) ([]ToolExecution, error) {
+	if service == nil {
+		return nil, errors.New("tool execution service is nil")
+	}
+	bound := *service
+	orderedObserver := &orderedBatchObserver{delegate: scope.Observer}
+	bound.observer = orderedObserver
+	bound.contextScope = scope.ContextScope
+	if scope.AllowedTools != nil {
+		bound.allowedTools = make(map[string]struct{}, len(scope.AllowedTools))
+		for _, name := range scope.AllowedTools {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				bound.allowedTools[name] = struct{}{}
+			}
+		}
+	}
+	executions, err := bound.ExecuteBatch(ctx, calls, recorder)
+	if err != nil {
+		return nil, err
+	}
+	if scope.Observer != nil {
+		completionCtx := context.WithoutCancel(ctx)
+		for _, execution := range executions {
+			if err := scope.Observer.ToolCallCompleted(completionCtx, execution); err != nil {
+				return nil, fmt.Errorf("publish ordered tool completion: %w", err)
+			}
+		}
+	}
+	return executions, nil
+}
+
+type orderedBatchObserver struct {
+	delegate LifecycleObserver
+}
+
+func (observer *orderedBatchObserver) ToolCallStarted(ctx context.Context, spec ToolSpec, call ToolCall) error {
+	if observer == nil || observer.delegate == nil {
+		return nil
+	}
+	return observer.delegate.ToolCallStarted(ctx, spec, call)
+}
+
+func (*orderedBatchObserver) ToolCallCompleted(context.Context, ToolExecution) error { return nil }
 
 func (service *ToolExecutionService) SupportsParallelToolCalls(name string) bool {
 	toolImpl, ok := service.registry.LookupVisible(name, service.visibility)
@@ -158,6 +230,12 @@ func (service *ToolExecutionService) prepareCall(call ToolCall) executionCall {
 	if !ok {
 		failure := service.failure(safeCall, "not_registered", fmt.Errorf("tool %q is not registered or visible", call.Name), startedAt)
 		return executionCall{call: safeCall, startedAt: startedAt, failure: &failure}
+	}
+	if service.allowedTools != nil {
+		if _, allowed := service.allowedTools[call.Name]; !allowed {
+			failure := service.failure(safeCall, "tool_not_available", fmt.Errorf("tool %q is not available in this model step", call.Name), startedAt)
+			return executionCall{call: safeCall, startedAt: startedAt, failure: &failure}
+		}
 	}
 	spec := toolImpl.Spec()
 	normalized, err := service.validator.Normalize(spec, call.Payload)

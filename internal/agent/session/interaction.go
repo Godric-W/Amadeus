@@ -3,32 +3,10 @@ package session
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
-	"github.com/Godric-W/Amadeus/internal/rollout"
 )
-
-func (session *Session) queueCompletedItem(turnID turn.ID, item rollout.Item) {
-	if session == nil || turnID == "" {
-		return
-	}
-	session.completedMu.Lock()
-	session.queuedItems[turnID] = append(session.queuedItems[turnID], item)
-	session.completedMu.Unlock()
-}
-
-func (session *Session) takeCompletedItems(turnID turn.ID) []rollout.Item {
-	if session == nil {
-		return nil
-	}
-	session.completedMu.Lock()
-	items := append([]rollout.Item(nil), session.queuedItems[turnID]...)
-	delete(session.queuedItems, turnID)
-	session.completedMu.Unlock()
-	return items
-}
 
 func (session *Session) publish(event protocol.SessionEvent) {
 	_ = session.Publish(context.WithoutCancel(session.ctx), event)
@@ -37,7 +15,7 @@ func (session *Session) publish(event protocol.SessionEvent) {
 // Publish is the Session-owned event boundary used by a running task. Events
 // produced below the Session boundary are scoped here before they reach the
 // SessionIo channel; callers do not need to carry routing metadata through
-// tool or reactor internals.
+// tool or engine internals.
 func (session *Session) Publish(ctx context.Context, event protocol.SessionEvent) error {
 	if session == nil {
 		return errors.New("session event publisher is nil")
@@ -50,13 +28,6 @@ func (session *Session) Publish(ctx context.Context, event protocol.SessionEvent
 	}
 	if err := event.Validate(); err != nil {
 		return err
-	}
-	if completed, ok := event.Message.(protocol.ItemCompleted); ok {
-		item, err := protocol.NewCompletedItem(completed.Item)
-		if err != nil {
-			return fmt.Errorf("encode completed event for rollout: %w", err)
-		}
-		session.queueCompletedItem(turn.ID(event.TurnID), item)
 	}
 	select {
 	case session.events <- event:

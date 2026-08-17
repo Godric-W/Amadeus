@@ -23,9 +23,6 @@ func TestConfigCanBeConstructed(t *testing.T) {
 			},
 		},
 		Agent: AgentConfig{
-			MaxIterations:    10,
-			MaxToolCalls:     20,
-			MaxDuration:      5 * time.Minute,
 			MaxParallelTools: 2,
 		},
 		Logging: LoggingConfig{
@@ -41,7 +38,7 @@ func TestConfigCanBeConstructed(t *testing.T) {
 	if provider.Dialect != DialectDeepSeek {
 		t.Fatalf("unexpected provider dialect: got %q", provider.Dialect)
 	}
-	if configured.Agent.MaxIterations != 10 || configured.Agent.MaxToolCalls != 20 || configured.Agent.MaxDuration != 5*time.Minute || configured.Agent.MaxParallelTools != 2 {
+	if configured.Agent.MaxParallelTools != 2 {
 		t.Fatalf("unexpected agent config: %#v", configured.Agent)
 	}
 }
@@ -68,7 +65,7 @@ func TestDefault(t *testing.T) {
 	if provider.Timeout != 2*time.Minute {
 		t.Fatalf("unexpected default timeout: got %s", provider.Timeout)
 	}
-	if configured.Agent.MaxIterations != 30 || configured.Agent.MaxToolCalls != 120 || configured.Agent.MaxDuration != 30*time.Minute || configured.Agent.MaxParallelTools != 4 {
+	if configured.Agent.MaxParallelTools != 4 {
 		t.Fatalf("unexpected default agent config: %#v", configured.Agent)
 	}
 	if configured.Logging.Level != LogLevelInfo {

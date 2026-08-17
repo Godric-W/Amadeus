@@ -1,0 +1,124 @@
+package engine
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	agentcontext "github.com/Godric-W/Amadeus/internal/context"
+	"github.com/Godric-W/Amadeus/internal/instruction"
+	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
+	"github.com/Godric-W/Amadeus/internal/rollout"
+)
+
+type ContextHost interface {
+	TurnHost
+	ContextUpdate(agentcontext.UpdateKey) string
+}
+
+type InstructionScope interface {
+	StepInstructionScope
+	Initialize(context.Context, string) (instruction.ResolveRequest, error)
+}
+
+func (runtime *CodingRuntime) PrepareTurn(ctx context.Context, goal string, host ContextHost, turnContext *turn.Context, scope InstructionScope) error {
+	if runtime == nil || host == nil || turnContext == nil || scope == nil {
+		return fmt.Errorf("turn context preparation is incomplete")
+	}
+	tools := runtime.AvailableTools()
+	mode := "execute"
+	if turnContext.InitialPermissionMode == turn.PermissionModePlan {
+		mode = "plan"
+		tools = planModeTools(tools)
+	}
+	toolNames := make([]string, len(tools))
+	for index, spec := range tools {
+		toolNames[index] = spec.Name
+	}
+	developer, err := internalprompt.DeveloperInstructions(mode, toolNames)
+	if err != nil {
+		return err
+	}
+	contextItems := make([]rollout.Item, 0, 6)
+	setUpdate := func(key agentcontext.UpdateKey, content string) error {
+		content = strings.TrimSpace(content)
+		if host.ContextUpdate(key) == content {
+			return nil
+		}
+		item, err := rollout.NewItem(rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(key), Content: content})
+		if err != nil {
+			return err
+		}
+		contextItems = append(contextItems, item)
+		return nil
+	}
+	if err := setUpdate(agentcontext.UpdateDeveloperInstructions, developer); err != nil {
+		return err
+	}
+	request, err := scope.Initialize(ctx, turnContext.CWD)
+	if err != nil {
+		return err
+	}
+	if err := setUpdate(agentcontext.UpdateEnvironment, fmt.Sprintf("## Workspace Context\n\nCurrent working directory: %s\nInstruction target: %s", turnContext.CWD, request.TargetPath)); err != nil {
+		return err
+	}
+	effective := runtime.fileSystemPolicy.EffectiveProfile()
+	permissionPayload := struct {
+		ReadHost       bool     `json:"read_host"`
+		WorkspaceRoots []string `json:"workspace_roots"`
+		TemporaryRoots []string `json:"temporary_roots"`
+		ReadOnlyRoots  []string `json:"read_only_roots"`
+		DeniedRoots    []string `json:"denied_roots"`
+		ApprovalCount  int      `json:"session_command_approval_count"`
+	}{
+		ReadHost: effective.ReadHost, WorkspaceRoots: effective.WorkspaceRoots,
+		TemporaryRoots: effective.TemporaryRoots, ReadOnlyRoots: effective.ReadOnlyRoots,
+		DeniedRoots: effective.DeniedRoots, ApprovalCount: runtime.permissions.GrantCount(),
+	}
+	encodedPermission, err := json.Marshal(permissionPayload)
+	if err != nil {
+		return err
+	}
+	if err := setUpdate(agentcontext.UpdatePermissionMode, "## Permission And Isolation Context\n\nPermission context (enforced by runtime, not by this text): "+string(encodedPermission)); err != nil {
+		return err
+	}
+	skillParts := make([]string, 0)
+	if runtime.extensions != nil {
+		injections, err := runtime.extensions.ResolveSkillInjections(goal)
+		if err != nil {
+			return err
+		}
+		for _, injection := range injections {
+			skillParts = append(skillParts, "{\"type\":\"amadeus.skill_injection.v1\",\"name\":\""+injection.Name+"\"}\n"+injection.Content)
+		}
+		if err := setUpdate(agentcontext.UpdateMCP, "MCP tools are available only through their exposed Tool Specs and current bindings."); err != nil {
+			return err
+		}
+	} else if err := setUpdate(agentcontext.UpdateMCP, ""); err != nil {
+		return err
+	}
+	indexParts := make([]string, 0)
+	for _, entry := range runtime.SkillIndex() {
+		if entry.Enabled {
+			indexParts = append(indexParts, fmt.Sprintf("- `%s`: %s", entry.Name, entry.Description))
+		}
+	}
+	if len(indexParts) > 0 {
+		skillParts = append([]string{"## Skills And Extensions\n\n{\"type\":\"amadeus.skill_index.v1\",\"skills\":\n" + strings.Join(indexParts, "\n")}, skillParts...)
+	} else if len(skillParts) > 0 {
+		skillParts = append([]string{"## Skills And Extensions"}, skillParts...)
+	} else {
+		skillParts = []string{"## Skills And Extensions\n\nNo Skills are currently available."}
+	}
+	if err := setUpdate(agentcontext.UpdateSkills, strings.Join(skillParts, "\n\n")); err != nil {
+		return err
+	}
+	if len(contextItems) > 0 {
+		if err := host.AppendItems(ctx, turnContext.TurnID, contextItems...); err != nil {
+			return fmt.Errorf("persist dynamic context updates: %w", err)
+		}
+	}
+	return nil
+}

@@ -47,7 +47,7 @@
 - Plan Update 使用 Codex 风格的 `• Updated Plan` 标题；说明与第一项共用唯一 `└` 入口，进行中/待处理项使用 `□`，完成项使用 `✔`，主界面不展示内部 revision 或 `plan-N` 标识。
 - Cell 内容不携带为了排版伪造的首尾换行；`displayLinesForHistoryInsert()` 根据 `HasEmittedHistoryLines` 和 `IsStreamContinuation()` 在独立 Cell 之间插入一个空 `StyledLine`。
 - 流式 Agent draft 与活动 Tool Cell 留在 Bottom Pane，完成后一次形成 `AgentMessageCell` 或完成 Tool Cell 并提交到主屏 scrollback；当前不引入 Codex 的 provisional stream consolidation。
-- Reactor 的 `IterationStarted/IterationCompleted` 不是视觉边界，不触发横线或批量 Tool 输出。
+- Model Step 不是视觉边界，不触发横线或批量 Tool 输出；视觉只跟随 Assistant/Tool Item 生命周期。
 
 ## Tool History
 
@@ -62,7 +62,7 @@
 - Tool 工作结束后，在最终 Assistant 消息前按内容边界插入 dim rule。
 - Run terminal 时如仍有未封口的工作活动，追加 Final Message Separator。
 - 不超过 60s 的 Run 只显示 dim rule；超过 60s 显示 `─ Worked for 2m 05s ───`。
-- 不因 Reactor iteration 数量增加 separator。
+- 不因 Model Step 数量增加 separator。
 
 ## Layout And Terminal Matrix
 

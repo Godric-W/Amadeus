@@ -51,7 +51,7 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 			t.Fatalf("scan %s: %v", relative, err)
 		}
 	}
-	for _, relative := range []string{"internal/agent/engine", "internal/agent/reflect", "internal/session", "internal/snapshot"} {
+	for _, relative := range []string{"internal/agent/react", "internal/agent/runtime", "internal/agent/reflect", "internal/session", "internal/snapshot"} {
 		if _, err := os.Stat(filepath.Join(root, relative)); err == nil {
 			t.Errorf("removed production package still exists: %s", relative)
 		} else if !os.IsNotExist(err) {
@@ -87,6 +87,33 @@ func TestSessionTaskDependencyDirection(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAgentEngineDoesNotReintroduceLegacyComposition(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, relative := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, forbidden := range []string{"internal/agent/react", "internal/agent/runtime", "ProgressMonitor", "StopBudgetExhausted"} {
+				if strings.Contains(string(content), forbidden) {
+					t.Errorf("legacy Agent Engine concept %q remains in %s", forbidden, filepath.ToSlash(path[len(root)+1:]))
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -158,7 +185,7 @@ func TestCanonicalWritersUseTypedPayloads(t *testing.T) {
 	}
 }
 
-func TestPromptArchitectureKeepsAssetsInternalAndReactorDecoupled(t *testing.T) {
+func TestPromptArchitectureKeepsAssetsInternalAndEngineDecoupled(t *testing.T) {
 	root := repositoryRoot(t)
 	legacyRoot := filepath.Join(root, "prompts")
 	if _, err := os.Stat(legacyRoot); err == nil {
@@ -178,8 +205,8 @@ func TestPromptArchitectureKeepsAssetsInternalAndReactorDecoupled(t *testing.T) 
 		t.Fatalf("inspect legacy Prompt package: %v", err)
 	}
 
-	reactorRoot := filepath.Join(root, "internal", "agent", "react")
-	err := filepath.WalkDir(reactorRoot, func(path string, entry os.DirEntry, walkErr error) error {
+	engineRoot := filepath.Join(root, "internal", "agent", "engine")
+	err := filepath.WalkDir(engineRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -190,21 +217,21 @@ func TestPromptArchitectureKeepsAssetsInternalAndReactorDecoupled(t *testing.T) 
 		if readErr != nil {
 			return readErr
 		}
-		for _, forbidden := range []string{"internal/prompt", "AgentSystem("} {
+		for _, forbidden := range []string{"AgentSystem("} {
 			if strings.Contains(string(content), forbidden) {
-				t.Errorf("Reactor owns Prompt asset through %q in %s", forbidden, filepath.ToSlash(path[len(root)+1:]))
+				t.Errorf("Engine owns legacy Prompt assembly through %q in %s", forbidden, filepath.ToSlash(path[len(root)+1:]))
 			}
 		}
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("scan Reactor Prompt dependencies: %v", err)
+		t.Fatalf("scan Engine Prompt dependencies: %v", err)
 	}
 }
 
 func TestContextArchitectureHasOneCanonicalWriteAndProjectionChain(t *testing.T) {
 	root := repositoryRoot(t)
-	for _, relative := range []string{"internal/agent/react", "internal/agent/task"} {
+	for _, relative := range []string{"internal/agent/engine", "internal/agent/task"} {
 		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr

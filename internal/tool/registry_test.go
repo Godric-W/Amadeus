@@ -131,6 +131,31 @@ func TestRegistryStoresExposureMetadata(t *testing.T) {
 	}
 }
 
+func TestRegistryRevisionIsStableAndContentAddressed(t *testing.T) {
+	first := NewRegistry()
+	second := NewRegistry()
+	for _, name := range []string{"beta", "alpha"} {
+		if err := first.RegisterDefinition(newFakeTool(name, true)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"alpha", "beta"} {
+		if err := second.RegisterDefinition(newFakeTool(name, true)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if first.Revision() == "" || first.Revision() != first.Revision() || first.Revision() != second.Revision() {
+		t.Fatalf("registry revision is not deterministic: first=%q second=%q", first.Revision(), second.Revision())
+	}
+	before := first.Revision()
+	if err := first.RegisterDefinition(newFakeTool("gamma", true)); err != nil {
+		t.Fatal(err)
+	}
+	if first.Revision() == before {
+		t.Fatal("registry revision did not change after registration")
+	}
+}
+
 func newFakeTool(name string, parallel bool) *fakeTool {
 	return &fakeTool{parallel: parallel, spec: ToolSpec{Name: name, Description: "test tool", InputSchema: json.RawMessage(`{"type":"object"}`), SideEffect: SideEffectRead, Idempotent: true}}
 }

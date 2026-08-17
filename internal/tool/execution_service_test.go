@@ -153,6 +153,88 @@ func TestToolExecutionServiceRepairsValidatesAndExecutesOnce(t *testing.T) {
 	}
 }
 
+func TestToolExecutionServiceScopedBindingsDoNotLeak(t *testing.T) {
+	toolImpl := &executionServiceTestTool{name: "read_test", parallel: true}
+	baseObserver := &recordingLifecycleObserver{}
+	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{Observer: baseObserver}, toolImpl)
+	deniedObserver := &recordingLifecycleObserver{}
+	executions, err := service.ExecuteBatchScoped(context.Background(), []ToolCall{
+		NewCall("call-denied", toolImpl.name, json.RawMessage(`{"value":"ok"}`)),
+	}, nil, ExecutionScope{Observer: deniedObserver, AllowedTools: []string{"different_tool"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(executions) != 1 || executions[0].Outcome.Error == nil || executions[0].Outcome.Error.Kind != "tool_not_available" {
+		t.Fatalf("disallowed scoped call = %#v", executions)
+	}
+	allowed, err := service.Execute(context.Background(), NewCall("call-allowed", toolImpl.name, json.RawMessage(`{"value":"ok"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowed.Outcome.Status != ToolCallCompleted {
+		t.Fatalf("base service inherited scoped allow-list: %#v", allowed)
+	}
+	if len(baseObserver.completed) != 1 || len(deniedObserver.completed) != 1 {
+		t.Fatalf("observer bindings leaked: base=%d scoped=%d", len(baseObserver.completed), len(deniedObserver.completed))
+	}
+}
+
+func TestToolExecutionServiceCompletesUnstartedCallsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	observer := &recordingLifecycleObserver{}
+	toolImpl := &executionServiceTestTool{name: "read_test", parallel: false, handle: func(_ context.Context, invocation Invocation) (ToolResult, error) {
+		if invocation.Call.ID == "call-1" {
+			cancel()
+		}
+		return ToolResult{Text: "done"}, nil
+	}}
+	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{Observer: observer}, toolImpl)
+	executions, err := service.ExecuteBatch(ctx, []ToolCall{
+		NewCall("call-1", toolImpl.name, json.RawMessage(`{"value":"one"}`)),
+		NewCall("call-2", toolImpl.name, json.RawMessage(`{"value":"two"}`)),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(executions) != 2 || executions[1].Outcome.Status != ToolCallInterrupted || executions[1].Outcome.Error == nil || executions[1].Outcome.Error.Kind != "interrupted" {
+		t.Fatalf("cancelled batch did not complete pending calls: %#v", executions)
+	}
+	if len(observer.completed) != 2 {
+		t.Fatalf("completed observer count = %d", len(observer.completed))
+	}
+}
+
+func TestToolExecutionServiceScopedCompletionPreservesCallOrder(t *testing.T) {
+	releaseFirst := make(chan struct{})
+	secondDone := make(chan struct{})
+	toolImpl := &executionServiceTestTool{name: "read_test", parallel: true, handle: func(_ context.Context, invocation Invocation) (ToolResult, error) {
+		if invocation.Call.ID == "call-1" {
+			<-releaseFirst
+		} else {
+			close(secondDone)
+		}
+		return ToolResult{Text: invocation.Call.ID}, nil
+	}}
+	observer := &recordingLifecycleObserver{}
+	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{MaxParallel: 2}, toolImpl)
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.ExecuteBatchScoped(context.Background(), []ToolCall{
+			NewCall("call-1", toolImpl.name, json.RawMessage(`{"value":"one"}`)),
+			NewCall("call-2", toolImpl.name, json.RawMessage(`{"value":"two"}`)),
+		}, nil, ExecutionScope{Observer: observer, AllowedTools: []string{toolImpl.name}})
+		done <- err
+	}()
+	<-secondDone
+	close(releaseFirst)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if len(observer.completed) != 2 || observer.completed[0].Call.ID != "call-1" || observer.completed[1].Call.ID != "call-2" {
+		t.Fatalf("scoped completion order = %#v", observer.completed)
+	}
+}
+
 func TestToolExecutionServiceReturnsModelVisibleLookupAndArgumentFailures(t *testing.T) {
 	toolImpl := &executionServiceTestTool{name: "read_test", parallel: true}
 	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{}, toolImpl)
@@ -319,6 +401,42 @@ func TestToolExecutionServiceAppliesPermissionDecisionsAndSessionGrant(t *testin
 	execution, err := deniedService.Execute(context.Background(), executionServiceCall("denied", denied.name))
 	if err != nil || execution.Outcome.Status != ToolCallDenied || deniedCalls.Load() != 0 {
 		t.Fatalf("permission deny reached Tool.Call: %#v calls=%d err=%v", execution, deniedCalls.Load(), err)
+	}
+}
+
+func TestToolExecutionServiceCancellationReleasesApprovalWait(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	approvalPort := &executionServiceApprovalPort{entered: entered, release: release}
+	coordinator, err := policy.NewApprovalCoordinator(approvalPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var handled atomic.Int32
+	toolImpl := &executionServiceTestTool{name: "approval_wait", parallel: false, check: func(_ context.Context, invocation Invocation) (PermissionEvaluation, error) {
+		request, requestErr := policy.NewApprovalRequestForPurpose(invocation.Call.ID, invocation.Call.Name, invocation.Call.Payload, policy.ApprovalPurposeExternal, policy.CommandRiskModerate, policy.ApprovalCause{Kind: policy.ApprovalCausePolicy, Code: "test_wait"})
+		if requestErr != nil {
+			return PermissionEvaluation{}, requestErr
+		}
+		grant := policy.ExternalGrant("test:approval_wait")
+		request.PermissionKey = grant.Key
+		return PermissionEvaluation{Decision: PermissionAsk, Request: &request, Grant: grant}, nil
+	}, handle: func(context.Context, Invocation) (ToolResult, error) {
+		handled.Add(1)
+		return ToolResult{}, nil
+	}}
+	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{Approvals: coordinator}, toolImpl)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan ToolExecution, 1)
+	go func() {
+		execution, _ := service.Execute(ctx, executionServiceCall("approval-call", toolImpl.name))
+		done <- execution
+	}()
+	<-entered
+	cancel()
+	execution := <-done
+	if execution.Outcome.Status != ToolCallInterrupted || handled.Load() != 0 {
+		t.Fatalf("approval cancellation result=%#v handled=%d", execution, handled.Load())
 	}
 }
 

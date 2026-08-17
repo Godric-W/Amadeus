@@ -74,9 +74,6 @@ providers:
     model: mock-model
     max_retries: 0
 agent:
-  max_iterations: 12
-  max_tool_calls: 12
-  max_duration: 2m
   max_parallel_tools: 2
 `, api, dialect, server.URL))
 			writeE2EFile(t, filepath.Join(projectDirectory, "go.mod"), "module example.com/coretools\n\ngo 1.26.0\n")
@@ -170,9 +167,6 @@ providers:
     model: mock-model
     max_retries: 0
 agent:
-  max_iterations: 4
-  max_tool_calls: 2
-  max_duration: 2m
   max_parallel_tools: 1
 `, api, dialect, server.URL))
 
@@ -279,9 +273,6 @@ providers:
     model: mock-model
     max_retries: 0
 agent:
-  max_iterations: 6
-  max_tool_calls: 4
-  max_duration: 2m
   max_parallel_tools: 1
 `, api, dialect, server.URL))
 

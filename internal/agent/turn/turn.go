@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
@@ -34,7 +35,6 @@ type Context struct {
 
 	InitialPermissionMode PermissionMode  `json:"initial_permission_mode"`
 	Personality           Personality     `json:"personality,omitempty"`
-	ToolNames             []string        `json:"tool_names,omitempty"`
 	OutputSchema          json.RawMessage `json:"output_schema,omitempty"`
 }
 
@@ -54,7 +54,7 @@ func (value Context) Validate() error {
 type State struct {
 	mu            sync.RWMutex
 	StartedAt     time.Time
-	Usage         json.RawMessage
+	Usage         llm.Usage
 	ToolCallCount int
 	Terminal      bool
 	TerminalError string
@@ -67,9 +67,23 @@ func (state *State) Snapshot() StateSnapshot {
 	state.mu.RLock()
 	defer state.mu.RUnlock()
 	return StateSnapshot{
-		StartedAt: state.StartedAt, Usage: append(json.RawMessage(nil), state.Usage...), ToolCallCount: state.ToolCallCount,
+		StartedAt: state.StartedAt, Usage: state.Usage, ToolCallCount: state.ToolCallCount,
 		Terminal: state.Terminal, TerminalError: state.TerminalError,
 	}
+}
+
+func (state *State) Record(usage llm.Usage, toolCalls int) {
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	state.Usage.InputTokens += usage.InputTokens
+	state.Usage.CachedInputTokens += usage.CachedInputTokens
+	state.Usage.OutputTokens += usage.OutputTokens
+	state.Usage.ReasoningTokens += usage.ReasoningTokens
+	state.Usage.TotalTokens += usage.TotalTokens
+	state.ToolCallCount += toolCalls
+	state.mu.Unlock()
 }
 
 func (state *State) MarkTerminal(err error) {
@@ -83,7 +97,7 @@ func (state *State) MarkTerminal(err error) {
 
 type StateSnapshot struct {
 	StartedAt     time.Time
-	Usage         json.RawMessage
+	Usage         llm.Usage
 	ToolCallCount int
 	Terminal      bool
 	TerminalError string

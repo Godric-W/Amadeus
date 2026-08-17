@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	agentruntime "github.com/Godric-W/Amadeus/internal/agent/runtime"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
@@ -23,7 +23,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/skill"
-	"github.com/Godric-W/Amadeus/internal/tool"
 	"github.com/Godric-W/Amadeus/internal/webfetch"
 	"github.com/Godric-W/Amadeus/internal/websearch"
 )
@@ -46,7 +45,7 @@ type CodingFactoryOptions struct {
 	Project          project.Root
 	WorkspaceRoots   []string
 	AmadeusRoot      string
-	ClientFactory    agentruntime.ClientFactory
+	ClientFactory    engine.ClientFactory
 	MCPClientFactory mcp.ClientFactory
 	WebFetcher       webfetch.Fetcher
 	WebSearch        websearch.Provider
@@ -60,7 +59,7 @@ type CodingFactory struct {
 	configured       config.Config
 	project          project.Root
 	amadeusRoot      string
-	clientFactory    agentruntime.ClientFactory
+	clientFactory    engine.ClientFactory
 	mcpClientFactory mcp.ClientFactory
 	webFetcher       webfetch.Fetcher
 	webSearch        websearch.Provider
@@ -71,6 +70,7 @@ type CodingFactory struct {
 	instructions     *instruction.WorkspaceResolver
 	baseInstructions llm.BaseInstructions
 	clock            func() time.Time
+	runtime          *engine.CodingRuntime
 	closed           bool
 }
 
@@ -151,7 +151,6 @@ func (factory *CodingFactory) Prepare(ctx context.Context, host Host, request Pr
 	}
 	switch request.Kind {
 	case KindCompact:
-		snapshot.ToolNames = nil
 		return Prepared{Task: &compactTask{factory: factory}, Context: snapshot}, snapshot.Validate()
 	case KindRegular:
 		goal := strings.TrimSpace(request.Input)
@@ -183,14 +182,66 @@ func (factory *CodingFactory) Close() error {
 		return nil
 	}
 	factory.closed = true
+	runtime := factory.runtime
 	extensions := factory.extensions
-	factory.extensions = nil
 	factory.mu.Unlock()
-	factory.permissions.Clear()
-	if extensions == nil {
-		return nil
+	if runtime != nil {
+		return runtime.Close()
 	}
-	return extensions.Close()
+	factory.permissions.Clear()
+	if extensions != nil {
+		return extensions.Close()
+	}
+	return nil
+}
+
+func (factory *CodingFactory) ensureRuntime(host Host) (*engine.CodingRuntime, error) {
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	if factory.closed {
+		return nil, errors.New("coding task factory is closed")
+	}
+	if factory.runtime != nil {
+		return factory.runtime, nil
+	}
+	runtimeHost, ok := host.(eventRequestHost)
+	if !ok {
+		return nil, errors.New("session task host does not expose event and request boundaries")
+	}
+	planHost, ok := host.(PlanHost)
+	if !ok {
+		return nil, errors.New("turn host does not support session plans")
+	}
+	approvals, err := newSessionApprovalPort(runtimeHost)
+	if err != nil {
+		return nil, err
+	}
+	auditSink, auditCloser, err := factory.auditFactory()
+	if err != nil {
+		return nil, err
+	}
+	if auditSink == nil {
+		if auditCloser != nil {
+			_ = auditCloser.Close()
+		}
+		return nil, errors.New("coding task audit factory returned nil sink")
+	}
+	runtime, err := engine.NewCodingRuntime(engine.RuntimeOptions{
+		Config: factory.configured, Project: factory.project, ClientFactory: factory.clientFactory,
+		Events: runtimeHost, Approvals: approvals, PlanUpdater: planHost,
+		Audit: auditSink, AuditCloser: auditCloser, Extensions: factory.extensions,
+		WebFetcher: factory.webFetcher, WebSearch: factory.webSearch,
+		FileSystemPolicy: factory.fileSystemPolicy, Permissions: factory.permissions,
+		Instructions: factory.instructions, BaseInstructions: factory.baseInstructions,
+	})
+	if err != nil {
+		if auditCloser != nil {
+			_ = auditCloser.Close()
+		}
+		return nil, err
+	}
+	factory.runtime = runtime
+	return runtime, nil
 }
 
 func (factory *CodingFactory) PermissionGrantCount() int {
@@ -250,14 +301,10 @@ func (factory *CodingFactory) MCPTools(ctx context.Context, server string) ([]mc
 }
 
 type regularTask struct {
-	factory        *CodingFactory
-	goal           string
-	agent          *agentruntime.Agent
-	availableTools []tool.ToolSpec
-	auditCloser    io.Closer
-	instructions   *targetInstructionScope
-	closeOnce      sync.Once
-	closeErr       error
+	runtime      *engine.CodingRuntime
+	goal         string
+	events       protocol.EventSink
+	instructions *targetInstructionScope
 }
 
 func (*regularTask) Kind() Kind { return KindRegular }
@@ -267,7 +314,7 @@ func (sessionTask *regularTask) Run(ctx context.Context, host Host, turnContext 
 }
 
 func (sessionTask *regularTask) Abort(context.Context, Host, *turn.Context) error {
-	return sessionTask.close()
+	return nil
 }
 
 type compactTask struct{ factory *CodingFactory }
