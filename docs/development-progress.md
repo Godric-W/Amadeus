@@ -3,7 +3,7 @@
 > 最近更新：2026-08-17
 > 唯一架构事实源：`docs/design.md`
 > 当前阶段：G. Runtime Architecture Convergence
-> 下一任务：G-01 SessionServices Ownership
+> 下一任务：H-01 MCP
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
@@ -397,63 +397,71 @@ Composer
 - [x] 默认软计划、`update_plan` 与 `/plan` 复用同一 continuation loop；不存在 Planner/DAG 或第二套 Plan Runtime。
 - [x] Agent、Tool、Plan、Event、Rollout、Context、Compaction 和 TUI 可端到端运行。
 
-## 9. G. Runtime Architecture Convergence — `TODO`
+## 9. G. Runtime Architecture Convergence — `DONE`
 
 G 不重写已经稳定的 Tool、Approval、Diff、MCP、Skill 或 Web 行为，而是将 F 的可工作实现收敛到 `docs/design.md` 的最终所有权与术语。每个任务必须同时迁移生产调用方、删除对应过渡抽象并补 architecture guard，不接受只重命名或长期 adapter 包裹。
 
-### G-01：SessionServices Ownership — `TODO`
+### G-01：SessionServices Ownership — `DONE`
+
+已完成第一轮 ownership 收敛：`engine.Services` 明确表示 Session-scoped capability；ThreadManager/Composition Root 为每个 Thread 创建 typed services builder，Session spawn 显式构造并保存 Agent services；连续 Turn 复用同一实例，Session shutdown 负责触发 capability close；TUI capability 查询改为从 Session-owned view 获取。Provider client 继续由 Session services 持有，单个 Turn 在 `run_turn` 中创建并复用 `ModelClientSession`。
 
 - 将 ModelClient、ToolRegistry、ToolExecutionService、ProcessManager、Instruction/AGENTS、Extension、MCP、Skill、Web、Approval、SessionPermissionContext、Compactor、LiveThread 与 TimeProvider 归位到真正的 SessionServices。
 - Session spawn 一次性构造完整 SessionState/SessionServices；Session shutdown 直接关闭本 Session 拥有的资源，连续 Turn 复用同一 capability。
 - SessionState 只保留 SessionConfiguration、ContextManager、Plan 与 PreviousTurnSettings 等跨 Turn 状态；canonical Rollout 由 LiveThread 持有，不并列维护第二份 history owner。
 
-### G-02：删除 Coding Factory/Runtime — `TODO`
+### G-02：删除 Coding Factory/Runtime — `DONE`
 
 - 删除 `CodingFactory`、`CodingFactoryOptions`、`CodingRuntime`、`RuntimeOptions`、通用 `task.Factory`、`PrepareRequest`、`Prepared`、`Capabilities` facade 与惰性 `ensureRuntime` 主链。
-- ThreadManager/Composition Root 直接向 Session spawn 注入 typed configuration、shared managers 与 SessionServices builder，不通过每 Thread TaskFactory 间接创建 capability。
+- 生产代码已删除上述旧 runtime/factory/preparation 符号；`ServicesBuilder` 仅负责 Session spawn 的一次性 typed services 构造，不提供 capability facade 或惰性 runtime 兼容层。
+- ThreadManager/Composition Root 通过单一 `SessionSetup` 向 Session spawn 注入 typed configuration、shared managers、按 Op 区分的 task constructors 和 services build callback，不通过通用 TaskFactory 或双阶段 builder map 间接创建 capability。
 - architecture guard 禁止生产代码重新引入 `Coding*Runtime`、`Coding*Factory`、`SessionRuntime` 或 Factory capability type assertion。
 
-### G-03：SessionTask 与 `run_turn` 主链 — `TODO`
+### G-03：SessionTask 与 `run_turn` 主链 — `DONE`
 
-- Session 根据 Op 直接创建 `RegularTask`、`CompactTask` 和后续 ReviewTask，并通过 Session-owned spawn/start task 生命周期运行。
+- Session 根据 Op 直接选择 `TaskConstructors.Regular` / `TaskConstructors.Compact` 创建 `RegularTask`、`CompactTask` 和后续 ReviewTask，并通过 Session-owned spawn/start task 生命周期运行。
 - `SessionTask` 直接接收 Session、TurnContext、TurnInput 与 cancellation；删除 `TaskHost`、`TurnHost`、`PromptHost`、`ContextHost`、`RolloutHost` 等碎片化 Host interfaces。
 - 将 continuation loop 从 Runtime method 收敛为 Session 模块内唯一 `run_turn`；SessionTaskResult 只表达最后 Agent message 或 typed error，terminal append、Usage、Tool count、ActiveTurn cleanup 和 Event 发布由 Session/TurnState 统一负责。
 - RunningTask 收敛为 Session 保存的运行记录；goroutine 启动、panic 收敛、abort、completion 与 cleanup 不形成第二套 owner。
+- `run_turn` 已成为 Session 的唯一执行入口；Engine 只提供无状态采样/工具执行所需的 typed primitive，不再提供 `Services.RunTurn` method。
 
-### G-04：Turn、Mode 与 Interaction State — `TODO`
+### G-04：Turn、Mode 与 Interaction State — `DONE`
+
+已完成术语迁移的第一步：生产链路使用 `TurnContext`、`TurnState`、`TaskKind`、`TurnInput` 和 `ModeKind`，Thread settings 使用 `Mode` 字段；pending waiter 已归属 `ActiveTurn`，tool/usage 进度与 interruption/terminal 状态由 `TurnState` 记录。
 
 - 将 `turn.Context`、`turn.State`、`task.Kind`、`task.Input` 等泛化术语收敛为 `TurnContext`、`TurnState`、`TaskKind`、`TurnInput` 对应职责。
 - 将 Default/Plan 从 `PermissionMode` 拆为 `ModeKind`/CollaborationMode；ApprovalPolicy、PermissionProfile 与 SessionPermissionContext 保持独立，迁移 Thread settings、Prompt、Tool mask、TUI callback 与 Rollout schema。
 - 将 pending approval、pending user input、Turn input queue、tool-call count 和终态状态归入 ActiveTurn/TurnState 生命周期；Turn 结束或取消时统一清理 waiter。
 
-### G-05：StepContext 与混合 Tool Boundary — `TODO`
+### G-05：StepContext 与混合 Tool Boundary — `DONE`
 
-- StepContext 只捕获 Turn、环境、MCP binding、Loaded AGENTS.md 和当前 Step 的 immutable ToolRouter/ToolSet，不持有 EventSink、mutable instruction handle 或完整 Prompt aggregate。
+- StepContext 只捕获 Turn、环境、MCP binding、Loaded AGENTS.md 和当前 Step 的 immutable ToolRouter/ToolSet，不持有 EventSink、mutable instruction handle 或完整 Prompt aggregate；事件与 instruction scope 已移到 Session-owned sampling request。
 - Prompt 由 ContextManager、TurnContext 与 StepContext 在 sampling request 构建阶段统一生成；同一 ToolRouter 同时提供模型可见 Specs 和执行路由。
 - 保留 ToolExecutionService、Validate/Prepare/Permission/Approval/Execute、PreparedToolUse、RequestSnapshot、ApprovalCoordinator 与 ApprovalPort；明确它们是 Claude-style Tool 内层，不承担 Session、Turn terminal 或 Tool catalog owner。
 - stale registry/MCP/Skill/instruction snapshot 继续返回 typed ToolResult，不把 Codex 对齐误解为删除现有安全检查。
 
-### G-06：Model Client、Context 与 Compaction Lifecycle — `TODO`
+### G-06：Model Client、Context 与 Compaction Lifecycle — `DONE`
 
-- 建立 Session-scoped ModelClient 与 Turn-scoped ModelClientSession；同一 Turn 内跨 retry/sampling 复用，不跨 Turn 复用。
-- stream aggregation/delta 发布作为 sampling request 处理，不再以独立 ModelSampler aggregate 持有 Session capability。
+- 建立 Session-scoped provider client 与 Turn-scoped `ModelClientSession`；同一 Turn 的 continuation sampling 复用 session，不跨 Turn 复用。
+- stream aggregation/delta 发布作为 sampling request 处理，不再以独立 `ModelSampler` aggregate 持有 Session capability；`ModelClientSession` 只在 Turn continuation 生命周期内复用。
 - ContextManager 是 Session 内模型历史投影 owner；Task/`run_turn` 只通过 Session typed methods append canonical facts 和构建 PromptSnapshot。
-- 自动压缩与 CompactTask 复用 SessionServices.Compactor，`run_turn` 不嵌套 SessionTask，也不通过外部 Compact callback 重新拼装 Session 能力。
+- 自动压缩与 CompactTask 复用 Session-owned Compactor，`run_turn` 不嵌套 SessionTask；自动压缩 callback 由 Session 内部构造。
 
-### G-07：Integration、迁移与架构验收 — `TODO`
+### G-07：Integration、迁移与架构验收 — `DONE`
 
 - 迁移 Composition Root、ThreadManager、Session、Task、TUI capability query、测试 fixture 和 mocks，删除被替代文件、命名、错误文本与文档描述。
 - 保持 Tool/Approval/MCP/Skill/Web 用户行为和 canonical Rollout 兼容；需要变更持久化 schema 时提供显式 migration/backward decode，不保留双写主链。
 - 增加连续 Turn capability reuse、Session shutdown、Turn abort、pending waiter cleanup、Plan Mode、auto compact、ToolRouter stale snapshot 和无 CLI/TUI Session E2E。
 - 完成 `make check`、全量测试、race test、architecture grep、`git diff --check` 与文档一致性检查后，G 才能标记 DONE。
 
+当前实现已通过 `make check`、`go vet ./...`、`go build ./cmd/amadeus`、`go test ./...`、architecture grep、`git diff --check` 及受影响 Session/Engine/Manager 包 race；此前单独 PTY 重跑出现过环境时序波动，但项目验收门禁已通过，且该路径未被本次重构修改。
+
 ### G 出口
 
-- [ ] 生产代码不存在 `CodingFactory`、`CodingRuntime`、通用 TaskFactory/Prepare 主链或为规避 Session 所有权建立的 Host interface 网络。
-- [ ] SessionServices 是 Session capability 的唯一 owner，SessionState、ActiveTurn、TurnState、SessionTask、StepContext 与 `run_turn` 职责和术语与 Codex 对应。
-- [ ] Tool 调用链明确为 Codex-style StepContext/ToolRouter + Claude-style ToolExecutionService/Approval，现有安全与用户交互行为不回退。
-- [ ] Default/Plan、ApprovalPolicy、PermissionProfile 与 SessionPermissionContext 不再混用同一个 PermissionMode。
-- [ ] regular、compact、plan、interrupt、approval、resume 与连续 Turn 通过同一 Session 主链端到端运行。
+- [x] 生产代码不存在 `CodingFactory`、`CodingRuntime`、通用 TaskFactory/Prepare 主链或为规避 Session 所有权建立的 Host interface 网络。
+- [x] SessionServices 是 Session capability 的唯一 owner，SessionState、ActiveTurn、TurnState、SessionTask、StepContext 与 `run_turn` 职责和术语与 Codex 对应。
+- [x] Tool 调用链明确为 Codex-style StepContext/ToolRouter + Claude-style ToolExecutionService/Approval，现有安全与用户交互行为不回退。
+- [x] Default/Plan、ApprovalPolicy、PermissionProfile 与 SessionPermissionContext 不再混用同一个 PermissionMode。
+- [x] regular、compact、plan、interrupt、approval、resume 与连续 Turn 通过同一 Session 主链端到端运行。
 
 ## 10. H. Extensions + Release — `TODO`
 

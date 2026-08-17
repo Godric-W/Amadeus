@@ -1,4 +1,4 @@
-package task
+package session
 
 import (
 	"context"
@@ -66,7 +66,7 @@ func TestTargetInstructionScopePersistsNestedResolutionAndGatesMutation(t *testi
 		t.Fatal(err)
 	}
 	host := &instructionScopeHost{manager: agentcontext.NewManager(nil)}
-	scope, err := newTargetInstructionScope(host, resolver, "turn-1")
+	scope, err := newTargetInstructionScope(host.ContextUpdate, host.AppendItems, resolver, "turn-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestTargetInstructionScopeGatesCommandCWDInAnotherWorkspaceRoot(t *testing.
 		t.Fatal(err)
 	}
 	host := &instructionScopeHost{manager: agentcontext.NewManager(nil)}
-	scope, err := newTargetInstructionScope(host, resolver, "turn-2")
+	scope, err := newTargetInstructionScope(host.ContextUpdate, host.AppendItems, resolver, "turn-2")
 	if err != nil {
 		t.Fatal(err)
 	}

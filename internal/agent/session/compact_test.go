@@ -1,4 +1,4 @@
-package task
+package session
 
 import (
 	"context"
@@ -72,8 +72,13 @@ func (host *compactTestHost) ContextUpdate(key agentcontext.UpdateKey) string {
 }
 
 func TestCompactTaskProducesSemanticReplacementHistory(t *testing.T) {
-	factory, host, client := newCompactionTestRuntime(t)
-	result, err := (&compactTask{factory: factory}).Run(context.Background(), host, &turn.Context{}, nil)
+	builder, host, client := newCompactionTestRuntime(t)
+	session := newTestSession(host.lines, host.context)
+	runtime, err := builder.BuildServices(context.Background(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := (&compactTask{runtime: runtime}).Run(context.Background(), session, &turn.TurnContext{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +98,12 @@ func TestCompactTaskProducesSemanticReplacementHistory(t *testing.T) {
 }
 
 func TestCompactTaskPreservesLatestUserTurnOutsideReplacement(t *testing.T) {
-	factory, host, _ := newCompactionTestRuntime(t)
+	builder, host, _ := newCompactionTestRuntime(t)
+	session := newTestSession(host.lines, host.context)
+	runtime, err := builder.BuildServices(context.Background(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
 	latest, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "now run the tests"})
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +111,8 @@ func TestCompactTaskPreservesLatestUserTurnOutsideReplacement(t *testing.T) {
 	if err := host.AppendItems(context.Background(), "turn-2", latest); err != nil {
 		t.Fatal(err)
 	}
-	result, err := (&compactTask{factory: factory}).Run(context.Background(), host, &turn.Context{}, nil)
+	session.state.History = host.lines
+	result, err := (&compactTask{runtime: runtime}).Run(context.Background(), session, &turn.TurnContext{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,15 +129,20 @@ func TestCompactTaskPreservesLatestUserTurnOutsideReplacement(t *testing.T) {
 }
 
 func TestCompactTaskFailureDoesNotReturnItems(t *testing.T) {
-	factory, host, client := newCompactionTestRuntime(t)
+	builder, host, client := newCompactionTestRuntime(t)
+	session := newTestSession(host.lines, host.context)
+	runtime, err := builder.BuildServices(context.Background(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
 	client.err = errors.New("provider unavailable")
-	result, err := (&compactTask{factory: factory}).Run(context.Background(), host, &turn.Context{}, nil)
+	result, err := (&compactTask{runtime: runtime}).Run(context.Background(), session, &turn.TurnContext{}, nil)
 	if err == nil || len(result.Items) != 0 {
 		t.Fatalf("failed compaction result=%#v err=%v", result, err)
 	}
 }
 
-func newCompactionTestRuntime(t *testing.T) (*CodingFactory, *compactTestHost, *interactiveCompactionClient) {
+func newCompactionTestRuntime(t *testing.T) (*ServicesBuilder, *compactTestHost, *interactiveCompactionClient) {
 	t.Helper()
 	client := &interactiveCompactionClient{}
 	configured := config.Default()
@@ -140,7 +156,7 @@ func newCompactionTestRuntime(t *testing.T) (*CodingFactory, *compactTestHost, *
 	if err != nil {
 		t.Fatal(err)
 	}
-	factory, err := NewCodingFactory(CodingFactoryOptions{
+	builder, err := NewServicesBuilder(ServicesOptions{
 		Config: configured, Project: root, AmadeusRoot: t.TempDir(), BaseInstructions: llm.BaseInstructions{Text: "test base instructions"},
 		ClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
 		AuditFactory: func() (audit.Sink, io.Closer, error) {
@@ -150,7 +166,7 @@ func newCompactionTestRuntime(t *testing.T) (*CodingFactory, *compactTestHost, *
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = factory.Close() })
+	t.Cleanup(func() { _ = builder.Close() })
 	user, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "inspect project"})
 	if err != nil {
 		t.Fatal(err)
@@ -163,5 +179,5 @@ func newCompactionTestRuntime(t *testing.T) (*CodingFactory, *compactTestHost, *
 	if err := host.AppendItems(context.Background(), "turn-1", user, assistant); err != nil {
 		t.Fatal(err)
 	}
-	return factory, host, client
+	return builder, host, client
 }

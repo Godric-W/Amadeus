@@ -64,9 +64,9 @@ func (runner *agentController) runFullscreenInteractive(ctx context.Context, inv
 			runInvocation := invocation
 			runInvocation.Mode = agentInvocationOnce
 			runInvocation.Task = submission.Content
-			runInvocation.RunMode = turn.PermissionModeDefault
+			runInvocation.RunMode = turn.ModeKindDefault
 			if submission.Mode == tui.CollaborationPlan {
-				runInvocation.RunMode = turn.PermissionModePlan
+				runInvocation.RunMode = turn.ModeKindPlan
 			}
 			runInvocation.Input = strings.NewReader("")
 			runInvocation.Output = io.Discard
@@ -96,11 +96,11 @@ func (runner *agentController) runFullscreenInteractive(ctx context.Context, inv
 			if err != nil {
 				return err
 			}
-			permissionMode := turn.PermissionModeDefault
+			permissionMode := turn.ModeKindDefault
 			if mode == tui.CollaborationPlan {
-				permissionMode = turn.PermissionModePlan
+				permissionMode = turn.ModeKindPlan
 			}
-			return activeThread.Submit(commandCtx, protocol.ThreadSettingsOp{PermissionMode: string(permissionMode)})
+			return activeThread.Submit(commandCtx, protocol.ThreadSettingsOp{Mode: string(permissionMode)})
 		},
 		Clear: func(commandCtx context.Context) error {
 			return runner.newDraft(commandCtx)

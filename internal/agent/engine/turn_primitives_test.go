@@ -147,16 +147,13 @@ func TestTurnEngineContinuesAfterToolFailureAndPersistsBeforeCompletion(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	sampler, err := NewModelSampler(client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime := &CodingRuntime{
+	runtime := &Services{
 		providerName: "test", provider: config.ProviderConfig{Model: "test-model", MaxOutputTokens: 1024}, client: client,
 		baseInstructions: llm.BaseInstructions{Text: "test instructions"}, registry: registry,
-		toolService: service, sampler: sampler, visibility: map[string]bool{},
+		toolService: service, visibility: map[string]bool{},
 	}
 	host := &engineTestHost{context: agentcontext.NewManager(nil)}
+	scope := &engineTestScope{}
 	user, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: string(llm.RoleUser), Content: "do work"})
 	if err != nil {
 		t.Fatal(err)
@@ -164,10 +161,9 @@ func TestTurnEngineContinuesAfterToolFailureAndPersistsBeforeCompletion(t *testi
 	if err := host.AppendItems(context.Background(), "turn-1", user); err != nil {
 		t.Fatal(err)
 	}
-	scope := &engineTestScope{}
-	result, err := runtime.RunTurn(context.Background(), RunRequest{
-		Host: host, Events: host, Instructions: scope,
-		Turn: turn.Context{ThreadID: "thread-1", TurnID: "turn-1", Provider: "test", Model: "test-model", CWD: t.TempDir(), InitialPermissionMode: turn.PermissionModeDefault},
+	result, err := RunTurn(context.Background(), runtime, RunRequest{
+		Snapshot: host.Snapshot, AppendItems: host.AppendItems, Events: host, Instructions: scope,
+		Turn: turn.TurnContext{ThreadID: "thread-1", TurnID: "turn-1", Provider: "test", Model: "test-model", CWD: t.TempDir(), Mode: turn.ModeKindDefault},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -203,17 +199,16 @@ func TestStepContextDerivesPlanMaskAndRevisionFromOneRegistrySnapshot(t *testing
 			t.Fatal(err)
 		}
 	}
-	runtime := &CodingRuntime{client: client, baseInstructions: llm.BaseInstructions{Text: "base"}, registry: registry, visibility: map[string]bool{}, provider: config.ProviderConfig{MaxOutputTokens: 1024}}
+	runtime := &Services{client: client, baseInstructions: llm.BaseInstructions{Text: "base"}, registry: registry, visibility: map[string]bool{}, provider: config.ProviderConfig{MaxOutputTokens: 1024}}
 	host := &engineTestHost{context: agentcontext.NewManager(nil)}
-	scope := &engineTestScope{}
-	regular, err := runtime.CaptureStep(host, host, turn.Context{InitialPermissionMode: turn.PermissionModeDefault}, scope)
+	regular, err := runtime.CaptureStep(host.Snapshot, turn.TurnContext{Mode: turn.ModeKindDefault})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !containsName(regular.ToolNames, "update_plan") || !containsName(regular.ToolNames, "write") {
 		t.Fatalf("regular tool mask = %v", regular.ToolNames)
 	}
-	plan, err := runtime.CaptureStep(host, host, turn.Context{InitialPermissionMode: turn.PermissionModePlan}, scope)
+	plan, err := runtime.CaptureStep(host.Snapshot, turn.TurnContext{Mode: turn.ModeKindPlan})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +219,7 @@ func TestStepContextDerivesPlanMaskAndRevisionFromOneRegistrySnapshot(t *testing
 	if err := registry.RegisterDefinition(&engineNamedTool{name: "new_read", effect: tool.SideEffectRead}); err != nil {
 		t.Fatal(err)
 	}
-	changed, err := runtime.CaptureStep(host, host, turn.Context{InitialPermissionMode: turn.PermissionModeDefault}, scope)
+	changed, err := runtime.CaptureStep(host.Snapshot, turn.TurnContext{Mode: turn.ModeKindDefault})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,14 +241,10 @@ func TestTurnEngineWarnsThenReturnsTypedBlockedAtSafetyBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sampler, err := NewModelSampler(client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime := &CodingRuntime{
+	runtime := &Services{
 		providerName: "test", provider: config.ProviderConfig{Model: "test-model", MaxOutputTokens: 1024}, client: client,
 		baseInstructions: llm.BaseInstructions{Text: "test instructions"}, registry: registry,
-		toolService: service, sampler: sampler, visibility: map[string]bool{},
+		toolService: service, visibility: map[string]bool{},
 		budget: TurnBudget{MaxSamples: 2, MaxToolCalls: 100, MaxDuration: time.Hour, WarnRatio: 0.5},
 	}
 	host := &engineTestHost{context: agentcontext.NewManager(nil)}
@@ -261,9 +252,9 @@ func TestTurnEngineWarnsThenReturnsTypedBlockedAtSafetyBudget(t *testing.T) {
 	if err := host.AppendItems(context.Background(), "turn-budget", user); err != nil {
 		t.Fatal(err)
 	}
-	result, err := runtime.RunTurn(context.Background(), RunRequest{
-		Host: host, Events: host, Instructions: &engineTestScope{},
-		Turn: turn.Context{ThreadID: "thread-1", TurnID: "turn-budget", Provider: "test", Model: "test-model", CWD: t.TempDir(), InitialPermissionMode: turn.PermissionModeDefault},
+	result, err := RunTurn(context.Background(), runtime, RunRequest{
+		Snapshot: host.Snapshot, AppendItems: host.AppendItems, Events: host, Instructions: &engineTestScope{},
+		Turn: turn.TurnContext{ThreadID: "thread-1", TurnID: "turn-budget", Provider: "test", Model: "test-model", CWD: t.TempDir(), Mode: turn.ModeKindDefault},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -283,14 +274,10 @@ func TestTurnEngineChecksAutomaticCompactionBeforeSampling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sampler, err := NewModelSampler(client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime := &CodingRuntime{
+	runtime := &Services{
 		providerName: "test", provider: config.ProviderConfig{Model: "test-model", ContextWindow: 1_000, AutoCompactTokenLimit: 1, MaxOutputTokens: 64}, client: client,
 		baseInstructions: llm.BaseInstructions{Text: "test instructions"}, registry: registry,
-		toolService: service, sampler: sampler, visibility: map[string]bool{}, budget: DefaultTurnBudget(),
+		toolService: service, visibility: map[string]bool{}, budget: DefaultTurnBudget(),
 	}
 	host := &engineTestHost{context: agentcontext.NewManager(nil)}
 	user, _ := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: string(llm.RoleUser), Content: "a context that exceeds one token"})
@@ -298,9 +285,9 @@ func TestTurnEngineChecksAutomaticCompactionBeforeSampling(t *testing.T) {
 		t.Fatal(err)
 	}
 	checks := 0
-	result, err := runtime.RunTurn(context.Background(), RunRequest{
-		Host: host, Events: host, Instructions: &engineTestScope{},
-		Turn: turn.Context{ThreadID: "thread-1", TurnID: "turn-compact", Provider: "test", Model: "test-model", CWD: t.TempDir(), InitialPermissionMode: turn.PermissionModeDefault},
+	result, err := RunTurn(context.Background(), runtime, RunRequest{
+		Snapshot: host.Snapshot, AppendItems: host.AppendItems, Events: host, Instructions: &engineTestScope{},
+		Turn: turn.TurnContext{ThreadID: "thread-1", TurnID: "turn-compact", Provider: "test", Model: "test-model", CWD: t.TempDir(), Mode: turn.ModeKindDefault},
 		Compact: func(context.Context) (bool, error) {
 			checks++
 			return false, nil

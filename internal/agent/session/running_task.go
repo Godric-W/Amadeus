@@ -1,4 +1,4 @@
-package task
+package session
 
 import (
 	"context"
@@ -19,9 +19,9 @@ type Completion struct {
 type RunningTask struct {
 	mu        sync.Mutex
 	task      SessionTask
-	context   *turn.Context
-	host      Host
-	inputs    []Input
+	context   *turn.TurnContext
+	session   *Session
+	inputs    []TurnInput
 	ctx       context.Context
 	cancel    context.CancelCauseFunc
 	done      chan Completion
@@ -29,8 +29,8 @@ type RunningTask struct {
 	abortOnce sync.Once
 }
 
-func NewRunningTask(parent context.Context, host Host, sessionTask SessionTask, turnContext *turn.Context, inputs []Input) (*RunningTask, error) {
-	if parent == nil || host == nil || sessionTask == nil || turnContext == nil {
+func NewRunningTask(parent context.Context, session *Session, sessionTask SessionTask, turnContext *turn.TurnContext, inputs []TurnInput) (*RunningTask, error) {
+	if parent == nil || session == nil || sessionTask == nil || turnContext == nil {
 		return nil, errors.New("running task is incomplete")
 	}
 	if err := turnContext.Validate(); err != nil {
@@ -38,7 +38,7 @@ func NewRunningTask(parent context.Context, host Host, sessionTask SessionTask, 
 	}
 	ctx, cancel := context.WithCancelCause(parent)
 	return &RunningTask{
-		task: sessionTask, context: turnContext, host: host, inputs: append([]Input(nil), inputs...),
+		task: sessionTask, context: turnContext, session: session, inputs: append([]TurnInput(nil), inputs...),
 		ctx: ctx, cancel: cancel, done: make(chan Completion, 1),
 	}, nil
 }
@@ -61,7 +61,7 @@ func (running *RunningTask) Start() <-chan Completion {
 			running.done <- completion
 			close(running.done)
 		}()
-		completion.Result, completion.Error = running.task.Run(running.ctx, running.host, running.context, running.inputs)
+		completion.Result, completion.Error = running.task.Run(running.ctx, running.session, running.context, running.inputs)
 	}()
 	return running.done
 }
@@ -79,12 +79,12 @@ func (running *RunningTask) Abort(ctx context.Context) error {
 	}
 	var abortErr error
 	running.abortOnce.Do(func() {
-		abortErr = running.task.Abort(ctx, running.host, running.context)
+		abortErr = running.task.Abort(ctx, running.session, running.context)
 	})
 	return abortErr
 }
 
-func (running *RunningTask) Context() *turn.Context {
+func (running *RunningTask) Context() *turn.TurnContext {
 	if running == nil {
 		return nil
 	}

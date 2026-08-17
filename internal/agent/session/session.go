@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/task"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
@@ -27,29 +26,30 @@ type Configuration struct {
 	Shell            string
 	CurrentDate      string
 	Timezone         string
-	PermissionMode   turn.PermissionMode
+	Mode             turn.ModeKind
 	Personality      turn.Personality
 	OutputSchema     json.RawMessage
 	BaseInstructions llm.BaseInstructions
 }
 
-type PermissionState struct {
-	Mode turn.PermissionMode
+type ModeState struct {
+	Mode turn.ModeKind
 }
 
 type SessionState struct {
 	Configuration Configuration
 	History       []rollout.Line
-	Permissions   PermissionState
+	Mode          ModeState
 	Context       *agentcontext.Manager
 	Plan          *plan.State
 }
 
 type SessionServices struct {
-	LiveThread  *thread.LiveThread
-	TaskFactory task.Factory
-	Clock       func() time.Time
-	NextID      func(string) string
+	LiveThread       *thread.LiveThread
+	TaskConstructors TaskConstructors
+	AgentServices    *engine.Services
+	Clock            func() time.Time
+	NextID           func(string) string
 }
 
 type SessionIo struct {
@@ -61,15 +61,17 @@ type SessionIo struct {
 }
 
 type SpawnArgs struct {
-	ThreadID thread.ID
-	History  thread.InitialHistory
-	State    SessionState
-	Services SessionServices
+	ThreadID      thread.ID
+	History       thread.InitialHistory
+	State         SessionState
+	Services      SessionServices
+	BuildServices func(context.Context, *Session) (*engine.Services, error)
 }
 
 type ActiveTurn struct {
-	State *turn.State
-	Task  *task.RunningTask
+	State   *turn.TurnState
+	Task    *RunningTask
+	pending map[string]chan protocol.Op
 }
 
 type Session struct {
@@ -88,9 +90,8 @@ type Session struct {
 	requests    chan protocol.InteractiveRequest
 	status      chan protocol.AgentStatus
 	terminated  chan struct{}
-	completed   chan task.Completion
+	completed   chan Completion
 	requestsIn  chan requestDelivery
-	pending     map[string]chan protocol.Op
 }
 
 type requestDelivery struct {
@@ -101,7 +102,7 @@ type requestDelivery struct {
 var ErrInterrupted = errors.New("turn interrupted by user")
 
 func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) {
-	if parent == nil || args.ThreadID == "" || args.Services.LiveThread == nil || args.Services.TaskFactory == nil || args.Services.NextID == nil {
+	if parent == nil || args.ThreadID == "" || args.Services.LiveThread == nil || !args.Services.TaskConstructors.Valid() || args.Services.NextID == nil {
 		return nil, SessionIo{}, errors.New("session spawn arguments are incomplete")
 	}
 	if args.Services.Clock == nil {
@@ -111,17 +112,24 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 		return nil, SessionIo{}, fmt.Errorf("validate initial history: %w", err)
 	}
 	ctx, cancel := context.WithCancelCause(parent)
+	closeSpawnServices := func() {
+		if args.Services.TaskConstructors.Close != nil {
+			_ = args.Services.TaskConstructors.Close()
+		}
+		_ = args.Services.LiveThread.Shutdown(context.Background())
+	}
 	value := &Session{
 		threadID: args.ThreadID, state: args.State, services: args.Services, ctx: ctx, cancel: cancel,
 		submissions: make(chan protocol.Submission, 32), events: make(chan protocol.SessionEvent, 128),
 		requests: make(chan protocol.InteractiveRequest, 8), status: make(chan protocol.AgentStatus, 16),
-		terminated: make(chan struct{}), completed: make(chan task.Completion, 1),
-		requestsIn: make(chan requestDelivery, 8), pending: make(map[string]chan protocol.Op),
+		terminated: make(chan struct{}), completed: make(chan Completion, 1),
+		requestsIn: make(chan requestDelivery, 8),
 	}
 	value.state.History = cloneLines(args.History.Lines)
 	contextManager, err := agentcontext.NewManagerFromRollout(args.History.Lines, nil)
 	if err != nil {
 		cancel(err)
+		closeSpawnServices()
 		return nil, SessionIo{}, fmt.Errorf("rebuild context from initial history: %w", err)
 	}
 	value.state.Context = contextManager
@@ -131,10 +139,20 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 	if snapshot, ok := latestPlanSnapshot(args.History.Lines); ok {
 		if err := value.state.Plan.Restore(snapshot); err != nil {
 			cancel(err)
+			closeSpawnServices()
 			return nil, SessionIo{}, fmt.Errorf("restore plan from initial history: %w", err)
 		}
 	}
-	value.state.Permissions = PermissionState{Mode: value.state.Configuration.PermissionMode}
+	value.state.Mode = ModeState{Mode: value.state.Configuration.Mode}
+	if args.BuildServices != nil {
+		capabilities, buildErr := args.BuildServices(ctx, value)
+		if buildErr != nil {
+			cancel(buildErr)
+			closeSpawnServices()
+			return nil, SessionIo{}, fmt.Errorf("build session services: %w", buildErr)
+		}
+		value.services.AgentServices = capabilities
+	}
 	io := SessionIo{
 		Submissions: value.submissions, Events: value.events, Requests: value.requests,
 		Status: value.status, Terminated: value.terminated,
@@ -149,10 +167,7 @@ func (session *Session) loop() {
 	defer close(session.status)
 	defer close(session.terminated)
 	defer func() {
-		for requestID, result := range session.pending {
-			delete(session.pending, requestID)
-			result <- nil
-		}
+		session.clearPendingRequests()
 	}()
 	defer func() {
 		cleanupCtx, cancel := session.cleanupContext()
@@ -160,8 +175,13 @@ func (session *Session) loop() {
 		_ = session.services.LiveThread.Shutdown(cleanupCtx)
 	}()
 	defer func() {
-		if closer, ok := session.services.TaskFactory.(io.Closer); ok {
-			_ = closer.Close()
+		if session.services.AgentServices != nil {
+			_ = session.services.AgentServices.Close()
+		}
+	}()
+	defer func() {
+		if session.services.TaskConstructors.Close != nil {
+			_ = session.services.TaskConstructors.Close()
 		}
 	}()
 	session.publish(protocol.SessionEvent{ThreadID: session.threadID, Message: protocol.ThreadConfigured{}})
@@ -222,8 +242,8 @@ func (session *Session) handleSubmission(submission protocol.Submission) {
 	case protocol.InterruptOp:
 		session.cancelActive(ErrInterrupted)
 	case protocol.ThreadSettingsOp:
-		if op.PermissionMode == string(turn.PermissionModeDefault) || op.PermissionMode == string(turn.PermissionModePlan) {
-			session.state.Permissions.Mode = turn.PermissionMode(op.PermissionMode)
+		if op.Mode == string(turn.ModeKindDefault) || op.Mode == string(turn.ModeKindPlan) {
+			session.state.Mode.Mode = turn.ModeKind(op.Mode)
 		}
 	case protocol.ApprovalDecisionOp:
 		session.resolveRequest(op.RequestID, op)
@@ -237,25 +257,32 @@ func (session *Session) handleRequest(envelope requestDelivery) {
 		envelope.result <- nil
 		return
 	}
-	if _, exists := session.pending[envelope.request.RequestID]; exists {
+	if session.active == nil {
 		envelope.result <- nil
 		return
 	}
-	session.pending[envelope.request.RequestID] = envelope.result
+	if _, exists := session.active.pending[envelope.request.RequestID]; exists {
+		envelope.result <- nil
+		return
+	}
+	session.active.pending[envelope.request.RequestID] = envelope.result
 	select {
 	case session.requests <- envelope.request:
 	case <-session.ctx.Done():
-		delete(session.pending, envelope.request.RequestID)
+		delete(session.active.pending, envelope.request.RequestID)
 		envelope.result <- nil
 	}
 }
 
 func (session *Session) resolveRequest(requestID string, op protocol.Op) {
-	result := session.pending[requestID]
+	if session.active == nil {
+		return
+	}
+	result := session.active.pending[requestID]
 	if result == nil {
 		return
 	}
-	delete(session.pending, requestID)
+	delete(session.active.pending, requestID)
 	result <- op
 }
 
@@ -265,11 +292,11 @@ func (session *Session) startTurn(input string, compact bool) {
 	}
 	now := session.services.Clock().UTC()
 	turnID := turn.ID(session.services.NextID("turn"))
-	baseContext := turn.Context{
+	baseContext := turn.TurnContext{
 		ThreadID: session.threadID, TurnID: turnID, Provider: session.state.Configuration.Provider,
 		Model: session.state.Configuration.Model, CWD: session.state.Configuration.CWD, Shell: session.state.Configuration.Shell,
 		CurrentDate: session.state.Configuration.CurrentDate, Timezone: session.state.Configuration.Timezone,
-		InitialPermissionMode: session.state.Permissions.Mode, Personality: session.state.Configuration.Personality,
+		Mode: session.state.Mode.Mode, Personality: session.state.Configuration.Personality,
 		OutputSchema: append(json.RawMessage(nil), session.state.Configuration.OutputSchema...),
 	}
 	materialized, err := session.services.LiveThread.Materialize(session.ctx, thread.CreateInput{
@@ -284,24 +311,24 @@ func (session *Session) startTurn(input string, compact bool) {
 	if materialized.MetadataWarning != nil {
 		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.Warning{Message: materialized.MetadataWarning.Error()}})
 	}
-	kind := task.KindRegular
+	constructor := session.services.TaskConstructors.Regular
 	if compact {
-		kind = task.KindCompact
+		constructor = session.services.TaskConstructors.Compact
 	}
-	prepared, err := session.services.TaskFactory.Prepare(session.ctx, session, task.PrepareRequest{Kind: kind, Input: input, Context: baseContext})
+	taskValue, turnValue, err := constructor(session.ctx, session, input, baseContext)
 	if err != nil {
 		session.rejectTurn(turnID, err, false)
 		return
 	}
-	if prepared.Task == nil {
-		session.rejectTurn(turnID, errors.New("task factory returned nil task"), false)
+	if taskValue == nil {
+		session.rejectTurn(turnID, errors.New("session task constructor returned nil task"), false)
 		return
 	}
-	turnContext := &prepared.Context
+	turnContext := &turnValue
 	abortPrepared := func() {
 		abortCtx, cancel := context.WithTimeout(context.WithoutCancel(session.ctx), 2*time.Second)
 		defer cancel()
-		_ = prepared.Task.Abort(abortCtx, session, turnContext)
+		_ = taskValue.Abort(abortCtx, session, turnContext)
 	}
 	contextItem, err := rollout.NewItem(rollout.KindTurnContext, turnContext)
 	if err != nil {
@@ -331,13 +358,13 @@ func (session *Session) startTurn(input string, compact bool) {
 		session.rejectTurn(turnID, err, true)
 		return
 	}
-	running, err := task.NewRunningTask(session.ctx, session, prepared.Task, turnContext, []task.Input{{Content: input}})
+	running, err := NewRunningTask(session.ctx, session, taskValue, turnContext, []TurnInput{{Content: input}})
 	if err != nil {
 		abortPrepared()
 		session.completeWithoutTask(turnID, err)
 		return
 	}
-	session.active = &ActiveTurn{State: &turn.State{StartedAt: now}, Task: running}
+	session.active = &ActiveTurn{State: &turn.TurnState{StartedAt: now}, Task: running, pending: make(map[string]chan protocol.Op)}
 	session.publishStatus(turnID, true)
 	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.TurnStarted{StartedAt: now}})
 	done := running.Start()
@@ -365,12 +392,18 @@ func (session *Session) rejectTurn(turnID turn.ID, err error, fatal bool) {
 	}
 }
 
-func (session *Session) finishTurn(completion task.Completion) {
+func (session *Session) finishTurn(completion Completion) {
 	if session.active == nil || session.active.Task.Context().TurnID != completion.TurnID {
 		return
 	}
-	session.active.State.Record(completion.Result.Usage, completion.Result.ToolCallCount)
 	completedItems := append([]rollout.Item(nil), completion.Result.Items...)
+	if completion.Result.Usage.TotalTokens > 0 {
+		if usageItem, usageErr := engine.UsageItem(completion.Result.Usage); usageErr == nil {
+			completedItems = append(completedItems, usageItem)
+		} else if completion.Error == nil {
+			completion.Error = usageErr
+		}
+	}
 	if len(completedItems) > 0 {
 		cleanupCtx, cancel := session.cleanupContext()
 		err := session.appendItemsDurable(cleanupCtx, completion.TurnID, completedItems...)
@@ -390,7 +423,8 @@ func (session *Session) finishTurn(completion task.Completion) {
 		cleanupCtx, cancel := session.cleanupContext()
 		persistErr := session.appendItemsDurable(cleanupCtx, completion.TurnID, terminal)
 		cancel()
-		session.active.State.MarkTerminal(persistErr)
+		session.active.State.MarkInterrupted(errors.Join(completion.Cause, persistErr))
+		session.clearPendingRequests()
 		session.active = nil
 		session.publishStatus(completion.TurnID, false)
 		if persistErr != nil {
@@ -404,18 +438,18 @@ func (session *Session) finishTurn(completion task.Completion) {
 	status := rollout.TurnStatusCompleted
 	outcome := completion.Result.Outcome
 	if !outcome.Valid() {
-		outcome = task.OutcomeCompleted
+		outcome = OutcomeCompleted
 	}
 	reason := strings.TrimSpace(completion.Result.Reason)
 	errorText := ""
 	if completion.Error != nil {
 		status = rollout.TurnStatusFailed
-		outcome = task.OutcomeFailed
+		outcome = OutcomeFailed
 		errorText = completion.Error.Error()
 		if reason == "" {
 			reason = errorText
 		}
-	} else if outcome == task.OutcomeFailed {
+	} else if outcome == OutcomeFailed {
 		status = rollout.TurnStatusFailed
 		errorText = reason
 		if errorText == "" {
@@ -431,6 +465,7 @@ func (session *Session) finishTurn(completion task.Completion) {
 		errorText = errors.Join(completion.Error, persistErr).Error()
 	}
 	session.active.State.MarkTerminal(errors.Join(completion.Error, persistErr))
+	session.clearPendingRequests()
 	session.active = nil
 	session.publishStatus(completion.TurnID, false)
 	if persistErr != nil {
@@ -442,7 +477,7 @@ func (session *Session) finishTurn(completion task.Completion) {
 }
 
 func (session *Session) completeWithoutTask(turnID turn.ID, taskErr error) {
-	terminal, _ := rollout.NewItem(rollout.KindTurnCompleted, rollout.TurnCompleted{Status: rollout.TurnStatusFailed, Outcome: task.OutcomeFailed, Reason: taskErr.Error(), Error: taskErr.Error()})
+	terminal, _ := rollout.NewItem(rollout.KindTurnCompleted, rollout.TurnCompleted{Status: rollout.TurnStatusFailed, Outcome: OutcomeFailed, Reason: taskErr.Error(), Error: taskErr.Error()})
 	cleanupCtx, cancel := session.cleanupContext()
 	persistErr := session.appendItemsDurable(cleanupCtx, turnID, terminal)
 	cancel()
@@ -451,7 +486,7 @@ func (session *Session) completeWithoutTask(turnID turn.ID, taskErr error) {
 		session.cancel(fmt.Errorf("persist rejected turn: %w", persistErr))
 		return
 	}
-	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.TurnCompleted{Status: rollout.TurnStatusFailed, Outcome: task.OutcomeFailed, Reason: taskErr.Error(), Error: taskErr.Error(), FinishedAt: session.services.Clock().UTC()}})
+	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.TurnCompleted{Status: rollout.TurnStatusFailed, Outcome: OutcomeFailed, Reason: taskErr.Error(), Error: taskErr.Error(), FinishedAt: session.services.Clock().UTC()}})
 }
 
 func (session *Session) cancelActive(cause error) {

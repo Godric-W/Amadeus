@@ -28,7 +28,7 @@ import (
 
 type ClientFactory func(string, config.ProviderConfig) (llm.Client, error)
 
-type RuntimeOptions struct {
+type ServicesOptions struct {
 	Config           config.Config
 	Project          project.Root
 	ClientFactory    ClientFactory
@@ -46,9 +46,9 @@ type RuntimeOptions struct {
 	BaseInstructions llm.BaseInstructions
 }
 
-// CodingRuntime owns capabilities whose lifetime is the Session. Turn-specific
-// state is captured by StepContext and never stored here.
-type CodingRuntime struct {
+// Services owns the capabilities shared by every Turn in one Session.
+// Turn-specific state is captured by StepContext and never stored here.
+type Services struct {
 	configured       config.Config
 	project          project.Root
 	providerName     string
@@ -57,7 +57,6 @@ type CodingRuntime struct {
 	baseInstructions llm.BaseInstructions
 	registry         *tool.Registry
 	toolService      *tool.ToolExecutionService
-	sampler          *ModelSampler
 	processes        *processdomain.Manager
 	extensions       *extensionruntime.Runtime
 	fileSystemPolicy *project.FileSystemPolicy
@@ -71,18 +70,18 @@ type CodingRuntime struct {
 	closeErr         error
 }
 
-func NewCodingRuntime(options RuntimeOptions) (*CodingRuntime, error) {
+func NewServices(options ServicesOptions) (*Services, error) {
 	if err := config.Validate(options.Config); err != nil {
-		return nil, fmt.Errorf("validate coding runtime configuration: %w", err)
+		return nil, fmt.Errorf("validate services configuration: %w", err)
 	}
 	if options.Project.Path() == "" || options.Events == nil || options.Approvals == nil || options.PlanUpdater == nil || options.Audit == nil {
-		return nil, errors.New("coding runtime composition is incomplete")
+		return nil, errors.New("services composition is incomplete")
 	}
 	if options.Extensions == nil || options.FileSystemPolicy == nil || options.Permissions == nil || options.Instructions == nil {
-		return nil, errors.New("coding runtime session services are incomplete")
+		return nil, errors.New("session services are incomplete")
 	}
 	if strings.TrimSpace(options.BaseInstructions.Text) == "" {
-		return nil, errors.New("coding runtime base instructions are empty")
+		return nil, errors.New("services base instructions are empty")
 	}
 	createClient := options.ClientFactory
 	if createClient == nil {
@@ -117,24 +116,47 @@ func NewCodingRuntime(options RuntimeOptions) (*CodingRuntime, error) {
 		processes.Close()
 		return nil, fmt.Errorf("create tool execution service: %w", err)
 	}
-	sampler, err := NewModelSampler(client)
-	if err != nil {
-		processes.Close()
-		return nil, err
-	}
-	return &CodingRuntime{
+	return &Services{
 		configured: options.Config, project: options.Project, providerName: providerName, provider: provider,
 		client: client, baseInstructions: options.BaseInstructions, registry: registry, toolService: toolService,
-		sampler: sampler, processes: processes, extensions: options.Extensions,
+		processes: processes, extensions: options.Extensions,
 		fileSystemPolicy: options.FileSystemPolicy, permissions: options.Permissions, instructions: options.Instructions,
 		visibility: visibility, skillWarnings: options.Extensions.SkillWarnings(), auditCloser: options.AuditCloser,
 		budget: DefaultTurnBudget(),
 	}, nil
 }
 
-func (runtime *CodingRuntime) ProviderName() string { return runtime.providerName }
+func (runtime *Services) ProviderName() string { return runtime.providerName }
 
-func (runtime *CodingRuntime) ModelInfo() llm.ModelInfo {
+func (runtime *Services) NewModelClientSession() (*ModelClientSession, error) {
+	if runtime == nil || runtime.client == nil {
+		return nil, errors.New("session model client is unavailable")
+	}
+	return NewModelClientSession(runtime.client)
+}
+
+func (runtime *Services) ModelTemperature() float64 {
+	if runtime == nil {
+		return 0
+	}
+	return runtime.provider.Temperature
+}
+
+func (runtime *Services) TurnBudget() TurnBudget {
+	if runtime == nil {
+		return TurnBudget{}
+	}
+	return runtime.budget
+}
+
+func (runtime *Services) ExecuteBatchScoped(ctx context.Context, calls []tool.ToolCall, recorder tool.NormalizedCallRecorder, scope tool.ExecutionScope) ([]tool.ToolExecution, error) {
+	if runtime == nil || runtime.toolService == nil {
+		return nil, errors.New("tool execution service is unavailable")
+	}
+	return runtime.toolService.ExecuteBatchScoped(ctx, calls, recorder, scope)
+}
+
+func (runtime *Services) ModelInfo() llm.ModelInfo {
 	if runtime == nil || runtime.client == nil {
 		return llm.ModelInfo{}
 	}
@@ -146,7 +168,7 @@ func (runtime *CodingRuntime) ModelInfo() llm.ModelInfo {
 	return model.Normalized()
 }
 
-func (runtime *CodingRuntime) AvailableTools() []tool.ToolSpec {
+func (runtime *Services) AvailableTools() []tool.ToolSpec {
 	if runtime == nil || runtime.registry == nil {
 		return nil
 	}
@@ -158,14 +180,65 @@ func (runtime *CodingRuntime) AvailableTools() []tool.ToolSpec {
 	return result
 }
 
-func (runtime *CodingRuntime) SkillIndex() []skill.IndexEntry {
+func (runtime *Services) SkillIndex() []skill.IndexEntry {
 	if runtime == nil || runtime.extensions == nil || runtime.extensions.Skills() == nil {
 		return nil
 	}
 	return runtime.extensions.Skills().Index()
 }
 
-func (runtime *CodingRuntime) RefreshMCP(ctx context.Context) []error {
+func (runtime *Services) PermissionGrantCount() int {
+	if runtime == nil || runtime.permissions == nil {
+		return 0
+	}
+	return runtime.permissions.GrantCount()
+}
+
+func (runtime *Services) SkillRevision() string {
+	if runtime == nil || runtime.extensions == nil {
+		return ""
+	}
+	return runtime.extensions.SkillRevision()
+}
+
+func (runtime *Services) MCPRevision() string {
+	if runtime == nil || runtime.extensions == nil {
+		return ""
+	}
+	return runtime.extensions.MCPRevision()
+}
+
+func (runtime *Services) Skills() []skill.IndexEntry { return runtime.SkillIndex() }
+
+func (runtime *Services) SetSkillEnabled(name string, enabled bool) error {
+	if runtime == nil || runtime.extensions == nil {
+		return errors.New("skill catalog is unavailable")
+	}
+	return runtime.extensions.SetSkillEnabled(name, enabled)
+}
+
+func (runtime *Services) MCPServers() []string {
+	if runtime == nil || runtime.extensions == nil || runtime.extensions.MCP() == nil {
+		return nil
+	}
+	return runtime.extensions.MCP().EnabledServers()
+}
+
+func (runtime *Services) MCPBindings() mcp.BindingSnapshot {
+	if runtime == nil || runtime.extensions == nil {
+		return mcp.BindingSnapshot{}
+	}
+	return runtime.extensions.MCPBinding()
+}
+
+func (runtime *Services) MCPTools(ctx context.Context, server string) ([]mcp.RemoteTool, error) {
+	if runtime == nil || runtime.extensions == nil || runtime.extensions.MCP() == nil {
+		return nil, errors.New("MCP manager is unavailable")
+	}
+	return runtime.extensions.MCP().ListTools(ctx, server)
+}
+
+func (runtime *Services) RefreshMCP(ctx context.Context) []error {
 	if runtime == nil || runtime.extensions == nil || runtime.extensions.MCP() == nil || runtime.registry == nil {
 		return nil
 	}
@@ -187,14 +260,14 @@ func (runtime *CodingRuntime) RefreshMCP(ctx context.Context) []error {
 	return warnings
 }
 
-func (runtime *CodingRuntime) SkillWarnings() []error {
+func (runtime *Services) SkillWarnings() []error {
 	if runtime == nil {
 		return nil
 	}
 	return append([]error(nil), runtime.skillWarnings...)
 }
 
-func (runtime *CodingRuntime) Close() error {
+func (runtime *Services) Close() error {
 	if runtime == nil {
 		return nil
 	}

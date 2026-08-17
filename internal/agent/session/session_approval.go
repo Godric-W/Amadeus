@@ -1,4 +1,4 @@
-package task
+package session
 
 import (
 	"context"
@@ -10,9 +10,9 @@ import (
 	"github.com/Godric-W/Amadeus/internal/policy"
 )
 
-type sessionApprovalPort struct{ requester eventRequestHost }
+type sessionApprovalPort struct{ requester *Session }
 
-func newSessionApprovalPort(requester eventRequestHost) (*sessionApprovalPort, error) {
+func newSessionApprovalPort(requester *Session) (*sessionApprovalPort, error) {
 	if requester == nil {
 		return nil, errors.New("session approval requester is nil")
 	}

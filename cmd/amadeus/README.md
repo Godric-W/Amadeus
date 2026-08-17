@@ -13,4 +13,4 @@ The command package is intentionally split by application responsibility:
 - `runtime_ids.go`: supplies runtime IDs and clock access.
 - `thread_store_factory.go`: command-level Session store factory.
 
-Provider adapters, Session-scoped CodingRuntime, TurnEngine, Context, Tools, Approval, persistence, and policy remain under `internal/`; this directory only composes and presents those capabilities.
+Provider adapters, Session-owned agent services, continuation execution, Context, Tools, Approval, persistence, and policy remain under `internal/`; this directory only composes and presents those capabilities.

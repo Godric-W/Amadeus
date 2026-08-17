@@ -1,4 +1,4 @@
-package task
+package session
 
 import (
 	"context"
@@ -6,22 +6,16 @@ import (
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
-	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
-type testHost struct{}
-
-func (testHost) AppendItems(context.Context, turn.ID, ...rollout.Item) error { return nil }
-func (testHost) History() []rollout.Line                                     { return nil }
-
 func TestRunningTaskReportsPanicAsCompletion(t *testing.T) {
-	turnContext := &turn.Context{
+	turnContext := &turn.TurnContext{
 		ThreadID: "thread-1", TurnID: "turn-1", Provider: "openai", Model: "gpt-test", CWD: "/workspace",
-		InitialPermissionMode: turn.PermissionModeDefault,
+		Mode: turn.ModeKindDefault,
 	}
-	running, err := NewRunningTask(context.Background(), testHost{}, FuncTask{
-		TaskKind: KindRegular,
-		RunFunc: func(context.Context, Host, *turn.Context, []Input) (Result, error) {
+	running, err := NewRunningTask(context.Background(), &Session{}, FuncTask{
+		TaskKind: TaskKindRegular,
+		RunFunc: func(context.Context, *Session, *turn.TurnContext, []TurnInput) (Result, error) {
 			panic("boom")
 		},
 	}, turnContext, nil)

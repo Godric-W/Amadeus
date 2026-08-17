@@ -4,16 +4,11 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
-
-type PromptSource interface {
-	Snapshot(llm.ModelInfo, llm.Prompt) agentcontext.PromptSnapshot
-}
 
 type StepInstructionScope interface {
 	tool.ContextScope
@@ -23,7 +18,7 @@ type StepInstructionScope interface {
 // StepContext is an immutable request snapshot. The prompt-visible tool specs
 // and the execution allow-list are derived together and must stay paired.
 type StepContext struct {
-	Turn             turn.Context
+	Turn             turn.TurnContext
 	Prompt           agentcontext.PromptSnapshot
 	Model            llm.ModelInfo
 	BaseInstructions llm.BaseInstructions
@@ -33,16 +28,14 @@ type StepContext struct {
 	SkillRevision    string
 	MCPRevision      string
 	RequestSnapshot  tool.RequestSnapshot
-	Events           protocol.EventSink
-	Instructions     StepInstructionScope
 }
 
-func (runtime *CodingRuntime) CaptureStep(source PromptSource, events protocol.EventSink, turnContext turn.Context, instructions StepInstructionScope) (StepContext, error) {
-	if runtime == nil || source == nil || events == nil || instructions == nil {
+func (runtime *Services) CaptureStep(snapshot func(llm.ModelInfo, llm.Prompt) agentcontext.PromptSnapshot, turnContext turn.TurnContext) (StepContext, error) {
+	if runtime == nil || snapshot == nil {
 		return StepContext{}, errors.New("step context capture is incomplete")
 	}
 	tools := runtime.AvailableTools()
-	if turnContext.InitialPermissionMode == turn.PermissionModePlan {
+	if turnContext.Mode == turn.ModeKindPlan {
 		tools = planModeTools(tools)
 	}
 	toolNames := make([]string, len(tools))
@@ -57,19 +50,17 @@ func (runtime *CodingRuntime) CaptureStep(source PromptSource, events protocol.E
 		ParallelToolCalls: model.SupportsParallelToolCalls,
 		OutputSchema:      append(llm.OutputSchema(nil), turnContext.OutputSchema...),
 	}
-	snapshot := source.Snapshot(model, promptShape)
+	promptSnapshot := snapshot(model, promptShape)
 	requestSnapshot := tool.RequestSnapshot{ToolRevision: runtime.registry.Revision()}
 	if runtime.extensions != nil {
 		requestSnapshot.SkillRevision = runtime.extensions.SkillRevision()
 		requestSnapshot.MCPBindingRevision = runtime.extensions.MCPBinding().Revision
 	}
-	instructions.MarkSampled()
 	return StepContext{
-		Turn: turnContext, Prompt: snapshot, Model: model, BaseInstructions: runtime.baseInstructions,
+		Turn: turnContext, Prompt: promptSnapshot, Model: model, BaseInstructions: runtime.baseInstructions,
 		Tools: cloneToolSpecs(tools), ToolNames: append([]string(nil), toolNames...),
 		ToolRevision: requestSnapshot.ToolRevision, SkillRevision: requestSnapshot.SkillRevision,
 		MCPRevision: requestSnapshot.MCPBindingRevision, RequestSnapshot: requestSnapshot,
-		Events: events, Instructions: instructions,
 	}, nil
 }
 

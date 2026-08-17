@@ -3,6 +3,7 @@ package architecture_test
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -24,6 +25,8 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 		"ToolConcurrencyShared", "ToolConcurrencyExclusive",
 		"codingTaskFactory", "codingTaskRequest", "taskFactories",
 		"executeCodingTurn", "executeCompactTurn", "executeReactorTurn",
+		"CodingFactory", "CodingRuntime", "PrepareRequest", "TaskFactory", "TaskBuilder", "ensureRuntime",
+		"TurnHost", "TaskHost", "PromptHost", "ContextHost", "RolloutHost", "ModelSampler", "RunRequest", "RunTurn",
 	}
 	for _, relative := range []string{"cmd", "internal"} {
 		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
@@ -62,7 +65,7 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 
 func TestSessionTaskDependencyDirection(t *testing.T) {
 	root := repositoryRoot(t)
-	taskRoot := filepath.Join(root, "internal", "agent", "task")
+	taskRoot := filepath.Join(root, "internal", "agent", "session")
 	forbidden := []string{
 		"cmd/amadeus", "internal/interface/tui", "internal/app/bootstrap",
 		"github.com/spf13/cobra", "cobra.Command", "tea.Model",
@@ -81,6 +84,11 @@ func TestSessionTaskDependencyDirection(t *testing.T) {
 		for _, dependency := range forbidden {
 			if strings.Contains(string(content), dependency) {
 				t.Errorf("SessionTask depends on interface/application detail %q in %s", dependency, filepath.ToSlash(path[len(root)+1:]))
+			}
+		}
+		for _, identifier := range []string{"RuntimeOptions", "Prepared"} {
+			if regexp.MustCompile(`\b` + identifier + `\b`).Match(content) {
+				t.Errorf("removed architecture symbol %q remains in %s", identifier, filepath.ToSlash(path[len(root)+1:]))
 			}
 		}
 		return nil
@@ -231,7 +239,7 @@ func TestPromptArchitectureKeepsAssetsInternalAndEngineDecoupled(t *testing.T) {
 
 func TestContextArchitectureHasOneCanonicalWriteAndProjectionChain(t *testing.T) {
 	root := repositoryRoot(t)
-	for _, relative := range []string{"internal/agent/engine", "internal/agent/task"} {
+	for _, relative := range []string{"internal/agent/engine"} {
 		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr

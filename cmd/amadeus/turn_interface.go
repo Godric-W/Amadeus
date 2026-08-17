@@ -49,11 +49,11 @@ func (runner *agentController) runOnce(ctx context.Context, invocation agentInvo
 		invocation.EventSink = renderer
 		invocation.Approvals = approvals
 	}
-	mode := turn.PermissionModeDefault
-	if invocation.RunMode == turn.PermissionModePlan {
-		mode = turn.PermissionModePlan
+	mode := turn.ModeKindDefault
+	if invocation.RunMode == turn.ModeKindPlan {
+		mode = turn.ModeKindPlan
 	}
-	if err := active.Submit(ctx, protocol.ThreadSettingsOp{PermissionMode: string(mode)}); err != nil {
+	if err := active.Submit(ctx, protocol.ThreadSettingsOp{Mode: string(mode)}); err != nil {
 		return err
 	}
 	if err := active.Submit(ctx, protocol.UserInputOp{Content: objective}); err != nil {

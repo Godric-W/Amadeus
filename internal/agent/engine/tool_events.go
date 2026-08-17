@@ -14,18 +14,14 @@ import (
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
-type RolloutHost interface {
-	AppendItems(context.Context, turn.ID, ...rollout.Item) error
-}
-
 type toolEventObserver struct {
-	host   RolloutHost
-	turnID turn.ID
-	events protocol.EventSink
+	appendItems func(context.Context, turn.ID, ...rollout.Item) error
+	turnID      turn.ID
+	events      protocol.EventSink
 }
 
-func newToolEventObserver(host RolloutHost, turnID turn.ID, events protocol.EventSink) tool.LifecycleObserver {
-	return &toolEventObserver{host: host, turnID: turnID, events: events}
+func NewToolEventObserver(appendItems func(context.Context, turn.ID, ...rollout.Item) error, turnID turn.ID, events protocol.EventSink) tool.LifecycleObserver {
+	return &toolEventObserver{appendItems: appendItems, turnID: turnID, events: events}
 }
 
 func (observer *toolEventObserver) ToolCallStarted(ctx context.Context, spec tool.ToolSpec, call tool.ToolCall) error {
@@ -37,7 +33,7 @@ func (observer *toolEventObserver) ToolCallStarted(ctx context.Context, spec too
 }
 
 func (observer *toolEventObserver) ToolCallCompleted(ctx context.Context, execution tool.ToolExecution) error {
-	if observer == nil || observer.host == nil || observer.events == nil {
+	if observer == nil || observer.appendItems == nil || observer.events == nil {
 		return errors.New("tool event observer is incomplete")
 	}
 	result := execution.Output.Clone()
@@ -70,7 +66,7 @@ func (observer *toolEventObserver) ToolCallCompleted(ctx context.Context, execut
 		return err
 	}
 	completionCtx := context.WithoutCancel(ctx)
-	if err := observer.host.AppendItems(completionCtx, observer.turnID, responseItem, completedItem); err != nil {
+	if err := observer.appendItems(completionCtx, observer.turnID, responseItem, completedItem); err != nil {
 		return fmt.Errorf("persist tool completion: %w", err)
 	}
 	return observer.events.Publish(completionCtx, protocol.SessionEvent{Message: protocol.ItemCompleted{Item: turnItem}})

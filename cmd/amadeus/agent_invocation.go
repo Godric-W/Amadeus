@@ -30,7 +30,7 @@ type agentInvocation struct {
 	Project        project.Root
 	WorkspaceRoots []string
 	Task           string
-	RunMode        turn.PermissionMode
+	RunMode        turn.ModeKind
 	SessionMode    sessionStartMode
 	SessionID      thread.ID
 	Interactive    bool

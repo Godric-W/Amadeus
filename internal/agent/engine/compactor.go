@@ -15,7 +15,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
-func (runtime *CodingRuntime) Compact(ctx context.Context, lines []rollout.Line) ([]rollout.Item, error) {
+func (runtime *Services) Compact(ctx context.Context, lines []rollout.Line) ([]rollout.Item, error) {
 	if runtime == nil || runtime.client == nil {
 		return nil, errors.New("compactor runtime is unavailable")
 	}

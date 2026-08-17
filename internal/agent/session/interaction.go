@@ -8,6 +8,16 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 )
 
+func (session *Session) clearPendingRequests() {
+	if session == nil || session.active == nil {
+		return
+	}
+	for requestID, result := range session.active.pending {
+		delete(session.active.pending, requestID)
+		result <- nil
+	}
+}
+
 func (session *Session) publish(event protocol.SessionEvent) {
 	_ = session.Publish(context.WithoutCancel(session.ctx), event)
 }

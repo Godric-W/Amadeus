@@ -7,7 +7,6 @@ import (
 	"time"
 
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
-	agenttask "github.com/Godric-W/Amadeus/internal/agent/task"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/app"
 	"github.com/Godric-W/Amadeus/internal/config"
@@ -65,25 +64,37 @@ func (runner *agentController) ensureWorkspace(ctx context.Context, invocation a
 	if lifecycleCtx == nil {
 		lifecycleCtx = ctx
 	}
+	newBuilder := func() (*agentsession.ServicesBuilder, error) {
+		auditFactory := runner.runtime.auditSinkFactory
+		if auditFactory == nil {
+			auditFactory = defaultAuditSinkFactory(runner.runtime.lookupEnv, os.UserHomeDir)
+		}
+		options := agentsession.ServicesOptions{
+			Config: configured, Project: invocation.Project, WorkspaceRoots: append([]string(nil), invocation.WorkspaceRoots...),
+			AmadeusRoot: runner.runtime.amadeusRoot, MCPClientFactory: runner.runtime.mcpClientFactory,
+			WebFetcher: runner.runtime.webFetcher, WebSearch: runner.runtime.webSearch,
+			AuditFactory: agentsession.AuditFactory(auditFactory), BaseInstructions: assets.Base, Clock: clock,
+		}
+		if runner.runtime.llmClientFactory != nil {
+			options.ClientFactory = func(providerName string, providerConfig config.ProviderConfig) (llm.Client, error) {
+				return runner.runtime.llmClientFactory(providerName, providerConfig)
+			}
+		}
+		return agentsession.NewServicesBuilder(options)
+	}
 	manager, err := threadmanager.New(lifecycleCtx, store, threadmanager.SharedServices{
 		Clock: clock, NextID: idFactory,
-		NewTaskFactory: func(thread.ID) (agenttask.Factory, error) {
-			auditFactory := runner.runtime.auditSinkFactory
-			if auditFactory == nil {
-				auditFactory = defaultAuditSinkFactory(runner.runtime.lookupEnv, os.UserHomeDir)
+		NewSessionSetup: func(id thread.ID) (agentsession.SessionSetup, error) {
+			builder, err := newBuilder()
+			if err != nil {
+				return agentsession.SessionSetup{}, err
 			}
-			options := agenttask.CodingFactoryOptions{
-				Config: configured, Project: invocation.Project, WorkspaceRoots: append([]string(nil), invocation.WorkspaceRoots...),
-				AmadeusRoot: runner.runtime.amadeusRoot, MCPClientFactory: runner.runtime.mcpClientFactory,
-				WebFetcher: runner.runtime.webFetcher, WebSearch: runner.runtime.webSearch,
-				AuditFactory: agenttask.AuditFactory(auditFactory), BaseInstructions: assets.Base, Clock: clock,
-			}
-			if runner.runtime.llmClientFactory != nil {
-				options.ClientFactory = func(providerName string, providerConfig config.ProviderConfig) (llm.Client, error) {
-					return runner.runtime.llmClientFactory(providerName, providerConfig)
-				}
-			}
-			return agenttask.NewCodingFactory(options)
+			return agentsession.SessionSetup{
+				TaskConstructors: agentsession.TaskConstructors{
+					Regular: builder.NewRegularTask, Compact: builder.NewCompactTask, Close: builder.Close,
+				},
+				BuildServices: builder.BuildServices,
+			}, nil
 		},
 	})
 	if err != nil {
@@ -110,13 +121,13 @@ func (runner *agentController) currentWorkspace() *app.ThreadWorkspace {
 
 func sessionConfiguration(configured config.Config, invocation agentInvocation) agentsession.Configuration {
 	provider := configured.Providers[configured.DefaultProvider]
-	mode := turn.PermissionModeDefault
+	mode := turn.ModeKindDefault
 	if invocation.RunMode == "plan" {
-		mode = turn.PermissionModePlan
+		mode = turn.ModeKindPlan
 	}
 	assets, _ := internalprompt.LoadAssets()
 	return agentsession.Configuration{
 		CWD: invocation.Project.Path(), Provider: configured.DefaultProvider, Model: provider.Model,
-		PermissionMode: mode, BaseInstructions: assets.Base,
+		Mode: mode, BaseInstructions: assets.Base,
 	}
 }

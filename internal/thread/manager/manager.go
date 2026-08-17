@@ -9,17 +9,16 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
-	"github.com/Godric-W/Amadeus/internal/agent/task"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/state"
 	"github.com/Godric-W/Amadeus/internal/thread"
 )
 
 type SharedServices struct {
-	DefaultTaskFactory task.Factory
-	NewTaskFactory     func(thread.ID) (task.Factory, error)
-	Clock              func() time.Time
-	NextID             func(string) string
+	DefaultSessionSetup agentsession.SessionSetup
+	NewSessionSetup     func(thread.ID) (agentsession.SessionSetup, error)
+	Clock               func() time.Time
+	NextID              func(string) string
 }
 
 type StartInput struct {
@@ -96,23 +95,27 @@ func (manager *ThreadManager) spawn(ctx context.Context, id thread.ID, live *thr
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	tasks := manager.services.DefaultTaskFactory
-	if manager.services.NewTaskFactory != nil {
+	setup := manager.services.DefaultSessionSetup
+	if manager.services.NewSessionSetup != nil {
 		var err error
-		tasks, err = manager.services.NewTaskFactory(id)
+		setup, err = manager.services.NewSessionSetup(id)
 		if err != nil {
 			_ = live.Shutdown(context.Background())
 			return nil, err
 		}
 	}
-	if tasks == nil {
+	if !setup.TaskConstructors.Valid() {
+		if setup.TaskConstructors.Close != nil {
+			_ = setup.TaskConstructors.Close()
+		}
 		_ = live.Shutdown(context.Background())
-		return nil, errors.New("thread task factory is unavailable")
+		return nil, errors.New("thread session task constructors are unavailable")
 	}
 	session, io, err := agentsession.Spawn(manager.ctx, agentsession.SpawnArgs{
 		ThreadID: id, History: history,
-		State:    agentsession.SessionState{Configuration: input.Configuration},
-		Services: agentsession.SessionServices{LiveThread: live, TaskFactory: tasks, Clock: manager.services.Clock, NextID: manager.services.NextID},
+		State:         agentsession.SessionState{Configuration: input.Configuration},
+		Services:      agentsession.SessionServices{LiveThread: live, TaskConstructors: setup.TaskConstructors, Clock: manager.services.Clock, NextID: manager.services.NextID},
+		BuildServices: setup.BuildServices,
 	})
 	if err != nil {
 		_ = live.Shutdown(context.Background())
@@ -245,11 +248,11 @@ func (threadRuntime *AmadeusThread) History() []rollout.Line {
 	return threadRuntime.session.History()
 }
 
-func (threadRuntime *AmadeusThread) Capabilities() (task.Capabilities, bool) {
+func (threadRuntime *AmadeusThread) CapabilityView() (agentsession.CapabilityView, bool) {
 	if threadRuntime == nil || threadRuntime.session == nil {
 		return nil, false
 	}
-	return threadRuntime.session.Capabilities()
+	return threadRuntime.session.CapabilityView()
 }
 
 func (threadRuntime *AmadeusThread) Submit(ctx context.Context, op protocol.Op) error {

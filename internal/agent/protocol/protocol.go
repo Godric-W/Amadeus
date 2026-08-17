@@ -49,7 +49,7 @@ type UserInputResponseOp struct {
 
 func (UserInputResponseOp) isOp() {}
 
-type ThreadSettingsOp struct{ PermissionMode string }
+type ThreadSettingsOp struct{ Mode string }
 
 func (ThreadSettingsOp) isOp() {}
 

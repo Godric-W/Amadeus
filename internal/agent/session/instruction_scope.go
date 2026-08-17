@@ -1,4 +1,4 @@
-package task
+package session
 
 import (
 	"context"
@@ -17,7 +17,8 @@ import (
 
 type targetInstructionScope struct {
 	mu              sync.Mutex
-	host            PromptHost
+	contextUpdate   func(agentcontext.UpdateKey) string
+	appendItems     func(context.Context, turn.ID, ...rollout.Item) error
 	resolver        *instruction.WorkspaceResolver
 	turnID          turn.ID
 	documents       map[string]instruction.InstructionDocument
@@ -25,10 +26,9 @@ type targetInstructionScope struct {
 	sampledRevision uint64
 }
 
-func newTargetInstructionScope(host Host, resolver *instruction.WorkspaceResolver, turnID turn.ID) (*targetInstructionScope, error) {
-	promptHost, ok := host.(PromptHost)
-	if !ok {
-		return nil, errors.New("instruction scope host does not expose prompt context")
+func newTargetInstructionScope(contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, turn.ID, ...rollout.Item) error, resolver *instruction.WorkspaceResolver, turnID turn.ID) (*targetInstructionScope, error) {
+	if contextUpdate == nil || appendItems == nil {
+		return nil, errors.New("instruction scope callbacks are incomplete")
 	}
 	if resolver == nil {
 		return nil, errors.New("instruction scope resolver is nil")
@@ -36,7 +36,7 @@ func newTargetInstructionScope(host Host, resolver *instruction.WorkspaceResolve
 	if turnID == "" {
 		return nil, errors.New("instruction scope turn ID is empty")
 	}
-	return &targetInstructionScope{host: promptHost, resolver: resolver, turnID: turnID, documents: make(map[string]instruction.InstructionDocument)}, nil
+	return &targetInstructionScope{contextUpdate: contextUpdate, appendItems: appendItems, resolver: resolver, turnID: turnID, documents: make(map[string]instruction.InstructionDocument)}, nil
 }
 
 func (scope *targetInstructionScope) Initialize(ctx context.Context, target string) (instruction.ResolveRequest, error) {
@@ -62,7 +62,7 @@ func (scope *targetInstructionScope) MarkSampled() {
 }
 
 func (scope *targetInstructionScope) resolve(ctx context.Context, target string, kind instruction.TargetKind, effect tool.SideEffect) (instruction.ResolveRequest, error) {
-	if scope == nil || scope.resolver == nil || scope.host == nil {
+	if scope == nil || scope.resolver == nil || scope.contextUpdate == nil || scope.appendItems == nil {
 		return instruction.ResolveRequest{}, errors.New("instruction scope is unavailable")
 	}
 	scope.mu.Lock()
@@ -84,7 +84,7 @@ func (scope *targetInstructionScope) resolve(ctx context.Context, target string,
 	}
 	if changed || scope.revision == 0 {
 		content := renderInstructionDocuments(scope.documents)
-		if scope.host.ContextUpdate(agentcontext.UpdateAgents) != content {
+		if scope.contextUpdate(agentcontext.UpdateAgents) != content {
 			item, itemErr := rollout.NewItem(rollout.KindContextUpdate, rollout.ContextUpdate{
 				Key: string(agentcontext.UpdateAgents), Content: content,
 				InstructionResolution: instructionResolutionFact(request, resolution),
@@ -92,7 +92,7 @@ func (scope *targetInstructionScope) resolve(ctx context.Context, target string,
 			if itemErr != nil {
 				return instruction.ResolveRequest{}, itemErr
 			}
-			if appendErr := scope.host.AppendItems(ctx, scope.turnID, item); appendErr != nil {
+			if appendErr := scope.appendItems(ctx, scope.turnID, item); appendErr != nil {
 				return instruction.ResolveRequest{}, fmt.Errorf("persist target instruction resolution: %w", appendErr)
 			}
 		}

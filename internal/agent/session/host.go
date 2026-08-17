@@ -8,13 +8,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/task"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/mcp"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/skill"
 	"github.com/Godric-W/Amadeus/internal/thread"
 )
 
@@ -92,12 +94,30 @@ func (session *Session) History() []rollout.Line {
 	return cloneLines(session.state.History)
 }
 
-func (session *Session) Capabilities() (task.Capabilities, bool) {
-	if session == nil {
+type CapabilityView interface {
+	PermissionGrantCount() int
+	SkillRevision() string
+	MCPRevision() string
+	Skills() []skill.IndexEntry
+	SetSkillEnabled(string, bool) error
+	MCPServers() []string
+	MCPBindings() mcp.BindingSnapshot
+	MCPTools(context.Context, string) ([]mcp.RemoteTool, error)
+}
+
+func (session *Session) CapabilityView() (CapabilityView, bool) {
+	services := session.AgentServices()
+	if services == nil {
 		return nil, false
 	}
-	capabilities, ok := session.services.TaskFactory.(task.Capabilities)
-	return capabilities, ok
+	return services, true
+}
+
+func (session *Session) AgentServices() *engine.Services {
+	if session == nil {
+		return nil
+	}
+	return session.services.AgentServices
 }
 
 func (session *Session) appendHistory(lines []rollout.Line) {

@@ -38,23 +38,23 @@ type SampleResult struct {
 	ToolCalls []tool.ToolCall
 }
 
-type ModelSampler struct {
+type ModelClientSession struct {
 	client llm.Client
 }
 
-func NewModelSampler(client llm.Client) (*ModelSampler, error) {
+func NewModelClientSession(client llm.Client) (*ModelClientSession, error) {
 	if client == nil {
-		return nil, errors.New("model sampler client is nil")
+		return nil, errors.New("model client is nil")
 	}
 	if strings.TrimSpace(client.Model().Name) == "" {
-		return nil, errors.New("model sampler model is empty")
+		return nil, errors.New("model client model is empty")
 	}
-	return &ModelSampler{client: client}, nil
+	return &ModelClientSession{client: client}, nil
 }
 
-func (sampler *ModelSampler) Sample(ctx context.Context, request SampleRequest) (SampleResult, error) {
-	if sampler == nil || sampler.client == nil {
-		return SampleResult{}, errors.New("model sampler is nil")
+func (session *ModelClientSession) Sample(ctx context.Context, request SampleRequest) (SampleResult, error) {
+	if session == nil || session.client == nil {
+		return SampleResult{}, errors.New("model client session is nil")
 	}
 	if strings.TrimSpace(request.ID) == "" || len(request.Messages) == 0 || strings.TrimSpace(request.BaseInstructions.Text) == "" {
 		return SampleResult{}, errors.New("model sample request is incomplete")
@@ -69,12 +69,12 @@ func (sampler *ModelSampler) Sample(ctx context.Context, request SampleRequest) 
 	for index, spec := range request.Tools {
 		definitions[index] = llm.ToolDefinition{Name: spec.Name, Description: spec.Description, InputSchema: append([]byte(nil), spec.InputSchema...)}
 	}
-	stream, err := sampler.client.Stream(ctx, llm.Request{
-		Model: sampler.client.Model().Name,
+	stream, err := session.client.Stream(ctx, llm.Request{
+		Model: session.client.Model().Name,
 		Prompt: llm.Prompt{
 			BaseInstructions: request.BaseInstructions,
 			Input:            request.Messages, Tools: definitions,
-			ParallelToolCalls: sampler.client.Model().SupportsParallelToolCalls,
+			ParallelToolCalls: session.client.Model().SupportsParallelToolCalls,
 			OutputSchema:      append(llm.OutputSchema(nil), request.OutputSchema...),
 		},
 		Temperature: request.Temperature, MaxOutputTokens: request.MaxOutputTokens, Reasoning: request.Reasoning,

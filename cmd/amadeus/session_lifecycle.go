@@ -60,7 +60,7 @@ func (runner *agentController) writeInteractiveStatus(ctx context.Context, invoc
 	permissionCount := 0
 	skillRevision := "unloaded"
 	mcpRevision := "unloaded"
-	if capabilities, ok := active.Capabilities(); ok {
+	if capabilities, ok := active.CapabilityView(); ok {
 		permissionCount = capabilities.PermissionGrantCount()
 		skillRevision = shortRevision(capabilities.SkillRevision())
 		mcpRevision = shortRevision(capabilities.MCPRevision())

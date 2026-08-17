@@ -8,7 +8,7 @@ import (
 	"sort"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/task"
+	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/tool/builtin"
 )
@@ -34,12 +34,12 @@ func (runner *agentController) compactInteractiveSession(ctx context.Context, in
 	return "Conversation compacted", nil
 }
 
-func (runner *agentController) currentCapabilities(ctx context.Context, invocation agentInvocation) (task.Capabilities, error) {
+func (runner *agentController) currentCapabilities(ctx context.Context, invocation agentInvocation) (agentsession.CapabilityView, error) {
 	active, _, err := runner.ensureActiveThread(ctx, invocation)
 	if err != nil {
 		return nil, err
 	}
-	capabilities, ok := active.Capabilities()
+	capabilities, ok := active.CapabilityView()
 	if !ok {
 		return nil, errors.New("active thread capabilities are unavailable")
 	}

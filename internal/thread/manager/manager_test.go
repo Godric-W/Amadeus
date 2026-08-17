@@ -12,7 +12,6 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/session"
-	"github.com/Godric-W/Amadeus/internal/agent/task"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/state"
@@ -45,20 +44,39 @@ type terminalModeFactory struct{ mode string }
 
 type abortTrackingFactory struct{ aborts *atomic.Int32 }
 
-func (factory testFactory) Prepare(_ context.Context, _ task.Host, request task.PrepareRequest) (task.Prepared, error) {
-	sessionTask := task.FuncTask{TaskKind: request.Kind, RunFunc: func(ctx context.Context, _ task.Host, _ *turn.Context, _ []task.Input) (task.Result, error) {
-		if factory.block {
-			<-ctx.Done()
-			return task.Result{}, ctx.Err()
-		}
-		item, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "done"})
-		return task.Result{Items: []rollout.Item{item}}, err
-	}}
-	return task.Prepared{Task: sessionTask, Context: request.Context}, nil
+type testTaskSource interface {
+	NewTask(context.Context, *session.Session, session.TaskKind, string, turn.TurnContext) (session.SessionTask, turn.TurnContext, error)
+	Close() error
 }
 
-func (factory concurrentHistoryFactory) Prepare(_ context.Context, _ task.Host, request task.PrepareRequest) (task.Prepared, error) {
-	sessionTask := task.FuncTask{TaskKind: request.Kind, RunFunc: func(ctx context.Context, host task.Host, turnContext *turn.Context, _ []task.Input) (task.Result, error) {
+func taskConstructors(source testTaskSource) session.TaskConstructors {
+	return session.TaskConstructors{
+		Regular: func(ctx context.Context, active *session.Session, input string, value turn.TurnContext) (session.SessionTask, turn.TurnContext, error) {
+			return source.NewTask(ctx, active, session.TaskKindRegular, input, value)
+		},
+		Compact: func(ctx context.Context, active *session.Session, input string, value turn.TurnContext) (session.SessionTask, turn.TurnContext, error) {
+			return source.NewTask(ctx, active, session.TaskKindCompact, input, value)
+		},
+		Close: source.Close,
+	}
+}
+
+func (factory testFactory) NewTask(_ context.Context, _ *session.Session, kind session.TaskKind, _ string, value turn.TurnContext) (session.SessionTask, turn.TurnContext, error) {
+	sessionTask := session.FuncTask{TaskKind: kind, RunFunc: func(ctx context.Context, _ *session.Session, _ *turn.TurnContext, _ []session.TurnInput) (session.Result, error) {
+		if factory.block {
+			<-ctx.Done()
+			return session.Result{}, ctx.Err()
+		}
+		item, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "done"})
+		return session.Result{Items: []rollout.Item{item}}, err
+	}}
+	return sessionTask, value, nil
+}
+
+func (testFactory) Close() error { return nil }
+
+func (factory concurrentHistoryFactory) NewTask(_ context.Context, active *session.Session, kind session.TaskKind, _ string, value turn.TurnContext) (session.SessionTask, turn.TurnContext, error) {
+	sessionTask := session.FuncTask{TaskKind: kind, RunFunc: func(ctx context.Context, host *session.Session, turnContext *turn.TurnContext, _ []session.TurnInput) (session.Result, error) {
 		var wait sync.WaitGroup
 		errorsChannel := make(chan error, 16)
 		for index := range 16 {
@@ -76,14 +94,17 @@ func (factory concurrentHistoryFactory) Prepare(_ context.Context, _ task.Host, 
 		close(errorsChannel)
 		for err := range errorsChannel {
 			if err != nil {
-				return task.Result{}, err
+				return session.Result{}, err
 			}
 		}
 		factory.observed <- len(host.History())
-		return task.Result{}, nil
+		return session.Result{}, nil
 	}}
-	return task.Prepared{Task: sessionTask, Context: request.Context}, nil
+	_ = active
+	return sessionTask, value, nil
 }
+
+func (concurrentHistoryFactory) Close() error { return nil }
 
 func (store terminalFailStore) AppendItems(ctx context.Context, id thread.ID, turnID thread.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
 	for _, item := range items {
@@ -107,33 +128,37 @@ func (store turnStartFailStore) AppendItems(ctx context.Context, id thread.ID, t
 	return store.ThreadStore.AppendItems(ctx, id, turnID, items...)
 }
 
-func (factory terminalModeFactory) Prepare(_ context.Context, _ task.Host, request task.PrepareRequest) (task.Prepared, error) {
-	value := task.FuncTask{TaskKind: request.Kind, RunFunc: func(context.Context, task.Host, *turn.Context, []task.Input) (task.Result, error) {
+func (factory terminalModeFactory) NewTask(_ context.Context, _ *session.Session, kind session.TaskKind, _ string, value turn.TurnContext) (session.SessionTask, turn.TurnContext, error) {
+	valueTask := session.FuncTask{TaskKind: kind, RunFunc: func(context.Context, *session.Session, *turn.TurnContext, []session.TurnInput) (session.Result, error) {
 		switch factory.mode {
 		case "failed":
-			return task.Result{Summary: "failed summary"}, errors.New("task failed")
+			return session.Result{Summary: "failed summary"}, errors.New("task failed")
 		case "panic":
 			panic("task panic")
 		default:
-			return task.Result{Summary: "completed summary"}, nil
+			return session.Result{Summary: "completed summary"}, nil
 		}
 	}}
-	return task.Prepared{Task: value, Context: request.Context}, nil
+	return valueTask, value, nil
 }
 
-func (factory abortTrackingFactory) Prepare(_ context.Context, _ task.Host, request task.PrepareRequest) (task.Prepared, error) {
-	value := task.FuncTask{
-		TaskKind: request.Kind,
-		RunFunc: func(context.Context, task.Host, *turn.Context, []task.Input) (task.Result, error) {
-			return task.Result{}, errors.New("task must not run")
+func (terminalModeFactory) Close() error { return nil }
+
+func (factory abortTrackingFactory) NewTask(_ context.Context, _ *session.Session, kind session.TaskKind, _ string, value turn.TurnContext) (session.SessionTask, turn.TurnContext, error) {
+	taskValue := session.FuncTask{
+		TaskKind: kind,
+		RunFunc: func(context.Context, *session.Session, *turn.TurnContext, []session.TurnInput) (session.Result, error) {
+			return session.Result{}, errors.New("task must not run")
 		},
-		AbortFunc: func(context.Context, task.Host, *turn.Context) error {
+		AbortFunc: func(context.Context, *session.Session, *turn.TurnContext) error {
 			factory.aborts.Add(1)
 			return nil
 		},
 	}
-	return task.Prepared{Task: value, Context: request.Context}, nil
+	return taskValue, value, nil
 }
+
+func (abortTrackingFactory) Close() error { return nil }
 
 func TestThreadManagerMaterializesOnFirstInput(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -450,7 +475,7 @@ func TestResumeRecoversIncompleteToolCall(t *testing.T) {
 	}
 }
 
-func newTestManager(t *testing.T, ctx context.Context, factory task.Factory) (*ThreadManager, thread.ThreadStore) {
+func newTestManager(t *testing.T, ctx context.Context, factory testTaskSource) (*ThreadManager, thread.ThreadStore) {
 	t.Helper()
 	home := t.TempDir()
 	database, err := statesqlite.Open(ctx, home)
@@ -467,7 +492,7 @@ func newTestManager(t *testing.T, ctx context.Context, factory task.Factory) (*T
 	}
 	var sequence atomic.Uint64
 	manager, err := New(ctx, localStore, SharedServices{
-		DefaultTaskFactory: factory,
+		DefaultSessionSetup: session.SessionSetup{TaskConstructors: taskConstructors(factory)},
 		NextID: func(prefix string) string {
 			return prefix + "-" + time.Unix(0, int64(sequence.Add(1))).UTC().Format("150405.000000000")
 		},
@@ -482,16 +507,16 @@ func testConfiguration(t *testing.T) session.Configuration {
 	t.Helper()
 	return session.Configuration{
 		CWD: filepath.Clean(t.TempDir()), Provider: "openai", Model: "gpt-test",
-		PermissionMode: turn.PermissionModeDefault,
+		Mode: turn.ModeKindDefault,
 	}
 }
 
-func testTurnContext(t *testing.T, threadID rollout.ThreadID, turnID rollout.TurnID) turn.Context {
+func testTurnContext(t *testing.T, threadID rollout.ThreadID, turnID rollout.TurnID) turn.TurnContext {
 	t.Helper()
 	configuration := testConfiguration(t)
-	return turn.Context{
+	return turn.TurnContext{
 		ThreadID: threadID, TurnID: turnID, Provider: configuration.Provider, Model: configuration.Model,
-		CWD: configuration.CWD, InitialPermissionMode: turn.PermissionModeDefault,
+		CWD: configuration.CWD, Mode: turn.ModeKindDefault,
 	}
 }
 

@@ -13,23 +13,18 @@ import (
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
-type ContextHost interface {
-	TurnHost
-	ContextUpdate(agentcontext.UpdateKey) string
-}
-
 type InstructionScope interface {
 	StepInstructionScope
 	Initialize(context.Context, string) (instruction.ResolveRequest, error)
 }
 
-func (runtime *CodingRuntime) PrepareTurn(ctx context.Context, goal string, host ContextHost, turnContext *turn.Context, scope InstructionScope) error {
-	if runtime == nil || host == nil || turnContext == nil || scope == nil {
+func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnContext *turn.TurnContext, scope InstructionScope, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, turn.ID, ...rollout.Item) error) error {
+	if runtime == nil || turnContext == nil || scope == nil || contextUpdate == nil || appendItems == nil {
 		return fmt.Errorf("turn context preparation is incomplete")
 	}
 	tools := runtime.AvailableTools()
 	mode := "execute"
-	if turnContext.InitialPermissionMode == turn.PermissionModePlan {
+	if turnContext.Mode == turn.ModeKindPlan {
 		mode = "plan"
 		tools = planModeTools(tools)
 	}
@@ -44,7 +39,7 @@ func (runtime *CodingRuntime) PrepareTurn(ctx context.Context, goal string, host
 	contextItems := make([]rollout.Item, 0, 6)
 	setUpdate := func(key agentcontext.UpdateKey, content string) error {
 		content = strings.TrimSpace(content)
-		if host.ContextUpdate(key) == content {
+		if contextUpdate(key) == content {
 			return nil
 		}
 		item, err := rollout.NewItem(rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(key), Content: content})
@@ -116,7 +111,7 @@ func (runtime *CodingRuntime) PrepareTurn(ctx context.Context, goal string, host
 		return err
 	}
 	if len(contextItems) > 0 {
-		if err := host.AppendItems(ctx, turnContext.TurnID, contextItems...); err != nil {
+		if err := appendItems(ctx, turnContext.TurnID, contextItems...); err != nil {
 			return fmt.Errorf("persist dynamic context updates: %w", err)
 		}
 	}

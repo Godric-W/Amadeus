@@ -9,23 +9,24 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
-	"github.com/Godric-W/Amadeus/internal/agent/task"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	statesqlite "github.com/Godric-W/Amadeus/internal/state/sqlite"
 	"github.com/Godric-W/Amadeus/internal/thread/local"
 	threadmanager "github.com/Godric-W/Amadeus/internal/thread/manager"
 )
 
-type workspaceTaskFactory struct{}
+type workspaceTaskSource struct{}
 
-func (workspaceTaskFactory) Prepare(_ context.Context, _ task.Host, request task.PrepareRequest) (task.Prepared, error) {
-	return task.Prepared{Task: task.FuncTask{
-		TaskKind: request.Kind,
-		RunFunc: func(context.Context, task.Host, *turn.Context, []task.Input) (task.Result, error) {
-			return task.Result{Summary: "completed"}, nil
+func (workspaceTaskSource) NewTask(_ context.Context, _ *agentsession.Session, kind agentsession.TaskKind, _ string, value turn.TurnContext) (agentsession.SessionTask, turn.TurnContext, error) {
+	return agentsession.FuncTask{
+		TaskKind: kind,
+		RunFunc: func(context.Context, *agentsession.Session, *turn.TurnContext, []agentsession.TurnInput) (agentsession.Result, error) {
+			return agentsession.Result{Summary: "completed"}, nil
 		},
-	}, Context: request.Context}, nil
+	}, value, nil
 }
+
+func (workspaceTaskSource) Close() error { return nil }
 
 func TestThreadWorkspaceOwnsCurrentThreadLifecycle(t *testing.T) {
 	ctx := context.Background()
@@ -44,7 +45,15 @@ func TestThreadWorkspaceOwnsCurrentThreadLifecycle(t *testing.T) {
 	}
 	var sequence atomic.Uint64
 	manager, err := threadmanager.New(ctx, threadStore, threadmanager.SharedServices{
-		DefaultTaskFactory: workspaceTaskFactory{},
+		DefaultSessionSetup: agentsession.SessionSetup{TaskConstructors: agentsession.TaskConstructors{
+			Regular: func(ctx context.Context, active *agentsession.Session, input string, value turn.TurnContext) (agentsession.SessionTask, turn.TurnContext, error) {
+				return workspaceTaskSource{}.NewTask(ctx, active, agentsession.TaskKindRegular, input, value)
+			},
+			Compact: func(ctx context.Context, active *agentsession.Session, input string, value turn.TurnContext) (agentsession.SessionTask, turn.TurnContext, error) {
+				return workspaceTaskSource{}.NewTask(ctx, active, agentsession.TaskKindCompact, input, value)
+			},
+			Close: workspaceTaskSource{}.Close,
+		}},
 		NextID: func(prefix string) string {
 			return prefix + "-" + time.Unix(0, int64(sequence.Add(1))).UTC().Format("150405.000000000")
 		},
@@ -59,7 +68,7 @@ func TestThreadWorkspaceOwnsCurrentThreadLifecycle(t *testing.T) {
 	defer workspace.Close(context.Background())
 	configuration := agentsession.Configuration{
 		CWD: filepath.Clean(t.TempDir()), Provider: "mock", Model: "model",
-		PermissionMode: turn.PermissionModeDefault,
+		Mode: turn.ModeKindDefault,
 	}
 	current, err := workspace.EnsureCurrent(ctx, configuration)
 	if err != nil {
