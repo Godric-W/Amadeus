@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -68,11 +69,7 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent protoc
 		if typed.Item.ToolName == "update_plan" {
 			return nil
 		}
-		state := "completed"
-		if typed.Item.Status != protocol.ItemStatusCompleted {
-			state = string(typed.Item.Status)
-		}
-		return renderer.statusLine("tool %s: %s: %s", state, typed.Item.ToolName, typed.Item.Text)
+		return renderer.toolBlock(typed.Item, true)
 	case protocol.PlanUpdated:
 		renderer.phase = "planning"
 		if typed.Revision > 1 {
@@ -85,7 +82,7 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent protoc
 		}
 		renderer.phase = "executing"
 		renderer.toolCalls++
-		return renderer.statusLine("tool started: %s", typed.Item.ToolName)
+		return renderer.toolBlock(typed.Item, false)
 	case protocol.TurnStarted:
 		renderer.phase = "starting"
 		return renderer.statusLine("turn started")
@@ -123,12 +120,29 @@ func (renderer *InlineRenderer) planBlock(plan protocol.PlanUpdated) error {
 	if err := renderer.finishText(); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(renderer.status, "plan %d:\n", plan.Revision); err != nil {
-		return fmt.Errorf("write inline plan heading: %w", err)
+	for _, line := range rawStyledLines(NewPlanUpdateCell(plan).DisplayLines(rawToolContext())) {
+		if _, err := fmt.Fprintln(renderer.status, sanitizeInlineEventText(line)); err != nil {
+			return fmt.Errorf("write inline plan line: %w", err)
+		}
 	}
-	for index, item := range plan.Items {
-		if _, err := fmt.Fprintf(renderer.status, "  plan-%d [%s]: %s\n", index+1, sanitizeInlineEventText(item.Status), sanitizeInlineEventText(item.Step)); err != nil {
-			return fmt.Errorf("write inline plan task: %w", err)
+	return renderer.writeStatusBar()
+}
+
+func (renderer *InlineRenderer) toolBlock(item protocol.TurnItem, completed bool) error {
+	if err := renderer.finishText(); err != nil {
+		return err
+	}
+	cell := newToolHistoryCell()
+	started := item
+	started.Status = protocol.ItemInProgress
+	started.CompletedAt = time.Time{}
+	cell.Apply(protocol.ItemStarted{Item: started})
+	if completed {
+		cell.Apply(protocol.ItemCompleted{Item: item})
+	}
+	for _, line := range cell.RawLines() {
+		if _, err := fmt.Fprintln(renderer.status, sanitizeInlineEventText(line)); err != nil {
+			return fmt.Errorf("write inline tool line: %w", err)
 		}
 	}
 	return renderer.writeStatusBar()

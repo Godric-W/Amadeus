@@ -29,7 +29,13 @@ func toolCompletedMessage(started protocol.ItemStarted, status protocol.ItemStat
 	item.Status = status
 	item.CompletedAt = now
 	item.Text = text
-	item.Payload = map[string]any{"duration": duration, "partial": partial}
+	payload := map[string]any{"duration": duration, "partial": partial}
+	if startedPayload, ok := started.Item.Payload.(map[string]any); ok {
+		for key, value := range startedPayload {
+			payload[key] = value
+		}
+	}
+	item.Payload = payload
 	return protocol.ItemCompleted{Item: item}
 }
 
@@ -44,10 +50,10 @@ func TestToolHistoryCellGroupsExplorationAndDeduplicatesReads(t *testing.T) {
 		cell.Apply(toolCompletedMessage(started, protocol.ItemStatusCompleted, "", "0s", false))
 	}
 	rendered := xansi.Strip(renderHistoryCellForTest(cell, noColorRenderContext()))
-	if !strings.Contains(rendered, "Explored") || strings.Count(rendered, "docs/design.md") != 1 || !strings.Contains(rendered, "Search M9V") {
+	if !strings.Contains(rendered, "Explored") || strings.Count(rendered, "docs/design.md") != 1 || !strings.Contains(rendered, "Grep M9V") {
 		t.Fatalf("unexpected explore projection: %q", rendered)
 	}
-	if strings.Count(rendered, "└") != 1 || !strings.Contains(rendered, "\n    Search M9V") {
+	if strings.Count(rendered, "└") != 1 || !strings.Contains(rendered, "\n    Grep M9V") {
 		t.Fatalf("explore tree should use one branch marker: %q", rendered)
 	}
 }
@@ -96,17 +102,5 @@ func TestExecCellPreservesYouRanSemantic(t *testing.T) {
 	cell.Apply(toolCompletedMessage(started, protocol.ItemStatusCompleted, "", "0s", false))
 	if rendered := xansi.Strip(renderHistoryCellForTest(cell, noColorRenderContext())); !strings.Contains(rendered, "You ran") {
 		t.Fatalf("user command semantic missing: %q", rendered)
-	}
-}
-
-func TestActivityKindUsesSafeSideEffectFallback(t *testing.T) {
-	if got := activityKindFromSideEffect("network"); got != activityNetwork {
-		t.Fatalf("network kind = %q", got)
-	}
-	if got := activityKindFromSideEffect("write"); got != activityRun {
-		t.Fatalf("write kind = %q", got)
-	}
-	if got := activityKindFromSideEffect("unknown"); got != activityRun {
-		t.Fatalf("unknown kind = %q", got)
 	}
 }

@@ -28,6 +28,9 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case fullscreenApprovalMsg:
 		model.approval = message.prompt
 		model.approvalDialog = newApprovalDialog(message.prompt.request)
+		if cell, ok := model.transcript.ActiveCell.(*ToolHistoryCell); ok && cell.SetApprovalState(message.prompt.request.ID, true) {
+			model.transcript.bumpActiveCellRevision()
+		}
 		model.status = "awaiting approval"
 		model.input.Blur()
 		return model, nil

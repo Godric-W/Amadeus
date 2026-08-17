@@ -16,6 +16,8 @@ func TestPresentCallUsesStableSafeSummaries(t *testing.T) {
 	}{
 		{name: "read", spec: ToolSpec{Name: "read", SideEffect: SideEffectRead}, input: `{"path":"docs/design.md"}`, want: "Read docs/design.md"},
 		{name: "search", spec: ToolSpec{Name: "grep", SideEffect: SideEffectRead}, input: `{"query":"Plan.*Run","path":"internal"}`, want: "Search Plan.*Run in internal"},
+		{name: "write", spec: ToolSpec{Name: "write", SideEffect: SideEffectWrite}, input: `{"path":"internal/new.go","content":"package internal"}`, want: "Create internal/new.go"},
+		{name: "edit", spec: ToolSpec{Name: "edit", SideEffect: SideEffectWrite}, input: `{"path":"internal/new.go","old_string":"old","new_string":"new"}`, want: "Update internal/new.go"},
 		{name: "command", spec: ToolSpec{Name: "execute_command", SideEffect: SideEffectExecute}, input: `{"command":"curl -H 'Authorization: Bearer secret' example.test"}`, want: "Ran curl -H 'Authorization: [REDACTED] [REDACTED] example.test"},
 		{name: "web", spec: ToolSpec{Name: "web_fetch", SideEffect: SideEffectNetwork}, input: `{"url":"https://example.test/private?q=secret"}`, want: "Fetched example.test"},
 		{name: "mcp call", spec: ToolSpec{Name: "mcp_call", SideEffect: SideEffectNetwork}, input: `{"server":"demo","name":"echo","arguments":{"api_key":"secret"}}`, want: "Called MCP tool", detail: "demo · echo"},

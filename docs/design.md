@@ -2049,6 +2049,65 @@ Approval Dialog
 
 Approval 与模型主动询问用户通过 `InteractiveRequest` 进入 TUI，不作为普通 `SessionEvent`。TUI 将选择结果返回 Session；Session 由 ApprovalCoordinator 应用内存 grant，Tool 的 Completed Item 记录最终 completed/declined/failed/stale 状态。
 
+### 19.5 Tool Projection 与展示 Contract
+
+TUI 的 Tool 展示必须同时吸收 Codex 的 HistoryCell/树状 activity 表现和 Claude Code 的 Tool-specific UI projection。TUI 不根据模型生成的自然语言标题、`action_summary` 或 Tool Result 文本反推工具身份；`TurnItem.ToolName` 是唯一的工具身份来源，结构化 `ToolDisplayResult` 是结果展示来源。
+
+Tool 展示遵循以下链路：
+
+```text
+TurnItem.ToolName + typed payload
+→ ToolDisplaySpec
+→ ActiveToolCell / HistoryCell
+→ Rich / Raw Renderer
+```
+
+`ToolDisplaySpec` 至少表达：
+
+```go
+type ToolDisplaySpec struct {
+    ToolName       string
+    UserFacingName string
+    Category       ToolDisplayCategory
+    Summary        string
+    Detail         string
+    ResultSummary  string
+    Status         ToolDisplayStatus
+    Metadata       map[string]any
+}
+```
+
+具体的 `Diff`、文件变更统计、进程输出和媒体数据继续通过 `ToolDisplayResult` 的 typed 数据承载，不在 TUI 中从文本重新解析。`apply_patch` 是遗留代码，不注册、不暴露给模型，也不进入本展示 Contract。
+
+首批内置 Tool 的展示规则如下：
+
+- `read`、`grep`、`glob` 等只读探索 Tool 统一进入 Codex 风格的 `Exploring`/`Explored` 树中，但每个叶节点必须显示真实 Tool 名和必要参数；不得把未知探索 Tool 默认显示为 `Read`。
+- `execute_command` 统一进入 Codex 风格的 `Running`/`Ran` 树中，摘要包含命令，结果包含截断后的 stdout/stderr、退出状态和错误状态；不得把命令执行伪装成文件修改。
+- `update_plan` 直接沿用 Codex 的 Plan/PlanUpdated 展示逻辑，作为 `PlanCell`/`PlanUpdated` 展示，不进入 `Explored`、`Ran` 或普通 `ToolHistoryCell`。
+- `write` 使用 Claude Code 风格的 `Write`/`Create` 展示目标路径和必要的行数/大小摘要；覆盖已有文件时沿用结构化 Diff 和 Approval 展示。
+- `edit` 使用 Claude Code 风格的 `Edit`/`Update` 展示目标路径和变更统计；完成态可以提供可进入 Detail View 的结构化 Diff。
+- `web_search` 使用搜索专用摘要，显示查询和结果统计，不并入本地探索树。
+- 未知或扩展 Tool 使用真实 Tool 名和安全的通用摘要，不能因为缺少专用 renderer 而丢失 Tool 身份。
+
+每个 Tool 的 renderer 应分别覆盖调用摘要、运行中状态、等待 Approval、完成结果、失败结果和拒绝结果，职责对应 Claude Code 的 `renderToolUseMessage`、progress、result 和 error projection。主 transcript 保持摘要，长结果和结构化 Diff 进入 Detail View。
+
+工具状态至少区分：`queued`、`running`、`waiting_for_approval`、`completed`、`failed`、`denied` 和 `partial`。等待 Approval 时，对应 Tool 行和 Approval Dialog 都必须可见；Approval 完成后，Completed Item 保留 approved/denied 的最终事实。
+
+目标展示示例：
+
+```text
+• Explored
+  ├─ Read internal/agent/session/session.go
+  ├─ Grep "Approval" internal/policy
+  └─ Glob internal/**/*.go
+
+• Ran go test ./...
+  └ ok
+
+• Updated internal/policy/presentation.go
+  └ +8 -2 lines
+```
+
 ## 20. Session、Resume 与中断
 
 ### 20.1 Thread 创建与持久化物化
@@ -2515,6 +2574,13 @@ Runtime 正确性不能依赖 TUI 消费速度：
 - Working 只由 TurnStarted/TurnCompleted/TurnAborted 控制。
 - Bubble Tea Task 返回不作为第二套 Turn 终态。
 - Terminal 无颜色和窄宽度降级。
+- Tool 展示使用真实 `TurnItem.ToolName`，不从 `action_summary` 或自然语言标题猜测工具身份。
+- `read`、`grep`、`glob` 的探索树叶节点显示对应 Tool 名和必要参数；`execute_command` 显示 Codex 风格的 `Running`/`Ran` 与命令结果。
+- `update_plan` 使用 Codex 风格的 Plan/PlanUpdated 展示，不进入普通 ToolHistoryCell。
+- `write`、`edit` 分别使用 Claude Code 风格展示目标路径、操作名称、变更统计和结构化 Diff 入口，不归入通用 `Ran`。
+- Tool 行覆盖 queued、running、waiting approval、completed、failed、denied 和 partial 状态。
+- Rich/Raw、Live/Replay 对相同 Completed Tool Item 生成一致的 Tool-specific HistoryCell。
+- `apply_patch` 不出现在 Tool Catalog、Event、Rollout 或 TUI 主链；仅保留遗留实现代码。
 
 ### 27.6 Provider
 

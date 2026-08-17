@@ -2,8 +2,8 @@
 
 > 最近更新：2026-08-17
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：G. Runtime Architecture Convergence
-> 下一任务：H-01 MCP
+> 当前阶段：H. Extensions + Release
+> 下一任务：H-02 MCP
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
@@ -463,13 +463,14 @@ G 不重写已经稳定的 Tool、Approval、Diff、MCP、Skill 或 Web 行为�
 - [x] Default/Plan、ApprovalPolicy、PermissionProfile 与 SessionPermissionContext 不再混用同一个 PermissionMode。
 - [x] regular、compact、plan、interrupt、approval、resume 与连续 Turn 通过同一 Session 主链端到端运行。
 
-## 10. H. Extensions + Release — `TODO`
+## 10. H. Extensions + Release — `DOING`
 
-- `H-01 MCP`：按当前 ToolDefinition、Approval 和 Event Contract 接入 MCP 工具。
-- `H-02 Skill`：实现 Skill 发现、说明、调用和脚本执行边界。
-- `H-03 Web`：完善可配置 Web Search Provider、超时、重试和结果归一化。
-- `H-04 Release Cleanup`：清理 Extensions 与发布阶段产生的临时适配代码；A/B/F/G 的旧 Runtime、Persistence、Context 和 Agent Engine 过渡主链必须在对应 Closure 内删除，不推迟到 H。
-- `H-05 Release Validation`：跨平台构建、端到端测试、文档同步和发布验收。
+- `H-01 TUI Tool Projection Convergence`：`DONE`。按 Codex HistoryCell/树状 activity 和 Claude Code Tool-specific UI projection 收敛工具展示。以真实 `TurnItem.ToolName` 为身份来源：`read`/`grep`/`glob` 进入 Codex 风格 `Exploring`/`Explored` 树，`execute_command` 进入 Codex 风格 `Running`/`Ran` 树，`update_plan` 直接沿用 Codex Plan/PlanUpdated 展示，`write`/`edit` 使用 Claude Code 风格独立展示。已覆盖 Tool 状态生命周期、结构化 ToolDisplayResult/文件变更摘要、Approval waiting/denied 展示、Rich/Raw、Inline、Live/Replay 一致性测试；`apply_patch` 明确排除在默认 Tool Catalog、Event、Rollout 和 TUI 主链之外，仅保留遗留代码。受影响包测试、race、vet、build、architecture guard 和 `git diff --check` 通过；全量测试中仍有既有 `internal/thread/manager` 环境时序超时，相关代码未修改。
+- `H-02 MCP`：按当前 ToolDefinition、Approval 和 Event Contract 接入 MCP 工具，并复用通用 Tool Display Contract。
+- `H-03 Skill`：实现 Skill 发现、说明、调用和脚本执行边界，并提供稳定的 Tool/Approval/TUI 摘要。
+- `H-04 Web`：完善可配置 Web Search Provider、超时、重试和结果归一化，并完成搜索 Tool 的 TUI 结果展示。
+- `H-05 Release Cleanup`：清理 Extensions 与发布阶段产生的临时适配代码；A/B/F/G 的旧 Runtime、Persistence、Context 和 Agent Engine 过渡主链必须在对应 Closure 内删除，不推迟到 H。
+- `H-06 Release Validation`：跨平台构建、端到端测试、文档同步和发布验收。
 
 ## 11. 当前保留能力
 

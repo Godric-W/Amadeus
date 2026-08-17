@@ -129,7 +129,7 @@ func TestCodingAgentExposesAndExecutesUpdatePlan(t *testing.T) {
 	if prompt := requestPromptText(client.requests[0]); !strings.Contains(prompt, "## `update_plan`") || !strings.Contains(prompt, "multiple files or components") {
 		t.Fatalf("execute request omitted plan guidance: %s", prompt)
 	}
-	if output := stderr.String(); !strings.Contains(output, "plan 1:") || !strings.Contains(output, "plan-1 [in_progress]: Inspect implementation") || strings.Contains(output, "tool started: update_plan") {
+	if output := stderr.String(); !strings.Contains(output, "Updated Plan") || !strings.Contains(output, "Inspect implementation") || strings.Contains(output, "Running update_plan") {
 		t.Fatalf("update_plan was not rendered as a dedicated plan update: %q", output)
 	}
 	if !requestContainsToolOutput(client.requests[1], "plan-1") {
@@ -205,7 +205,7 @@ func TestCodingAgentCommandReadsFixesTestsAndCompletes(t *testing.T) {
 	if stdout.String() != "fixed Add and verified go test\n" {
 		t.Fatalf("unexpected workflow stdout: %q", stdout.String())
 	}
-	for _, fragment := range []string{"tool started: read", "tool started: edit", "tool started: execute_command", "result: completed"} {
+	for _, fragment := range []string{"Exploring", "Read calc.go", "Updating calc.go", "Running go test ./...", "result: completed"} {
 		if !strings.Contains(stderr.String(), fragment) {
 			t.Fatalf("workflow stderr missing %q: %s", fragment, stderr.String())
 		}
@@ -384,7 +384,7 @@ func TestCodingAgentSkillWorkflowUsesProjectOverrideAndNextRequestContext(t *tes
 	if !requestContains(second, "PROJECT-SKILL-BODY") || requestContains(second, "USER-SKILL-BODY") {
 		t.Fatalf("second request did not contain the project Skill body: %#v", second.Prompt.Input)
 	}
-	if strings.Count(stderr.String(), "tool started: read_skill") != 2 {
+	if strings.Count(stderr.String(), "Running read_skill") != 2 {
 		t.Fatalf("Skill tools did not execute: %s", stderr.String())
 	}
 }

@@ -12,6 +12,11 @@ func (model fullscreenModel) resolveApproval(decision policy.ApprovalDecision) (
 	prompt := model.approval
 	model.approval = nil
 	model.approvalDialog = nil
+	if prompt != nil {
+		if cell, ok := model.transcript.ActiveCell.(*ToolHistoryCell); ok && cell.SetApprovalState(prompt.request.ID, false) {
+			model.transcript.bumpActiveCellRevision()
+		}
+	}
 	model.selection = nil
 	model.selectionKind = ""
 	model.status = "executing"

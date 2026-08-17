@@ -201,7 +201,7 @@ func (model fullscreenModel) inputBox() string {
 			})
 		}
 		list := model.renderListVisual(listVisual{
-			Title: "Commands", Hint: "↑/↓ select · Enter insert · Esc dismiss", Items: items,
+			Items: items,
 		}, width)
 		return input + "\n\n" + list
 	}

@@ -69,6 +69,9 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) {
 			return
 		}
 		model.finishDraft()
+		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
+			model.flushActiveHistoryCell()
+		}
 		if model.transcript.ActiveCell == nil {
 			cell := newToolHistoryCell()
 			cell.Apply(protocol.ItemStarted{Item: protocol.TurnItem{ID: item.Item.ID, Kind: item.Item.Kind, Status: protocol.ItemInProgress, CreatedAt: item.Item.CreatedAt, ToolName: item.Item.ToolName, CallID: item.Item.CallID, Payload: item.Item.Payload}})
@@ -85,10 +88,10 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) {
 		if cell, ok := model.transcript.ActiveCell.(*ToolHistoryCell); ok {
 			activity := cell.byCallID[item.Item.CallID]
 			if activity != nil {
-				detailContent := strings.TrimSpace(strings.Join([]string{activity.Detail, item.Item.Text}, "\n\n"))
+				detailContent := toolActivityDetailContent(activity, item.Item.Text)
 				if detail, ok := model.details.Add(item.Item.CallID, activity.Title, detailContent); ok {
 					activity.ResultDetailID = detail.ID
-					activity.DetailAvailable = activity.Kind == activityExplore || detail.Truncated || strings.Count(item.Item.Text, "\n") >= 5 || len([]rune(item.Item.Text)) > 600
+					activity.DetailAvailable = isExploreTool(activity.ToolName) || activityFileChangePreview(activity) != nil || detail.Truncated || strings.Count(detailContent, "\n") >= 5 || len([]rune(detailContent)) > 600
 					activity.Result = detail.Content
 				}
 			}
@@ -154,6 +157,9 @@ func (model *fullscreenModel) restoreCompletedItems(items []protocol.TurnItem) {
 		}
 		event := protocol.SessionEvent{ThreadID: threadID, Message: protocol.ItemCompleted{Item: item}}
 		model.applyEvent(event)
+	}
+	if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
+		model.flushActiveHistoryCell()
 	}
 }
 

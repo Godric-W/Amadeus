@@ -57,6 +57,18 @@ func (cell *ToolHistoryCell) IsComplete() bool {
 	}
 	return true
 }
+
+func (cell *ToolHistoryCell) SetApprovalState(callID string, pending bool) bool {
+	if cell == nil {
+		return false
+	}
+	activity := cell.byCallID[strings.TrimSpace(callID)]
+	if activity == nil || activity.PendingApproval == pending {
+		return false
+	}
+	activity.PendingApproval = pending
+	return true
+}
 func (cell *ToolHistoryCell) Apply(message protocol.EventMessage) bool {
 	if cell == nil {
 		return false
@@ -85,7 +97,10 @@ func (cell *ToolHistoryCell) Apply(message protocol.EventMessage) bool {
 		activity.Result = strings.TrimSpace(item.Item.Text)
 		if item.Item.ToolResult != nil {
 			activity.Result = displayResultText(*item.Item.ToolResult)
+			result := item.Item.ToolResult.Clone()
+			activity.ToolResult = &result
 		}
+		activity.Status = item.Item.Status
 		activity.Success = item.Item.Status == protocol.ItemStatusCompleted
 		if payload, ok := item.Item.Payload.(map[string]any); ok {
 			if duration, ok := payload["duration"].(string); ok {
@@ -101,6 +116,9 @@ func (cell *ToolHistoryCell) Apply(message protocol.EventMessage) bool {
 }
 
 func displayResultText(result tool.ToolResult) string {
+	if result.Display.Kind == tool.ToolDisplayProcess && strings.TrimSpace(result.Text) != "" {
+		return strings.TrimSpace(result.Text)
+	}
 	if summary := strings.TrimSpace(result.Display.Summary); summary != "" {
 		return summary
 	}
@@ -140,16 +158,24 @@ func (cell *ToolHistoryCell) projections() []HistoryCell {
 		explored = nil
 	}
 	for _, activity := range activities {
-		if activity.Kind == activityExplore {
+		spec := toolDisplaySpecFor(activity)
+		if spec.Category == ToolDisplayExplore {
 			explored = append(explored, activity)
 			continue
 		}
 		flushExplored()
-		if activity.Kind == activityNetwork {
+		if spec.Category == ToolDisplayNetwork {
 			projections = append(projections, WebSearchCell{activity: activity})
 			continue
 		}
-		projections = append(projections, ExecCell{activity: activity})
+		switch spec.Category {
+		case ToolDisplayCommand:
+			projections = append(projections, ExecCell{activity: activity})
+		case ToolDisplayWrite:
+			projections = append(projections, FileChangeCell{activity: activity})
+		default:
+			projections = append(projections, GenericToolCell{activity: activity})
+		}
 	}
 	flushExplored()
 	return projections
@@ -179,12 +205,16 @@ func rawToolContext() HistoryRenderContext {
 func renderExploreLines(activities []*toolActivity, ctx HistoryRenderContext) []styledLine {
 	complete := true
 	success := true
+	partial := false
 	for _, activity := range activities {
 		complete = complete && activity.Completed
-		success = success && activityCompletedSuccessfully(activity)
+		success = success && activity.Success
+		partial = partial || activity.Partial
 	}
 	markerStyle := styleDim
-	if complete && success {
+	if complete && success && partial {
+		markerStyle = styleAccent
+	} else if complete && success {
 		markerStyle = styleSuccess
 	} else if complete && !success {
 		markerStyle = styleFailure
@@ -213,8 +243,12 @@ func renderExploreLines(activities []*toolActivity, ctx HistoryRenderContext) []
 		if detail != "" {
 			line = append(line, styledSpan{Text: " " + detail, Style: stylePlain})
 		}
-		if activity.Completed && !activity.Success {
-			line = append(line, styledSpan{Text: " · failed", Style: styleFailure})
+		if label := activityStatusLabel(activity); activity.Completed && label != "" {
+			style := styleFailure
+			if label == "partial" {
+				style = styleAccent
+			}
+			line = append(line, styledSpan{Text: " · " + label, Style: style})
 		}
 		lines = append(lines, line)
 		itemIndex++
@@ -224,36 +258,61 @@ func renderExploreLines(activities []*toolActivity, ctx HistoryRenderContext) []
 
 func exploreVerbAndDetail(activity *toolActivity) (string, string) {
 	value := strings.TrimSpace(activity.Title)
-	for _, verb := range []string{"Read", "List", "Search"} {
-		if strings.HasPrefix(strings.ToLower(value), strings.ToLower(verb)) {
-			return verb, strings.TrimSpace(value[len(verb):])
+	switch activity.ToolName {
+	case "read":
+		return "Read", trimPresentationPrefix(value, "Read")
+	case "grep":
+		return "Grep", trimPresentationPrefix(value, "Search")
+	case "glob":
+		return "Glob", trimPresentationPrefix(value, "Find")
+	default:
+		for _, verb := range []string{"Read", "List", "Search"} {
+			if strings.HasPrefix(strings.ToLower(value), strings.ToLower(verb)) {
+				return verb, strings.TrimSpace(value[len(verb):])
+			}
 		}
+		return firstNonEmpty(activity.ToolName, "Tool"), value
 	}
-	return "Read", value
+}
+
+func isExploreTool(toolName string) bool {
+	return toolDisplayCategoryForName(toolName) == ToolDisplayExplore
+}
+
+func trimPresentationPrefix(value, prefix string) string {
+	if strings.HasPrefix(strings.ToLower(value), strings.ToLower(prefix)) {
+		return strings.TrimSpace(value[len(prefix):])
+	}
+	return value
 }
 
 func renderExecLines(activity *toolActivity, ctx HistoryRenderContext) []styledLine {
 	complete := activity.Completed
-	markerStyle := styleDim
-	if complete && activityCompletedSuccessfully(activity) {
-		markerStyle = styleSuccess
-	} else if complete {
-		markerStyle = styleFailure
-	}
+	markerStyle := activityMarkerStyle(activity)
 	title := "Running"
+	if activity.PendingApproval {
+		title = "Waiting for approval"
+	}
 	if complete {
 		title = "Ran"
 	}
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(activity.Title)), "you ran") {
+	if !activity.PendingApproval && strings.HasPrefix(strings.ToLower(strings.TrimSpace(activity.Title)), "you ran") {
 		title = "You ran"
 	}
-	commandLines := strings.Split(strings.TrimSpace(firstNonEmpty(activity.Detail, activity.Title)), "\n")
+	commandLines := strings.Split(commandActivityDetail(activity), "\n")
 	if len(commandLines) > 2 {
 		commandLines = append(commandLines[:2], "…")
 	}
-	header := styledLine{markerSpan(complete, activityCompletedSuccessfully(activity), ctx, markerStyle), {Text: " "}, {Text: title, Style: styleBold}}
+	header := styledLine{markerSpan(complete, activity.Success, ctx, markerStyle), {Text: " "}, {Text: title, Style: styleBold}}
 	if len(commandLines) > 0 && commandLines[0] != "" {
 		header = append(header, styledSpan{Text: " " + commandLines[0], Style: stylePlain})
+	}
+	if label := activityStatusLabel(activity); complete && label != "" {
+		style := styleFailure
+		if label == "partial" {
+			style = styleAccent
+		}
+		header = append(header, styledSpan{Text: " · " + label, Style: style})
 	}
 	lines := []styledLine{header}
 	for _, command := range commandLines[1:] {
@@ -279,20 +338,38 @@ func renderExecLines(activity *toolActivity, ctx HistoryRenderContext) []styledL
 	return lines
 }
 
+func commandActivityDetail(activity *toolActivity) string {
+	if activity == nil {
+		return ""
+	}
+	if detail := strings.TrimSpace(activity.Detail); detail != "" {
+		return detail
+	}
+	value := strings.TrimSpace(activity.Title)
+	for _, prefix := range []string{"You ran", "Ran", "Run"} {
+		if strings.HasPrefix(strings.ToLower(value), strings.ToLower(prefix)) {
+			return strings.TrimSpace(value[len(prefix):])
+		}
+	}
+	return value
+}
+
 func renderWebSearchLines(activity *toolActivity, ctx HistoryRenderContext) []styledLine {
 	complete := activity.Completed
-	success := activityCompletedSuccessfully(activity)
-	markerStyle := styleDim
-	if complete && success {
-		markerStyle = styleSuccess
-	} else if complete {
-		markerStyle = styleFailure
-	}
+	success := activity.Success
+	markerStyle := activityMarkerStyle(activity)
 	title := "Searching the web"
 	if complete {
 		title = "Searched the web"
 	}
 	lines := []styledLine{{markerSpan(complete, success, ctx, markerStyle), {Text: " "}, {Text: title, Style: styleBold}}}
+	if label := activityStatusLabel(activity); complete && label != "" {
+		style := styleFailure
+		if label == "partial" {
+			style = styleAccent
+		}
+		lines[0] = append(lines[0], styledSpan{Text: " · " + label, Style: style})
+	}
 	detail := firstNonEmpty(activity.Detail, activity.Title)
 	if detail != "" {
 		lines = append(lines, styledLine{{Text: "  └ ", Style: styleDim}, {Text: detail, Style: styleAccent}})
@@ -323,6 +400,10 @@ func cloneToolActivities(activities []*toolActivity) []*toolActivity {
 			continue
 		}
 		copyActivity := *activity
+		if activity.ToolResult != nil {
+			result := activity.ToolResult.Clone()
+			copyActivity.ToolResult = &result
+		}
 		result = append(result, &copyActivity)
 	}
 	return result

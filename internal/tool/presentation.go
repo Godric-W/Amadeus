@@ -40,6 +40,10 @@ func PresentCall(spec ToolSpec, call ToolCall) CallPresentation {
 			summary += " in " + path
 		}
 		return CallPresentation{ActionSummary: summary}
+	case "write":
+		return CallPresentation{ActionSummary: joinAction("Create", path)}
+	case "edit":
+		return CallPresentation{ActionSummary: joinAction("Update", path)}
 	case "read_skill":
 		if path != "" {
 			return CallPresentation{ActionSummary: joinAction("Read skill reference", path)}

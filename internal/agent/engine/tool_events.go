@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
@@ -15,21 +16,47 @@ import (
 )
 
 type toolEventObserver struct {
-	appendItems func(context.Context, turn.ID, ...rollout.Item) error
-	turnID      turn.ID
-	events      protocol.EventSink
+	appendItems   func(context.Context, turn.ID, ...rollout.Item) error
+	turnID        turn.ID
+	events        protocol.EventSink
+	mu            sync.Mutex
+	presentations map[string]toolCallPresentation
+}
+
+type toolCallPresentation struct {
+	actionSummary string
+	detail        string
+	sideEffect    tool.SideEffect
+}
+
+func (presentation toolCallPresentation) payload(duration time.Duration, partial bool) map[string]any {
+	return map[string]any{
+		"action_summary": presentation.actionSummary,
+		"detail":         presentation.detail,
+		"side_effect":    string(presentation.sideEffect),
+		"duration":       duration.String(),
+		"partial":        partial,
+	}
 }
 
 func NewToolEventObserver(appendItems func(context.Context, turn.ID, ...rollout.Item) error, turnID turn.ID, events protocol.EventSink) tool.LifecycleObserver {
-	return &toolEventObserver{appendItems: appendItems, turnID: turnID, events: events}
+	return &toolEventObserver{appendItems: appendItems, turnID: turnID, events: events, presentations: map[string]toolCallPresentation{}}
 }
 
 func (observer *toolEventObserver) ToolCallStarted(ctx context.Context, spec tool.ToolSpec, call tool.ToolCall) error {
 	presentation := tool.PresentCall(spec, call)
-	item := protocol.TurnItem{ID: call.ID, Kind: toolItemKind(call.Name, spec.SideEffect), Status: protocol.ItemInProgress, CreatedAt: time.Now().UTC(), ToolName: call.Name, CallID: call.ID, Payload: map[string]any{
-		"action_summary": presentation.ActionSummary, "detail": presentation.Detail, "side_effect": string(spec.SideEffect),
-	}}
-	return observer.events.Publish(ctx, protocol.SessionEvent{Message: protocol.ItemStarted{Item: item}})
+	snapshot := toolCallPresentation{actionSummary: presentation.ActionSummary, detail: presentation.Detail, sideEffect: spec.SideEffect}
+	observer.mu.Lock()
+	observer.presentations[call.ID] = snapshot
+	observer.mu.Unlock()
+	item := protocol.TurnItem{ID: call.ID, Kind: toolItemKind(call.Name, spec.SideEffect), Status: protocol.ItemInProgress, CreatedAt: time.Now().UTC(), ToolName: call.Name, CallID: call.ID, Payload: snapshot.payload(0, false)}
+	if err := observer.events.Publish(ctx, protocol.SessionEvent{Message: protocol.ItemStarted{Item: item}}); err != nil {
+		observer.mu.Lock()
+		delete(observer.presentations, call.ID)
+		observer.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (observer *toolEventObserver) ToolCallCompleted(ctx context.Context, execution tool.ToolExecution) error {
@@ -58,9 +85,12 @@ func (observer *toolEventObserver) ToolCallCompleted(ctx context.Context, execut
 		status = protocol.ItemFailed
 	}
 	now := time.Now().UTC()
-	turnItem := protocol.TurnItem{ID: execution.Call.ID, Kind: toolItemKind(execution.Call.Name, ""), Status: status, CreatedAt: now, CompletedAt: now, Text: toolExecutionSummary(execution), ToolName: execution.Call.Name, CallID: execution.Call.ID, ToolResult: &result, Payload: map[string]any{
-		"duration": execution.Outcome.Duration.String(), "partial": execution.Output.Partial,
-	}}
+	observer.mu.Lock()
+	presentation := observer.presentations[execution.Call.ID]
+	delete(observer.presentations, execution.Call.ID)
+	observer.mu.Unlock()
+	itemPayload := presentation.payload(execution.Outcome.Duration, execution.Output.Partial)
+	turnItem := protocol.TurnItem{ID: execution.Call.ID, Kind: toolItemKind(execution.Call.Name, ""), Status: status, CreatedAt: now, CompletedAt: now, Text: toolExecutionSummary(execution), ToolName: execution.Call.Name, CallID: execution.Call.ID, ToolResult: &result, Payload: itemPayload}
 	completedItem, err := protocol.NewCompletedItem(turnItem)
 	if err != nil {
 		return err
@@ -76,7 +106,7 @@ func toolItemKind(name string, effect tool.SideEffect) protocol.ItemKind {
 	if name == "execute_command" || name == "write_stdin" {
 		return protocol.ItemCommandExecution
 	}
-	if effect == tool.SideEffectWrite || name == "edit" || name == "write" || name == "apply_patch" {
+	if effect == tool.SideEffectWrite || name == "edit" || name == "write" {
 		return protocol.ItemFileChange
 	}
 	return protocol.ItemToolCall

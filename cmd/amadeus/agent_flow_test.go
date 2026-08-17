@@ -357,7 +357,7 @@ func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 		t.Fatalf("unexpected Coding Agent stdout: %q", stdout.String())
 	}
 	for _, fragment := range []string{
-		"tool started: read", "tool completed: read", "status: phase=idle", "result: completed",
+		"Exploring", "Read README.md", "Explored", "status: phase=idle", "result: completed",
 	} {
 		if !strings.Contains(stderr.String(), fragment) {
 			t.Fatalf("Coding Agent stderr missing %q: %s", fragment, stderr.String())

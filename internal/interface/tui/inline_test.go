@@ -25,7 +25,7 @@ func TestInlineRendererKeepsTextAndStatusBlocksSeparate(t *testing.T) {
 	if err := renderer.Publish(ctx, protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: started}); err != nil {
 		t.Fatal(err)
 	}
-	if text.String() != "hello\n" || !strings.Contains(status.String(), "tool started: read") {
+	if text.String() != "hello\n" || !strings.Contains(status.String(), "Exploring") || !strings.Contains(status.String(), "Read file") {
 		t.Fatalf("unexpected inline output: text=%q status=%q", text.String(), status.String())
 	}
 }
@@ -36,7 +36,7 @@ func TestInlineRendererRendersPlanAndUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	started := toolStartedMessage("write-1", "write", "write", "Write file", "")
+	started := toolStartedMessage("write-1", "write", "write", "Create file", "")
 	for _, event := range []protocol.SessionEvent{
 		{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.PlanUpdated{Revision: 1, Items: []protocol.PlanItem{{Step: "Read source", Status: "pending"}}}},
 		{ThreadID: "thread-1", TurnID: "turn-1", Message: started},
@@ -49,7 +49,7 @@ func TestInlineRendererRendersPlanAndUsage(t *testing.T) {
 		}
 	}
 	output := status.String()
-	for _, fragment := range []string{"plan 1:", "tool started: write", "usage: input=3 output=5 total=8", "status: phase=idle"} {
+	for _, fragment := range []string{"Updated Plan", "□ Read source", "Created file", "usage: input=3 output=5 total=8", "status: phase=idle"} {
 		if !strings.Contains(output, fragment) {
 			t.Fatalf("inline transcript omitted %q: %s", fragment, output)
 		}

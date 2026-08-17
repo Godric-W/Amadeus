@@ -38,7 +38,7 @@ func TestSlashAndSelectionUseSharedListVisual(t *testing.T) {
 			t.Fatalf("%s list omitted shared accent style: %q", name, rendered)
 		}
 		plain := xansi.Strip(rendered)
-		for _, expected := range []string{"› ", "  ", "↑/↓"} {
+		for _, expected := range []string{"› ", "  "} {
 			if !strings.Contains(plain, expected) {
 				t.Fatalf("%s list omitted shared visual %q: %q", name, expected, plain)
 			}
@@ -49,8 +49,14 @@ func TestSlashAndSelectionUseSharedListVisual(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(xansi.Strip(slash), "Commands") || !strings.Contains(xansi.Strip(selection), "Resume Session") {
-		t.Fatalf("list titles missing: slash=%q selection=%q", xansi.Strip(slash), xansi.Strip(selection))
+	slashPlain := xansi.Strip(slash)
+	for _, forbidden := range []string{"Commands", "↑/↓", "Enter insert", "Esc dismiss"} {
+		if strings.Contains(slashPlain, forbidden) {
+			t.Fatalf("slash popup unexpectedly contains %q: %q", forbidden, slashPlain)
+		}
+	}
+	if !strings.Contains(xansi.Strip(selection), "Resume Session") {
+		t.Fatalf("selection list title missing: %q", xansi.Strip(selection))
 	}
 }
 
