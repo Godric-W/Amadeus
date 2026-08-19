@@ -24,8 +24,10 @@ const (
 	styleDim
 	styleBold
 	styleAccent
+	styleCommand
 	styleSuccess
 	styleFailure
+	styleWarning
 	styleUser
 	styleSeparator
 	styleRendered
@@ -168,6 +170,28 @@ func (cell DiagnosticHistoryCell) DisplayLines(HistoryRenderContext) []styledLin
 
 func (cell DiagnosticHistoryCell) RawLines() []string    { return rawLines(cell.Content) }
 func (DiagnosticHistoryCell) IsStreamContinuation() bool { return false }
+
+type WarningHistoryCell struct{ Content string }
+
+func NewWarningHistoryCell(content string) HistoryCell {
+	return WarningHistoryCell{Content: strings.TrimSpace(content)}
+}
+
+func (cell WarningHistoryCell) DisplayLines(HistoryRenderContext) []styledLine {
+	if cell.Content == "" {
+		return nil
+	}
+	return []styledLine{{{Text: "⚠ " + sanitizeFullscreenContent(cell.Content), Style: styleWarning}}}
+}
+
+func (cell WarningHistoryCell) RawLines() []string {
+	if cell.Content == "" {
+		return nil
+	}
+	return []string{"⚠ " + cell.Content}
+}
+
+func (WarningHistoryCell) IsStreamContinuation() bool { return false }
 
 type ErrorHistoryCell struct{ Message string }
 
@@ -334,10 +358,14 @@ func styleForSemantic(ctx HistoryRenderContext, style semanticStyle) lipgloss.St
 		return ctx.Palette.bold()
 	case styleAccent:
 		return ctx.Palette.accent()
+	case styleCommand:
+		return ctx.Palette.command()
 	case styleSuccess:
 		return ctx.Palette.success()
 	case styleFailure:
 		return ctx.Palette.failure()
+	case styleWarning:
+		return ctx.Palette.warning()
 	case styleUser:
 		result := ctx.Palette.user()
 		if ctx.Palette.Level == colorLevelTrueColor && !ctx.Palette.NoColor {

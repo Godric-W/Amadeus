@@ -3,12 +3,13 @@ package tui
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"sync"
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	application "github.com/Godric-W/Amadeus/internal/app"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/atotto/clipboard"
@@ -29,62 +30,38 @@ type FullscreenStartup struct {
 	ContextWindow int64
 }
 
-type FullscreenTaskRunner func(context.Context, TaskSubmission) error
-type FullscreenTurnContextFactory func(context.Context) (context.Context, context.CancelFunc, error)
-
-type FullscreenSessionLister func(context.Context) ([]SessionOption, error)
-type FullscreenSessionResumer func(context.Context, string) (string, error)
-type FullscreenCurrentSession func() string
-type FullscreenCurrentSessionTitle func() string
-type FullscreenSessionRenamer func(context.Context, string) (string, error)
-type FullscreenSessionDeleter func(context.Context) (string, error)
-type FullscreenCompactor func(context.Context) (string, error)
-type FullscreenSkillLister func(context.Context) ([]SkillOption, error)
-type FullscreenSkillSetter func(context.Context, string, bool) error
 type FullscreenClipboardWriter func(string) error
-type FullscreenStatusReader func(context.Context) (string, error)
-type FullscreenMCPReader func(context.Context, bool) (string, error)
-type FullscreenClearer func(context.Context) error
-type FullscreenPermissionModeSetter func(context.Context, CollaborationMode) error
 
-type SessionOption struct {
-	ID      string
-	Title   string
-	Current bool
-}
-
-type SkillOption struct {
-	Name        string
-	Description string
-	Source      string
-	Enabled     bool
+type FullscreenApplicationPort interface {
+	Events() <-chan application.InteractiveEvent
+	SubmitUser(context.Context, string) error
+	SubmitCompact(context.Context) error
+	SetMode(context.Context, turn.ModeKind) error
+	Interrupt(context.Context) error
+	ResolveApproval(context.Context, string, policy.ApprovalDecision) error
+	LoadSessions(context.Context)
+	Resume(context.Context, rollout.ThreadID)
+	Clear(context.Context)
+	Rename(context.Context, uint64, string)
+	Delete(context.Context, uint64)
+	Status() application.StatusSnapshot
+	LoadMCP(context.Context, uint64, application.MCPDetail)
+	LoadSkills()
+	SetSkillEnabled(string, bool)
+	Shutdown(context.Context)
 }
 
 type FullscreenOptions struct {
-	Input               io.Reader
-	Output              io.Writer
-	Startup             FullscreenStartup
-	InitialItems        []protocol.TurnItem
-	Task                FullscreenTaskRunner
-	NewTask             FullscreenTurnContextFactory
-	Status              FullscreenStatusReader
-	MCP                 FullscreenMCPReader
-	Clear               FullscreenClearer
-	SetPermissionMode   FullscreenPermissionModeSetter
-	Sessions            FullscreenSessionLister
-	Resume              FullscreenSessionResumer
-	CurrentSession      FullscreenCurrentSession
-	CurrentSessionTitle FullscreenCurrentSessionTitle
-	Rename              FullscreenSessionRenamer
-	Delete              FullscreenSessionDeleter
-	Compact             FullscreenCompactor
-	Skills              FullscreenSkillLister
-	SetSkill            FullscreenSkillSetter
-	ClipboardWrite      FullscreenClipboardWriter
-	OpenSessions        bool
-	NoColor             bool
-	DisableAnimations   bool
-	Width               int
+	Input             io.Reader
+	Output            io.Writer
+	Startup           FullscreenStartup
+	Snapshot          application.ThreadViewSnapshot
+	Application       FullscreenApplicationPort
+	ClipboardWrite    FullscreenClipboardWriter
+	OpenSessions      bool
+	NoColor           bool
+	DisableAnimations bool
+	Width             int
 }
 
 type FullscreenApplication struct {
@@ -93,9 +70,6 @@ type FullscreenApplication struct {
 	programMutex sync.RWMutex
 	program      *tea.Program
 	done         chan struct{}
-
-	cancelMutex sync.Mutex
-	cancelRun   context.CancelFunc
 }
 
 type fullscreenModel struct {
@@ -117,13 +91,13 @@ type fullscreenModel struct {
 	running                bool
 	status                 string
 	model                  string
+	sessionTitle           string
 	inputUsage             int64
 	outputUsage            int64
 	contextUsage           int64
 	contextLimit           int64
 	history                []string
 	historyPos             int
-	queuedTasks            []TaskSubmission
 	runStartedAt           time.Time
 	palette                terminalPalette
 	clock                  motionClock
@@ -134,22 +108,23 @@ type fullscreenModel struct {
 	viewingDetails         bool
 	approval               *fullscreenApproval
 	approvalDialog         *approvalDialog
-	sessions               []SessionOption
+	sessions               []application.SessionOption
 	slashPopup             slashCommandPopup
 	collaboration          CollaborationMode
 	selection              *selectionOverlay
 	selectionKind          string
-	skills                 []SkillOption
+	skills                 []application.SkillOption
+	pendingSkillsView      string
+	generation             uint64
+	pendingModeTask        string
+	mcpRequestID           uint64
+	clearing               bool
+	shutdownRequested      bool
 }
 
 type fullscreenApproval struct {
-	request  policy.ApprovalRequest
-	response chan fullscreenApprovalResult
-}
-
-type fullscreenApprovalResult struct {
-	decision policy.ApprovalDecision
-	err      error
+	requestID string
+	request   policy.ApprovalRequest
 }
 
 type fullscreenApprovalChoice struct {
@@ -184,51 +159,10 @@ func approvalChoices(request policy.ApprovalRequest) []fullscreenApprovalChoice 
 	return fullscreenApprovalChoices
 }
 
-type fullscreenEventMsg struct{ item protocol.SessionEvent }
-type fullscreenApprovalMsg struct{ prompt *fullscreenApproval }
-type fullscreenTaskDoneMsg struct {
-	err     error
-	session string
-	elapsed time.Duration
-}
-type fullscreenCommandDoneMsg struct {
-	command string
-	output  string
-	err     error
-}
-type fullscreenPermissionModeDoneMsg struct {
-	mode CollaborationMode
-	task string
-	err  error
-}
-type fullscreenSessionsMsg struct {
-	sessions []SessionOption
-	err      error
-}
-type fullscreenResumeMsg struct {
-	message string
-	err     error
-}
-type fullscreenRenameMsg struct {
-	message string
-	err     error
-}
-type fullscreenDeleteMsg struct {
-	message string
-	err     error
-}
-type fullscreenCompactMsg struct {
-	message string
-	err     error
-}
-type fullscreenSkillsMsg struct {
-	skills []SkillOption
-	err    error
-}
-type fullscreenSkillSetMsg struct {
-	name    string
-	enabled bool
-	err     error
+type fullscreenAppEventMsg struct{ event application.InteractiveEvent }
+type fullscreenOperationFailedMsg struct {
+	operation string
+	err       error
 }
 type fullscreenWorkingTickMsg time.Time
 
@@ -248,24 +182,13 @@ func NewFullscreenApplication(options FullscreenOptions) (*FullscreenApplication
 	if options.Input == nil || options.Output == nil {
 		return nil, errors.New("fullscreen TUI streams are nil")
 	}
-	if options.Task == nil {
-		return nil, errors.New("fullscreen TUI task runner is nil")
-	}
-	if options.NewTask == nil {
-		options.NewTask = defaultFullscreenTaskContext
+	if options.Application == nil {
+		return nil, errors.New("fullscreen interactive application is nil")
 	}
 	if options.ClipboardWrite == nil {
 		options.ClipboardWrite = clipboard.WriteAll
 	}
 	return &FullscreenApplication{options: options, done: make(chan struct{})}, nil
-}
-
-func defaultFullscreenTaskContext(parent context.Context) (context.Context, context.CancelFunc, error) {
-	if parent == nil {
-		return nil, nil, errors.New("fullscreen task parent context is nil")
-	}
-	ctx, cancel := context.WithCancel(parent)
-	return ctx, cancel, nil
 }
 
 func (app *FullscreenApplication) Run(ctx context.Context) error {
@@ -281,8 +204,8 @@ func (app *FullscreenApplication) Run(ctx context.Context) error {
 	app.programMutex.Lock()
 	app.program = program
 	app.programMutex.Unlock()
+	go app.forwardEvents(ctx)
 	_, err := program.Run()
-	app.cancelActiveRun()
 	app.programMutex.Lock()
 	app.program = nil
 	select {
@@ -297,27 +220,19 @@ func (app *FullscreenApplication) Run(ctx context.Context) error {
 	return err
 }
 
-func (app *FullscreenApplication) Publish(ctx context.Context, item protocol.SessionEvent) error {
-	if err := item.Validate(); err != nil {
-		return fmt.Errorf("validate fullscreen TUI event: %w", err)
-	}
-	return app.send(ctx, fullscreenEventMsg{item: item})
-}
-
-func (app *FullscreenApplication) Decide(ctx context.Context, request policy.ApprovalRequest) (policy.ApprovalDecision, error) {
-	if err := request.Validate(); err != nil {
-		return policy.ApprovalDecision{}, fmt.Errorf("validate fullscreen approval request: %w", err)
-	}
-	response := make(chan fullscreenApprovalResult, 1)
-	prompt := &fullscreenApproval{request: request, response: response}
-	if err := app.send(ctx, fullscreenApprovalMsg{prompt: prompt}); err != nil {
-		return policy.ApprovalDecision{}, err
-	}
-	select {
-	case <-ctx.Done():
-		return policy.ApprovalDecision{}, ctx.Err()
-	case result := <-response:
-		return result.decision, result.err
+func (app *FullscreenApplication) forwardEvents(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-app.options.Application.Events():
+			if !ok {
+				return
+			}
+			if err := app.send(ctx, fullscreenAppEventMsg{event: event}); err != nil {
+				return
+			}
+		}
 	}
 }
 
@@ -349,30 +264,6 @@ func (app *FullscreenApplication) send(ctx context.Context, message tea.Msg) err
 	}
 }
 
-func (app *FullscreenApplication) setActiveRun(cancel context.CancelFunc) {
-	app.cancelMutex.Lock()
-	app.cancelRun = cancel
-	app.cancelMutex.Unlock()
-}
-
-func (app *FullscreenApplication) clearActiveRun(cancel context.CancelFunc) {
-	app.cancelMutex.Lock()
-	if app.cancelRun != nil {
-		app.cancelRun = nil
-	}
-	app.cancelMutex.Unlock()
-}
-
-func (app *FullscreenApplication) cancelActiveRun() {
-	app.cancelMutex.Lock()
-	cancel := app.cancelRun
-	app.cancelRun = nil
-	app.cancelMutex.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-}
-
 func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscreenModel {
 	palette := detectTerminalPalette(app.options.NoColor)
 	input := textarea.New()
@@ -399,6 +290,11 @@ func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscr
 	input.Focus()
 	renderer, _ := newFullscreenMarkdownRenderer(94, palette)
 	startup := app.options.Startup
+	snapshot := app.options.Snapshot
+	startup.Session = string(snapshot.ThreadID)
+	startup.Provider = snapshot.Provider
+	startup.Model = snapshot.Model
+	startup.ContextWindow = snapshot.ContextWindow
 	initialWidth := app.options.Width
 	if initialWidth < 20 {
 		initialWidth = 100
@@ -406,26 +302,35 @@ func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscr
 	model := fullscreenModel{
 		app: app, ctx: ctx, startup: startup, input: input, renderer: renderer,
 		width: initialWidth, height: 30, status: "idle", model: startup.Model, historyPos: -1, collaboration: CollaborationExecute,
-		palette: palette, clock: systemMotionClock{}, motion: motionAnimated, motionStartedAt: time.Now(),
+		sessionTitle: snapshot.Title,
+		palette:      palette, clock: systemMotionClock{}, motion: motionAnimated, motionStartedAt: time.Now(),
 		details: newTranscriptDetailStore(0, 0), detailViewport: newTranscriptViewport(initialWidth, 30),
-		runtimeTranscript: protocol.NewTranscriptState(rollout.ThreadID(startup.Session)),
+		runtimeTranscript: protocol.NewTranscriptState(rollout.ThreadID(startup.Session)), generation: snapshot.Generation,
 	}
+	if snapshot.Mode == turn.ModeKindPlan {
+		model.collaboration = CollaborationPlan
+	}
+	model.inputUsage = snapshot.Usage.InputTokens
+	model.outputUsage = snapshot.Usage.OutputTokens
+	model.contextUsage = snapshot.Usage.TotalTokens
 	if app.options.DisableAnimations {
 		model.motion = motionReduced
 	}
 	model.updateInputLayout()
 	model.renderer, _ = newFullscreenMarkdownRenderer(maxInt(20, initialWidth-6), palette)
-	model.restoreCompletedItems(app.options.InitialItems)
+	model.restoreCompletedItems(snapshot.Items)
+	model.pendingHistoryCells = nil
+	model.hasEmittedHistoryLines = len(model.historyCells) > 0
 	return model
 }
 
 func (model fullscreenModel) Init() tea.Cmd {
 	header := model.banner()
 	if len(model.historyCells) > 0 {
-		header += "\n\n" + model.renderHistoryCell(model.historyCells[0])
+		header += "\n\n" + renderHistoryCells(model.historyCells, model.historyMode, model.historyRenderContext())
 	}
 	commands := []tea.Cmd{tea.Println(header), tea.HideCursor, model.input.Focus()}
-	if model.app.options.OpenSessions && model.app.options.Sessions != nil {
+	if model.app.options.OpenSessions {
 		commands = append(commands, model.loadSessions())
 	}
 	return tea.Sequence(commands...)

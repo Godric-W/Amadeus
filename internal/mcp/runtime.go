@@ -68,6 +68,13 @@ func (runtime *MCPRuntime) EnabledServers() []string {
 	return runtime.configured.EnabledServers()
 }
 
+func (runtime *MCPRuntime) Configuration() Config {
+	if runtime == nil {
+		return Config{Servers: map[string]ServerConfig{}}
+	}
+	return runtime.configured.Redacted()
+}
+
 func (runtime *MCPRuntime) ListTools(ctx context.Context, server string) ([]RemoteTool, error) {
 	server = strings.TrimSpace(server)
 	state, err := runtime.serverState(server)

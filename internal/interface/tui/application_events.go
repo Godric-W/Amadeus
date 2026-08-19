@@ -5,11 +5,13 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	tea "github.com/charmbracelet/bubbletea"
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
-func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) {
+func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 	if model.runtimeTranscript == nil {
 		model.runtimeTranscript = protocol.NewTranscriptState(event.ThreadID)
 	}
@@ -22,13 +24,48 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) {
 			_ = model.runtimeTranscript.Apply(event)
 		} else {
 			model.insertHistoryCell(NewDiagnosticHistoryCell("event projection: " + err.Error()))
-			return
+			return nil
 		}
 	}
 	message := event.Message
 	switch item := message.(type) {
 	case protocol.TurnStarted:
-		model.status = "working"
+		model.running = true
+		model.runStartedAt = item.StartedAt
+		if model.runStartedAt.IsZero() {
+			model.runStartedAt = time.Now()
+		}
+		model.motionStartedAt = model.runStartedAt
+		model.transcript.HadWorkActivity = false
+		model.transcript.NeedsFinalMessageSeparator = false
+		if item.Kind == protocol.TaskKindCompact {
+			model.status = "compacting context"
+		} else if model.collaboration == CollaborationPlan {
+			model.status = "planning"
+		} else {
+			model.status = "working"
+		}
+		return model.workingTick()
+	case protocol.ThreadSettingsUpdated:
+		if item.Mode == string(turn.ModeKindPlan) {
+			model.collaboration = CollaborationPlan
+			model.status = "plan mode"
+		} else {
+			model.collaboration = CollaborationExecute
+			model.status = "idle"
+		}
+		task := strings.TrimSpace(model.pendingModeTask)
+		model.pendingModeTask = ""
+		if task == "" {
+			model.insertHistoryCell(NewNoticeHistoryCell("Switched to " + collaborationModeName(model.collaboration) + " mode"))
+			return nil
+		}
+		model.insertHistoryCell(NewUserMessageCell(task))
+		model.running = true
+		model.runStartedAt = time.Now()
+		model.motionStartedAt = model.runStartedAt
+		model.status = taskPhase(TaskSubmission{Content: task, Mode: model.collaboration})
+		return tea.Batch(model.submitTask(TaskSubmission{Content: task, Mode: model.collaboration}), model.workingTick())
 	case protocol.AssistantMessageDelta:
 		if model.draft == "" && model.transcript.HadWorkActivity && model.transcript.NeedsFinalMessageSeparator {
 			model.flushActiveHistoryCell()
@@ -58,7 +95,7 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) {
 		model.status = "planning"
 	case protocol.ItemStarted:
 		if item.Item.ToolName == "update_plan" {
-			return
+			return nil
 		}
 		model.finishDraft()
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
@@ -74,8 +111,35 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) {
 		model.transcript.NeedsFinalMessageSeparator = true
 		model.status = "executing"
 	case protocol.ItemCompleted:
+		switch item.Item.Kind {
+		case protocol.ItemUserMessage:
+			model.flushCompletedActivityBeforeBoundary()
+			model.insertHistoryCell(NewUserMessageCell(item.Item.Text))
+			return nil
+		case protocol.ItemAssistantMessage:
+			model.flushCompletedActivityBeforeBoundary()
+			if strings.TrimSpace(model.draft) != "" {
+				model.finishDraft()
+			} else if strings.TrimSpace(item.Item.Text) != "" {
+				model.transcript.LastAgentMarkdown = item.Item.Text
+				model.insertHistoryCell(NewAgentMessageCell(item.Item.Text))
+			}
+			return nil
+		case protocol.ItemReasoning:
+			return nil
+		case protocol.ItemPlan:
+			model.flushCompletedActivityBeforeBoundary()
+			if update, ok := item.Item.Payload.(protocol.PlanUpdated); ok {
+				model.insertHistoryCell(NewPlanUpdateCell(update))
+			}
+			return nil
+		case protocol.ItemContextCompaction:
+			model.flushCompletedActivityBeforeBoundary()
+			model.insertHistoryCell(NewContextCompactedCell())
+			return nil
+		}
 		if item.Item.ToolName == "update_plan" {
-			return
+			return nil
 		}
 		model.finishDraft()
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
@@ -107,7 +171,7 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) {
 		}
 	case protocol.Warning:
 		model.finishDraft()
-		model.insertHistoryCell(NewDiagnosticHistoryCell(item.Message))
+		model.insertHistoryCell(NewWarningHistoryCell(item.Message))
 	case protocol.StreamError:
 		model.finishDraft()
 		if strings.TrimSpace(item.Error) != "" {
@@ -118,14 +182,30 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) {
 			model.flushActiveHistoryCell()
 		}
 		model.finishDraft()
+		model.finishTurn(model.runElapsed())
+		model.running = false
 		model.status = "completed"
 	case protocol.TurnAborted:
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
 			model.flushActiveHistoryCell()
 		}
 		model.finishDraft()
+		model.finishTurn(model.runElapsed())
+		model.running = false
 		model.status = "aborted"
+	case protocol.TurnRejected:
+		model.finishDraft()
+		model.running = false
+		model.status = "idle"
+		if strings.TrimSpace(item.Error) != "" {
+			model.insertHistoryCell(NewErrorHistoryCell(item.Error))
+		}
+	case protocol.ContextCompacted:
+		model.insertHistoryCell(NewContextCompactedCell())
+	case protocol.ShutdownComplete:
+		model.status = "shutting down"
 	}
+	return nil
 }
 
 func (model *fullscreenModel) recoverDeltaStart(event protocol.SessionEvent) bool {
@@ -157,19 +237,52 @@ func (model *fullscreenModel) restoreCompletedItems(items []protocol.TurnItem) {
 	}
 	threadID := rollout.ThreadID(model.startup.Session)
 	for _, item := range items {
-		if item.Kind == protocol.ItemAssistantMessage {
+		switch item.Kind {
+		case protocol.ItemUserMessage:
+			model.flushCompletedActivityBeforeBoundary()
+			model.insertHistoryCell(NewUserMessageCell(item.Text))
+		case protocol.ItemAssistantMessage:
+			model.flushCompletedActivityBeforeBoundary()
+			model.transcript.LastAgentMarkdown = item.Text
 			model.insertHistoryCell(NewAgentMessageCell(item.Text))
-			continue
+		case protocol.ItemReasoning:
+		case protocol.ItemPlan:
+			model.flushCompletedActivityBeforeBoundary()
+			if update, ok := item.Payload.(protocol.PlanUpdated); ok {
+				model.insertHistoryCell(NewPlanUpdateCell(update))
+			}
+		case protocol.ItemContextCompaction:
+			model.flushCompletedActivityBeforeBoundary()
+			model.insertHistoryCell(NewContextCompactedCell())
+		default:
+			event := protocol.SessionEvent{ThreadID: threadID, Message: protocol.ItemCompleted{Item: item}}
+			model.applyEvent(event)
 		}
-		if item.Kind == protocol.ItemReasoning {
-			continue
-		}
-		event := protocol.SessionEvent{ThreadID: threadID, Message: protocol.ItemCompleted{Item: item}}
-		model.applyEvent(event)
 	}
 	if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
 		model.flushActiveHistoryCell()
 	}
+}
+
+func (model *fullscreenModel) flushCompletedActivityBeforeBoundary() {
+	if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
+		model.flushActiveHistoryCell()
+	}
+}
+
+func (model *fullscreenModel) finishTurn(elapsed time.Duration) {
+	if model.transcript.HadWorkActivity && model.transcript.NeedsFinalMessageSeparator {
+		model.insertHistoryCell(FinalMessageSeparator{Elapsed: elapsed})
+	}
+	model.transcript.HadWorkActivity = false
+	model.transcript.NeedsFinalMessageSeparator = false
+}
+
+func collaborationModeName(mode CollaborationMode) string {
+	if mode == CollaborationPlan {
+		return "Plan"
+	}
+	return "Execute"
 }
 
 func (model *fullscreenModel) finishDraft() {

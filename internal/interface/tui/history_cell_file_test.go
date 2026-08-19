@@ -103,7 +103,8 @@ func TestRestoreCompletedToolItemsPreservesToolSpecificProjection(t *testing.T) 
 
 	_, replay := newTestFullscreen(t, func(options *FullscreenOptions) {
 		options.Startup.Session = "thread-replay"
-		options.InitialItems = []protocol.TurnItem{readCompleted, writeCompleted}
+		options.Snapshot.ThreadID = "thread-replay"
+		options.Snapshot.Items = []protocol.TurnItem{readCompleted, writeCompleted}
 	})
 	if len(replay.historyCells) != 2 || replay.transcript.ActiveCell != nil {
 		t.Fatalf("replay history state = cells:%d active:%T", len(replay.historyCells), replay.transcript.ActiveCell)

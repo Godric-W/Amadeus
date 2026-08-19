@@ -107,6 +107,15 @@ func (p terminalPalette) accent() lipgloss.Style {
 	}
 	return p.plain().Foreground(p.bestColor(p.accentRGB())).Bold(true)
 }
+func (p terminalPalette) command() lipgloss.Style {
+	if p.NoColor || p.Level == colorLevelNone {
+		return p.strong()
+	}
+	if p.Level == colorLevelANSI16 {
+		return p.plain().Foreground(lipgloss.Color("5"))
+	}
+	return p.plain().Foreground(p.bestColor(terminalRGB{205, 0, 205}))
+}
 func (p terminalPalette) selection() lipgloss.Style { return p.accent().Bold(true) }
 func (p terminalPalette) success() lipgloss.Style {
 	return p.statusColor(terminalRGB{72, 187, 120}, "2", "2").Bold(true)

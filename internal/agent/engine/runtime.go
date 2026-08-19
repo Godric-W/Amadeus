@@ -229,18 +229,11 @@ func (runtime *Services) SetSkillEnabled(name string, enabled bool) error {
 	return runtime.extensionAssembly.SetSkillEnabled(name, enabled)
 }
 
-func (runtime *Services) MCPServers() []string {
-	if runtime == nil || runtime.extensionAssembly == nil || runtime.extensionAssembly.MCPRuntime() == nil {
-		return nil
-	}
-	return runtime.extensionAssembly.MCPRuntime().EnabledServers()
-}
-
-func (runtime *Services) MCPBindings() mcp.MCPBinding {
+func (runtime *Services) MCPConfiguration() mcp.Config {
 	if runtime == nil || runtime.extensionAssembly == nil {
-		return mcp.MCPBinding{}
+		return mcp.Config{Servers: map[string]mcp.ServerConfig{}}
 	}
-	return runtime.extensionAssembly.MCPBinding()
+	return runtime.extensionAssembly.MCPConfiguration()
 }
 
 func (runtime *Services) MCPTools(ctx context.Context, server string) (mcp.ToolCatalog, error) {
@@ -248,6 +241,13 @@ func (runtime *Services) MCPTools(ctx context.Context, server string) (mcp.ToolC
 		return mcp.ToolCatalog{}, errors.New("MCP runtime is unavailable")
 	}
 	return runtime.extensionAssembly.MCPRuntime().ToolCatalog(ctx, server)
+}
+
+func (runtime *Services) MCPResources(ctx context.Context, server string) (mcp.ResourceCatalog, error) {
+	if runtime == nil || runtime.extensionAssembly == nil || runtime.extensionAssembly.MCPRuntime() == nil {
+		return mcp.ResourceCatalog{}, errors.New("MCP runtime is unavailable")
+	}
+	return runtime.extensionAssembly.MCPRuntime().ResourceCatalog(ctx, server)
 }
 
 func (runtime *Services) SkillWarnings() []error {

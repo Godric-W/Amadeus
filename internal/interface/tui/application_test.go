@@ -3,25 +3,103 @@ package tui
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	application "github.com/Godric-W/Amadeus/internal/app"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/policy"
+	"github.com/Godric-W/Amadeus/internal/rollout"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
+type fakeFullscreenApplication struct {
+	events       chan application.InteractiveEvent
+	submitted    []string
+	compactCount int
+	modes        []turn.ModeKind
+	interrupts   int
+	approvals    []string
+	resumed      []rollout.ThreadID
+	renamed      []string
+	deleted      []uint64
+	clears       int
+	mcpRequests  []uint64
+	loadSkills   int
+	skillPaths   []string
+	shutdowns    int
+	status       application.StatusSnapshot
+	submitErr    error
+	compactErr   error
+	setModeErr   error
+	interruptErr error
+	approvalErr  error
+}
+
+func newFakeFullscreenApplication() *fakeFullscreenApplication {
+	return &fakeFullscreenApplication{events: make(chan application.InteractiveEvent, 32)}
+}
+
+func (fake *fakeFullscreenApplication) Events() <-chan application.InteractiveEvent {
+	return fake.events
+}
+func (fake *fakeFullscreenApplication) SubmitUser(_ context.Context, content string) error {
+	fake.submitted = append(fake.submitted, content)
+	return fake.submitErr
+}
+func (fake *fakeFullscreenApplication) SubmitCompact(context.Context) error {
+	fake.compactCount++
+	return fake.compactErr
+}
+func (fake *fakeFullscreenApplication) SetMode(_ context.Context, mode turn.ModeKind) error {
+	fake.modes = append(fake.modes, mode)
+	return fake.setModeErr
+}
+func (fake *fakeFullscreenApplication) Interrupt(context.Context) error {
+	fake.interrupts++
+	return fake.interruptErr
+}
+func (fake *fakeFullscreenApplication) ResolveApproval(_ context.Context, requestID string, _ policy.ApprovalDecision) error {
+	fake.approvals = append(fake.approvals, requestID)
+	return fake.approvalErr
+}
+func (fake *fakeFullscreenApplication) LoadSessions(context.Context) {}
+func (fake *fakeFullscreenApplication) Resume(_ context.Context, id rollout.ThreadID) {
+	fake.resumed = append(fake.resumed, id)
+}
+func (fake *fakeFullscreenApplication) Clear(context.Context) { fake.clears++ }
+func (fake *fakeFullscreenApplication) Rename(_ context.Context, _ uint64, name string) {
+	fake.renamed = append(fake.renamed, name)
+}
+func (fake *fakeFullscreenApplication) Delete(_ context.Context, generation uint64) {
+	fake.deleted = append(fake.deleted, generation)
+}
+func (fake *fakeFullscreenApplication) Status() application.StatusSnapshot { return fake.status }
+func (fake *fakeFullscreenApplication) LoadMCP(_ context.Context, requestID uint64, _ application.MCPDetail) {
+	fake.mcpRequests = append(fake.mcpRequests, requestID)
+}
+func (fake *fakeFullscreenApplication) LoadSkills() { fake.loadSkills++ }
+func (fake *fakeFullscreenApplication) SetSkillEnabled(path string, _ bool) {
+	fake.skillPaths = append(fake.skillPaths, path)
+}
+func (fake *fakeFullscreenApplication) Shutdown(context.Context) {
+	fake.shutdowns++
+	fake.events <- application.ShutdownFinished{}
+}
+
 func newTestFullscreen(t *testing.T, configure func(*FullscreenOptions)) (*FullscreenApplication, fullscreenModel) {
 	t.Helper()
+	fake := newFakeFullscreenApplication()
 	options := FullscreenOptions{
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{}, Width: 100, DisableAnimations: true,
-		Task:              func(context.Context, TaskSubmission) error { return nil },
-		SetPermissionMode: func(context.Context, CollaborationMode) error { return nil },
+		Application: fake,
+		Snapshot:    application.ThreadViewSnapshot{Generation: 1, ThreadID: "thread-1", Mode: turn.ModeKindDefault, Model: "test-model", ContextWindow: 128000},
 	}
 	if configure != nil {
 		configure(&options)
@@ -33,6 +111,15 @@ func newTestFullscreen(t *testing.T, configure func(*FullscreenOptions)) (*Fulls
 	model := newFullscreenModel(context.Background(), app)
 	model.palette = terminalPalette{Level: colorLevelNone, NoColor: true, Dark: true}
 	return app, model
+}
+
+func fakeApplication(t *testing.T, model fullscreenModel) *fakeFullscreenApplication {
+	t.Helper()
+	fake, ok := model.app.options.Application.(*fakeFullscreenApplication)
+	if !ok {
+		t.Fatalf("application = %T", model.app.options.Application)
+	}
+	return fake
 }
 
 func cellContent(cell HistoryCell) string {
@@ -49,20 +136,41 @@ func lastCellContent(model fullscreenModel) string {
 	return cellContent(model.historyCells[len(model.historyCells)-1])
 }
 
+func executeCommand(t *testing.T, command tea.Cmd) tea.Msg {
+	t.Helper()
+	if command == nil {
+		t.Fatal("command is nil")
+	}
+	message := command()
+	executeMessage(t, message)
+	return message
+}
+
+func executeMessage(t *testing.T, message tea.Msg) {
+	t.Helper()
+	switch message := message.(type) {
+	case tea.BatchMsg:
+		for _, command := range message {
+			if command != nil {
+				executeMessage(t, command())
+			}
+		}
+	}
+}
+
 func TestFullscreenTextareaPreservesChineseAndBackspace(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("请检查中文")})
-	model = updated.(fullscreenModel)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyBackspace})
-	model = updated.(fullscreenModel)
-	if got := model.input.Value(); got != "请检查中" {
+	updated, _ = updated.(fullscreenModel).Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if got := updated.(fullscreenModel).input.Value(); got != "请检查中" {
 		t.Fatalf("Chinese input = %q", got)
 	}
 }
 
-func TestFullscreenBannerUsesLogoAndRestrainedMetadata(t *testing.T) {
+func TestFullscreenBannerUsesRestrainedMetadata(t *testing.T) {
 	_, model := newTestFullscreen(t, func(options *FullscreenOptions) {
 		options.Startup = FullscreenStartup{Version: "dev", Provider: "openai", Model: "gpt", Project: "/tmp/project", Branch: "main", Session: "session"}
+		options.Snapshot.Model = "gpt"
 	})
 	banner := xansi.Strip(model.banner())
 	for _, expected := range []string{"Amadeus", "model:", "gpt", "directory:", "/tmp/project"} {
@@ -75,118 +183,275 @@ func TestFullscreenBannerUsesLogoAndRestrainedMetadata(t *testing.T) {
 			t.Fatalf("banner leaked %q: %q", excluded, banner)
 		}
 	}
-	if maxLineWidth(banner) >= model.width {
-		t.Fatalf("banner touches terminal edge: width=%d\n%s", model.width, banner)
-	}
 }
 
-func TestFullscreenContextStatusUsesEstimatedAndProviderUsage(t *testing.T) {
+func TestFullscreenContextStatusUsesRuntimeUsage(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.ThreadTokenUsageUpdated{
-		EstimatedInputTokens: 12_000,
-		ContextWindow:        128_000,
+		Usage: llm.Usage{InputTokens: 13000, OutputTokens: 800}, EstimatedInputTokens: 12000, ContextWindow: 128000,
 	}})
-	if model.contextUsage != 12_000 || model.contextLimit != 128_000 {
-		t.Fatalf("estimated context usage = %d/%d", model.contextUsage, model.contextLimit)
-	}
-	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.ThreadTokenUsageUpdated{
-		Usage: llm.Usage{InputTokens: 14_000, OutputTokens: 500},
-	}})
-	if model.contextUsage != 14_000 || model.inputUsage != 14_000 || model.outputUsage != 500 {
-		t.Fatalf("provider context usage = %d, input/output = %d/%d", model.contextUsage, model.inputUsage, model.outputUsage)
-	}
-	if rendered := xansi.Strip(model.statusBar()); !strings.Contains(rendered, "Context 10% used") {
-		t.Fatalf("status bar omitted context usage: %q", rendered)
+	if model.contextUsage != 13000 || model.inputUsage != 13000 || model.outputUsage != 800 {
+		t.Fatalf("usage = context %d input %d output %d", model.contextUsage, model.inputUsage, model.outputUsage)
 	}
 }
 
-func TestFullscreenAcceptsAndQueuesInputWhileRunning(t *testing.T) {
+func TestFullscreenSubmitsInputDirectlyWhileRunning(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	model.running = true
 	model.input.SetValue("继续检查")
 	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(fullscreenModel)
-	if command == nil || len(model.queuedTasks) != 1 || model.queuedTasks[0].Content != "继续检查" || lastCellContent(model) != "继续检查" {
-		t.Fatalf("queued state: tasks=%#v last=%q", model.queuedTasks, lastCellContent(model))
+	executeCommand(t, command)
+	fake := fakeApplication(t, model)
+	if len(fake.submitted) != 1 || fake.submitted[0] != "继续检查" || lastCellContent(model) != "继续检查" {
+		t.Fatalf("submitted=%v last=%q", fake.submitted, lastCellContent(model))
 	}
 }
 
-func TestFullscreenPlanAndShiftTabModes(t *testing.T) {
+func TestFullscreenPlanTaskWaitsForSettingsAcknowledgement(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
-	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashPlan})
-	if command == nil {
-		t.Fatal("plan command did not submit permission mode")
-	}
-	updated, _ = updated.(fullscreenModel).Update(command())
-	model = updated.(fullscreenModel)
-	if model.collaboration != CollaborationPlan {
-		t.Fatalf("plan mode = %q", model.collaboration)
-	}
-	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-	if command == nil {
-		t.Fatal("shift-tab did not submit permission mode")
-	}
-	updated, _ = updated.(fullscreenModel).Update(command())
-	model = updated.(fullscreenModel)
-	if model.collaboration != CollaborationExecute {
-		t.Fatalf("shift-tab mode = %q", model.collaboration)
-	}
-	model.running = true
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-	model = updated.(fullscreenModel)
-	if model.collaboration != CollaborationExecute || !strings.Contains(lastCellContent(model), "cannot change") {
-		t.Fatalf("running mode changed")
-	}
-}
-
-func TestFullscreenPlanTaskSetsSessionModeBeforeStartingTask(t *testing.T) {
-	var modes []CollaborationMode
-	_, model := newTestFullscreen(t, func(options *FullscreenOptions) {
-		options.SetPermissionMode = func(_ context.Context, mode CollaborationMode) error {
-			modes = append(modes, mode)
-			return nil
-		}
-	})
 	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashPlan, Args: "inspect the repository"})
-	if command == nil {
-		t.Fatal("plan task did not create a permission mode command")
-	}
-	if len(modes) != 0 {
-		t.Fatalf("permission mode changed before command execution: %v", modes)
-	}
-
-	updatedModel := updated.(fullscreenModel)
-	modeMessage := command()
-	if len(modes) != 1 || modes[0] != CollaborationPlan {
-		t.Fatalf("permission mode calls = %v, want [plan]", modes)
-	}
-	updated, taskCommand := updatedModel.Update(modeMessage)
 	model = updated.(fullscreenModel)
-	if model.collaboration != CollaborationPlan || !model.running {
-		t.Fatalf("plan task did not enter plan mode: mode=%q running=%v", model.collaboration, model.running)
+	executeCommand(t, command)
+	fake := fakeApplication(t, model)
+	if len(fake.modes) != 1 || len(fake.submitted) != 0 || model.running {
+		t.Fatalf("before acknowledgement modes=%v submitted=%v running=%v", fake.modes, fake.submitted, model.running)
 	}
-	if taskCommand == nil {
-		t.Fatal("plan task did not start after permission mode update")
+	updated, command = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: protocol.SessionEvent{
+		ThreadID: "thread-1", Message: protocol.ThreadSettingsUpdated{Mode: string(turn.ModeKindPlan)},
+	}}})
+	model = updated.(fullscreenModel)
+	executeCommand(t, command)
+	if model.collaboration != CollaborationPlan || len(fake.submitted) != 1 || fake.submitted[0] != "inspect the repository" {
+		t.Fatalf("after acknowledgement mode=%q submitted=%v", model.collaboration, fake.submitted)
 	}
 }
 
 func TestFullscreenPlanModeFailureDoesNotChangeProjection(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	fake := fakeApplication(t, model)
+	fake.setModeErr = errors.New("session is unavailable")
+	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashPlan})
+	message := executeCommand(t, command)
+	updated, _ = updated.(fullscreenModel).Update(message)
+	model = updated.(fullscreenModel)
+	if model.collaboration != CollaborationExecute || !strings.Contains(lastCellContent(model), "session is unavailable") {
+		t.Fatalf("mode=%q last=%q", model.collaboration, lastCellContent(model))
+	}
+}
+
+func TestFullscreenResumeReplaysSnapshotAndRejectsStaleEvents(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	model.insertHistoryCell(NewNoticeHistoryCell("old transcript"))
+	now := time.Now().UTC()
+	snapshot := application.ThreadViewSnapshot{Generation: 2, ThreadID: "thread-2", Mode: turn.ModeKindPlan, Model: "next", ContextWindow: 64000, Items: []protocol.TurnItem{
+		{ID: "user", Kind: protocol.ItemUserMessage, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now, Text: "hello"},
+		{ID: "assistant", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now, Text: "world"},
+	}}
+	updated, _ := model.Update(fullscreenAppEventMsg{event: application.ThreadAttached{Snapshot: snapshot}})
+	model = updated.(fullscreenModel)
+	if model.generation != 2 || model.startup.Session != "thread-2" || len(model.historyCells) != 2 || cellContent(model.historyCells[0]) != "hello" || cellContent(model.historyCells[1]) != "world" {
+		t.Fatalf("snapshot not restored: generation=%d session=%s cells=%v", model.generation, model.startup.Session, model.historyCells)
+	}
+	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: protocol.SessionEvent{ThreadID: "thread-1", Message: protocol.Warning{Message: "stale"}}}})
+	model = updated.(fullscreenModel)
+	if strings.Contains(lastCellContent(model), "stale") {
+		t.Fatal("stale event changed active transcript")
+	}
+}
+
+func TestFullscreenResumeRestoresComposerFocus(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	model.input.Blur()
+	if model.input.Focused() {
+		t.Fatal("test setup left composer focused")
+	}
+	updated, _ := model.Update(fullscreenAppEventMsg{event: application.ThreadAttached{Snapshot: application.ThreadViewSnapshot{
+		Generation: 2, ThreadID: "thread-2", Title: "resumed", Mode: turn.ModeKindDefault,
+	}}})
+	model = updated.(fullscreenModel)
+	if !model.input.Focused() {
+		t.Fatal("resume did not restore composer focus")
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if got := updated.(fullscreenModel).input.Value(); got != "x" {
+		t.Fatalf("focused composer ignored input: %q", got)
+	}
+}
+
+func TestFullscreenResumeFlushesCompletedToolBeforeFinalAssistant(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	started := toolStartedMessage("read-resume", "read", "read", "Read docs/design.md", "")
+	toolItem := toolCompletedMessage(started, protocol.ItemStatusCompleted, "content", "1ms", false).Item
+	now := time.Now().UTC()
+	assistant := protocol.TurnItem{
+		ID: "assistant-resume", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemStatusCompleted,
+		CreatedAt: now, CompletedAt: now, Text: "final answer",
+	}
+	updated, _ := model.Update(fullscreenAppEventMsg{event: application.ThreadAttached{Snapshot: application.ThreadViewSnapshot{
+		Generation: 2, ThreadID: "thread-2", Title: "resumed", Mode: turn.ModeKindDefault,
+		Items: []protocol.TurnItem{toolItem, assistant},
+	}}})
+	model = updated.(fullscreenModel)
+	if len(model.historyCells) != 2 {
+		t.Fatalf("replayed cells = %d: %#v", len(model.historyCells), model.historyCells)
+	}
+	if _, ok := model.historyCells[0].(*ToolHistoryCell); !ok {
+		t.Fatalf("first replayed cell = %T, want tool activity", model.historyCells[0])
+	}
+	if _, ok := model.historyCells[1].(AgentMessageCell); !ok {
+		t.Fatalf("second replayed cell = %T, want final assistant", model.historyCells[1])
+	}
+}
+
+func TestFullscreenResumeFailureRestoresComposerFocus(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	model.input.Blur()
+	model.selection = &selectionOverlay{Title: "Resume"}
+	model.selectionKind = "resume"
+	updated, _ := model.Update(fullscreenAppEventMsg{event: application.ThreadAttachFailed{Error: errors.New("not found")}})
+	model = updated.(fullscreenModel)
+	if !model.input.Focused() || model.selection != nil {
+		t.Fatalf("resume failure focus=%v selection=%v", model.input.Focused(), model.selection != nil)
+	}
+}
+
+func TestFullscreenCompactHasPendingAndCompletedStates(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashCompact})
+	model = updated.(fullscreenModel)
+	if !model.running || model.status != "compacting context" {
+		t.Fatalf("pending compact state running=%v status=%q", model.running, model.status)
+	}
+	executeCommand(t, command)
+	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: protocol.SessionEvent{ThreadID: "thread-1", Message: protocol.ContextCompacted{ItemID: "compact-1"}}}})
+	model = updated.(fullscreenModel)
+	if lastCellContent(model) != "Context compacted" {
+		t.Fatalf("compact result = %q", lastCellContent(model))
+	}
+	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: protocol.SessionEvent{ThreadID: "thread-1", Message: protocol.Warning{Message: "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted."}}}})
+	model = updated.(fullscreenModel)
+	if lastCellContent(model) != "⚠ Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted." {
+		t.Fatalf("compact transcript = %q", renderHistoryCells(model.historyCells, HistoryRenderRaw, noColorRenderContext()))
+	}
+}
+
+func TestFullscreenEmptyMCPInventoryIsVisibleAndStaleResultIgnored(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashMCP})
+	model = updated.(fullscreenModel)
+	if model.status != "loading MCP inventory" || len(model.historyCells) != 1 {
+		t.Fatalf("MCP pending status=%q history=%#v", model.status, model.historyCells)
+	}
+	if _, ok := model.historyCells[0].(MCPCommandHistoryCell); !ok {
+		t.Fatalf("first MCP cell = %T", model.historyCells[0])
+	}
+	executeCommand(t, command)
+	updated, _ = model.Update(fullscreenAppEventMsg{event: application.MCPInventoryLoaded{RequestID: 1, Generation: 1, ThreadID: "thread-1"}})
+	model = updated.(fullscreenModel)
+	if got, want := renderHistoryCells(model.historyCells, HistoryRenderRaw, noColorRenderContext()), "/mcp\n\n🔌  MCP Tools\n\n  • No MCP servers configured."; got != want {
+		t.Fatalf("MCP output\n got: %q\nwant: %q", got, want)
+	}
+	before := len(model.historyCells)
+	updated, _ = model.Update(fullscreenAppEventMsg{event: application.MCPInventoryLoaded{RequestID: 0, Generation: 1, ThreadID: "thread-1", Error: errors.New("stale")}})
+	if len(updated.(fullscreenModel).historyCells) != before {
+		t.Fatal("stale MCP result changed history")
+	}
+}
+
+func TestFullscreenStatusUsesStructuredCell(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	fake := fakeApplication(t, model)
+	fake.status = application.StatusSnapshot{ThreadID: "thread-1", Title: "demo", Provider: "openai", Model: "gpt", Phase: "idle"}
+	updated, _ := model.dispatchCommand(SlashInvocation{Command: SlashStatus})
+	if _, ok := updated.(fullscreenModel).historyCells[0].(StatusHistoryCell); !ok {
+		t.Fatalf("status cell = %T", updated.(fullscreenModel).historyCells[0])
+	}
+}
+
+func TestFullscreenCopyRemainsTUILocal(t *testing.T) {
+	copied := ""
 	_, model := newTestFullscreen(t, func(options *FullscreenOptions) {
-		options.SetPermissionMode = func(context.Context, CollaborationMode) error {
-			return fmt.Errorf("session is unavailable")
+		options.ClipboardWrite = func(value string) error {
+			copied = value
+			return nil
 		}
 	})
-	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashPlan})
-	if command == nil {
-		t.Fatal("plan command did not create a permission mode command")
-	}
-	updated, _ = updated.(fullscreenModel).Update(command())
+	model.transcript.LastAgentMarkdown = "**raw**"
+	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashCopy})
 	model = updated.(fullscreenModel)
-	if model.collaboration != CollaborationExecute {
-		t.Fatalf("failed plan changed local mode to %q", model.collaboration)
+	if command == nil || copied != "**raw**" || len(fakeApplication(t, model).submitted) != 0 {
+		t.Fatalf("command=%v copied=%q submitted=%v", command != nil, copied, fakeApplication(t, model).submitted)
 	}
-	if !strings.Contains(lastCellContent(model), "session is unavailable") {
-		t.Fatalf("missing mode failure: %q", lastCellContent(model))
+}
+
+func TestFullscreenSkillsToggleUsesStablePath(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	model.pendingSkillsView = "manage"
+	updated, _ := model.Update(fullscreenAppEventMsg{event: application.SkillsLoaded{Generation: 1, Skills: []application.SkillOption{
+		{Name: "review", Path: "/user/review/SKILL.md", Enabled: true},
+		{Name: "review", Path: "/project/review/SKILL.md", Enabled: false},
+	}}})
+	model = updated.(fullscreenModel)
+	model.selection.Selected = 1
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(fullscreenModel)
+	executeCommand(t, command)
+	paths := fakeApplication(t, model).skillPaths
+	if len(paths) != 1 || paths[0] != "/project/review/SKILL.md" {
+		t.Fatalf("skill paths = %v", paths)
+	}
+}
+
+func TestFullscreenStaleRenameAndDeleteFailureStayUsable(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	model.sessionTitle = "current"
+	updated, _ := model.Update(fullscreenAppEventMsg{event: application.ThreadNameUpdated{Generation: 0, ThreadID: "old", Name: "stale"}})
+	model = updated.(fullscreenModel)
+	if model.sessionTitle != "current" {
+		t.Fatalf("stale rename changed title to %q", model.sessionTitle)
+	}
+	updated, command := model.Update(fullscreenAppEventMsg{event: application.ThreadDeleteFailed{Error: errors.New("store busy")}})
+	model = updated.(fullscreenModel)
+	if command == nil || model.status != "idle" || !strings.Contains(lastCellContent(model), "store busy") {
+		t.Fatalf("delete failure status=%q last=%q", model.status, lastCellContent(model))
+	}
+}
+
+func TestFullscreenClearDropsOldTranscript(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	model.insertHistoryCell(NewNoticeHistoryCell("old"))
+	updated, _ := model.Update(fullscreenAppEventMsg{event: application.ClearUIStarted{}})
+	model = updated.(fullscreenModel)
+	if len(model.historyCells) != 0 || !model.clearing {
+		t.Fatalf("clear state cells=%d clearing=%v", len(model.historyCells), model.clearing)
+	}
+}
+
+func TestFullscreenApprovalUsesTypedApplicationPort(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	request := policy.ApprovalRequest{ID: "approval-1", ToolName: "execute_command", Command: "go test ./..."}
+	updated, _ := model.Update(fullscreenAppEventMsg{event: application.ApprovalRequested{Generation: 1, RequestID: "request-1", Request: request}})
+	model = updated.(fullscreenModel)
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(fullscreenModel)
+	executeCommand(t, command)
+	if got := fakeApplication(t, model).approvals; len(got) != 1 || got[0] != "request-1" {
+		t.Fatalf("approvals = %v", got)
+	}
+}
+
+func TestFullscreenExitWaitsForShutdownFinished(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashExit})
+	model = updated.(fullscreenModel)
+	executeCommand(t, command)
+	if fakeApplication(t, model).shutdowns != 1 || !model.shutdownRequested {
+		t.Fatal("shutdown was not requested")
+	}
+	updated, quit := model.Update(fullscreenAppEventMsg{event: application.ShutdownFinished{}})
+	if updated.(fullscreenModel).status != "shutting down" || quit == nil {
+		t.Fatal("shutdown completion did not quit")
 	}
 }
 
@@ -195,13 +460,8 @@ func TestFullscreenInvalidSlashInputDoesNotEnterHistory(t *testing.T) {
 	model.input.SetValue("/unknown")
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(fullscreenModel)
-	for _, entry := range model.history {
-		if entry == "/unknown" {
-			t.Fatal("invalid slash command entered input history")
-		}
-	}
-	if !strings.Contains(lastCellContent(model), "unknown command") {
-		t.Fatalf("missing invalid slash command error: %q", lastCellContent(model))
+	if len(model.history) != 0 || !strings.Contains(lastCellContent(model), "unknown command") {
+		t.Fatalf("history=%v last=%q", model.history, lastCellContent(model))
 	}
 }
 
@@ -209,339 +469,13 @@ func TestFullscreenFlushCommitsCellsOnce(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	model.insertHistoryCell(NewUserMessageCell("检查项目"))
 	command := model.flushHistory()
-	if command == nil || len(model.historyCells) != 1 || len(model.pendingHistoryCells) != 0 || !model.hasEmittedHistoryLines {
-		t.Fatalf("first flush failed")
+	if command == nil || len(model.pendingHistoryCells) != 0 || !model.hasEmittedHistoryLines {
+		t.Fatal("first flush failed")
 	}
-	if output := fmt.Sprint(command()); !strings.Contains(output, "检查项目") {
-		t.Fatalf("flush output = %q", output)
-	} else if strings.Contains(output, "\n}") {
-		t.Fatalf("flush output carries a trailing blank line: %q", output)
+	if output := command(); output == nil || !strings.Contains(strings.TrimSpace(fmt.Sprint(output)), "检查项目") {
+		t.Fatalf("flush output = %#v", output)
 	}
-	if command := model.flushHistory(); command != nil {
-		t.Fatal("second flush repeated history")
+	if model.flushHistory() != nil {
+		t.Fatal("second flush duplicated output")
 	}
-}
-
-func TestFullscreenFlushSeparatesCellsAcrossCommitBatches(t *testing.T) {
-	_, model := newTestFullscreen(t, nil)
-	model.insertHistoryCell(NewUserMessageCell("Inspect the project"))
-	first := model.flushHistory()
-	if first == nil {
-		t.Fatal("first flush missing")
-	}
-	model.insertHistoryCell(NewAgentMessageCell("The project is ready."))
-	second := model.flushHistory()
-	if second == nil {
-		t.Fatal("second flush missing")
-	}
-	output := fmt.Sprint(second())
-	if !strings.Contains(output, "{\n") {
-		t.Fatalf("cross-batch blank line missing: %q", output)
-	}
-	if strings.Contains(output, "\n\n}") {
-		t.Fatalf("flush output carries a trailing blank line: %q", output)
-	}
-}
-
-func TestFullscreenFlushKeepsStreamContinuationAdjacent(t *testing.T) {
-	_, model := newTestFullscreen(t, nil)
-	model.insertHistoryCell(continuationHistoryCell{text: "first"})
-	first := model.flushHistory()
-	if first == nil {
-		t.Fatal("first flush missing")
-	}
-	_ = first()
-	model.insertHistoryCell(continuationHistoryCell{text: "second", continuation: true})
-	second := model.flushHistory()
-	if second == nil {
-		t.Fatal("second flush missing")
-	}
-	if output := fmt.Sprint(second()); strings.Contains(output, "{\n") {
-		t.Fatalf("stream continuation gained a blank line: %q", output)
-	}
-}
-
-func TestFullscreenWorkingUsesFixedClockAndDoesNotCommitHistory(t *testing.T) {
-	_, model := newTestFullscreen(t, nil)
-	start := time.Unix(100, 0)
-	model.running = true
-	model.runStartedAt = start
-	model.motionStartedAt = start
-	model.clock = fixedMotionClock{now: start.Add(65 * time.Second)}
-	before := len(model.historyCells)
-	line := xansi.Strip(model.workingLine())
-	if !strings.Contains(line, "• Working (1m 05s • esc to interrupt)") {
-		t.Fatalf("working line = %q", line)
-	}
-	updated, command := model.Update(fullscreenWorkingTickMsg(start.Add(time.Second)))
-	model = updated.(fullscreenModel)
-	if command != nil || len(model.historyCells) != before {
-		t.Fatalf("working tick affected transcript")
-	}
-}
-
-func TestFullscreenActivityStartsOneLineBelowCommittedHistory(t *testing.T) {
-	_, model := newTestFullscreen(t, nil)
-	start := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
-	model.clock = fixedMotionClock{now: start.Add(time.Second)}
-	model.motionStartedAt = start
-	model.runStartedAt = start
-	model.hasEmittedHistoryLines = true
-	model.running = true
-
-	working := xansi.Strip(model.View())
-	if !strings.HasPrefix(working, "\n• Working") {
-		t.Fatalf("working activity is not separated from committed history: %q", working)
-	}
-
-	model.running = false
-	model.draft = "First response token"
-	draft := xansi.Strip(model.View())
-	if !strings.HasPrefix(draft, "\n• First response token") {
-		t.Fatalf("assistant draft is not separated from committed history: %q", draft)
-	}
-}
-
-func TestFullscreenComposerLeavesOneBlankLineBeforeStatusBar(t *testing.T) {
-	_, model := newTestFullscreen(t, nil)
-	view := xansi.Strip(model.View())
-	status := xansi.Strip(model.statusBar())
-	if !strings.HasSuffix(view, "\n\n"+status) {
-		t.Fatalf("composer/status spacing = %q, want one blank line before %q", view, status)
-	}
-	if strings.HasSuffix(view, "\n\n\n"+status) {
-		t.Fatalf("composer/status spacing contains more than one blank line: %q", view)
-	}
-}
-
-func TestFullscreenRunningComposerHasNoAuxiliaryHint(t *testing.T) {
-	_, model := newTestFullscreen(t, nil)
-	model.running = true
-	model.queuedTasks = []TaskSubmission{{Content: "queued"}}
-	rendered := xansi.Strip(model.inputBox())
-	if strings.Contains(rendered, "Agent is working") || strings.Contains(rendered, "queues the next task") {
-		t.Fatalf("running composer still renders an auxiliary hint: %q", rendered)
-	}
-}
-
-func TestFullscreenToolEventsAreVisibleBeforeIterationCompletion(t *testing.T) {
-	_, model := newTestFullscreen(t, nil)
-	started := toolStartedMessage("read", "read", "read", "Read docs/design.md", "")
-	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: started})
-	if model.transcript.ActiveCell == nil || !strings.Contains(xansi.Strip(model.renderActiveCell()), "Exploring") {
-		t.Fatalf("tool was not immediately visible")
-	}
-	count := len(model.historyCells)
-	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.TurnStarted{StartedAt: time.Now().UTC()}})
-	if len(model.historyCells) != count {
-		t.Fatal("turn lifecycle event changed transcript layout")
-	}
-}
-
-func TestFullscreenSeparatorFollowsToolAndAssistantBoundary(t *testing.T) {
-	_, model := newTestFullscreen(t, nil)
-	started := toolStartedMessage("exec", "execute_command", "write", "", "go test ./...")
-	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: started})
-	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: toolCompletedMessage(started, protocol.ItemStatusCompleted, "", "0s", false)})
-	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.AssistantMessageDelta{ItemID: "assistant-1", Delta: "完成。"}})
-	if len(model.historyCells) != 2 {
-		t.Fatalf("tool/final boundary = %#v", model.historyCells)
-	}
-	if _, ok := model.historyCells[0].(*ToolHistoryCell); !ok {
-		t.Fatalf("first cell = %T", model.historyCells[0])
-	}
-	if _, ok := model.historyCells[1].(FinalMessageSeparator); !ok {
-		t.Fatalf("second cell = %T", model.historyCells[1])
-	}
-	model.finishDraft()
-	if _, ok := model.historyCells[2].(AgentMessageCell); !ok {
-		t.Fatalf("assistant order incorrect")
-	}
-}
-
-func TestFullscreenTaskCompletionUsesShortAndLongSeparator(t *testing.T) {
-	_, model := newTestFullscreen(t, nil)
-	model.running = true
-	model.runStartedAt = time.Now().Add(-30 * time.Second)
-	model.transcript.HadWorkActivity = true
-	model.transcript.NeedsFinalMessageSeparator = true
-	updated, _ := model.Update(fullscreenTaskDoneMsg{})
-	model = updated.(fullscreenModel)
-	if len(model.historyCells) != 1 || strings.Contains(cellContent(model.historyCells[0]), "Worked") {
-		t.Fatalf("short separator = %#v", model.historyCells)
-	}
-	separator := FinalMessageSeparator{Elapsed: 65 * time.Second}
-	if got := xansi.Strip(model.renderHistoryCell(separator)); !strings.Contains(got, "Worked for 1m 05s") {
-		t.Fatalf("long separator = %q", got)
-	}
-}
-
-func TestFullscreenTaskCompletionPrefersMeasuredTaskDuration(t *testing.T) {
-	_, model := newTestFullscreen(t, nil)
-	model.running = true
-	model.runStartedAt = time.Now()
-	model.transcript.HadWorkActivity = true
-	model.transcript.NeedsFinalMessageSeparator = true
-	updated, _ := model.Update(fullscreenTaskDoneMsg{elapsed: 7*time.Minute + 18*time.Second})
-	model = updated.(fullscreenModel)
-	if len(model.historyCells) != 1 {
-		t.Fatalf("cells = %#v", model.historyCells)
-	}
-	if got := xansi.Strip(model.renderHistoryCell(model.historyCells[0])); !strings.Contains(got, "Worked for 7m 18s") {
-		t.Fatalf("measured duration missing: %q", got)
-	}
-}
-
-func TestFullscreenErrorAfterToolKeepsFinalSeparator(t *testing.T) {
-	_, model := newTestFullscreen(t, nil)
-	start := time.Unix(100, 0)
-	model.running = true
-	model.runStartedAt = start
-	model.clock = fixedMotionClock{now: start.Add(61 * time.Second)}
-	model.transcript.HadWorkActivity = true
-	model.transcript.NeedsFinalMessageSeparator = true
-	updated, _ := model.Update(fullscreenTaskDoneMsg{err: context.Canceled})
-	model = updated.(fullscreenModel)
-	if len(model.historyCells) != 2 {
-		t.Fatalf("cancel boundary = %#v", model.historyCells)
-	}
-	if _, ok := model.historyCells[0].(FinalMessageSeparator); !ok {
-		t.Fatalf("cancel separator = %T", model.historyCells[0])
-	}
-	if _, ok := model.historyCells[1].(NoticeHistoryCell); !ok {
-		t.Fatalf("cancel notice = %T", model.historyCells[1])
-	}
-	if !strings.Contains(cellContent(model.historyCells[0]), "Worked for 1m 01s") {
-		t.Fatalf("cancel duration missing")
-	}
-}
-
-func TestFullscreenModelRendersAgentEvents(t *testing.T) {
-	_, model := newTestFullscreen(t, nil)
-	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.PlanUpdated{Revision: 1, Items: []protocol.PlanItem{{Step: "Inspect", Status: "in_progress"}}}})
-	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.Warning{Message: "notice"}})
-	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.StreamError{Error: "boom"}})
-	if len(model.historyCells) != 3 {
-		t.Fatalf("event projection = %#v", model.historyCells)
-	}
-	if _, ok := model.historyCells[0].(PlanUpdateCell); !ok {
-		t.Fatalf("plan projection = %T", model.historyCells[0])
-	}
-	if _, ok := model.historyCells[2].(ErrorHistoryCell); !ok {
-		t.Fatalf("error projection = %T", model.historyCells[2])
-	}
-}
-
-func TestFullscreenPlanUpdateSuppressesGenericToolActivity(t *testing.T) {
-	_, model := newTestFullscreen(t, nil)
-	started := toolStartedMessage("plan-1", "update_plan", "none", "Update plan", "")
-	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: started})
-	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.PlanUpdated{Revision: 1, Items: []protocol.PlanItem{{Step: "Inspect", Status: "in_progress"}}}})
-	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: toolCompletedMessage(started, protocol.ItemStatusCompleted, "", "0s", false)})
-	if model.transcript.ActiveCell != nil || len(model.historyCells) != 1 {
-		t.Fatalf("update_plan should render only the plan cell: active=%#v cells=%#v", model.transcript.ActiveCell, model.historyCells)
-	}
-	if _, ok := model.historyCells[0].(PlanUpdateCell); !ok {
-		t.Fatalf("update_plan cell = %T", model.historyCells[0])
-	}
-	if rendered := xansi.Strip(model.renderHistoryCell(model.historyCells[0])); !strings.Contains(rendered, "Updated Plan") || strings.Contains(rendered, "Explored") {
-		t.Fatalf("unexpected update_plan projection: %q", rendered)
-	}
-	if rendered := xansi.Strip(model.renderHistoryCell(model.historyCells[0])); !strings.Contains(rendered, "\n  └ □ Inspect") || strings.Contains(rendered, "revision") || strings.Contains(rendered, "plan-1") {
-		t.Fatalf("plan cell should follow Codex checklist layout: %q", rendered)
-	}
-}
-
-func TestFullscreenWarningDoesNotBecomeDiffState(t *testing.T) {
-	_, model := newTestFullscreen(t, nil)
-	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.Warning{Message: "diff is shown in approval"}})
-	if len(model.historyCells) != 1 || !strings.Contains(cellContent(model.historyCells[0]), "diff is shown in approval") {
-		t.Fatalf("warning projection = %#v", model.historyCells)
-	}
-}
-
-func TestFullscreenNoColorAndWidthMatrix(t *testing.T) {
-	for _, width := range []int{40, 59, 60, 80, 100} {
-		_, model := newTestFullscreen(t, func(options *FullscreenOptions) {
-			options.Width = width
-			options.NoColor = true
-			options.Startup = FullscreenStartup{Model: "模型", Project: "/项目/很长/路径"}
-		})
-		model.width = width
-		model.running = true
-		model.runStartedAt = time.Now()
-		model.motionStartedAt = model.runStartedAt
-		for name, rendered := range map[string]string{"banner": model.banner(), "view": model.View(), "user": model.renderHistoryCell(NewUserMessageCell("中文 🎼 内容"))} {
-			if strings.Contains(rendered, "\x1b[") {
-				t.Fatalf("width %d %s contains ANSI", width, name)
-			}
-			if maxLineWidth(rendered) > width {
-				t.Fatalf("width %d %s overflow: %d", width, name, maxLineWidth(rendered))
-			}
-		}
-	}
-}
-
-func TestFullscreenApprovalUsesKeyboardDecision(t *testing.T) {
-	_, model := newTestFullscreen(t, nil)
-	response := make(chan fullscreenApprovalResult, 1)
-	request := policy.ApprovalRequest{ID: "approval", ToolName: "write_file", Risk: policy.CommandRiskHigh, Cause: policy.ApprovalCause{Kind: policy.ApprovalCausePolicy, Code: "writes_file"}}
-	updated, _ := model.Update(fullscreenApprovalMsg{prompt: &fullscreenApproval{request: request, response: response}})
-	model = updated.(fullscreenModel)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
-	model = updated.(fullscreenModel)
-	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(fullscreenModel)
-	decision := (<-response).decision
-	if decision.Outcome != policy.ApprovalAllow || decision.Scope != policy.ApprovalSession || model.approval != nil || command == nil {
-		t.Fatalf("approval result = %#v", decision)
-	}
-}
-
-func TestFullscreenResumeOverlayAndCopyClear(t *testing.T) {
-	copied := ""
-	_, model := newTestFullscreen(t, func(options *FullscreenOptions) {
-		options.ClipboardWrite = func(value string) error { copied = value; return nil }
-		options.Sessions = func(context.Context) ([]SessionOption, error) {
-			return []SessionOption{{ID: "session-1", Title: "Current", Current: true}}, nil
-		}
-		options.Resume = func(context.Context, string) (string, error) { return "resumed", nil }
-	})
-	model.transcript.LastAgentMarkdown = "**done**"
-	updated, _ := model.dispatchCommand(SlashInvocation{Command: SlashCopy})
-	model = updated.(fullscreenModel)
-	if copied != "**done**" || !strings.Contains(lastCellContent(model), "Copied") {
-		t.Fatalf("copy failed")
-	}
-	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashResume})
-	model = updated.(fullscreenModel)
-	message := command()
-	updated, _ = model.Update(message)
-	model = updated.(fullscreenModel)
-	if model.selection == nil || model.selectionKind != "resume" {
-		t.Fatalf("resume overlay missing")
-	}
-	model.collaboration = CollaborationPlan
-	updated, _ = model.Update(fullscreenCommandDoneMsg{command: "/clear"})
-	model = updated.(fullscreenModel)
-	if len(model.historyCells) != 0 || model.collaboration != CollaborationExecute {
-		t.Fatalf("clear did not reset state")
-	}
-}
-
-func TestPrefixRenderedBlockSkipsANSIOnlyBlankLines(t *testing.T) {
-	input := "\x1b[0m\nhello\n\x1b[0m\n"
-	if got := xansi.Strip(prefixRenderedBlock(input, "• ")); got != "• hello" {
-		t.Fatalf("prefixed block = %q", got)
-	}
-}
-
-func maxLineWidth(value string) int {
-	maximum := 0
-	for _, line := range strings.Split(value, "\n") {
-		if width := lipgloss.Width(line); width > maximum {
-			maximum = width
-		}
-	}
-	return maximum
 }

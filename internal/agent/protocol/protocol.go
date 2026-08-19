@@ -75,9 +75,31 @@ type ThreadConfigured struct{}
 
 func (ThreadConfigured) isEventMessage() {}
 
+type ThreadSettingsUpdated struct {
+	Mode string
+}
+
+func (ThreadSettingsUpdated) isEventMessage() {}
+
+type ShutdownComplete struct{}
+
+func (ShutdownComplete) isEventMessage() {}
+
+type TaskKind string
+
+const (
+	TaskKindRegular TaskKind = "regular"
+	TaskKindCompact TaskKind = "compact"
+)
+
+func (kind TaskKind) Valid() bool {
+	return kind == TaskKindRegular || kind == TaskKindCompact
+}
+
 type TurnStarted struct {
 	StartedAt time.Time
 	Input     string
+	Kind      TaskKind
 }
 
 func (TurnStarted) isEventMessage() {}

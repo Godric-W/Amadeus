@@ -7,8 +7,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -210,6 +208,9 @@ func (model fullscreenModel) statusBar() string {
 		parts = append(parts, statusBarPart{text: modelName, style: model.palette.statusLineStyle(statusAccentModel)})
 	} else {
 		parts = append(parts, statusBarPart{text: "AMADEUS", style: model.palette.statusLineStyle(statusAccentModel)})
+	}
+	if title := strings.TrimSpace(model.sessionTitle); title != "" && title != "draft" {
+		parts = append(parts, statusBarPart{text: title, style: model.palette.dim()})
 	}
 	if project := strings.TrimSpace(model.startup.Project); project != "" {
 		parts = append(parts, statusBarPart{text: project, style: model.palette.statusLineStyle(statusAccentPath)})
@@ -453,6 +454,3 @@ func maxInt(left, right int) int {
 	}
 	return right
 }
-
-var _ protocol.EventSink = (*FullscreenApplication)(nil)
-var _ policy.ApprovalPort = (*FullscreenApplication)(nil)

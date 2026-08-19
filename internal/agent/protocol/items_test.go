@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
@@ -137,10 +138,10 @@ func TestTranscriptStateUnknownDeltaIsRejected(t *testing.T) {
 
 func TestTranscriptStateContextCompacted(t *testing.T) {
 	state := NewTranscriptState("thread-1")
-	if err := state.Apply(SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: ContextCompacted{ItemID: "compact-1", DroppedMessages: 3, Reason: "budget"}}); err != nil {
+	if err := state.Apply(SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: ContextCompacted{ItemID: "compact-1"}}); err != nil {
 		t.Fatalf("apply compaction: %v", err)
 	}
-	if len(state.Items) != 1 || state.Items[0].Kind != ItemContextCompaction || state.Items[0].Text != "budget" {
+	if len(state.Items) != 1 || state.Items[0].Kind != ItemContextCompaction || state.Items[0].Text != "" {
 		t.Fatalf("unexpected compaction item: %#v", state.Items)
 	}
 }
@@ -166,8 +167,58 @@ func TestCompletedItemRoundTripAndReplay(t *testing.T) {
 	if decoded.ID != item.ID || decoded.Kind != item.Kind || decoded.Status != item.Status || decoded.Text != item.Text {
 		t.Fatalf("decoded item = %#v", decoded)
 	}
-	items, err := ProjectCompletedItems([]rollout.Line{line})
-	if err != nil || len(items) != 1 || items[0].ID != item.ID {
-		t.Fatalf("replay items = %#v, err=%v", items, err)
+	projection, err := ProjectThreadItems([]rollout.Line{line})
+	if err != nil || len(projection.Items) != 1 || projection.Items[0].ID != item.ID {
+		t.Fatalf("replay items = %#v, err=%v", projection.Items, err)
+	}
+}
+
+func TestProjectThreadItemsPreservesCanonicalVisibleOrder(t *testing.T) {
+	now := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+	user, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "inspect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistant, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "working"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planItem, err := rollout.NewItem(rollout.KindPlanUpdate, plan.Snapshot{
+		Explanation: "ordered", UpdatedAt: now.Add(2 * time.Second), Revision: 1,
+		Items: []plan.Item{{Step: "test", Status: plan.ItemInProgress}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compaction, err := rollout.NewItem(rollout.KindCompaction, rollout.Compaction{
+		Summary: "budget", ReplacementHistory: []rollout.ReplacementMessage{{Role: "user", Content: "summary"}},
+		CoveredThroughSequence: 2, SourceHash: "hash",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := ProjectThreadItems([]rollout.Line{
+		{Version: rollout.CurrentVersion, Sequence: 1, Timestamp: now, ThreadID: "thread-1", TurnID: "turn-1", Item: user},
+		{Version: rollout.CurrentVersion, Sequence: 2, Timestamp: now.Add(time.Second), ThreadID: "thread-1", TurnID: "turn-1", Item: assistant},
+		{Version: rollout.CurrentVersion, Sequence: 3, Timestamp: now.Add(2 * time.Second), ThreadID: "thread-1", TurnID: "turn-2", Item: planItem},
+		{Version: rollout.CurrentVersion, Sequence: 4, Timestamp: now.Add(3 * time.Second), ThreadID: "thread-1", TurnID: "turn-2", Item: compaction},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ItemKind{ItemUserMessage, ItemAssistantMessage, ItemPlan, ItemContextCompaction}
+	if len(projection.Items) != len(want) {
+		t.Fatalf("projection items = %#v", projection.Items)
+	}
+	for index, kind := range want {
+		if projection.Items[index].Kind != kind {
+			t.Fatalf("item %d kind = %q, want %q", index, projection.Items[index].Kind, kind)
+		}
+	}
+	if projection.Items[3].Text != "" {
+		t.Fatalf("compaction summary leaked into replay text: %q", projection.Items[3].Text)
+	}
+	if payload, ok := projection.Items[3].Payload.(rollout.Compaction); !ok || payload.Summary != "budget" {
+		t.Fatalf("compaction payload = %#v", projection.Items[3].Payload)
 	}
 }

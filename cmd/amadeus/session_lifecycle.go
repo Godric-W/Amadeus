@@ -41,46 +41,6 @@ func (runner *agentController) closeSessionStore() {
 	}
 }
 
-func (runner *agentController) writeInteractiveStatus(ctx context.Context, invocation agentInvocation) error {
-	active, configured, err := runner.ensureActiveThread(ctx, invocation)
-	if err != nil {
-		return err
-	}
-	provider := configured.Providers[configured.DefaultProvider]
-	workspace := runner.currentWorkspace()
-	metadata, metadataErr := workspace.CurrentMetadata(ctx)
-	title := "draft"
-	sessionID := "draft"
-	rolloutItems := 0
-	if metadataErr == nil {
-		sessionID = string(active.ID())
-		title = metadata.Title
-		rolloutItems = len(active.History())
-	}
-	permissionCount := 0
-	skillRevision := "unloaded"
-	mcpRevision := "unloaded"
-	if capabilities, ok := active.CapabilityView(); ok {
-		permissionCount = capabilities.PermissionGrantCount()
-		skillRevision = shortRevision(capabilities.SkillRevision())
-		mcpRevision = shortRevision(capabilities.MCPRevision())
-	}
-	_, err = fmt.Fprintf(invocation.ErrorOutput,
-		"project: %s\nsession: %s\ntitle: %s\nprovider: %s\nmodel: %s\nrollout items: %d\nsession permissions: %d\nskills revision: %s\nmcp revision: %s\n",
-		invocation.Project.Path(), sessionID, title, configured.DefaultProvider, provider.Model, rolloutItems,
-		permissionCount, skillRevision, mcpRevision,
-	)
-	return err
-}
-
-func shortRevision(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) <= 12 {
-		return value
-	}
-	return value[:12]
-}
-
 func (runner *agentController) prepareSession(ctx context.Context, invocation agentInvocation, reader *bufio.Reader) error {
 	switch invocation.SessionMode {
 	case "", sessionStartDraft:

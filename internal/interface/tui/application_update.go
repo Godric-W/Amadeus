@@ -3,10 +3,10 @@ package tui
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -19,210 +19,15 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.renderer, _ = newFullscreenMarkdownRenderer(maxInt(20, model.width-6), model.palette)
 		model.resizeTranscriptViewport()
 		return model, nil
-	case fullscreenEventMsg:
-		model.applyEvent(message.item)
+	case fullscreenAppEventMsg:
+		command := model.handleAppEvent(message.event)
 		if model.viewingDetails && model.details != nil && !model.details.Empty() {
 			model.refreshTranscriptViewport()
 		}
+		return model, tea.Batch(command, model.flushHistory())
+	case fullscreenOperationFailedMsg:
+		model.handleOperationFailure(message)
 		return model, model.flushHistory()
-	case fullscreenApprovalMsg:
-		model.approval = message.prompt
-		model.approvalDialog = newApprovalDialog(message.prompt.request)
-		if cell, ok := model.transcript.ActiveCell.(*ToolHistoryCell); ok && cell.SetApprovalState(message.prompt.request.ID, true) {
-			model.transcript.bumpActiveCellRevision()
-		}
-		model.status = "awaiting approval"
-		model.input.Blur()
-		return model, nil
-	case fullscreenTaskDoneMsg:
-		runDuration := message.elapsed
-		if runDuration <= 0 {
-			runDuration = model.runElapsed()
-		}
-		model.finishDraft()
-		model.flushActiveHistoryCell()
-		if strings.TrimSpace(message.session) != "" {
-			model.startup.Session = strings.TrimSpace(message.session)
-		}
-		if model.transcript.HadWorkActivity && model.transcript.NeedsFinalMessageSeparator {
-			model.insertHistoryCell(FinalMessageSeparator{Elapsed: runDuration})
-			model.transcript.NeedsFinalMessageSeparator = false
-		}
-		if message.err != nil {
-			if errors.Is(message.err, context.Canceled) {
-				model.insertHistoryCell(NewNoticeHistoryCell("当前任务已取消。"))
-			} else {
-				model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
-			}
-		}
-		model.transcript.HadWorkActivity = false
-		model.transcript.NeedsFinalMessageSeparator = false
-		if len(model.queuedTasks) > 0 {
-			next := model.queuedTasks[0]
-			model.queuedTasks = model.queuedTasks[1:]
-			model.details = newTranscriptDetailStore(0, 0)
-			model.running = true
-			model.runStartedAt = time.Now()
-			model.motionStartedAt = model.runStartedAt
-			model.status = taskPhase(next)
-			model.draft = ""
-			return model, tea.Sequence(model.flushHistory(), tea.Batch(model.runTask(next), model.workingTick()))
-		}
-		model.running = false
-		model.status = "idle"
-		return model, model.flushHistory()
-	case fullscreenCommandDoneMsg:
-		if message.err != nil {
-			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
-		} else if strings.HasPrefix(strings.TrimSpace(message.command), "/clear") {
-			model.resetHistory()
-			model.details = newTranscriptDetailStore(0, 0)
-			model.draft = ""
-			model.collaboration = CollaborationExecute
-			model.refreshCurrentSession()
-			model.status = "idle"
-			return model, tea.Sequence(func() tea.Msg { return tea.ClearScreen() }, tea.Println(model.banner()))
-		} else if strings.TrimSpace(message.output) != "" {
-			model.insertHistoryCell(NewNoticeHistoryCell(message.output))
-		}
-		model.status = "idle"
-		return model, model.flushHistory()
-	case fullscreenPermissionModeDoneMsg:
-		if message.err != nil {
-			model.status = "idle"
-			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
-			return model, model.flushHistory()
-		}
-		model.collaboration = message.mode
-		if strings.TrimSpace(message.task) == "" {
-			if message.mode == CollaborationPlan {
-				model.status = "plan mode"
-				model.insertHistoryCell(NewNoticeHistoryCell("Switched to Plan mode"))
-			} else {
-				model.status = "idle"
-				model.insertHistoryCell(NewNoticeHistoryCell("Switched to Execute mode"))
-			}
-			return model, model.flushHistory()
-		}
-		model.insertHistoryCell(NewUserMessageCell(message.task))
-		model.details = newTranscriptDetailStore(0, 0)
-		model.running = true
-		model.runStartedAt = time.Now()
-		model.motionStartedAt = model.runStartedAt
-		model.transcript.HadWorkActivity = false
-		model.transcript.NeedsFinalMessageSeparator = false
-		submission := TaskSubmission{Content: message.task, Mode: message.mode}
-		model.status = taskPhase(submission)
-		model.draft = ""
-		return model, tea.Sequence(model.flushHistory(), tea.Batch(model.runTask(submission), model.workingTick()))
-	case fullscreenSessionsMsg:
-		model.status = "idle"
-		if message.err != nil {
-			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
-			return model, model.flushHistory()
-		}
-		if len(message.sessions) == 0 {
-			model.insertHistoryCell(NewNoticeHistoryCell("当前项目还没有可恢复的 Session。"))
-			return model, model.flushHistory()
-		}
-		model.sessions = message.sessions
-		selected := 0
-		items := make([]selectionItem, 0, len(message.sessions))
-		for index, session := range model.sessions {
-			description := session.Title
-			if session.Current {
-				description += " · current"
-			}
-			items = append(items, selectionItem{Name: session.ID, Description: description})
-			if session.Current {
-				selected = index
-			}
-		}
-		model.selection = &selectionOverlay{Title: "Resume Session", Subtitle: "Select a saved chat", Items: items, Selected: selected, Search: true, Hint: "Type to search · Esc cancel"}
-		model.selectionKind = "resume"
-		return model, nil
-	case fullscreenResumeMsg:
-		model.selection = nil
-		model.selectionKind = ""
-		model.sessions = nil
-		model.status = "idle"
-		if message.err != nil {
-			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
-		} else if strings.TrimSpace(message.message) != "" {
-			model.insertHistoryCell(NewNoticeHistoryCell(message.message))
-			model.refreshCurrentSession()
-			model.collaboration = CollaborationExecute
-		}
-		return model, model.flushHistory()
-	case fullscreenRenameMsg:
-		model.selection = nil
-		model.selectionKind = ""
-		model.status = "idle"
-		if message.err != nil {
-			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
-		} else {
-			model.insertHistoryCell(NewNoticeHistoryCell(message.message))
-			model.refreshCurrentSession()
-		}
-		return model, model.flushHistory()
-	case fullscreenDeleteMsg:
-		model.selection = nil
-		model.selectionKind = ""
-		model.status = "idle"
-		if message.err != nil {
-			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
-			return model, model.flushHistory()
-		}
-		model.insertHistoryCell(NewNoticeHistoryCell(message.message))
-		return model, tea.Sequence(model.flushHistory(), tea.Quit)
-	case fullscreenCompactMsg:
-		model.status = "idle"
-		if message.err != nil {
-			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
-		} else {
-			model.insertHistoryCell(NewNoticeHistoryCell(message.message))
-		}
-		return model, model.flushHistory()
-	case fullscreenSkillsMsg:
-		model.status = "idle"
-		if message.err != nil {
-			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
-			return model, model.flushHistory()
-		}
-		model.skills = message.skills
-		if len(message.skills) == 0 {
-			model.insertHistoryCell(NewNoticeHistoryCell("No skills available."))
-			return model, model.flushHistory()
-		}
-		items := make([]selectionItem, 0, len(message.skills))
-		for _, skill := range message.skills {
-			state := "enabled"
-			if !skill.Enabled {
-				state = "disabled"
-			}
-			items = append(items, selectionItem{Name: skill.Name, Description: skill.Description + " · " + skill.Source + " · " + state})
-		}
-		model.selection = &selectionOverlay{Title: "Skills", Subtitle: "Enter toggles the selected skill", Items: items, Search: true, Hint: "Type to search · Enter toggle · Esc cancel"}
-		model.selectionKind = "skills"
-		return model, nil
-	case fullscreenSkillSetMsg:
-		if message.err != nil {
-			model.insertHistoryCell(NewErrorHistoryCell(message.err.Error()))
-			return model, model.flushHistory()
-		}
-		for index := range model.skills {
-			if model.skills[index].Name == message.name {
-				model.skills[index].Enabled = message.enabled
-				if model.selection != nil && index < len(model.selection.Items) {
-					state := "enabled"
-					if !message.enabled {
-						state = "disabled"
-					}
-					model.selection.Items[index].Description = model.skills[index].Description + " · " + model.skills[index].Source + " · " + state
-				}
-			}
-		}
-		return model, nil
 	case fullscreenWorkingTickMsg:
 		if !model.running || model.approval != nil {
 			return model, nil
@@ -253,6 +58,25 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return model, nil
 }
 
+func (model *fullscreenModel) handleOperationFailure(message fullscreenOperationFailedMsg) {
+	if message.err == nil {
+		return
+	}
+	if errors.Is(message.err, context.Canceled) {
+		model.insertHistoryCell(NewNoticeHistoryCell(message.operation + " cancelled"))
+	} else {
+		model.insertHistoryCell(NewErrorHistoryCell(message.operation + ": " + message.err.Error()))
+	}
+	switch message.operation {
+	case "submit task", "compact context":
+		model.running = false
+		model.status = "idle"
+	case "set collaboration mode":
+		model.pendingModeTask = ""
+		model.status = "idle"
+	}
+}
+
 func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	model.slashPopup.sync(model.input.Value(), model.running)
 	switch key.String() {
@@ -261,24 +85,17 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 			model.insertHistoryCell(NewNoticeHistoryCell("Collaboration mode cannot change while a task is in progress."))
 			return model, model.flushHistory()
 		}
-		if model.app.options.SetPermissionMode == nil {
-			model.insertHistoryCell(NewErrorHistoryCell("Permission mode control is unavailable"))
-			return model, model.flushHistory()
-		}
-		nextMode := CollaborationPlan
+		nextMode := turn.ModeKindPlan
 		if model.collaboration == CollaborationPlan {
-			nextMode = CollaborationExecute
+			nextMode = turn.ModeKindDefault
 		}
+		model.pendingModeTask = ""
 		model.status = "switching mode"
-		return model, func() tea.Msg {
-			err := model.app.options.SetPermissionMode(model.ctx, nextMode)
-			return fullscreenPermissionModeDoneMsg{mode: nextMode, err: err}
-		}
+		return model, model.setMode(nextMode)
 	case "ctrl+c":
 		if model.running {
 			model.status = "cancelling"
-			model.app.cancelActiveRun()
-			return model, nil
+			return model, model.interrupt()
 		}
 		model.input.Reset()
 		model.historyPos = -1
@@ -286,7 +103,12 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		return model, nil
 	case "ctrl+d":
 		if !model.running && strings.TrimSpace(model.input.Value()) == "" {
-			return model, tea.Quit
+			if model.shutdownRequested {
+				return model, nil
+			}
+			model.shutdownRequested = true
+			model.status = "shutting down"
+			return model, model.shutdown()
 		}
 	case "ctrl+t":
 		if model.details == nil || model.details.Empty() {
@@ -303,8 +125,7 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		}
 		if model.running && strings.TrimSpace(model.input.Value()) == "" {
 			model.status = "cancelling"
-			model.app.cancelActiveRun()
-			return model, nil
+			return model, model.interrupt()
 		}
 		model.input.Reset()
 		model.historyPos = -1
@@ -380,12 +201,6 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		model.updateInputLayout()
 		model.history = append(model.history, text)
 		model.historyPos = -1
-		if model.running {
-			model.insertHistoryCell(NewUserMessageCell(text))
-			model.queuedTasks = append(model.queuedTasks, TaskSubmission{Content: text, Mode: model.collaboration})
-			model.status = fmt.Sprintf("%s · %d queued", model.status, len(model.queuedTasks))
-			return model, model.flushHistory()
-		}
 		model.insertHistoryCell(NewUserMessageCell(text))
 		model.details = newTranscriptDetailStore(0, 0)
 		model.running = true
@@ -393,10 +208,9 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		model.motionStartedAt = model.runStartedAt
 		model.transcript.HadWorkActivity = false
 		model.transcript.NeedsFinalMessageSeparator = false
-		submission := TaskSubmission{Content: text, Mode: model.collaboration}
-		model.status = taskPhase(submission)
+		model.status = taskPhase(TaskSubmission{Content: text, Mode: model.collaboration})
 		model.draft = ""
-		return model, tea.Sequence(model.flushHistory(), tea.Batch(model.runTask(submission), model.workingTick()))
+		return model, tea.Batch(model.flushHistory(), model.submitTask(TaskSubmission{Content: text, Mode: model.collaboration}), model.workingTick())
 	}
 	var command tea.Cmd
 	model.input, command = model.input.Update(key)
@@ -405,4 +219,13 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 	model.slashPopup.sync(model.input.Value(), model.running)
 	model.updateInputLayout()
 	return model, command
+}
+
+func (model fullscreenModel) interrupt() tea.Cmd {
+	return func() tea.Msg {
+		if err := model.app.options.Application.Interrupt(model.ctx); err != nil {
+			return fullscreenOperationFailedMsg{operation: "interrupt task", err: err}
+		}
+		return nil
+	}
 }

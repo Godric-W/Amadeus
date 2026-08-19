@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/policy"
@@ -20,8 +19,16 @@ func (model fullscreenModel) resolveApproval(decision policy.ApprovalDecision) (
 	model.selection = nil
 	model.selectionKind = ""
 	model.status = "executing"
-	prompt.response <- fullscreenApprovalResult{decision: decision}
 	commands := []tea.Cmd{model.input.Focus()}
+	if prompt != nil {
+		requestID := prompt.requestID
+		commands = append(commands, func() tea.Msg {
+			if err := model.app.options.Application.ResolveApproval(model.ctx, requestID, decision); err != nil {
+				return fullscreenOperationFailedMsg{operation: "resolve approval", err: err}
+			}
+			return nil
+		})
+	}
 	if model.running {
 		commands = append(commands, fullscreenWorkingTick())
 	}
@@ -50,12 +57,9 @@ func (model fullscreenModel) handleSelectionKey(key tea.KeyMsg) (tea.Model, tea.
 				return model, nil
 			}
 			model.status = "renaming session"
-			return model, func() tea.Msg {
-				message, err := model.app.options.Rename(model.ctx, value)
-				return fullscreenRenameMsg{message: message, err: err}
-			}
+			return model, model.rename(value)
 		default:
-			if len(key.Runes) > 0 && key.Alt == false {
+			if len(key.Runes) > 0 && !key.Alt {
 				model.selection.Value += string(key.Runes)
 			}
 			return model, nil
@@ -101,8 +105,8 @@ func (model fullscreenModel) handleSelectionKey(key tea.KeyMsg) (tea.Model, tea.
 				model.status = "resuming session"
 				id := model.sessions[selected].ID
 				return model, func() tea.Msg {
-					message, err := model.app.options.Resume(model.ctx, id)
-					return fullscreenResumeMsg{message: message, err: err}
+					model.app.options.Application.Resume(model.ctx, id)
+					return nil
 				}
 			}
 		case "delete":
@@ -112,42 +116,41 @@ func (model fullscreenModel) handleSelectionKey(key tea.KeyMsg) (tea.Model, tea.
 				return model, model.input.Focus()
 			}
 			model.status = "deleting session"
+			generation := model.generation
 			return model, func() tea.Msg {
-				message, err := model.app.options.Delete(model.ctx)
-				return fullscreenDeleteMsg{message: message, err: err}
+				model.app.options.Application.Delete(model.ctx, generation)
+				return nil
 			}
 		case "skills-menu":
+			model.selection = nil
+			model.selectionKind = ""
+			model.status = "loading skills"
 			if selected == 0 {
+				model.pendingSkillsView = "list"
+			} else {
+				model.pendingSkillsView = "manage"
+			}
+			return model, func() tea.Msg {
+				model.app.options.Application.LoadSkills()
+				return nil
+			}
+		case "skills-list":
+			if selected >= 0 && selected < len(model.skills) {
+				skill := model.skills[selected]
+				model.input.SetValue("$" + skill.Name + " ")
+				model.input.CursorEnd()
 				model.selection = nil
 				model.selectionKind = ""
-				model.status = "loading skills"
-				return model, func() tea.Msg {
-					skills, err := model.app.options.Skills(model.ctx)
-					if err != nil {
-						return fullscreenSkillsMsg{err: err}
-					}
-					var builder strings.Builder
-					for index, skill := range skills {
-						if index > 0 {
-							builder.WriteByte('\n')
-						}
-						fmt.Fprintf(&builder, "%s  %s  %s", skill.Name, skill.Source, skill.Description)
-					}
-					return fullscreenCommandDoneMsg{command: "/skills", output: builder.String()}
-				}
+				model.updateInputLayout()
+				return model, model.input.Focus()
 			}
-			model.status = "loading skills"
-			return model, func() tea.Msg {
-				skills, err := model.app.options.Skills(model.ctx)
-				return fullscreenSkillsMsg{skills: skills, err: err}
-			}
-		case "skills":
-			if selected >= 0 && selected < len(model.skills) && model.app.options.SetSkill != nil {
+		case "skills-manage":
+			if selected >= 0 && selected < len(model.skills) {
 				skill := model.skills[selected]
+				enabled := !skill.Enabled
 				return model, func() tea.Msg {
-					enabled := !skill.Enabled
-					err := model.app.options.SetSkill(model.ctx, skill.Name, enabled)
-					return fullscreenSkillSetMsg{name: skill.Name, enabled: enabled, err: err}
+					model.app.options.Application.SetSkillEnabled(skill.Path, enabled)
+					return nil
 				}
 			}
 		}

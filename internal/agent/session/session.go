@@ -82,6 +82,7 @@ type Session struct {
 	queue     []protocol.Submission
 	historyMu sync.RWMutex
 	contextMu sync.Mutex
+	modeMu    sync.RWMutex
 
 	ctx         context.Context
 	cancel      context.CancelCauseFunc
@@ -93,6 +94,8 @@ type Session struct {
 	completed   chan Completion
 	requestsIn  chan requestDelivery
 }
+
+const compactionWarningMessage = "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted."
 
 type requestDelivery struct {
 	request protocol.InteractiveRequest
@@ -163,6 +166,7 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 
 func (session *Session) loop() {
 	defer close(session.events)
+	defer session.publish(protocol.SessionEvent{ThreadID: session.threadID, Message: protocol.ShutdownComplete{}})
 	defer close(session.requests)
 	defer close(session.status)
 	defer close(session.terminated)
@@ -243,7 +247,10 @@ func (session *Session) handleSubmission(submission protocol.Submission) {
 		session.cancelActive(ErrInterrupted)
 	case protocol.ThreadSettingsOp:
 		if op.Mode == string(turn.ModeKindDefault) || op.Mode == string(turn.ModeKindPlan) {
+			session.modeMu.Lock()
 			session.state.Mode.Mode = turn.ModeKind(op.Mode)
+			session.modeMu.Unlock()
+			session.publish(protocol.SessionEvent{ThreadID: session.threadID, Message: protocol.ThreadSettingsUpdated{Mode: op.Mode}})
 		}
 	case protocol.ApprovalDecisionOp:
 		session.resolveRequest(op.RequestID, op)
@@ -296,7 +303,7 @@ func (session *Session) startTurn(input string, compact bool) {
 		ThreadID: session.threadID, TurnID: turnID, Provider: session.state.Configuration.Provider,
 		Model: session.state.Configuration.Model, CWD: session.state.Configuration.CWD, Shell: session.state.Configuration.Shell,
 		CurrentDate: session.state.Configuration.CurrentDate, Timezone: session.state.Configuration.Timezone,
-		Mode: session.state.Mode.Mode, Personality: session.state.Configuration.Personality,
+		Mode: session.Mode(), Personality: session.state.Configuration.Personality,
 		OutputSchema:       append(json.RawMessage(nil), session.state.Configuration.OutputSchema...),
 		OutputSchemaStrict: session.state.Configuration.OutputSchemaStrict,
 	}
@@ -367,7 +374,11 @@ func (session *Session) startTurn(input string, compact bool) {
 	}
 	session.active = &ActiveTurn{State: &turn.TurnState{StartedAt: now}, Task: running, pending: make(map[string]chan protocol.Op)}
 	session.publishStatus(turnID, true)
-	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.TurnStarted{StartedAt: now}})
+	kind := protocol.TaskKindRegular
+	if compact {
+		kind = protocol.TaskKindCompact
+	}
+	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.TurnStarted{StartedAt: now, Input: input, Kind: kind}})
 	done := running.Start()
 	go func() {
 		completion, ok := <-done
@@ -411,6 +422,9 @@ func (session *Session) finishTurn(completion Completion) {
 		cancel()
 		if err != nil && completion.Error == nil {
 			completion.Error = err
+		}
+		if err == nil {
+			session.publishCompactionEvents(completion.TurnID, completedItems)
 		}
 	}
 	finishedAt := session.services.Clock().UTC()
@@ -475,6 +489,40 @@ func (session *Session) finishTurn(completion Completion) {
 		return
 	}
 	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: protocol.TurnCompleted{Status: status, Outcome: outcome, Reason: reason, Summary: completion.Result.Summary, Error: errorText, FinishedAt: finishedAt}})
+}
+
+func (session *Session) Mode() turn.ModeKind {
+	if session == nil {
+		return turn.ModeKindDefault
+	}
+	session.modeMu.RLock()
+	defer session.modeMu.RUnlock()
+	return session.state.Mode.Mode
+}
+
+func (session *Session) publishCompactionEvents(turnID turn.ID, items []rollout.Item) {
+	for _, item := range items {
+		if item.Kind != rollout.KindCompaction {
+			continue
+		}
+		_, err := rollout.DecodePayload[rollout.Compaction](item)
+		if err != nil {
+			session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.Warning{Message: err.Error()}})
+			continue
+		}
+		session.publish(protocol.SessionEvent{
+			ThreadID: session.threadID,
+			TurnID:   turnID,
+			Message: protocol.ContextCompacted{
+				ItemID: fmt.Sprintf("compaction-%s", turnID),
+			},
+		})
+		session.publish(protocol.SessionEvent{
+			ThreadID: session.threadID,
+			TurnID:   turnID,
+			Message:  protocol.Warning{Message: compactionWarningMessage},
+		})
+	}
 }
 
 func (session *Session) completeWithoutTask(turnID turn.ID, taskErr error) {

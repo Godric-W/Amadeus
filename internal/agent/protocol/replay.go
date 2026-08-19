@@ -3,7 +3,10 @@ package protocol
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
+	"github.com/Godric-W/Amadeus/internal/agent/plan"
+	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -64,61 +67,147 @@ func cloneToolResult(value *tool.ToolResult) *tool.ToolResult {
 	return &cloned
 }
 
-// ProjectCompletedItems returns only durable completed items in rollout order.
-// It intentionally ignores deltas and in-progress records so a resumed TUI
-// cannot recreate a transient working animation.
-func ProjectCompletedItems(lines []rollout.Line) ([]TurnItem, error) {
-	items := make([]TurnItem, 0)
-	for _, line := range lines {
-		if line.Item.Kind != rollout.KindTurnItemCompleted {
-			continue
-		}
-		item, err := DecodeCompletedItem(line)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	return items, nil
+type ThreadProjection struct {
+	Items []TurnItem
+	Usage llm.Usage
 }
 
-// LegacyResponseItemsToCompleted is a narrow migration projection for old
-// response_item lines. New writes must use TurnItemCompleted; this helper exists
-// only so old rollouts remain renderable during Resume.
-func LegacyResponseItemsToCompleted(lines []rollout.Line) ([]TurnItem, error) {
-	items := make([]TurnItem, 0)
+// ProjectThreadItems is the only canonical rollout-to-TUI replay projector.
+// It preserves rollout sequence and never reconstructs transient working state.
+func ProjectThreadItems(lines []rollout.Line) (ThreadProjection, error) {
+	completedTurns := make(map[rollout.TurnID]bool)
 	for _, line := range lines {
-		if line.Item.Kind != rollout.KindResponseItem {
-			continue
+		if line.Item.Kind == rollout.KindTurnItemCompleted {
+			completedTurns[line.TurnID] = true
 		}
-		payload, err := rollout.DecodeResponseItem(line.Item)
-		if err != nil {
-			return nil, fmt.Errorf("decode legacy response item at sequence %d: %w", line.Sequence, err)
-		}
-		kind := ItemAssistantMessage
-		status := ItemStatusCompleted
-		toolName := ""
-		if payload.Type == rollout.ResponseToolCall || payload.Type == rollout.ResponseToolResult {
-			kind = ItemToolCall
-			toolName = payload.Name
-			if payload.Type == rollout.ResponseToolResult {
-				if payload.Status == "denied" {
-					status = ItemDeclined
-				} else if payload.Status == "failed" || payload.Status == "cancelled" {
-					status = ItemFailed
-				}
+	}
+	projection := ThreadProjection{Items: make([]TurnItem, 0)}
+	for _, line := range lines {
+		switch line.Item.Kind {
+		case rollout.KindTurnItemCompleted:
+			item, err := DecodeCompletedItem(line)
+			if err != nil {
+				return ThreadProjection{}, err
+			}
+			projection.Items = append(projection.Items, item)
+		case rollout.KindResponseItem:
+			item, visible, err := projectResponseItem(line, completedTurns[line.TurnID])
+			if err != nil {
+				return ThreadProjection{}, err
+			}
+			if visible {
+				projection.Items = append(projection.Items, item)
+			}
+		case rollout.KindPlanUpdate:
+			item, err := projectPlanItem(line)
+			if err != nil {
+				return ThreadProjection{}, err
+			}
+			projection.Items = append(projection.Items, item)
+		case rollout.KindCompaction:
+			item, err := projectCompactionItem(line)
+			if err != nil {
+				return ThreadProjection{}, err
+			}
+			projection.Items = append(projection.Items, item)
+		case rollout.KindTokenUsage:
+			usage, err := rollout.DecodePayload[rollout.TokenUsage](line.Item)
+			if err != nil {
+				return ThreadProjection{}, err
+			}
+			projection.Usage = llm.Usage{
+				InputTokens: usage.InputTokens, CachedInputTokens: usage.CachedInputTokens,
+				OutputTokens: usage.OutputTokens, ReasoningTokens: usage.ReasoningTokens, TotalTokens: usage.TotalTokens,
 			}
 		}
-		if payload.Type != rollout.ResponseAssistantMessage && payload.Type != rollout.ResponseToolCall && payload.Type != rollout.ResponseToolResult {
-			continue
-		}
-		created := line.Timestamp
-		item := TurnItem{ID: fmt.Sprintf("legacy-%d", line.Sequence), Kind: kind, Status: status,
-			CreatedAt: created, CompletedAt: created, Text: payload.Content, ToolName: toolName, CallID: payload.CallID}
-		if err := item.Validate(); err != nil {
-			return nil, err
-		}
-		items = append(items, item)
 	}
-	return items, nil
+	return projection, nil
+}
+
+func projectResponseItem(line rollout.Line, hasCompletedItems bool) (TurnItem, bool, error) {
+	payload, err := rollout.DecodeResponseItem(line.Item)
+	if err != nil {
+		return TurnItem{}, false, fmt.Errorf("decode response item at sequence %d: %w", line.Sequence, err)
+	}
+	kind := ItemAssistantMessage
+	status := ItemStatusCompleted
+	toolName := ""
+	switch payload.Type {
+	case rollout.ResponseUserMessage:
+		kind = ItemUserMessage
+	case rollout.ResponseAssistantMessage:
+		if hasCompletedItems {
+			return TurnItem{}, false, nil
+		}
+	case rollout.ResponseToolCall, rollout.ResponseToolResult:
+		if hasCompletedItems {
+			return TurnItem{}, false, nil
+		}
+		kind = ItemToolCall
+		toolName = payload.Name
+		if payload.Type == rollout.ResponseToolResult {
+			switch payload.Status {
+			case "denied":
+				status = ItemDeclined
+			case "failed", "cancelled":
+				status = ItemFailed
+			}
+		}
+	default:
+		return TurnItem{}, false, nil
+	}
+	text := strings.TrimSpace(payload.Content)
+	if text == "" {
+		text = strings.TrimSpace(payload.Reasoning)
+	}
+	if text == "" && payload.Result != nil {
+		text = strings.TrimSpace(payload.Result.Display.Summary)
+		if text == "" {
+			text = strings.TrimSpace(payload.Result.Text)
+		}
+	}
+	item := TurnItem{
+		ID: fmt.Sprintf("rollout-%d", line.Sequence), Kind: kind, Status: status,
+		CreatedAt: line.Timestamp, CompletedAt: line.Timestamp, Text: text,
+		ToolName: toolName, CallID: payload.CallID, ToolResult: cloneToolResult(payload.Result), Payload: payload,
+	}
+	if err := item.Validate(); err != nil {
+		return TurnItem{}, false, err
+	}
+	return item, true, nil
+}
+
+func projectPlanItem(line rollout.Line) (TurnItem, error) {
+	snapshot, err := rollout.DecodePayload[plan.Snapshot](line.Item)
+	if err != nil {
+		return TurnItem{}, err
+	}
+	updatedAt := snapshot.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = line.Timestamp
+	}
+	items := make([]PlanItem, 0, len(snapshot.Items))
+	for _, value := range snapshot.Items {
+		items = append(items, PlanItem{Step: value.Step, Status: string(value.Status)})
+	}
+	payload := PlanUpdated{
+		ItemID: fmt.Sprintf("plan-%d", line.Sequence), Explanation: snapshot.Explanation,
+		Items: items, Revision: snapshot.Revision, UpdatedAt: updatedAt,
+	}
+	return TurnItem{
+		ID: payload.ItemID, Kind: ItemPlan, Status: ItemStatusCompleted,
+		CreatedAt: updatedAt, CompletedAt: updatedAt, Text: snapshot.Explanation, Payload: payload,
+	}, nil
+}
+
+func projectCompactionItem(line rollout.Line) (TurnItem, error) {
+	value, err := rollout.DecodePayload[rollout.Compaction](line.Item)
+	if err != nil {
+		return TurnItem{}, err
+	}
+	return TurnItem{
+		ID: fmt.Sprintf("compaction-%d", line.Sequence), Kind: ItemContextCompaction,
+		Status: ItemStatusCompleted, CreatedAt: line.Timestamp, CompletedAt: line.Timestamp,
+		Payload: value,
+	}, nil
 }

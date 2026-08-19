@@ -9,6 +9,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
+	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/state"
 	"github.com/Godric-W/Amadeus/internal/thread"
@@ -253,6 +254,13 @@ func (threadRuntime *AmadeusThread) CapabilityView() (agentsession.CapabilityVie
 		return nil, false
 	}
 	return threadRuntime.session.CapabilityView()
+}
+
+func (threadRuntime *AmadeusThread) Mode() turn.ModeKind {
+	if threadRuntime == nil || threadRuntime.session == nil {
+		return turn.ModeKindDefault
+	}
+	return threadRuntime.session.Mode()
 }
 
 func (threadRuntime *AmadeusThread) Submit(ctx context.Context, op protocol.Op) error {

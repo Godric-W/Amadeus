@@ -106,6 +106,13 @@ func (assembly *Assembly) MCPBinding() mcp.MCPBinding {
 	return assembly.mcp.Binding()
 }
 
+func (assembly *Assembly) MCPConfiguration() mcp.Config {
+	if assembly == nil || assembly.mcp == nil {
+		return mcp.Config{Servers: map[string]mcp.ServerConfig{}}
+	}
+	return assembly.mcp.Configuration()
+}
+
 func (assembly *Assembly) ResolveSkillInjections(task string) ([]agentcontext.SkillInjection, error) {
 	if assembly == nil || assembly.skills == nil {
 		return nil, nil

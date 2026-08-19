@@ -12,6 +12,7 @@ import (
 )
 
 var ErrNoActiveThread = errors.New("no active thread")
+var ErrThreadSelectionChanged = errors.New("active thread changed while preparing switch")
 
 // ThreadWorkspace owns the application-level selection of the current Thread.
 // ThreadManager owns all live Threads; interfaces only choose which one is
@@ -20,6 +21,52 @@ type ThreadWorkspace struct {
 	mu      sync.RWMutex
 	manager *threadmanager.ThreadManager
 	current *threadmanager.AmadeusThread
+}
+
+type PreparedThreadSwitch struct {
+	workspace *ThreadWorkspace
+	target    *threadmanager.AmadeusThread
+	previous  *threadmanager.AmadeusThread
+	committed bool
+}
+
+func (prepared *PreparedThreadSwitch) Target() *threadmanager.AmadeusThread {
+	if prepared == nil {
+		return nil
+	}
+	return prepared.target
+}
+
+func (prepared *PreparedThreadSwitch) Previous() *threadmanager.AmadeusThread {
+	if prepared == nil {
+		return nil
+	}
+	return prepared.previous
+}
+
+func (prepared *PreparedThreadSwitch) Commit() error {
+	if prepared == nil || prepared.workspace == nil || prepared.target == nil {
+		return errors.New("prepared thread switch is incomplete")
+	}
+	prepared.workspace.mu.Lock()
+	defer prepared.workspace.mu.Unlock()
+	if prepared.workspace.current != prepared.previous {
+		return ErrThreadSelectionChanged
+	}
+	prepared.workspace.current = prepared.target
+	prepared.committed = true
+	return nil
+}
+
+func (prepared *PreparedThreadSwitch) Abort(ctx context.Context) error {
+	if prepared == nil || prepared.workspace == nil || prepared.target == nil || prepared.committed || prepared.target == prepared.previous {
+		return nil
+	}
+	manager := prepared.workspace.managerSnapshot()
+	if manager == nil {
+		return errors.New("thread workspace is closed")
+	}
+	return manager.ShutdownThread(ctx, prepared.target.ID())
 }
 
 func NewThreadWorkspace(manager *threadmanager.ThreadManager) (*ThreadWorkspace, error) {
@@ -72,31 +119,63 @@ func (workspace *ThreadWorkspace) EnsureCurrent(ctx context.Context, configurati
 }
 
 func (workspace *ThreadWorkspace) Resume(ctx context.Context, id thread.ID, configuration agentsession.Configuration) (*threadmanager.AmadeusThread, error) {
+	prepared, err := workspace.PrepareResume(ctx, id, configuration)
+	if err != nil {
+		return nil, err
+	}
+	if err := prepared.Commit(); err != nil {
+		_ = prepared.Abort(context.WithoutCancel(ctx))
+		return nil, err
+	}
+	if previous := prepared.Previous(); previous != nil && previous != prepared.Target() {
+		manager := workspace.managerSnapshot()
+		if manager != nil {
+			if err := manager.ShutdownThread(ctx, previous.ID()); err != nil {
+				return prepared.Target(), err
+			}
+		}
+	}
+	return prepared.Target(), nil
+}
+
+func (workspace *ThreadWorkspace) PrepareResume(ctx context.Context, id thread.ID, configuration agentsession.Configuration) (*PreparedThreadSwitch, error) {
 	manager := workspace.managerSnapshot()
 	if manager == nil {
 		return nil, errors.New("thread workspace is closed")
 	}
-	if current, ok := workspace.Current(); ok && current.ID() == id {
-		return current, nil
-	}
-	if current, ok := workspace.Current(); ok {
-		if err := manager.ShutdownThread(ctx, current.ID()); err != nil {
-			return nil, err
-		}
-		workspace.mu.Lock()
-		if workspace.current == current {
-			workspace.current = nil
-		}
-		workspace.mu.Unlock()
+	current, _ := workspace.Current()
+	if current != nil && current.ID() == id {
+		return &PreparedThreadSwitch{workspace: workspace, target: current, previous: current}, nil
 	}
 	resumed, err := manager.ResumeThread(ctx, id, threadmanager.StartInput{Configuration: configuration})
 	if err != nil {
 		return nil, err
 	}
-	workspace.mu.Lock()
-	workspace.current = resumed
-	workspace.mu.Unlock()
-	return resumed, nil
+	return &PreparedThreadSwitch{workspace: workspace, target: resumed, previous: current}, nil
+}
+
+func (workspace *ThreadWorkspace) PrepareNew(ctx context.Context, configuration agentsession.Configuration) (*PreparedThreadSwitch, error) {
+	manager := workspace.managerSnapshot()
+	if manager == nil {
+		return nil, errors.New("thread workspace is closed")
+	}
+	current, _ := workspace.Current()
+	created, err := manager.StartThread(ctx, threadmanager.StartInput{Configuration: configuration})
+	if err != nil {
+		return nil, err
+	}
+	return &PreparedThreadSwitch{workspace: workspace, target: created, previous: current}, nil
+}
+
+func (workspace *ThreadWorkspace) Release(ctx context.Context, value *threadmanager.AmadeusThread) error {
+	if value == nil {
+		return nil
+	}
+	manager := workspace.managerSnapshot()
+	if manager == nil {
+		return errors.New("thread workspace is closed")
+	}
+	return manager.ShutdownThread(ctx, value.ID())
 }
 
 func (workspace *ThreadWorkspace) NewDraft(ctx context.Context) error {

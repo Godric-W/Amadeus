@@ -26,7 +26,7 @@ func TestTerminalPaletteSemanticMatrix(t *testing.T) {
 			lipgloss.SetColorProfile(test.profile)
 			styles := []string{
 				test.palette.accent().Render("accent"), test.palette.success().Render("success"),
-				test.palette.failure().Render("failure"), test.palette.warning().Render("warning"), test.palette.dim().Render("dim"),
+				test.palette.failure().Render("failure"), test.palette.warning().Render("warning"), test.palette.command().Render("command"), test.palette.dim().Render("dim"),
 			}
 			for _, rendered := range styles {
 				if strings.Contains(rendered, "\x1b[") != test.ansi {
@@ -34,6 +34,16 @@ func TestTerminalPaletteSemanticMatrix(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCommandPaletteUsesCodexMagenta(t *testing.T) {
+	original := lipgloss.ColorProfile()
+	t.Cleanup(func() { lipgloss.SetColorProfile(original) })
+	lipgloss.SetColorProfile(termenv.ANSI)
+	rendered := terminalPalette{Level: colorLevelANSI16, Dark: true}.command().Render("/mcp")
+	if !strings.Contains(rendered, "\x1b[35m") {
+		t.Fatalf("command color = %q", rendered)
 	}
 }
 

@@ -1,9 +1,9 @@
 # Amadeus 开发进度
 
-> 最近更新：2026-08-18
+> 最近更新：2026-08-19
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：H. Extensions + Release（DONE）
-> 下一任务：无（H 阶段验收完成）
+> 当前阶段：K. Response Stream Reconnect Lifecycle Alignment（TODO）
+> 下一任务：K-01 Provider Retry Configuration + Error Classification
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
@@ -32,9 +32,11 @@ A Runtime + Persistence
 → G Runtime Architecture Convergence
 → H Extensions + Release
 → I Prompt Construction + Optimization
+→ J Slash Command + TUI Application Lifecycle Alignment
+→ K Response Stream Reconnect Lifecycle Alignment
 ```
 
-Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command 和 TUI 的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A/B Architecture Closure 已完成，F 已删除早期经典 ReAct Engine 并建立可工作的 continuation loop；G 负责消除 F 中为快速落地引入的 `CodingFactory/CodingRuntime`、通用 TaskFactory、Host interface 和 PermissionMode 过渡结构，把 capability 所有权与 Codex 术语归位，同时保留已经稳定的 ToolExecutionService 与 Claude-style Approval。实施发现 Contract 问题时先更新 `docs/design.md`。
+Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command 和 TUI 的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A/B Architecture Closure 已完成，F 已删除早期经典 ReAct Engine 并建立可工作的 continuation loop；G 已将 capability 所有权与 Codex 术语归位，同时保留稳定的 ToolExecutionService 与 Claude-style Approval；I 已完成 Prompt 主链收敛；J 已删除 Slash Command/TUI Application 的 callback、字符串结果和重复 Session IO 生命周期。K 将继续按 Codex 架构拆分 request retry 与 response stream reconnect，并把 retry 决策、typed transient Event、TUI status restore、Compaction 和 partial Delta 安全收敛到一条主链。实施发现 Contract 问题时先更新 `docs/design.md`。
 
 ## 3. A. Runtime + Persistence — `DONE`
 
@@ -558,7 +560,163 @@ I 阶段专门完成 Prompt 构造架构、数据模型、命名、职责和 Pro
 - Tool Guidance、ToolSpec、ToolExecutionService 和 Approval Contract 对同一 Tool 的能力边界一致；提示词不能替代 Runtime 安全校验。
 - Prompt 资产、动态 Context、canonical Rollout、ContextManager、Resume、Token Accounting 和 Provider Request 的语义一致。
 
-## 12. 当前保留能力
+## 12. J. Slash Command + TUI Application Lifecycle Alignment — `DONE`
+
+E 阶段已经交付 Slash Command 的基础命令集、Composer 解析、Popup 和单一 Fullscreen 分发入口；J 不重新建立命令框架，而是按 `docs/design.md` 的架构对齐原则，替换其中仍由旧 callback、字符串结果、Bubble Tea done message 和临时 `waitTurn` 驱动的 Application/Runtime 生命周期。
+
+完成记录：Fullscreen 已由 `InteractiveApplication` 持续拥有 active Thread attachment 和唯一 `SessionIo` event pump；canonical replay、transactional resume、typed compact/MCP/settings/metadata/skills/shutdown 生命周期及专用 HistoryCell 已落地。旧 callback、done message、Fullscreen `runOnce/waitTurn`、字符串 command result、`interactive_commands.go` 与旧 replay helper 已删除；`make check`、全量测试、race、vet、build、architecture guards 和 `git diff --check` 均于 2026-08-19 通过。
+
+### J-01：Active Thread Attachment 与 AppEvent 所有权 — `DONE`
+
+- 在 Fullscreen Application 中建立持续存活的 active Thread attachment 和 event pump，由其唯一消费当前 `SessionIo.Events`、`Requests`、`Status` 与 termination。
+- 普通输入与 `/compact` 只提交 typed Op；Turn running、Approval、History、Completion 和 Abort 统一由 Runtime Event 经 typed AppEvent 回到 TUI，不再由 `runTask → runOnce/waitTurn → fullscreenTaskDoneMsg` 维护第二套完成真相。
+- 为 Thread switch、后台 query 和迟到结果建立 ThreadID/attachment generation 关联；旧 attachment 停止后不得继续污染当前 transcript。
+
+### J-02：Canonical Replay Projector — `DONE`
+
+- 建立唯一 `ProjectThreadItems` replay projector，严格按 canonical rollout sequence 投影 User、Assistant、Tool、Plan 和 ContextCompaction。
+- 删除 `ProjectCompletedItems` 与 legacy item 合并后按完成时间重排的 replay 路径；Live、初始 Resume 与运行中 Thread switch 使用同一完成项投影语义。
+- 增加 UserMessage、Compaction boundary、Tool/Plan、损坏尾部与 legacy decode 的顺序 Contract 测试。
+
+### J-03：`/resume` Transactional Switch + Replay — `DONE`
+
+- 将 picker/直接参数统一转换为 typed Resume AppEvent，由 Application/ThreadWorkspace 执行目标解析、恢复、attach、replay 和当前 Thread 提交。
+- Resume 成功后缓冲并一次性刷新目标 Thread 历史，再更新 Header、Composer、Collaboration Mode、Token 和 Session metadata；Notice 不能替代 replay。
+- Resume 失败时保持原 Thread、attachment 和 transcript 可用；删除 `FullscreenSessionResumer`、`fullscreenResumeMsg.message` 与只刷新 Session ID 的完成路径。
+
+### J-04：`/compact` Session Op + Visible Lifecycle — `DONE`
+
+- 将 `/compact` 接入正式 `CompactOp → CompactTask` 主链，并让 `TurnStarted` 携带稳定 task kind；提交后立即进入可见 pending/running UI，Runtime Event 仍是最终真相。
+- durable compaction item 写入后发布 `ContextCompacted → Warning → TurnCompleted`；TUI 固定显示 `• Context compacted` 与 Codex 原文 Heads-up 警告，生成 summary 仅保留在 replacement history，不进入 transcript 文本。
+- 删除 `FullscreenCompactor`、`fullscreenCompactMsg`、`compactInteractiveSession` 及 Fullscreen 内部 `waitTurn` 完成路径。
+
+### J-05：`/mcp` Typed Inventory Query — `DONE`
+
+- 将 `/mcp`、`/mcp verbose` 转换为 typed `FetchMCPInventory` AppEvent，使用结构化 server/tool/resource status 与 detail level，不在 Application/CLI 拼接输出字符串。
+- 立即提交洋红色 `MCPCommandHistoryCell("/mcp")`，将加载反馈放入 status projection；不向不可变的 main-screen terminal history 打印随后无法替换的 loading cell。
+- `MCPInventoryCell` 使用 Codex 的 `🔌  MCP Tools`、Auth、Tools、Resources、Resource templates 术语和层级；无 Server、无 Tool 和查询失败均有明确可见结果。
+- 结果携带 origin ThreadID/request generation 并只接受 matching result；删除 `FullscreenMCPReader`、TUI 主链中的 `writeInteractiveMCP`、`MCPInventoryLoadingCell` 和 MCP 对通用 `fullscreenCommandDoneMsg` 的依赖。
+
+### J-06：`/plan` Thread Settings Lifecycle — `DONE`
+
+- `/plan` 通过 active attachment 提交 `ThreadSettingsOp`，Session 接受并发布 typed `ThreadSettingsUpdated` 后才更新 TUI collaboration projection。
+- `/plan <task>` 严格执行 settings acknowledgement 后再提交 `UserInputOp`；设置失败时保留原模式且不得启动任务，快捷模式切换复用同一 lifecycle。
+- 删除 `FullscreenPermissionModeSetter`、`fullscreenPermissionModeDoneMsg` 和仅修改 TUI 本地模式变量的完成路径。
+
+### J-07：`/clear` ClearUI + Fresh Thread Lifecycle — `DONE`
+
+- 将 `/clear` 转换为 typed `ClearUI` AppEvent；按顺序清除 pending history insertion、terminal scrollback/viewport 和 Transcript/App UI state，防止旧消息在清屏后重新 flush。
+- detach/shutdown 当前 live attachment，但不删除或归档旧 canonical Thread；以 `source=clear` 启动 fresh Thread，并复用正常 configure/attach lifecycle 与 lineage/resume hint。
+- fresh Thread 启动或 attach 失败时在已清空 UI 中显示 ErrorCell，不伪造 `Started a new chat`；删除 `FullscreenClearer` 和 `fullscreenCommandDoneMsg` 的 `/clear` 字符串分支。
+
+### J-08：`/rename` Typed Metadata Notification — `DONE`
+
+- 保留 prompt、inline name normalize 与空名称校验为 TUI-local；提交 `SetThreadName(name)` typed command 到 active Thread metadata owner。
+- durable update 后发布带 ThreadID 的 `ThreadNameUpdated`，仅 matching attachment 更新 Header/metadata；提交失败显示 ErrorCell，迟到旧 Thread notification 必须丢弃。
+- 删除 `FullscreenSessionRenamer`、`fullscreenRenameMsg.message`、成功字符串和仅调用 `refreshCurrentSession()` 的完成路径。
+
+### J-09：`/delete` Confirmed Destructive Lifecycle — `DONE`
+
+- confirmation overlay 保持 TUI-local 并绑定 attachment generation；Thread switch 关闭旧 overlay，确认 action 发送 Codex 同名 `DeleteCurrentThread`，由串行 Application event loop 解析并验证 active Thread。
+- ThreadWorkspace/ThreadStore 作为唯一 delete owner，协调 attachment shutdown、rollout close、metadata 与 rollout durable delete；成功后返回 Application Exit control，失败插入 ErrorCell 并继续运行。
+- 删除 `FullscreenSessionDeleter`、`fullscreenDeleteMsg.message` 和成功 Notice 后 `tea.Sequence(..., tea.Quit)` 的完成路径。
+
+### J-10：`/status` Structured Snapshot + Correlated Refresh — `DONE`
+
+- 从 Application/TUI 已持有的 typed Thread、Model、Mode、Token、Context、Provider 和 Turn phase 构造 `StatusSnapshot`，立即插入 `StatusHistoryCell`。
+- 可选延迟数据通过 `RefreshStatusData(StatusCommand(request_id))` 获取；result 只原位完成 matching card，迟到/未知 ID 忽略，失败也必须结束 refreshing 并保留本地 snapshot。
+- 删除 `FullscreenStatusReader`、`commandStatus() + output string` 拼接和 `/status` 对通用 `fullscreenCommandDoneMsg` 的依赖。
+
+### J-11：`/skills` Typed Catalog + Config Mutation — `DONE`
+
+- `/skills` 保留 local menu/search/toggle overlay；list action 复用现有 Skill mention/selection surface（无 mention UI 时复用唯一 typed searchable picker），manage action 使用 cached typed catalog，禁止字符串 builder 和第二份 catalog UI。
+- `SetSkillEnabled(path, enabled)` 由 Application 配置 owner 持久化；成功更新缓存，失败显示 ErrorCell，关闭管理界面后触发 `ListSkills(force_reload=true)` 消除 optimistic state 偏差。
+- startup/user refresh 共享 `SkillsLoaded` 数据模型并校验 cwd/catalog generation；删除 `FullscreenSkillLister`、`FullscreenSkillSetter`、`fullscreenSkillsMsg` 和 `fullscreenSkillSetMsg`。
+
+### J-12：`/exit` Shutdown-first Application Control — `DONE`
+
+- `/exit` 发送 `Exit(ShutdownFirst)`，立即显示 shutdown feedback，并标记 pending shutdown Thread，避免正常 termination/failover 逻辑接管用户退出。
+- Application 等待 active attachment、rollout flush、后台任务和子进程清理；提供 bounded UI timeout，成功或超时后才产生最终 `tea.Quit`。
+- `Immediate` 只保留给 fatal/emergency 或 shutdown 已完成后的最终跳出；删除 `/exit → tea.Quit` 直接路径并覆盖 shutdown ordering。
+
+### J-13：`/copy` 与 TUI-local Boundary — `DONE`
+
+- `/copy` 读取 Transcript 中最后一条 Assistant raw markdown，调用可注入 clipboard backend，并插入 Info/Error HistoryCell；无响应、成功和平台失败均有明确反馈。
+- `/copy` 不创建 AppEvent、Session Op、Turn 或 Rollout item；clipboard lease 由 TUI/adapter 持有，不从已渲染 ANSI 文本反向提取内容。
+- 保持现有 `SlashCommand`、`SlashInvocation`、参数校验、Popup 和单一 `dispatchCommand` 数据模型；不引入通用 Handler Registry、Command Bus 或第二套交互路由。
+
+### J-14：旧链删除、Architecture Guards 与验收 — `DONE`
+
+- 删除被替代的 Fullscreen callback/type/message、通用字符串 command result、重复 Session IO consumer 和旧 replay helper，并增加 architecture guards 防止回流。
+- 覆盖 `/resume` replay、`/compact` 状态、空 `/mcp`、`/plan <task>` ordering、clear/rename/delete/status/skills/exit/copy、迟到事件隔离和 shutdown ordering。
+- 完成针对性测试、全量测试、race、vet、build、`make check`、architecture grep、`git diff --check` 与文档一致性检查后，J 才能标记 DONE。
+
+### J 出口
+
+- Fullscreen Application 持续拥有唯一 active Thread attachment；Turn 与 Thread 生命周期不存在 callback/waiter/done-message 第二真相。
+- `/resume` 恢复完整 canonical transcript，`/compact` 和 `/mcp` 从提交到空状态/错误/完成均有明确可见反馈，`/plan` 以 Runtime settings acknowledgement 为准。
+- `/clear`、`/rename`、`/delete`、`/status`、`/skills` 和 `/exit` 已按各自 owner 使用 typed AppEvent/Session Op/HistoryCell；`/copy` 明确保留为 TUI-local。
+- 生产路径不存在为保留旧实现而增加的 Codex 同名 Adapter/Facade，旧 callback、字符串完成协议、重复事件 consumer 和旧 replay 主链全部删除。
+
+## 13. K. Response Stream Reconnect Lifecycle Alignment — `TODO`
+
+J 已完成 Slash Command 与 TUI Application 生命周期收敛，但当前 Provider 配置仍以单一 `max_retries` 混合 HTTP request retry 和 response stream reconnect；`ModelClientSession` 在 `Recv` 失败后直接返回，`StreamError` 不能表达 transient/terminal，TUI 也会把它立即写成永久 ErrorCell。K 不增加动画补丁，而是按 `docs/design.md` 的 Codex 对齐原则重构 Provider、LLM Domain、Session/Core、Event Protocol、Compactor 与 TUI 的完整重连生命周期。
+
+### K-01：Provider Retry Configuration + Error Classification — `TODO`
+
+- [ ] 将单一 `provider.max_retries` 拆分为当前 HTTP/SSE 基础版唯一需要的 3 个字段：`request_max_retries`（默认 `4`、范围 `0..100`）、`stream_max_retries`（默认 `5`、范围 `0..100`）和 `stream_idle_timeout`（默认 `5m`、必须大于 `0`）。
+- [ ] 明确 Amadeus 不存在内置 Provider，所有用户定义 Provider 均由配置归一化层获得上述默认值；schema、patch/merge、`config show`、validation、redaction 和测试使用同一字段集合。
+- [ ] 旧 `max_retries` 只迁移到 `request_max_retries`，不得同时赋给 stream retry；完成迁移后删除旧生产字段、SDK wiring 和含混文案。
+- [ ] 审计现有 `provider.timeout`，确保它不作为活跃 streaming response 的固定 wall-clock deadline 抢先终止持续有 Delta 的长响应，并与 `stream_idle_timeout` 保持单一明确语义。
+- [ ] 当前不增加 Codex 的 `websocket_connect_timeout_ms` 或 transport fallback；只有 Amadeus 实现真实 WebSocket transport 后才能单独设计和排期。
+- [ ] 扩展 typed `ProviderError`/`ProviderErrorInfo`，稳定表达 kind/code、safe message、additional details、retryable、Retry-After/retry delay 和 request/provider identity。
+- [ ] OpenAI Responses/Chat Completions Adapter 只负责 transport/error 归一化与 request retry 接线，不拥有 Turn-visible stream retry counter、backoff lifecycle 或 TUI 文案。
+
+### K-02：Core Response Stream Retry Owner — `TODO`
+
+- [ ] 在 Turn-scoped `ModelClientSession` 或 Session 模块内建立唯一 response retry helper，统一 retryability、counter、cancellable backoff、idle timeout 和 retry exhaustion。
+- [ ] 同一 Turn 内复用 ModelClientSession 与 sampling request 语义；TUI、SDK Adapter、RegularTask 和 Compactor 不分别维护重试状态。
+- [ ] cancellation 在 stream read 和 backoff 中立即生效；不可恢复错误和重试耗尽只进入一次最终 failed task result，由 Session 完成唯一 Turn terminal protocol。
+
+### K-03：Typed Transient StreamError Protocol — `TODO`
+
+- [ ] 将当前字符串 `StreamError` 替换为包含 `Message`、`AdditionalDetails`、`ProviderError` 与 `WillRetry` 的 typed Event contract。
+- [ ] retry owner 发布 Codex 风格 `Reconnecting... n/m`；TUI 不解析字符串决定 retry counter、Turn running 或 terminal。
+- [ ] `WillRetry=true` 定义为 live、transient、non-canonical notification，不写入 Rollout、不创建 TurnItem、Resume/replay 不重放；`WillRetry=false` 与最终 Turn failure ordering 有明确 Contract test。
+
+### K-04：TUI Status Indicator + Restore Lifecycle — `TODO`
+
+- [ ] 将硬编码 `Working` 的 working line 重构为读取当前 status header/details，并复用现有 activity marker、shimmer、elapsed time 与 `esc to interrupt`。
+- [ ] 收到 retrying StreamError 时保存旧 status header、确保 indicator 可见并显示 `Reconnecting... n/m` 与安全 details；不 finish draft、不提交 ActiveHistoryCell、不插入 ErrorCell。
+- [ ] 下一条非 retry live Event 恢复旧 header；连续 retry 只保存一次，Turn terminal 清理 retry state，Replay/Resume initial history 忽略 transient retry status。
+- [ ] 使用 TerminalPalette 既有 status accent，覆盖无颜色、窄终端、indicator 原本隐藏和 details 截断场景，不增加 reconnect 专用动画组件或硬编码 ANSI 色。
+
+### K-05：Sampling + Compaction Policy Convergence — `TODO`
+
+- [ ] 普通 sampling、手动 `/compact` CompactTask 和 `run_turn` 自动 compaction 复用同一 response-stream retry policy，仅保留请求类型和 Prompt 差异。
+- [ ] Compactor 不拥有独立静默 retry loop；重连期间保持 Compact Turn running，成功后继续既有 `ContextCompacted → Warning → TurnCompleted` 顺序。
+- [ ] compact retry exhausted 保持原 ContextManager/replacement history 不变，并产生明确最终错误与唯一 Turn terminal。
+
+### K-06：Partial Delta Attempt Isolation — `TODO`
+
+- [ ] 每次 stream attempt 使用独立 aggregation state；未完成 Delta 不进入 canonical Rollout，只有成功完成的 ResponseItem 才 append 并发布 ItemCompleted。
+- [ ] 定义 retry 后 draft replacement 或 stable item identity 去重，保证部分 Assistant/Reasoning/Tool Call Delta 后重连不会重复文本、重复 Tool Call 或污染下一 Model Step。
+- [ ] 覆盖 retry success、retry exhausted、partial delta、close error、idle timeout、Retry-After、取消、Tool Call aggregation 和 Resume semantic-equivalence。
+
+### K-07：旧链删除、Architecture Guards 与验收 — `TODO`
+
+- [ ] 删除单一 `MaxRetries` 生产配置、terminal-only `StreamError{Error string}`、TUI StreamError 直接 finishDraft/ErrorCell 和任何 Adapter/TUI 私有 stream retry 状态。
+- [ ] 增加 architecture guards，禁止 `workingLine` 硬编码状态文案、Compactor 自建 retry loop、TUI 根据错误字符串判断 lifecycle，以及 transient retry Event 进入 Rollout/Replay。
+- [ ] 完成针对性测试、全量测试、race、vet、build、`make check`、architecture grep、`git diff --check` 与文档一致性检查后，K 才能标记 DONE。
+
+### K 出口
+
+- request retry 与 response stream reconnect 使用独立配置和 owner；Provider Adapter 归一化错误，Core/ModelClientSession 负责重连，TUI 只消费 typed lifecycle。
+- retrying 状态显示 Codex 风格 `Reconnecting... n/m` 和 details，保持 Turn/draft 运行且不污染 History/Rollout；恢复后还原旧 status，Resume 不重放瞬态状态。
+- 普通 sampling 与手动/自动 compaction 共享 retry policy；部分 Delta、取消和重试耗尽均不会产生重复 transcript、重复 Tool Call、静默卡死或第二套 Turn terminal。
+- 生产路径不存在用新名称包裹 SDK retry、字符串 StreamError、硬编码 Working 或 Compactor 私有重试的过渡主链。
+
+## 14. 当前保留能力
 
 - 默认启动：`amadeus` 或 `amadeus "<task>"`。
 - 当前配置链和 Provider Adapter 已可使用 OpenAI Responses/Chat Completions 及兼容 Provider。
@@ -566,7 +724,7 @@ I 阶段专门完成 Prompt 构造架构、数据模型、命名、职责和 Pro
 - TUI 和 Inline 输出以当前代码和 `docs/design.md` 为准。
 - 内置 Tool、Approval、Diff、Web Search 和 Slash Command 已进入基础主链；A/B Architecture Closure 期间保持用户可见能力，同时收口 Tool Result projection、AGENTS.md target scope 和 Session capability ownership。
 
-## 13. 当前执行规则
+## 15. 当前执行规则
 
 1. 每次只推进一个 `TODO`/`DOING` 主任务。
 2. 先修改 `docs/design.md`，再修改代码；实现发现设计问题时暂停并同步 Contract。
@@ -574,7 +732,7 @@ I 阶段专门完成 Prompt 构造架构、数据模型、命名、职责和 Pro
 4. 任务完成必须运行针对性测试和构建；环境限制导致的测试失败要单独记录。
 5. 本文只更新任务状态和出口，不复制架构设计、源码审计或长篇讨论。
 
-## 14. 源码结构清理 — `DONE`
+## 16. 源码结构清理 — `DONE`
 
 ### 已完成
 

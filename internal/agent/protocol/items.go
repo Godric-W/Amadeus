@@ -134,9 +134,7 @@ type ThreadTokenUsageUpdated struct {
 func (ThreadTokenUsageUpdated) isEventMessage() {}
 
 type ContextCompacted struct {
-	ItemID          string
-	DroppedMessages int
-	Reason          string
+	ItemID string
 }
 
 func (ContextCompacted) isEventMessage() {}
@@ -211,7 +209,7 @@ func (state *TranscriptState) Apply(event SessionEvent) error {
 		state.Usage = message.Usage
 	case ContextCompacted:
 		now := time.Now().UTC()
-		replaceTranscriptItem(&state.Items, TurnItem{ID: message.ItemID, Kind: ItemContextCompaction, Status: ItemStatusCompleted, CreatedAt: now, CompletedAt: now, Text: message.Reason})
+		replaceTranscriptItem(&state.Items, TurnItem{ID: message.ItemID, Kind: ItemContextCompaction, Status: ItemStatusCompleted, CreatedAt: now, CompletedAt: now})
 	case Warning:
 		state.Warning = message.Message
 	case StreamError:

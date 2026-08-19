@@ -100,9 +100,9 @@ type CapabilityView interface {
 	MCPRevision() string
 	Skills() []skill.SkillMetadata
 	SetSkillEnabled(string, bool) error
-	MCPServers() []string
-	MCPBindings() mcp.MCPBinding
+	MCPConfiguration() mcp.Config
 	MCPTools(context.Context, string) (mcp.ToolCatalog, error)
+	MCPResources(context.Context, string) (mcp.ResourceCatalog, error)
 }
 
 func (session *Session) CapabilityView() (CapabilityView, bool) {

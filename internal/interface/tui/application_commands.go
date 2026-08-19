@@ -1,10 +1,14 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	application "github.com/Godric-W/Amadeus/internal/app"
+	"github.com/Godric-W/Amadeus/internal/rollout"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -22,35 +26,18 @@ func (model fullscreenModel) dispatchCommand(invocation SlashInvocation) (tea.Mo
 		model.insertHistoryCell(NewErrorHistoryCell(err.Error()))
 		return model, model.flushHistory()
 	}
-	command := invocation.String()
 	switch slashCommand {
 	case SlashStatus:
-		localStatus := model.commandStatus()
-		if model.app.options.Status == nil {
-			model.insertHistoryCell(NewNoticeHistoryCell(localStatus))
-			return model, model.flushHistory()
-		}
-		return model, func() tea.Msg {
-			output, err := model.app.options.Status(model.ctx)
-			if strings.TrimSpace(output) == "" {
-				output = localStatus
-			} else {
-				output = localStatus + "\n" + strings.TrimSpace(output)
-			}
-			return fullscreenCommandDoneMsg{command: command, output: output, err: err}
-		}
+		model.insertHistoryCell(NewStatusHistoryCell(model.app.options.Application.Status()))
+		return model, model.flushHistory()
 	case SlashPlan:
-		if model.app.options.SetPermissionMode == nil {
-			model.insertHistoryCell(NewErrorHistoryCell("Permission mode control is unavailable"))
-			return model, model.flushHistory()
-		}
 		model.status = "switching to Plan mode"
-		return model, func() tea.Msg {
-			err := model.app.options.SetPermissionMode(model.ctx, CollaborationPlan)
-			return fullscreenPermissionModeDoneMsg{mode: CollaborationPlan, task: arguments, err: err}
-		}
+		model.pendingModeTask = strings.TrimSpace(arguments)
+		return model, model.setMode(turn.ModeKindPlan)
 	case SlashExit:
-		return model, tea.Quit
+		model.shutdownRequested = true
+		model.status = "shutting down"
+		return model, model.shutdown()
 	case SlashCopy:
 		if strings.TrimSpace(model.transcript.LastAgentMarkdown) == "" {
 			model.insertHistoryCell(NewErrorHistoryCell("No agent response to copy"))
@@ -59,48 +46,29 @@ func (model fullscreenModel) dispatchCommand(invocation SlashInvocation) (tea.Mo
 		if err := model.app.options.ClipboardWrite(model.transcript.LastAgentMarkdown); err != nil {
 			model.insertHistoryCell(NewErrorHistoryCell("Copy failed: " + err.Error()))
 		} else {
-			model.insertHistoryCell(NewNoticeHistoryCell("Copied last response to clipboard"))
+			model.insertHistoryCell(NewNoticeHistoryCell("Copied last message to clipboard"))
 		}
 		return model, model.flushHistory()
 	case SlashResume:
-		if model.app.options.Sessions == nil || model.app.options.Resume == nil {
-			model.insertHistoryCell(NewErrorHistoryCell("Session picker is unavailable"))
-			return model, model.flushHistory()
-		}
 		if arguments != "" {
 			model.status = "resuming session"
 			return model, func() tea.Msg {
-				message, err := model.app.options.Resume(model.ctx, arguments)
-				return fullscreenResumeMsg{message: message, err: err}
+				model.app.options.Application.Resume(model.ctx, applicationThreadID(arguments))
+				return nil
 			}
 		}
 		model.status = "loading sessions"
 		return model, model.loadSessions()
 	case SlashRename:
-		if model.app.options.Rename == nil {
-			model.insertHistoryCell(NewErrorHistoryCell("Session rename is unavailable"))
-			return model, model.flushHistory()
-		}
 		if arguments != "" {
 			model.status = "renaming session"
-			return model, func() tea.Msg {
-				message, err := model.app.options.Rename(model.ctx, arguments)
-				return fullscreenRenameMsg{message: message, err: err}
-			}
+			return model, model.rename(arguments)
 		}
-		currentTitle := ""
-		if model.app.options.CurrentSessionTitle != nil {
-			currentTitle = model.app.options.CurrentSessionTitle()
-		}
-		model.selection = &selectionOverlay{Title: "Rename session", Subtitle: "Type a name and press Enter", Input: true, Value: currentTitle, Hint: "Esc cancel"}
+		model.selection = &selectionOverlay{Title: "Rename session", Subtitle: "Type a name and press Enter", Input: true, Value: model.sessionTitle, Hint: "Esc cancel"}
 		model.selectionKind = "rename"
 		model.input.Blur()
 		return model, nil
 	case SlashDelete:
-		if model.app.options.Delete == nil {
-			model.insertHistoryCell(NewErrorHistoryCell("Session deletion is unavailable"))
-			return model, model.flushHistory()
-		}
 		model.selection = &selectionOverlay{Title: "Delete this session?", Subtitle: "Cannot be undone.", Items: []selectionItem{
 			{Name: "No, keep this session", Description: "Return to the current session"},
 			{Name: "Yes, delete and exit", Description: "Permanently delete this session now"},
@@ -108,20 +76,12 @@ func (model fullscreenModel) dispatchCommand(invocation SlashInvocation) (tea.Mo
 		model.selectionKind = "delete"
 		return model, nil
 	case SlashCompact:
-		if model.app.options.Compact == nil {
-			model.insertHistoryCell(NewErrorHistoryCell("Conversation compaction is unavailable"))
-			return model, model.flushHistory()
-		}
-		model.status = "compacting"
-		return model, func() tea.Msg {
-			message, err := model.app.options.Compact(model.ctx)
-			return fullscreenCompactMsg{message: message, err: err}
-		}
+		model.running = true
+		model.status = "compacting context"
+		model.runStartedAt = time.Now()
+		model.motionStartedAt = model.runStartedAt
+		return model, tea.Batch(model.submitCompact(), model.workingTick())
 	case SlashSkills:
-		if model.app.options.Skills == nil {
-			model.insertHistoryCell(NewErrorHistoryCell("Skills are unavailable"))
-			return model, model.flushHistory()
-		}
 		model.selection = &selectionOverlay{Title: "Skills", Subtitle: "Choose an action", Items: []selectionItem{
 			{Name: "List skills", Description: "Browse available skills"},
 			{Name: "Enable/Disable Skills", Description: "Enable or disable skills", Disabled: model.running, DisabledReason: "unavailable while a task is running"},
@@ -129,23 +89,24 @@ func (model fullscreenModel) dispatchCommand(invocation SlashInvocation) (tea.Mo
 		model.selectionKind = "skills-menu"
 		return model, nil
 	case SlashMCP:
-		if model.app.options.MCP == nil {
-			model.insertHistoryCell(NewErrorHistoryCell("MCP status is unavailable"))
-			return model, model.flushHistory()
+		model.mcpRequestID++
+		requestID := model.mcpRequestID
+		detail := application.MCPDetailSummary
+		if strings.EqualFold(arguments, "verbose") {
+			detail = application.MCPDetailVerbose
 		}
-		model.status = "loading MCP"
-		return model, func() tea.Msg {
-			output, err := model.app.options.MCP(model.ctx, strings.EqualFold(arguments, "verbose"))
-			return fullscreenCommandDoneMsg{command: command, output: output, err: err}
-		}
+		model.status = "loading MCP inventory"
+		model.insertHistoryCell(NewMCPCommandHistoryCell())
+		return model, tea.Sequence(model.flushHistory(), func() tea.Msg {
+			model.app.options.Application.LoadMCP(model.ctx, requestID, detail)
+			return nil
+		})
 	case SlashClear:
-		if model.app.options.Clear == nil {
-			model.insertHistoryCell(NewErrorHistoryCell("New chat is unavailable"))
-			return model, model.flushHistory()
-		}
+		model.clearing = true
+		model.status = "starting new chat"
 		return model, func() tea.Msg {
-			err := model.app.options.Clear(model.ctx)
-			return fullscreenCommandDoneMsg{command: command, output: "Started a new chat", err: err}
+			model.app.options.Application.Clear(model.ctx)
+			return nil
 		}
 	default:
 		model.insertHistoryCell(NewErrorHistoryCell(fmt.Sprintf("Command /%s is unavailable", slashCommand)))
@@ -153,13 +114,8 @@ func (model fullscreenModel) dispatchCommand(invocation SlashInvocation) (tea.Mo
 	}
 }
 
-func (model fullscreenModel) commandStatus() string {
-	mode := string(model.collaboration)
-	if mode == "" {
-		mode = string(CollaborationExecute)
-	}
-	return fmt.Sprintf("mode: %s\nmodel: %s\ntokens: input=%d cached/unknown output=%d context=%d/%d\nphase: %s",
-		mode, strings.TrimSpace(model.model), model.inputUsage, model.outputUsage, model.contextUsage, model.contextLimit, model.status)
+func applicationThreadID(value string) rollout.ThreadID {
+	return rollout.ThreadID(strings.TrimSpace(value))
 }
 
 func taskPhase(task TaskSubmission) string {
@@ -171,36 +127,50 @@ func taskPhase(task TaskSubmission) string {
 
 func (model fullscreenModel) loadSessions() tea.Cmd {
 	return func() tea.Msg {
-		sessions, err := model.app.options.Sessions(model.ctx)
-		return fullscreenSessionsMsg{sessions: sessions, err: err}
+		model.app.options.Application.LoadSessions(model.ctx)
+		return nil
 	}
 }
 
-func (model fullscreenModel) runTask(task TaskSubmission) tea.Cmd {
+func (model fullscreenModel) submitTask(task TaskSubmission) tea.Cmd {
 	return func() tea.Msg {
-		startedAt := time.Now()
-		taskContext, cancel, err := model.app.options.NewTask(model.ctx)
-		if err != nil {
-			return fullscreenTaskDoneMsg{err: err, elapsed: time.Since(startedAt)}
+		if err := model.app.options.Application.SubmitUser(model.ctx, task.Content); err != nil {
+			return fullscreenOperationFailedMsg{operation: "submit task", err: err}
 		}
-		model.app.setActiveRun(cancel)
-		defer func() {
-			cancel()
-			model.app.clearActiveRun(cancel)
-		}()
-		taskErr := model.app.options.Task(taskContext, task)
-		session := ""
-		if model.app.options.CurrentSession != nil {
-			session = model.app.options.CurrentSession()
-		}
-		return fullscreenTaskDoneMsg{err: taskErr, session: session, elapsed: time.Since(startedAt)}
+		return nil
 	}
 }
 
-func (model *fullscreenModel) refreshCurrentSession() {
-	if model != nil && model.app.options.CurrentSession != nil {
-		if session := strings.TrimSpace(model.app.options.CurrentSession()); session != "" {
-			model.startup.Session = session
+func (model fullscreenModel) submitCompact() tea.Cmd {
+	return func() tea.Msg {
+		if err := model.app.options.Application.SubmitCompact(model.ctx); err != nil {
+			return fullscreenOperationFailedMsg{operation: "compact context", err: err}
 		}
+		return nil
+	}
+}
+
+func (model fullscreenModel) setMode(mode turn.ModeKind) tea.Cmd {
+	return func() tea.Msg {
+		if err := model.app.options.Application.SetMode(model.ctx, mode); err != nil {
+			return fullscreenOperationFailedMsg{operation: "set collaboration mode", err: err}
+		}
+		return nil
+	}
+}
+
+func (model fullscreenModel) rename(name string) tea.Cmd {
+	return func() tea.Msg {
+		model.app.options.Application.Rename(model.ctx, model.generation, name)
+		return nil
+	}
+}
+
+func (model fullscreenModel) shutdown() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(model.ctx), 3*time.Second)
+		defer cancel()
+		model.app.options.Application.Shutdown(ctx)
+		return nil
 	}
 }

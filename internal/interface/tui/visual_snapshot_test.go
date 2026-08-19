@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	application "github.com/Godric-W/Amadeus/internal/app"
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
@@ -49,7 +50,8 @@ func TestFullscreenRunKeepsMainScreenAndNativeMouse(t *testing.T) {
 	var output bytes.Buffer
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: bytes.NewBufferString("/exit\r"), Output: &output, Width: 80, NoColor: true, DisableAnimations: true,
-		Task: func(context.Context, TaskSubmission) error { return nil },
+		Application: newFakeFullscreenApplication(),
+		Snapshot:    application.ThreadViewSnapshot{Generation: 1, ThreadID: "thread-1", Model: "test"},
 	})
 	if err != nil {
 		t.Fatal(err)

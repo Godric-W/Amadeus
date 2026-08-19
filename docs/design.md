@@ -1,7 +1,7 @@
 # Amadeus 架构设计
 
 > 状态：Target Architecture v1
-> 最近修订：2026-08-18
+> 最近修订：2026-08-19
 > 目标语言：Go
 > 产品形态：面向真实软件工程任务的本地 Coding Agent CLI
 > 架构骨架：`../codex-main`
@@ -19,6 +19,15 @@
 4. 外层 Runtime 不照搬 Claude Code；内层 Tool 的数据模型和阶段划分尽量与 Claude Code 对齐，再通过 Go 类型和 Codex Event/InteractiveRequest 边界适配。
 5. 不引入 Claude Code 的用户级、项目级或本地权限持久化；Approval grant 只保存在当前 Session 内存中，Session 结束或 Resume 后清空。
 6. Prompt 的架构、数据模型、命名和所有权以 Codex 为准；普通模式、Plan Mode 和 Compaction Prompt 使用 Codex 对应机制与资产。Prompt 迁移不得为旧实现增加兼容适配层，旧 Prompt owner、旧字段和旧装配入口必须在切换后删除。
+7. 本文所称“向 Codex/Claude Code 看齐”均指架构级对齐：对齐职责划分、数据模型、概念术语、命名、所有权、依赖方向、状态生命周期、事件顺序和失败顺序，而不是保留 Amadeus 旧实现后仅增加同名类型、回调、Adapter、Facade 或展示层包装。
+
+架构对齐必须遵守以下替换原则：
+
+- 先确认参考实现中业务事实的 owner、输入输出 Contract、状态机边界和完成协议，再设计 Amadeus 的 Go 等价实现；不得从当前旧调用链反推一个“最小改名方案”。
+- 当前类型或调用链无法表达目标 Contract 时，必须替换数据模型和职责边界，迁移全部生产调用方，并删除旧 callback、旧 message、旧状态字段和旧完成路径。
+- 不允许新主链调用旧 executor/query/controller 后再把字符串结果包装成 Codex 风格 Event；不允许 TUI、Application 和 Session 同时维护同一操作的 running、completed 或 history 真相。
+- UI 文案、视觉样式或 symbol 名称相似不构成对齐完成；只有所有权、生命周期、事件时序、恢复语义和失败行为一致，并有 Contract test 固化后，才视为完成。
+- Amadeus 可以因 Go、Bubble Tea、多 Provider 和本地运行边界做语言与平台适配，但适配不得改变参考架构中的核心概念关系，也不得成为保留旧实现的理由。
 
 架构迁移以所有权、依赖方向和运行时不变量为完成标准，不以 package、类型或字段改名为完成标准：
 
@@ -42,6 +51,8 @@
 | G. Runtime Architecture Convergence | SessionServices 所有权归位、Codex 术语收敛、Task/run_turn 主链与混合 Tool 边界 |
 | H. Extensions + Release | MCP、Skill、Web、迁移清理与发布验收 |
 | I. Prompt Construction + Optimization | Codex Prompt 数据模型、ModelMessages、WorldState/Collaboration Mode、Prompt 资产迁移与缓存/Token/Contract 验证 |
+| J. Slash Command + TUI Application Lifecycle Alignment | Active Thread Attachment、canonical replay、typed command lifecycle 与专用 HistoryCell |
+| K. Response Stream Reconnect Lifecycle Alignment | Provider retry 分层、ModelClientSession 重连、typed transient error 与 TUI 状态恢复 |
 
 ## 2. 产品目标
 
@@ -101,7 +112,7 @@ Amadeus 不引入以下主链：
 5. **修改先预览后落盘**：结构化文件修改必须先生成 Structured Diff。
 6. **权限靠近 Tool**：Tool 根据真实输入返回 Allow、Ask 或 Deny；Ask 统一进入 Approval Runtime。
 7. **Prompt 只描述真实能力**：未实现的 Tool、权限、MCP、Skill 或 Runtime 行为不得写进系统提示词。
-8. **错误必须可见**：任何停止工作、上下文超限、Tool 失败或 Provider 错误都必须产生明确的 StreamError、Completed Item 或 Turn 终态。
+8. **错误必须可见且区分瞬态与终态**：任何停止工作、上下文超限、Tool 失败或 Provider 错误都必须产生明确的 StreamError、Completed Item 或 Turn 终态；正在自动恢复的 response stream error 必须显式标记为 retrying，不得被 TUI 提前投影成永久错误或 Turn 终态。
 9. **默认安全但不过度抽象**：优先采用简单、明确、可测试的规则，不提前建立企业级策略系统。
 
 ## 6. 分层架构
@@ -187,7 +198,7 @@ Agent Runtime 负责：
 - 接收 ToolResult 并继续推理。
 - 路由 Interrupt、Approval Decision、User Input Response 和待处理输入。
 - 完成持久化后发布 Turn 终态事件。
-- 发布稳定的 SessionEvent，不把 Model Step、Provider retry 或 TUI 内部细节暴露为公共协议。
+- 发布稳定的 SessionEvent，不把 Model Step、单次 HTTP attempt、backoff tick 或 TUI 动画帧暴露为公共协议；但会影响用户等待体验和 Turn 是否继续运行的 response stream retry lifecycle 必须通过 typed transient Event 明确公开。
 
 ### 6.5 Capabilities
 
@@ -978,6 +989,46 @@ ItemStarted
 
 Tool Call/Result 也遵守同样顺序。允许多个 completed facts 先 buffered append、在 Turn durability boundary 统一 flush，但不能先向 TUI 宣布 Completed 再只保存在 `run_turn` 私有内存队列中。
 
+#### 10.5.1 Request Retry 与 Response Stream Reconnect
+
+Provider request retry 与 response stream reconnect 是两个不同生命周期，必须使用不同配置、计数和 owner：
+
+- `request_max_retries` 只处理请求建立前后可安全重试的 HTTP/transport failure，由 Provider client/adapter 按统一配置执行；它不产生 Turn-visible `Reconnecting...` 状态。
+- `stream_max_retries` 处理已经建立的 response stream 在完成前断开、idle timeout 或其他可恢复读取错误，由 Turn-scoped `ModelClientSession` 或 Session 模块内专用 response retry helper 负责。
+- `stream_idle_timeout` 定义 response stream 多久无活动后视为连接丢失；Provider Adapter 负责把 transport timeout、Retry-After 和底层错误归一化为 typed `ProviderError`，不拥有 Turn 状态或 TUI 文案。
+- retryability 判定、retry counter、delay、取消、瞬态 Event 和重试耗尽后的最终错误必须由同一 Core owner 串行协调；不得由 OpenAI SDK、TUI 和 Compactor 分别维护三套重试事实。
+
+当前 Amadeus 只支持 HTTP/SSE Provider transport，因此 K 阶段的连接恢复配置固定为上述 **2 个 retry count + 1 个 stream idle timeout**。Codex 另有 `websocket_connect_timeout_ms`，但 Amadeus 在真正实现 WebSocket transport、capability detection 和 transport fallback 前不得增加无效的 `websocket_connect_timeout` 配置或伪 fallback 分支。
+
+可恢复 stream failure 的顺序固定为：
+
+```text
+Sample Model Stream
+→ classify retryable ProviderError
+→ publish StreamError{WillRetry: true, Message: "Reconnecting... n/m"}
+→ cancellable backoff
+→ reuse the same Turn-scoped ModelClientSession and sampling request semantics
+→ reopen response stream
+→ next normal live Event restores the previous TUI status
+→ success continues the same Turn
+```
+
+重试耗尽或错误不可恢复时，Core 发布 `WillRetry: false` 的最终错误语义并让 `run_turn` 返回 failed result；Session 仍按唯一 Turn terminal protocol 完成 durable terminal append、ActiveTurn cleanup 和 `TurnCompleted`。TUI 不得根据计数或错误字符串自行决定 Turn 是否结束。
+
+普通 sampling、手动 `/compact` 的 CompactTask 和 `run_turn` 内自动 compaction 必须复用同一 response-stream retry policy；Compactor 可以使用不同请求类型和 Prompt，但不得拥有独立、不可观察的 retry loop。
+
+#### 10.5.2 Partial Delta 与恢复边界
+
+Stream 在已发布部分 Delta 后断开时，不能简单重新请求并把新 Delta 继续追加到旧 draft。实现必须明确 attempt-local aggregation 与用户可见 draft 的关系，并满足：
+
+- 未形成 completed ResponseItem 的 Delta 不是 canonical fact，不写入 Rollout，也不参与 Resume replay。
+- 每次 retry attempt 使用独立 aggregation state；只有成功完成的 response item 才进入 canonical append 与 ItemCompleted 顺序。
+- 新 attempt 如果从头返回内容，TUI/stream projector 必须替换或按稳定 item identity 去重旧 attempt 的未完成 draft，不能产生重复文本、重复 Tool Call 或重复 reasoning。
+- 已完成并 canonical append 的 ResponseItem 不因后续 sampling request 重试而回滚；retry 只作用于当前未完成 sampling request。
+- cancellation 在 stream read 和 backoff 期间都必须立即生效，并最终走 `TurnAborted` 或既定 interruption contract，不能被下一次 retry 吞掉。
+
+Response stream retry Event 是 live、transient、non-canonical notification。Resume/replay 不重放历史上的 `Reconnecting...` 状态，也不尝试恢复旧 Provider stream、retry counter、backoff timer 或 attempt-local draft。
+
 ### 10.6 Progress、Budget 与停止条件
 
 `run_turn` 不使用“相同调用两次”或“相同错误两次”之类通用启发式判定 stalled。重复错误可以形成 model-visible reminder 或 telemetry，但不拥有 Turn 终止权。
@@ -1363,7 +1414,7 @@ Domain Request 统一表达：
 - Provider Dialect 的最小兼容差异。
 - Developer role 降级。
 - Tool call argument 增量聚合。
-- Provider Error 和 Usage 归一化。
+- Provider Error、retryability、Retry-After、transport/idle timeout 和 Usage 归一化。
 
 它不负责：
 
@@ -1372,6 +1423,7 @@ Domain Request 统一表达：
 - Tool 参数业务校验。
 - Approval。
 - Context Compaction。
+- Turn-visible response stream retry counter、backoff lifecycle 或 TUI 状态。
 
 ### 13.3 API Mode
 
@@ -1395,6 +1447,24 @@ Dialect 只处理经过验证的协议差异，不根据域名猜测：
 - `generic_openai`
 
 具体差异必须由契约测试覆盖，包括 role 支持、reasoning 字段、tool call delta 和 usage。
+
+### 13.5 Provider Retry 配置与错误 Contract
+
+Amadeus 没有内置 Provider；每个 Provider 都由用户定义。因此这三个字段属于所有用户 Provider 共用的稳定配置 Contract，并由配置归一化层在用户省略时填入默认值，而不是依赖某个内置 Provider preset：
+
+| 字段 | 默认值 | 校验与含义 |
+|---|---:|---|
+| `request_max_retries` | `4` | `0..100`；失败 HTTP request 的重试次数，不显示 `Reconnecting...` |
+| `stream_max_retries` | `5` | `0..100`；已建立 response stream 中断后的重连次数 |
+| `stream_idle_timeout` | `5m` | 必须大于 `0`；stream 连续无活动达到该时长后按可恢复断线处理 |
+
+这三个字段就是当前 HTTP/SSE 基础版的完整连接恢复配置：严格按“次数”统计是 2 个 retry 字段，连同断流检测是 3 个字段。Codex 的第 4 个相关字段 `websocket_connect_timeout_ms` 只服务 WebSocket transport，不进入当前 Amadeus 配置、Prompt、`config show` 或 K 阶段验收。
+
+不得继续用单一 `max_retries` 同时表达 SDK HTTP request retry 和 response stream reconnect。旧 `max_retries` 当前只接入 SDK request retry，因此配置迁移只能将显式旧值映射到 `request_max_retries`；`stream_max_retries` 始终使用自己的显式值或默认值 `5`，不能继承旧字段。迁移期可以给出 deprecation error/warning，但最终生产 schema、`config show`、patch/merge、validation 和 Adapter wiring 必须删除旧字段。
+
+现有 `provider.timeout` 不属于 Codex 上述三个 retry/reconnect 字段。K 阶段必须审计并明确其 request timeout 语义；它不得作为整个活跃 streaming response 的固定 wall-clock deadline，从而在持续有 Delta 时抢先于 `stream_idle_timeout` 终止长响应。Composition Root 只负责装配，不把 retry policy 写进 TUI 或 Task。
+
+`ProviderError` 至少稳定表达 error kind/code、用户安全 message、可选 additional details、retryable、可选 retry delay 和底层 request/provider identity。Adapter 负责归一化这些事实；Core 根据这些事实决定是否重连。错误字符串不能作为 retryability、Turn terminal 或 TUI 状态切换的判断依据。
 
 ## 14. Tool 架构
 
@@ -2069,9 +2139,9 @@ Fullscreen TUI 的活动模型承担类似 Codex `ChatWidget` 的统一分发职
 Composer
 → InputResult
 → fullscreenModel.dispatchCommand
-→ TUI Local Action / Application Command / Session Op
-→ Runtime
-→ SessionEvent 或 Application Result
+→ TUI Local Action / AppEvent / Session Op
+→ Application 或 Runtime owner
+→ SessionEvent / typed AppEvent result
 → HistoryCell / TUI Projection
 ```
 
@@ -2082,22 +2152,287 @@ Composer
 | 类型 | 命令 | 执行方式 |
 |---|---|---|
 | TUI Local | `/copy` | 复制最近 Assistant 回复，不创建 Turn |
-| Application Command/Query | `/resume`、`/skills`、`/rename`、`/delete`、`/status`、`/mcp`、`/clear`、`/exit` | 由当前 TUI 分发到 Application/Thread 服务 |
+| Application Command/Query | `/resume`、`/skills`、`/rename`、`/delete`、`/status`、`/mcp`、`/clear`、`/exit` | 转换为 typed AppEvent，由 Application/Thread owner 执行并返回结构化结果 |
 | Session/Turn Operation | `/compact`、`/plan` | 提交 `CompactOp` 或 `ThreadSettingsOp`；设置成功后 `/plan <task>` 再提交用户输入 |
 
-`/plan` 不直接修改 TUI 的本地模式变量。Fullscreen TUI 通过一个明确的 `SetCollaborationMode` 回调向当前 `AmadeusThread` 提交 `ThreadSettingsOp`；Session 接受设置后，TUI 才更新模式投影。带参数的 `/plan <task>` 严格遵循：
+`/plan` 不直接修改 TUI 的本地模式变量，也不通过 callback 返回模拟 Session 已接受设置。Fullscreen TUI 通过 active Thread attachment 提交 `ThreadSettingsOp`；Session 发布 typed `ThreadSettingsUpdated` 后，TUI 才更新模式投影。带参数的 `/plan <task>` 严格遵循：
 
 ```text
 SetCollaborationMode(plan)
 → ThreadSettingsOp
 → Session 更新 CollaborationMode
-→ TUI 收到设置成功结果
+→ ThreadSettingsUpdated
 → UserInputOp(task)
 ```
 
-快捷模式切换复用同一回调；设置失败时保留原模式，不启动任务。
+快捷模式切换复用同一 Op/Event 生命周期；设置失败时保留原模式，不启动任务。旧 `FullscreenPermissionModeSetter` 和 `fullscreenPermissionModeDoneMsg` 不作为最终目标保留。
 
 Slash Command 不是 SessionEvent。命令执行引发的状态变化才通过 SessionEvent、Rollout 和 TUI Projection 传播；纯 TUI 操作不写入 canonical history。
+
+### 18.4 AppEvent 与命令生命周期
+
+Slash Command 分发后的异步工作使用 Codex 同构的 typed AppEvent，不使用 `func(context.Context) (string, error)` 作为通用命令边界。字符串只允许存在于最终 HistoryCell 的展示字段中，不能承担 Thread attach、history replay、running state、empty state 或 typed inventory 的业务语义。
+
+Fullscreen interactive mode 必须像 Codex `App` 一样持续拥有当前 Thread attachment 和事件路由，而不是让每次 `runTask` 或 Slash Command callback 临时调用 `waitTurn` 消费 `SessionIo`：
+
+- 同一时刻只有一个 active Thread attachment；它是 `SessionIo.Events`、`SessionIo.Requests`、`SessionIo.Status` 和 termination 的唯一消费者。
+- 普通用户输入与 `/compact` 只负责向 active `AmadeusThread` 提交 typed Op；Turn running、approval、completion 和 history 更新全部由 attachment event pump 送回 Bubble Tea AppEvent。
+- Resume 成功后先停止旧 attachment 的转发，再原子安装新 attachment；带旧 ThreadID 或旧 attachment generation 的迟到消息必须被丢弃。
+- `waitTurn` 只保留给 one-shot/非 Fullscreen CLI；Fullscreen 主链不得通过 `runOnce → waitTurn → EventSink` 形成第二套事件消费和 Turn 完成协议。
+- Bubble Tea 后台 command 的完成只表示 Application request goroutine 已返回，不能表示 Turn 已完成；Turn 终态仍唯一来自 `TurnCompleted`/`TurnAborted`。
+
+目标 AppEvent 至少覆盖：
+
+```text
+OpenResumePicker
+ResumeThread(thread_id)
+ThreadAttached(ThreadViewSnapshot)
+ThreadAttachFailed(error)
+
+ClearUI(name)
+SetThreadName(name)
+ThreadNameUpdated(thread_id, name)
+DeleteCurrentThread
+
+FetchMCPInventory(detail, origin_thread_id)
+MCPInventoryLoaded(inventory, detail, origin_thread_id)
+MCPInventoryFailed(error, origin_thread_id)
+
+RefreshStatusData(StatusRefreshOrigin)
+StatusDataLoaded(origin, result)
+
+OpenSkillsList
+OpenManageSkills
+SetSkillEnabled(path, enabled)
+ManageSkillsClosed
+ListSkills(force_reload)
+SkillsLoaded(catalog)
+
+Exit(ShutdownFirst | Immediate)
+ShutdownComplete
+```
+
+这些名称表达 Codex 的职责和生命周期；在 Go/Bubble Tea 中可以按语言习惯拆成 request/result message，但不得重新退化为一个携带 `command/output/error` 的通用完成消息。Thread-scoped completion 必须携带 ThreadID，后台 query completion 必须携带 request ID 或 origin generation。
+
+`ThreadViewSnapshot` 是 Application 向 TUI 提供的只读线程视图，不成为第二份历史 owner：
+
+```go
+type ThreadViewSnapshot struct {
+    ThreadID      rollout.ThreadID
+    Title         string
+    Mode          turn.ModeKind
+    Items         []protocol.TurnItem
+    Usage         llm.Usage
+    ContextWindow int64
+}
+```
+
+`Items` 必须由目标 Thread 的 canonical rollout 投影得到；TUI 只能通过既有 `TurnItem → HistoryCell` replay 链渲染，不能直接解析 rollout，也不能复用切换前 Thread 的 `TranscriptState`。
+
+#### `/resume`
+
+`/resume` 是 Application 级 Thread attach/switch 生命周期，不是“修改当前 Session ID 后返回一条成功字符串”：
+
+```text
+SlashCommand::Resume
+→ OpenResumePicker / ResumeThread
+→ ThreadWorkspace 准备并恢复目标 AmadeusThread
+→ 从目标 canonical rollout 构造 ThreadViewSnapshot
+→ 原子替换 Application current Thread
+→ BeginThreadSwitchHistoryReplay
+→ TUI 重置旧 TranscriptState、HistoryCell、active item、usage 和 mode 投影
+→ replay ThreadViewSnapshot.Items
+→ EndThreadSwitchHistoryReplay
+→ 重新接收目标 Thread 的 live SessionEvent
+```
+
+- 目标 Thread 恢复、history projection 或 TUI attach 失败时，当前 Thread 与当前 transcript 必须保持不变；不得先关闭当前 Thread 再尝试恢复目标 Thread。
+- replay 必须按 canonical 顺序一次性缓冲并刷新，避免用户看到只切换 Session 标识、半段历史或逐条闪烁。
+- Resume 只允许存在一个 `ProjectThreadItems` projector，按 rollout sequence 投影 User、Assistant、Tool、Plan 和 ContextCompaction；不得再把 `ProjectCompletedItems`、legacy response items 等多个列表合并后按时间重新排序。
+- canonical `ResponseUserMessage` 必须投影为 `ItemUserMessage`，`KindCompaction` 必须投影为 `ItemContextCompaction`；用户消息和压缩边界不能只存在于首次 live TUI 的本地插入中。
+- replay 不重放 Working、Approval wait 或 Delta 动画；已完成项必须与首次启动时的 Resume projection 完全一致。
+- 成功后可以追加轻量 Session lineage/notice，但 notice 不能替代历史恢复。
+- 旧 `FullscreenSessionResumer func(...) (string, error)`、`fullscreenResumeMsg.message`、`replayTurnItems` 的 merge/sort 路径和只调用 `refreshCurrentSession()` 的完成路径必须删除。
+
+#### `/compact`
+
+`/compact` 是正式的 Session Op 和 `CompactTask`，其运行状态与终态只来自 Runtime Event：
+
+```text
+SlashCommand::Compact
+→ TUI 立即进入 pending task UI
+→ AmadeusThread.Submit(CompactOp)
+→ TurnStarted(kind=compact)
+→ CompactTask
+→ durable Compaction rollout item
+→ ContextCompacted
+→ Warning("Heads up: Long threads...")
+→ TurnCompleted / TurnAborted
+→ TUI 离开 task running state
+```
+
+- `TurnStarted` 必须携带稳定的 Turn/Task kind，使 TUI 显示 `Compacting context`，而不是把压缩伪装成普通用户 Turn 或仅修改不可见的 status 字符串。
+- 提交 `CompactOp` 后 TUI 可以像 Codex 一样先设置 pending/running projection，消除事件往返前的空白；Runtime 的 `TurnStarted`、`TurnCompleted` 和 `TurnAborted` 仍是最终真相。
+- `ContextCompacted` 必须在 compaction durable append 成功后发布，并固定投影为 Codex 同义的 `• Context compacted`；生成的 summary 只属于 durable replacement history/compaction payload，不得作为 Assistant 消息、Reason 文本或 TUI 详情泄露。
+- `ContextCompacted` 后必须立即发布独立的 typed `Warning`，由黄色 `WarningHistoryCell` 显示 `⚠ Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.`；该提示不是 compaction summary，也不并入 `TurnCompleted` 文本。
+- `/compact` 不通过 TUI callback 内部调用 `waitTurn`，不返回 `"Conversation compacted"` 字符串作为完成协议，也不维护独立 `fullscreenCompactMsg` 终态。
+- Compact 期间的新输入遵循普通 task queue 规则，不创建仅对 Compact 生效的第二套输入状态机。
+
+#### `/mcp`
+
+`/mcp` 是 Application 级结构化 inventory query，不是拼接文本的同步 reader：
+
+```text
+SlashCommand::MCP
+→ 立即提交洋红色 MCPCommandHistoryCell("/mcp")
+→ status = loading MCP inventory
+→ FetchMCPInventory(detail, origin_thread_id)
+→ MCPInventoryLoaded / MCPInventoryFailed
+→ MCPInventoryCell / EmptyMCPInventoryCell / ErrorCell
+→ status = idle
+```
+
+- 主屏 terminal history 一经 `tea.Println` flush 即不可变，因此不得先打印一个 loading HistoryCell 再假装原位替换；in-flight 状态属于 status projection，正式 history 只记录 `/mcp` 命令与最终结果。
+- MCP query 使用 `MCPServerStatus`、`MCPAuthStatus`、`MCPToolMetadata`、`MCPResourceMetadata` 和 detail enum 等 typed 数据；Application 从 CapabilityView 获取 redacted configuration/tool/resource catalog，排序和最终布局由 MCP HistoryCell renderer 负责，Application 不拼接终端文本。
+- 默认输出必须采用 Codex 术语与层级：`🔌  MCP Tools`、Server、`Auth`、`Tools`；`/mcp verbose` 在同一 renderer 中增加 `Resources` 与 `Resource templates`，不得建立第二套字符串输出路径。
+- 即使没有配置 Server 或没有可用 Tool，也必须提交明确结果：`No MCP servers configured.` 或 `No MCP tools available.`，不能静默结束。
+- query/result 必须携带发起时的 `origin_thread_id`、attachment generation 和 request ID；用户在请求期间 Resume 到其他 Thread 时，迟到结果不得污染新 transcript。
+- 旧 `FullscreenMCPReader func(...) (string, error)`、`writeInteractiveMCP` 的 TUI 主链用途以及通过通用 `fullscreenCommandDoneMsg` 展示 MCP 的路径必须删除。
+- `/mcp verbose` 只改变 typed detail level，不建立第二套查询或 renderer。
+
+#### `/clear`
+
+`/clear` 与 Codex `ClearUi` 一样，是 Application-owned 的“清空当前 UI 并启动 fresh Thread”操作，不是清空一段本地 slice 后返回 `Started a new chat`：
+
+```text
+SlashCommand::Clear
+→ ClearUI(name?)
+→ 清除 pending history insertion
+→ 清空 terminal viewport/scrollback
+→ reset Transcript/App UI state
+→ detach/shutdown 当前 live Thread attachment
+→ StartFreshThread(source=clear)
+→ 复用正常 Thread attach/configure lifecycle
+→ 显示旧 Thread 的 resume hint/lineage（如适用）
+```
+
+- 清屏前必须先丢弃尚未 flush 的旧 history insertion，防止 `/clear` 后旧 transcript 行再次写回终端。
+- reset 范围至少包括 HistoryCell、ActiveHistoryCell、deferred history、replay buffer、details store、pending status refresh、usage/mode projection 和旧 attachment generation；不能只调用 `resetHistory()`。
+- 旧 Thread 不被删除或归档，canonical rollout 继续可 Resume；Application 只停止其 live event forwarding。
+- fresh Thread 启动或 attach 失败时，在已清空的 UI 中显示 ErrorCell，并保留旧 Thread 可恢复性；不得返回或显示伪造的成功文案。
+- 旧 `FullscreenClearer`、`fullscreenCommandDoneMsg` 中通过 `strings.HasPrefix(command, "/clear")` 分支执行重置的路径必须删除。
+
+#### `/rename`
+
+`/rename` 分为 TUI-local prompt 和 Thread-scoped typed command 两段，完成事实来自 Thread metadata notification：
+
+```text
+SlashCommand::Rename
+→ Rename prompt / inline name validation
+→ SetThreadName(name)
+→ Application 路由到 active Thread metadata owner
+→ durable metadata update
+→ ThreadNameUpdated(thread_id, name)
+→ matching ChatWidget/Header 更新名称
+```
+
+- prompt、空名称校验和 normalize 属于 TUI；持久化与当前 Thread 身份校验属于 Application/ThreadWorkspace。
+- `ThreadNameUpdated` 必须携带 ThreadID；旧 Thread 或迟到 attachment 的更新不得修改当前 Header。
+- 提交失败显示 ErrorCell，成功不依赖返回字符串或额外 Notice 才能更新 UI；Header/metadata 只根据 typed completion 更新。
+- 旧 `FullscreenSessionRenamer func(...) (string, error)`、`fullscreenRenameMsg.message` 和直接调用 `refreshCurrentSession()` 的完成路径必须删除。
+
+#### `/delete`
+
+`/delete` 使用 TUI-local confirmation + Application-owned destructive lifecycle：
+
+```text
+SlashCommand::Delete
+→ confirmation overlay
+→ DeleteCurrentThread
+→ ThreadWorkspace/ThreadStore durable delete
+→ success: Exit(UserRequested)
+→ failure: ErrorCell + Continue
+```
+
+- 取消 confirmation 不产生 AppEvent；confirmation overlay 绑定创建时的 attachment generation，Thread switch 必须关闭或失效旧 overlay，避免对错误 Thread 执行确认动作。
+- `DeleteCurrentThread` 与 Codex 一样由串行 Application event loop 在处理时解析 active Thread；Application 在删除前验证目标仍允许删除，并协调 attachment shutdown、rollout close、metadata/rollout 删除顺序，删除只有一个 owner。
+- durable delete 成功后直接进入 Application exit control，不先插入成功字符串再 `tea.Quit`；删除失败必须保留 TUI 可用并显示错误。
+- 旧 `FullscreenSessionDeleter func(...) (string, error)`、`fullscreenDeleteMsg.message` 和 `tea.Sequence(flushHistory, tea.Quit)` 完成路径必须删除。
+
+#### `/status`
+
+`/status` 首先从 TUI/Application 已持有的 typed state 立即构造 Status HistoryCell；只有确实需要远程或延迟数据时才发起关联请求：
+
+```text
+SlashCommand::Status
+→ Build StatusSnapshot from cached typed state
+→ StatusHistoryCell(refreshing?, request_id?)
+→ optional RefreshStatusData(StatusCommand(request_id))
+→ StatusDataLoaded(StatusCommand(request_id), result)
+→ 原位完成 matching StatusHistoryCell
+```
+
+`StatusSnapshot` 至少包含当前 ThreadID/名称、Model、Collaboration Mode、Token/Context usage、Turn phase 和 Provider identity；可选扩展数据保持 typed field，不拼接成 CLI 文本后再交给 TUI 解析。
+
+- 本地状态卡必须立即可见，不能为了等待可选 Provider/account 数据让回车后无反馈。
+- 每次 `/status` 使用独立 request ID 和 HistoryCell handle；并发请求只更新自己的卡片，迟到或未知 request ID 直接忽略。
+- 异步刷新失败也必须结束该卡片的 refreshing 状态，并保留已显示的本地 snapshot；不能永久显示 loading，也不能用通用 command done message 追加第二张状态卡。
+- 旧 `FullscreenStatusReader func(...) (string, error)`、`commandStatus() + output string` 拼接和 `/status` 对 `fullscreenCommandDoneMsg` 的依赖必须删除。
+
+#### `/skills`
+
+`/skills` 的菜单与列表交互属于 TUI，Skill catalog、配置写入和 refresh 属于 Application/Skill owner：
+
+```text
+SlashCommand::Skills
+→ local Skills menu
+→ OpenSkillsList / OpenManageSkills
+→ list: 打开既有 Skill mention/selection surface
+→ manage: render cached typed Skill catalog
+→ SetSkillEnabled(path, enabled)
+→ config owner durable write
+→ success: update cached Skill state
+→ failure: ErrorCell
+→ ManageSkillsClosed
+→ ListSkills(force_reload=true)
+→ SkillsLoaded(catalog)
+```
+
+- Codex 的 `OpenSkillsList` 复用现有 mention selector，而不是生成一段列表文本；Amadeus 若尚无 mention surface，基础版可复用唯一 typed searchable Skill picker，但不得为 list 再建立字符串输出或第二份 catalog UI。
+- Menu、搜索、选中和 toggle view 不进入 Runtime/Rollout；Skill identity 使用稳定 path/ID，不能只用可能重复的 display name。
+- 空 catalog 必须显示明确的 `No skills available.`；list path 不得把 `[]SkillOption` 转成多行字符串交给通用 NoticeCell。
+- enable/disable 只有 Application 配置 owner 可以持久化；成功后更新内存 catalog，失败显示 ErrorCell，关闭管理界面后执行一次 typed force refresh 消除 optimistic view 与真实配置的偏差。
+- startup refresh 与用户触发 refresh 可以共享 `SkillsLoaded` 数据模型，但 origin/错误展示不同；迟到 refresh 必须按 cwd/catalog generation 校验。
+- 旧 `FullscreenSkillLister`、`FullscreenSkillSetter`、`fullscreenSkillsMsg`、`fullscreenSkillSetMsg` 及 `/skills` 的字符串 builder 路径必须删除。
+
+#### `/exit`
+
+`/exit` 是 Application shutdown request，不是 ChatWidget 直接返回 `tea.Quit`：
+
+```text
+SlashCommand::Exit
+→ Exit(ShutdownFirst)
+→ 显示 shutdown in progress
+→ 标记 pending shutdown target
+→ shutdown/detach active Thread 与后台资源
+→ rollout flush / child process cleanup
+→ ShutdownComplete 或 bounded timeout
+→ Application Exit(UserRequested)
+→ tea.Quit
+```
+
+- `ShutdownFirst` 是用户主动退出的默认模式；pending shutdown target 用于阻止正常 Thread termination/failover 逻辑把退出误判为异常切换。
+- shutdown 必须有 UI escape-hatch timeout，避免损坏的 Runtime 让退出永久卡住；超时可以记录 warning 后退出，但不能把 `Immediate` 当常规路径。
+- `Immediate` 只用于 fatal error、shutdown 已完成后的最终跳出或明确的紧急逃生路径，允许跳过 flush 的风险必须在类型命名中可见。
+- 旧 `/exit → tea.Quit` 直接路径必须删除；最终 `tea.Quit` 只能由 Application shutdown lifecycle 的终态触发。
+
+#### `/copy`
+
+`/copy` 与 Codex 一样保留为纯 TUI-local action：读取 Transcript 中最后一条 Assistant raw markdown，调用可注入的 clipboard backend，并插入 Info/Error HistoryCell 后 redraw。
+
+- 没有 Assistant markdown 时显示 `No agent response to copy`；clipboard 失败显示具体 ErrorCell，成功显示轻量 InfoCell。
+- `/copy` 不创建 AppEvent、Session Op、Turn、Rollout item 或 Application callback。为了形式统一而把它路由到 Runtime 属于错误的架构对齐。
+- clipboard lease 等平台资源由 TUI/clipboard adapter 持有；Transcript 只保存 raw markdown，不从已渲染 ANSI 文本反向提取内容。
 
 ## 19. TUI
 
@@ -2134,6 +2469,12 @@ SessionEvent
 - PlanCell
 - ApprovalCell
 - DiffCell
+- ContextCompactedCell
+- WarningHistoryCell
+- MCPCommandHistoryCell
+- MCPInventoryCell
+- EmptyMCPInventoryCell
+- StatusHistoryCell
 - ErrorCell
 - WorkedSeparatorCell
 
@@ -2167,6 +2508,16 @@ Working 是 Turn 生命周期的派生 UI 状态：
 - `TurnCompleted` 或 `TurnAborted` 离开 Working。
 - LLM Call、Reasoning、Tool 或任意通用 Status Event 不单独决定 Turn 是否运行。
 - Bubble Tea 后台命令返回只释放 goroutine，不再作为第二套 Turn 终态真相。
+
+Response stream reconnect 复用同一个 status indicator、activity marker、shimmer、elapsed time 和 `esc to interrupt` 交互，不新增 reconnect 专用动画组件：
+
+- status renderer 必须读取当前 status header/details，不能硬编码只渲染 `Working`。
+- 收到 `StreamError{WillRetry:true}` 时先保存当前 status header，确保 status indicator 可见，再显示 `Reconnecting... n/m` 和可选底层 details。
+- retrying StreamError 不 `finishDraft`、不提交 ActiveHistoryCell、不插入 ErrorCell，也不改变 Turn running 状态。
+- 收到下一条非 retry 的 live SessionEvent 时恢复此前保存的 status header；连续 retry event 只保存一次原 header。
+- retrying 状态使用 TerminalPalette 的既有 status accent，不以硬编码 ANSI 颜色实现；无颜色终端仍保留文本和 details。
+- Replay/Resume initial history 忽略 retrying StreamError，不能恢复旧 retry status 或在历史底部生成永久 `Reconnecting...` Cell。
+- `WillRetry=false` 使用最终错误投影，并等待唯一 `TurnCompleted`/`TurnAborted` 结束 Working；TUI 不自行合成 Turn terminal。
 
 ### 19.4 Approval 与 Diff
 
@@ -2612,6 +2963,23 @@ Warning
 StreamError
 ```
 
+`StreamError` 是 response stream 生命周期的 typed notification，而不是普通永久 History 项。它至少表达：
+
+```go
+type StreamError struct {
+    Message           string
+    AdditionalDetails *string
+    ProviderError     *ProviderErrorInfo
+    WillRetry         bool
+}
+```
+
+- `ProviderErrorInfo` 是 Event Protocol 自己拥有的脱敏 DTO，不直接暴露或引用 Infrastructure/SDK error 类型。
+- `WillRetry=true` 表示错误是瞬态的，Core 将自动恢复且当前 Turn 继续运行；`Message` 由 retry owner 生成 Codex 风格 `Reconnecting... n/m`，TUI 不解析字符串推导次数或状态。
+- `AdditionalDetails` 展示底层安全诊断，例如 idle timeout；敏感 header、API Key 和未脱敏响应不得进入 Event。
+- `WillRetry=false` 表示当前 stream 不再恢复；最终 Turn 是否 failed 仍由 SessionTask result 与 Session terminal protocol 决定。
+- retrying StreamError 不进入 canonical Rollout，不在 Resume/replay 中重放，不创建 Completed TurnItem。
+
 明确不进入公共 Event Protocol（内部仍可作为 Trace/Telemetry）：
 
 - LLMCallStarted/Completed。
@@ -2619,9 +2987,9 @@ StreamError
 - 通用 StatusChanged 生命周期事件。
 - ContextBuildStarted/Completed。
 - TUI Working/Shimmer Tick。
-- Provider Trace、HTTP Attempt、Retry Backoff 等遥测细节。
+- Provider Trace、单次 HTTP Attempt、Retry Backoff tick、delay 采样等遥测细节。
 
-这些信息可以保留在日志、Trace 或测试探针中，但 TUI 不应依赖它们判断 Turn 生命周期。
+这些信息可以保留在日志、Trace 或测试探针中，但 TUI 不应依赖它们判断 Turn 生命周期。`StreamError{WillRetry:true}` 是对此规则的明确边界：它公开“Core 正在自动恢复且 Turn 未结束”的产品生命周期，不公开每一次 transport attempt 的内部遥测。
 
 ### 25.4 TurnItem
 
@@ -2737,6 +3105,11 @@ Runtime 正确性不能依赖 TUI 消费速度：
 - persistence_error
 - interrupted
 
+Provider/stream error 还必须区分：
+
+- transient retrying：Core 已决定自动重试，Turn 保持 running，只更新 live status。
+- terminal provider failure：不可恢复或重试耗尽，进入 failed SessionTask result 和唯一 Turn terminal protocol。
+
 所有错误必须：
 
 - 带稳定错误码。
@@ -2746,6 +3119,7 @@ Runtime 正确性不能依赖 TUI 消费速度：
 - 在 Turn 终态中可恢复或可诊断。
 
 禁止出现“Working 动画停止但没有 Error/Completed Event”的静默失败。
+禁止把 transient retrying error 插入永久 ErrorHistoryCell、提前 finish draft 或停止 Turn；也禁止重试耗尽后只清除 `Reconnecting...` 状态而没有最终错误和 Turn 终态。
 
 ## 27. 测试策略
 
@@ -2829,6 +3203,8 @@ Runtime 正确性不能依赖 TUI 消费速度：
 - Working/Worked 计时和间距。
 - ActiveHistoryCell 只提交一次。
 - Working 只由 TurnStarted/TurnCompleted/TurnAborted 控制。
+- retrying StreamError 复用 status indicator 显示 `Reconnecting... n/m` 与 details，不生成 HistoryCell、不结束 draft；下一条非 retry live Event 恢复此前 status header。
+- Replay/Resume 忽略 transient retry status；无颜色、窄终端和隐藏 status indicator 场景仍有稳定降级。
 - Bubble Tea Task 返回不作为第二套 Turn 终态。
 - Terminal 无颜色和窄宽度降级。
 - Tool 展示使用真实 `TurnItem.ToolName`，不从 `action_summary` 或自然语言标题猜测工具身份。
@@ -2845,7 +3221,13 @@ Runtime 正确性不能依赖 TUI 消费速度：
 - 流式增量聚合。
 - Developer role 降级。
 - DeepSeek、GLM、Qwen 方言 fixture。
-- timeout、retry、取消和错误脱敏。
+- 所有用户定义 Provider 在省略连接恢复字段时统一得到 `request_max_retries=4`、`stream_max_retries=5` 和 `stream_idle_timeout=5m`；显式 `0` 必须保留为禁用 retry，不能被默认值覆盖。
+- 旧 `max_retries` 迁移只影响 `request_max_retries`，schema/patch/merge/`config show`/validation 一致；当前配置中不存在未接线的 `websocket_connect_timeout`。
+- request retry 与 stream reconnect 使用独立配置、计数和测试 fixture。
+- retryable disconnect/idle timeout 发布 `WillRetry=true` 后成功恢复；retry exhausted 只发布一次最终错误并完成 failed Turn terminal。
+- backoff cancellation、Retry-After、不可恢复错误、部分 Delta 后重连和无重复 ResponseItem/Tool Call。
+- 普通 sampling、手动 compact 与自动 compact 复用同一 stream retry policy。
+- timeout、取消、错误脱敏和 request/stream retry 边界。
 
 ## 28. 架构验收场景
 
@@ -2874,6 +3256,8 @@ Amadeus 至少通过以下真实场景：
 21. Skill Script 只能通过 `execute_command`，enabled Skill `scripts/` attribution 不扩大命令权限；脚本仍经过普通 Permission/Approval/Process lifecycle。
 22. 相同只读调用或相同可恢复错误出现两次不会被 `run_turn` 强制终止；模型仍可调整方案并继续。
 23. 进程在 ItemCompleted 后、TurnCompleted 前退出，Resume 仍能从 canonical response_item 与 Completed TurnItem 恢复已完成工作。
+24. 模型 response stream 在 Turn 中断开时，TUI 显示可取消的 `Reconnecting... n/m` 和安全 details，不写入永久错误历史；恢复后继续同一 Turn，重试耗尽后产生明确最终错误和唯一 Turn 终态。
+25. response stream 在部分 Assistant/Reasoning/Tool Call Delta 后断开并恢复时，transcript、canonical Rollout 和后续 Resume 均不出现重复文本、重复 Tool Call 或 attempt-local draft。
 
 ## 29. 最终架构结论
 
@@ -2896,3 +3280,5 @@ Amadeus 至少通过以下真实场景：
 17. internal Session 是 SessionTask、ActiveTurn、Context History、Event Delivery 和终态收尾的唯一所有者。
 18. 生产 SessionTask 由 Session 直接创建和执行，不反向调用 CLI/Application executor；SessionServices 是唯一 Session capability owner，不存在 CodingRuntime、CodingFactory、通用 TaskFactory 或 invocation/result side channel。
 19. canonical Rollout payload 使用统一 typed contract；live、replay、Context 和 TUI 对同一业务事实共享 schema 与语义。
+20. Provider request retry 与 response stream reconnect 是独立生命周期；Turn-scoped ModelClientSession/Core retry helper 拥有 retry 决策，TUI 只投影 typed transient StreamError。
+21. `Reconnecting... n/m` 复用 Codex 风格 status indicator，retrying 不进入 History/Rollout、不结束 Turn，下一条非 retry live Event 恢复先前 status，Resume 不重放瞬态状态。
