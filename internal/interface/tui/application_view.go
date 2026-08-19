@@ -278,7 +278,7 @@ func renderStatusBarParts(parts []statusBarPart, palette terminalPalette) string
 }
 
 func (model fullscreenModel) workingLine() string {
-	if !model.running || model.approval != nil {
+	if (!model.running && !model.retryStatus.active) || model.approval != nil {
 		return ""
 	}
 	now := time.Now()

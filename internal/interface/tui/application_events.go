@@ -102,6 +102,10 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 		model.insertHistoryCell(NewPlanUpdateCell(item))
 		model.status = "planning"
 	case protocol.ItemStarted:
+		switch item.Item.Kind {
+		case protocol.ItemAssistantMessage, protocol.ItemReasoning, protocol.ItemUserMessage, protocol.ItemPlan, protocol.ItemContextCompaction:
+			return nil
+		}
 		if item.Item.ToolName == "update_plan" {
 			return nil
 		}

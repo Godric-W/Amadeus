@@ -63,6 +63,7 @@ func newProviderError(kind llm.ProviderErrorKind, statusCode int, code, param, m
 	if message == "" {
 		message = providerErrorMessage(kind, statusCode)
 	}
+	message = llm.SanitizeProviderErrorText(message)
 	return &llm.ProviderError{
 		Kind:              kind,
 		StatusCode:        statusCode,
@@ -141,6 +142,10 @@ func providerRequestID(response *http.Response) string {
 }
 
 func providerRetryDelay(response *http.Response) time.Duration {
+	return providerRetryDelayAt(response, time.Now())
+}
+
+func providerRetryDelayAt(response *http.Response, now time.Time) time.Duration {
 	if response == nil {
 		return 0
 	}
@@ -158,7 +163,7 @@ func providerRetryDelay(response *http.Response) time.Duration {
 	if err != nil {
 		return 0
 	}
-	delay := time.Until(when)
+	delay := when.Sub(now)
 	if delay < 0 {
 		return 0
 	}

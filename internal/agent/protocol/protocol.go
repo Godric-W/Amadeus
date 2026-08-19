@@ -140,6 +140,8 @@ type ProviderErrorInfo struct {
 	StatusCode int
 	RequestID  string
 	Provider   string
+	Retryable  bool
+	RetryDelay time.Duration
 }
 
 type StreamError struct {

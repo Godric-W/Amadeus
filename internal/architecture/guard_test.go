@@ -386,3 +386,99 @@ func TestPromptConstructionHasCodexOwnershipBoundaries(t *testing.T) {
 		}
 	}
 }
+
+func TestResponseStreamReconnectHasCodexOwnershipBoundaries(t *testing.T) {
+	root := repositoryRoot(t)
+	legacyMaxRetries := regexp.MustCompile(`\bMaxRetries\b`)
+	stringLifecycleCheck := regexp.MustCompile(`strings\.(?:Contains|HasPrefix|HasSuffix)\([^\n]*[Rr]econnect`)
+	for _, relative := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") || filepath.Base(path) == "migration.go" {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			relativePath := filepath.ToSlash(path[len(root)+1:])
+			if legacyMaxRetries.Match(content) {
+				t.Errorf("legacy MaxRetries production field remains in %s", relativePath)
+			}
+			if strings.HasPrefix(relativePath, "internal/interface/tui/") && stringLifecycleCheck.Match(content) {
+				t.Errorf("TUI infers reconnect lifecycle from display text in %s", relativePath)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan %s: %v", relative, err)
+		}
+	}
+
+	compactor := mustReadArchitectureFile(t, root, "internal/agent/engine/compactor.go")
+	for _, forbidden := range []string{"runtime.client.Complete(", "Reconnecting...", "responseRetryPolicy"} {
+		if strings.Contains(compactor, forbidden) {
+			t.Errorf("Compactor owns response retry through %q", forbidden)
+		}
+	}
+	if !strings.Contains(compactor, "request.ModelSession.Complete(") {
+		t.Fatal("Compactor does not use the Turn-scoped ModelClientSession")
+	}
+
+	continuation := mustReadArchitectureFile(t, root, "internal/agent/session/continuation.go")
+	for _, required := range []string{
+		"modelSession, err := runtime.NewModelClientSession()",
+		"session.compactCallback(runtime, modelSession",
+		"ModelSession: modelSession",
+	} {
+		if !strings.Contains(continuation, required) {
+			t.Errorf("automatic compaction does not share ModelClientSession: missing %q", required)
+		}
+	}
+
+	workingView := mustReadArchitectureFile(t, root, "internal/interface/tui/application_view.go")
+	workingStart := strings.Index(workingView, "func (model fullscreenModel) workingLine() string")
+	if workingStart < 0 {
+		t.Fatal("locate workingLine implementation")
+	}
+	workingEnd := strings.Index(workingView[workingStart:], "\nfunc (model fullscreenModel) runElapsed()")
+	if workingEnd < 0 {
+		t.Fatal("locate workingLine implementation boundary")
+	}
+	if strings.Contains(workingView[workingStart:workingStart+workingEnd], `"Working"`) {
+		t.Fatal("workingLine hardcodes the Working status header")
+	}
+
+	for _, relative := range []string{"internal/rollout", "internal/context", "internal/state"} {
+		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			if strings.Contains(string(content), "WillRetry") || strings.Contains(string(content), "StreamError") {
+				t.Errorf("transient stream retry entered canonical/replay package %s", filepath.ToSlash(path[len(root)+1:]))
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan %s: %v", relative, err)
+		}
+	}
+}
+
+func mustReadArchitectureFile(t *testing.T, root, relative string) string {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))
+	if err != nil {
+		t.Fatalf("read %s: %v", relative, err)
+	}
+	return string(content)
+}

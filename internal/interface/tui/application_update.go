@@ -29,7 +29,7 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.handleOperationFailure(message)
 		return model, model.flushHistory()
 	case fullscreenWorkingTickMsg:
-		if !model.running || model.approval != nil {
+		if (!model.running && !model.retryStatus.active) || model.approval != nil {
 			return model, nil
 		}
 		return model, model.workingTick()

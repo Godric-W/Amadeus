@@ -3,9 +3,12 @@ package llm
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
+
+var providerErrorSensitiveValue = regexp.MustCompile(`(?i)\bauthorization\s*[:=]\s*bearer\s+\S+|\b(?:api[_-]?key|token|password)\s*[:=]\s*\S+|\bbearer\s+\S+`)
 
 type ProviderErrorKind string
 
@@ -39,7 +42,7 @@ func (providerError *ProviderError) Error() string {
 	if !kind.Valid() {
 		kind = ProviderErrorUnknown
 	}
-	message := strings.TrimSpace(providerError.Message)
+	message := SanitizeProviderErrorText(providerError.Message)
 	if message == "" {
 		message = "provider request failed"
 	}
@@ -47,6 +50,11 @@ func (providerError *ProviderError) Error() string {
 		return fmt.Sprintf("provider %s error: %s", kind, message)
 	}
 	return fmt.Sprintf("provider %s error (%s): %s", kind, providerError.Code, message)
+}
+
+func SanitizeProviderErrorText(value string) string {
+	value = strings.TrimSpace(value)
+	return providerErrorSensitiveValue.ReplaceAllString(value, "[REDACTED]")
 }
 
 func (providerError *ProviderError) Unwrap() error {

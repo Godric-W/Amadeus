@@ -67,11 +67,11 @@ func (stream *scriptedModelStream) Close() error { return stream.closeErr }
 func TestModelClientSessionRetriesDroppedStreamAndReplacesAttemptDraft(t *testing.T) {
 	client := &scriptedModelClient{streams: []llm.Stream{
 		&scriptedModelStream{results: []scriptedStreamResult{
-			{chunk: llm.StreamChunk{ContentDelta: "partial"}},
+			{chunk: llm.StreamChunk{ContentDelta: "partial", ReasoningDelta: "old reasoning"}},
 			{err: retryableNetworkError("connection reset")},
 		}},
 		&scriptedModelStream{results: []scriptedStreamResult{
-			{chunk: llm.StreamChunk{ContentDelta: "recovered"}},
+			{chunk: llm.StreamChunk{ContentDelta: "recovered", ReasoningDelta: "new reasoning"}},
 			{chunk: llm.StreamChunk{FinishReason: llm.FinishReasonStop}},
 		}},
 	}}
@@ -91,7 +91,8 @@ func TestModelClientSessionRetriesDroppedStreamAndReplacesAttemptDraft(t *testin
 
 	events := sink.Snapshot()
 	var retryEvents int
-	var resetEvents int
+	var assistantResetEvents int
+	var reasoningResetEvents int
 	var terminalErrors int
 	state := protocol.NewTranscriptState("memory-thread")
 	for _, event := range events {
@@ -106,18 +107,45 @@ func TestModelClientSessionRetriesDroppedStreamAndReplacesAttemptDraft(t *testin
 			}
 		}
 		if delta, ok := event.Message.(protocol.AssistantMessageDelta); ok && delta.Reset {
-			resetEvents++
+			assistantResetEvents++
+		}
+		if delta, ok := event.Message.(protocol.ReasoningDelta); ok && delta.Reset {
+			reasoningResetEvents++
 		}
 		if err := state.Apply(event); err != nil {
 			t.Fatalf("apply retry event: %v", err)
 		}
 	}
-	if retryEvents != 1 || resetEvents != 1 || terminalErrors != 0 {
-		t.Fatalf("unexpected retry lifecycle: retry=%d reset=%d terminal=%d events=%#v", retryEvents, resetEvents, terminalErrors, events)
+	if retryEvents != 1 || assistantResetEvents != 1 || reasoningResetEvents != 1 || terminalErrors != 0 {
+		t.Fatalf("unexpected retry lifecycle: retry=%d assistant_reset=%d reasoning_reset=%d terminal=%d events=%#v", retryEvents, assistantResetEvents, reasoningResetEvents, terminalErrors, events)
 	}
 	active := state.Active["sample-1:assistant"]
 	if active.Text != "recovered" {
 		t.Fatalf("transcript draft was not replaced: %#v", active)
+	}
+	if reasoning := state.Active["sample-1:reasoning"]; reasoning.Text != "new reasoning" {
+		t.Fatalf("reasoning draft was not replaced: %#v", reasoning)
+	}
+}
+
+func TestModelClientSessionDiscardsFailedAttemptToolCalls(t *testing.T) {
+	client := &scriptedModelClient{streams: []llm.Stream{
+		&scriptedModelStream{results: []scriptedStreamResult{
+			{chunk: llm.StreamChunk{ToolCalls: []llm.ToolCall{{ID: "stale", Name: "read", Arguments: []byte(`{"path":"old"}`)}}}},
+			{err: retryableNetworkError("connection reset")},
+		}},
+		&scriptedModelStream{results: []scriptedStreamResult{
+			{chunk: llm.StreamChunk{ContentDelta: "recovered"}},
+			{chunk: llm.StreamChunk{FinishReason: llm.FinishReasonStop}},
+		}},
+	}}
+	session := newTestModelClientSession(t, client, 1, time.Second)
+	result, err := session.Sample(context.Background(), sampleRequest(protocol.NewMemorySink()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind != SampleFinal || len(result.ToolCalls) != 0 || len(result.Response.Message.ToolCalls) != 0 {
+		t.Fatalf("failed attempt tool calls leaked: %#v", result)
 	}
 }
 
@@ -169,6 +197,17 @@ func TestModelClientSessionHonorsProviderRetryDelay(t *testing.T) {
 	if len(delays) != 1 || delays[0] != 125*time.Millisecond {
 		t.Fatalf("unexpected retry delays: %v", delays)
 	}
+	for _, event := range sink.Snapshot() {
+		streamError, ok := event.Message.(protocol.StreamError)
+		if !ok || !streamError.WillRetry {
+			continue
+		}
+		if streamError.ProviderError == nil || !streamError.ProviderError.Retryable || streamError.ProviderError.RetryDelay != 125*time.Millisecond {
+			t.Fatalf("retry provider info = %#v", streamError.ProviderError)
+		}
+		return
+	}
+	t.Fatal("missing retry stream event")
 }
 
 func TestModelClientSessionCancellationStopsBackoffWithoutTerminalError(t *testing.T) {

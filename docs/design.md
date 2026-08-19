@@ -1024,6 +1024,7 @@ Stream 在已发布部分 Delta 后断开时，不能简单重新请求并把新
 - 未形成 completed ResponseItem 的 Delta 不是 canonical fact，不写入 Rollout，也不参与 Resume replay。
 - 每次 retry attempt 使用独立 aggregation state；只有成功完成的 response item 才进入 canonical append 与 ItemCompleted 顺序。
 - 新 attempt 如果从头返回内容，TUI/stream projector 必须替换或按稳定 item identity 去重旧 attempt 的未完成 draft，不能产生重复文本、重复 Tool Call 或重复 reasoning。
+- `ItemStarted.Item.Kind` 是 live projector 的稳定分流依据：Assistant/Reasoning start 只建立 draft identity，不得创建 Tool/Explored HistoryCell；只有 Tool/Command/File activity 才进入 Tool activity projector。TUI 不得用空 `ToolName`、事件到达顺序或展示字符串猜测 item 类型。
 - 已完成并 canonical append 的 ResponseItem 不因后续 sampling request 重试而回滚；retry 只作用于当前未完成 sampling request。
 - cancellation 在 stream read 和 backoff 期间都必须立即生效，并最终走 `TurnAborted` 或既定 interruption contract，不能被下一次 retry 吞掉。
 
@@ -1328,20 +1329,20 @@ ModelInfo 至少保存：
 ```text
 context_window
 auto_compact_token_limit
-max_output_tokens
+truncation_policy
 supports_parallel_tool_calls
-tool_output_max_tokens
 input_modalities
 ```
 
-- `provider.max_output_tokens` 只表示单次模型请求最大输出。
-- `max_output_tokens` 只由 ModelInfo/Provider Request 定义。
-- `context_window` 是模型硬上限；`auto_compact_token_limit` 默认取 context window 的 90%，显式配置只能进一步收紧。
+- `context_window` 是当前 ModelInfo 的模型硬上限；用户配置 `model_context_window` 是 Runtime/Model override，不属于 Provider transport。
+- `auto_compact_token_limit` 默认取 context window 的 90%；用户配置 `model_auto_compact_token_limit` 只能进一步收紧，不得扩大默认安全窗口。
+- `truncation_policy` 是模型可见 Tool/Function Output 的投影策略；顶层 `tool_output_token_limit` 覆盖其 token limit，默认 `10000`。
+- 普通 sampling 和 Compaction Request 均不提供用户可配置的 `temperature` 或 `max_output_tokens`，Adapter 省略对应 wire 参数并使用模型厂商默认值。
 - Provider Usage 只作为已完成请求的权威统计；下一次请求容量判断始终重新估算当前完整 Prompt，避免把上次请求 Usage 当成不同 Prompt 的容量值。
 - ContextManager 中的 live Usage、canonical `token_usage` 和 Resume 重建使用同一累计语义；单次 Model Step usage 只能先累加到 Turn/Thread usage，再更新投影，不能覆盖前序 Model Step。
 - 完整 Prompt 估算包含 BaseInstructions、ContextManager 输入、模型可见 Tool Specs 与 OutputSchema。
 - `base_tokens_remaining = min(auto_compact_token_limit - active_context_tokens, context_window - active_context_tokens)`。
-- 单次请求还必须满足 estimated input + max output 不超过 context window。
+- 自动压缩阈值负责为模型输出、系统开销和协议开销预留 headroom；硬 Context Window 判断只比较当前 active/estimated input 与 `context_window`，不得重新引入用户配置的最大模型输出预算。
 - Token Budget 不按 System、Instructions、History、Tools 或 Resources 设置固定百分比分区。
 
 ### 12.5 Tool Result Projection
@@ -1354,6 +1355,7 @@ input_modalities
 - Shell 保留命令、退出码、关键 stdout/stderr 和截断信息。
 - 搜索保留匹配路径、行号和总匹配数。
 - canonical Rollout 保存完整原始 Tool Result；`ContextManager.Snapshot` 只返回模型安全投影。
+- `tool_output_token_limit` 只限制进入模型上下文的 Tool/Function Output，默认 `10000`；它不限制终端展示、canonical Rollout 原始结果、模型输出 token，也不等同于 `execute_command` 调用参数中的 `max_output_tokens`。
 - 投影失败必须产生显式 Context Error，不允许静默丢失。
 
 Tool Result 不保留独立的即时 replay 历史：Tool Call/Result 先 canonical append，Session 立即 rebuild，`run_turn` 的下一次 sampling request 与 Resume 都读取同一 projector 生成的 `PromptSnapshot`。唯一 typed projector 的模型可见 payload 至少稳定表达 `ok/status`、文本或 parts、error、partial/truncated 和允许暴露的 metadata；任何阶段不得只取 `Text/Parts` 而静默丢失 declined、failed、cancelled、stale 或 partial 语义。完整 canonical result 与受预算约束的模型投影可以不同，但差异必须由同一 projector 显式产生并有 round-trip/semantic-equivalence 测试。
@@ -1400,8 +1402,10 @@ Domain Request 统一表达：
 - system/developer/user/assistant/tool 语义。
 - Tool definitions。
 - Tool call 与 Tool result 配对。
-- model、temperature、max output tokens。
+- model selection 与 Provider 支持的显式请求控制。
 - reasoning 与 usage。
+
+普通 Domain Request 不保存稳定的 `temperature` 或 `max_output_tokens` 字段。Amadeus 不用内部默认值伪装模型厂商默认值；Responses 与 Chat Completions Adapter 都必须在普通 sampling 和 Compaction 中省略对应 wire 参数。未来确有 Provider 必需扩展时，只能由经过契约测试的 Dialect/request extension 显式提供，不能重新变成所有 Provider 共用的用户配置。
 
 ### 13.2 OpenAI Adapter
 
@@ -1425,7 +1429,7 @@ Domain Request 统一表达：
 - Context Compaction。
 - Turn-visible response stream retry counter、backoff lifecycle 或 TUI 状态。
 
-### 13.3 API Mode
+### 13.3 Wire API
 
 支持：
 
@@ -1434,7 +1438,9 @@ Domain Request 统一表达：
 | `responses` | OpenAI Responses API，默认优先 |
 | `chat_completions` | OpenAI-compatible Chat Completions |
 
-Provider 预设可以提供默认 Base URL、API Mode 和 Dialect，但用户仍可以显式覆盖 Base URL。
+Provider transport 配置字段统一命名为 `wire_api`，内部类型与常量使用 `WireAPI` 术语，不保留 `api`/`APIMode` 作为新名称外壳下的旧主链。Amadeus 仍支持 Chat Completions，因此只对齐 Codex 的字段职责和命名，不照搬其当前仅保留 `responses` 的枚举范围。
+
+Amadeus 没有内置 Provider preset。每个用户定义 Provider 省略 `wire_api` 时由配置归一化层得到默认值 `responses`；Base URL、Dialect 和认证仍由用户 Provider 定义。
 
 ### 13.4 Provider Dialect
 
@@ -1448,7 +1454,47 @@ Dialect 只处理经过验证的协议差异，不根据域名猜测：
 
 具体差异必须由契约测试覆盖，包括 role 支持、reasoning 字段、tool call delta 和 usage。
 
-### 13.5 Provider Retry 配置与错误 Contract
+### 13.5 Model 与 Provider 配置所有权
+
+配置模型向 Codex 的概念、命名和职责划分收敛，目标稳定形态为：
+
+```yaml
+version: 2
+
+model: provider-model
+model_provider: compatible
+model_context_window: 128000
+# 省略时从 model_context_window 推导 90%
+# model_auto_compact_token_limit: 115200
+tool_output_token_limit: 10000
+
+model_providers:
+  compatible:
+    wire_api: chat_completions
+    dialect: standard
+    api_key: "${COMPATIBLE_API_KEY}"
+    base_url: https://provider.example/v1
+    timeout: 120s
+    request_max_retries: 4
+    stream_max_retries: 5
+    stream_idle_timeout: 5m
+```
+
+所有权固定如下：
+
+- `model`、`model_context_window`、`model_auto_compact_token_limit` 和 `tool_output_token_limit` 属于当前 Model/Runtime 配置，不进入 `ModelProviderInfo`。
+- `model_provider` 选择 `model_providers` 中的用户定义 Provider；Provider 只保存 transport、auth、wire API、Dialect、timeout、retry 和 capability。
+- `model_context_window` 在 Amadeus 尚无可信 Model Catalog 时必须显式为正数；不得为任意未知模型伪造统一的 128K Context Window 默认值。
+- `model_auto_compact_token_limit` 可省略，省略时取 Context Window 的 90%；显式值必须大于 0 且不超过该派生上限。
+- `tool_output_token_limit` 是顶层可配置项，默认 `10000`，覆盖 ModelInfo 的 Tool Output truncation policy；不得放回单个 Provider。
+- Codex 的 `model_auto_compact_token_limit_scope` 依赖 carried-prefix/body-after-prefix 计数模型。Amadeus 在实现对应 Context Window 生命周期前不暴露未接线的 scope 配置，当前固定采用 total active context 语义。
+- `temperature` 和 `max_output_tokens` 从稳定配置、ProviderConfig、ModelInfo、SampleRequest 与普通 LLM Request 中删除；普通 sampling 和 Compaction 使用模型厂商默认参数。
+
+配置版本升级为 `2`。迁移规则只自动处理无歧义转换：`default_provider → model_provider`、`providers → model_providers`、Provider 内 `api → wire_api` 和旧 `max_retries → request_max_retries`。旧 Provider-local `model`、`context_window`、`auto_compact_token_limit`、`tool_output_max_tokens` 需要提升到顶层；存在多个 Provider 值或新旧字段同时存在时必须返回带准确路径的迁移错误，不能猜测、覆盖或静默丢弃。旧 `temperature` 与 `max_output_tokens` 返回明确 removed-field 诊断，提示其已改为模型厂商默认行为。
+
+CLI、Environment、provenance、`config check`、`config explain/show`、redaction、example config 和 README 使用同一字段集合。目标命名至少包括 `model_provider`、`model_providers` 和 `wire_api`；不得只修改 YAML tag 而保留 `DefaultProvider`、`Providers`、`API` 等旧概念作为生产主模型。
+
+### 13.6 Provider Retry 配置与错误 Contract
 
 Amadeus 没有内置 Provider；每个 Provider 都由用户定义。因此这三个字段属于所有用户 Provider 共用的稳定配置 Contract，并由配置归一化层在用户省略时填入默认值，而不是依赖某个内置 Provider preset：
 
@@ -2883,14 +2929,17 @@ $AMADEUS_HOME/config.yaml
 CLI Flags
 > Environment Variables
 > $AMADEUS_HOME/config.yaml
-> Built-in Defaults
+> Built-in Field Defaults
 ```
 
 API Key 默认通过环境变量或配置文件提供，不要求暴露 CLI Flag，避免进入 Shell History。
 
+Built-in Field Defaults 只表示 retry、timeout、Tool Output truncation 等字段级归一化默认值，不创建内置 Provider 或内置 Provider entry。`model_provider` 必须引用用户在 `model_providers` 中定义的条目。
+
 ### 24.3 核心配置域
 
-- provider
+- model selection/runtime overrides
+- model provider transport
 - agent runtime limits
 - context window/compaction
 - tool process defaults
@@ -3221,6 +3270,9 @@ Provider/stream error 还必须区分：
 - 流式增量聚合。
 - Developer role 降级。
 - DeepSeek、GLM、Qwen 方言 fixture。
+- 顶层 `model`/`model_provider` 与 `model_providers.*.wire_api` 使用 Codex 对齐的命名和所有权；Provider 中不存在 model、temperature、max output、context window 或 Tool Output limit。
+- `model_context_window` 必须显式有效，`model_auto_compact_token_limit` 省略时派生为 90%，`tool_output_token_limit` 默认 `10000` 并只约束模型可见 Tool/Function Output。
+- 普通 Responses、Chat Completions 和 Compaction Request 不发送 `temperature`、`max_output_tokens`、`max_tokens` 等用户稳定配置参数，使用模型厂商默认值。
 - 所有用户定义 Provider 在省略连接恢复字段时统一得到 `request_max_retries=4`、`stream_max_retries=5` 和 `stream_idle_timeout=5m`；显式 `0` 必须保留为禁用 retry，不能被默认值覆盖。
 - 旧 `max_retries` 迁移只影响 `request_max_retries`，schema/patch/merge/`config show`/validation 一致；当前配置中不存在未接线的 `websocket_connect_timeout`。
 - request retry 与 stream reconnect 使用独立配置、计数和测试 fixture。

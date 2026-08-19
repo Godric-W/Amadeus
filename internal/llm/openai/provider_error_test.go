@@ -5,8 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Godric-W/Amadeus/internal/llm"
 	openaisdk "github.com/openai/openai-go/v3"
@@ -54,6 +56,50 @@ func TestNormalizeProviderErrorClassifiesAPIErrors(t *testing.T) {
 	}
 }
 
+func TestProviderRetryDelayParsesSupportedHeaders(t *testing.T) {
+	now := time.Date(2026, time.August, 19, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		header http.Header
+		want   time.Duration
+	}{
+		{name: "milliseconds", header: http.Header{"Retry-After-Ms": []string{"125.5"}}, want: 125500 * time.Microsecond},
+		{name: "seconds", header: http.Header{"Retry-After": []string{"2.5"}}, want: 2500 * time.Millisecond},
+		{name: "http date", header: http.Header{"Retry-After": []string{now.Add(3 * time.Second).Format(http.TimeFormat)}}, want: 3 * time.Second},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := providerRetryDelayAt(&http.Response{Header: test.header}, now); got != test.want {
+				t.Fatalf("retry delay = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRetryableProviderErrorMatrix(t *testing.T) {
+	tests := []struct {
+		kind       llm.ProviderErrorKind
+		statusCode int
+		want       bool
+	}{
+		{kind: llm.ProviderErrorRateLimit, want: true},
+		{kind: llm.ProviderErrorNetwork, want: true},
+		{kind: llm.ProviderErrorTimeout, want: true},
+		{kind: llm.ProviderErrorUnavailable, want: true},
+		{kind: llm.ProviderErrorAuthentication, want: false},
+		{kind: llm.ProviderErrorInvalidRequest, want: false},
+		{kind: llm.ProviderErrorProtocol, want: false},
+		{kind: llm.ProviderErrorCancelled, want: false},
+		{kind: llm.ProviderErrorUnknown, statusCode: http.StatusServiceUnavailable, want: true},
+		{kind: llm.ProviderErrorUnknown, statusCode: http.StatusTeapot, want: false},
+	}
+	for _, test := range tests {
+		if got := retryableProviderError(test.kind, test.statusCode); got != test.want {
+			t.Fatalf("retryableProviderError(%q, %d) = %v, want %v", test.kind, test.statusCode, got, test.want)
+		}
+	}
+}
+
 func TestNormalizeProviderErrorClassifiesContextAndNetwork(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -92,5 +138,21 @@ func TestNewProviderErrorClassifiesStreamCode(t *testing.T) {
 	)
 	if providerError.Kind != llm.ProviderErrorRateLimit || providerError.Code != "rate_limit_exceeded" || providerError.RequestID != "request_456" {
 		t.Fatalf("unexpected stream provider error: %#v", providerError)
+	}
+}
+
+func TestNewProviderErrorStoresSafeUserMessage(t *testing.T) {
+	providerError := newProviderError(
+		llm.ProviderErrorNetwork,
+		0,
+		"",
+		"",
+		"token=secret-value",
+		"request_789",
+		0,
+		nil,
+	)
+	if strings.Contains(providerError.Message, "secret-value") || strings.Contains(providerError.AdditionalDetails, "secret-value") {
+		t.Fatalf("normalized provider error retained sensitive message: %#v", providerError)
 	}
 }

@@ -110,6 +110,12 @@ type engineTestHost struct {
 	order   []string
 }
 
+func (host *engineTestHost) History() []rollout.Line {
+	host.mu.Lock()
+	defer host.mu.Unlock()
+	return append([]rollout.Line(nil), host.lines...)
+}
+
 func (host *engineTestHost) AppendItems(_ context.Context, turnID turn.ID, items ...rollout.Item) error {
 	host.mu.Lock()
 	defer host.mu.Unlock()
@@ -150,7 +156,7 @@ func TestTurnEngineContinuesAfterToolFailureAndPersistsBeforeCompletion(t *testi
 		t.Fatal(err)
 	}
 	runtime := &Services{
-		providerName: "test", provider: config.ProviderConfig{Model: "test-model", MaxOutputTokens: 1024}, client: client,
+		providerName: "test", provider: engineTestProvider(), client: client,
 		modelMessages: testModelMessages(t), registry: registry,
 		toolService: service, visibility: map[string]bool{},
 	}
@@ -201,7 +207,7 @@ func TestStepContextDerivesPlanMaskAndRevisionFromOneRegistrySnapshot(t *testing
 			t.Fatal(err)
 		}
 	}
-	runtime := &Services{client: client, modelMessages: testModelMessages(t), registry: registry, visibility: map[string]bool{}, provider: config.ProviderConfig{MaxOutputTokens: 1024}}
+	runtime := &Services{client: client, modelMessages: testModelMessages(t), registry: registry, visibility: map[string]bool{}, provider: engineTestProvider()}
 	host := &engineTestHost{context: agentcontext.NewManager(nil)}
 	regular, err := runtime.CaptureStep(host.Snapshot, turn.TurnContext{Mode: turn.ModeKindDefault})
 	if err != nil {
@@ -244,7 +250,7 @@ func TestTurnEngineWarnsThenReturnsTypedBlockedAtSafetyBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := &Services{
-		providerName: "test", provider: config.ProviderConfig{Model: "test-model", MaxOutputTokens: 1024}, client: client,
+		providerName: "test", provider: engineTestProvider(), client: client,
 		modelMessages: testModelMessages(t), registry: registry,
 		toolService: service, visibility: map[string]bool{},
 		budget: TurnBudget{MaxSamples: 2, MaxToolCalls: 100, MaxDuration: time.Hour, WarnRatio: 0.5},
@@ -277,7 +283,13 @@ func TestTurnEngineChecksAutomaticCompactionBeforeSampling(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := &Services{
-		providerName: "test", provider: config.ProviderConfig{Model: "test-model", ContextWindow: 1_000, AutoCompactTokenLimit: 1, MaxOutputTokens: 64}, client: client,
+		providerName: "test", provider: func() config.ProviderConfig {
+			provider := engineTestProvider()
+			provider.ContextWindow = 1_000
+			provider.AutoCompactTokenLimit = 1
+			provider.MaxOutputTokens = 64
+			return provider
+		}(), client: client,
 		modelMessages: testModelMessages(t), registry: registry,
 		toolService: service, visibility: map[string]bool{}, budget: DefaultTurnBudget(),
 	}
@@ -297,6 +309,15 @@ func TestTurnEngineChecksAutomaticCompactionBeforeSampling(t *testing.T) {
 	})
 	if err != nil || result.Outcome != rollout.TurnOutcomeCompleted || checks != 1 || len(client.requests) != 1 {
 		t.Fatalf("auto compaction check result=%#v checks=%d requests=%d err=%v", result, checks, len(client.requests), err)
+	}
+}
+
+func engineTestProvider() config.ProviderConfig {
+	return config.ProviderConfig{
+		Model:             "test-model",
+		MaxOutputTokens:   1024,
+		StreamMaxRetries:  0,
+		StreamIdleTimeout: time.Second,
 	}
 }
 

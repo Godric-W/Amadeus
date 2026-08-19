@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -21,8 +22,10 @@ import (
 )
 
 type interactiveCompactionClient struct {
-	request llm.Request
-	err     error
+	request  llm.Request
+	requests []llm.Request
+	streams  []llm.Stream
+	err      error
 }
 
 func (client *interactiveCompactionClient) Complete(_ context.Context, request llm.Request) (llm.Response, error) {
@@ -31,13 +34,23 @@ func (client *interactiveCompactionClient) Complete(_ context.Context, request l
 
 func (client *interactiveCompactionClient) Stream(_ context.Context, request llm.Request) (llm.Stream, error) {
 	client.request = request
+	client.requests = append(client.requests, request)
 	if client.err != nil {
 		return nil, client.err
 	}
+	if len(client.streams) > 0 {
+		stream := client.streams[0]
+		client.streams = client.streams[1:]
+		return stream, nil
+	}
+	return successfulCompactStream(), nil
+}
+
+func successfulCompactStream() llm.Stream {
 	return &compactTestStream{chunks: []llm.StreamChunk{
 		{ContentDelta: "## Handoff\n\nInspection completed; continue with tests."},
 		{FinishReason: llm.FinishReasonStop},
-	}}, nil
+	}}
 }
 
 func (*interactiveCompactionClient) Model() llm.ModelInfo {
@@ -46,10 +59,18 @@ func (*interactiveCompactionClient) Model() llm.ModelInfo {
 
 func (*interactiveCompactionClient) Capabilities() llm.Capabilities { return llm.Capabilities{} }
 
-type compactTestStream struct{ chunks []llm.StreamChunk }
+type compactTestStream struct {
+	chunks []llm.StreamChunk
+	err    error
+}
 
 func (stream *compactTestStream) Recv() (llm.StreamChunk, error) {
 	if len(stream.chunks) == 0 {
+		if stream.err != nil {
+			err := stream.err
+			stream.err = nil
+			return llm.StreamChunk{}, err
+		}
 		return llm.StreamChunk{}, io.EOF
 	}
 	chunk := stream.chunks[0]
@@ -62,6 +83,7 @@ func (*compactTestStream) Close() error { return nil }
 type compactTestHost struct {
 	lines   []rollout.Line
 	context *agentcontext.Manager
+	events  []protocol.SessionEvent
 }
 
 func (host *compactTestHost) AppendItems(_ context.Context, turnID turn.ID, items ...rollout.Item) error {
@@ -74,7 +96,10 @@ func (host *compactTestHost) AppendItems(_ context.Context, turnID turn.ID, item
 func (host *compactTestHost) History() []rollout.Line {
 	return append([]rollout.Line(nil), host.lines...)
 }
-func (*compactTestHost) Publish(context.Context, protocol.SessionEvent) error { return nil }
+func (host *compactTestHost) Publish(_ context.Context, event protocol.SessionEvent) error {
+	host.events = append(host.events, event)
+	return nil
+}
 func (*compactTestHost) Request(context.Context, protocol.InteractiveRequest) (protocol.Op, error) {
 	return nil, errors.New("unexpected interactive request")
 }
@@ -159,11 +184,83 @@ func TestCompactTaskFailureDoesNotReturnItems(t *testing.T) {
 	}
 }
 
+func TestCompactTaskRetriesResponseStreamAndKeepsCanonicalResult(t *testing.T) {
+	builder, host, client := newCompactionTestRuntimeWithRetries(t, 1)
+	client.streams = []llm.Stream{compactRetryFailure("connection reset"), successfulCompactStream()}
+	session := newTestSession(host.lines, host.context)
+	runtime, err := builder.BuildServices(context.Background(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 2 || len(result.Items) != 2 || result.Items[0].Kind != rollout.KindCompaction {
+		t.Fatalf("retry compaction requests=%d result=%#v", len(client.requests), result)
+	}
+	if retrying, terminal := compactStreamErrorCounts(host.events); retrying != 1 || terminal != 0 {
+		t.Fatalf("retry compaction events retrying=%d terminal=%d events=%#v", retrying, terminal, host.events)
+	}
+}
+
+func TestCompactTaskRetryExhaustionDoesNotChangeReplacementHistory(t *testing.T) {
+	builder, host, client := newCompactionTestRuntimeWithRetries(t, 1)
+	client.streams = []llm.Stream{compactRetryFailure("first failure"), compactRetryFailure("second failure")}
+	session := newTestSession(host.lines, host.context)
+	original := session.History()
+	runtime, err := builder.BuildServices(context.Background(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil)
+	if err == nil || len(result.Items) != 0 {
+		t.Fatalf("exhausted compaction result=%#v err=%v", result, err)
+	}
+	if !reflect.DeepEqual(session.History(), original) {
+		t.Fatalf("failed compaction changed history: before=%#v after=%#v", original, session.History())
+	}
+	if retrying, terminal := compactStreamErrorCounts(host.events); retrying != 1 || terminal != 1 {
+		t.Fatalf("exhausted compaction events retrying=%d terminal=%d events=%#v", retrying, terminal, host.events)
+	}
+}
+
+func TestCompactionSuccessEventOrderRemainsContextWarningTerminal(t *testing.T) {
+	item, err := rollout.NewItem(rollout.KindCompaction, rollout.Compaction{
+		Summary: "summary", ReplacementHistory: []rollout.ReplacementMessage{{Role: "assistant", Content: "summary"}},
+		CoveredThroughSequence: 1, SourceHash: "hash", Provider: "mock", Model: "compact-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{threadID: "thread-1", ctx: context.Background(), events: make(chan protocol.SessionEvent, 3)}
+	session.publishCompactionEvents("turn-1", []rollout.Item{item})
+	session.publish(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.TurnCompleted{}})
+
+	first := <-session.events
+	second := <-session.events
+	third := <-session.events
+	if _, ok := first.Message.(protocol.ContextCompacted); !ok {
+		t.Fatalf("first event = %T", first.Message)
+	}
+	if warning, ok := second.Message.(protocol.Warning); !ok || warning.Message != compactionWarningMessage {
+		t.Fatalf("second event = %#v", second.Message)
+	}
+	if _, ok := third.Message.(protocol.TurnCompleted); !ok {
+		t.Fatalf("third event = %T", third.Message)
+	}
+}
+
 func compactTurnContext() *turn.TurnContext {
 	return &turn.TurnContext{ThreadID: "thread-1", TurnID: "turn-2"}
 }
 
 func newCompactionTestRuntime(t *testing.T) (*ServicesBuilder, *compactTestHost, *interactiveCompactionClient) {
+	configured := config.Default()
+	return newCompactionTestRuntimeWithRetries(t, configured.Providers[configured.DefaultProvider].StreamMaxRetries)
+}
+
+func newCompactionTestRuntimeWithRetries(t *testing.T, streamMaxRetries int) (*ServicesBuilder, *compactTestHost, *interactiveCompactionClient) {
 	t.Helper()
 	client := &interactiveCompactionClient{}
 	configured := config.Default()
@@ -171,6 +268,7 @@ func newCompactionTestRuntime(t *testing.T) (*ServicesBuilder, *compactTestHost,
 	provider.APIKey = "test-key"
 	provider.Model = "compact-model"
 	provider.MaxOutputTokens = 1024
+	provider.StreamMaxRetries = streamMaxRetries
 	configured.DefaultProvider = "mock"
 	configured.Providers = map[string]config.ProviderConfig{"mock": provider}
 	root, err := project.NewRoot(t.TempDir())
@@ -201,6 +299,27 @@ func newCompactionTestRuntime(t *testing.T) (*ServicesBuilder, *compactTestHost,
 		t.Fatal(err)
 	}
 	return builder, host, client
+}
+
+func compactRetryFailure(message string) llm.Stream {
+	return &compactTestStream{chunks: nil, err: &llm.ProviderError{
+		Kind: llm.ProviderErrorNetwork, Message: message, AdditionalDetails: message, Retryable: true, RetryDelay: time.Nanosecond,
+	}}
+}
+
+func compactStreamErrorCounts(events []protocol.SessionEvent) (retrying, terminal int) {
+	for _, event := range events {
+		streamError, ok := event.Message.(protocol.StreamError)
+		if !ok {
+			continue
+		}
+		if streamError.WillRetry {
+			retrying++
+		} else {
+			terminal++
+		}
+	}
+	return retrying, terminal
 }
 
 func mustLoadModelMessages(t *testing.T) llm.ModelMessages {

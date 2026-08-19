@@ -55,3 +55,20 @@ func TestInlineRendererRendersPlanAndUsage(t *testing.T) {
 		}
 	}
 }
+
+func TestInlineRendererRetryDoesNotEnterErrorPhase(t *testing.T) {
+	var text, status bytes.Buffer
+	renderer, err := NewInlineRenderer(&text, &status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	details := "idle timeout waiting for provider stream"
+	if err := renderer.Publish(context.Background(), protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.StreamError{
+		Message: "Reconnecting... 1/5", AdditionalDetails: &details, WillRetry: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if renderer.phase == "error" || !strings.Contains(status.String(), "Reconnecting... 1/5") || !strings.Contains(status.String(), details) {
+		t.Fatalf("inline retry phase=%q status=%q", renderer.phase, status.String())
+	}
+}

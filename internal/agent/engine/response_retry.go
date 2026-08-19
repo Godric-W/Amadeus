@@ -12,6 +12,8 @@ import (
 	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
+const maxResponseRetryBackoff = time.Duration(1<<63 - 1)
+
 type responseRetryPolicy struct {
 	maxRetries int
 	backoff    func(int) time.Duration
@@ -88,7 +90,7 @@ func normalizeResponseStreamError(err error) *llm.ProviderError {
 	return &llm.ProviderError{
 		Kind:              llm.ProviderErrorUnknown,
 		Message:           "provider response stream failed",
-		AdditionalDetails: err.Error(),
+		AdditionalDetails: llm.SanitizeProviderErrorText(err.Error()),
 		Cause:             err,
 	}
 }
@@ -97,10 +99,12 @@ func publishStreamFailure(ctx context.Context, events protocol.EventSink, provid
 	if events == nil {
 		return errors.New("stream error event sink is nil")
 	}
+	message = llm.SanitizeProviderErrorText(message)
 	details := providerError.AdditionalDetails
 	if details == "" {
 		details = providerError.Message
 	}
+	details = llm.SanitizeProviderErrorText(details)
 	var detailPointer *string
 	if details != "" {
 		detailPointer = &details
@@ -114,6 +118,8 @@ func publishStreamFailure(ctx context.Context, events protocol.EventSink, provid
 			StatusCode: providerError.StatusCode,
 			RequestID:  providerError.RequestID,
 			Provider:   provider,
+			Retryable:  providerError.Retryable,
+			RetryDelay: providerError.RetryDelay,
 		},
 		WillRetry: willRetry,
 	}})
@@ -123,10 +129,13 @@ func responseRetryBackoff(attempt int) time.Duration {
 	if attempt < 1 {
 		attempt = 1
 	}
-	exponent := math.Pow(2, float64(attempt-1))
-	base := float64(200*time.Millisecond) * exponent
+	base := math.Ldexp(float64(200*time.Millisecond), attempt-1)
 	jitter := 0.9 + rand.Float64()*0.2
-	return time.Duration(base * jitter)
+	delay := base * jitter
+	if math.IsInf(delay, 0) || delay >= float64(maxResponseRetryBackoff) {
+		return maxResponseRetryBackoff
+	}
+	return time.Duration(delay)
 }
 
 func sleepWithContext(ctx context.Context, delay time.Duration) error {

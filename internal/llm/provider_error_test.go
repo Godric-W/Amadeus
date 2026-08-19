@@ -47,3 +47,13 @@ func TestProviderErrorKindValidation(t *testing.T) {
 		t.Fatal("unexpected valid custom provider error kind")
 	}
 }
+
+func TestProviderErrorTextRedactsSensitiveValues(t *testing.T) {
+	providerError := &ProviderError{Kind: ProviderErrorNetwork, Message: "Authorization: Bearer secret-value"}
+	if text := providerError.Error(); strings.Contains(text, "secret-value") || !strings.Contains(text, "[REDACTED]") {
+		t.Fatalf("provider error leaked sensitive value: %q", text)
+	}
+	if text := SanitizeProviderErrorText("token=secret-value"); strings.Contains(text, "secret-value") || !strings.Contains(text, "[REDACTED]") {
+		t.Fatalf("provider detail leaked sensitive value: %q", text)
+	}
+}

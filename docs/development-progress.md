@@ -2,8 +2,8 @@
 
 > 最近更新：2026-08-19
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：K. Response Stream Reconnect Lifecycle Alignment（TODO）
-> 下一任务：K-01 Provider Retry Configuration + Error Classification
+> 当前阶段：L. Model + Provider Configuration Ownership Alignment（TODO）
+> 下一任务：L-01 Config v2 Schema + Codex Terminology
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
@@ -34,9 +34,10 @@ A Runtime + Persistence
 → I Prompt Construction + Optimization
 → J Slash Command + TUI Application Lifecycle Alignment
 → K Response Stream Reconnect Lifecycle Alignment
+→ L Model + Provider Configuration Ownership Alignment
 ```
 
-Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command 和 TUI 的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A/B Architecture Closure 已完成，F 已删除早期经典 ReAct Engine 并建立可工作的 continuation loop；G 已将 capability 所有权与 Codex 术语归位，同时保留稳定的 ToolExecutionService 与 Claude-style Approval；I 已完成 Prompt 主链收敛；J 已删除 Slash Command/TUI Application 的 callback、字符串结果和重复 Session IO 生命周期。K 将继续按 Codex 架构拆分 request retry 与 response stream reconnect，并把 retry 决策、typed transient Event、TUI status restore、Compaction 和 partial Delta 安全收敛到一条主链。实施发现 Contract 问题时先更新 `docs/design.md`。
+Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A/B Architecture Closure 已完成，F 已删除早期经典 ReAct Engine 并建立可工作的 continuation loop；G 已将 capability 所有权与 Codex 术语归位，同时保留稳定的 ToolExecutionService 与 Claude-style Approval；I 已完成 Prompt 主链收敛；J 已删除 Slash Command/TUI Application 的 callback、字符串结果和重复 Session IO 生命周期；K 已完成 request retry 与 response stream reconnect 收敛。L 将删除 ProviderConfig 中混合的 model metadata/sampling policy，统一 `wire_api`、顶层 Model Runtime override、Provider-default sampling 和 Tool Output truncation 配置。实施发现 Contract 问题时先更新 `docs/design.md`。
 
 ## 3. A. Runtime + Persistence — `DONE`
 
@@ -658,56 +659,58 @@ E 阶段已经交付 Slash Command 的基础命令集、Composer 解析、Popup 
 - `/clear`、`/rename`、`/delete`、`/status`、`/skills` 和 `/exit` 已按各自 owner 使用 typed AppEvent/Session Op/HistoryCell；`/copy` 明确保留为 TUI-local。
 - 生产路径不存在为保留旧实现而增加的 Codex 同名 Adapter/Facade，旧 callback、字符串完成协议、重复事件 consumer 和旧 replay 主链全部删除。
 
-## 13. K. Response Stream Reconnect Lifecycle Alignment — `TODO`
+## 13. K. Response Stream Reconnect Lifecycle Alignment — `DONE`
 
-J 已完成 Slash Command 与 TUI Application 生命周期收敛，但当前 Provider 配置仍以单一 `max_retries` 混合 HTTP request retry 和 response stream reconnect；`ModelClientSession` 在 `Recv` 失败后直接返回，`StreamError` 不能表达 transient/terminal，TUI 也会把它立即写成永久 ErrorCell。K 不增加动画补丁，而是按 `docs/design.md` 的 Codex 对齐原则重构 Provider、LLM Domain、Session/Core、Event Protocol、Compactor 与 TUI 的完整重连生命周期。
+K 从单一 `max_retries`、`Recv` 失败即终止和 terminal-only `StreamError` 的旧链出发，不增加动画补丁，而是按 `docs/design.md` 的 Codex 对齐原则重构 Provider、LLM Domain、Session/Core、Event Protocol、Compactor 与 TUI 的完整重连生命周期。
 
-### K-01：Provider Retry Configuration + Error Classification — `TODO`
+完成记录：Provider request retry 与 response stream reconnect 已拆分；Turn-scoped `ModelClientSession` 成为 sampling/compaction 的唯一 response retry owner，支持 idle timeout、Retry-After、可取消 backoff、attempt-local aggregation 和 typed transient Event。Fullscreen/Inline TUI 已实现 Codex 风格 `Reconnecting... n/m`、安全 details、status restore 与 draft replacement，并修正 Assistant/Reasoning `ItemStarted` 被误投影为 Tool/Explored activity 的旧问题。针对性测试、全量测试、race、vet、build、`make check`、architecture guards 与 `git diff --check` 均于 2026-08-19 通过。
 
-- [ ] 将单一 `provider.max_retries` 拆分为当前 HTTP/SSE 基础版唯一需要的 3 个字段：`request_max_retries`（默认 `4`、范围 `0..100`）、`stream_max_retries`（默认 `5`、范围 `0..100`）和 `stream_idle_timeout`（默认 `5m`、必须大于 `0`）。
-- [ ] 明确 Amadeus 不存在内置 Provider，所有用户定义 Provider 均由配置归一化层获得上述默认值；schema、patch/merge、`config show`、validation、redaction 和测试使用同一字段集合。
-- [ ] 旧 `max_retries` 只迁移到 `request_max_retries`，不得同时赋给 stream retry；完成迁移后删除旧生产字段、SDK wiring 和含混文案。
-- [ ] 审计现有 `provider.timeout`，确保它不作为活跃 streaming response 的固定 wall-clock deadline 抢先终止持续有 Delta 的长响应，并与 `stream_idle_timeout` 保持单一明确语义。
-- [ ] 当前不增加 Codex 的 `websocket_connect_timeout_ms` 或 transport fallback；只有 Amadeus 实现真实 WebSocket transport 后才能单独设计和排期。
-- [ ] 扩展 typed `ProviderError`/`ProviderErrorInfo`，稳定表达 kind/code、safe message、additional details、retryable、Retry-After/retry delay 和 request/provider identity。
-- [ ] OpenAI Responses/Chat Completions Adapter 只负责 transport/error 归一化与 request retry 接线，不拥有 Turn-visible stream retry counter、backoff lifecycle 或 TUI 文案。
+### K-01：Provider Retry Configuration + Error Classification — `DONE`
 
-### K-02：Core Response Stream Retry Owner — `TODO`
+- [x] 将单一 `provider.max_retries` 拆分为当前 HTTP/SSE 基础版唯一需要的 3 个字段：`request_max_retries`（默认 `4`、范围 `0..100`）、`stream_max_retries`（默认 `5`、范围 `0..100`）和 `stream_idle_timeout`（默认 `5m`、必须大于 `0`）。
+- [x] 明确 Amadeus 不存在内置 Provider，所有用户定义 Provider 均由配置归一化层获得上述默认值；schema、patch/merge、`config show`、validation、redaction 和测试使用同一字段集合。
+- [x] 旧 `max_retries` 只迁移到 `request_max_retries`，不得同时赋给 stream retry；完成迁移后删除旧生产字段、SDK wiring 和含混文案。
+- [x] 审计现有 `provider.timeout`，确保它不作为活跃 streaming response 的固定 wall-clock deadline 抢先终止持续有 Delta 的长响应，并与 `stream_idle_timeout` 保持单一明确语义。
+- [x] 当前不增加 Codex 的 `websocket_connect_timeout_ms` 或 transport fallback；只有 Amadeus 实现真实 WebSocket transport 后才能单独设计和排期。
+- [x] 扩展 typed `ProviderError`/`ProviderErrorInfo`，稳定表达 kind/code、safe message、additional details、retryable、Retry-After/retry delay 和 request/provider identity。
+- [x] OpenAI Responses/Chat Completions Adapter 只负责 transport/error 归一化与 request retry 接线，不拥有 Turn-visible stream retry counter、backoff lifecycle 或 TUI 文案。
 
-- [ ] 在 Turn-scoped `ModelClientSession` 或 Session 模块内建立唯一 response retry helper，统一 retryability、counter、cancellable backoff、idle timeout 和 retry exhaustion。
-- [ ] 同一 Turn 内复用 ModelClientSession 与 sampling request 语义；TUI、SDK Adapter、RegularTask 和 Compactor 不分别维护重试状态。
-- [ ] cancellation 在 stream read 和 backoff 中立即生效；不可恢复错误和重试耗尽只进入一次最终 failed task result，由 Session 完成唯一 Turn terminal protocol。
+### K-02：Core Response Stream Retry Owner — `DONE`
 
-### K-03：Typed Transient StreamError Protocol — `TODO`
+- [x] 在 Turn-scoped `ModelClientSession` 或 Session 模块内建立唯一 response retry helper，统一 retryability、counter、cancellable backoff、idle timeout 和 retry exhaustion。
+- [x] 同一 Turn 内复用 ModelClientSession 与 sampling request 语义；TUI、SDK Adapter、RegularTask 和 Compactor 不分别维护重试状态。
+- [x] cancellation 在 stream read 和 backoff 中立即生效；不可恢复错误和重试耗尽只进入一次最终 failed task result，由 Session 完成唯一 Turn terminal protocol。
 
-- [ ] 将当前字符串 `StreamError` 替换为包含 `Message`、`AdditionalDetails`、`ProviderError` 与 `WillRetry` 的 typed Event contract。
-- [ ] retry owner 发布 Codex 风格 `Reconnecting... n/m`；TUI 不解析字符串决定 retry counter、Turn running 或 terminal。
-- [ ] `WillRetry=true` 定义为 live、transient、non-canonical notification，不写入 Rollout、不创建 TurnItem、Resume/replay 不重放；`WillRetry=false` 与最终 Turn failure ordering 有明确 Contract test。
+### K-03：Typed Transient StreamError Protocol — `DONE`
 
-### K-04：TUI Status Indicator + Restore Lifecycle — `TODO`
+- [x] 将当前字符串 `StreamError` 替换为包含 `Message`、`AdditionalDetails`、`ProviderError` 与 `WillRetry` 的 typed Event contract。
+- [x] retry owner 发布 Codex 风格 `Reconnecting... n/m`；TUI 不解析字符串决定 retry counter、Turn running 或 terminal。
+- [x] `WillRetry=true` 定义为 live、transient、non-canonical notification，不写入 Rollout、不创建 TurnItem、Resume/replay 不重放；`WillRetry=false` 与最终 Turn failure ordering 有明确 Contract test。
 
-- [ ] 将硬编码 `Working` 的 working line 重构为读取当前 status header/details，并复用现有 activity marker、shimmer、elapsed time 与 `esc to interrupt`。
-- [ ] 收到 retrying StreamError 时保存旧 status header、确保 indicator 可见并显示 `Reconnecting... n/m` 与安全 details；不 finish draft、不提交 ActiveHistoryCell、不插入 ErrorCell。
-- [ ] 下一条非 retry live Event 恢复旧 header；连续 retry 只保存一次，Turn terminal 清理 retry state，Replay/Resume initial history 忽略 transient retry status。
-- [ ] 使用 TerminalPalette 既有 status accent，覆盖无颜色、窄终端、indicator 原本隐藏和 details 截断场景，不增加 reconnect 专用动画组件或硬编码 ANSI 色。
+### K-04：TUI Status Indicator + Restore Lifecycle — `DONE`
 
-### K-05：Sampling + Compaction Policy Convergence — `TODO`
+- [x] 将硬编码 `Working` 的 working line 重构为读取当前 status header/details，并复用现有 activity marker、shimmer、elapsed time 与 `esc to interrupt`。
+- [x] 收到 retrying StreamError 时保存旧 status header、确保 indicator 可见并显示 `Reconnecting... n/m` 与安全 details；不 finish draft、不提交 ActiveHistoryCell、不插入 ErrorCell。
+- [x] 下一条非 retry live Event 恢复旧 header；连续 retry 只保存一次，Turn terminal 清理 retry state，Replay/Resume initial history 忽略 transient retry status。
+- [x] 使用 TerminalPalette 既有 status accent，覆盖无颜色、窄终端、indicator 原本隐藏和 details 截断场景，不增加 reconnect 专用动画组件或硬编码 ANSI 色。
 
-- [ ] 普通 sampling、手动 `/compact` CompactTask 和 `run_turn` 自动 compaction 复用同一 response-stream retry policy，仅保留请求类型和 Prompt 差异。
-- [ ] Compactor 不拥有独立静默 retry loop；重连期间保持 Compact Turn running，成功后继续既有 `ContextCompacted → Warning → TurnCompleted` 顺序。
-- [ ] compact retry exhausted 保持原 ContextManager/replacement history 不变，并产生明确最终错误与唯一 Turn terminal。
+### K-05：Sampling + Compaction Policy Convergence — `DONE`
 
-### K-06：Partial Delta Attempt Isolation — `TODO`
+- [x] 普通 sampling、手动 `/compact` CompactTask 和 `run_turn` 自动 compaction 复用同一 response-stream retry policy，仅保留请求类型和 Prompt 差异。
+- [x] Compactor 不拥有独立静默 retry loop；重连期间保持 Compact Turn running，成功后继续既有 `ContextCompacted → Warning → TurnCompleted` 顺序。
+- [x] compact retry exhausted 保持原 ContextManager/replacement history 不变，并产生明确最终错误与唯一 Turn terminal。
 
-- [ ] 每次 stream attempt 使用独立 aggregation state；未完成 Delta 不进入 canonical Rollout，只有成功完成的 ResponseItem 才 append 并发布 ItemCompleted。
-- [ ] 定义 retry 后 draft replacement 或 stable item identity 去重，保证部分 Assistant/Reasoning/Tool Call Delta 后重连不会重复文本、重复 Tool Call 或污染下一 Model Step。
-- [ ] 覆盖 retry success、retry exhausted、partial delta、close error、idle timeout、Retry-After、取消、Tool Call aggregation 和 Resume semantic-equivalence。
+### K-06：Partial Delta Attempt Isolation — `DONE`
 
-### K-07：旧链删除、Architecture Guards 与验收 — `TODO`
+- [x] 每次 stream attempt 使用独立 aggregation state；未完成 Delta 不进入 canonical Rollout，只有成功完成的 ResponseItem 才 append 并发布 ItemCompleted。
+- [x] 定义 retry 后 draft replacement 或 stable item identity 去重，保证部分 Assistant/Reasoning/Tool Call Delta 后重连不会重复文本、重复 Tool Call 或污染下一 Model Step。
+- [x] 覆盖 retry success、retry exhausted、partial delta、close error、idle timeout、Retry-After、取消、Tool Call aggregation 和 Resume semantic-equivalence。
 
-- [ ] 删除单一 `MaxRetries` 生产配置、terminal-only `StreamError{Error string}`、TUI StreamError 直接 finishDraft/ErrorCell 和任何 Adapter/TUI 私有 stream retry 状态。
-- [ ] 增加 architecture guards，禁止 `workingLine` 硬编码状态文案、Compactor 自建 retry loop、TUI 根据错误字符串判断 lifecycle，以及 transient retry Event 进入 Rollout/Replay。
-- [ ] 完成针对性测试、全量测试、race、vet、build、`make check`、architecture grep、`git diff --check` 与文档一致性检查后，K 才能标记 DONE。
+### K-07：旧链删除、Architecture Guards 与验收 — `DONE`
+
+- [x] 删除单一 `MaxRetries` 生产配置、terminal-only `StreamError{Error string}`、TUI StreamError 直接 finishDraft/ErrorCell 和任何 Adapter/TUI 私有 stream retry 状态。
+- [x] 增加 architecture guards，禁止 `workingLine` 硬编码状态文案、Compactor 自建 retry loop、TUI 根据错误字符串判断 lifecycle，以及 transient retry Event 进入 Rollout/Replay。
+- [x] 完成针对性测试、全量测试、race、vet、build、`make check`、architecture grep、`git diff --check` 与文档一致性检查后，K 才能标记 DONE。
 
 ### K 出口
 
@@ -716,7 +719,60 @@ J 已完成 Slash Command 与 TUI Application 生命周期收敛，但当前 Pro
 - 普通 sampling 与手动/自动 compaction 共享 retry policy；部分 Delta、取消和重试耗尽均不会产生重复 transcript、重复 Tool Call、静默卡死或第二套 Turn terminal。
 - 生产路径不存在用新名称包裹 SDK retry、字符串 StreamError、硬编码 Working 或 Compactor 私有重试的过渡主链。
 
-## 14. 当前保留能力
+## 14. L. Model + Provider Configuration Ownership Alignment — `TODO`
+
+K 已完成 Provider connection recovery 生命周期，但当前 `ProviderConfig` 仍同时保存 transport、model selection、sampling policy 和 context policy；普通 Responses/Chat Completions/Compaction Request 还会强制发送 Amadeus 默认的 temperature 与最大输出 token。L 按 `docs/design.md` 将配置升级为 Codex 风格的 Model Runtime + ModelProviderInfo 分层，不保留旧字段换名后的双模型。
+
+### L-01：Config v2 Schema + Codex Terminology — `TODO`
+
+- [ ] 将稳定配置升级为 `version: 2`，顶层使用 `model`、`model_provider`、`model_context_window`、`model_auto_compact_token_limit`、`tool_output_token_limit` 和 `model_providers`。
+- [ ] 将 Provider `api`/内部 `APIMode` 完整重构为 `wire_api`/`WireAPI`，保留 `responses` 与 `chat_completions` 两种 Amadeus 实际 transport。
+- [ ] schema、patch/merge、validation、clone、redaction、provenance 与默认值归一化使用同一字段集合，禁止新 YAML tag 包裹旧 `DefaultProvider`/`Providers`/`API` 数据模型。
+
+### L-02：Provider Transport Ownership Closure — `TODO`
+
+- [ ] `ModelProviderInfo` 只保留 wire API、Dialect、auth/API key、Base URL、timeout、request retry、stream reconnect 和 Provider capability。
+- [ ] 从 Provider 删除 model、temperature、max output tokens、context window、auto compact limit 和 Tool Output limit；Adapter 不再从 Provider 返回伪 Model metadata。
+- [ ] 删除默认 `openai` Provider entry；所有 Provider 由用户定义，省略字段时由 Provider normalization 统一填入 `wire_api=responses` 和既有 retry/timeout 默认值。
+
+### L-03：Model Runtime Overrides + ModelInfo Resolution — `TODO`
+
+- [ ] Composition/Application/Session 以顶层 `model` 与 `model_provider` 构造当前 Model selection，Provider 切换和 Model 切换不再绑定在同一个 ProviderConfig 对象中。
+- [ ] `model_context_window` 在无可信 Model Catalog 的当前阶段要求显式正数；`model_auto_compact_token_limit` 省略时派生为 context window 的 90%，显式值只能进一步收紧。
+- [ ] 当前固定采用 total active context 语义，不增加未接线的 `model_auto_compact_token_limit_scope`；ModelInfo 保存 effective context/compact/truncation policy，而不是配置对象引用。
+
+### L-04：Provider-default Sampling + Compaction Requests — `TODO`
+
+- [ ] 从稳定配置、`llm.Request`、`SampleRequest`、`ModelInfo`、Runtime accessor 和 Session continuation 删除 temperature 与模型最大输出 token。
+- [ ] Responses、Chat Completions 和 Compaction Adapter 构造均省略 `temperature`、`max_output_tokens`、`max_tokens` 等字段，使用模型厂商默认行为。
+- [ ] 删除 Compactor 私有 4096 输出上限和 `estimated input + max output` 容量判断；自动压缩阈值负责预留 headroom，Context Window 保持独立硬上限。
+
+### L-05：Tool Output Token Limit + Projection Policy — `TODO`
+
+- [ ] 保留 Codex 同名顶层配置 `tool_output_token_limit`，默认值固定为 `10000`，并映射为 ModelInfo/ContextManager 的 Tool Output truncation policy。
+- [ ] 明确该字段只限制模型可见 Tool/Function Output，不截断 canonical Rollout、终端展示或模型回复，也不与 `execute_command.max_output_tokens` 混用。
+- [ ] Read/Glob/Grep/Command/MCP 及其他 Tool Result 通过唯一 Context projector 应用相同预算，live 与 Resume 投影保持 semantic equivalence。
+
+### L-06：Config Migration + User-facing Surfaces — `TODO`
+
+- [ ] 自动迁移无歧义字段：`default_provider → model_provider`、`providers → model_providers`、`api → wire_api`、`max_retries → request_max_retries`。
+- [ ] Provider-local model/context/compact/tool-output 字段提升存在多值冲突或新旧字段并存时返回准确路径错误；旧 temperature/max output 字段返回明确 removed-field 诊断，不静默忽略。
+- [ ] CLI flags、Environment names、`config check`、`config explain/show`、README、example config 和实际 `$AMADEUS_HOME/config.yaml` 模板同步到 Config v2。
+
+### L-07：旧链删除、Architecture Guards 与验收 — `TODO`
+
+- [ ] 删除生产路径中的 `ProviderConfig.Model/Temperature/MaxOutputTokens/ContextWindow/AutoCompactTokenLimit/ToolOutputMaxTokens`、`APIMode` 和旧配置 source key。
+- [ ] 增加 architecture guards，禁止 Provider 重新拥有 Model Runtime policy、普通请求重新强制发送 temperature/max output，以及 Tool Output limit 混入 command/model output budget。
+- [ ] 覆盖 Config v1/v2 migration、无内置 Provider、Responses/Chat 参数 omission、Compaction、Context threshold、Tool projection、CLI/env/provenance 和 Resume equivalence；完成全量测试、race、vet、build、`make check` 与 `git diff --check` 后 L 才能标记 DONE。
+
+### L 出口
+
+- 配置使用 Codex 风格 `model`/`model_provider`/`model_providers.*.wire_api`，Provider transport 与 Model Runtime policy 具有单一 owner。
+- 普通 sampling 与 Compaction 不再覆盖模型厂商 temperature 或最大输出 token 默认值；Context Window 和 Auto Compact 使用顶层 Model override。
+- `tool_output_token_limit=10000` 作为唯一用户可配置 Tool/Function Output 上下文预算，并通过唯一 projector 保持 live/Resume 一致。
+- 生产路径不存在 Provider-owned model/context/sampling 字段、Config v1 双主链或只换名称的兼容 Facade。
+
+## 15. 当前保留能力
 
 - 默认启动：`amadeus` 或 `amadeus "<task>"`。
 - 当前配置链和 Provider Adapter 已可使用 OpenAI Responses/Chat Completions 及兼容 Provider。
@@ -724,7 +780,7 @@ J 已完成 Slash Command 与 TUI Application 生命周期收敛，但当前 Pro
 - TUI 和 Inline 输出以当前代码和 `docs/design.md` 为准。
 - 内置 Tool、Approval、Diff、Web Search 和 Slash Command 已进入基础主链；A/B Architecture Closure 期间保持用户可见能力，同时收口 Tool Result projection、AGENTS.md target scope 和 Session capability ownership。
 
-## 15. 当前执行规则
+## 16. 当前执行规则
 
 1. 每次只推进一个 `TODO`/`DOING` 主任务。
 2. 先修改 `docs/design.md`，再修改代码；实现发现设计问题时暂停并同步 Contract。
@@ -732,7 +788,7 @@ J 已完成 Slash Command 与 TUI Application 生命周期收敛，但当前 Pro
 4. 任务完成必须运行针对性测试和构建；环境限制导致的测试失败要单独记录。
 5. 本文只更新任务状态和出口，不复制架构设计、源码审计或长篇讨论。
 
-## 16. 源码结构清理 — `DONE`
+## 17. 源码结构清理 — `DONE`
 
 ### 已完成
 
