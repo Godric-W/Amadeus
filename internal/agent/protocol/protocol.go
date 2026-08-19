@@ -7,11 +7,34 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol/identity"
 	"github.com/Godric-W/Amadeus/internal/filechange"
-	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
-type Submission struct{ Op Op }
+type ThreadID = identity.ThreadID
+
+type TurnID = identity.TurnID
+
+type SubmissionID = identity.SubmissionID
+
+type RequestID = identity.RequestID
+
+type ItemID = identity.ItemID
+
+type Submission struct {
+	ID SubmissionID
+	Op Op
+}
+
+func (submission Submission) Validate() error {
+	if strings.TrimSpace(string(submission.ID)) == "" {
+		return errors.New("submission ID is empty")
+	}
+	if submission.Op == nil {
+		return errors.New("submission op is nil")
+	}
+	return nil
+}
 
 type Op interface{ isOp() }
 
@@ -32,7 +55,7 @@ type ShutdownOp struct{}
 func (ShutdownOp) isOp() {}
 
 type ApprovalDecisionOp struct {
-	RequestID string
+	RequestID RequestID
 	OptionID  string
 	Outcome   string
 	Scope     string
@@ -46,37 +69,47 @@ type ThreadSettingsOp struct{ Mode string }
 
 func (ThreadSettingsOp) isOp() {}
 
-type SessionEvent struct {
-	ThreadID rollout.ThreadID
-	TurnID   rollout.TurnID
-	Message  EventMessage
+type Event struct {
+	ID  SubmissionID
+	Msg EventMsg
 }
 
-func (event SessionEvent) Validate() error {
-	if event.ThreadID == "" {
-		return errors.New("session event thread ID is empty")
+func (event Event) Validate() error {
+	if strings.TrimSpace(string(event.ID)) == "" {
+		return errors.New("event correlation ID is empty")
 	}
-	if event.Message == nil {
-		return errors.New("session event message is nil")
+	if event.Msg == nil {
+		return errors.New("event message is nil")
 	}
 	return nil
 }
 
-type EventMessage interface{ isEventMessage() }
+type EventMsg interface{ isEventMsg() }
 
-type ThreadConfigured struct{}
-
-func (ThreadConfigured) isEventMessage() {}
-
-type ThreadSettingsUpdated struct {
-	Mode string
+type SessionConfiguration struct {
+	CWD      string
+	Provider string
+	Model    string
+	Mode     string
 }
 
-func (ThreadSettingsUpdated) isEventMessage() {}
+type SessionConfiguredEvent struct {
+	ThreadID      ThreadID
+	Configuration SessionConfiguration
+}
 
-type ShutdownComplete struct{}
+func (SessionConfiguredEvent) isEventMsg() {}
 
-func (ShutdownComplete) isEventMessage() {}
+type ThreadSettingsAppliedEvent struct {
+	ThreadID ThreadID
+	Mode     string
+}
+
+func (ThreadSettingsAppliedEvent) isEventMsg() {}
+
+type ShutdownCompleteEvent struct{ ThreadID ThreadID }
+
+func (ShutdownCompleteEvent) isEventMsg() {}
 
 type TaskKind string
 
@@ -89,43 +122,81 @@ func (kind TaskKind) Valid() bool {
 	return kind == TaskKindRegular || kind == TaskKindCompact
 }
 
-type TurnStarted struct {
+type TurnStartedEvent struct {
+	ThreadID  ThreadID
+	TurnID    TurnID
 	StartedAt time.Time
 	Input     string
 	Kind      TaskKind
 }
 
-func (TurnStarted) isEventMessage() {}
+func (TurnStartedEvent) isEventMsg() {}
 
-type TurnRejected struct {
-	Error      string
-	RejectedAt time.Time
+type ErrorEvent struct {
+	ThreadID ThreadID
+	TurnID   TurnID
+	Code     string
+	Message  string
+	At       time.Time
 }
 
-func (TurnRejected) isEventMessage() {}
+func (ErrorEvent) isEventMsg() {}
 
-type TurnCompleted struct {
-	Status     rollout.TurnTerminalStatus
-	Outcome    rollout.TurnOutcome
+type TurnTerminalStatus string
+
+const (
+	TurnStatusCompleted TurnTerminalStatus = "completed"
+	TurnStatusFailed    TurnTerminalStatus = "failed"
+)
+
+type TurnOutcome string
+
+const (
+	TurnOutcomeCompleted TurnOutcome = "completed"
+	TurnOutcomeBlocked   TurnOutcome = "blocked"
+	TurnOutcomeFailed    TurnOutcome = "failed"
+	TurnOutcomeAborted   TurnOutcome = "aborted"
+)
+
+func (outcome TurnOutcome) Valid() bool {
+	switch outcome {
+	case TurnOutcomeCompleted, TurnOutcomeBlocked, TurnOutcomeFailed, TurnOutcomeAborted:
+		return true
+	default:
+		return false
+	}
+}
+
+type TurnCompleteEvent struct {
+	ThreadID   ThreadID
+	TurnID     TurnID
+	Status     TurnTerminalStatus
+	Outcome    TurnOutcome
 	Reason     string
 	Summary    string
 	Error      string
 	FinishedAt time.Time
 }
 
-func (TurnCompleted) isEventMessage() {}
+func (TurnCompleteEvent) isEventMsg() {}
 
-type TurnAborted struct {
+type TurnAbortedEvent struct {
+	ThreadID   ThreadID
+	TurnID     TurnID
 	Summary    string
 	Reason     string
 	FinishedAt time.Time
 }
 
-func (TurnAborted) isEventMessage() {}
+func (TurnAbortedEvent) isEventMsg() {}
 
-type Warning struct{ Message string }
+type WarningEvent struct {
+	ThreadID ThreadID
+	TurnID   TurnID
+	Message  string
+}
 
-func (Warning) isEventMessage() {}
+func (WarningEvent) isEventMsg() {}
 
 type ProviderErrorInfo struct {
 	Kind       string
@@ -137,22 +208,16 @@ type ProviderErrorInfo struct {
 	RetryDelay time.Duration
 }
 
-type StreamError struct {
+type StreamErrorEvent struct {
+	ThreadID          ThreadID
+	TurnID            TurnID
 	Message           string
 	AdditionalDetails *string
 	ProviderError     *ProviderErrorInfo
 	WillRetry         bool
 }
 
-func (StreamError) isEventMessage() {}
-
-type InteractiveRequestKind string
-
-const RequestApproval InteractiveRequestKind = "approval"
-
-func (kind InteractiveRequestKind) Valid() bool {
-	return kind == RequestApproval
-}
+func (StreamErrorEvent) isEventMsg() {}
 
 type ApprovalPresentation struct {
 	Title       string
@@ -169,35 +234,112 @@ type ApprovalOption struct {
 }
 
 type ApprovalRequest struct {
-	ID           string
+	ID           RequestID
 	ToolName     string
 	Presentation ApprovalPresentation
 	Raw          json.RawMessage
 }
 
-type InteractiveRequest struct {
-	RequestID string
-	ThreadID  rollout.ThreadID
-	TurnID    rollout.TurnID
-	Kind      InteractiveRequestKind
-	Approval  *ApprovalRequest
+type ApprovalRequestEvent struct {
+	RequestID RequestID
+	ThreadID  ThreadID
+	TurnID    TurnID
+	Approval  ApprovalRequest
 }
 
-func (request InteractiveRequest) Validate() error {
-	if strings.TrimSpace(request.RequestID) == "" {
-		return errors.New("interactive request ID is empty")
+func (ApprovalRequestEvent) isEventMsg() {}
+
+func (request ApprovalRequestEvent) Validate() error {
+	if strings.TrimSpace(string(request.RequestID)) == "" {
+		return errors.New("approval request ID is empty")
 	}
-	if !request.Kind.Valid() {
-		return fmt.Errorf("interactive request kind %q is invalid", request.Kind)
-	}
-	if request.Kind == RequestApproval && request.Approval == nil {
-		return errors.New("approval request payload is nil")
+	if strings.TrimSpace(string(request.Approval.ID)) == "" {
+		return errors.New("approval request payload is incomplete")
 	}
 	return nil
 }
 
-type AgentStatus struct {
-	ThreadID rollout.ThreadID
-	TurnID   rollout.TurnID
-	Working  bool
+func ScopeEventMsg(message EventMsg, threadID ThreadID, turnID TurnID) EventMsg {
+	switch value := message.(type) {
+	case SessionConfiguredEvent:
+		value.ThreadID = threadID
+		return value
+	case ThreadSettingsAppliedEvent:
+		value.ThreadID = threadID
+		return value
+	case ShutdownCompleteEvent:
+		value.ThreadID = threadID
+		return value
+	case TurnStartedEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
+	case ErrorEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
+	case TurnCompleteEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
+	case TurnAbortedEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
+	case WarningEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
+	case StreamErrorEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
+	case ApprovalRequestEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
+	default:
+		return ScopeItemEventMsg(message, threadID, turnID)
+	}
+}
+
+func ThreadIDOf(message EventMsg) ThreadID {
+	switch value := message.(type) {
+	case SessionConfiguredEvent:
+		return value.ThreadID
+	case ThreadSettingsAppliedEvent:
+		return value.ThreadID
+	case ShutdownCompleteEvent:
+		return value.ThreadID
+	case TurnStartedEvent:
+		return value.ThreadID
+	case ErrorEvent:
+		return value.ThreadID
+	case TurnCompleteEvent:
+		return value.ThreadID
+	case TurnAbortedEvent:
+		return value.ThreadID
+	case WarningEvent:
+		return value.ThreadID
+	case StreamErrorEvent:
+		return value.ThreadID
+	case ApprovalRequestEvent:
+		return value.ThreadID
+	default:
+		return ItemEventThreadID(message)
+	}
+}
+
+func TurnIDOf(message EventMsg) TurnID {
+	switch value := message.(type) {
+	case TurnStartedEvent:
+		return value.TurnID
+	case ErrorEvent:
+		return value.TurnID
+	case TurnCompleteEvent:
+		return value.TurnID
+	case TurnAbortedEvent:
+		return value.TurnID
+	case WarningEvent:
+		return value.TurnID
+	case StreamErrorEvent:
+		return value.TurnID
+	case ApprovalRequestEvent:
+		return value.TurnID
+	default:
+		return ItemEventTurnID(message)
+	}
 }

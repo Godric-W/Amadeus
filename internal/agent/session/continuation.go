@@ -46,7 +46,7 @@ func (session *Session) continueTurn(ctx context.Context, runtime *engine.Servic
 				continue
 			}
 		}
-		if err := events.Publish(ctx, protocol.SessionEvent{Message: protocol.ThreadTokenUsageUpdated{
+		if err := events.Publish(ctx, protocol.Event{Msg: protocol.TokenCountEvent{
 			EstimatedInputTokens: step.Prompt.Usage.EstimatedInputTokens,
 			ContextWindow:        step.Model.ContextWindow,
 		}}); err != nil {

@@ -54,9 +54,7 @@ type SessionServices struct {
 
 type SessionIo struct {
 	Submissions chan<- protocol.Submission
-	Events      <-chan protocol.SessionEvent
-	Requests    <-chan protocol.InteractiveRequest
-	Status      <-chan protocol.AgentStatus
+	Events      <-chan protocol.Event
 	Terminated  <-chan struct{}
 }
 
@@ -69,9 +67,10 @@ type SpawnArgs struct {
 }
 
 type ActiveTurn struct {
-	State   *turn.TurnState
-	Task    *RunningTask
-	pending map[string]chan protocol.Op
+	SubmissionID protocol.SubmissionID
+	State        *turn.TurnState
+	Task         *RunningTask
+	pending      map[protocol.RequestID]chan protocol.Op
 }
 
 type Session struct {
@@ -87,9 +86,7 @@ type Session struct {
 	ctx         context.Context
 	cancel      context.CancelCauseFunc
 	submissions chan protocol.Submission
-	events      chan protocol.SessionEvent
-	requests    chan protocol.InteractiveRequest
-	status      chan protocol.AgentStatus
+	events      chan protocol.Event
 	terminated  chan struct{}
 	completed   chan Completion
 	requestsIn  chan requestDelivery
@@ -98,7 +95,7 @@ type Session struct {
 const compactionWarningMessage = "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted."
 
 type requestDelivery struct {
-	request protocol.InteractiveRequest
+	request protocol.ApprovalRequestEvent
 	result  chan protocol.Op
 }
 
@@ -123,8 +120,7 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 	}
 	value := &Session{
 		threadID: args.ThreadID, state: args.State, services: args.Services, ctx: ctx, cancel: cancel,
-		submissions: make(chan protocol.Submission, 32), events: make(chan protocol.SessionEvent, 128),
-		requests: make(chan protocol.InteractiveRequest, 8), status: make(chan protocol.AgentStatus, 16),
+		submissions: make(chan protocol.Submission, 32), events: make(chan protocol.Event, 128),
 		terminated: make(chan struct{}), completed: make(chan Completion, 1),
 		requestsIn: make(chan requestDelivery, 8),
 	}
@@ -157,8 +153,7 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 		value.services.AgentServices = capabilities
 	}
 	io := SessionIo{
-		Submissions: value.submissions, Events: value.events, Requests: value.requests,
-		Status: value.status, Terminated: value.terminated,
+		Submissions: value.submissions, Events: value.events, Terminated: value.terminated,
 	}
 	go value.loop()
 	return value, io, nil
@@ -166,9 +161,7 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 
 func (session *Session) loop() {
 	defer close(session.events)
-	defer session.publish(protocol.SessionEvent{ThreadID: session.threadID, Message: protocol.ShutdownComplete{}})
-	defer close(session.requests)
-	defer close(session.status)
+	defer session.publish(protocol.Event{Msg: protocol.ShutdownCompleteEvent{ThreadID: protocol.ThreadID(session.threadID)}})
 	defer close(session.terminated)
 	defer func() {
 		session.clearPendingRequests()
@@ -188,7 +181,13 @@ func (session *Session) loop() {
 			_ = session.services.TaskConstructors.Close()
 		}
 	}()
-	session.publish(protocol.SessionEvent{ThreadID: session.threadID, Message: protocol.ThreadConfigured{}})
+	session.publish(protocol.Event{Msg: protocol.SessionConfiguredEvent{
+		ThreadID: protocol.ThreadID(session.threadID),
+		Configuration: protocol.SessionConfiguration{
+			CWD: session.state.Configuration.CWD, Provider: session.state.Configuration.Provider,
+			Model: session.state.Configuration.Model, Mode: string(session.state.Configuration.Mode),
+		},
+	}})
 	sessionDone := session.ctx.Done()
 	for {
 		if session.active == nil && len(session.queue) > 0 {
@@ -230,19 +229,23 @@ func (session *Session) loop() {
 }
 
 func (session *Session) handleSubmission(submission protocol.Submission) {
+	if err := submission.Validate(); err != nil {
+		session.publish(protocol.Event{ID: submission.ID, Msg: protocol.ErrorEvent{ThreadID: protocol.ThreadID(session.threadID), Code: "invalid_submission", Message: err.Error(), At: session.services.Clock().UTC()}})
+		return
+	}
 	switch op := submission.Op.(type) {
 	case protocol.UserInputOp:
 		if session.active != nil {
 			session.queue = append(session.queue, submission)
 			return
 		}
-		session.startTurn(strings.TrimSpace(op.Content), false)
+		session.startTurn(submission.ID, strings.TrimSpace(op.Content), false)
 	case protocol.CompactOp:
 		if session.active != nil {
 			session.queue = append(session.queue, submission)
 			return
 		}
-		session.startTurn("compact context", true)
+		session.startTurn(submission.ID, "compact context", true)
 	case protocol.InterruptOp:
 		session.cancelActive(ErrInterrupted)
 	case protocol.ThreadSettingsOp:
@@ -250,7 +253,7 @@ func (session *Session) handleSubmission(submission protocol.Submission) {
 			session.modeMu.Lock()
 			session.state.Mode.Mode = turn.ModeKind(op.Mode)
 			session.modeMu.Unlock()
-			session.publish(protocol.SessionEvent{ThreadID: session.threadID, Message: protocol.ThreadSettingsUpdated{Mode: op.Mode}})
+			session.publish(protocol.Event{ID: submission.ID, Msg: protocol.ThreadSettingsAppliedEvent{ThreadID: protocol.ThreadID(session.threadID), Mode: op.Mode}})
 		}
 	case protocol.ApprovalDecisionOp:
 		session.resolveRequest(op.RequestID, op)
@@ -271,15 +274,10 @@ func (session *Session) handleRequest(envelope requestDelivery) {
 		return
 	}
 	session.active.pending[envelope.request.RequestID] = envelope.result
-	select {
-	case session.requests <- envelope.request:
-	case <-session.ctx.Done():
-		delete(session.active.pending, envelope.request.RequestID)
-		envelope.result <- nil
-	}
+	session.publish(protocol.Event{ID: session.active.SubmissionID, Msg: protocol.ScopeEventMsg(envelope.request, protocol.ThreadID(session.threadID), protocol.TurnID(session.active.Task.Context().TurnID))})
 }
 
-func (session *Session) resolveRequest(requestID string, op protocol.Op) {
+func (session *Session) resolveRequest(requestID protocol.RequestID, op protocol.Op) {
 	if session.active == nil {
 		return
 	}
@@ -291,13 +289,14 @@ func (session *Session) resolveRequest(requestID string, op protocol.Op) {
 	result <- op
 }
 
-func (session *Session) startTurn(input string, compact bool) {
+func (session *Session) startTurn(submissionID protocol.SubmissionID, input string, compact bool) {
 	if input == "" {
 		return
 	}
 	now := session.services.Clock().UTC()
 	turnID := turn.ID(session.services.NextID("turn"))
 	baseContext := turn.TurnContext{
+		SubmissionID: submissionID,
 		ThreadID: session.threadID, TurnID: turnID, Provider: session.state.Configuration.Provider,
 		Model: session.state.Configuration.Model, CWD: session.state.Configuration.CWD, Shell: session.state.Configuration.Shell,
 		CurrentDate: session.state.Configuration.CurrentDate, Timezone: session.state.Configuration.Timezone,
@@ -310,12 +309,12 @@ func (session *Session) startTurn(input string, compact bool) {
 		ModelProvider: session.state.Configuration.Provider, Model: session.state.Configuration.Model, CreatedAt: now,
 	})
 	if err != nil {
-		session.rejectTurn(turnID, err, false)
+		session.rejectTurn(submissionID, turnID, err, false)
 		return
 	}
 	session.appendHistory(materialized.Lines)
 	if materialized.MetadataWarning != nil {
-		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.Warning{Message: materialized.MetadataWarning.Error()}})
+		session.publish(protocol.Event{ID: submissionID, Msg: protocol.WarningEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID), Message: materialized.MetadataWarning.Error()}})
 	}
 	constructor := session.services.TaskConstructors.Regular
 	if compact {
@@ -323,11 +322,11 @@ func (session *Session) startTurn(input string, compact bool) {
 	}
 	taskValue, turnValue, err := constructor(session.ctx, session, input, baseContext)
 	if err != nil {
-		session.rejectTurn(turnID, err, false)
+		session.rejectTurn(submissionID, turnID, err, false)
 		return
 	}
 	if taskValue == nil {
-		session.rejectTurn(turnID, errors.New("session task constructor returned nil task"), false)
+		session.rejectTurn(submissionID, turnID, errors.New("session task constructor returned nil task"), false)
 		return
 	}
 	turnContext := &turnValue
@@ -339,13 +338,13 @@ func (session *Session) startTurn(input string, compact bool) {
 	contextItem, err := rollout.NewItem(rollout.KindTurnContext, turnContext)
 	if err != nil {
 		abortPrepared()
-		session.rejectTurn(turnID, err, false)
+		session.rejectTurn(submissionID, turnID, err, false)
 		return
 	}
 	startedItem, err := rollout.NewItem(rollout.KindTurnStarted, rollout.TurnStarted{Input: input})
 	if err != nil {
 		abortPrepared()
-		session.rejectTurn(turnID, err, false)
+		session.rejectTurn(submissionID, turnID, err, false)
 		return
 	}
 	items := []rollout.Item{contextItem}
@@ -353,7 +352,7 @@ func (session *Session) startTurn(input string, compact bool) {
 		responseItem, responseErr := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: string(llm.RoleUser), Content: input})
 		if responseErr != nil {
 			abortPrepared()
-			session.rejectTurn(turnID, responseErr, false)
+			session.rejectTurn(submissionID, turnID, responseErr, false)
 			return
 		}
 		items = append(items, responseItem)
@@ -361,22 +360,21 @@ func (session *Session) startTurn(input string, compact bool) {
 	items = append(items, startedItem)
 	if err := session.appendItemsDurable(session.ctx, turnID, items...); err != nil {
 		abortPrepared()
-		session.rejectTurn(turnID, err, true)
+		session.rejectTurn(submissionID, turnID, err, true)
 		return
 	}
 	running, err := NewRunningTask(session.ctx, session, taskValue, turnContext, []TurnInput{{Content: input}})
 	if err != nil {
 		abortPrepared()
-		session.completeWithoutTask(turnID, err)
+		session.completeWithoutTask(submissionID, turnID, err)
 		return
 	}
-	session.active = &ActiveTurn{State: &turn.TurnState{StartedAt: now}, Task: running, pending: make(map[string]chan protocol.Op)}
-	session.publishStatus(turnID, true)
+	session.active = &ActiveTurn{SubmissionID: submissionID, State: &turn.TurnState{StartedAt: now}, Task: running, pending: make(map[protocol.RequestID]chan protocol.Op)}
 	kind := protocol.TaskKindRegular
 	if compact {
 		kind = protocol.TaskKindCompact
 	}
-	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.TurnStarted{StartedAt: now, Input: input, Kind: kind}})
+	session.publish(protocol.Event{ID: submissionID, Msg: protocol.TurnStartedEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID), StartedAt: now, Input: input, Kind: kind}})
 	done := running.Start()
 	go func() {
 		completion, ok := <-done
@@ -390,13 +388,11 @@ func (session *Session) startTurn(input string, compact bool) {
 	}()
 }
 
-func (session *Session) rejectTurn(turnID turn.ID, err error, fatal bool) {
+func (session *Session) rejectTurn(submissionID protocol.SubmissionID, turnID turn.ID, err error, fatal bool) {
 	if err == nil {
 		err = errors.New("turn was rejected")
 	}
-	session.publishStatus(turnID, false)
-	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.StreamError{Message: err.Error()}})
-	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.TurnRejected{Error: err.Error(), RejectedAt: session.services.Clock().UTC()}})
+	session.publish(protocol.Event{ID: submissionID, Msg: protocol.ErrorEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID), Code: "turn_start_failed", Message: err.Error(), At: session.services.Clock().UTC()}})
 	if fatal {
 		session.cancel(fmt.Errorf("start turn persistence: %w", err))
 	}
@@ -406,6 +402,7 @@ func (session *Session) finishTurn(completion Completion) {
 	if session.active == nil || session.active.Task.Context().TurnID != completion.TurnID {
 		return
 	}
+	submissionID := session.active.SubmissionID
 	completedItems := append([]rollout.Item(nil), completion.Result.Items...)
 	if completion.Result.Usage.TotalTokens > 0 {
 		if usageItem, usageErr := engine.UsageItem(completion.Result.Usage); usageErr == nil {
@@ -422,7 +419,7 @@ func (session *Session) finishTurn(completion Completion) {
 			completion.Error = err
 		}
 		if err == nil {
-			session.publishCompactionEvents(completion.TurnID, completedItems)
+			session.publishCompactionEvents(submissionID, completion.TurnID, completedItems)
 		}
 	}
 	finishedAt := session.services.Clock().UTC()
@@ -439,13 +436,12 @@ func (session *Session) finishTurn(completion Completion) {
 		session.active.State.MarkInterrupted(errors.Join(completion.Cause, persistErr))
 		session.clearPendingRequests()
 		session.active = nil
-		session.publishStatus(completion.TurnID, false)
 		if persistErr != nil {
-			session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: protocol.StreamError{Message: persistErr.Error()}})
+			session.publish(protocol.Event{ID: submissionID, Msg: protocol.StreamErrorEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(completion.TurnID), Message: persistErr.Error()}})
 			session.cancel(fmt.Errorf("persist aborted turn: %w", persistErr))
 			return
 		}
-		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: protocol.TurnAborted{Summary: summary, Reason: reason, FinishedAt: finishedAt}})
+		session.publish(protocol.Event{ID: submissionID, Msg: protocol.TurnAbortedEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(completion.TurnID), Summary: summary, Reason: reason, FinishedAt: finishedAt}})
 		return
 	}
 	status := rollout.TurnStatusCompleted
@@ -480,13 +476,16 @@ func (session *Session) finishTurn(completion Completion) {
 	session.active.State.MarkTerminal(errors.Join(completion.Error, persistErr))
 	session.clearPendingRequests()
 	session.active = nil
-	session.publishStatus(completion.TurnID, false)
 	if persistErr != nil {
-		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: protocol.StreamError{Message: persistErr.Error()}})
+		session.publish(protocol.Event{ID: submissionID, Msg: protocol.StreamErrorEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(completion.TurnID), Message: persistErr.Error()}})
 		session.cancel(fmt.Errorf("persist completed turn: %w", persistErr))
 		return
 	}
-	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: protocol.TurnCompleted{Status: status, Outcome: outcome, Reason: reason, Summary: completion.Result.Summary, Error: errorText, FinishedAt: finishedAt}})
+	session.publish(protocol.Event{ID: submissionID, Msg: protocol.TurnCompleteEvent{
+		ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(completion.TurnID),
+		Status: protocol.TurnTerminalStatus(status), Outcome: protocol.TurnOutcome(outcome), Reason: reason,
+		Summary: completion.Result.Summary, Error: errorText, FinishedAt: finishedAt,
+	}})
 }
 
 func (session *Session) Mode() turn.ModeKind {
@@ -498,42 +497,45 @@ func (session *Session) Mode() turn.ModeKind {
 	return session.state.Mode.Mode
 }
 
-func (session *Session) publishCompactionEvents(turnID turn.ID, items []rollout.Item) {
+func (session *Session) publishCompactionEvents(submissionID protocol.SubmissionID, turnID turn.ID, items []rollout.Item) {
 	for _, item := range items {
 		if item.Kind != rollout.KindCompaction {
 			continue
 		}
 		_, err := rollout.DecodePayload[rollout.Compaction](item)
 		if err != nil {
-			session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.Warning{Message: err.Error()}})
+			session.publish(protocol.Event{ID: submissionID, Msg: protocol.WarningEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID), Message: err.Error()}})
 			continue
 		}
-		session.publish(protocol.SessionEvent{
-			ThreadID: session.threadID,
-			TurnID:   turnID,
-			Message: protocol.ContextCompacted{
-				ItemID: fmt.Sprintf("compaction-%s", turnID),
+		session.publish(protocol.Event{
+			ID: submissionID,
+			Msg: protocol.ContextCompactedEvent{
+				ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID),
+				ItemID: protocol.ItemID(fmt.Sprintf("compaction-%s", turnID)),
 			},
 		})
-		session.publish(protocol.SessionEvent{
-			ThreadID: session.threadID,
-			TurnID:   turnID,
-			Message:  protocol.Warning{Message: compactionWarningMessage},
+		session.publish(protocol.Event{
+			ID:  submissionID,
+			Msg: protocol.WarningEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID), Message: compactionWarningMessage},
 		})
 	}
 }
 
-func (session *Session) completeWithoutTask(turnID turn.ID, taskErr error) {
+func (session *Session) completeWithoutTask(submissionID protocol.SubmissionID, turnID turn.ID, taskErr error) {
 	terminal, _ := rollout.NewItem(rollout.KindTurnCompleted, rollout.TurnCompleted{Status: rollout.TurnStatusFailed, Outcome: OutcomeFailed, Reason: taskErr.Error(), Error: taskErr.Error()})
 	cleanupCtx, cancel := session.cleanupContext()
 	persistErr := session.appendItemsDurable(cleanupCtx, turnID, terminal)
 	cancel()
 	if persistErr != nil {
-		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.StreamError{Message: persistErr.Error()}})
+		session.publish(protocol.Event{ID: submissionID, Msg: protocol.StreamErrorEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID), Message: persistErr.Error()}})
 		session.cancel(fmt.Errorf("persist rejected turn: %w", persistErr))
 		return
 	}
-	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.TurnCompleted{Status: rollout.TurnStatusFailed, Outcome: OutcomeFailed, Reason: taskErr.Error(), Error: taskErr.Error(), FinishedAt: session.services.Clock().UTC()}})
+	session.publish(protocol.Event{ID: submissionID, Msg: protocol.TurnCompleteEvent{
+		ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID),
+		Status: protocol.TurnStatusFailed, Outcome: protocol.TurnOutcomeFailed,
+		Reason: taskErr.Error(), Error: taskErr.Error(), FinishedAt: session.services.Clock().UTC(),
+	}})
 }
 
 func (session *Session) cancelActive(cause error) {
@@ -544,7 +546,7 @@ func (session *Session) cancelActive(cause error) {
 	abortCtx, cancel := context.WithTimeout(context.WithoutCancel(session.ctx), 2*time.Second)
 	defer cancel()
 	if err := session.active.Task.Abort(abortCtx); err != nil {
-		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: session.active.Task.Context().TurnID, Message: protocol.Warning{Message: err.Error()}})
+		session.publish(protocol.Event{ID: session.active.SubmissionID, Msg: protocol.WarningEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(session.active.Task.Context().TurnID), Message: err.Error()}})
 	}
 }
 

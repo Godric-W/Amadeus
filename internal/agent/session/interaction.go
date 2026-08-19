@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 )
 
 func (session *Session) clearPendingRequests() {
@@ -18,7 +17,7 @@ func (session *Session) clearPendingRequests() {
 	}
 }
 
-func (session *Session) publish(event protocol.SessionEvent) {
+func (session *Session) publish(event protocol.Event) {
 	_ = session.Publish(context.WithoutCancel(session.ctx), event)
 }
 
@@ -26,16 +25,17 @@ func (session *Session) publish(event protocol.SessionEvent) {
 // produced below the Session boundary are scoped here before they reach the
 // SessionIo channel; callers do not need to carry routing metadata through
 // tool or engine internals.
-func (session *Session) Publish(ctx context.Context, event protocol.SessionEvent) error {
+func (session *Session) Publish(ctx context.Context, event protocol.Event) error {
 	if session == nil {
 		return errors.New("session event publisher is nil")
 	}
 	if ctx == nil {
 		return errors.New("session event context is nil")
 	}
-	if event.ThreadID == "" {
-		event.ThreadID = session.threadID
+	if event.ID == "" {
+		event.ID = protocol.SubmissionID(session.services.NextID("event"))
 	}
+	event.Msg = protocol.ScopeEventMsg(event.Msg, protocol.ThreadID(session.threadID), protocol.TurnIDOf(event.Msg))
 	if err := event.Validate(); err != nil {
 		return err
 	}
@@ -52,7 +52,7 @@ func (session *Session) Publish(ctx context.Context, event protocol.SessionEvent
 // Request is the Session-owned request/response boundary for approvals and
 // other interactive tool interactions. The Session loop remains the sole
 // owner of pending requests and routes the response back to the caller.
-func (session *Session) Request(ctx context.Context, request protocol.InteractiveRequest) (protocol.Op, error) {
+func (session *Session) Request(ctx context.Context, request protocol.ApprovalRequestEvent) (protocol.Op, error) {
 	if session == nil {
 		return nil, errors.New("session request publisher is nil")
 	}
@@ -74,20 +74,12 @@ func (session *Session) Request(ctx context.Context, request protocol.Interactiv
 	select {
 	case op := <-result:
 		if op == nil {
-			return nil, errors.New("interactive request was rejected")
+			return nil, errors.New("approval request was rejected")
 		}
 		return op, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-session.terminated:
 		return nil, errors.New("session is terminated")
-	}
-}
-
-func (session *Session) publishStatus(turnID turn.ID, working bool) {
-	status := protocol.AgentStatus{ThreadID: session.threadID, TurnID: turnID, Working: working}
-	select {
-	case session.status <- status:
-	default:
 	}
 }

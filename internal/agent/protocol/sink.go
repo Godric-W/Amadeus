@@ -3,28 +3,25 @@ package protocol
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
-
-	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
 // EventSink is the only runtime output port for product events. Implementations
 // must preserve the order in which a single producer publishes events.
 type EventSink interface {
-	Publish(context.Context, SessionEvent) error
+	Publish(context.Context, Event) error
 }
 
-// MemorySink is useful for deterministic tests and small in-process adapters.
-// It intentionally stores the already-scoped SessionEvent rather than adding
-// metadata after publication.
 type MemorySink struct {
 	mu     sync.RWMutex
-	events []SessionEvent
+	events []Event
+	nextID uint64
 }
 
 func NewMemorySink() *MemorySink { return &MemorySink{} }
 
-func (sink *MemorySink) Publish(ctx context.Context, event SessionEvent) error {
+func (sink *MemorySink) Publish(ctx context.Context, event Event) error {
 	if sink == nil {
 		return errors.New("protocol memory sink is nil")
 	}
@@ -34,70 +31,65 @@ func (sink *MemorySink) Publish(ctx context.Context, event SessionEvent) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// MemorySink is also used by direct Agent composition tests, where there is
-	// no Session boundary to add routing scope. Keep the persisted/test event
-	// valid without weakening Session.Publish validation.
-	if event.ThreadID == "" {
-		event.ThreadID = "memory-thread"
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if event.ID == "" {
+		sink.nextID++
+		event.ID = SubmissionID(fmt.Sprintf("memory-event-%d", sink.nextID))
 	}
 	if err := event.Validate(); err != nil {
 		return err
 	}
-	sink.mu.Lock()
 	sink.events = append(sink.events, event)
-	sink.mu.Unlock()
 	return nil
 }
 
-func (sink *MemorySink) Snapshot() []SessionEvent {
+func (sink *MemorySink) Snapshot() []Event {
 	if sink == nil {
 		return nil
 	}
 	sink.mu.RLock()
 	defer sink.mu.RUnlock()
-	return append([]SessionEvent(nil), sink.events...)
+	return append([]Event(nil), sink.events...)
 }
 
-// ScopedSink adds only the stable routing fields that belong to the Session
-// boundary. It does not mutate EventMessage payloads or inject reflection
-// metadata.
+// ScopedSink binds one submission and turn to all events produced by a task.
 type ScopedSink struct {
 	parent   EventSink
-	threadID rollout.ThreadID
-	turnID   rollout.TurnID
+	eventID  SubmissionID
+	threadID ThreadID
+	turnID   TurnID
 }
 
-func NewScopedSink(parent EventSink, threadID rollout.ThreadID, turnID rollout.TurnID) (*ScopedSink, error) {
+func NewScopedSink(parent EventSink, eventID SubmissionID, threadID ThreadID, turnID TurnID) (*ScopedSink, error) {
 	if parent == nil {
 		return nil, errors.New("scoped event sink parent is nil")
 	}
-	if threadID == "" {
-		return nil, errors.New("scoped event sink thread ID is empty")
+	if eventID == "" || threadID == "" {
+		return nil, errors.New("scoped event sink identity is incomplete")
 	}
-	return &ScopedSink{parent: parent, threadID: threadID, turnID: turnID}, nil
+	return &ScopedSink{parent: parent, eventID: eventID, threadID: threadID, turnID: turnID}, nil
 }
 
-func (sink *ScopedSink) Publish(ctx context.Context, event SessionEvent) error {
+func (sink *ScopedSink) Publish(ctx context.Context, event Event) error {
 	if sink == nil || sink.parent == nil {
 		return errors.New("scoped event sink is nil")
 	}
-	if event.ThreadID == "" {
-		event.ThreadID = sink.threadID
+	if event.ID == "" {
+		event.ID = sink.eventID
 	}
-	if event.TurnID == "" {
-		event.TurnID = sink.turnID
-	}
+	event.Msg = ScopeEventMsg(event.Msg, sink.threadID, sink.turnID)
 	return sink.parent.Publish(ctx, event)
 }
 
-func (sink *ScopedSink) ThreadID() rollout.ThreadID {
+func (sink *ScopedSink) ThreadID() ThreadID {
 	if sink == nil {
 		return ""
 	}
 	return sink.threadID
 }
 
-func (sink *ScopedSink) TurnID() rollout.TurnID {
+func (sink *ScopedSink) TurnID() TurnID {
 	if sink == nil {
 		return ""
 	}

@@ -26,7 +26,7 @@ func NewCompletedItem(item TurnItem) (rollout.Item, error) {
 		return rollout.Item{}, fmt.Errorf("encode completed turn item payload: %w", err)
 	}
 	return rollout.NewItem(rollout.KindTurnItemCompleted, rollout.TurnItemCompleted{
-		ID: item.ID, Kind: string(item.Kind), Status: string(item.Status),
+		ID: string(item.ID), Kind: string(item.Kind), Status: string(item.Status),
 		CreatedAt: item.CreatedAt, CompletedAt: item.CompletedAt, Text: item.Text,
 		ToolName: item.ToolName, CallID: item.CallID, Payload: payload, ToolResult: cloneToolResult(item.ToolResult),
 	})
@@ -49,7 +49,7 @@ func DecodeCompletedItem(line rollout.Line) (TurnItem, error) {
 		}
 	}
 	item := TurnItem{
-		ID: payload.ID, Kind: ItemKind(payload.Kind), Status: ItemStatus(payload.Status),
+		ID: ItemID(payload.ID), Kind: ItemKind(payload.Kind), Status: ItemStatus(payload.Status),
 		CreatedAt: payload.CreatedAt, CompletedAt: payload.CompletedAt, Text: payload.Text,
 		ToolName: payload.ToolName, CallID: payload.CallID, Payload: itemPayload, ToolResult: cloneToolResult(payload.ToolResult),
 	}
@@ -167,7 +167,7 @@ func projectResponseItem(line rollout.Line, hasCompletedItems bool) (TurnItem, b
 		}
 	}
 	item := TurnItem{
-		ID: fmt.Sprintf("rollout-%d", line.Sequence), Kind: kind, Status: status,
+		ID: ItemID(fmt.Sprintf("rollout-%d", line.Sequence)), Kind: kind, Status: status,
 		CreatedAt: line.Timestamp, CompletedAt: line.Timestamp, Text: text,
 		ToolName: toolName, CallID: payload.CallID, ToolResult: cloneToolResult(payload.Result), Payload: payload,
 	}
@@ -190,8 +190,8 @@ func projectPlanItem(line rollout.Line) (TurnItem, error) {
 	for _, value := range snapshot.Items {
 		items = append(items, PlanItem{Step: value.Step, Status: string(value.Status)})
 	}
-	payload := PlanUpdated{
-		ItemID: fmt.Sprintf("plan-%d", line.Sequence), Explanation: snapshot.Explanation,
+	payload := PlanUpdateEvent{
+		ItemID: ItemID(fmt.Sprintf("plan-%d", line.Sequence)), Explanation: snapshot.Explanation,
 		Items: items, Revision: snapshot.Revision, UpdatedAt: updatedAt,
 	}
 	return TurnItem{
@@ -206,7 +206,7 @@ func projectCompactionItem(line rollout.Line) (TurnItem, error) {
 		return TurnItem{}, err
 	}
 	return TurnItem{
-		ID: fmt.Sprintf("compaction-%d", line.Sequence), Kind: ItemContextCompaction,
+		ID: ItemID(fmt.Sprintf("compaction-%d", line.Sequence)), Kind: ItemContextCompaction,
 		Status: ItemStatusCompleted, CreatedAt: line.Timestamp, CompletedAt: line.Timestamp,
 		Payload: value,
 	}, nil

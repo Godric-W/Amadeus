@@ -143,7 +143,7 @@ func (builder *ServicesBuilder) NewCompactTask(ctx context.Context, session *Ses
 	if err := snapshot.Validate(); err != nil {
 		return nil, turn.TurnContext{}, err
 	}
-	events, err := protocol.NewScopedSink(session, snapshot.ThreadID, snapshot.TurnID)
+	events, err := protocol.NewScopedSink(session, snapshot.SubmissionID, protocol.ThreadID(snapshot.ThreadID), protocol.TurnID(snapshot.TurnID))
 	if err != nil {
 		return nil, turn.TurnContext{}, err
 	}

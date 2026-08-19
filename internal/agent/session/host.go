@@ -53,7 +53,7 @@ func (session *Session) appendItems(ctx context.Context, turnID turn.ID, durable
 		return fmt.Errorf("rebuild context after rollout append: %w", rebuildErr)
 	}
 	if result.MetadataWarning != nil {
-		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.Warning{Message: result.MetadataWarning.Error()}})
+		session.publish(protocol.Event{Msg: protocol.WarningEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID), Message: result.MetadataWarning.Error()}})
 	}
 	return nil
 }

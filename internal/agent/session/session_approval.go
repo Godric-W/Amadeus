@@ -24,11 +24,10 @@ func (port *sessionApprovalPort) Decide(ctx context.Context, request policy.Appr
 	if err != nil {
 		return policy.ApprovalDecision{}, fmt.Errorf("encode approval request: %w", err)
 	}
-	interactive := protocol.InteractiveRequest{
-		RequestID: request.ID,
-		Kind:      protocol.RequestApproval,
-		Approval: &protocol.ApprovalRequest{
-			ID: request.ID, ToolName: request.ToolName, Raw: raw,
+	interactive := protocol.ApprovalRequestEvent{
+		RequestID: protocol.RequestID(request.ID),
+		Approval: protocol.ApprovalRequest{
+			ID: protocol.RequestID(request.ID), ToolName: request.ToolName, Raw: raw,
 			Presentation: protocol.ApprovalPresentation{
 				Title: request.Presentation.Title, Description: request.Presentation.Question,
 				Details: append([]string(nil), request.Presentation.Details...), Diff: request.Diff,

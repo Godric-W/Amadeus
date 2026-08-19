@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/llm"
-	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -50,7 +49,7 @@ func (status ItemStatus) Valid() bool {
 // TurnItem is the stable replay unit shared by live and resumed sessions.
 // A terminal item must contain all facts needed to render it independently.
 type TurnItem struct {
-	ID          string           `json:"id"`
+	ID          ItemID           `json:"id"`
 	Kind        ItemKind         `json:"kind"`
 	Status      ItemStatus       `json:"status"`
 	CreatedAt   time.Time        `json:"created_at"`
@@ -63,7 +62,7 @@ type TurnItem struct {
 }
 
 func (item TurnItem) Validate() error {
-	if strings.TrimSpace(item.ID) == "" {
+	if strings.TrimSpace(string(item.ID)) == "" {
 		return errors.New("turn item ID is empty")
 	}
 	if !item.Kind.Valid() {
@@ -81,86 +80,106 @@ func (item TurnItem) Validate() error {
 	return nil
 }
 
-type ItemStarted struct{ Item TurnItem }
-
-func (ItemStarted) isEventMessage() {}
-
-type ItemCompleted struct{ Item TurnItem }
-
-func (ItemCompleted) isEventMessage() {}
-
-type AssistantMessageDelta struct {
-	ItemID string
-	Delta  string
-	Reset  bool
+type ItemStartedEvent struct {
+	ThreadID ThreadID
+	TurnID   TurnID
+	Item     TurnItem
 }
 
-func (AssistantMessageDelta) isEventMessage() {}
+func (ItemStartedEvent) isEventMsg() {}
 
-type ReasoningDelta struct {
-	ItemID string
-	Delta  string
-	Reset  bool
+type ItemCompletedEvent struct {
+	ThreadID ThreadID
+	TurnID   TurnID
+	Item     TurnItem
 }
 
-func (ReasoningDelta) isEventMessage() {}
+func (ItemCompletedEvent) isEventMsg() {}
 
-type CommandOutputDelta struct {
-	ItemID string
-	Delta  string
+type AgentMessageContentDeltaEvent struct {
+	ThreadID ThreadID
+	TurnID   TurnID
+	ItemID   ItemID
+	Delta    string
+	Reset    bool
 }
 
-func (CommandOutputDelta) isEventMessage() {}
+func (AgentMessageContentDeltaEvent) isEventMsg() {}
+
+type ReasoningContentDeltaEvent struct {
+	ThreadID ThreadID
+	TurnID   TurnID
+	ItemID   ItemID
+	Delta    string
+	Reset    bool
+}
+
+func (ReasoningContentDeltaEvent) isEventMsg() {}
+
+type CommandOutputDeltaEvent struct {
+	ThreadID ThreadID
+	TurnID   TurnID
+	ItemID   ItemID
+	Delta    string
+}
+
+func (CommandOutputDeltaEvent) isEventMsg() {}
 
 type PlanItem struct {
 	Step   string `json:"step"`
 	Status string `json:"status"`
 }
 
-type PlanUpdated struct {
-	ItemID      string
+type PlanUpdateEvent struct {
+	ThreadID    ThreadID
+	TurnID      TurnID
+	ItemID      ItemID
 	Explanation string
 	Items       []PlanItem
 	Revision    int64
 	UpdatedAt   time.Time
 }
 
-func (PlanUpdated) isEventMessage() {}
+func (PlanUpdateEvent) isEventMsg() {}
 
-type ThreadTokenUsageUpdated struct {
+type TokenCountEvent struct {
+	ThreadID             ThreadID
+	TurnID               TurnID
 	Usage                llm.Usage
 	EstimatedInputTokens int64
 	ContextWindow        int64
 }
 
-func (ThreadTokenUsageUpdated) isEventMessage() {}
+func (TokenCountEvent) isEventMsg() {}
 
-type ContextCompacted struct {
-	ItemID string
+type ContextCompactedEvent struct {
+	ThreadID ThreadID
+	TurnID   TurnID
+	ItemID   ItemID
 }
 
-func (ContextCompacted) isEventMessage() {}
+func (ContextCompactedEvent) isEventMsg() {}
 
 type TranscriptState struct {
-	ThreadID rollout.ThreadID
-	TurnID   rollout.TurnID
+	ThreadID ThreadID
+	TurnID   TurnID
 	Working  bool
 	Items    []TurnItem
-	Active   map[string]TurnItem
-	Plan     *PlanUpdated
+	Active   map[ItemID]TurnItem
+	Plan     *PlanUpdateEvent
 	Usage    llm.Usage
-	Pending  *InteractiveRequest
+	Pending  *ApprovalRequestEvent
 	Warning  string
 	Error    string
 }
 
-func NewTranscriptState(threadID rollout.ThreadID) *TranscriptState {
-	return &TranscriptState{ThreadID: threadID, Active: make(map[string]TurnItem)}
+func NewTranscriptState(threadID ThreadID) *TranscriptState {
+	return &TranscriptState{ThreadID: threadID, Active: make(map[ItemID]TurnItem)}
 }
 
 // Apply is deterministic and idempotent for completed items. Replay can
 // submit ItemCompleted without a preceding ItemStarted.
-func (state *TranscriptState) Apply(event SessionEvent) error {
+func (state *TranscriptState) Apply(event Event) error {
 	if state == nil {
 		return errors.New("transcript state is nil")
 	}
@@ -168,53 +187,54 @@ func (state *TranscriptState) Apply(event SessionEvent) error {
 		return err
 	}
 	if state.ThreadID == "" {
-		state.ThreadID = event.ThreadID
+		state.ThreadID = ThreadIDOf(event.Msg)
 	}
-	if event.ThreadID != state.ThreadID {
-		return fmt.Errorf("event thread ID %q does not match %q", event.ThreadID, state.ThreadID)
+	threadID := ThreadIDOf(event.Msg)
+	if threadID != state.ThreadID {
+		return fmt.Errorf("event thread ID %q does not match %q", threadID, state.ThreadID)
 	}
-	if event.TurnID != "" {
-		state.TurnID = event.TurnID
+	if turnID := TurnIDOf(event.Msg); turnID != "" {
+		state.TurnID = turnID
 	}
 	if state.Active == nil {
-		state.Active = make(map[string]TurnItem)
+		state.Active = make(map[ItemID]TurnItem)
 	}
-	switch message := event.Message.(type) {
-	case ThreadConfigured:
-	case TurnStarted:
+	switch message := event.Msg.(type) {
+	case SessionConfiguredEvent:
+	case TurnStartedEvent:
 		state.Working = true
 		state.Error = ""
-	case TurnCompleted, TurnAborted:
+	case TurnCompleteEvent, TurnAbortedEvent:
 		state.Working = false
 		state.Pending = nil
-	case ItemStarted:
+	case ItemStartedEvent:
 		if err := message.Item.Validate(); err != nil {
 			return err
 		}
 		state.Active[message.Item.ID] = message.Item
-	case ItemCompleted:
+	case ItemCompletedEvent:
 		if err := message.Item.Validate(); err != nil {
 			return err
 		}
 		delete(state.Active, message.Item.ID)
 		replaceTranscriptItem(&state.Items, message.Item)
-	case AssistantMessageDelta:
+	case AgentMessageContentDeltaEvent:
 		return state.applyDelta(message.ItemID, message.Delta, message.Reset)
-	case ReasoningDelta:
+	case ReasoningContentDeltaEvent:
 		return state.applyDelta(message.ItemID, message.Delta, message.Reset)
-	case CommandOutputDelta:
+	case CommandOutputDeltaEvent:
 		return state.applyDelta(message.ItemID, message.Delta, false)
-	case PlanUpdated:
+	case PlanUpdateEvent:
 		copy := message
 		state.Plan = &copy
-	case ThreadTokenUsageUpdated:
+	case TokenCountEvent:
 		state.Usage = message.Usage
-	case ContextCompacted:
+	case ContextCompactedEvent:
 		now := time.Now().UTC()
 		replaceTranscriptItem(&state.Items, TurnItem{ID: message.ItemID, Kind: ItemContextCompaction, Status: ItemStatusCompleted, CreatedAt: now, CompletedAt: now})
-	case Warning:
+	case WarningEvent:
 		state.Warning = message.Message
-	case StreamError:
+	case StreamErrorEvent:
 		if !message.WillRetry {
 			state.Error = message.Message
 		}
@@ -222,8 +242,85 @@ func (state *TranscriptState) Apply(event SessionEvent) error {
 	return nil
 }
 
-func (state *TranscriptState) applyDelta(itemID, delta string, reset bool) error {
-	if strings.TrimSpace(itemID) == "" {
+func ScopeItemEventMsg(message EventMsg, threadID ThreadID, turnID TurnID) EventMsg {
+	switch value := message.(type) {
+	case ItemStartedEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
+	case ItemCompletedEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
+	case AgentMessageContentDeltaEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
+	case ReasoningContentDeltaEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
+	case CommandOutputDeltaEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
+	case PlanUpdateEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
+	case TokenCountEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
+	case ContextCompactedEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
+	default:
+		return message
+	}
+}
+
+func ItemEventThreadID(message EventMsg) ThreadID {
+	switch value := message.(type) {
+	case ItemStartedEvent:
+		return value.ThreadID
+	case ItemCompletedEvent:
+		return value.ThreadID
+	case AgentMessageContentDeltaEvent:
+		return value.ThreadID
+	case ReasoningContentDeltaEvent:
+		return value.ThreadID
+	case CommandOutputDeltaEvent:
+		return value.ThreadID
+	case PlanUpdateEvent:
+		return value.ThreadID
+	case TokenCountEvent:
+		return value.ThreadID
+	case ContextCompactedEvent:
+		return value.ThreadID
+	default:
+		return ""
+	}
+}
+
+func ItemEventTurnID(message EventMsg) TurnID {
+	switch value := message.(type) {
+	case ItemStartedEvent:
+		return value.TurnID
+	case ItemCompletedEvent:
+		return value.TurnID
+	case AgentMessageContentDeltaEvent:
+		return value.TurnID
+	case ReasoningContentDeltaEvent:
+		return value.TurnID
+	case CommandOutputDeltaEvent:
+		return value.TurnID
+	case PlanUpdateEvent:
+		return value.TurnID
+	case TokenCountEvent:
+		return value.TurnID
+	case ContextCompactedEvent:
+		return value.TurnID
+	default:
+		return ""
+	}
+}
+
+func (state *TranscriptState) applyDelta(itemID ItemID, delta string, reset bool) error {
+	if strings.TrimSpace(string(itemID)) == "" {
 		return errors.New("transcript delta item ID is empty")
 	}
 	item, ok := state.Active[itemID]

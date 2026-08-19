@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
@@ -23,6 +24,7 @@ const (
 type Personality string
 
 type TurnContext struct {
+	SubmissionID protocol.SubmissionID `json:"-"`
 	ThreadID rollout.ThreadID `json:"thread_id"`
 	TurnID   ID               `json:"turn_id"`
 	Provider string           `json:"provider"`

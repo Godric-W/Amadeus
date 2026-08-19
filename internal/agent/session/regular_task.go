@@ -14,7 +14,7 @@ func (builder *ServicesBuilder) prepareRegular(_ context.Context, session *Sessi
 	if runtime == nil {
 		return nil, turn.TurnContext{}, errors.New("session agent services are unavailable")
 	}
-	events, err := protocol.NewScopedSink(session, snapshot.ThreadID, snapshot.TurnID)
+	events, err := protocol.NewScopedSink(session, snapshot.SubmissionID, protocol.ThreadID(snapshot.ThreadID), protocol.TurnID(snapshot.TurnID))
 	if err != nil {
 		return nil, turn.TurnContext{}, err
 	}
@@ -34,7 +34,7 @@ func (sessionTask *regularTask) run(ctx context.Context, session *Session, turnC
 	}
 	for _, warning := range sessionTask.runtime.SkillWarnings() {
 		if warning != nil {
-			if err := sessionTask.events.Publish(ctx, protocol.SessionEvent{Message: protocol.Warning{Message: warning.Error()}}); err != nil {
+			if err := sessionTask.events.Publish(ctx, protocol.Event{Msg: protocol.WarningEvent{Message: warning.Error()}}); err != nil {
 				return Result{}, err
 			}
 		}
