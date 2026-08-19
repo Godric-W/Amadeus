@@ -32,4 +32,9 @@ func TestTargetCatalogFixesCoreConditionalDeferredAndHiddenTools(t *testing.T) {
 			t.Fatalf("tool %q exposure = %q, want %q", name, byName[name].Exposure, exposure)
 		}
 	}
+	for _, retired := range []string{"apply_patch", "request_user_input"} {
+		if _, exists := byName[retired]; exists {
+			t.Fatalf("retired tool %q entered the target catalog", retired)
+		}
+	}
 }

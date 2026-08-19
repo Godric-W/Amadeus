@@ -30,6 +30,7 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 		"executeCodingTurn", "executeCompactTurn", "executeReactorTurn",
 		"CodingFactory", "CodingRuntime", "PrepareRequest", "TaskFactory", "TaskBuilder", "ensureRuntime",
 		"TurnHost", "TaskHost", "PromptHost", "ContextHost", "RolloutHost", "ModelSampler", "RunRequest", "RunTurn",
+		"request_user_input", "RequestUserInput", "UserInputRequest", "UserInputResponseOp",
 	}
 	for _, relative := range []string{"cmd", "internal"} {
 		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {

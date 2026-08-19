@@ -37,8 +37,10 @@ func TestCoreRegistryContainsOnlyPublicCoreTools(t *testing.T) {
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("core tools = %v, want %v", names, want)
 	}
-	if _, exists := registry.Lookup("apply_patch"); exists {
-		t.Fatal("apply_patch entered the default core registry")
+	for _, retired := range []string{"apply_patch", "request_user_input"} {
+		if _, exists := registry.Lookup(retired); exists {
+			t.Fatalf("retired tool %q entered the default core registry", retired)
+		}
 	}
 }
 

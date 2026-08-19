@@ -2,10 +2,12 @@
 
 > 最近更新：2026-08-19
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：L. Model + Provider Configuration Ownership Alignment（DONE）
-> 下一任务：无（等待下一阶段规划）
+> 当前阶段：M. Codex Architecture Realignment（TODO）
+> 下一任务：M-01 Protocol Identity + Event Envelope
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
+
+A-L 的条目保留为历史完成记录；其中与 M 或当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。
 
 ## 1. 状态与完成标准
 
@@ -35,9 +37,10 @@ A Runtime + Persistence
 → J Slash Command + TUI Application Lifecycle Alignment
 → K Response Stream Reconnect Lifecycle Alignment
 → L Model + Provider Configuration Ownership Alignment
+→ M Codex Architecture Realignment
 ```
 
-Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A/B Architecture Closure 已完成，F 已删除早期经典 ReAct Engine 并建立可工作的 continuation loop；G 已将 capability 所有权与 Codex 术语归位，同时保留稳定的 ToolExecutionService 与 Claude-style Approval；I 已完成 Prompt 主链收敛；J 已删除 Slash Command/TUI Application 的 callback、字符串结果和重复 Session IO 生命周期；K 已完成 request retry 与 response stream reconnect 收敛；L 已完成 Config v2、Model Runtime 与 Provider transport 所有权分离、Provider-default sampling 和 Tool Output truncation 配置收敛。实施发现 Contract 问题时先更新 `docs/design.md`。
+Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先更新 `docs/design.md`。
 
 ## 3. A. Runtime + Persistence — `DONE`
 
@@ -257,7 +260,7 @@ C-R 只完成了基础统一，作为 C-T 的起点：
 
 - [x] 将 `update_plan` 输入统一为 Codex 风格 `plan` + optional `explanation`，校验至多一个 `in_progress`。
 - [x] `update_plan` 只调用 Session `UpdatePlan` capability、发布 `PlanUpdated` 并返回简短 `Plan updated`；完整计划不塞入通用 ToolResult 文本。
-- [x] 将 `request_user_input` 保持为独立 Interactive Request，不复用 Permission Approval 或修改权限上下文。
+- [x] 将 `request_user_input` 从当前 Tool Catalog 和 active Interactive Request 主链移出，与 `apply_patch` 一样归为遗留能力；不保留 Permission Approval 复用或协议占位。
 - [x] C-T 只完成 Tool 层 Contract；Plan State、Resume、Plan Mode 与 continuation loop 的端到端实现由 F-06 完成。
 
 #### C-T-07：Result Projection 与外部 Tool
@@ -401,9 +404,9 @@ Composer
 - [x] 默认软计划、`update_plan` 与 `/plan` 复用同一 continuation loop；不存在 Planner/DAG 或第二套 Plan Runtime。
 - [x] Agent、Tool、Plan、Event、Rollout、Context、Compaction 和 TUI 可端到端运行。
 
-## 9. G. Runtime Architecture Convergence — `DONE`
+## 9. G. Runtime Architecture Convergence — `SUPERSEDED BY M`
 
-G 不重写已经稳定的 Tool、Approval、Diff、MCP、Skill 或 Web 行为，而是将 F 的可工作实现收敛到 `docs/design.md` 的最终所有权与术语。每个任务必须同时迁移生产调用方、删除对应过渡抽象并补 architecture guard，不接受只重命名或长期 adapter 包裹。
+G 完成了当时的第一轮 Runtime 收敛和可工作主链，但其 `engine.Services`、ServicesBuilder/SessionSetup/TaskConstructors、CapabilityView 和多级 terminal result 仍是过渡实现。M 以新的源码审计结论取代 G 的最终架构出口；G 的功能完成记录保留为历史，不再作为当前 ownership 验收依据。
 
 ### G-01：SessionServices Ownership — `DONE`
 
@@ -450,16 +453,18 @@ G 不重写已经稳定的 Tool、Approval、Diff、MCP、Skill 或 Web 行为�
 - ContextManager 是 Session 内模型历史投影 owner；Task/`run_turn` 只通过 Session typed methods append canonical facts 和构建 PromptSnapshot。
 - 自动压缩与 CompactTask 复用 Session-owned Compactor，`run_turn` 不嵌套 SessionTask；自动压缩 callback 由 Session 内部构造。
 
-### G-07：Integration、迁移与架构验收 — `DONE`
+### G-07：Integration、迁移与架构验收 — `SUPERSEDED BY M`
 
 - 迁移 Composition Root、ThreadManager、Session、Task、TUI capability query、测试 fixture 和 mocks，删除被替代文件、命名、错误文本与文档描述。
-- 保持 Tool/Approval/MCP/Skill/Web 用户行为和 canonical Rollout 兼容；需要变更持久化 schema 时提供显式 migration/backward decode，不保留双写主链。
+- 当时保留了 Tool/Approval/MCP/Skill/Web 用户行为和 canonical Rollout 兼容；该兼容策略现已被 M 取代，旧 migration/backward decode 将直接删除。
 - 增加连续 Turn capability reuse、Session shutdown、Turn abort、pending waiter cleanup、Plan Mode、auto compact、ToolRouter stale snapshot 和无 CLI/TUI Session E2E。
 - 完成 `make check`、全量测试、race test、architecture grep、`git diff --check` 与文档一致性检查后，G 才能标记 DONE。
 
 当前实现已通过 `make check`、`go vet ./...`、`go build ./cmd/amadeus`、`go test ./...`、architecture grep、`git diff --check` 及受影响 Session/Engine/Manager 包 race；此前单独 PTY 重跑出现过环境时序波动，但项目验收门禁已通过，且该路径未被本次重构修改。
 
 ### G 出口
+
+以下出口是 G 当时的验收记录；SessionServices ownership、ToolRouter snapshot、Rollout/Event 和 factory removal 结论已被 M 重新打开。
 
 - [x] 生产代码不存在 `CodingFactory`、`CodingRuntime`、通用 TaskFactory/Prepare 主链或为规避 Session 所有权建立的 Host interface 网络。
 - [x] SessionServices 是 Session capability 的唯一 owner，SessionState、ActiveTurn、TurnState、SessionTask、StepContext 与 `run_turn` 职责和术语与 Codex 对应。
@@ -469,16 +474,18 @@ G 不重写已经稳定的 Tool、Approval、Diff、MCP、Skill 或 Web 行为�
 
 ## 10. H. Extensions + Release — `DONE`
 
+H 的 MCP、Skill 和 Web 行为能力仍保留；其中 `ExtensionAssembly` 作为装配层的架构结论被 M-07 取代，M 将让 SessionServices 直接拥有 MCPRuntime 与 SkillCatalog，并删除 generic Extension 聚合。
+
 - `H-01 TUI Tool Projection Convergence`：`DONE`。按 Codex HistoryCell/树状 activity 和 Claude Code Tool-specific UI projection 收敛工具展示。以真实 `TurnItem.ToolName` 为身份来源：`read`/`grep`/`glob` 进入 Codex 风格 `Exploring`/`Explored` 树，`execute_command` 进入 Codex 风格 `Running`/`Ran` 树，`update_plan` 直接沿用 Codex Plan/PlanUpdated 展示，`write`/`edit` 使用 Claude Code 风格独立展示。已覆盖 Tool 状态生命周期、结构化 ToolDisplayResult/文件变更摘要、Approval waiting/denied 展示、Rich/Raw、Inline、Live/Replay 一致性测试；`apply_patch` 明确排除在默认 Tool Catalog、Event、Rollout 和 TUI 主链之外，仅保留遗留代码。受影响包测试、race、vet、build、architecture guard 和 `git diff --check` 通过；全量测试中仍有既有 `internal/thread/manager` 环境时序超时，相关代码未修改。
 - `H-02 MCP Runtime Convergence`：`DONE`。已删除旧 `Manager`/动态 Adapter 生产主链，完成 `MCPRuntime`、`MCPBinding`、typed Tool/Resource Catalog、lazy discovery、schema validation、read-only permission、typed stale/remote error、refresh/reconnect、shutdown、Resume ToolResult persistence 和 TUI typed projection；全量测试与 race 验收通过。
-  - `[x] H-02.1`：MCP 配置、Client、Server binding、ToolCatalog、ResourceCatalog 和 Binding Revision 已统一进入 `MCPRuntime` owner；`ExtensionAssembly` 仅装配，Tool/TUI 消费 typed snapshot。
+  - `[x] H-02.1`：MCP 配置、Client、Server binding、ToolCatalog、ResourceCatalog 和 Binding Revision 已统一进入 `MCPRuntime` owner；当时保留的 `ExtensionAssembly` 装配层由 M-07 删除。
   - `[x] H-02.2`：已稳定 server/tool identity、description、input schema、read-only/idempotent/parallel capability、resource metadata 和 catalog revision；生产路径不再注册动态 MCP Tool Adapter。
   - `[x] H-02.3`：保留 lazy discovery；`mcp_list_tools`/`mcp_call` Prepare 验证 binding、server catalog、tool identity 和 input schema，Execute 再校验 catalog revision。
   - `[x] H-02.4`：MCP List/Resource Read 默认 Allow，MCP Call 默认 Ask；结果进入统一 ToolResult/TUI projection，远程输出保持不可信。
   - `[x] H-02.5`：Catalog 保留远程 annotation/capability；明确只读 Tool 标记为具备并行资格，写入/未知 Tool 保持串行。由于基础版统一通过参数化动态 `mcp_call` 暴露远程调用，Tool Registry 无法按单次调用选择并发，故动态入口安全固定串行；未来 direct MCP Tool 投影再启用有界并行，不复制第二套调用链。
   - `[x] H-02.6`：startup、lazy start、refresh、disconnect/reconnect、shutdown、schema/remote error、Session/Resume/stale revision 已有覆盖并通过全量测试与 race；不实现 OAuth、Elicitation、Plugin/Remote Connector 和 MCP dependency installer。
 - `H-03 Skill Catalog and Resource Convergence`：`DONE`。已完成 metadata/document 分离、resource index、渐进式披露、explicit selection、stale read、script attribution、Resume projection 和旧 Skill 类型清理；全量测试与 race 验收通过。
-  - `[x] H-03.1`：Skill discovery、metadata、enabled settings、resource index 和 revision 已统一由 `SkillCatalog` 管理；`ExtensionAssembly` 只装配和转换 Context injection。
+  - `[x] H-03.1`：Skill discovery、metadata、enabled settings、resource index 和 revision 已统一由 `SkillCatalog` 管理；当时保留的 `ExtensionAssembly` 装配和 Context injection 转换由 M-07 删除。
   - `[x] H-03.2`：已实现 `name`、`description`、`short_description`、`path_to_skills_md`、`source/scope`、`enabled`、`policy`、`references`、`scripts`、`assets` 和 `revision`；Index 不携带正文。
   - `[x] H-03.3`：保留 `$skill-name` 显式选择和 `read_skill`；正文为 `SkillInjection`，references 只能 bounded、line-aware、path-contained 按需读取；TUI 只负责 enabled policy，不直接注入正文。
   - `[x] H-03.4`：已建立 `SKILL.md`、`references/*`、`scripts/*`、`assets/*` 边界；scripts/assets 不可被普通 reference 路径读取或自动注入。
@@ -489,7 +496,7 @@ G 不重写已经稳定的 Tool、Approval、Diff、MCP、Skill 或 Web 行为�
   - `[x] H-03.7`：Catalog/Resource/Policy revision、stale read/command、resume、disabled/override、same-name precedence、warning、path escape 和 TUI/ToolResult 已覆盖并通过全量测试与 race；不实现 Plugin/Remote Skill、MCP dependency installation、Product gating 和 package manager。
 - H-02 与 H-03 的完成顺序：先完成 owner/data model 和旧生产主链删除，再做 lazy/resource/injection 行为，最后补 stale/lifecycle/resume 验收；仅新增字段或兼容 alias 不得标记子任务完成。
 - `H-04 Web`：`DONE`。已完成 DuckDuckGo/Tavily/SearXNG/Brave Provider、统一错误分类、超时/重试、URL 校验/去重/结果上限、web_search/web_fetch Permission Contract 和 TUI Network projection；搜索/抓取失败保留可见 ToolResult 与稳定 error metadata。
-- `H-05 Release Cleanup`：`DONE`。删除旧 MCP Manager/Tool Adapter、旧 Skill 混合对象和泛化 Extension Runtime；生产 owner 已收敛为 `MCPRuntime`、`SkillCatalog`、`ExtensionAssembly`，目录与文件职责已拆分，未保留 alias/wrapper 双主链。
+- `H-05 Release Cleanup`：`SUPERSEDED BY M-07`。当时删除旧 MCP Manager/Tool Adapter、旧 Skill 混合对象和泛化 Extension Runtime，但仍保留 `ExtensionAssembly`；M-07 将直接删除该聚合。
 - `H-06 Release Validation`：`DONE`。Linux/Windows/Darwin 目标构建、全量测试、全量 race、`go vet ./...`、架构 guard、文档同步和 `git diff --check` 已完成；当前沙箱偶发的 httptest loopback 监听失败不属于代码失败，独立重跑全量测试已通过。
 
 ## 11. I. Prompt Construction + Optimization — `DONE`
@@ -569,15 +576,14 @@ E 阶段已经交付 Slash Command 的基础命令集、Composer 解析、Popup 
 
 ### J-01：Active Thread Attachment 与 AppEvent 所有权 — `DONE`
 
-- 在 Fullscreen Application 中建立持续存活的 active Thread attachment 和 event pump，由其唯一消费当前 `SessionIo.Events`、`Requests`、`Status` 与 termination。
+- 在 Fullscreen Application 中建立持续存活的 active Thread attachment 和 event pump；当时仍消费 `Events`、`Requests`、`Status`，该多输出协议由 M-01 统一为 Event/EventMsg 单流。
 - 普通输入与 `/compact` 只提交 typed Op；Turn running、Approval、History、Completion 和 Abort 统一由 Runtime Event 经 typed AppEvent 回到 TUI，不再由 `runTask → runOnce/waitTurn → fullscreenTaskDoneMsg` 维护第二套完成真相。
 - 为 Thread switch、后台 query 和迟到结果建立 ThreadID/attachment generation 关联；旧 attachment 停止后不得继续污染当前 transcript。
 
-### J-02：Canonical Replay Projector — `DONE`
+### J-02：Canonical Replay Projector — `SUPERSEDED BY M-02`
 
-- 建立唯一 `ProjectThreadItems` replay projector，严格按 canonical rollout sequence 投影 User、Assistant、Tool、Plan 和 ContextCompaction。
-- 删除 `ProjectCompletedItems` 与 legacy item 合并后按完成时间重排的 replay 路径；Live、初始 Resume 与运行中 Thread switch 使用同一完成项投影语义。
-- 增加 UserMessage、Compaction boundary、Tool/Plan、损坏尾部与 legacy decode 的顺序 Contract 测试。
+- 当时建立 `ProjectThreadItems` replay projector 并统一完成项顺序，但仍依赖自定义 completed-item Rollout projection。
+- M-02 改为 typed RolloutItem + persisted EventMsg，删除 `TurnItemCompleted`、fallback projector、legacy decode 和旧格式测试。
 
 ### J-03：`/resume` Transactional Switch + Replay — `DONE`
 
@@ -723,7 +729,7 @@ K 从单一 `max_retries`、`Recv` 失败即终止和 terminal-only `StreamError
 
 K 完成 Provider connection recovery 生命周期后，L 针对旧 `ProviderConfig` 同时保存 transport、model selection、sampling policy 和 context policy，以及普通 Responses/Chat Completions/Compaction Request 强制发送 Amadeus 默认采样参数的问题，将配置升级为 Codex 风格的 Model Runtime + ModelProviderInfo 分层，没有保留旧字段换名后的双模型。
 
-完成记录：稳定配置已升级到 Config v2，顶层 Model Runtime 与用户定义 `ModelProviderInfo` transport 分层完成；普通 Responses、Chat Completions 和 Compaction Request 使用模型厂商默认采样参数，`tool_output_token_limit=10000` 通过 effective ModelInfo 和唯一 Context projector 约束模型可见 Tool Result。v1 AST migration、CLI/env/provenance、README、example config、实际忽略配置与 architecture guards 已同步；Compactor 绕过 effective ModelInfo 的遗留漏洞也已修复。全量测试、全量 race、vet、build、`make check`、旧链搜索和 `git diff --check` 均于 2026-08-19 通过。
+完成记录：稳定配置已升级到 Config v2，顶层 Model Runtime 与用户定义 `ModelProviderInfo` transport 分层完成；普通 Responses、Chat Completions 和 Compaction Request 使用模型厂商默认采样参数，`tool_output_token_limit=10000` 通过 effective ModelInfo 和唯一 Context projector 约束模型可见 Tool Result。当时实现的 v1 AST migration 属于开发期过渡代码，现由 M-08 直接删除；CLI/env/provenance、README、example config、实际忽略配置与 architecture guards 已同步。全量测试、全量 race、vet、build、`make check`、旧链搜索和 `git diff --check` 均于 2026-08-19 通过。
 
 ### L-01：Config v2 Schema + Codex Terminology — `DONE`
 
@@ -755,11 +761,13 @@ K 完成 Provider connection recovery 生命周期后，L 针对旧 `ProviderCon
 - [x] 明确该字段只限制模型可见 Tool/Function Output，不截断 canonical Rollout、终端展示或模型回复，也不与 `execute_command.max_output_tokens` 混用。
 - [x] Read/Glob/Grep/Command/MCP 及其他 Tool Result 通过唯一 Context projector 应用相同预算，live 与 Resume 投影保持 semantic equivalence。
 
-### L-06：Config Migration + User-facing Surfaces — `DONE`
+### L-06：Config Migration + User-facing Surfaces — `SUPERSEDED BY M-08`
 
 - [x] 自动迁移无歧义字段：`default_provider → model_provider`、`providers → model_providers`、`api → wire_api`、`max_retries → request_max_retries`。
 - [x] Provider-local model/context/compact/tool-output 字段提升存在多值冲突或新旧字段并存时返回准确路径错误；旧 temperature/max output 字段返回明确 removed-field 诊断，不静默忽略。
 - [x] CLI flags、Environment names、`config check`、`config explain/show`、README、example config 和实际 `$AMADEUS_HOME/config.yaml` 模板同步到 Config v2。
+
+上述 migration 是历史完成记录；M-08 删除 Config v1 decoder/migration 和相关 fixture，当前开发数据必须按 Config v2 重建。
 
 ### L-07：旧链删除、Architecture Guards 与验收 — `DONE`
 
@@ -774,15 +782,94 @@ K 完成 Provider connection recovery 生命周期后，L 针对旧 `ProviderCon
 - `tool_output_token_limit=10000` 作为唯一用户可配置 Tool/Function Output 上下文预算，并通过唯一 projector 保持 live/Resume 一致。
 - 生产路径不存在 Provider-owned model/context/sampling 字段、Config v1 双主链或只换名称的兼容 Facade。
 
-## 15. 当前保留能力
+## 15. M. Codex Architecture Realignment — `TODO`
+
+M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/J 阶段仍保留的过渡 owner、factory、Protocol、Rollout 和 Extension/Instruction 模型。Amadeus 尚未发布，本阶段不考虑旧读写兼容：替换完成后直接删除旧 reader、writer、decoder、migration、alias、wrapper、Adapter、Facade、fixture 和兼容测试；旧 JSONL、SQLite、Config 和本地开发数据由开发者清理后按当前 schema 重建。
+
+### M-01：Protocol Identity + Event Envelope — `TODO`
+
+- 将 ThreadID、TurnID、SubmissionID、RequestID 和 ItemID 归入 Protocol/Identity domain，删除 rollout/thread/turn package 对 ID 的定义或 alias。
+- 建立 `Submission{ID, Op}`、`Event{ID, Msg}` 和 typed `EventMsg`；按需在 payload 中携带 ThreadID、TurnID、RequestID 和 ItemID。
+- 将 `SessionEvent`/`EventMessage` 收敛为 `Event`/`EventMsg`，完成 `SessionConfiguredEvent`、`ThreadSettingsAppliedEvent`、`TurnCompleteEvent`、`ErrorEvent`、`AgentMessageContentDeltaEvent`、`PlanUpdateEvent` 和 `TokenCountEvent` 等命名迁移。
+- 将 Approval request 作为 EventMsg，回答使用 correlated `ApprovalDecisionOp`；删除 `SessionIo.Requests`、公开 `SessionIo.Status`、`InteractiveRequest`、`TurnRejected` 和重复 terminal/status 协议。
+- AgentStatus 仅保留为 Event reducer 派生的内部 watch/read model，不成为第二公开输出主链。
+
+### M-02：Typed RolloutItem + Persistence Reset — `TODO`
+
+- 建立 `SessionMetaItem`、`ResponseItem`、`CompactedItem`、`TurnContextItem` 和 `EventMsgItem` typed sum，RolloutLine 只负责当前格式的 version/sequence/timestamp。
+- 原样持久化 store policy 选中的 EventMsg；删除 `KindTurnItemCompleted`、`TurnItemCompleted`、`NewCompletedItem`、completed-item queue 和 response/completed fallback projector。
+- 将 Thread/Turn identity 从 persistence package 移出，生产 writer、reader、Context 和 TUI 共享唯一 typed contract，不使用 `kind + RawMessage` 领域主链。
+- 删除旧 Rollout reader/writer、legacy decoder、migration projector、旧 SQLite canonical tables 和兼容 fixture；未知旧格式直接返回 unsupported-format 诊断。
+- SQLite 只接受当前 schema version；metadata index 可以从当前格式 Rollout 重建，旧 JSONL/SQLite 开发数据直接清理。
+
+### M-03：SessionState + Context Ownership — `TODO`
+
+- 让 ContextManager 成为活动 Session 的内存 history owner，SessionState 不保存 `[]rollout.Line` 或第二份历史集合。
+- Resume 时从 typed Rollout 重建一次；运行期间在 durable append 成功后按 typed fact 增量 record，不再每次 append 全量 rebuild。
+- ThreadStore append 不返回完整 Lines 驱动 Session；Context mutation、Plan projection 和 usage projection 均由 Session 按唯一顺序提交。
+- Compaction replacement 继续允许原位 atomic rebuild，但与普通 append 的增量路径共享 normalization/projector 语义。
+- 增加 live incremental 与 Resume rebuild 的 semantic-equivalence、ToolCall/ToolResult pairing、interrupt 和 compaction contract tests。
+
+### M-04：SessionServices Ownership — `TODO`
+
+- 让 `SessionServices` 直接拥有 ModelClient、ToolRegistry、ToolExecutionService、ProcessManager、AgentsMdManager、MCPRuntime、SkillCatalog、Web、Approval、Permission、Compactor、LiveThread 和 ID/Time services。
+- 删除 `engine.Services`、`AgentServices`、`ServicesBuilder`、`SessionSetup`、`TaskConstructors`、CLI factory closure、`CapabilityView` 和相关 adapter/guard exceptions。
+- Composition Root 只构造外部 Adapter 和 Session spawn args；Session 自己构造 services、tasks 并负责 shutdown。
+- `SessionState.Configuration` 成为当前配置唯一事实源，删除 `engine.Services.configured`、首次 closure capture 和其他重复 configuration snapshot。
+- 更新 ThreadManager、Application typed query、fixtures 和 mocks，禁止通过 capability facade 或 type assertion 取回 Session 内部服务。
+
+### M-05：SessionTask + Turn Lifecycle — `TODO`
+
+- Session 根据 Op 直接创建 RegularTask/CompactTask，不经过 constructor map、factory callback、Prepare/Prepared 或 CLI controller。
+- 将 runtime `TurnContext` 与 durable `TurnContextItem` 分离；运行对象不直接序列化，durable DTO 只保存稳定恢复事实。
+- 删除 `engine.RunResult → session.Result → rollout/protocol terminal` 多级转换；Task 只返回最小 TaskOutput，Session 唯一创建 TurnCompleteEvent、TurnAbortedEvent 和 ErrorEvent。
+- ActiveTurn/TurnState 只保存 typed pending approval、usage、tool count、cancellation 和 terminal state；删除重复 TaskKind、pending user input 和未消费 lifecycle 字段。
+- 固化 accepted、startup error、completed、blocked、failed、aborted、panic、interrupt 和 shutdown 的唯一完成协议。
+
+### M-06：Immutable StepContext + ToolRouter — `TODO`
+
+- StepContext 中的 immutable ToolRouter 同时保存模型可见 specs、exact ToolDefinition handler、MCP binding、visibility 和 parallel flags。
+- 同一次 sampling 的 Prompt Tool Specs 与随后 Tool dispatch 必须使用同一 router；执行时不得按名称重新查询当前 mutable registry。
+- 删除 name-only `AllowedTools`、未约束 handler identity 的 `ToolRevision` 和 stale registry lookup 主链；deferred/lazy call 按 frozen identity/revision 返回 typed stale result。
+- 保留 Claude-style `Validate → Prepare → Permission → Approval → Execute` 内层协议、Read-before-write、Diff Preview、revalidate 和 atomic apply。
+- 增加 registry/MCP/Skill 变化、同名 handler replacement、Plan tool mask 和 parallel capability snapshot tests。
+
+### M-07：AgentsMd + Skills + MCP Ownership — `TODO`
+
+- 删除 `ExtensionAssembly`、generic Extension aggregate 和相关 conversion wrapper；SessionServices 直接拥有 MCPRuntime 与 SkillCatalog。
+- 建立 `AgentsMdManager + LoadedAgentsMd` 唯一模型，删除 generic `WorkspaceResolver`、`InstructionScope`、target instruction service、`MarkSampled` 和 `context_refresh_required` 主链。
+- capture StepContext 时统一解析 AgentsMd、Skill snapshot、MCP binding 和 ToolRouter；Tool 只报告 target/stale facts，不直接修改 ContextManager。
+- 保留 MCP lazy discovery、typed Catalog/Binding、Skill progressive disclosure、script attribution 和普通 Permission/Approval 行为。
+- 更新 Prompt、Context Update、Tool Prepare、TUI query 和 architecture guards，确认 AgentsMd/Skill/MCP 各有直接且唯一 owner。
+
+### M-08：Protocol/UI Projection + Legacy Cleanup Acceptance — `TODO`
+
+- 将 TranscriptState、EventReducer、History projection 和 Rollout replay 从 `internal/agent/protocol` 迁出；Protocol package 只保留 identity、DTO 和 contracts。
+- 删除重复 TaskKind、旧 Event aliases、request/status side channel、completed-item projector、Config v1 migration、旧 schema tests 和所有只服务兼容的 production code。
+- 更新 README、design、examples、fixtures 和 `$AMADEUS_HOME` 开发模板，只描述当前 Config/Protocol/Rollout schema；旧数据由开发者删除重建。
+- 增加 architecture guards，禁止 `engine.Services`、factory closure network、`ExtensionAssembly`、`InteractiveRequest`、`KindTurnItemCompleted`、legacy reader/writer/decoder/migration 和 protocol-owned UI reducer 回归。
+- 完成针对性测试、全量测试、race、vet、build、`make check`、architecture grep、`git diff --check` 和 live/Resume E2E 后，M 才能标记 DONE。
+
+### M 出口
+
+- 生产代码不存在旧读写兼容、旧 schema migration、legacy decoder、alias/wrapper Facade 或双格式探测；旧开发数据必须删除重建。
+- SessionServices 是唯一 capability owner，不存在 `engine.Services`、AgentServices、ServicesBuilder、SessionSetup、TaskConstructors、CapabilityView 或 Composition closure 网络。
+- SessionIo 只有 Submission、Event 和 Terminated 主边界；Approval 进入 EventMsg，不存在 SessionEvent/InteractiveRequest/Status 三输出协议。
+- Rollout 使用 typed RolloutItem 并持久化选定 EventMsg；不存在 KindTurnItemCompleted、custom completed projection 或 fallback replay。
+- ContextManager 在 Resume 时重建一次、运行时增量 record；SessionState 不保存第二份 Rollout lines。
+- StepContext 的 ToolRouter 同时决定模型 specs 与 exact dispatch；registry/MCP/Skill 变化不会改变已冻结 step 的 handler identity。
+- AgentsMdManager/LoadedAgentsMd、SkillCatalog 和 MCPRuntime 分别直接归 SessionServices 所有，不存在 generic Extension/Instruction assembly。
+- Protocol package 只保留 identity/DTO/contracts，TUI reducer、TranscriptState 和 replay projector 位于各自职责 package。
+
+## 16. 当前保留能力
 
 - 默认启动：`amadeus` 或 `amadeus "<task>"`。
 - 当前配置链和 Provider Adapter 已可使用 OpenAI Responses/Chat Completions 及兼容 Provider。
 - JSONL Canonical Rollout + SQLite Metadata Index 已可支持 Session 恢复。
 - TUI 和 Inline 输出以当前代码和 `docs/design.md` 为准。
-- 内置 Tool、Approval、Diff、Web Search 和 Slash Command 已进入基础主链；A/B Architecture Closure 期间保持用户可见能力，同时收口 Tool Result projection、AGENTS.md target scope 和 Session capability ownership。
+- 内置 Tool、Approval、Diff、Web Search 和 Slash Command 已进入基础主链；M 阶段保持这些用户可见能力，同时重构 Protocol、Rollout、Context、SessionServices、ToolRouter、AgentsMd、MCP 和 Skill ownership。
 
-## 16. 当前执行规则
+## 17. 当前执行规则
 
 1. 每次只推进一个 `TODO`/`DOING` 主任务。
 2. 先修改 `docs/design.md`，再修改代码；实现发现设计问题时暂停并同步 Contract。
@@ -790,7 +877,7 @@ K 完成 Provider connection recovery 生命周期后，L 针对旧 `ProviderCon
 4. 任务完成必须运行针对性测试和构建；环境限制导致的测试失败要单独记录。
 5. 本文只更新任务状态和出口，不复制架构设计、源码审计或长篇讨论。
 
-## 17. 源码结构清理 — `DONE`
+## 18. 源码结构清理 — `DONE`
 
 ### 已完成
 

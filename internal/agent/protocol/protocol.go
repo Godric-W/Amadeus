@@ -42,13 +42,6 @@ type ApprovalDecisionOp struct {
 
 func (ApprovalDecisionOp) isOp() {}
 
-type UserInputResponseOp struct {
-	RequestID string
-	Content   string
-}
-
-func (UserInputResponseOp) isOp() {}
-
 type ThreadSettingsOp struct{ Mode string }
 
 func (ThreadSettingsOp) isOp() {}
@@ -155,13 +148,10 @@ func (StreamError) isEventMessage() {}
 
 type InteractiveRequestKind string
 
-const (
-	RequestApproval  InteractiveRequestKind = "approval"
-	RequestUserInput InteractiveRequestKind = "user_input"
-)
+const RequestApproval InteractiveRequestKind = "approval"
 
 func (kind InteractiveRequestKind) Valid() bool {
-	return kind == RequestApproval || kind == RequestUserInput
+	return kind == RequestApproval
 }
 
 type ApprovalPresentation struct {
@@ -185,19 +175,12 @@ type ApprovalRequest struct {
 	Raw          json.RawMessage
 }
 
-type UserInputRequest struct {
-	ID     string
-	Prompt string
-	Secret bool
-}
-
 type InteractiveRequest struct {
 	RequestID string
 	ThreadID  rollout.ThreadID
 	TurnID    rollout.TurnID
 	Kind      InteractiveRequestKind
 	Approval  *ApprovalRequest
-	UserInput *UserInputRequest
 }
 
 func (request InteractiveRequest) Validate() error {
@@ -209,9 +192,6 @@ func (request InteractiveRequest) Validate() error {
 	}
 	if request.Kind == RequestApproval && request.Approval == nil {
 		return errors.New("approval request payload is nil")
-	}
-	if request.Kind == RequestUserInput && request.UserInput == nil {
-		return errors.New("user input request payload is nil")
 	}
 	return nil
 }

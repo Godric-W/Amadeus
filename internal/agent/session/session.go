@@ -254,8 +254,6 @@ func (session *Session) handleSubmission(submission protocol.Submission) {
 		}
 	case protocol.ApprovalDecisionOp:
 		session.resolveRequest(op.RequestID, op)
-	case protocol.UserInputResponseOp:
-		session.resolveRequest(op.RequestID, op)
 	}
 }
 
