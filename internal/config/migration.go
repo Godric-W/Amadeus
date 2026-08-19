@@ -34,12 +34,12 @@ func migrateConfigDocument(root *yaml.Node) error {
 			}
 			for _, removed := range []string{"temperature", "max_output_tokens"} {
 				if mappingValue(provider, removed) != nil {
-					return fmt.Errorf("model_providers.%s.%s was removed in config version 2; Amadeus now uses the model provider default", providerName, removed)
+					return fmt.Errorf("model_providers.%s.%s was removed in config version 2; Amadeus now uses the upstream model vendor default", providerName, removed)
 				}
 			}
 		}
 		for _, promotion := range []struct {
-			legacy string
+			legacy  string
 			current string
 		}{
 			{legacy: "model", current: "model"},

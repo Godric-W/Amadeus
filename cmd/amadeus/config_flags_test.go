@@ -14,8 +14,8 @@ func TestConfigFlagsOverrideEnvironmentConfiguration(t *testing.T) {
 	command.SetErr(&bytes.Buffer{})
 	command.SetArgs([]string{
 		"version",
-		"--provider", "cli",
-		"--api", string(config.WireAPIChatCompletions),
+		"--model-provider", "cli",
+		"--wire-api", string(config.WireAPIChatCompletions),
 		"--dialect", string(config.DialectGLM),
 		"--base-url", "https://cli.example.invalid/v1",
 		"--model", "cli-model",
@@ -26,16 +26,16 @@ func TestConfigFlagsOverrideEnvironmentConfiguration(t *testing.T) {
 	}
 
 	environmentProvider := "environment"
-	environmentAPI := config.WireAPIResponses
+	environmentWireAPI := config.WireAPIResponses
 	environmentDialect := config.DialectOpenAI
 	environmentBaseURL := "https://environment.example.invalid/v1"
 	environmentModel := "environment-model"
 	configured := config.ApplyOverrides(config.Default(), config.Overrides{
-		Provider: &environmentProvider,
-		API:      &environmentAPI,
-		Dialect:  &environmentDialect,
-		BaseURL:  &environmentBaseURL,
-		Model:    &environmentModel,
+		ModelProvider: &environmentProvider,
+		WireAPI:       &environmentWireAPI,
+		Dialect:       &environmentDialect,
+		BaseURL:       &environmentBaseURL,
+		Model:         &environmentModel,
 	})
 
 	configured = flags.apply(command, configured)
@@ -44,7 +44,7 @@ func TestConfigFlagsOverrideEnvironmentConfiguration(t *testing.T) {
 	}
 	provider := configured.ModelProviders["cli"]
 	if provider.WireAPI != config.WireAPIChatCompletions {
-		t.Fatalf("CLI API mode did not win: got %q", provider.WireAPI)
+		t.Fatalf("CLI wire API did not win: got %q", provider.WireAPI)
 	}
 	if provider.Dialect != config.DialectGLM {
 		t.Fatalf("CLI dialect did not win: got %q", provider.Dialect)
@@ -52,8 +52,8 @@ func TestConfigFlagsOverrideEnvironmentConfiguration(t *testing.T) {
 	if provider.BaseURL != "https://cli.example.invalid/v1" {
 		t.Fatalf("CLI base URL did not win: got %q", provider.BaseURL)
 	}
-	if provider.Model != "cli-model" {
-		t.Fatalf("CLI model did not win: got %q", provider.Model)
+	if configured.Model != "cli-model" {
+		t.Fatalf("CLI model did not win: got %q", configured.Model)
 	}
 }
 
@@ -89,13 +89,11 @@ func TestConfigFlagsAllowExplicitEmptyValues(t *testing.T) {
 	}
 
 	configured := config.Default()
-	provider := configured.ModelProviders[configured.ModelProvider]
-	provider.Model = "environment-model"
-	configured.ModelProviders[configured.ModelProvider] = provider
+	configured.Model = "environment-model"
 
 	configured = flags.apply(command, configured)
-	if configured.ModelProviders[configured.ModelProvider].Model != "" {
-		t.Fatalf("explicit empty model did not override configuration: %#v", configured.ModelProviders[configured.ModelProvider])
+	if configured.Model != "" {
+		t.Fatalf("explicit empty model did not override configuration: %q", configured.Model)
 	}
 }
 

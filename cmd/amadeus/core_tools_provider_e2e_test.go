@@ -64,14 +64,16 @@ func TestCoreToolsProviderMockE2E(t *testing.T) {
 				dialect = config.DialectOpenAI
 			}
 			writeCommandConfig(t, filepath.Join(amadeusHome, "config.yaml"), fmt.Sprintf(`
-default_provider: mock
-providers:
+version: 2
+model: mock-model
+model_provider: mock
+model_context_window: 8192
+model_providers:
   mock:
-    api: %s
+    wire_api: %s
     dialect: %s
     api_key: core-tools-secret
     base_url: %s/v1
-    model: mock-model
     request_max_retries: 0
 agent:
   max_parallel_tools: 2
@@ -157,14 +159,16 @@ func TestCoreToolsProviderMockE2EDeniedWrite(t *testing.T) {
 				dialect = config.DialectOpenAI
 			}
 			writeCommandConfig(t, filepath.Join(amadeusHome, "config.yaml"), fmt.Sprintf(`
-default_provider: mock
-providers:
+version: 2
+model: mock-model
+model_provider: mock
+model_context_window: 8192
+model_providers:
   mock:
-    api: %s
+    wire_api: %s
     dialect: %s
     api_key: denied-write-secret
     base_url: %s/v1
-    model: mock-model
     request_max_retries: 0
 agent:
   max_parallel_tools: 1
@@ -263,14 +267,16 @@ func TestCoreToolsProviderMockE2EPermissionGrant(t *testing.T) {
 				dialect = config.DialectOpenAI
 			}
 			writeCommandConfig(t, filepath.Join(amadeusHome, "config.yaml"), fmt.Sprintf(`
-default_provider: mock
-providers:
+version: 2
+model: mock-model
+model_provider: mock
+model_context_window: 8192
+model_providers:
   mock:
-    api: %s
+    wire_api: %s
     dialect: %s
     api_key: permission-grant-secret
     base_url: %s/v1
-    model: mock-model
     request_max_retries: 0
 agent:
   max_parallel_tools: 1

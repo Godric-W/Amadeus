@@ -1,6 +1,9 @@
 package architecture_test
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -472,6 +475,129 @@ func TestResponseStreamReconnectHasCodexOwnershipBoundaries(t *testing.T) {
 			t.Fatalf("scan %s: %v", relative, err)
 		}
 	}
+}
+
+func TestModelProviderConfigurationHasCodexOwnershipBoundaries(t *testing.T) {
+	root := repositoryRoot(t)
+	providerFields := architectureStructFields(t, root, "internal/config/model_provider.go", "ModelProviderInfo")
+	wantProviderFields := []string{
+		"WireAPI", "Dialect", "APIKey", "BaseURL", "Timeout",
+		"RequestMaxRetries", "StreamMaxRetries", "StreamIdleTimeout",
+	}
+	for _, field := range wantProviderFields {
+		if _, ok := providerFields[field]; !ok {
+			t.Errorf("ModelProviderInfo is missing transport field %q", field)
+		}
+	}
+	for _, field := range []string{
+		"Model", "Temperature", "MaxOutputTokens", "ContextWindow",
+		"AutoCompactTokenLimit", "ToolOutputMaxTokens", "ToolOutputTokenLimit",
+	} {
+		if _, ok := providerFields[field]; ok {
+			t.Errorf("ModelProviderInfo owns Model runtime field %q", field)
+		}
+	}
+
+	configFields := architectureStructFields(t, root, "internal/config/config.go", "Config")
+	for _, field := range []string{
+		"Model", "ModelProvider", "ModelContextWindow", "ModelAutoCompactTokenLimit",
+		"ToolOutputTokenLimit", "ModelProviders",
+	} {
+		if _, ok := configFields[field]; !ok {
+			t.Errorf("Config is missing Model runtime field %q", field)
+		}
+	}
+	for _, field := range []string{"DefaultProvider", "Providers"} {
+		if _, ok := configFields[field]; ok {
+			t.Errorf("Config retains legacy field %q", field)
+		}
+	}
+
+	legacyIdentifiers := regexp.MustCompile(`\b(?:ProviderConfig|APIMode|DefaultProvider|APIResponses|APIChatCompletions|ToolOutputMaxTokens|EnvProvider|EnvAPI|flagProvider|flagAPI)\b`)
+	legacySampling := regexp.MustCompile(`\b(?:Temperature|MaxOutputTokens)\b`)
+	for _, relative := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") || filepath.Base(path) == "migration.go" {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			relativePath := filepath.ToSlash(path[len(root)+1:])
+			if legacyIdentifiers.Match(content) {
+				t.Errorf("legacy Model/Provider identifier remains in %s", relativePath)
+			}
+			for _, legacyTag := range []string{`yaml:"default_provider"`, `yaml:"providers"`, `yaml:"api"`} {
+				if strings.Contains(string(content), legacyTag) {
+					t.Errorf("legacy configuration source key %q remains in %s", legacyTag, relativePath)
+				}
+			}
+			if legacySampling.Match(content) && !strings.HasPrefix(relativePath, "internal/tool/") {
+				t.Errorf("stable model sampling budget remains in %s", relativePath)
+			}
+			if strings.HasPrefix(relativePath, "internal/tool/") && strings.Contains(string(content), "ToolOutputTokenLimit") {
+				t.Errorf("model-visible Tool Output limit entered Tool execution budget in %s", relativePath)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan %s: %v", relative, err)
+		}
+	}
+
+	for _, relative := range []string{
+		"internal/llm/openai/responses_request.go",
+		"internal/llm/openai/chat_completions_request.go",
+	} {
+		content := mustReadArchitectureFile(t, root, relative)
+		for _, forbidden := range []string{"Temperature:", "MaxOutputTokens:", "MaxTokens:", "MaxCompletionTokens:"} {
+			if strings.Contains(content, forbidden) {
+				t.Errorf("ordinary Provider request forces sampling field %q in %s", forbidden, relative)
+			}
+		}
+	}
+
+	compactor := mustReadArchitectureFile(t, root, "internal/agent/engine/compactor.go")
+	if !strings.Contains(compactor, "NormalizeResponseItems(projection.Covered, runtime.ModelInfo(), nil)") {
+		t.Fatal("Compactor does not use the effective ModelInfo projection policy")
+	}
+	if strings.Contains(compactor, "runtime.client.Model()") {
+		t.Fatal("Compactor bypasses the effective ModelInfo with Adapter metadata")
+	}
+}
+
+func architectureStructFields(t *testing.T, root, relative, typeName string) map[string]struct{} {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", relative, err)
+	}
+	fields := make(map[string]struct{})
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		typeSpec, ok := node.(*ast.TypeSpec)
+		if !ok || typeSpec.Name.Name != typeName {
+			return true
+		}
+		structure, ok := typeSpec.Type.(*ast.StructType)
+		if !ok {
+			t.Fatalf("%s in %s is not a struct", typeName, relative)
+		}
+		for _, field := range structure.Fields.List {
+			for _, name := range field.Names {
+				fields[name.Name] = struct{}{}
+			}
+		}
+		return false
+	})
+	if len(fields) == 0 {
+		t.Fatalf("locate struct %s in %s", typeName, relative)
+	}
+	return fields
 }
 
 func mustReadArchitectureFile(t *testing.T, root, relative string) string {

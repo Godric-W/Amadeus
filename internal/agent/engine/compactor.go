@@ -41,7 +41,7 @@ func (runtime *Services) Compact(ctx context.Context, request CompactRequest) ([
 	if err != nil {
 		return nil, err
 	}
-	input := agentcontext.NormalizeResponseItems(projection.Covered, runtime.client.Model(), nil)
+	input := agentcontext.NormalizeResponseItems(projection.Covered, runtime.ModelInfo(), nil)
 	input = append(input, llm.UserMessage("Create the handoff summary now. Return only the summary and do not call tools."))
 	response, err := request.ModelSession.Complete(ctx, CompleteRequest{
 		Request: llm.Request{

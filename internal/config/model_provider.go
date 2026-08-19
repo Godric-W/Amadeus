@@ -20,12 +20,12 @@ const (
 )
 
 type ModelProviderInfo struct {
-	WireAPI             WireAPI         `yaml:"wire_api"`
-	Dialect             ProviderDialect `yaml:"dialect"`
-	APIKey              string          `yaml:"api_key"`
-	BaseURL             string          `yaml:"base_url"`
-	Timeout             time.Duration   `yaml:"timeout"`
-	RequestMaxRetries   int             `yaml:"request_max_retries"`
-	StreamMaxRetries    int             `yaml:"stream_max_retries"`
-	StreamIdleTimeout   time.Duration   `yaml:"stream_idle_timeout"`
+	WireAPI           WireAPI         `yaml:"wire_api"`
+	Dialect           ProviderDialect `yaml:"dialect"`
+	APIKey            string          `yaml:"api_key"`
+	BaseURL           string          `yaml:"base_url"`
+	Timeout           time.Duration   `yaml:"timeout"`
+	RequestMaxRetries int             `yaml:"request_max_retries"`
+	StreamMaxRetries  int             `yaml:"stream_max_retries"`
+	StreamIdleTimeout time.Duration   `yaml:"stream_idle_timeout"`
 }

@@ -157,7 +157,7 @@ func TestTurnEngineContinuesAfterToolFailureAndPersistsBeforeCompletion(t *testi
 	}
 	runtime := &Services{
 		providerName: "test", provider: engineTestProvider(), client: client,
-		modelInfo: engineTestModelInfo(client.messages),
+		modelInfo:     engineTestModelInfo(client.messages),
 		modelMessages: testModelMessages(t), registry: registry,
 		toolService: service, visibility: map[string]bool{},
 	}
@@ -252,7 +252,7 @@ func TestTurnEngineWarnsThenReturnsTypedBlockedAtSafetyBudget(t *testing.T) {
 	}
 	runtime := &Services{
 		providerName: "test", provider: engineTestProvider(), client: client,
-		modelInfo: engineTestModelInfo(client.messages),
+		modelInfo:     engineTestModelInfo(client.messages),
 		modelMessages: testModelMessages(t), registry: registry,
 		toolService: service, visibility: map[string]bool{},
 		budget: TurnBudget{MaxSamples: 2, MaxToolCalls: 100, MaxDuration: time.Hour, WarnRatio: 0.5},
@@ -286,7 +286,7 @@ func TestTurnEngineChecksAutomaticCompactionBeforeSampling(t *testing.T) {
 	}
 	runtime := &Services{
 		providerName: "test", provider: engineTestProvider(), client: client,
-		modelInfo: llm.ModelInfo{Provider: "test", Name: "test-model", ContextWindow: 1_000, AutoCompactTokenLimit: 1, ToolOutputTokenLimit: 10_000, SupportsParallelToolCalls: true, ModelMessages: client.messages},
+		modelInfo:     llm.ModelInfo{Provider: "test", Name: "test-model", ContextWindow: 1_000, AutoCompactTokenLimit: 1, ToolOutputTokenLimit: 10_000, SupportsParallelToolCalls: true, ModelMessages: client.messages},
 		modelMessages: testModelMessages(t), registry: registry,
 		toolService: service, visibility: map[string]bool{}, budget: DefaultTurnBudget(),
 	}

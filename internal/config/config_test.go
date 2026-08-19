@@ -8,11 +8,11 @@ import (
 
 func TestConfigCanBeConstructed(t *testing.T) {
 	configured := Config{
-		Version:                 CurrentVersion,
-		Model:                   "test-model",
-		ModelProvider:           "compatible",
-		ModelContextWindow:      128_000,
-		ToolOutputTokenLimit:    DefaultToolOutputTokenLimit,
+		Version:              CurrentVersion,
+		Model:                "test-model",
+		ModelProvider:        "compatible",
+		ModelContextWindow:   128_000,
+		ToolOutputTokenLimit: DefaultToolOutputTokenLimit,
 		ModelProviders: map[string]ModelProviderInfo{
 			"compatible": {
 				WireAPI:           WireAPIChatCompletions,

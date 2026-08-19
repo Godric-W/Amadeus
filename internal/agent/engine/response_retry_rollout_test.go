@@ -35,7 +35,7 @@ func TestResponseRetryPersistsOnlySuccessfulAttempt(t *testing.T) {
 			StreamMaxRetries: 1, StreamIdleTimeout: time.Second,
 		},
 		modelInfo: llm.ModelInfo{Provider: "test-provider", Name: "test-model", ContextWindow: 100_000, AutoCompactTokenLimit: 90_000, ToolOutputTokenLimit: 10_000},
-		client: client, modelMessages: testModelMessages(t), registry: registry, toolService: toolService,
+		client:    client, modelMessages: testModelMessages(t), registry: registry, toolService: toolService,
 		visibility: map[string]bool{}, budget: DefaultTurnBudget(),
 	}
 	host := &engineTestHost{context: agentcontext.NewManager(nil)}

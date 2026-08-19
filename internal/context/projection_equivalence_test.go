@@ -27,7 +27,7 @@ func TestCanonicalProjectionIsEquivalentForLiveAndResume(t *testing.T) {
 		contextTestLine(t, 4, rollout.KindTokenUsage, rollout.TokenUsage{InputTokens: 20, OutputTokens: 5, TotalTokens: 25}),
 		contextTestLine(t, 5, rollout.KindTokenUsage, rollout.TokenUsage{InputTokens: 4, OutputTokens: 1, TotalTokens: 5}),
 	}
-	model := llm.ModelInfo{ContextWindow: 10_000, ToolOutputMaxTokens: 160, InputModalities: []llm.InputModality{llm.InputModalityText}}
+	model := llm.ModelInfo{ContextWindow: 10_000, ToolOutputTokenLimit: 160, InputModalities: []llm.InputModality{llm.InputModalityText}}
 	live := NewManager(nil)
 	for index := range lines {
 		if err := live.Rebuild(lines[:index+1]); err != nil {

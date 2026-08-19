@@ -107,9 +107,9 @@ func TestValidateRejectsAgentParallelismAboveLimit(t *testing.T) {
 func TestCustomProviderReceivesOperationalDefaults(t *testing.T) {
 	configured := Default()
 	patch := configPatch{
-		Model:               stringPointer("model"),
-		ModelProvider:       stringPointer("custom"),
-		ModelContextWindow:  int64Pointer(128_000),
+		Model:              stringPointer("model"),
+		ModelProvider:      stringPointer("custom"),
+		ModelContextWindow: int64Pointer(128_000),
 		ModelProviders: map[string]modelProviderPatch{
 			"custom": {BaseURL: stringPointer("https://example.invalid/v1")},
 		},

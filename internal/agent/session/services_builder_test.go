@@ -76,10 +76,21 @@ func (host *builderTestHost) ContextUpdate(key agentcontext.UpdateKey) string {
 
 func TestServicesBuilderReusesSessionServicesAcrossRegularTasks(t *testing.T) {
 	configured := config.Default()
-	provider := configured.ModelProviders[configured.ModelProvider]
-	provider.APIKey = "test-key"
-	provider.Model = "test-model"
-	configured.ModelProviders[configured.ModelProvider] = provider
+	configured.Model = "test-model"
+	configured.ModelProvider = "mock"
+	configured.ModelContextWindow = 8_192
+	configured.ModelProviders = map[string]config.ModelProviderInfo{
+		"mock": {
+			WireAPI:           config.WireAPIResponses,
+			Dialect:           config.DialectStandard,
+			APIKey:            "test-key",
+			BaseURL:           "https://example.invalid/v1",
+			Timeout:           2 * time.Minute,
+			RequestMaxRetries: 4,
+			StreamMaxRetries:  5,
+			StreamIdleTimeout: 5 * time.Minute,
+		},
+	}
 	root, err := project.NewRoot(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -95,8 +106,8 @@ func TestServicesBuilderReusesSessionServicesAcrossRegularTasks(t *testing.T) {
 	}
 	builder, err := NewServicesBuilder(ServicesOptions{
 		Config: configured, Project: root, AmadeusRoot: t.TempDir(), ModelMessages: modelMessages,
-		ClientFactory: func(providerName string, provider config.ModelProviderInfo) (llm.Client, error) {
-			return &builderTestClient{model: llm.ModelInfo{Provider: providerName, Name: provider.Model}}, nil
+		ClientFactory: func(providerName, model string, _ config.ModelProviderInfo) (llm.Client, error) {
+			return &builderTestClient{model: llm.ModelInfo{Provider: providerName, Name: model}}, nil
 		},
 		AuditFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), closer, nil },
 		Clock:        func() time.Time { return time.Date(2026, 8, 14, 12, 0, 0, 0, location) },
@@ -110,9 +121,13 @@ func TestServicesBuilderReusesSessionServicesAcrossRegularTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	modelInfo := runtime.ModelInfo()
+	if modelInfo.Provider != "mock" || modelInfo.Name != "test-model" || modelInfo.ContextWindow != 8_192 || modelInfo.AutoCompactTokenLimit != 7_372 || modelInfo.ToolOutputTokenLimit != 10_000 {
+		t.Fatalf("runtime ModelInfo did not resolve top-level Model policy: %#v", modelInfo)
+	}
 	host.runtime = runtime
 	requestContext := turn.TurnContext{
-		ThreadID: "thread-1", TurnID: "turn-1", Provider: configured.ModelProvider, Model: provider.Model,
+		ThreadID: "thread-1", TurnID: "turn-1", Provider: configured.ModelProvider, Model: configured.Model,
 		CWD: root.Path(), Mode: turn.ModeKindDefault,
 	}
 	session.services.AgentServices = runtime

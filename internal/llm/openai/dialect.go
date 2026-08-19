@@ -37,7 +37,7 @@ func (dialectError *DialectError) Error() string {
 
 type dialect struct {
 	name                     config.ProviderDialect
-	supportedWireAPIs            map[config.WireAPI]struct{}
+	supportedWireAPIs        map[config.WireAPI]struct{}
 	capabilities             func(config.WireAPI) llm.Capabilities
 	prepareChatRequest       func(llm.Request, *openaisdk.ChatCompletionNewParams) error
 	prepareChatMessage       func(llm.ResponseItem, *openaisdk.ChatCompletionMessageParamUnion) error
@@ -48,16 +48,16 @@ func (providerDialect dialect) Name() config.ProviderDialect {
 	return providerDialect.name
 }
 
-func (providerDialect dialect) SupportsWireAPI(api config.WireAPI) bool {
-	_, ok := providerDialect.supportedWireAPIs[api]
+func (providerDialect dialect) SupportsWireAPI(wireAPI config.WireAPI) bool {
+	_, ok := providerDialect.supportedWireAPIs[wireAPI]
 	return ok
 }
 
-func (providerDialect dialect) Capabilities(api config.WireAPI) llm.Capabilities {
-	if !providerDialect.SupportsWireAPI(api) {
+func (providerDialect dialect) Capabilities(wireAPI config.WireAPI) llm.Capabilities {
+	if !providerDialect.SupportsWireAPI(wireAPI) {
 		return llm.Capabilities{}
 	}
-	return providerDialect.capabilities(api)
+	return providerDialect.capabilities(wireAPI)
 }
 
 func (providerDialect dialect) PrepareChatRequest(request llm.Request, params *openaisdk.ChatCompletionNewParams) error {
@@ -169,9 +169,9 @@ func errorsForUnsupportedReasoningOption(dialect config.ProviderDialect, option 
 	return fmt.Errorf("provider dialect %q does not support reasoning option %q", dialect, option)
 }
 
-func openAICapabilities(api config.WireAPI) llm.Capabilities {
+func openAICapabilities(wireAPI config.WireAPI) llm.Capabilities {
 	capabilities := llm.Capabilities{SupportsStreaming: true, SupportsImages: true}
-	if api == config.WireAPIResponses {
+	if wireAPI == config.WireAPIResponses {
 		capabilities.SupportsDeveloperRole = true
 		capabilities.SupportsReasoning = true
 		capabilities.SupportsStreamUsage = true

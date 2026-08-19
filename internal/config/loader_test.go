@@ -103,13 +103,83 @@ providers:
 	}
 }
 
+func TestLoadMigratesEqualProviderLocalModelPolicyValues(t *testing.T) {
+	loader := newTestLoader(t.TempDir())
+	writeConfig(t, loader, `
+default_provider: first
+providers:
+  first:
+    model: shared-model
+    context_window: 128000
+    auto_compact_token_limit: 100000
+    tool_output_max_tokens: 9000
+  second:
+    model: shared-model
+    context_window: 128000
+    auto_compact_token_limit: 100000
+    tool_output_max_tokens: 9000
+`)
+	configured, err := loader.Load()
+	if err != nil {
+		t.Fatalf("migrate equal Provider-local policy: %v", err)
+	}
+	if configured.Model != "shared-model" || configured.ModelContextWindow != 128_000 || configured.ModelAutoCompactTokenLimit != 100_000 || configured.ToolOutputTokenLimit != 9_000 {
+		t.Fatalf("equal Provider-local policy was not promoted: %#v", configured)
+	}
+}
+
+func TestLoadRejectsTopLevelAndProviderLocalModelPolicyTogether(t *testing.T) {
+	tests := []struct {
+		current string
+		legacy  string
+		value   string
+	}{
+		{current: "model", legacy: "model", value: "shared-model"},
+		{current: "model_context_window", legacy: "context_window", value: "128000"},
+		{current: "model_auto_compact_token_limit", legacy: "auto_compact_token_limit", value: "100000"},
+		{current: "tool_output_token_limit", legacy: "tool_output_max_tokens", value: "9000"},
+	}
+	for _, test := range tests {
+		t.Run(test.current, func(t *testing.T) {
+			loader := newTestLoader(t.TempDir())
+			writeConfig(t, loader, test.current+": "+test.value+"\nproviders:\n  compatible:\n    "+test.legacy+": "+test.value+"\n")
+			_, err := loader.Load()
+			if err == nil || !strings.Contains(err.Error(), test.current) || !strings.Contains(err.Error(), test.legacy) || !strings.Contains(err.Error(), "cannot both be set") {
+				t.Fatalf("expected %s/%s conflict: %v", test.current, test.legacy, err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsLegacyAndCurrentProviderTransportFieldsTogether(t *testing.T) {
+	tests := []struct {
+		legacy  string
+		current string
+		value   string
+	}{
+		{legacy: "api", current: "wire_api", value: "responses"},
+		{legacy: "max_retries", current: "request_max_retries", value: "2"},
+	}
+	for _, test := range tests {
+		t.Run(test.current, func(t *testing.T) {
+			loader := newTestLoader(t.TempDir())
+			writeConfig(t, loader, "providers:\n  compatible:\n    "+test.legacy+": "+test.value+"\n    "+test.current+": "+test.value+"\n")
+			_, err := loader.Load()
+			if err == nil || !strings.Contains(err.Error(), "model_providers.compatible") || !strings.Contains(err.Error(), test.current) || !strings.Contains(err.Error(), test.legacy) {
+				t.Fatalf("expected Provider transport conflict: %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsRemovedSamplingFields(t *testing.T) {
 	for _, field := range []string{"temperature: 0.2", "max_output_tokens: 8192"} {
 		t.Run(strings.Split(field, ":")[0], func(t *testing.T) {
 			loader := newTestLoader(t.TempDir())
 			writeConfig(t, loader, "providers:\n  compatible:\n    "+field+"\n")
 			_, err := loader.Load()
-			if err == nil || !strings.Contains(err.Error(), "was removed in config version 2") {
+			path := "model_providers.compatible." + strings.Split(field, ":")[0]
+			if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "was removed in config version 2") {
 				t.Fatalf("expected removed-field error: %v", err)
 			}
 		})

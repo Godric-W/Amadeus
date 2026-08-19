@@ -19,6 +19,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/project"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type interactiveCompactionClient struct {
@@ -139,6 +140,50 @@ func TestCompactTaskProducesSemanticReplacementHistory(t *testing.T) {
 	}
 }
 
+func TestCompactTaskUsesEffectiveToolOutputTokenLimit(t *testing.T) {
+	builder, host, client := newCompactionTestRuntime(t)
+	builder.configured.ToolOutputTokenLimit = 40
+	toolCall, err := rollout.NewResponseItem(rollout.ResponseItem{
+		Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-1", Name: "read", Arguments: []byte(`{"path":"large.txt"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := &tool.ToolResult{CallID: "call-1", ToolName: "read", Text: strings.Repeat("large output ", 200)}
+	toolResult, err := rollout.NewResponseItem(rollout.ResponseItem{
+		Type: rollout.ResponseToolResult, Role: "tool", CallID: "call-1", Name: "read", Status: "succeeded", Result: result,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistant, err := rollout.NewResponseItem(rollout.ResponseItem{
+		Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "The large file was inspected.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.AppendItems(context.Background(), "turn-1", toolCall, toolResult, assistant); err != nil {
+		t.Fatal(err)
+	}
+	session := newTestSession(host.lines, host.context)
+	runtime, err := builder.BuildServices(context.Background(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range client.request.Prompt.Input {
+		if item.Role == llm.RoleTool {
+			if !strings.Contains(item.Content, "truncated for the model") {
+				t.Fatalf("compaction Tool Result bypassed effective token limit: %q", item.Content)
+			}
+			return
+		}
+	}
+	t.Fatal("compaction request did not include the projected Tool Result")
+}
+
 func TestCompactTaskPreservesLatestUserTurnOutsideReplacement(t *testing.T) {
 	builder, host, _ := newCompactionTestRuntime(t)
 	session := newTestSession(host.lines, host.context)
@@ -256,28 +301,35 @@ func compactTurnContext() *turn.TurnContext {
 }
 
 func newCompactionTestRuntime(t *testing.T) (*ServicesBuilder, *compactTestHost, *interactiveCompactionClient) {
-	configured := config.Default()
-	return newCompactionTestRuntimeWithRetries(t, configured.ModelProviders[configured.ModelProvider].StreamMaxRetries)
+	return newCompactionTestRuntimeWithRetries(t, 5)
 }
 
 func newCompactionTestRuntimeWithRetries(t *testing.T, streamMaxRetries int) (*ServicesBuilder, *compactTestHost, *interactiveCompactionClient) {
 	t.Helper()
 	client := &interactiveCompactionClient{}
 	configured := config.Default()
-	provider := configured.ModelProviders[configured.ModelProvider]
-	provider.APIKey = "test-key"
-	provider.Model = "compact-model"
-	provider.MaxOutputTokens = 1024
-	provider.StreamMaxRetries = streamMaxRetries
+	configured.Model = "compact-model"
 	configured.ModelProvider = "mock"
-	configured.ModelProviders = map[string]config.ModelProviderInfo{"mock": provider}
+	configured.ModelContextWindow = 8_192
+	configured.ModelProviders = map[string]config.ModelProviderInfo{
+		"mock": {
+			WireAPI:           config.WireAPIResponses,
+			Dialect:           config.DialectStandard,
+			APIKey:            "test-key",
+			BaseURL:           "https://example.invalid/v1",
+			Timeout:           2 * time.Minute,
+			RequestMaxRetries: 4,
+			StreamMaxRetries:  streamMaxRetries,
+			StreamIdleTimeout: 5 * time.Minute,
+		},
+	}
 	root, err := project.NewRoot(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	builder, err := NewServicesBuilder(ServicesOptions{
 		Config: configured, Project: root, AmadeusRoot: t.TempDir(), ModelMessages: mustLoadModelMessages(t),
-		ClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
+		ClientFactory: func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 		AuditFactory: func() (audit.Sink, io.Closer, error) {
 			return audit.NewMemorySink(), io.NopCloser(strings.NewReader("")), nil
 		},

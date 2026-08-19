@@ -3,7 +3,7 @@ package config
 import "time"
 
 const (
-	CurrentVersion             = 2
+	CurrentVersion              = 2
 	DefaultToolOutputTokenLimit = int64(10_000)
 )
 

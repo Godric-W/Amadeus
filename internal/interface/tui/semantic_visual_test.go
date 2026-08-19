@@ -33,7 +33,7 @@ func TestComposerPromptAndStatusUseSemanticHierarchy(t *testing.T) {
 	if fullscreenInputPrompt != "› " {
 		t.Fatalf("composer prompt = %q, want %q", fullscreenInputPrompt, "› ")
 	}
-	if fullscreenInputPlaceholder != "Ask Amadeus to do anything, or type / for commands" {
+	if fullscreenInputPlaceholder != "Ask Amadeus to do anything" {
 		t.Fatalf("composer placeholder = %q", fullscreenInputPlaceholder)
 	}
 

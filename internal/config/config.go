@@ -21,16 +21,16 @@ const (
 )
 
 type Config struct {
-	Version                       int                          `yaml:"version"`
-	Model                         string                       `yaml:"model"`
-	ModelProvider                 string                       `yaml:"model_provider"`
-	ModelContextWindow            int64                        `yaml:"model_context_window"`
-	ModelAutoCompactTokenLimit    int64                        `yaml:"model_auto_compact_token_limit"`
-	ToolOutputTokenLimit          int64                        `yaml:"tool_output_token_limit"`
-	ModelProviders                map[string]ModelProviderInfo `yaml:"model_providers"`
-	Agent                         AgentConfig                  `yaml:"agent"`
-	Web                           WebConfig                    `yaml:"web"`
-	Logging                       LoggingConfig                `yaml:"logging"`
+	Version                    int                          `yaml:"version"`
+	Model                      string                       `yaml:"model"`
+	ModelProvider              string                       `yaml:"model_provider"`
+	ModelContextWindow         int64                        `yaml:"model_context_window"`
+	ModelAutoCompactTokenLimit int64                        `yaml:"model_auto_compact_token_limit"`
+	ToolOutputTokenLimit       int64                        `yaml:"tool_output_token_limit"`
+	ModelProviders             map[string]ModelProviderInfo `yaml:"model_providers"`
+	Agent                      AgentConfig                  `yaml:"agent"`
+	Web                        WebConfig                    `yaml:"web"`
+	Logging                    LoggingConfig                `yaml:"logging"`
 }
 
 type WebConfig struct {

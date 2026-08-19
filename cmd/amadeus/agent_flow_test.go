@@ -197,7 +197,7 @@ func TestDefaultGreetingUsesTurnEngineWithoutPlanner(t *testing.T) {
 	runtime := commandRuntime{
 		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 		terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
+		llmClientFactory: func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
 		turnIDFactory:    func() string { return "greeting-run" },
 	}
@@ -223,7 +223,7 @@ func TestTurnEngineRecoversFromToolFailure(t *testing.T) {
 	runtime := commandRuntime{
 		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 		terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
+		llmClientFactory: func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
 		turnIDFactory:    func() string { return "tool-recovery-run" },
 	}
@@ -260,7 +260,7 @@ func TestCodingAgentPublishesNonFatalSkillLoadWarnings(t *testing.T) {
 	runtime := commandRuntime{
 		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 		terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
+		llmClientFactory: func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
 		turnIDFactory:    func() string { return "skill-warning-run" },
 	}
@@ -293,7 +293,7 @@ func TestCodingAgentInjectsExplicitSkillIntoFirstRequestContext(t *testing.T) {
 	runtime := commandRuntime{
 		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 		terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
+		llmClientFactory: func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
 		turnIDFactory:    func() string { return "explicit-skill-run" },
 	}
@@ -333,9 +333,9 @@ func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 		lookupEnv:           emptyEnvLookup,
 		terminalDetector:    func(io.Reader) bool { return true },
 		agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(providerName string, provider config.ModelProviderInfo) (llm.Client, error) {
-			if providerName != "openai" || provider.Model != "mock-model" || provider.APIKey != "test-api-key" {
-				t.Fatalf("unexpected Provider selection: name=%q provider=%#v", providerName, provider)
+		llmClientFactory: func(providerName, model string, provider config.ModelProviderInfo) (llm.Client, error) {
+			if providerName != "openai" || model != "mock-model" || provider.APIKey != "test-api-key" {
+				t.Fatalf("unexpected Model/Provider selection: name=%q model=%q provider=%#v", providerName, model, provider)
 			}
 			return client, nil
 		},
@@ -417,7 +417,7 @@ func TestOneShotInterruptReturnsCancelledExitCode(t *testing.T) {
 		lookupEnv:           emptyEnvLookup,
 		terminalDetector:    func(io.Reader) bool { return false },
 		agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) {
+		llmClientFactory: func(string, string, config.ModelProviderInfo) (llm.Client, error) {
 			return &interruptingCodingClient{codingCommandClient: &codingCommandClient{}, cancel: currentCancel}, nil
 		},
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
@@ -462,19 +462,19 @@ func TestResolveAuditPathUsesXDGThenHome(t *testing.T) {
 
 func writeCodingCommandConfig(t *testing.T, directory string) {
 	t.Helper()
-	content := `version: 1
-default_provider: openai
-providers:
+	content := `version: 2
+model: mock-model
+model_provider: openai
+model_context_window: 8192
+tool_output_token_limit: 10000
+model_providers:
   openai:
-    api: responses
+    wire_api: responses
     dialect: openai
     api_key: test-api-key
     base_url: https://example.invalid/v1
-    model: mock-model
     timeout: 5s
     request_max_retries: 0
-    temperature: 0.1
-    max_output_tokens: 512
 agent:
   max_parallel_tools: 2
 logging:

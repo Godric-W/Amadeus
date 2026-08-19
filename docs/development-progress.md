@@ -2,8 +2,8 @@
 
 > 最近更新：2026-08-19
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：L. Model + Provider Configuration Ownership Alignment（TODO）
-> 下一任务：L-01 Config v2 Schema + Codex Terminology
+> 当前阶段：L. Model + Provider Configuration Ownership Alignment（DONE）
+> 下一任务：无（等待下一阶段规划）
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
@@ -37,7 +37,7 @@ A Runtime + Persistence
 → L Model + Provider Configuration Ownership Alignment
 ```
 
-Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A/B Architecture Closure 已完成，F 已删除早期经典 ReAct Engine 并建立可工作的 continuation loop；G 已将 capability 所有权与 Codex 术语归位，同时保留稳定的 ToolExecutionService 与 Claude-style Approval；I 已完成 Prompt 主链收敛；J 已删除 Slash Command/TUI Application 的 callback、字符串结果和重复 Session IO 生命周期；K 已完成 request retry 与 response stream reconnect 收敛。L 将删除 ProviderConfig 中混合的 model metadata/sampling policy，统一 `wire_api`、顶层 Model Runtime override、Provider-default sampling 和 Tool Output truncation 配置。实施发现 Contract 问题时先更新 `docs/design.md`。
+Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A/B Architecture Closure 已完成，F 已删除早期经典 ReAct Engine 并建立可工作的 continuation loop；G 已将 capability 所有权与 Codex 术语归位，同时保留稳定的 ToolExecutionService 与 Claude-style Approval；I 已完成 Prompt 主链收敛；J 已删除 Slash Command/TUI Application 的 callback、字符串结果和重复 Session IO 生命周期；K 已完成 request retry 与 response stream reconnect 收敛；L 已完成 Config v2、Model Runtime 与 Provider transport 所有权分离、Provider-default sampling 和 Tool Output truncation 配置收敛。实施发现 Contract 问题时先更新 `docs/design.md`。
 
 ## 3. A. Runtime + Persistence — `DONE`
 
@@ -719,51 +719,53 @@ K 从单一 `max_retries`、`Recv` 失败即终止和 terminal-only `StreamError
 - 普通 sampling 与手动/自动 compaction 共享 retry policy；部分 Delta、取消和重试耗尽均不会产生重复 transcript、重复 Tool Call、静默卡死或第二套 Turn terminal。
 - 生产路径不存在用新名称包裹 SDK retry、字符串 StreamError、硬编码 Working 或 Compactor 私有重试的过渡主链。
 
-## 14. L. Model + Provider Configuration Ownership Alignment — `TODO`
+## 14. L. Model + Provider Configuration Ownership Alignment — `DONE`
 
-K 已完成 Provider connection recovery 生命周期，但当前 `ProviderConfig` 仍同时保存 transport、model selection、sampling policy 和 context policy；普通 Responses/Chat Completions/Compaction Request 还会强制发送 Amadeus 默认的 temperature 与最大输出 token。L 按 `docs/design.md` 将配置升级为 Codex 风格的 Model Runtime + ModelProviderInfo 分层，不保留旧字段换名后的双模型。
+K 完成 Provider connection recovery 生命周期后，L 针对旧 `ProviderConfig` 同时保存 transport、model selection、sampling policy 和 context policy，以及普通 Responses/Chat Completions/Compaction Request 强制发送 Amadeus 默认采样参数的问题，将配置升级为 Codex 风格的 Model Runtime + ModelProviderInfo 分层，没有保留旧字段换名后的双模型。
 
-### L-01：Config v2 Schema + Codex Terminology — `TODO`
+完成记录：稳定配置已升级到 Config v2，顶层 Model Runtime 与用户定义 `ModelProviderInfo` transport 分层完成；普通 Responses、Chat Completions 和 Compaction Request 使用模型厂商默认采样参数，`tool_output_token_limit=10000` 通过 effective ModelInfo 和唯一 Context projector 约束模型可见 Tool Result。v1 AST migration、CLI/env/provenance、README、example config、实际忽略配置与 architecture guards 已同步；Compactor 绕过 effective ModelInfo 的遗留漏洞也已修复。全量测试、全量 race、vet、build、`make check`、旧链搜索和 `git diff --check` 均于 2026-08-19 通过。
 
-- [ ] 将稳定配置升级为 `version: 2`，顶层使用 `model`、`model_provider`、`model_context_window`、`model_auto_compact_token_limit`、`tool_output_token_limit` 和 `model_providers`。
-- [ ] 将 Provider `api`/内部 `APIMode` 完整重构为 `wire_api`/`WireAPI`，保留 `responses` 与 `chat_completions` 两种 Amadeus 实际 transport。
-- [ ] schema、patch/merge、validation、clone、redaction、provenance 与默认值归一化使用同一字段集合，禁止新 YAML tag 包裹旧 `DefaultProvider`/`Providers`/`API` 数据模型。
+### L-01：Config v2 Schema + Codex Terminology — `DONE`
 
-### L-02：Provider Transport Ownership Closure — `TODO`
+- [x] 将稳定配置升级为 `version: 2`，顶层使用 `model`、`model_provider`、`model_context_window`、`model_auto_compact_token_limit`、`tool_output_token_limit` 和 `model_providers`。
+- [x] 将 Provider `api`/内部 `APIMode` 完整重构为 `wire_api`/`WireAPI`，保留 `responses` 与 `chat_completions` 两种 Amadeus 实际 transport。
+- [x] schema、patch/merge、validation、clone、redaction、provenance 与默认值归一化使用同一字段集合，禁止新 YAML tag 包裹旧 `DefaultProvider`/`Providers`/`API` 数据模型。
 
-- [ ] `ModelProviderInfo` 只保留 wire API、Dialect、auth/API key、Base URL、timeout、request retry、stream reconnect 和 Provider capability。
-- [ ] 从 Provider 删除 model、temperature、max output tokens、context window、auto compact limit 和 Tool Output limit；Adapter 不再从 Provider 返回伪 Model metadata。
-- [ ] 删除默认 `openai` Provider entry；所有 Provider 由用户定义，省略字段时由 Provider normalization 统一填入 `wire_api=responses` 和既有 retry/timeout 默认值。
+### L-02：Provider Transport Ownership Closure — `DONE`
 
-### L-03：Model Runtime Overrides + ModelInfo Resolution — `TODO`
+- [x] `ModelProviderInfo` 只保留 wire API、Dialect、auth/API key、Base URL、timeout、request retry、stream reconnect 和 Provider capability。
+- [x] 从 Provider 删除 model、temperature、max output tokens、context window、auto compact limit 和 Tool Output limit；Adapter 不再从 Provider 返回伪 Model metadata。
+- [x] 删除默认 `openai` Provider entry；所有 Provider 由用户定义，省略字段时由 Provider normalization 统一填入 `wire_api=responses` 和既有 retry/timeout 默认值。
 
-- [ ] Composition/Application/Session 以顶层 `model` 与 `model_provider` 构造当前 Model selection，Provider 切换和 Model 切换不再绑定在同一个 ProviderConfig 对象中。
-- [ ] `model_context_window` 在无可信 Model Catalog 的当前阶段要求显式正数；`model_auto_compact_token_limit` 省略时派生为 context window 的 90%，显式值只能进一步收紧。
-- [ ] 当前固定采用 total active context 语义，不增加未接线的 `model_auto_compact_token_limit_scope`；ModelInfo 保存 effective context/compact/truncation policy，而不是配置对象引用。
+### L-03：Model Runtime Overrides + ModelInfo Resolution — `DONE`
 
-### L-04：Provider-default Sampling + Compaction Requests — `TODO`
+- [x] Composition/Application/Session 以顶层 `model` 与 `model_provider` 构造当前 Model selection，Provider 切换和 Model 切换不再绑定在同一个 ProviderConfig 对象中。
+- [x] `model_context_window` 在无可信 Model Catalog 的当前阶段要求显式正数；`model_auto_compact_token_limit` 省略时派生为 context window 的 90%，显式值只能进一步收紧。
+- [x] 当前固定采用 total active context 语义，不增加未接线的 `model_auto_compact_token_limit_scope`；ModelInfo 保存 effective context/compact/truncation policy，而不是配置对象引用。
 
-- [ ] 从稳定配置、`llm.Request`、`SampleRequest`、`ModelInfo`、Runtime accessor 和 Session continuation 删除 temperature 与模型最大输出 token。
-- [ ] Responses、Chat Completions 和 Compaction Adapter 构造均省略 `temperature`、`max_output_tokens`、`max_tokens` 等字段，使用模型厂商默认行为。
-- [ ] 删除 Compactor 私有 4096 输出上限和 `estimated input + max output` 容量判断；自动压缩阈值负责预留 headroom，Context Window 保持独立硬上限。
+### L-04：Provider-default Sampling + Compaction Requests — `DONE`
 
-### L-05：Tool Output Token Limit + Projection Policy — `TODO`
+- [x] 从稳定配置、`llm.Request`、`SampleRequest`、`ModelInfo`、Runtime accessor 和 Session continuation 删除 temperature 与模型最大输出 token。
+- [x] Responses、Chat Completions 和 Compaction Adapter 构造均省略 `temperature`、`max_output_tokens`、`max_tokens` 等字段，使用模型厂商默认行为。
+- [x] 删除 Compactor 私有 4096 输出上限和 `estimated input + max output` 容量判断；自动压缩阈值负责预留 headroom，Context Window 保持独立硬上限。
 
-- [ ] 保留 Codex 同名顶层配置 `tool_output_token_limit`，默认值固定为 `10000`，并映射为 ModelInfo/ContextManager 的 Tool Output truncation policy。
-- [ ] 明确该字段只限制模型可见 Tool/Function Output，不截断 canonical Rollout、终端展示或模型回复，也不与 `execute_command.max_output_tokens` 混用。
-- [ ] Read/Glob/Grep/Command/MCP 及其他 Tool Result 通过唯一 Context projector 应用相同预算，live 与 Resume 投影保持 semantic equivalence。
+### L-05：Tool Output Token Limit + Projection Policy — `DONE`
 
-### L-06：Config Migration + User-facing Surfaces — `TODO`
+- [x] 保留 Codex 同名顶层配置 `tool_output_token_limit`，默认值固定为 `10000`，并映射为 ModelInfo/ContextManager 的 Tool Output truncation policy。
+- [x] 明确该字段只限制模型可见 Tool/Function Output，不截断 canonical Rollout、终端展示或模型回复，也不与 `execute_command.max_output_tokens` 混用。
+- [x] Read/Glob/Grep/Command/MCP 及其他 Tool Result 通过唯一 Context projector 应用相同预算，live 与 Resume 投影保持 semantic equivalence。
 
-- [ ] 自动迁移无歧义字段：`default_provider → model_provider`、`providers → model_providers`、`api → wire_api`、`max_retries → request_max_retries`。
-- [ ] Provider-local model/context/compact/tool-output 字段提升存在多值冲突或新旧字段并存时返回准确路径错误；旧 temperature/max output 字段返回明确 removed-field 诊断，不静默忽略。
-- [ ] CLI flags、Environment names、`config check`、`config explain/show`、README、example config 和实际 `$AMADEUS_HOME/config.yaml` 模板同步到 Config v2。
+### L-06：Config Migration + User-facing Surfaces — `DONE`
 
-### L-07：旧链删除、Architecture Guards 与验收 — `TODO`
+- [x] 自动迁移无歧义字段：`default_provider → model_provider`、`providers → model_providers`、`api → wire_api`、`max_retries → request_max_retries`。
+- [x] Provider-local model/context/compact/tool-output 字段提升存在多值冲突或新旧字段并存时返回准确路径错误；旧 temperature/max output 字段返回明确 removed-field 诊断，不静默忽略。
+- [x] CLI flags、Environment names、`config check`、`config explain/show`、README、example config 和实际 `$AMADEUS_HOME/config.yaml` 模板同步到 Config v2。
 
-- [ ] 删除生产路径中的 `ProviderConfig.Model/Temperature/MaxOutputTokens/ContextWindow/AutoCompactTokenLimit/ToolOutputMaxTokens`、`APIMode` 和旧配置 source key。
-- [ ] 增加 architecture guards，禁止 Provider 重新拥有 Model Runtime policy、普通请求重新强制发送 temperature/max output，以及 Tool Output limit 混入 command/model output budget。
-- [ ] 覆盖 Config v1/v2 migration、无内置 Provider、Responses/Chat 参数 omission、Compaction、Context threshold、Tool projection、CLI/env/provenance 和 Resume equivalence；完成全量测试、race、vet、build、`make check` 与 `git diff --check` 后 L 才能标记 DONE。
+### L-07：旧链删除、Architecture Guards 与验收 — `DONE`
+
+- [x] 删除生产路径中的 `ProviderConfig.Model/Temperature/MaxOutputTokens/ContextWindow/AutoCompactTokenLimit/ToolOutputMaxTokens`、`APIMode` 和旧配置 source key。
+- [x] 增加 architecture guards，禁止 Provider 重新拥有 Model Runtime policy、普通请求重新强制发送 temperature/max output，以及 Tool Output limit 混入 command/model output budget。
+- [x] 覆盖 Config v1/v2 migration、无内置 Provider、Responses/Chat 参数 omission、Compaction、Context threshold、Tool projection、CLI/env/provenance 和 Resume equivalence；完成全量测试、race、vet、build、`make check` 与 `git diff --check` 后 L 才能标记 DONE。
 
 ### L 出口
 

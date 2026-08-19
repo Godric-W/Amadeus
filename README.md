@@ -55,6 +55,8 @@ cp configs/amadeus.example.yaml "$AMADEUS_HOME/config.yaml"
 3. `$AMADEUS_HOME/config.yaml`。
 4. 程序默认值。
 
+Amadeus 不内置 Provider 条目。程序默认值只负责 `wire_api`、超时、重试和 Tool Output 投影等字段级归一化；用户必须在 `model_providers` 中定义 Provider，并通过顶层 `model_provider` 选择它。
+
 推荐从示例开始，并通过环境变量注入凭证：
 
 ```bash
@@ -67,28 +69,25 @@ amadeus config explain
 OpenAI Responses 示例：
 
 ```yaml
-version: 1
-default_provider: openai
+version: 2
+model: your-model
+model_provider: openai
+model_context_window: 128000
+# 省略时派生为 model_context_window 的 90%；显式值只能进一步收紧。
+# model_auto_compact_token_limit: 115200
+tool_output_token_limit: 10000
 
-providers:
+model_providers:
   openai:
-    api: responses
+    wire_api: responses
     dialect: openai
     api_key: ${OPENAI_API_KEY}
     base_url: https://api.openai.com/v1
-    model: your-model
     timeout: 120s
     request_max_retries: 4
     stream_max_retries: 5
     stream_idle_timeout: 5m
-    temperature: 0.2
-    max_output_tokens: 8192
-
-    context_window: 128000
 agent:
-  max_iterations: 30
-  max_tool_calls: 120
-  max_duration: 30m
   max_parallel_tools: 4
 
 logging:
@@ -99,18 +98,23 @@ logging:
 OpenAI-compatible Chat Completions 通常配置为：
 
 ```yaml
-providers:
+model: provider-model
+model_provider: compatible
+model_context_window: 128000
+
+model_providers:
   compatible:
-    api: chat_completions
+    wire_api: chat_completions
     dialect: standard
     api_key: ${COMPATIBLE_API_KEY}
     base_url: https://provider.example/v1
-    model: provider-model
 ```
 
 如果厂商需要特定扩展，可将 `dialect` 设置为 `deepseek`、`qwen` 或 `glm`。不支持 `developer` role 的 Chat Provider 会由 Adapter 自动降级为 `system` role。
 
-`providers.<name>.max_output_tokens` 只限制单次模型调用。Run 仍累计 input/output usage 用于状态、持久化和审计，但稳定配置不再提供 `agent.max_input_tokens` 或 `agent.max_output_tokens` 终止预算；Run 的结构和时间边界由 iteration、tool call 与 duration 控制。
+普通 sampling 与上下文压缩不发送稳定配置层的 `temperature`、`max_output_tokens` 或 `max_tokens`，而是使用模型厂商默认值。`tool_output_token_limit` 默认 `10000`，只限制进入模型上下文的 Tool/Function Output；它不会截断 canonical Rollout、终端展示、模型回复，也不等同于 `execute_command.max_output_tokens`。
+
+Provider transport 字段使用 `wire_api`，支持 `responses` 与 `chat_completions`。运行时覆盖可使用 `--model-provider`、`--wire-api`、`--model` 或对应的 `AMADEUS_MODEL_PROVIDER`、`AMADEUS_WIRE_API`、`AMADEUS_MODEL` 环境变量。
 
 旧配置中的 `agent.mode` 已删除。普通任务默认执行；输入 `/plan` 后，下一条普通输入只分析并输出计划，不修改文件或执行命令。Composer 模式不写入配置或 SQLite，切换 Session、执行 `/clear` 或重新启动后恢复 execute；如果旧配置仍有 `agent.mode`，运行 `config check` 会报告未知字段，请将其删除。
 

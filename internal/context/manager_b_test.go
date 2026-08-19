@@ -25,7 +25,7 @@ func TestManagerNormalizesToolProtocolAndProjectsLargeResults(t *testing.T) {
 	if err := manager.Rebuild(lines); err != nil {
 		t.Fatal(err)
 	}
-	snapshot := manager.Snapshot(llm.ModelInfo{ContextWindow: 10000, ToolOutputMaxTokens: 100}, llm.Prompt{})
+	snapshot := manager.Snapshot(llm.ModelInfo{ContextWindow: 10000, ToolOutputTokenLimit: 100}, llm.Prompt{})
 	if len(snapshot.Items) != 5 {
 		t.Fatalf("unexpected normalized item count: %#v", snapshot.Items)
 	}
@@ -223,12 +223,12 @@ func TestManagerPromptSnapshotDoesNotShareMutableHistory(t *testing.T) {
 	}
 }
 
-func TestManagerCompactionThresholdAccountsForFullPromptAndOutputReserve(t *testing.T) {
+func TestManagerCompactionThresholdAccountsForFullPrompt(t *testing.T) {
 	manager := NewManager(ConservativeEstimator{})
 	if err := manager.Rebuild([]rollout.Line{contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: strings.Repeat("h", 300)})}); err != nil {
 		t.Fatal(err)
 	}
-	model := llm.ModelInfo{ContextWindow: 900, AutoCompactTokenLimit: 800, MaxOutputTokens: 400}
+	model := llm.ModelInfo{ContextWindow: 900, AutoCompactTokenLimit: 500}
 	bare := llm.Prompt{}
 	bareSnapshot := manager.Snapshot(model, bare)
 	if bareSnapshot.NeedsCompaction(model) {
@@ -240,7 +240,7 @@ func TestManagerCompactionThresholdAccountsForFullPromptAndOutputReserve(t *test
 	}
 	fullSnapshot := manager.Snapshot(model, prompt)
 	if !fullSnapshot.NeedsCompaction(model) {
-		t.Fatal("full Prompt and output reserve were not included in compaction threshold")
+		t.Fatal("full Prompt was not included in compaction threshold")
 	}
 	if fullSnapshot.Usage.EstimatedInputTokens <= bareSnapshot.Usage.EstimatedInputTokens {
 		t.Fatal("full Prompt estimate did not include instructions and Tool Specs")

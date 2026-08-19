@@ -9,14 +9,14 @@ import (
 )
 
 const (
-	maxProviderTimeout = 30 * time.Minute
-	maxProviderRetries = 100
-	maxContextWindow   = int64(100_000_000)
+	maxProviderTimeout  = 30 * time.Minute
+	maxProviderRetries  = 100
+	maxContextWindow    = int64(100_000_000)
 	maxToolOutputTokens = int64(1_000_000)
-	maxParallelTools   = 64
-	maxWebTimeout      = 2 * time.Minute
-	maxWebBytes        = int64(16 << 20)
-	maxWebResults      = 10
+	maxParallelTools    = 64
+	maxWebTimeout       = 2 * time.Minute
+	maxWebBytes         = int64(16 << 20)
+	maxWebResults       = 10
 )
 
 type ValidationIssue struct {

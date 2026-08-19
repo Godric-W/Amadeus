@@ -143,8 +143,8 @@ func mustResolveDialect(t *testing.T, name config.ProviderDialect) Dialect {
 
 func assertCompatibleTokenAndToolFields(t *testing.T, body map[string]any) {
 	t.Helper()
-	if body["max_tokens"] != float64(256) {
-		t.Fatalf("unexpected max_tokens: %#v", body)
+	if _, ok := body["max_tokens"]; ok {
+		t.Fatalf("compatible dialect emitted max_tokens: %#v", body)
 	}
 	if _, ok := body["max_completion_tokens"]; ok {
 		t.Fatalf("compatible dialect emitted max_completion_tokens: %#v", body)

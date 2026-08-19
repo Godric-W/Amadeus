@@ -16,12 +16,12 @@ const (
 )
 
 type configFlags struct {
-	configPath string
+	configPath    string
 	modelProvider string
 	wireAPI       string
-	dialect    string
-	baseURL    string
-	model      string
+	dialect       string
+	baseURL       string
+	model         string
 }
 
 func (flags *configFlags) bind(command *cobra.Command) {
@@ -43,8 +43,8 @@ func (flags *configFlags) apply(command *cobra.Command, configured config.Config
 	flagSet := command.Root().PersistentFlags()
 	overrides := config.Overrides{
 		ModelProvider: optionalString(flagSet, flagModelProvider, flags.modelProvider),
-		BaseURL:      optionalString(flagSet, flagBaseURL, flags.baseURL),
-		Model:        optionalString(flagSet, flagModel, flags.model),
+		BaseURL:       optionalString(flagSet, flagBaseURL, flags.baseURL),
+		Model:         optionalString(flagSet, flagModel, flags.model),
 	}
 	if flagSet.Changed(flagWireAPI) {
 		wireAPI := config.WireAPI(flags.wireAPI)

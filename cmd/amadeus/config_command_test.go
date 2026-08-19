@@ -12,26 +12,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func TestConfigCheckAcceptsDefaultConfiguration(t *testing.T) {
+func TestConfigCheckRejectsMissingUserModelProvider(t *testing.T) {
 	command, output := newTestRootCommand(t.TempDir())
 	command.SetArgs([]string{"config", "check"})
 
-	if err := command.Execute(); err != nil {
-		t.Fatalf("check default config: %v", err)
-	}
-	if !strings.Contains(output.String(), "configuration is valid") {
-		t.Fatalf("unexpected check output: %q", output.String())
-	}
-	if !strings.Contains(output.String(), "provider: openai") {
-		t.Fatalf("check output does not contain provider: %q", output.String())
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "model_provider") || !strings.Contains(err.Error(), "model_providers") {
+		t.Fatalf("missing user Provider was not rejected: err=%v output=%q", err, output.String())
 	}
 }
 
 func TestConfigCheckRejectsInvalidConfiguration(t *testing.T) {
 	amadeusRoot := t.TempDir()
 	writeCommandConfig(t, filepath.Join(amadeusRoot, "config.yaml"), `
-providers:
+version: 2
+model: test-model
+model_provider: openai
+model_context_window: 8192
+model_providers:
   openai:
+    wire_api: responses
+    dialect: openai
     base_url: not-a-url
 `)
 	command, _ := newTestRootCommand(amadeusRoot)
@@ -41,7 +42,7 @@ providers:
 	if err == nil {
 		t.Fatal("expected invalid configuration error")
 	}
-	if !strings.Contains(err.Error(), "providers.openai.base_url") {
+	if !strings.Contains(err.Error(), "model_providers.openai.base_url") {
 		t.Fatalf("validation error does not contain field path: %v", err)
 	}
 }
@@ -49,12 +50,18 @@ providers:
 func TestConfigCheckAppliesCLIFlagsBeforeValidation(t *testing.T) {
 	amadeusRoot := t.TempDir()
 	writeCommandConfig(t, filepath.Join(amadeusRoot, "config.yaml"), `
-providers:
+version: 2
+model: test-model
+model_provider: openai
+model_context_window: 8192
+model_providers:
   openai:
-    api: invalid
+    wire_api: invalid
+    dialect: openai
+    base_url: https://example.invalid/v1
 `)
 	command, output := newTestRootCommand(amadeusRoot)
-	command.SetArgs([]string{"config", "check", "--api", string(config.WireAPIResponses)})
+	command.SetArgs([]string{"config", "check", "--wire-api", string(config.WireAPIResponses)})
 
 	if err := command.Execute(); err != nil {
 		t.Fatalf("CLI flag did not repair file configuration before validation: %v", err)
@@ -67,9 +74,15 @@ providers:
 func TestConfigCheckUsesExplicitConfigWithoutAmadeusRoot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "explicit.yaml")
 	writeCommandConfig(t, path, `
-providers:
+version: 2
+model: explicit-model
+model_provider: openai
+model_context_window: 8192
+model_providers:
   openai:
-    model: explicit-model
+    wire_api: responses
+    dialect: openai
+    base_url: https://example.invalid/v1
 `)
 
 	var output bytes.Buffer
@@ -94,9 +107,16 @@ func TestConfigCheckDoesNotPrintAPIKey(t *testing.T) {
 	amadeusRoot := t.TempDir()
 	const secret = "do-not-print-this-secret"
 	writeCommandConfig(t, filepath.Join(amadeusRoot, "config.yaml"), `
-providers:
+version: 2
+model: test-model
+model_provider: openai
+model_context_window: 8192
+model_providers:
   openai:
+    wire_api: responses
+    dialect: openai
     api_key: do-not-print-this-secret
+    base_url: https://example.invalid/v1
 `)
 	command, output := newTestRootCommand(amadeusRoot)
 	command.SetArgs([]string{"config", "check"})
@@ -114,14 +134,16 @@ func TestConfigExplainShowsFinalValuesAndSources(t *testing.T) {
 	path := filepath.Join(amadeusRoot, "config.yaml")
 	const secret = "explain-must-not-print-this"
 	writeCommandConfig(t, path, `
-default_provider: compatible
-providers:
+version: 2
+model: file-model
+model_provider: compatible
+model_context_window: 128000
+model_providers:
   compatible:
-    api: chat_completions
+    wire_api: chat_completions
     dialect: deepseek
     api_key: ${FILE_API_KEY}
     base_url: https://file.example.invalid/v1
-    model: file-model
 `)
 
 	lookupEnv := config.EnvLookup(func(name string) (string, bool) {
@@ -151,12 +173,12 @@ providers:
 
 	explanation := output.String()
 	expected := []string{
-		"default_provider: compatible [source: file: " + path + "]",
-		"providers.compatible.dialect: qwen [source: cli: --dialect]",
-		"providers.compatible.api_key: " + config.RedactedSecret + " [source: environment: FILE_API_KEY via " + path + "]",
-		"providers.compatible.base_url: https://cli.example.invalid/v1 [source: cli: --base-url]",
-		"providers.compatible.model: environment-model [source: environment: " + config.EnvModel + "]",
-		"providers.compatible.timeout: 2m0s [source: default]",
+		"model_provider: compatible [source: file: " + path + "]",
+		"model: environment-model [source: environment: " + config.EnvModel + "]",
+		"model_providers.compatible.dialect: qwen [source: cli: --dialect]",
+		"model_providers.compatible.api_key: " + config.RedactedSecret + " [source: environment: FILE_API_KEY via " + path + "]",
+		"model_providers.compatible.base_url: https://cli.example.invalid/v1 [source: cli: --base-url]",
+		"model_providers.compatible.timeout: 2m0s [source: default]",
 		"agent.max_parallel_tools: 4 [source: default]",
 	}
 	for _, value := range expected {
@@ -175,9 +197,15 @@ providers:
 func TestConfigExplainRejectsInvalidEffectiveConfiguration(t *testing.T) {
 	amadeusRoot := t.TempDir()
 	writeCommandConfig(t, filepath.Join(amadeusRoot, "config.yaml"), `
-providers:
+version: 2
+model: test-model
+model_provider: openai
+model_context_window: 8192
+model_providers:
   openai:
-    api: invalid
+    wire_api: invalid
+    dialect: openai
+    base_url: https://example.invalid/v1
 `)
 	command, _ := newTestRootCommand(amadeusRoot)
 	command.SetArgs([]string{"config", "explain"})
@@ -186,7 +214,7 @@ providers:
 	if err == nil {
 		t.Fatal("expected invalid explanation configuration error")
 	}
-	if !strings.Contains(err.Error(), "providers.openai.api") {
+	if !strings.Contains(err.Error(), "model_providers.openai.wire_api") {
 		t.Fatalf("explain validation error does not contain field path: %v", err)
 	}
 }

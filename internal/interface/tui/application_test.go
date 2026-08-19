@@ -334,6 +334,9 @@ func TestFullscreenCompactHasPendingAndCompletedStates(t *testing.T) {
 	if lastCellContent(model) != "⚠ Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted." {
 		t.Fatalf("compact transcript = %q", renderHistoryCells(model.historyCells, HistoryRenderRaw, noColorRenderContext()))
 	}
+	if rendered := model.inputBox(); strings.Contains(rendered, "/ for commands") {
+		t.Fatalf("compact composer retained removed slash hint: %q", rendered)
+	}
 }
 
 func TestFullscreenEmptyMCPInventoryIsVisibleAndStaleResultIgnored(t *testing.T) {

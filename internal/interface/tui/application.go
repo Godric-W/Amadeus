@@ -176,7 +176,7 @@ type fullscreenWorkingTickMsg time.Time
 
 const (
 	fullscreenInputPrompt      = "› "
-	fullscreenInputPlaceholder = "Ask Amadeus to do anything, or type / for commands"
+	fullscreenInputPlaceholder = "Ask Amadeus to do anything"
 	fullscreenInputCharLimit   = 20000
 	fullscreenMaxInputRows     = 5
 )
