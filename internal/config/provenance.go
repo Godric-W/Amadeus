@@ -41,15 +41,17 @@ func SourcesFor(configured Config) Sources {
 	}
 
 	set("version")
-	set("default_provider")
-	providerNames := make([]string, 0, len(configured.Providers))
-	for name := range configured.Providers {
+	for _, path := range []string{"model", "model_provider", "model_context_window", "model_auto_compact_token_limit", "tool_output_token_limit"} {
+		set(path)
+	}
+	providerNames := make([]string, 0, len(configured.ModelProviders))
+	for name := range configured.ModelProviders {
 		providerNames = append(providerNames, name)
 	}
 	sort.Strings(providerNames)
 	for _, name := range providerNames {
-		prefix := "providers." + name + "."
-		for _, field := range []string{"api", "dialect", "api_key", "base_url", "model", "timeout", "request_max_retries", "stream_max_retries", "stream_idle_timeout", "temperature", "max_output_tokens", "context_window"} {
+		prefix := "model_providers." + name + "."
+		for _, field := range []string{"wire_api", "dialect", "api_key", "base_url", "timeout", "request_max_retries", "stream_max_retries", "stream_idle_timeout"} {
 			set(prefix + field)
 		}
 	}
@@ -112,21 +114,23 @@ func InspectYAMLSources(path string) (Sources, error) {
 
 func EnvironmentOverrideSources(configured Config, lookup EnvLookup) Sources {
 	sources := make(Sources)
-	provider := configured.DefaultProvider
-	if value, ok := lookup(EnvProvider); ok {
+	provider := configured.ModelProvider
+	if value, ok := lookup(EnvModelProvider); ok {
 		provider = value
-		sources["default_provider"] = Source{Kind: SourceEnvironment, Detail: EnvProvider}
+		sources["model_provider"] = Source{Kind: SourceEnvironment, Detail: EnvModelProvider}
+	}
+	if _, ok := lookup(EnvModel); ok {
+		sources["model"] = Source{Kind: SourceEnvironment, Detail: EnvModel}
 	}
 
 	for variable, field := range map[string]string{
-		EnvAPI:     "api",
+		EnvWireAPI: "wire_api",
 		EnvDialect: "dialect",
 		EnvAPIKey:  "api_key",
 		EnvBaseURL: "base_url",
-		EnvModel:   "model",
 	} {
 		if _, ok := lookup(variable); ok {
-			sources["providers."+provider+"."+field] = Source{Kind: SourceEnvironment, Detail: variable}
+			sources["model_providers."+provider+"."+field] = Source{Kind: SourceEnvironment, Detail: variable}
 		}
 	}
 

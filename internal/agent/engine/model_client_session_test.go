@@ -36,7 +36,7 @@ func (client *scriptedModelClient) Stream(_ context.Context, request llm.Request
 }
 
 func (*scriptedModelClient) Model() llm.ModelInfo {
-	return llm.ModelInfo{Provider: "test-provider", Name: "test-model", MaxOutputTokens: 1024}
+	return llm.ModelInfo{Provider: "test-provider", Name: "test-model"}
 }
 
 func (*scriptedModelClient) Capabilities() llm.Capabilities {
@@ -314,7 +314,7 @@ func newTestModelClientSession(t *testing.T, client llm.Client, maxRetries int, 
 func sampleRequest(events protocol.EventSink) SampleRequest {
 	return SampleRequest{
 		ID: "sample-1", Messages: []llm.ResponseItem{llm.UserMessage("hello")},
-		BaseInstructions: llm.BaseInstructions{Text: "help"}, MaxOutputTokens: 128, Events: events,
+		BaseInstructions: llm.BaseInstructions{Text: "help"}, Events: events,
 	}
 }
 

@@ -221,8 +221,8 @@ func normalizeHistory(items []llm.ResponseItem, model llm.ModelInfo, estimator E
 				continue
 			}
 			projected := cloneResponseItems([]llm.ResponseItem{item})[0]
-			projected.Content = projectToolOutput(name, projected.Content, model.ToolOutputMaxTokens, estimator)
-			projected.Parts = projectToolContentParts(name, projected.Content, projected.Parts, model.ToolOutputMaxTokens, estimator)
+			projected.Content = projectToolOutput(name, projected.Content, model.ToolOutputTokenLimit, estimator)
+			projected.Parts = projectToolContentParts(name, projected.Content, projected.Parts, model.ToolOutputTokenLimit, estimator)
 			result = append(result, projected)
 			delete(pending, callID)
 			continue

@@ -1,31 +1,31 @@
 package config
 
 const (
-	EnvProvider = "AMADEUS_PROVIDER"
-	EnvAPI      = "AMADEUS_API"
-	EnvDialect  = "AMADEUS_DIALECT"
-	EnvAPIKey   = "AMADEUS_API_KEY"
-	EnvBaseURL  = "AMADEUS_BASE_URL"
-	EnvModel    = "AMADEUS_MODEL"
+	EnvModelProvider = "AMADEUS_MODEL_PROVIDER"
+	EnvWireAPI       = "AMADEUS_WIRE_API"
+	EnvDialect       = "AMADEUS_DIALECT"
+	EnvAPIKey        = "AMADEUS_API_KEY"
+	EnvBaseURL       = "AMADEUS_BASE_URL"
+	EnvModel         = "AMADEUS_MODEL"
 )
 
 type Overrides struct {
-	Provider *string
-	API      *APIMode
-	Dialect  *ProviderDialect
-	APIKey   *string
-	BaseURL  *string
-	Model    *string
+	ModelProvider *string
+	WireAPI       *WireAPI
+	Dialect       *ProviderDialect
+	APIKey        *string
+	BaseURL       *string
+	Model         *string
 }
 
 func applyEnvironmentOverrides(configured Config, lookup EnvLookup) Config {
 	var overrides Overrides
-	if value, ok := lookup(EnvProvider); ok {
-		overrides.Provider = &value
+	if value, ok := lookup(EnvModelProvider); ok {
+		overrides.ModelProvider = &value
 	}
-	if value, ok := lookup(EnvAPI); ok {
-		api := APIMode(value)
-		overrides.API = &api
+	if value, ok := lookup(EnvWireAPI); ok {
+		wireAPI := WireAPI(value)
+		overrides.WireAPI = &wireAPI
 	}
 	if value, ok := lookup(EnvDialect); ok {
 		dialect := ProviderDialect(value)
@@ -46,17 +46,17 @@ func applyEnvironmentOverrides(configured Config, lookup EnvLookup) Config {
 
 func ApplyOverrides(configured Config, overrides Overrides) Config {
 	overridden := clone(configured)
-	if overrides.Provider != nil {
-		overridden.DefaultProvider = *overrides.Provider
-	}
+	assign(&overridden.ModelProvider, overrides.ModelProvider)
+	assign(&overridden.Model, overrides.Model)
 
-	provider, ok := overridden.Providers[overridden.DefaultProvider]
-	if !ok {
-		provider = defaultProviderConfig()
+	providerName := overridden.ModelProvider
+	provider, exists := overridden.ModelProviders[providerName]
+	if !exists {
+		provider = defaultModelProviderInfo()
 	}
-	changed := overrides.Provider != nil
-	if overrides.API != nil {
-		provider.API = *overrides.API
+	changed := overrides.ModelProvider != nil
+	if overrides.WireAPI != nil {
+		provider.WireAPI = *overrides.WireAPI
 		changed = true
 	}
 	if overrides.Dialect != nil {
@@ -71,12 +71,8 @@ func ApplyOverrides(configured Config, overrides Overrides) Config {
 		provider.BaseURL = *overrides.BaseURL
 		changed = true
 	}
-	if overrides.Model != nil {
-		provider.Model = *overrides.Model
-		changed = true
-	}
-	if changed {
-		overridden.Providers[overridden.DefaultProvider] = provider
+	if changed && providerName != "" {
+		overridden.ModelProviders[providerName] = provider
 	}
 
 	return overridden

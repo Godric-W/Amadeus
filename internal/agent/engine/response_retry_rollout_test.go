@@ -31,10 +31,10 @@ func TestResponseRetryPersistsOnlySuccessfulAttempt(t *testing.T) {
 	}
 	runtime := &Services{
 		providerName: "test-provider",
-		provider: config.ProviderConfig{
-			Model: "test-model", MaxOutputTokens: 128, ContextWindow: 100_000,
+		provider: config.ModelProviderInfo{
 			StreamMaxRetries: 1, StreamIdleTimeout: time.Second,
 		},
+		modelInfo: llm.ModelInfo{Provider: "test-provider", Name: "test-model", ContextWindow: 100_000, AutoCompactTokenLimit: 90_000, ToolOutputTokenLimit: 10_000},
 		client: client, modelMessages: testModelMessages(t), registry: registry, toolService: toolService,
 		visibility: map[string]bool{}, budget: DefaultTurnBudget(),
 	}

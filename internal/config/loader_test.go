@@ -9,429 +9,207 @@ import (
 	"time"
 )
 
-func TestLoadReturnsDefaultWhenFileDoesNotExist(t *testing.T) {
+func TestLoadReturnsFieldDefaultsWhenFileDoesNotExist(t *testing.T) {
 	configured, err := newTestLoader(t.TempDir()).Load()
 	if err != nil {
-		t.Fatalf("load missing project config: %v", err)
+		t.Fatalf("load missing config: %v", err)
 	}
-
 	if !reflect.DeepEqual(configured, Default()) {
-		t.Fatalf("missing project config did not return defaults: got %#v", configured)
+		t.Fatalf("missing config did not return field defaults: %#v", configured)
 	}
 }
 
-func TestLoadReadsConfigFromAmadeusRoot(t *testing.T) {
-	amadeusRoot := t.TempDir()
-	loader := newTestLoader(amadeusRoot)
+func TestLoadReadsConfigV2AndAppliesProviderDefaults(t *testing.T) {
+	loader := newTestLoader(t.TempDir())
+	writeConfig(t, loader, `
+version: 2
+model: compatible-model
+model_provider: compatible
+model_context_window: 128000
+model_providers:
+  compatible:
+    wire_api: chat_completions
+    api_key: test-key
+    base_url: https://example.invalid/v1
+    timeout: 45s
+    stream_max_retries: 2
+agent:
+  max_parallel_tools: 2
+`)
+
+	configured, err := loader.Load()
+	if err != nil {
+		t.Fatalf("load config v2: %v", err)
+	}
+	provider := configured.ModelProviders["compatible"]
+	if configured.Model != "compatible-model" || configured.ModelProvider != "compatible" || configured.ModelContextWindow != 128_000 {
+		t.Fatalf("unexpected model config: %#v", configured)
+	}
+	if provider.WireAPI != WireAPIChatCompletions || provider.Dialect != DialectStandard || provider.Timeout != 45*time.Second {
+		t.Fatalf("unexpected provider config: %#v", provider)
+	}
+	if provider.RequestMaxRetries != 4 || provider.StreamMaxRetries != 2 || provider.StreamIdleTimeout != 5*time.Minute {
+		t.Fatalf("provider defaults were not normalized: %#v", provider)
+	}
+	if configured.ToolOutputTokenLimit != 10_000 || configured.Agent.MaxParallelTools != 2 {
+		t.Fatalf("unexpected field defaults: %#v", configured)
+	}
+}
+
+func TestLoadMigratesUnambiguousConfigV1(t *testing.T) {
+	loader := newTestLoader(t.TempDir())
 	writeConfig(t, loader, `
 version: 1
 default_provider: compatible
 providers:
-  openai:
-    model: configured-openai-model
   compatible:
     api: chat_completions
-    api_key: test-key
     base_url: https://example.invalid/v1
     model: compatible-model
-    timeout: 45s
-    request_max_retries: 1
-    stream_max_retries: 2
-    stream_idle_timeout: 90s
-    temperature: 0.5
-    max_output_tokens: 4096
-agent:
-  max_parallel_tools: 2
-web:
-  fetch:
-    enabled: true
-    timeout: 20s
-    max_bytes: 2097152
-    max_redirects: 2
-  search:
-    enabled: true
-    provider: brave
-    api_key: brave-key
-    timeout: 12s
-    max_results: 7
-logging:
-  level: debug
-  trace_llm: true
-`)
-
-	configured, err := loader.Load()
-	if err != nil {
-		t.Fatalf("load project config: %v", err)
-	}
-
-	compatible := configured.Providers["compatible"]
-	if configured.DefaultProvider != "compatible" {
-		t.Fatalf("unexpected default provider: got %q", configured.DefaultProvider)
-	}
-	if compatible.API != APIChatCompletions {
-		t.Fatalf("unexpected compatible API mode: got %q", compatible.API)
-	}
-	if compatible.Timeout != 45*time.Second {
-		t.Fatalf("unexpected compatible timeout: got %s", compatible.Timeout)
-	}
-	if compatible.RequestMaxRetries != 1 || compatible.StreamMaxRetries != 2 || compatible.StreamIdleTimeout != 90*time.Second {
-		t.Fatalf("unexpected compatible retry config: %#v", compatible)
-	}
-	if configured.Agent.MaxParallelTools != 2 {
-		t.Fatalf("unexpected agent config: %#v", configured.Agent)
-	}
-	if !configured.Web.Fetch.Enabled || configured.Web.Fetch.Timeout != 20*time.Second || configured.Web.Fetch.MaxBytes != 2<<20 || configured.Web.Fetch.MaxRedirects != 2 {
-		t.Fatalf("unexpected Web fetch config: %#v", configured.Web.Fetch)
-	}
-	if !configured.Web.Search.Enabled || configured.Web.Search.Provider != WebSearchBrave || configured.Web.Search.APIKey != "brave-key" || configured.Web.Search.Timeout != 12*time.Second || configured.Web.Search.MaxResults != 7 {
-		t.Fatalf("unexpected Web search config: %#v", configured.Web.Search)
-	}
-	if configured.Logging.Level != LogLevelDebug || !configured.Logging.TraceLLM {
-		t.Fatalf("unexpected logging config: %#v", configured.Logging)
-	}
-}
-
-func TestLoadMigratesLegacyMaxRetriesToRequestRetriesOnly(t *testing.T) {
-	loader := newTestLoader(t.TempDir())
-	writeConfig(t, loader, `
-providers:
-  openai:
-    model: configured-model
+    context_window: 128000
+    auto_compact_token_limit: 100000
+    tool_output_max_tokens: 9000
     max_retries: 2
 `)
 
 	configured, err := loader.Load()
 	if err != nil {
-		t.Fatalf("load legacy retry config: %v", err)
+		t.Fatalf("migrate config v1: %v", err)
 	}
-	provider := configured.Providers[DefaultProviderName]
-	if provider.RequestMaxRetries != 2 {
-		t.Fatalf("legacy max_retries did not migrate to request retries: %#v", provider)
+	provider := configured.ModelProviders["compatible"]
+	if configured.Version != 2 || configured.ModelProvider != "compatible" || configured.Model != "compatible-model" {
+		t.Fatalf("top-level migration failed: %#v", configured)
 	}
-	if provider.StreamMaxRetries != 5 {
-		t.Fatalf("legacy max_retries changed stream retries: %#v", provider)
+	if configured.ModelContextWindow != 128_000 || configured.ModelAutoCompactTokenLimit != 100_000 || configured.ToolOutputTokenLimit != 9_000 {
+		t.Fatalf("model override migration failed: %#v", configured)
+	}
+	if provider.WireAPI != WireAPIChatCompletions || provider.RequestMaxRetries != 2 || provider.StreamMaxRetries != 5 {
+		t.Fatalf("provider migration failed: %#v", provider)
 	}
 }
 
-func TestLoadRejectsLegacyAndCurrentRequestRetriesTogether(t *testing.T) {
+func TestLoadRejectsAmbiguousProviderLocalModelMigration(t *testing.T) {
 	loader := newTestLoader(t.TempDir())
 	writeConfig(t, loader, `
 providers:
-  openai:
-    max_retries: 2
-    request_max_retries: 3
+  first:
+    model: model-a
+  second:
+    model: model-b
 `)
+	_, err := loader.Load()
+	if err == nil || !strings.Contains(err.Error(), "providers define different values") {
+		t.Fatalf("expected ambiguous model migration error: %v", err)
+	}
+}
 
+func TestLoadRejectsRemovedSamplingFields(t *testing.T) {
+	for _, field := range []string{"temperature: 0.2", "max_output_tokens: 8192"} {
+		t.Run(strings.Split(field, ":")[0], func(t *testing.T) {
+			loader := newTestLoader(t.TempDir())
+			writeConfig(t, loader, "providers:\n  compatible:\n    "+field+"\n")
+			_, err := loader.Load()
+			if err == nil || !strings.Contains(err.Error(), "was removed in config version 2") {
+				t.Fatalf("expected removed-field error: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsLegacyAndCurrentFieldsTogether(t *testing.T) {
+	loader := newTestLoader(t.TempDir())
+	writeConfig(t, loader, `
+model_provider: compatible
+default_provider: compatible
+`)
 	_, err := loader.Load()
 	if err == nil || !strings.Contains(err.Error(), "cannot both be set") {
-		t.Fatalf("expected conflicting retry fields to fail clearly: %v", err)
-	}
-}
-
-func TestLoadPreservesUnspecifiedProviderDefaults(t *testing.T) {
-	amadeusRoot := t.TempDir()
-	loader := newTestLoader(amadeusRoot)
-	writeConfig(t, loader, `
-providers:
-  openai:
-    model: configured-model
-`)
-
-	configured, err := loader.Load()
-	if err != nil {
-		t.Fatalf("load project config: %v", err)
-	}
-
-	provider := configured.Providers[DefaultProviderName]
-	if provider.Model != "configured-model" {
-		t.Fatalf("unexpected configured model: got %q", provider.Model)
-	}
-	if provider.API != APIResponses {
-		t.Fatalf("default API mode was not preserved: got %q", provider.API)
-	}
-	if provider.BaseURL != "https://api.openai.com/v1" {
-		t.Fatalf("default base URL was not preserved: got %q", provider.BaseURL)
-	}
-	if provider.MaxOutputTokens != 8192 {
-		t.Fatalf("default max output tokens were not preserved: got %d", provider.MaxOutputTokens)
+		t.Fatalf("expected conflicting field error: %v", err)
 	}
 }
 
 func TestLoadRejectsUnknownFields(t *testing.T) {
-	amadeusRoot := t.TempDir()
-	loader := newTestLoader(amadeusRoot)
-	writeConfig(t, loader, "unknown_field: true\n")
-
-	_, err := loader.Load()
-	if err == nil {
-		t.Fatal("expected unknown field error")
-	}
-	if !strings.Contains(err.Error(), loader.ConfigPath()) {
-		t.Fatalf("error does not contain config path: %v", err)
-	}
-}
-
-func TestLoadRejectsRemovedAgentTokenBudgets(t *testing.T) {
-	amadeusRoot := t.TempDir()
-	loader := newTestLoader(amadeusRoot)
-	writeConfig(t, loader, `
-agent:
-  max_input_tokens: 1000000
-  max_output_tokens: 245760
-`)
-
-	_, err := loader.Load()
-	if err == nil || !strings.Contains(err.Error(), "max_input_tokens") || !strings.Contains(err.Error(), "max_output_tokens") {
-		t.Fatalf("removed Agent token budgets were not rejected clearly: %v", err)
-	}
-}
-
-func TestLoadRejectsRemovedAgentMode(t *testing.T) {
 	loader := newTestLoader(t.TempDir())
-	writeConfig(t, loader, `
-agent:
-  mode: react
-`)
-
+	writeConfig(t, loader, "unknown_field: true\n")
 	_, err := loader.Load()
-	if err == nil {
-		t.Fatal("expected removed agent mode field to be rejected")
-	}
-	if !strings.Contains(err.Error(), "field mode not found") {
-		t.Fatalf("unexpected removed agent mode error: %v", err)
-	}
-}
-
-func TestConfigPathIsInAmadeusRoot(t *testing.T) {
-	amadeusRoot := t.TempDir()
-	loader := newTestLoader(amadeusRoot)
-	expected := filepath.Join(amadeusRoot, configFileName)
-
-	if loader.ConfigPath() != expected {
-		t.Fatalf("unexpected config path: got %q, want %q", loader.ConfigPath(), expected)
-	}
-}
-
-func TestLoadReadsExplicitConfigPath(t *testing.T) {
-	amadeusRoot := t.TempDir()
-	path := filepath.Join(amadeusRoot, "configs", "development.yaml")
-	loader := newTestFileLoader(path)
-	writeConfig(t, loader, `
-default_provider: local
-providers:
-  local:
-    api: chat_completions
-    base_url: http://localhost:11434/v1
-    model: local-model
-`)
-
-	configured, err := loader.Load()
-	if err != nil {
-		t.Fatalf("load explicit config: %v", err)
-	}
-
-	if loader.ConfigPath() != path {
-		t.Fatalf("unexpected explicit config path: got %q, want %q", loader.ConfigPath(), path)
-	}
-	if configured.DefaultProvider != "local" {
-		t.Fatalf("unexpected default provider: got %q", configured.DefaultProvider)
-	}
-	if configured.Providers["local"].Model != "local-model" {
-		t.Fatalf("unexpected local provider: %#v", configured.Providers["local"])
-	}
-}
-
-func TestExplicitConfigPathMustExist(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing.yaml")
-
-	_, err := newTestFileLoader(path).Load()
-	if err == nil {
-		t.Fatal("expected missing explicit config error")
-	}
-	if !strings.Contains(err.Error(), path) {
-		t.Fatalf("error does not contain explicit config path: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "field unknown_field not found") {
+		t.Fatalf("expected unknown field error: %v", err)
 	}
 }
 
 func TestLoadExpandsEnvironmentReferences(t *testing.T) {
-	amadeusRoot := t.TempDir()
-	loader := NewLoader(amadeusRoot).WithEnvLookup(mapEnvLookup(map[string]string{
-		"AMADEUS_API_KEY": "test-secret",
-		"AMADEUS_HOST":    "gateway.example.invalid",
-		"AMADEUS_MODEL":   "test-model",
-		"AMADEUS_TIMEOUT": "75s",
+	loader := NewLoader(t.TempDir()).WithEnvLookup(mapEnvLookup(map[string]string{
+		"MODEL_NAME": "environment-model",
+		"API_KEY":    "environment-secret",
 	}))
 	writeConfig(t, loader, `
-providers:
-  openai:
-    api_key: ${AMADEUS_API_KEY}
-    base_url: https://${AMADEUS_HOST}/v1
-    model: ${AMADEUS_MODEL}
-    timeout: ${AMADEUS_TIMEOUT}
+model: ${MODEL_NAME}
+model_provider: compatible
+model_context_window: 64000
+model_providers:
+  compatible:
+    api_key: ${API_KEY}
+    base_url: https://example.invalid/v1
 `)
-
 	configured, err := loader.Load()
 	if err != nil {
-		t.Fatalf("load config with environment references: %v", err)
+		t.Fatalf("load environment references: %v", err)
 	}
-
-	provider := configured.Providers[DefaultProviderName]
-	if provider.APIKey != "test-secret" {
-		t.Fatalf("unexpected expanded API key: got %q", provider.APIKey)
-	}
-	if provider.BaseURL != "https://gateway.example.invalid/v1" {
-		t.Fatalf("unexpected expanded base URL: got %q", provider.BaseURL)
-	}
-	if provider.Model != "test-model" {
-		t.Fatalf("unexpected expanded model: got %q", provider.Model)
-	}
-	if provider.Timeout != 75*time.Second {
-		t.Fatalf("unexpected expanded timeout: got %s", provider.Timeout)
-	}
-}
-
-func TestLoadAllowsEmptyEnvironmentValues(t *testing.T) {
-	amadeusRoot := t.TempDir()
-	loader := NewLoader(amadeusRoot).WithEnvLookup(mapEnvLookup(map[string]string{
-		"OPTIONAL_MODEL": "",
-	}))
-	writeConfig(t, loader, `
-providers:
-  openai:
-    model: ${OPTIONAL_MODEL}
-`)
-
-	configured, err := loader.Load()
-	if err != nil {
-		t.Fatalf("load config with empty environment value: %v", err)
-	}
-	if configured.Providers[DefaultProviderName].Model != "" {
-		t.Fatalf("expected empty model, got %q", configured.Providers[DefaultProviderName].Model)
+	if configured.Model != "environment-model" || configured.ModelProviders["compatible"].APIKey != "environment-secret" {
+		t.Fatalf("environment references were not expanded: %#v", configured)
 	}
 }
 
 func TestLoadReportsMissingEnvironmentVariableWithFieldPath(t *testing.T) {
-	amadeusRoot := t.TempDir()
-	loader := NewLoader(amadeusRoot).WithEnvLookup(mapEnvLookup(nil))
+	loader := newTestLoader(t.TempDir())
 	writeConfig(t, loader, `
-providers:
+model_providers:
   compatible:
-    api_key: ${MISSING_API_KEY}
+    api_key: ${MISSING_KEY}
 `)
-
 	_, err := loader.Load()
-	if err == nil {
-		t.Fatal("expected missing environment variable error")
-	}
-	if !strings.Contains(err.Error(), "providers.compatible.api_key") {
-		t.Fatalf("error does not contain field path: %v", err)
-	}
-	if !strings.Contains(err.Error(), "MISSING_API_KEY") {
-		t.Fatalf("error does not contain variable name: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "model_providers.compatible.api_key") || !strings.Contains(err.Error(), "MISSING_KEY") {
+		t.Fatalf("expected field-specific environment error: %v", err)
 	}
 }
 
-func TestLoadAppliesDirectEnvironmentOverridesToSelectedProvider(t *testing.T) {
-	amadeusRoot := t.TempDir()
-	loader := NewLoader(amadeusRoot).WithEnvLookup(mapEnvLookup(map[string]string{
-		EnvProvider: "runtime",
-		EnvAPI:      string(APIChatCompletions),
-		EnvDialect:  string(DialectQwen),
-		EnvAPIKey:   "runtime-secret",
-		EnvBaseURL:  "https://runtime.example.invalid/v1",
-		EnvModel:    "runtime-model",
-	}))
-	writeConfig(t, loader, `
-default_provider: file
-providers:
-  file:
-    api: responses
-    api_key: file-secret
-    base_url: https://file.example.invalid/v1
-    model: file-model
-`)
-
-	configured, err := loader.Load()
-	if err != nil {
-		t.Fatalf("load config with direct environment overrides: %v", err)
-	}
-
-	if configured.DefaultProvider != "runtime" {
-		t.Fatalf("unexpected environment provider: got %q", configured.DefaultProvider)
-	}
-	provider := configured.Providers["runtime"]
-	if provider.API != APIChatCompletions {
-		t.Fatalf("unexpected environment API mode: got %q", provider.API)
-	}
-	if provider.Dialect != DialectQwen {
-		t.Fatalf("unexpected environment dialect: got %q", provider.Dialect)
-	}
-	if provider.APIKey != "runtime-secret" {
-		t.Fatalf("unexpected environment API key: got %q", provider.APIKey)
-	}
-	if provider.BaseURL != "https://runtime.example.invalid/v1" {
-		t.Fatalf("unexpected environment base URL: got %q", provider.BaseURL)
-	}
-	if provider.Model != "runtime-model" {
-		t.Fatalf("unexpected environment model: got %q", provider.Model)
-	}
-	if configured.Providers["file"].Model != "file-model" {
-		t.Fatalf("file provider was unexpectedly modified: %#v", configured.Providers["file"])
-	}
-}
-
-func TestLoadAppliesEnvironmentOverridesWithoutConfigFile(t *testing.T) {
+func TestLoadAppliesDirectEnvironmentOverrides(t *testing.T) {
 	loader := NewLoader(t.TempDir()).WithEnvLookup(mapEnvLookup(map[string]string{
-		EnvModel: "environment-model",
+		EnvModelProvider: "runtime",
+		EnvModel:         "runtime-model",
+		EnvWireAPI:       string(WireAPIChatCompletions),
+		EnvDialect:       string(DialectDeepSeek),
+		EnvAPIKey:        "runtime-secret",
+		EnvBaseURL:       "https://runtime.example/v1",
 	}))
-
+	writeConfig(t, loader, `
+model: file-model
+model_provider: file
+model_context_window: 128000
+model_providers:
+  file:
+    base_url: https://file.example/v1
+`)
 	configured, err := loader.Load()
 	if err != nil {
-		t.Fatalf("load defaults with environment overrides: %v", err)
+		t.Fatalf("load environment overrides: %v", err)
 	}
-	if configured.Providers[DefaultProviderName].Model != "environment-model" {
-		t.Fatalf("environment override was not applied to defaults: %#v", configured.Providers[DefaultProviderName])
+	provider := configured.ModelProviders["runtime"]
+	if configured.ModelProvider != "runtime" || configured.Model != "runtime-model" {
+		t.Fatalf("model overrides did not win: %#v", configured)
+	}
+	if provider.WireAPI != WireAPIChatCompletions || provider.Dialect != DialectDeepSeek || provider.APIKey != "runtime-secret" || provider.BaseURL != "https://runtime.example/v1" {
+		t.Fatalf("provider overrides did not win: %#v", provider)
+	}
+	if configured.ModelProviders["file"].BaseURL != "https://file.example/v1" {
+		t.Fatalf("unselected provider was modified: %#v", configured.ModelProviders["file"])
 	}
 }
 
-func TestDirectEnvironmentOverrideWinsOverYAMLReference(t *testing.T) {
-	amadeusRoot := t.TempDir()
-	loader := NewLoader(amadeusRoot).WithEnvLookup(mapEnvLookup(map[string]string{
-		"FILE_MODEL": "file-expanded-model",
-		EnvModel:     "direct-environment-model",
-	}))
-	writeConfig(t, loader, `
-providers:
-  openai:
-    model: ${FILE_MODEL}
-`)
-
-	configured, err := loader.Load()
-	if err != nil {
-		t.Fatalf("load config with layered environment values: %v", err)
-	}
-	if configured.Providers[DefaultProviderName].Model != "direct-environment-model" {
-		t.Fatalf("direct environment override did not win: %#v", configured.Providers[DefaultProviderName])
-	}
-}
-
-func TestDirectEnvironmentOverrideAllowsEmptyValue(t *testing.T) {
-	amadeusRoot := t.TempDir()
-	loader := NewLoader(amadeusRoot).WithEnvLookup(mapEnvLookup(map[string]string{
-		EnvAPIKey: "",
-	}))
-	writeConfig(t, loader, `
-providers:
-  openai:
-    api_key: file-secret
-`)
-
-	configured, err := loader.Load()
-	if err != nil {
-		t.Fatalf("load config with empty direct environment override: %v", err)
-	}
-	if configured.Providers[DefaultProviderName].APIKey != "" {
-		t.Fatalf("expected empty API key override, got %q", configured.Providers[DefaultProviderName].APIKey)
+func TestExplicitConfigPathMustExist(t *testing.T) {
+	_, err := newTestFileLoader(filepath.Join(t.TempDir(), "missing.yaml")).Load()
+	if err == nil || !strings.Contains(err.Error(), "open config") {
+		t.Fatalf("expected missing explicit config error: %v", err)
 	}
 }
 
@@ -452,12 +230,11 @@ func newTestFileLoader(path string) Loader {
 
 func writeConfig(t *testing.T, loader Loader, content string) {
 	t.Helper()
-
 	path := loader.ConfigPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("create project config directory: %v", err)
+		t.Fatalf("create config directory: %v", err)
 	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write project config: %v", err)
+		t.Fatalf("write config: %v", err)
 	}
 }

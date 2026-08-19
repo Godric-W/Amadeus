@@ -12,10 +12,9 @@ import (
 
 func TestNewAdapterExposesStableModelAndCapabilities(t *testing.T) {
 	provider := configuredProvider()
-	provider.Model = "test-model"
-	provider.API = config.APIResponses
+	provider.WireAPI = config.WireAPIResponses
 	provider.Dialect = config.DialectOpenAI
-	adapter, err := NewAdapter("openai", provider)
+	adapter, err := NewAdapter("openai", "test-model", provider)
 	if err != nil {
 		t.Fatalf("create OpenAI adapter: %v", err)
 	}
@@ -27,9 +26,9 @@ func TestNewAdapterExposesStableModelAndCapabilities(t *testing.T) {
 		t.Fatalf("unexpected Responses capabilities: %#v", capabilities)
 	}
 
-	provider.API = config.APIChatCompletions
+	provider.WireAPI = config.WireAPIChatCompletions
 	provider.Dialect = config.DialectStandard
-	adapter, err = NewAdapter("compatible", provider)
+	adapter, err = NewAdapter("compatible", "test-model", provider)
 	if err != nil {
 		t.Fatalf("create Chat Completions adapter: %v", err)
 	}
@@ -45,22 +44,22 @@ func TestNewAdapterSelectsDialectExplicitly(t *testing.T) {
 	tests := []struct {
 		name      string
 		dialect   config.ProviderDialect
-		api       config.APIMode
+		api       config.WireAPI
 		reasoning bool
 	}{
-		{name: "standard responses", dialect: config.DialectStandard, api: config.APIResponses},
-		{name: "OpenAI responses", dialect: config.DialectOpenAI, api: config.APIResponses, reasoning: true},
-		{name: "DeepSeek chat", dialect: config.DialectDeepSeek, api: config.APIChatCompletions, reasoning: true},
-		{name: "Qwen chat", dialect: config.DialectQwen, api: config.APIChatCompletions, reasoning: true},
-		{name: "GLM chat", dialect: config.DialectGLM, api: config.APIChatCompletions, reasoning: true},
+		{name: "standard responses", dialect: config.DialectStandard, api: config.WireAPIResponses},
+		{name: "OpenAI responses", dialect: config.DialectOpenAI, api: config.WireAPIResponses, reasoning: true},
+		{name: "DeepSeek chat", dialect: config.DialectDeepSeek, api: config.WireAPIChatCompletions, reasoning: true},
+		{name: "Qwen chat", dialect: config.DialectQwen, api: config.WireAPIChatCompletions, reasoning: true},
+		{name: "GLM chat", dialect: config.DialectGLM, api: config.WireAPIChatCompletions, reasoning: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			provider := validAdapterProvider()
-			provider.API = test.api
+			provider.WireAPI = test.api
 			provider.Dialect = test.dialect
 
-			adapter, err := NewAdapter("provider-name-does-not-select-dialect", provider)
+			adapter, err := NewAdapter("provider-name-does-not-select-dialect", "test-model", provider)
 			if err != nil {
 				t.Fatalf("create adapter: %v", err)
 			}
@@ -78,20 +77,20 @@ func TestNewAdapterRejectsUnsupportedDialectAndAPICombination(t *testing.T) {
 	tests := []struct {
 		name    string
 		dialect config.ProviderDialect
-		api     config.APIMode
+		api     config.WireAPI
 	}{
-		{name: "unknown dialect", dialect: "vendor-specific", api: config.APIChatCompletions},
-		{name: "DeepSeek Responses", dialect: config.DialectDeepSeek, api: config.APIResponses},
-		{name: "Qwen Responses", dialect: config.DialectQwen, api: config.APIResponses},
-		{name: "GLM Responses", dialect: config.DialectGLM, api: config.APIResponses},
+		{name: "unknown dialect", dialect: "vendor-specific", api: config.WireAPIChatCompletions},
+		{name: "DeepSeek Responses", dialect: config.DialectDeepSeek, api: config.WireAPIResponses},
+		{name: "Qwen Responses", dialect: config.DialectQwen, api: config.WireAPIResponses},
+		{name: "GLM Responses", dialect: config.DialectGLM, api: config.WireAPIResponses},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			provider := validAdapterProvider()
-			provider.API = test.api
+			provider.WireAPI = test.api
 			provider.Dialect = test.dialect
 
-			_, err := NewAdapter("provider", provider)
+			_, err := NewAdapter("provider", "test-model", provider)
 			var dialectError *DialectError
 			if !errors.As(err, &dialectError) {
 				t.Fatalf("unexpected adapter error: %v", err)
@@ -106,21 +105,22 @@ func TestNewAdapterRejectsUnsupportedDialectAndAPICombination(t *testing.T) {
 func TestNewAdapterRejectsInvalidRuntimeConfiguration(t *testing.T) {
 	tests := []struct {
 		name       string
-		provider   config.ProviderConfig
+		provider   config.ModelProviderInfo
 		providerID string
+		model      string
 		errorMatch string
 	}{
-		{name: "empty provider name", provider: validAdapterProvider(), errorMatch: "provider name"},
-		{name: "empty model", providerID: "openai", provider: func() config.ProviderConfig { provider := validAdapterProvider(); provider.Model = ""; return provider }(), errorMatch: "model"},
-		{name: "invalid API", providerID: "openai", provider: func() config.ProviderConfig {
+		{name: "empty provider name", model: "test-model", provider: validAdapterProvider(), errorMatch: "provider name"},
+		{name: "empty model", providerID: "openai", provider: validAdapterProvider(), errorMatch: "model"},
+		{name: "invalid API", providerID: "openai", provider: func() config.ModelProviderInfo {
 			provider := validAdapterProvider()
-			provider.API = "legacy"
+			provider.WireAPI = "legacy"
 			return provider
-		}(), errorMatch: "API mode"},
+		}(), model: "test-model", errorMatch: "wire API"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := NewAdapter(test.providerID, test.provider)
+			_, err := NewAdapter(test.providerID, test.model, test.provider)
 			if err == nil || !strings.Contains(err.Error(), test.errorMatch) {
 				t.Fatalf("unexpected adapter error: %v", err)
 			}
@@ -130,15 +130,14 @@ func TestNewAdapterRejectsInvalidRuntimeConfiguration(t *testing.T) {
 
 func TestAdapterRejectsImagesBeforeCallingUnsupportedProvider(t *testing.T) {
 	provider := validAdapterProvider()
-	provider.API = config.APIChatCompletions
+	provider.WireAPI = config.WireAPIChatCompletions
 	provider.Dialect = config.DialectDeepSeek
-	adapter, err := NewAdapter("deepseek", provider)
+	adapter, err := NewAdapter("deepseek", "test-model", provider)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = adapter.Stream(context.Background(), llm.Request{
-		Model: provider.Model, Prompt: llm.Prompt{Input: []llm.ResponseItem{{Role: llm.RoleUser, Parts: []llm.ContentPart{llm.ImagePart("image/png", "YQ==")}}}},
-		MaxOutputTokens: 10,
+		Model: "test-model", Prompt: llm.Prompt{Input: []llm.ResponseItem{{Role: llm.RoleUser, Parts: []llm.ContentPart{llm.ImagePart("image/png", "YQ==")}}}},
 	})
 	var providerError *llm.ProviderError
 	if !errors.As(err, &providerError) || providerError.Kind != llm.ProviderErrorInvalidRequest || !strings.Contains(providerError.Message, "does not support image") {
@@ -146,10 +145,9 @@ func TestAdapterRejectsImagesBeforeCallingUnsupportedProvider(t *testing.T) {
 	}
 }
 
-func validAdapterProvider() config.ProviderConfig {
+func validAdapterProvider() config.ModelProviderInfo {
 	provider := configuredProvider()
-	provider.API = config.APIResponses
+	provider.WireAPI = config.WireAPIResponses
 	provider.Dialect = config.DialectOpenAI
-	provider.Model = "test-model"
 	return provider
 }

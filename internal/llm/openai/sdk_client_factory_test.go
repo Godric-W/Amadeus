@@ -90,15 +90,15 @@ func TestProviderHTTPClientUsesResponseHeaderTimeout(t *testing.T) {
 func TestNewSDKClientRejectsInvalidRuntimeConfiguration(t *testing.T) {
 	tests := []struct {
 		name       string
-		configure  func(*config.ProviderConfig)
+		configure  func(*config.ModelProviderInfo)
 		errorMatch string
 	}{
-		{name: "missing API key", configure: func(provider *config.ProviderConfig) { provider.APIKey = "" }, errorMatch: "API key"},
-		{name: "missing base URL", configure: func(provider *config.ProviderConfig) { provider.BaseURL = "" }, errorMatch: "base URL"},
-		{name: "invalid base URL", configure: func(provider *config.ProviderConfig) { provider.BaseURL = "relative" }, errorMatch: "absolute URL"},
-		{name: "invalid scheme", configure: func(provider *config.ProviderConfig) { provider.BaseURL = "ftp://example.invalid" }, errorMatch: "scheme"},
-		{name: "invalid timeout", configure: func(provider *config.ProviderConfig) { provider.Timeout = 0 }, errorMatch: "timeout"},
-		{name: "invalid retries", configure: func(provider *config.ProviderConfig) { provider.RequestMaxRetries = -1 }, errorMatch: "retries"},
+		{name: "missing API key", configure: func(provider *config.ModelProviderInfo) { provider.APIKey = "" }, errorMatch: "API key"},
+		{name: "missing base URL", configure: func(provider *config.ModelProviderInfo) { provider.BaseURL = "" }, errorMatch: "base URL"},
+		{name: "invalid base URL", configure: func(provider *config.ModelProviderInfo) { provider.BaseURL = "relative" }, errorMatch: "absolute URL"},
+		{name: "invalid scheme", configure: func(provider *config.ModelProviderInfo) { provider.BaseURL = "ftp://example.invalid" }, errorMatch: "scheme"},
+		{name: "invalid timeout", configure: func(provider *config.ModelProviderInfo) { provider.Timeout = 0 }, errorMatch: "timeout"},
+		{name: "invalid retries", configure: func(provider *config.ModelProviderInfo) { provider.RequestMaxRetries = -1 }, errorMatch: "retries"},
 	}
 
 	for _, test := range tests {
@@ -117,13 +117,17 @@ func TestNewSDKClientRejectsInvalidRuntimeConfiguration(t *testing.T) {
 	}
 }
 
-func configuredProvider() config.ProviderConfig {
-	provider := config.Default().Providers[config.DefaultProviderName]
-	provider.APIKey = "test-secret"
-	provider.BaseURL = "https://gateway.example.invalid/v1"
-	provider.Timeout = 75 * time.Millisecond
-	provider.RequestMaxRetries = 0
-	return provider
+func configuredProvider() config.ModelProviderInfo {
+	return config.ModelProviderInfo{
+		WireAPI:           config.WireAPIResponses,
+		Dialect:           config.DialectOpenAI,
+		APIKey:            "test-secret",
+		BaseURL:           "https://gateway.example.invalid/v1",
+		Timeout:           75 * time.Millisecond,
+		RequestMaxRetries: 0,
+		StreamMaxRetries:  5,
+		StreamIdleTimeout: 5 * time.Minute,
+	}
 }
 
 func jsonResponse(status int, body string) *http.Response {

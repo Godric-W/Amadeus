@@ -11,8 +11,8 @@ import (
 const (
 	maxProviderTimeout = 30 * time.Minute
 	maxProviderRetries = 100
-	maxOutputTokens    = 1_000_000
 	maxContextWindow   = int64(100_000_000)
+	maxToolOutputTokens = int64(1_000_000)
 	maxParallelTools   = 64
 	maxWebTimeout      = 2 * time.Minute
 	maxWebBytes        = int64(16 << 20)
@@ -51,25 +51,38 @@ func Validate(configured Config) error {
 		addIssue("version", fmt.Sprintf("must be %d", CurrentVersion))
 	}
 
-	defaultProvider := strings.TrimSpace(configured.DefaultProvider)
-	if defaultProvider == "" {
-		addIssue("default_provider", "must not be empty")
+	if strings.TrimSpace(configured.Model) == "" {
+		addIssue("model", "must not be empty")
 	}
-	if len(configured.Providers) == 0 {
-		addIssue("providers", "must contain at least one provider")
-	} else if defaultProvider != "" {
-		if _, ok := configured.Providers[configured.DefaultProvider]; !ok {
-			addIssue("default_provider", fmt.Sprintf("provider %q is not configured", configured.DefaultProvider))
+	modelProvider := strings.TrimSpace(configured.ModelProvider)
+	if modelProvider == "" {
+		addIssue("model_provider", "must not be empty")
+	}
+	if configured.ModelContextWindow <= 0 || configured.ModelContextWindow > maxContextWindow {
+		addIssue("model_context_window", fmt.Sprintf("must be greater than 0 and at most %d", maxContextWindow))
+	}
+	derivedCompactLimit := configured.ModelContextWindow * 9 / 10
+	if configured.ModelAutoCompactTokenLimit < 0 || configured.ModelAutoCompactTokenLimit > derivedCompactLimit {
+		addIssue("model_auto_compact_token_limit", "must be zero (derived) or no greater than 90% of model_context_window")
+	}
+	if configured.ToolOutputTokenLimit <= 0 || configured.ToolOutputTokenLimit > maxToolOutputTokens {
+		addIssue("tool_output_token_limit", fmt.Sprintf("must be greater than 0 and at most %d", maxToolOutputTokens))
+	}
+	if len(configured.ModelProviders) == 0 {
+		addIssue("model_providers", "must contain at least one provider")
+	} else if modelProvider != "" {
+		if _, ok := configured.ModelProviders[configured.ModelProvider]; !ok {
+			addIssue("model_provider", fmt.Sprintf("provider %q is not configured", configured.ModelProvider))
 		}
 	}
 
-	providerNames := make([]string, 0, len(configured.Providers))
-	for name := range configured.Providers {
+	providerNames := make([]string, 0, len(configured.ModelProviders))
+	for name := range configured.ModelProviders {
 		providerNames = append(providerNames, name)
 	}
 	sort.Strings(providerNames)
 	for _, name := range providerNames {
-		validateProvider(name, configured.Providers[name], addIssue)
+		validateProvider(name, configured.ModelProviders[name], addIssue)
 	}
 
 	validateAgent(configured.Agent, addIssue)
@@ -120,16 +133,16 @@ func validateWeb(configured WebConfig, addIssue func(string, string)) {
 	}
 }
 
-func validateProvider(name string, provider ProviderConfig, addIssue func(string, string)) {
-	path := "providers." + name
+func validateProvider(name string, provider ModelProviderInfo, addIssue func(string, string)) {
+	path := "model_providers." + name
 	if strings.TrimSpace(name) == "" {
-		addIssue("providers", "provider name must not be empty")
+		addIssue("model_providers", "provider name must not be empty")
 	}
 
-	switch provider.API {
-	case APIResponses, APIChatCompletions:
+	switch provider.WireAPI {
+	case WireAPIResponses, WireAPIChatCompletions:
 	default:
-		addIssue(path+".api", fmt.Sprintf("must be %q or %q", APIResponses, APIChatCompletions))
+		addIssue(path+".wire_api", fmt.Sprintf("must be %q or %q", WireAPIResponses, WireAPIChatCompletions))
 	}
 
 	switch provider.Dialect {
@@ -158,21 +171,6 @@ func validateProvider(name string, provider ProviderConfig, addIssue func(string
 	}
 	if provider.StreamIdleTimeout <= 0 {
 		addIssue(path+".stream_idle_timeout", "must be greater than 0")
-	}
-	if provider.Temperature < 0 || provider.Temperature > 2 {
-		addIssue(path+".temperature", "must be between 0 and 2")
-	}
-	if provider.MaxOutputTokens <= 0 || provider.MaxOutputTokens > maxOutputTokens {
-		addIssue(path+".max_output_tokens", fmt.Sprintf("must be greater than 0 and at most %d", maxOutputTokens))
-	}
-	if provider.ContextWindow <= int64(provider.MaxOutputTokens) || provider.ContextWindow > maxContextWindow {
-		addIssue(path+".context_window", fmt.Sprintf("must be greater than max_output_tokens and at most %d", maxContextWindow))
-	}
-	if provider.AutoCompactTokenLimit < 0 || provider.AutoCompactTokenLimit > provider.ContextWindow {
-		addIssue(path+".auto_compact_token_limit", "must be zero (derived) or between 1 and context_window")
-	}
-	if provider.ToolOutputMaxTokens < 0 || provider.ToolOutputMaxTokens > provider.ContextWindow {
-		addIssue(path+".tool_output_max_tokens", "must be zero (derived) or no greater than context_window")
 	}
 }
 

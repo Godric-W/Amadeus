@@ -62,7 +62,7 @@ func TestSessionPersistsAcrossCommandsAndContinueReplaysHistory(t *testing.T) {
 	firstRuntime := commandRuntime{
 		amadeusRoot: home, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 		terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return firstClient, nil },
+		llmClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) { return firstClient, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
 	}
 	first := newRootCommandWithRuntime(&configFlags{}, firstRuntime)
@@ -75,7 +75,7 @@ func TestSessionPersistsAcrossCommandsAndContinueReplaysHistory(t *testing.T) {
 	}
 	secondClient := &codingCommandClient{}
 	secondRuntime := firstRuntime
-	secondRuntime.llmClientFactory = func(string, config.ProviderConfig) (llm.Client, error) { return secondClient, nil }
+	secondRuntime.llmClientFactory = func(string, config.ModelProviderInfo) (llm.Client, error) { return secondClient, nil }
 	second := newRootCommandWithRuntime(&configFlags{}, secondRuntime)
 	second.SetIn(strings.NewReader(""))
 	second.SetOut(io.Discard)

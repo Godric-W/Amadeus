@@ -21,13 +21,6 @@ func newResponsesRequest(request llm.Request) (responses.ResponseNewParams, erro
 	if len(messages) == 0 {
 		return responses.ResponseNewParams{}, errors.New("responses request messages are empty")
 	}
-	if request.Temperature < 0 || request.Temperature > 2 {
-		return responses.ResponseNewParams{}, errors.New("responses request temperature must be between 0 and 2")
-	}
-	if request.MaxOutputTokens <= 0 {
-		return responses.ResponseNewParams{}, errors.New("responses request max output tokens must be greater than zero")
-	}
-
 	input := make(responses.ResponseInputParam, 0, len(messages))
 	for index, message := range messages {
 		converted, err := responsesInputItems(message)
@@ -47,9 +40,7 @@ func newResponsesRequest(request llm.Request) (responses.ResponseNewParams, erro
 		Input: responses.ResponseNewParamsInputUnion{
 			OfInputItemList: input,
 		},
-		Temperature:     openaisdk.Float(request.Temperature),
-		MaxOutputTokens: openaisdk.Int(int64(request.MaxOutputTokens)),
-		Tools:           tools,
+		Tools: tools,
 	}, nil
 }
 

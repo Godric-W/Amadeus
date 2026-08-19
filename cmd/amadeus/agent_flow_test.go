@@ -197,7 +197,7 @@ func TestDefaultGreetingUsesTurnEngineWithoutPlanner(t *testing.T) {
 	runtime := commandRuntime{
 		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 		terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
+		llmClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
 		turnIDFactory:    func() string { return "greeting-run" },
 	}
@@ -223,7 +223,7 @@ func TestTurnEngineRecoversFromToolFailure(t *testing.T) {
 	runtime := commandRuntime{
 		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 		terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
+		llmClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
 		turnIDFactory:    func() string { return "tool-recovery-run" },
 	}
@@ -260,7 +260,7 @@ func TestCodingAgentPublishesNonFatalSkillLoadWarnings(t *testing.T) {
 	runtime := commandRuntime{
 		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 		terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
+		llmClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
 		turnIDFactory:    func() string { return "skill-warning-run" },
 	}
@@ -293,7 +293,7 @@ func TestCodingAgentInjectsExplicitSkillIntoFirstRequestContext(t *testing.T) {
 	runtime := commandRuntime{
 		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 		terminalDetector: func(io.Reader) bool { return false }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
+		llmClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
 		turnIDFactory:    func() string { return "explicit-skill-run" },
 	}
@@ -333,7 +333,7 @@ func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 		lookupEnv:           emptyEnvLookup,
 		terminalDetector:    func(io.Reader) bool { return true },
 		agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(providerName string, provider config.ProviderConfig) (llm.Client, error) {
+		llmClientFactory: func(providerName string, provider config.ModelProviderInfo) (llm.Client, error) {
 			if providerName != "openai" || provider.Model != "mock-model" || provider.APIKey != "test-api-key" {
 				t.Fatalf("unexpected Provider selection: name=%q provider=%#v", providerName, provider)
 			}
@@ -417,7 +417,7 @@ func TestOneShotInterruptReturnsCancelledExitCode(t *testing.T) {
 		lookupEnv:           emptyEnvLookup,
 		terminalDetector:    func(io.Reader) bool { return false },
 		agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) {
+		llmClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) {
 			return &interruptingCodingClient{codingCommandClient: &codingCommandClient{}, cancel: currentCancel}, nil
 		},
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },

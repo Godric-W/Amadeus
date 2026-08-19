@@ -10,11 +10,11 @@ import (
 	openaiadapter "github.com/Godric-W/Amadeus/internal/llm/openai"
 )
 
-type llmClientFactory func(string, config.ProviderConfig) (llm.Client, error)
+type llmClientFactory func(string, string, config.ModelProviderInfo) (llm.Client, error)
 type turnContextFactory func(context.Context) (context.Context, context.CancelFunc)
 
-func defaultLLMClientFactory(providerName string, provider config.ProviderConfig) (llm.Client, error) {
-	return openaiadapter.NewAdapter(providerName, provider)
+func defaultLLMClientFactory(providerName, model string, provider config.ModelProviderInfo) (llm.Client, error) {
+	return openaiadapter.NewAdapter(providerName, model, provider)
 }
 
 func interruptibleTurnContext(parent context.Context) (context.Context, context.CancelFunc) {

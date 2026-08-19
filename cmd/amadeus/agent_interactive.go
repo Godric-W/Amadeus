@@ -37,11 +37,10 @@ func (runner *agentController) runFullscreenInteractive(ctx context.Context, inv
 	if err != nil {
 		return err
 	}
-	provider := configured.Providers[configured.DefaultProvider]
 	interactive, err := application.NewInteractiveApplication(ctx, application.InteractiveOptions{
 		Workspace: workspace, Configuration: sessionConfiguration(configured, invocation),
-		Project: invocation.Project.Path(), Provider: configured.DefaultProvider, Model: provider.Model,
-		ContextWindow: provider.ContextWindow, MaxTaskBytes: maxRootTaskBytes,
+		Project: invocation.Project.Path(), Provider: configured.ModelProvider, Model: configured.Model,
+		ContextWindow: configured.ModelContextWindow, MaxTaskBytes: maxRootTaskBytes,
 	})
 	if err != nil {
 		return err

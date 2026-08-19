@@ -37,7 +37,7 @@ func TestCoreToolsProviderMockE2E(t *testing.T) {
 		{id: "test-project", name: "execute_command", arguments: map[string]any{"command": "go test ./...", "timeout_ms": 30000}},
 	}
 
-	for _, api := range []config.APIMode{config.APIResponses, config.APIChatCompletions} {
+	for _, api := range []config.WireAPI{config.WireAPIResponses, config.WireAPIChatCompletions} {
 		t.Run(string(api), func(t *testing.T) {
 			var mutex sync.Mutex
 			var bodies []map[string]any
@@ -60,7 +60,7 @@ func TestCoreToolsProviderMockE2E(t *testing.T) {
 			amadeusHome := t.TempDir()
 			projectDirectory := t.TempDir()
 			dialect := config.DialectStandard
-			if api == config.APIResponses {
+			if api == config.WireAPIResponses {
 				dialect = config.DialectOpenAI
 			}
 			writeCommandConfig(t, filepath.Join(amadeusHome, "config.yaml"), fmt.Sprintf(`
@@ -120,7 +120,7 @@ agent:
 
 func TestCoreToolsProviderMockE2EDeniedWrite(t *testing.T) {
 	step := providerToolStep{id: "denied-write", name: "write", arguments: map[string]any{"path": ".amadeus/denied.txt", "content": "must not be written\n"}}
-	for _, api := range []config.APIMode{config.APIResponses, config.APIChatCompletions} {
+	for _, api := range []config.WireAPI{config.WireAPIResponses, config.WireAPIChatCompletions} {
 		t.Run(string(api), func(t *testing.T) {
 			var mutex sync.Mutex
 			var bodies []map[string]any
@@ -153,7 +153,7 @@ func TestCoreToolsProviderMockE2EDeniedWrite(t *testing.T) {
 				t.Fatal(err)
 			}
 			dialect := config.DialectStandard
-			if api == config.APIResponses {
+			if api == config.WireAPIResponses {
 				dialect = config.DialectOpenAI
 			}
 			writeCommandConfig(t, filepath.Join(amadeusHome, "config.yaml"), fmt.Sprintf(`
@@ -213,7 +213,7 @@ agent:
 }
 
 func TestCoreToolsProviderMockE2EPermissionGrant(t *testing.T) {
-	for _, api := range []config.APIMode{config.APIResponses, config.APIChatCompletions} {
+	for _, api := range []config.WireAPI{config.WireAPIResponses, config.WireAPIChatCompletions} {
 		t.Run(string(api), func(t *testing.T) {
 			externalDirectory, err := os.MkdirTemp(".", ".permission-grant-e2e-")
 			if err != nil {
@@ -259,7 +259,7 @@ func TestCoreToolsProviderMockE2EPermissionGrant(t *testing.T) {
 			amadeusHome := t.TempDir()
 			projectDirectory := t.TempDir()
 			dialect := config.DialectStandard
-			if api == config.APIResponses {
+			if api == config.WireAPIResponses {
 				dialect = config.DialectOpenAI
 			}
 			writeCommandConfig(t, filepath.Join(amadeusHome, "config.yaml"), fmt.Sprintf(`
@@ -317,12 +317,12 @@ agent:
 	}
 }
 
-func coreToolsProviderFixture(api config.APIMode, requestIndex int, steps []providerToolStep) string {
+func coreToolsProviderFixture(api config.WireAPI, requestIndex int, steps []providerToolStep) string {
 	if requestIndex <= len(steps) {
 		return providerToolCallFixture(api, requestIndex, steps[requestIndex-1])
 	}
 	if requestIndex == len(steps)+1 {
-		if api == config.APIResponses {
+		if api == config.WireAPIResponses {
 			return responsesTextFixture("core_tools_final", "core tools workflow complete")
 		}
 		return chatTextFixture("core_tools_final", "core tools workflow complete")
@@ -330,11 +330,11 @@ func coreToolsProviderFixture(api config.APIMode, requestIndex int, steps []prov
 	return providerTextFixture(api, "unexpected request")
 }
 
-func providerToolCallFixture(api config.APIMode, sequence int, step providerToolStep) string {
+func providerToolCallFixture(api config.WireAPI, sequence int, step providerToolStep) string {
 	arguments, _ := json.Marshal(step.arguments)
 	responseID := fmt.Sprintf("tool_response_%d", sequence)
 	itemID := fmt.Sprintf("tool_item_%d", sequence)
-	if api == config.APIResponses {
+	if api == config.WireAPIResponses {
 		return strings.Join([]string{
 			`event: response.created`, fmt.Sprintf(`data: {"type":"response.created","sequence_number":0,"response":{"id":%q,"status":"in_progress"}}`, responseID), ``,
 			`event: response.output_item.added`, fmt.Sprintf(`data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":%q,"type":"function_call","call_id":%q,"name":%q,"arguments":"","status":"in_progress"}}`, itemID, step.id, step.name), ``,
@@ -355,7 +355,7 @@ func chatTextFixture(id, text string) string {
 	}, "\n")
 }
 
-func assertCoreToolsProviderRequests(t *testing.T, api config.APIMode, captured []map[string]any) {
+func assertCoreToolsProviderRequests(t *testing.T, api config.WireAPI, captured []map[string]any) {
 	t.Helper()
 	first, _ := json.Marshal(captured[0])
 	for _, fragment := range []string{`"read"`, `"edit"`, `"write"`, `"execute_command"`} {

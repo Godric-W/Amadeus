@@ -14,9 +14,8 @@ type ModelInfo struct {
 	Name                      string
 	ContextWindow             int64
 	AutoCompactTokenLimit     int64
-	MaxOutputTokens           int
 	SupportsParallelToolCalls bool
-	ToolOutputMaxTokens       int64
+	ToolOutputTokenLimit      int64
 	InputModalities           []InputModality
 	ModelMessages             ModelMessages
 }
@@ -45,8 +44,8 @@ func (info ModelInfo) Normalized() ModelInfo {
 			info.AutoCompactTokenLimit = defaultLimit
 		}
 	}
-	if info.ToolOutputMaxTokens <= 0 {
-		info.ToolOutputMaxTokens = 16_384
+	if info.ToolOutputTokenLimit <= 0 {
+		info.ToolOutputTokenLimit = 10_000
 	}
 	if len(info.InputModalities) == 0 {
 		info.InputModalities = []InputModality{InputModalityText}

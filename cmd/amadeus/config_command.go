@@ -76,7 +76,7 @@ func newConfigCheckCommand(flags *configFlags, runtime commandRuntime) *cobra.Co
 
 			fmt.Fprintln(command.OutOrStdout(), "configuration is valid")
 			fmt.Fprintf(command.OutOrStdout(), "config: %s\n", path)
-			fmt.Fprintf(command.OutOrStdout(), "provider: %s\n", configured.DefaultProvider)
+			fmt.Fprintf(command.OutOrStdout(), "model provider: %s\n", configured.ModelProvider)
 			return nil
 		},
 	}
@@ -121,28 +121,28 @@ func loadConfiguredConfig(command *cobra.Command, flags *configFlags, runtime co
 func writeConfigExplanation(writer io.Writer, path string, configured config.Config, sources config.Sources) {
 	fmt.Fprintf(writer, "config: %s\n", path)
 	writeExplainedValue(writer, "version", configured.Version, sources)
-	writeExplainedValue(writer, "default_provider", configured.DefaultProvider, sources)
+	writeExplainedValue(writer, "model", configured.Model, sources)
+	writeExplainedValue(writer, "model_provider", configured.ModelProvider, sources)
+	writeExplainedValue(writer, "model_context_window", configured.ModelContextWindow, sources)
+	writeExplainedValue(writer, "model_auto_compact_token_limit", configured.ModelAutoCompactTokenLimit, sources)
+	writeExplainedValue(writer, "tool_output_token_limit", configured.ToolOutputTokenLimit, sources)
 
-	providerNames := make([]string, 0, len(configured.Providers))
-	for name := range configured.Providers {
+	providerNames := make([]string, 0, len(configured.ModelProviders))
+	for name := range configured.ModelProviders {
 		providerNames = append(providerNames, name)
 	}
 	sort.Strings(providerNames)
 	for _, name := range providerNames {
-		provider := configured.Providers[name]
-		prefix := "providers." + name + "."
-		writeExplainedValue(writer, prefix+"api", provider.API, sources)
+		provider := configured.ModelProviders[name]
+		prefix := "model_providers." + name + "."
+		writeExplainedValue(writer, prefix+"wire_api", provider.WireAPI, sources)
 		writeExplainedValue(writer, prefix+"dialect", provider.Dialect, sources)
 		writeExplainedValue(writer, prefix+"api_key", provider.APIKey, sources)
 		writeExplainedValue(writer, prefix+"base_url", provider.BaseURL, sources)
-		writeExplainedValue(writer, prefix+"model", provider.Model, sources)
 		writeExplainedValue(writer, prefix+"timeout", provider.Timeout, sources)
 		writeExplainedValue(writer, prefix+"request_max_retries", provider.RequestMaxRetries, sources)
 		writeExplainedValue(writer, prefix+"stream_max_retries", provider.StreamMaxRetries, sources)
 		writeExplainedValue(writer, prefix+"stream_idle_timeout", provider.StreamIdleTimeout, sources)
-		writeExplainedValue(writer, prefix+"temperature", provider.Temperature, sources)
-		writeExplainedValue(writer, prefix+"max_output_tokens", provider.MaxOutputTokens, sources)
-		writeExplainedValue(writer, prefix+"context_window", provider.ContextWindow, sources)
 	}
 
 	writeExplainedValue(writer, "agent.max_parallel_tools", configured.Agent.MaxParallelTools, sources)

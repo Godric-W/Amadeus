@@ -44,7 +44,7 @@ func (client *engineTestClient) Stream(_ context.Context, request llm.Request) (
 }
 
 func (client *engineTestClient) Model() llm.ModelInfo {
-	return llm.ModelInfo{Provider: "test", Name: "test-model", ContextWindow: 100_000, MaxOutputTokens: 1024, SupportsParallelToolCalls: true, ModelMessages: client.messages}
+	return llm.ModelInfo{Provider: "test", Name: "test-model", ContextWindow: 100_000, SupportsParallelToolCalls: true, ModelMessages: client.messages}
 }
 
 func (*engineTestClient) Capabilities() llm.Capabilities {
@@ -157,6 +157,7 @@ func TestTurnEngineContinuesAfterToolFailureAndPersistsBeforeCompletion(t *testi
 	}
 	runtime := &Services{
 		providerName: "test", provider: engineTestProvider(), client: client,
+		modelInfo: engineTestModelInfo(client.messages),
 		modelMessages: testModelMessages(t), registry: registry,
 		toolService: service, visibility: map[string]bool{},
 	}
@@ -207,7 +208,7 @@ func TestStepContextDerivesPlanMaskAndRevisionFromOneRegistrySnapshot(t *testing
 			t.Fatal(err)
 		}
 	}
-	runtime := &Services{client: client, modelMessages: testModelMessages(t), registry: registry, visibility: map[string]bool{}, provider: engineTestProvider()}
+	runtime := &Services{client: client, modelInfo: engineTestModelInfo(client.messages), modelMessages: testModelMessages(t), registry: registry, visibility: map[string]bool{}, provider: engineTestProvider()}
 	host := &engineTestHost{context: agentcontext.NewManager(nil)}
 	regular, err := runtime.CaptureStep(host.Snapshot, turn.TurnContext{Mode: turn.ModeKindDefault})
 	if err != nil {
@@ -251,6 +252,7 @@ func TestTurnEngineWarnsThenReturnsTypedBlockedAtSafetyBudget(t *testing.T) {
 	}
 	runtime := &Services{
 		providerName: "test", provider: engineTestProvider(), client: client,
+		modelInfo: engineTestModelInfo(client.messages),
 		modelMessages: testModelMessages(t), registry: registry,
 		toolService: service, visibility: map[string]bool{},
 		budget: TurnBudget{MaxSamples: 2, MaxToolCalls: 100, MaxDuration: time.Hour, WarnRatio: 0.5},
@@ -283,13 +285,8 @@ func TestTurnEngineChecksAutomaticCompactionBeforeSampling(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := &Services{
-		providerName: "test", provider: func() config.ProviderConfig {
-			provider := engineTestProvider()
-			provider.ContextWindow = 1_000
-			provider.AutoCompactTokenLimit = 1
-			provider.MaxOutputTokens = 64
-			return provider
-		}(), client: client,
+		providerName: "test", provider: engineTestProvider(), client: client,
+		modelInfo: llm.ModelInfo{Provider: "test", Name: "test-model", ContextWindow: 1_000, AutoCompactTokenLimit: 1, ToolOutputTokenLimit: 10_000, SupportsParallelToolCalls: true, ModelMessages: client.messages},
 		modelMessages: testModelMessages(t), registry: registry,
 		toolService: service, visibility: map[string]bool{}, budget: DefaultTurnBudget(),
 	}
@@ -312,12 +309,18 @@ func TestTurnEngineChecksAutomaticCompactionBeforeSampling(t *testing.T) {
 	}
 }
 
-func engineTestProvider() config.ProviderConfig {
-	return config.ProviderConfig{
-		Model:             "test-model",
-		MaxOutputTokens:   1024,
+func engineTestProvider() config.ModelProviderInfo {
+	return config.ModelProviderInfo{
 		StreamMaxRetries:  0,
 		StreamIdleTimeout: time.Second,
+	}
+}
+
+func engineTestModelInfo(messages llm.ModelMessages) llm.ModelInfo {
+	return llm.ModelInfo{
+		Provider: "test", Name: "test-model", ContextWindow: 100_000,
+		AutoCompactTokenLimit: 90_000, ToolOutputTokenLimit: 10_000,
+		SupportsParallelToolCalls: true, ModelMessages: messages,
 	}
 }
 
@@ -378,7 +381,7 @@ func TestServicesPreferModelMessagesFromCurrentModel(t *testing.T) {
 	modelMessages := catalog
 	modelMessages.InstructionsTemplate = "model-specific {{ personality }}"
 	modelMessages.Revision = "model-specific-revision"
-	runtime := &Services{client: &engineTestClient{messages: modelMessages}, modelMessages: catalog}
+	runtime := &Services{client: &engineTestClient{messages: modelMessages}, modelInfo: engineTestModelInfo(modelMessages), modelMessages: catalog}
 	resolved, err := runtime.ModelMessages(runtime.ModelInfo())
 	if err != nil {
 		t.Fatal(err)

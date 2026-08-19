@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
@@ -28,7 +27,7 @@ func TestResponsesRequestSerializesDomainTextFields(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := config.Default().Providers[config.DefaultProviderName]
+	provider := configuredProvider()
 	provider.APIKey = "test-secret"
 	provider.BaseURL = server.URL + "/v1"
 	provider.RequestMaxRetries = 0
@@ -43,8 +42,6 @@ func TestResponsesRequestSerializesDomainTextFields(t *testing.T) {
 			llm.DeveloperMessage("developer prompt"), llm.UserMessage("hello"),
 			{Role: llm.RoleAssistant, Content: "previous answer", Reasoning: "provider-only reasoning"},
 		}, BaseInstructions: llm.BaseInstructions{Text: "system prompt"}},
-		Temperature:     0.3,
-		MaxOutputTokens: 2048,
 	}
 	params, err := newResponsesRequest(domainRequest)
 	if err != nil {
@@ -57,11 +54,11 @@ func TestResponsesRequestSerializesDomainTextFields(t *testing.T) {
 	if requestBody["model"] != "test-model" {
 		t.Fatalf("unexpected model: %#v", requestBody["model"])
 	}
-	if requestBody["temperature"] != 0.3 {
-		t.Fatalf("unexpected temperature: %#v", requestBody["temperature"])
+	if _, exists := requestBody["temperature"]; exists {
+		t.Fatalf("Responses request unexpectedly set temperature: %#v", requestBody)
 	}
-	if requestBody["max_output_tokens"] != float64(2048) {
-		t.Fatalf("unexpected max output tokens: %#v", requestBody["max_output_tokens"])
+	if _, exists := requestBody["max_output_tokens"]; exists {
+		t.Fatalf("Responses request unexpectedly set max_output_tokens: %#v", requestBody)
 	}
 
 	messages, ok := requestBody["input"].([]any)
@@ -102,7 +99,7 @@ func TestResponsesRequestSerializesStandardToolProtocol(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := config.Default().Providers[config.DefaultProviderName]
+	provider := configuredProvider()
 	provider.APIKey = "test-secret"
 	provider.BaseURL = server.URL + "/v1"
 	provider.RequestMaxRetries = 0
@@ -122,7 +119,6 @@ func TestResponsesRequestSerializesStandardToolProtocol(t *testing.T) {
 				Name: "read", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`), Strict: true,
 			}},
 		},
-		Temperature: 0.2, MaxOutputTokens: 100,
 	}
 	params, err := newResponsesRequest(domainRequest)
 	if err != nil {
@@ -150,7 +146,7 @@ func TestResponsesRequestSerializesStandardToolProtocol(t *testing.T) {
 
 func TestResponsesRequestSerializesUserAndToolImagesAsContentParts(t *testing.T) {
 	var requestBody map[string]any
-	provider := config.Default().Providers[config.DefaultProviderName]
+	provider := configuredProvider()
 	provider.APIKey = "test-secret"
 	provider.BaseURL = "https://responses.example.invalid/v1"
 	provider.RequestMaxRetries = 0
@@ -165,7 +161,7 @@ func TestResponsesRequestSerializesUserAndToolImagesAsContentParts(t *testing.T)
 		t.Fatal(err)
 	}
 	request := llm.Request{
-		Model: "test-model", Temperature: 0.2, MaxOutputTokens: 100,
+		Model: "test-model",
 		Prompt: llm.Prompt{Input: []llm.ResponseItem{
 			{Role: llm.RoleUser, Content: "inspect", Parts: []llm.ContentPart{llm.ImagePart("image/png", "YQ==")}},
 			llm.ToolResultMessageWithParts("call_image", "tool image", llm.ImagePart("image/jpeg", "Yg==")),
@@ -196,12 +192,9 @@ func TestResponsesRequestRejectsUnsupportedInput(t *testing.T) {
 		errorMatch string
 	}{
 		{name: "missing model", request: validResponsesDomainRequest(), errorMatch: "model"},
-		{name: "missing messages", request: llm.Request{Model: "model", Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "messages"},
-		{name: "temperature below range", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{llm.UserMessage("hello")}}, Temperature: -0.1, MaxOutputTokens: 10}, errorMatch: "temperature"},
-		{name: "temperature above range", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{llm.UserMessage("hello")}}, Temperature: 2.1, MaxOutputTokens: 10}, errorMatch: "temperature"},
-		{name: "missing max tokens", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{llm.UserMessage("hello")}}, Temperature: 0.2}, errorMatch: "max output tokens"},
-		{name: "tool role missing call ID", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{{Role: llm.RoleTool, Content: "result"}}}, Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "call ID"},
-		{name: "unknown role", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{{Role: llm.Role("observer"), Content: "hello"}}}, Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "unsupported role"},
+		{name: "missing messages", request: llm.Request{Model: "model"}, errorMatch: "messages"},
+		{name: "tool role missing call ID", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{{Role: llm.RoleTool, Content: "result"}}}}, errorMatch: "call ID"},
+		{name: "unknown role", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{{Role: llm.Role("observer"), Content: "hello"}}}}, errorMatch: "unsupported role"},
 	}
 	tests[0].request.Model = ""
 
@@ -220,9 +213,7 @@ func TestResponsesRequestRejectsUnsupportedInput(t *testing.T) {
 
 func validResponsesDomainRequest() llm.Request {
 	return llm.Request{
-		Model:           "model",
-		Prompt:          llm.Prompt{Input: []llm.ResponseItem{llm.UserMessage("hello")}},
-		Temperature:     0.2,
-		MaxOutputTokens: 10,
+		Model:  "model",
+		Prompt: llm.Prompt{Input: []llm.ResponseItem{llm.UserMessage("hello")}},
 	}
 }

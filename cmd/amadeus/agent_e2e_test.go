@@ -107,7 +107,7 @@ func TestCodingAgentExposesAndExecutesUpdatePlan(t *testing.T) {
 	runtime := commandRuntime{
 		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 		terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
+		llmClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
 		turnIDFactory:    func() string { return "plan-guided-e2e" },
 	}
@@ -180,7 +180,7 @@ func TestCodingAgentCommandReadsFixesTestsAndCompletes(t *testing.T) {
 	runtime := commandRuntime{
 		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 		terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
+		llmClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil },
 		turnIDFactory:    func() string { return "coding-workflow-e2e" },
 		agentContextFactory: func(parent context.Context) (context.Context, context.CancelFunc) {
@@ -266,7 +266,7 @@ func TestCodingAgentAddDirAllowsPatchAcrossWorkspaceRoots(t *testing.T) {
 	runtime := commandRuntime{
 		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 		terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
+		llmClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
 		turnIDFactory:    func() string { return "add-dir-e2e" },
 	}
@@ -357,7 +357,7 @@ func TestCodingAgentSkillWorkflowUsesProjectOverrideAndNextRequestContext(t *tes
 	runtime := commandRuntime{
 		amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
 		terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
+		llmClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 		auditSinkFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
 		turnIDFactory:    func() string { return "skill-workflow-e2e" },
 	}
@@ -481,7 +481,7 @@ func TestCodingWorkflowIntegratesSkillMCPWebAndDiagnosticHook(t *testing.T) {
 	client, remote := &integratedWorkflowClient{}, &integratedMCPClient{}
 	auditSink := audit.NewMemorySink()
 	runtime := commandRuntime{amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup, terminalDetector: func(io.Reader) bool { return true }, agentCommandFactory: defaultAgentCommandFactory,
-		llmClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil }, mcpClientFactory: func(context.Context, mcp.ServerConfig) (mcp.Client, error) { return remote, nil }, webFetcher: &integratedWebFetcher{}, auditSinkFactory: func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil }, turnIDFactory: func() string { return "integrated-m6" }}
+		llmClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) { return client, nil }, mcpClientFactory: func(context.Context, mcp.ServerConfig) (mcp.Client, error) { return remote, nil }, webFetcher: &integratedWebFetcher{}, auditSinkFactory: func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil }, turnIDFactory: func() string { return "integrated-m6" }}
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
 	var stdout, stderr bytes.Buffer
 	command.SetIn(strings.NewReader("s\ns\ns\ns\n"))

@@ -257,27 +257,27 @@ func compactTurnContext() *turn.TurnContext {
 
 func newCompactionTestRuntime(t *testing.T) (*ServicesBuilder, *compactTestHost, *interactiveCompactionClient) {
 	configured := config.Default()
-	return newCompactionTestRuntimeWithRetries(t, configured.Providers[configured.DefaultProvider].StreamMaxRetries)
+	return newCompactionTestRuntimeWithRetries(t, configured.ModelProviders[configured.ModelProvider].StreamMaxRetries)
 }
 
 func newCompactionTestRuntimeWithRetries(t *testing.T, streamMaxRetries int) (*ServicesBuilder, *compactTestHost, *interactiveCompactionClient) {
 	t.Helper()
 	client := &interactiveCompactionClient{}
 	configured := config.Default()
-	provider := configured.Providers[configured.DefaultProvider]
+	provider := configured.ModelProviders[configured.ModelProvider]
 	provider.APIKey = "test-key"
 	provider.Model = "compact-model"
 	provider.MaxOutputTokens = 1024
 	provider.StreamMaxRetries = streamMaxRetries
-	configured.DefaultProvider = "mock"
-	configured.Providers = map[string]config.ProviderConfig{"mock": provider}
+	configured.ModelProvider = "mock"
+	configured.ModelProviders = map[string]config.ModelProviderInfo{"mock": provider}
 	root, err := project.NewRoot(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	builder, err := NewServicesBuilder(ServicesOptions{
 		Config: configured, Project: root, AmadeusRoot: t.TempDir(), ModelMessages: mustLoadModelMessages(t),
-		ClientFactory: func(string, config.ProviderConfig) (llm.Client, error) { return client, nil },
+		ClientFactory: func(string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 		AuditFactory: func() (audit.Sink, io.Closer, error) {
 			return audit.NewMemorySink(), io.NopCloser(strings.NewReader("")), nil
 		},

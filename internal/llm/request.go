@@ -33,11 +33,9 @@ type ReasoningConfig struct {
 }
 
 type Request struct {
-	Model           string
-	Prompt          Prompt
-	Temperature     float64
-	MaxOutputTokens int
-	Reasoning       *ReasoningConfig
+	Model     string
+	Prompt    Prompt
+	Reasoning *ReasoningConfig
 }
 
 func NewRequest(model string, messages []ResponseItem) Request {

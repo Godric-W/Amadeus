@@ -3,22 +3,15 @@ package config
 import "time"
 
 const (
-	CurrentVersion      = 1
-	DefaultProviderName = "openai"
+	CurrentVersion             = 2
+	DefaultToolOutputTokenLimit = int64(10_000)
 )
 
 func Default() Config {
-	openAI := defaultProviderConfig()
-	openAI.API = APIResponses
-	openAI.Dialect = DialectOpenAI
-	openAI.BaseURL = "https://api.openai.com/v1"
-
 	return Config{
-		Version:         CurrentVersion,
-		DefaultProvider: DefaultProviderName,
-		Providers: map[string]ProviderConfig{
-			DefaultProviderName: openAI,
-		},
+		Version:              CurrentVersion,
+		ToolOutputTokenLimit: DefaultToolOutputTokenLimit,
+		ModelProviders:       make(map[string]ModelProviderInfo),
 		Agent: AgentConfig{
 			MaxParallelTools: 4,
 		},
@@ -32,16 +25,13 @@ func Default() Config {
 	}
 }
 
-func defaultProviderConfig() ProviderConfig {
-	return ProviderConfig{
-		Dialect:             DialectStandard,
-		Timeout:             2 * time.Minute,
-		RequestMaxRetries:   4,
-		StreamMaxRetries:    5,
-		StreamIdleTimeout:   5 * time.Minute,
-		Temperature:         0.2,
-		MaxOutputTokens:     8192,
-		ContextWindow:       128_000,
-		ToolOutputMaxTokens: 16_384,
+func defaultModelProviderInfo() ModelProviderInfo {
+	return ModelProviderInfo{
+		WireAPI:           WireAPIResponses,
+		Dialect:           DialectStandard,
+		Timeout:           2 * time.Minute,
+		RequestMaxRetries: 4,
+		StreamMaxRetries:  5,
+		StreamIdleTimeout: 5 * time.Minute,
 	}
 }

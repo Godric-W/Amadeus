@@ -111,7 +111,6 @@ func dialectChatRequest() llm.Request {
 				Name: "read", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`), Strict: false,
 			}},
 		},
-		Temperature: 0.2, MaxOutputTokens: 256,
 	}
 }
 

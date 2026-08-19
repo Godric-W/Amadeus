@@ -43,14 +43,9 @@ func (runtime *Services) Compact(ctx context.Context, request CompactRequest) ([
 	}
 	input := agentcontext.NormalizeResponseItems(projection.Covered, runtime.client.Model(), nil)
 	input = append(input, llm.UserMessage("Create the handoff summary now. Return only the summary and do not call tools."))
-	maxOutputTokens := runtime.provider.MaxOutputTokens
-	if maxOutputTokens <= 0 || maxOutputTokens > 4096 {
-		maxOutputTokens = 4096
-	}
 	response, err := request.ModelSession.Complete(ctx, CompleteRequest{
 		Request: llm.Request{
-			Model: runtime.provider.Model, Prompt: llm.Prompt{BaseInstructions: compactionInstructions, Input: input},
-			Temperature: 0, MaxOutputTokens: maxOutputTokens,
+			Model: runtime.modelInfo.Name, Prompt: llm.Prompt{BaseInstructions: compactionInstructions, Input: input},
 		},
 		Events: request.Events,
 	})
@@ -74,7 +69,7 @@ func (runtime *Services) Compact(ctx context.Context, request CompactRequest) ([
 	compactionItem, err := rollout.NewItem(rollout.KindCompaction, rollout.Compaction{
 		Summary: summary, ReplacementHistory: replacement,
 		CoveredThroughSequence: projection.SourceSequences[len(projection.Covered)-1],
-		SourceHash:             hex.EncodeToString(digest[:]), Provider: runtime.providerName, Model: runtime.provider.Model,
+		SourceHash:             hex.EncodeToString(digest[:]), Provider: runtime.providerName, Model: runtime.modelInfo.Name,
 	})
 	if err != nil {
 		return nil, err

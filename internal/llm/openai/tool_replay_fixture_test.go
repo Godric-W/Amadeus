@@ -21,7 +21,7 @@ func TestCanonicalToolProjectionPreservesCallOrderAcrossProtocols(t *testing.T) 
 	if err != nil {
 		t.Fatalf("project canonical tool messages: %v", err)
 	}
-	request := llm.Request{Model: "test-model", Prompt: llm.Prompt{Input: projection.Messages}, Temperature: 0.2, MaxOutputTokens: 100}
+	request := llm.Request{Model: "test-model", Prompt: llm.Prompt{Input: projection.Messages}}
 
 	responsesParams, err := newResponsesRequest(request)
 	if err != nil {

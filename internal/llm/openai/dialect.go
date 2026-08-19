@@ -10,8 +10,8 @@ import (
 
 type Dialect interface {
 	Name() config.ProviderDialect
-	SupportsAPI(config.APIMode) bool
-	Capabilities(config.APIMode) llm.Capabilities
+	SupportsWireAPI(config.WireAPI) bool
+	Capabilities(config.WireAPI) llm.Capabilities
 	PrepareChatRequest(llm.Request, *openaisdk.ChatCompletionNewParams) error
 	PrepareChatMessage(llm.ResponseItem, *openaisdk.ChatCompletionMessageParamUnion) error
 	SupportsStrictToolSchema() bool
@@ -19,26 +19,26 @@ type Dialect interface {
 
 type DialectError struct {
 	Dialect config.ProviderDialect
-	API     config.APIMode
+	WireAPI config.WireAPI
 	Reason  string
 }
 
 func (dialectError *DialectError) Error() string {
-	if dialectError.API == "" {
+	if dialectError.WireAPI == "" {
 		return fmt.Sprintf("provider dialect %q is unsupported", dialectError.Dialect)
 	}
 	return fmt.Sprintf(
-		"provider dialect %q does not support API mode %q: %s",
+		"provider dialect %q does not support wire API %q: %s",
 		dialectError.Dialect,
-		dialectError.API,
+		dialectError.WireAPI,
 		dialectError.Reason,
 	)
 }
 
 type dialect struct {
 	name                     config.ProviderDialect
-	supportedAPIs            map[config.APIMode]struct{}
-	capabilities             func(config.APIMode) llm.Capabilities
+	supportedWireAPIs            map[config.WireAPI]struct{}
+	capabilities             func(config.WireAPI) llm.Capabilities
 	prepareChatRequest       func(llm.Request, *openaisdk.ChatCompletionNewParams) error
 	prepareChatMessage       func(llm.ResponseItem, *openaisdk.ChatCompletionMessageParamUnion) error
 	supportsStrictToolSchema bool
@@ -48,13 +48,13 @@ func (providerDialect dialect) Name() config.ProviderDialect {
 	return providerDialect.name
 }
 
-func (providerDialect dialect) SupportsAPI(api config.APIMode) bool {
-	_, ok := providerDialect.supportedAPIs[api]
+func (providerDialect dialect) SupportsWireAPI(api config.WireAPI) bool {
+	_, ok := providerDialect.supportedWireAPIs[api]
 	return ok
 }
 
-func (providerDialect dialect) Capabilities(api config.APIMode) llm.Capabilities {
-	if !providerDialect.SupportsAPI(api) {
+func (providerDialect dialect) Capabilities(api config.WireAPI) llm.Capabilities {
+	if !providerDialect.SupportsWireAPI(api) {
 		return llm.Capabilities{}
 	}
 	return providerDialect.capabilities(api)
@@ -82,34 +82,34 @@ func (providerDialect dialect) SupportsStrictToolSchema() bool {
 }
 
 func resolveDialect(name config.ProviderDialect) (Dialect, error) {
-	standardCapabilities := func(config.APIMode) llm.Capabilities {
+	standardCapabilities := func(config.WireAPI) llm.Capabilities {
 		return llm.Capabilities{SupportsStreaming: true}
 	}
-	chatOnly := map[config.APIMode]struct{}{
-		config.APIChatCompletions: {},
+	chatOnly := map[config.WireAPI]struct{}{
+		config.WireAPIChatCompletions: {},
 	}
-	bothAPIs := map[config.APIMode]struct{}{
-		config.APIResponses:       {},
-		config.APIChatCompletions: {},
+	bothAPIs := map[config.WireAPI]struct{}{
+		config.WireAPIResponses:       {},
+		config.WireAPIChatCompletions: {},
 	}
 
 	switch name {
 	case config.DialectStandard:
-		return dialect{name: name, supportedAPIs: bothAPIs, capabilities: standardCapabilities, prepareChatMessage: prepareReasoningChatMessage, supportsStrictToolSchema: true}, nil
+		return dialect{name: name, supportedWireAPIs: bothAPIs, capabilities: standardCapabilities, prepareChatMessage: prepareReasoningChatMessage, supportsStrictToolSchema: true}, nil
 	case config.DialectOpenAI:
-		return dialect{name: name, supportedAPIs: bothAPIs, capabilities: openAICapabilities, supportsStrictToolSchema: true}, nil
+		return dialect{name: name, supportedWireAPIs: bothAPIs, capabilities: openAICapabilities, supportsStrictToolSchema: true}, nil
 	case config.DialectDeepSeek:
-		return dialect{name: name, supportedAPIs: chatOnly, capabilities: reasoningChatCapabilities, prepareChatMessage: prepareReasoningChatMessage}, nil
+		return dialect{name: name, supportedWireAPIs: chatOnly, capabilities: reasoningChatCapabilities, prepareChatMessage: prepareReasoningChatMessage}, nil
 	case config.DialectQwen:
-		return dialect{name: name, supportedAPIs: chatOnly, capabilities: reasoningChatCapabilities, prepareChatRequest: prepareQwenChatRequest}, nil
+		return dialect{name: name, supportedWireAPIs: chatOnly, capabilities: reasoningChatCapabilities, prepareChatRequest: prepareQwenChatRequest}, nil
 	case config.DialectGLM:
-		return dialect{name: name, supportedAPIs: chatOnly, capabilities: reasoningChatCapabilities, prepareChatRequest: prepareGLMChatRequest, prepareChatMessage: prepareReasoningChatMessage}, nil
+		return dialect{name: name, supportedWireAPIs: chatOnly, capabilities: reasoningChatCapabilities, prepareChatRequest: prepareGLMChatRequest, prepareChatMessage: prepareReasoningChatMessage}, nil
 	default:
 		return nil, &DialectError{Dialect: name}
 	}
 }
 
-func reasoningChatCapabilities(config.APIMode) llm.Capabilities {
+func reasoningChatCapabilities(config.WireAPI) llm.Capabilities {
 	return llm.Capabilities{
 		SupportsStreaming:   true,
 		SupportsReasoning:   true,
@@ -169,9 +169,9 @@ func errorsForUnsupportedReasoningOption(dialect config.ProviderDialect, option 
 	return fmt.Errorf("provider dialect %q does not support reasoning option %q", dialect, option)
 }
 
-func openAICapabilities(api config.APIMode) llm.Capabilities {
+func openAICapabilities(api config.WireAPI) llm.Capabilities {
 	capabilities := llm.Capabilities{SupportsStreaming: true, SupportsImages: true}
-	if api == config.APIResponses {
+	if api == config.WireAPIResponses {
 		capabilities.SupportsDeveloperRole = true
 		capabilities.SupportsReasoning = true
 		capabilities.SupportsStreamUsage = true

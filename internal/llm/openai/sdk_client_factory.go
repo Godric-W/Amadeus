@@ -13,7 +13,7 @@ import (
 	"github.com/openai/openai-go/v3/option"
 )
 
-func newSDKClient(provider config.ProviderConfig, httpClient option.HTTPClient) (openaisdk.Client, error) {
+func newSDKClient(provider config.ModelProviderInfo, httpClient option.HTTPClient) (openaisdk.Client, error) {
 	if err := validateClientConfig(provider); err != nil {
 		return openaisdk.Client{}, err
 	}
@@ -31,7 +31,7 @@ func newSDKClient(provider config.ProviderConfig, httpClient option.HTTPClient) 
 	return openaisdk.NewClient(options...), nil
 }
 
-func validateClientConfig(provider config.ProviderConfig) error {
+func validateClientConfig(provider config.ModelProviderInfo) error {
 	if strings.TrimSpace(provider.APIKey) == "" {
 		return errors.New("provider API key is empty")
 	}

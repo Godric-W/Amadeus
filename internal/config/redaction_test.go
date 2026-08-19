@@ -9,24 +9,16 @@ import (
 
 func TestRedactMasksEveryConfiguredAPIKey(t *testing.T) {
 	configured := Default()
-	openAI := configured.Providers[DefaultProviderName]
-	openAI.APIKey = "openai-secret"
-	configured.Providers[DefaultProviderName] = openAI
-	configured.Providers["compatible"] = ProviderConfig{
-		API:               APIChatCompletions,
-		APIKey:            "compatible-secret",
-		BaseURL:           "https://compatible.example.invalid/v1",
-		Timeout:           openAI.Timeout,
-		RequestMaxRetries: openAI.RequestMaxRetries,
-		StreamMaxRetries:  openAI.StreamMaxRetries,
-		StreamIdleTimeout: openAI.StreamIdleTimeout,
-		Temperature:       openAI.Temperature,
-		MaxOutputTokens:   openAI.MaxOutputTokens,
-	}
+	first := defaultModelProviderInfo()
+	first.APIKey = "first-secret"
+	second := defaultModelProviderInfo()
+	second.APIKey = "second-secret"
+	configured.ModelProviders["first"] = first
+	configured.ModelProviders["second"] = second
 	configured.Web.Search.APIKey = "web-search-secret"
 
 	redacted := Redact(configured)
-	for name, provider := range redacted.Providers {
+	for name, provider := range redacted.ModelProviders {
 		if provider.APIKey != RedactedSecret {
 			t.Fatalf("provider %q API key was not redacted: got %q", name, provider.APIKey)
 		}
@@ -38,16 +30,16 @@ func TestRedactMasksEveryConfiguredAPIKey(t *testing.T) {
 
 func TestRedactDoesNotMutateOriginalConfig(t *testing.T) {
 	configured := Default()
-	provider := configured.Providers[DefaultProviderName]
+	provider := defaultModelProviderInfo()
 	provider.APIKey = "original-secret"
-	configured.Providers[DefaultProviderName] = provider
+	configured.ModelProviders["compatible"] = provider
 
 	redacted := Redact(configured)
-	if configured.Providers[DefaultProviderName].APIKey != "original-secret" {
+	if configured.ModelProviders["compatible"].APIKey != "original-secret" {
 		t.Fatal("redaction mutated the original config")
 	}
-	if redacted.Providers[DefaultProviderName].APIKey != RedactedSecret {
-		t.Fatalf("unexpected redacted API key: got %q", redacted.Providers[DefaultProviderName].APIKey)
+	if redacted.ModelProviders["compatible"].APIKey != RedactedSecret {
+		t.Fatalf("unexpected redacted API key: got %q", redacted.ModelProviders["compatible"].APIKey)
 	}
 }
 
@@ -55,16 +47,16 @@ func TestRedactPreservesUnsetAPIKeys(t *testing.T) {
 	configured := Default()
 	redacted := Redact(configured)
 
-	if redacted.Providers[DefaultProviderName].APIKey != "" {
-		t.Fatalf("unset API key should remain empty: got %q", redacted.Providers[DefaultProviderName].APIKey)
+	if len(redacted.ModelProviders) != 0 {
+		t.Fatalf("redaction synthesized providers: %#v", redacted.ModelProviders)
 	}
 }
 
 func TestRedactedYAMLDoesNotContainSecrets(t *testing.T) {
 	configured := Default()
-	provider := configured.Providers[DefaultProviderName]
+	provider := defaultModelProviderInfo()
 	provider.APIKey = "highly-sensitive-secret"
-	configured.Providers[DefaultProviderName] = provider
+	configured.ModelProviders["compatible"] = provider
 
 	encoded, err := yaml.Marshal(Redact(configured))
 	if err != nil {

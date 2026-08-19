@@ -19,7 +19,7 @@ import (
 )
 
 func TestCodingAgentProviderMockE2E(t *testing.T) {
-	for _, api := range []config.APIMode{config.APIResponses, config.APIChatCompletions} {
+	for _, api := range []config.WireAPI{config.WireAPIResponses, config.WireAPIChatCompletions} {
 		t.Run(string(api), func(t *testing.T) {
 			var mutex sync.Mutex
 			var bodies []map[string]any
@@ -49,7 +49,7 @@ func TestCodingAgentProviderMockE2E(t *testing.T) {
 			amadeusHome := t.TempDir()
 			projectDirectory := t.TempDir()
 			dialect := config.DialectStandard
-			if api == config.APIResponses {
+			if api == config.WireAPIResponses {
 				dialect = config.DialectOpenAI
 			}
 			writeCommandConfig(t, filepath.Join(amadeusHome, "config.yaml"), fmt.Sprintf(`
@@ -106,10 +106,10 @@ agent:
 	}
 }
 
-func assertProviderPromptContract(t *testing.T, api config.APIMode, body map[string]any) {
+func assertProviderPromptContract(t *testing.T, api config.WireAPI, body map[string]any) {
 	t.Helper()
 	key := "messages"
-	if api == config.APIResponses {
+	if api == config.WireAPIResponses {
 		key = "input"
 	}
 	items, ok := body[key].([]any)
@@ -149,8 +149,8 @@ func assertProviderPromptContract(t *testing.T, api config.APIMode, body map[str
 	}
 }
 
-func providerAgentFixture(api config.APIMode, requestIndex int) string {
-	if api == config.APIResponses {
+func providerAgentFixture(api config.WireAPI, requestIndex int) string {
+	if api == config.WireAPIResponses {
 		switch requestIndex {
 		case 1:
 			return strings.Join([]string{
@@ -181,8 +181,8 @@ func providerAgentFixture(api config.APIMode, requestIndex int) string {
 	}, "\n")
 }
 
-func providerTextFixture(api config.APIMode, text string) string {
-	if api == config.APIResponses {
+func providerTextFixture(api config.WireAPI, text string) string {
+	if api == config.WireAPIResponses {
 		return responsesTextFixture("planner_or_replanner", text)
 	}
 	return chatTextFixture("planner_or_replanner", text)
@@ -196,9 +196,9 @@ func responsesTextFixture(id, text string) string {
 	}, "\n")
 }
 
-func providerRequestContainsToolResult(api config.APIMode, body map[string]any) bool {
+func providerRequestContainsToolResult(api config.WireAPI, body map[string]any) bool {
 	key := "messages"
-	if api == config.APIResponses {
+	if api == config.WireAPIResponses {
 		key = "input"
 	}
 	encoded, _ := json.Marshal(body[key])

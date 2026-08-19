@@ -26,8 +26,6 @@ type SampleRequest struct {
 	Tools              []tool.ToolSpec
 	OutputSchema       llm.OutputSchema
 	OutputSchemaStrict bool
-	Temperature        float64
-	MaxOutputTokens    int
 	Reasoning          *llm.ReasoningConfig
 	Events             protocol.EventSink
 }
@@ -90,9 +88,6 @@ func (session *ModelClientSession) Sample(ctx context.Context, request SampleReq
 	if request.Events == nil {
 		return SampleResult{}, errors.New("model sample event sink is nil")
 	}
-	if request.MaxOutputTokens <= 0 {
-		return SampleResult{}, errors.New("model sample max output tokens must be greater than zero")
-	}
 	definitions := make([]llm.ToolSpec, len(request.Tools))
 	for index, spec := range request.Tools {
 		definitions[index] = llm.ToolSpec{Name: spec.Name, Description: spec.Description, InputSchema: append([]byte(nil), spec.InputSchema...)}
@@ -106,7 +101,7 @@ func (session *ModelClientSession) Sample(ctx context.Context, request SampleReq
 			OutputSchema:       append(llm.OutputSchema(nil), request.OutputSchema...),
 			OutputSchemaStrict: request.OutputSchemaStrict,
 		},
-		Temperature: request.Temperature, MaxOutputTokens: request.MaxOutputTokens, Reasoning: request.Reasoning,
+		Reasoning: request.Reasoning,
 	}
 	projection := sampleStreamProjection{
 		assistantID: request.ID + ":assistant",

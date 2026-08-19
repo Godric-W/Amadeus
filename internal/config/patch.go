@@ -3,12 +3,16 @@ package config
 import "time"
 
 type configPatch struct {
-	Version         *int                     `yaml:"version"`
-	DefaultProvider *string                  `yaml:"default_provider"`
-	Providers       map[string]providerPatch `yaml:"providers"`
-	Agent           *agentPatch              `yaml:"agent"`
-	Web             *webPatch                `yaml:"web"`
-	Logging         *loggingPatch            `yaml:"logging"`
+	Version                    *int                          `yaml:"version"`
+	Model                      *string                       `yaml:"model"`
+	ModelProvider              *string                       `yaml:"model_provider"`
+	ModelContextWindow         *int64                        `yaml:"model_context_window"`
+	ModelAutoCompactTokenLimit *int64                        `yaml:"model_auto_compact_token_limit"`
+	ToolOutputTokenLimit       *int64                        `yaml:"tool_output_token_limit"`
+	ModelProviders             map[string]modelProviderPatch `yaml:"model_providers"`
+	Agent                      *agentPatch                   `yaml:"agent"`
+	Web                        *webPatch                     `yaml:"web"`
+	Logging                    *loggingPatch                 `yaml:"logging"`
 }
 
 type webPatch struct {
@@ -32,21 +36,15 @@ type webSearchPatch struct {
 	MaxResults *int               `yaml:"max_results"`
 }
 
-type providerPatch struct {
-	API                   *APIMode         `yaml:"api"`
-	Dialect               *ProviderDialect `yaml:"dialect"`
-	APIKey                *string          `yaml:"api_key"`
-	BaseURL               *string          `yaml:"base_url"`
-	Model                 *string          `yaml:"model"`
-	Timeout               *time.Duration   `yaml:"timeout"`
-	RequestMaxRetries     *int             `yaml:"request_max_retries"`
-	StreamMaxRetries      *int             `yaml:"stream_max_retries"`
-	StreamIdleTimeout     *time.Duration   `yaml:"stream_idle_timeout"`
-	Temperature           *float64         `yaml:"temperature"`
-	MaxOutputTokens       *int             `yaml:"max_output_tokens"`
-	ContextWindow         *int64           `yaml:"context_window"`
-	AutoCompactTokenLimit *int64           `yaml:"auto_compact_token_limit"`
-	ToolOutputMaxTokens   *int64           `yaml:"tool_output_max_tokens"`
+type modelProviderPatch struct {
+	WireAPI           *WireAPI         `yaml:"wire_api"`
+	Dialect           *ProviderDialect `yaml:"dialect"`
+	APIKey            *string          `yaml:"api_key"`
+	BaseURL           *string          `yaml:"base_url"`
+	Timeout           *time.Duration   `yaml:"timeout"`
+	RequestMaxRetries *int             `yaml:"request_max_retries"`
+	StreamMaxRetries  *int             `yaml:"stream_max_retries"`
+	StreamIdleTimeout *time.Duration   `yaml:"stream_idle_timeout"`
 }
 
 type agentPatch struct {
@@ -62,15 +60,19 @@ func (patch configPatch) apply(base Config) Config {
 	configured := clone(base)
 
 	assign(&configured.Version, patch.Version)
-	assign(&configured.DefaultProvider, patch.DefaultProvider)
+	assign(&configured.Model, patch.Model)
+	assign(&configured.ModelProvider, patch.ModelProvider)
+	assign(&configured.ModelContextWindow, patch.ModelContextWindow)
+	assign(&configured.ModelAutoCompactTokenLimit, patch.ModelAutoCompactTokenLimit)
+	assign(&configured.ToolOutputTokenLimit, patch.ToolOutputTokenLimit)
 
-	for name, providerPatch := range patch.Providers {
-		provider, ok := configured.Providers[name]
+	for name, providerPatch := range patch.ModelProviders {
+		provider, ok := configured.ModelProviders[name]
 		if !ok {
-			provider = defaultProviderConfig()
+			provider = defaultModelProviderInfo()
 		}
 		providerPatch.apply(&provider)
-		configured.Providers[name] = provider
+		configured.ModelProviders[name] = provider
 	}
 
 	if patch.Agent != nil {
@@ -103,21 +105,15 @@ func (patch webPatch) apply(configured *WebConfig) {
 	}
 }
 
-func (patch providerPatch) apply(provider *ProviderConfig) {
-	assign(&provider.API, patch.API)
+func (patch modelProviderPatch) apply(provider *ModelProviderInfo) {
+	assign(&provider.WireAPI, patch.WireAPI)
 	assign(&provider.Dialect, patch.Dialect)
 	assign(&provider.APIKey, patch.APIKey)
 	assign(&provider.BaseURL, patch.BaseURL)
-	assign(&provider.Model, patch.Model)
 	assign(&provider.Timeout, patch.Timeout)
 	assign(&provider.RequestMaxRetries, patch.RequestMaxRetries)
 	assign(&provider.StreamMaxRetries, patch.StreamMaxRetries)
 	assign(&provider.StreamIdleTimeout, patch.StreamIdleTimeout)
-	assign(&provider.Temperature, patch.Temperature)
-	assign(&provider.MaxOutputTokens, patch.MaxOutputTokens)
-	assign(&provider.ContextWindow, patch.ContextWindow)
-	assign(&provider.AutoCompactTokenLimit, patch.AutoCompactTokenLimit)
-	assign(&provider.ToolOutputMaxTokens, patch.ToolOutputMaxTokens)
 }
 
 func (patch agentPatch) apply(agent *AgentConfig) {
@@ -131,9 +127,9 @@ func (patch loggingPatch) apply(logging *LoggingConfig) {
 
 func clone(configured Config) Config {
 	cloned := configured
-	cloned.Providers = make(map[string]ProviderConfig, len(configured.Providers))
-	for name, provider := range configured.Providers {
-		cloned.Providers[name] = provider
+	cloned.ModelProviders = make(map[string]ModelProviderInfo, len(configured.ModelProviders))
+	for name, provider := range configured.ModelProviders {
+		cloned.ModelProviders[name] = provider
 	}
 	return cloned
 }

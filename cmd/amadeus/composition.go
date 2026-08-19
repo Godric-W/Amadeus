@@ -76,8 +76,8 @@ func (runner *agentController) ensureWorkspace(ctx context.Context, invocation a
 			AuditFactory: agentsession.AuditFactory(auditFactory), ModelMessages: modelMessages, Clock: clock,
 		}
 		if runner.runtime.llmClientFactory != nil {
-			options.ClientFactory = func(providerName string, providerConfig config.ProviderConfig) (llm.Client, error) {
-				return runner.runtime.llmClientFactory(providerName, providerConfig)
+			options.ClientFactory = func(providerName, model string, providerConfig config.ModelProviderInfo) (llm.Client, error) {
+				return runner.runtime.llmClientFactory(providerName, model, providerConfig)
 			}
 		}
 		return agentsession.NewServicesBuilder(options)
@@ -120,13 +120,12 @@ func (runner *agentController) currentWorkspace() *app.ThreadWorkspace {
 }
 
 func sessionConfiguration(configured config.Config, invocation agentInvocation) agentsession.Configuration {
-	provider := configured.Providers[configured.DefaultProvider]
 	mode := turn.ModeKindDefault
 	if invocation.RunMode == "plan" {
 		mode = turn.ModeKindPlan
 	}
 	return agentsession.Configuration{
-		CWD: invocation.Project.Path(), Provider: configured.DefaultProvider, Model: provider.Model,
+		CWD: invocation.Project.Path(), Provider: configured.ModelProvider, Model: configured.Model,
 		Mode: mode,
 	}
 }

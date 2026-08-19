@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	openaisdk "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
@@ -251,7 +250,7 @@ func TestResponsesStreamReturnsDecodeError(t *testing.T) {
 
 func responsesFixtureClient(t *testing.T, fixture string) openaisdk.Client {
 	t.Helper()
-	provider := config.Default().Providers[config.DefaultProviderName]
+	provider := configuredProvider()
 	provider.APIKey = "test-secret"
 	provider.BaseURL = "https://stream.example.invalid/v1"
 	provider.RequestMaxRetries = 0

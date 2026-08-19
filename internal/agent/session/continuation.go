@@ -63,7 +63,6 @@ func (session *Session) continueTurn(ctx context.Context, runtime *engine.Servic
 		sample, sampleErr := modelSession.Sample(stepCtx, engine.SampleRequest{
 			ID: sampleID, Messages: step.Prompt.Items, BaseInstructions: step.BaseInstructions,
 			Tools: step.Tools, OutputSchema: llm.OutputSchema(turnContext.OutputSchema), OutputSchemaStrict: turnContext.OutputSchemaStrict,
-			Temperature: runtime.ModelTemperature(), MaxOutputTokens: step.Model.MaxOutputTokens,
 			Events: events,
 		})
 		usage = addUsage(usage, sample.Response.Usage)

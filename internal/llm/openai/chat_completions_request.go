@@ -27,17 +27,10 @@ func newChatCompletionsRequestForDialect(request llm.Request, dialect Dialect) (
 	if len(inputMessages) == 0 {
 		return openaisdk.ChatCompletionNewParams{}, errors.New("chat completions request messages are empty")
 	}
-	if request.Temperature < 0 || request.Temperature > 2 {
-		return openaisdk.ChatCompletionNewParams{}, errors.New("chat completions request temperature must be between 0 and 2")
-	}
-	if request.MaxOutputTokens <= 0 {
-		return openaisdk.ChatCompletionNewParams{}, errors.New("chat completions request max output tokens must be greater than zero")
-	}
-
 	messages := make([]openaisdk.ChatCompletionMessageParamUnion, 0, len(inputMessages))
 	for index, message := range inputMessages {
 		prepared := message
-		if prepared.Role == llm.RoleDeveloper && !dialect.Capabilities(config.APIChatCompletions).SupportsDeveloperRole {
+		if prepared.Role == llm.RoleDeveloper && !dialect.Capabilities(config.WireAPIChatCompletions).SupportsDeveloperRole {
 			prepared.Role = llm.RoleSystem
 		}
 		converted, err := chatCompletionMessages(prepared)
@@ -57,11 +50,9 @@ func newChatCompletionsRequestForDialect(request llm.Request, dialect Dialect) (
 	}
 
 	params := openaisdk.ChatCompletionNewParams{
-		Model:       shared.ChatModel(request.Model),
-		Messages:    messages,
-		Temperature: openaisdk.Float(request.Temperature),
-		MaxTokens:   openaisdk.Int(int64(request.MaxOutputTokens)),
-		Tools:       tools,
+		Model:    shared.ChatModel(request.Model),
+		Messages: messages,
+		Tools:    tools,
 	}
 	if err := dialect.PrepareChatRequest(request, &params); err != nil {
 		return openaisdk.ChatCompletionNewParams{}, err

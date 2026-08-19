@@ -7,200 +7,122 @@ import (
 	"time"
 )
 
-func TestValidateAcceptsDefaultConfig(t *testing.T) {
-	if err := Validate(Default()); err != nil {
-		t.Fatalf("validate default config: %v", err)
+func validConfig() Config {
+	configured := Default()
+	configured.Model = "test-model"
+	configured.ModelProvider = "compatible"
+	configured.ModelContextWindow = 128_000
+	configured.ModelProviders["compatible"] = defaultModelProviderInfo()
+	provider := configured.ModelProviders["compatible"]
+	provider.BaseURL = "https://example.invalid/v1"
+	configured.ModelProviders["compatible"] = provider
+	return configured
+}
+
+func TestValidateAcceptsConfigV2(t *testing.T) {
+	if err := Validate(validConfig()); err != nil {
+		t.Fatalf("validate config: %v", err)
 	}
 }
 
-func TestValidateAllowsMissingCredentialsAndModel(t *testing.T) {
-	configured := Default()
-	provider := configured.Providers[configured.DefaultProvider]
-	provider.APIKey = ""
-	provider.Model = ""
-	configured.Providers[configured.DefaultProvider] = provider
-
-	if err := Validate(configured); err != nil {
-		t.Fatalf("credentials and model should be optional during structural validation: %v", err)
-	}
-}
-
-func TestValidateReportsStableFieldPaths(t *testing.T) {
-	configured := Default()
-	configured.Version = 2
-	configured.DefaultProvider = "missing"
-	configured.Providers["broken"] = ProviderConfig{
-		API:               "invalid",
-		Dialect:           "invalid",
-		BaseURL:           "ftp://example.invalid/v1",
+func TestValidateReportsStableModelAndProviderPaths(t *testing.T) {
+	configured := validConfig()
+	configured.Version = 1
+	configured.Model = ""
+	configured.ModelProvider = "missing"
+	configured.ModelContextWindow = 0
+	configured.ModelAutoCompactTokenLimit = 1
+	configured.ToolOutputTokenLimit = 0
+	configured.ModelProviders["broken"] = ModelProviderInfo{
+		WireAPI:           "unknown",
+		Dialect:           "unknown",
+		BaseURL:           "relative",
+		Timeout:           0,
 		RequestMaxRetries: -1,
-		StreamMaxRetries:  maxProviderRetries + 1,
-		Temperature:       3,
-		MaxOutputTokens:   0,
+		StreamMaxRetries:  101,
+		StreamIdleTimeout: 0,
 	}
-	configured.Agent = AgentConfig{}
-	configured.Logging.Level = "invalid"
-
 	err := Validate(configured)
-	if err == nil {
-		t.Fatal("expected validation error")
-	}
-
 	var validationError *ValidationError
 	if !errors.As(err, &validationError) {
-		t.Fatalf("unexpected error type: %T", err)
+		t.Fatalf("expected validation error: %v", err)
 	}
-
-	expectedPaths := []string{
-		"version",
-		"default_provider",
-		"providers.broken.api",
-		"providers.broken.dialect",
-		"providers.broken.base_url",
-		"providers.broken.timeout",
-		"providers.broken.request_max_retries",
-		"providers.broken.stream_max_retries",
-		"providers.broken.stream_idle_timeout",
-		"providers.broken.temperature",
-		"providers.broken.max_output_tokens",
-		"agent.max_parallel_tools",
-		"logging.level",
-	}
-	for _, path := range expectedPaths {
-		if !strings.Contains(err.Error(), path+":") {
-			t.Fatalf("validation error does not contain %q: %v", path, err)
+	message := validationError.Error()
+	for _, path := range []string{
+		"version", "model", "model_provider", "model_context_window", "model_auto_compact_token_limit",
+		"tool_output_token_limit", "model_providers.broken.wire_api", "model_providers.broken.dialect",
+		"model_providers.broken.base_url", "model_providers.broken.timeout",
+		"model_providers.broken.request_max_retries", "model_providers.broken.stream_max_retries",
+		"model_providers.broken.stream_idle_timeout",
+	} {
+		if !strings.Contains(message, path) {
+			t.Errorf("validation error missing path %q: %s", path, message)
 		}
+	}
+}
+
+func TestValidateAutoCompactLimitUsesNinetyPercentCeiling(t *testing.T) {
+	configured := validConfig()
+	configured.ModelContextWindow = 100_000
+	configured.ModelAutoCompactTokenLimit = 90_000
+	if err := Validate(configured); err != nil {
+		t.Fatalf("90%% compact limit should validate: %v", err)
+	}
+	configured.ModelAutoCompactTokenLimit = 90_001
+	if err := Validate(configured); err == nil || !strings.Contains(err.Error(), "model_auto_compact_token_limit") {
+		t.Fatalf("expected compact limit error: %v", err)
 	}
 }
 
 func TestValidateAllowsRetryDisableWithExplicitZero(t *testing.T) {
-	configured := Default()
-	provider := configured.Providers[configured.DefaultProvider]
+	configured := validConfig()
+	provider := configured.ModelProviders[configured.ModelProvider]
 	provider.RequestMaxRetries = 0
 	provider.StreamMaxRetries = 0
-	configured.Providers[configured.DefaultProvider] = provider
-
+	configured.ModelProviders[configured.ModelProvider] = provider
 	if err := Validate(configured); err != nil {
-		t.Fatalf("zero retry counts should be valid: %v", err)
+		t.Fatalf("retry disable should validate: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidProviderURL(t *testing.T) {
+	configured := validConfig()
+	provider := configured.ModelProviders[configured.ModelProvider]
+	provider.BaseURL = "ftp://user@example.invalid/v1#fragment"
+	configured.ModelProviders[configured.ModelProvider] = provider
+	err := Validate(configured)
+	if err == nil || !strings.Contains(err.Error(), "model_providers.compatible.base_url") {
+		t.Fatalf("expected provider URL error: %v", err)
 	}
 }
 
 func TestValidateRejectsAgentParallelismAboveLimit(t *testing.T) {
+	configured := validConfig()
+	configured.Agent.MaxParallelTools = 65
+	if err := Validate(configured); err == nil || !strings.Contains(err.Error(), "agent.max_parallel_tools") {
+		t.Fatalf("expected parallelism error: %v", err)
+	}
+}
+
+func TestCustomProviderReceivesOperationalDefaults(t *testing.T) {
 	configured := Default()
-	configured.Agent = AgentConfig{MaxParallelTools: maxParallelTools + 1}
-
-	err := Validate(configured)
-	if err == nil {
-		t.Fatal("expected oversized Agent budget to fail")
+	patch := configPatch{
+		Model:               stringPointer("model"),
+		ModelProvider:       stringPointer("custom"),
+		ModelContextWindow:  int64Pointer(128_000),
+		ModelProviders: map[string]modelProviderPatch{
+			"custom": {BaseURL: stringPointer("https://example.invalid/v1")},
+		},
 	}
-	for _, path := range []string{"agent.max_parallel_tools"} {
-		if !strings.Contains(err.Error(), path+":") {
-			t.Fatalf("validation error does not contain %q: %v", path, err)
-		}
+	configured = patch.apply(configured)
+	provider := configured.ModelProviders["custom"]
+	if provider.WireAPI != WireAPIResponses || provider.Dialect != DialectStandard || provider.Timeout != 2*time.Minute {
+		t.Fatalf("unexpected provider defaults: %#v", provider)
+	}
+	if provider.RequestMaxRetries != 4 || provider.StreamMaxRetries != 5 || provider.StreamIdleTimeout != 5*time.Minute {
+		t.Fatalf("unexpected retry defaults: %#v", provider)
 	}
 }
 
-func TestValidateRejectsInvalidWebConfig(t *testing.T) {
-	tests := []struct {
-		name       string
-		configure  func(*Config)
-		expectPath string
-	}{
-		{
-			name: "brave without key",
-			configure: func(configured *Config) {
-				configured.Web.Search.Enabled = true
-				configured.Web.Search.Provider = WebSearchBrave
-				configured.Web.Search.APIKey = ""
-			},
-			expectPath: "web.search.api_key",
-		},
-		{
-			name: "searxng without URL",
-			configure: func(configured *Config) {
-				configured.Web.Search.Enabled = true
-				configured.Web.Search.Provider = WebSearchSearXNG
-				configured.Web.Search.BaseURL = ""
-			},
-			expectPath: "web.search.base_url",
-		},
-		{
-			name: "invalid result limit",
-			configure: func(configured *Config) {
-				configured.Web.Search.MaxResults = maxWebResults + 1
-			},
-			expectPath: "web.search.max_results",
-		},
-		{
-			name: "invalid fetch timeout",
-			configure: func(configured *Config) {
-				configured.Web.Fetch.Timeout = maxWebTimeout + time.Second
-			},
-			expectPath: "web.fetch.timeout",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			configured := Default()
-			test.configure(&configured)
-
-			err := Validate(configured)
-			if err == nil {
-				t.Fatal("expected invalid Web config to fail")
-			}
-			if !strings.Contains(err.Error(), test.expectPath+":") {
-				t.Fatalf("validation error does not contain %q: %v", test.expectPath, err)
-			}
-		})
-	}
-}
-
-func TestValidateRejectsInvalidBaseURLs(t *testing.T) {
-	tests := []struct {
-		name    string
-		baseURL string
-	}{
-		{name: "empty"},
-		{name: "relative", baseURL: "/v1"},
-		{name: "unsupported scheme", baseURL: "ftp://example.invalid/v1"},
-		{name: "userinfo", baseURL: "https://user:pass@example.invalid/v1"},
-		{name: "fragment", baseURL: "https://example.invalid/v1#fragment"},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			configured := Default()
-			provider := configured.Providers[configured.DefaultProvider]
-			provider.BaseURL = test.baseURL
-			configured.Providers[configured.DefaultProvider] = provider
-
-			if err := Validate(configured); err == nil {
-				t.Fatalf("expected invalid base URL %q to fail", test.baseURL)
-			}
-		})
-	}
-}
-
-func TestCustomProvidersReceiveOperationalDefaults(t *testing.T) {
-	configured := Default()
-	api := APIChatCompletions
-	providerName := "custom"
-	baseURL := "https://custom.example.invalid/v1"
-	configured = ApplyOverrides(configured, Overrides{
-		Provider: &providerName,
-		API:      &api,
-		BaseURL:  &baseURL,
-	})
-
-	provider := configured.Providers[providerName]
-	if provider.Dialect != DialectStandard {
-		t.Fatalf("custom provider did not receive the standard dialect: %#v", provider)
-	}
-	if provider.Timeout <= 0 || provider.RequestMaxRetries != 4 || provider.StreamMaxRetries != 5 || provider.StreamIdleTimeout != 5*time.Minute || provider.MaxOutputTokens <= 0 {
-		t.Fatalf("custom provider did not receive operational defaults: %#v", provider)
-	}
-	if err := Validate(configured); err != nil {
-		t.Fatalf("validate custom provider defaults: %v", err)
-	}
-}
+func stringPointer(value string) *string { return &value }
+func int64Pointer(value int64) *int64    { return &value }

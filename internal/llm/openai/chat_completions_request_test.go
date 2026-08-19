@@ -14,7 +14,7 @@ import (
 
 func TestChatCompletionsRequestSerializesCompatibleTextFields(t *testing.T) {
 	var requestBody map[string]any
-	provider := config.Default().Providers[config.DefaultProviderName]
+	provider := configuredProvider()
 	provider.APIKey = "test-secret"
 	provider.BaseURL = "https://chat.example.invalid/v1"
 	provider.RequestMaxRetries = 0
@@ -42,8 +42,6 @@ func TestChatCompletionsRequestSerializesCompatibleTextFields(t *testing.T) {
 			llm.DeveloperMessage("developer prompt"), llm.UserMessage("hello"),
 			{Role: llm.RoleAssistant, Content: "previous answer", Reasoning: "provider-only reasoning"},
 		}},
-		Temperature:     0.4,
-		MaxOutputTokens: 4096,
 	}
 	params, err := newChatCompletionsRequest(domainRequest)
 	if err != nil {
@@ -56,11 +54,11 @@ func TestChatCompletionsRequestSerializesCompatibleTextFields(t *testing.T) {
 	if requestBody["model"] != "test-model" {
 		t.Fatalf("unexpected model: %#v", requestBody["model"])
 	}
-	if requestBody["temperature"] != 0.4 {
-		t.Fatalf("unexpected temperature: %#v", requestBody["temperature"])
+	if _, exists := requestBody["temperature"]; exists {
+		t.Fatalf("Chat request unexpectedly set temperature: %#v", requestBody)
 	}
-	if requestBody["max_tokens"] != float64(4096) {
-		t.Fatalf("unexpected max tokens: %#v", requestBody["max_tokens"])
+	if _, exists := requestBody["max_tokens"]; exists {
+		t.Fatalf("Chat request unexpectedly set max_tokens: %#v", requestBody)
 	}
 	if _, exists := requestBody["max_completion_tokens"]; exists {
 		t.Fatalf("compatible request unexpectedly used max_completion_tokens: %#v", requestBody)
@@ -103,11 +101,10 @@ func TestChatCompletionsRequestPreservesDeveloperRoleWhenDialectSupportsIt(t *te
 	if err != nil {
 		t.Fatalf("resolve OpenAI dialect: %v", err)
 	}
-	providerCapabilities := dialect.Capabilities(config.APIChatCompletions)
+	providerCapabilities := dialect.Capabilities(config.WireAPIChatCompletions)
 	if providerCapabilities.SupportsDeveloperRole {
 		params, err := newChatCompletionsRequestForDialect(llm.Request{
 			Model: "test-model", Prompt: llm.Prompt{Input: []llm.ResponseItem{llm.DeveloperMessage("developer prompt")}},
-			MaxOutputTokens: 128,
 		}, dialect)
 		if err != nil {
 			t.Fatalf("convert OpenAI chat request: %v", err)
@@ -120,7 +117,7 @@ func TestChatCompletionsRequestPreservesDeveloperRoleWhenDialectSupportsIt(t *te
 
 func TestChatCompletionsRequestSerializesStandardToolProtocol(t *testing.T) {
 	var requestBody map[string]any
-	provider := config.Default().Providers[config.DefaultProviderName]
+	provider := configuredProvider()
 	provider.APIKey = "test-secret"
 	provider.BaseURL = "https://chat.example.invalid/v1"
 	provider.RequestMaxRetries = 0
@@ -150,7 +147,6 @@ func TestChatCompletionsRequestSerializesStandardToolProtocol(t *testing.T) {
 				Name: "read", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`), Strict: true,
 			}},
 		},
-		Temperature: 0.2, MaxOutputTokens: 100,
 	}
 	params, err := newChatCompletionsRequest(domainRequest)
 	if err != nil {
@@ -180,7 +176,7 @@ func TestChatCompletionsRequestSerializesStandardToolProtocol(t *testing.T) {
 
 func TestChatCompletionsRequestSerializesUserAndSyntheticToolImages(t *testing.T) {
 	var requestBody map[string]any
-	provider := config.Default().Providers[config.DefaultProviderName]
+	provider := configuredProvider()
 	provider.APIKey = "test-secret"
 	provider.BaseURL = "https://chat.example.invalid/v1"
 	provider.RequestMaxRetries = 0
@@ -195,7 +191,7 @@ func TestChatCompletionsRequestSerializesUserAndSyntheticToolImages(t *testing.T
 		t.Fatal(err)
 	}
 	domainRequest := llm.Request{
-		Model: "test-model", Temperature: 0.2, MaxOutputTokens: 100,
+		Model: "test-model",
 		Prompt: llm.Prompt{Input: []llm.ResponseItem{
 			{Role: llm.RoleUser, Content: "inspect", Parts: []llm.ContentPart{llm.ImagePart("image/png", "YQ==")}},
 			llm.ToolResultMessageWithParts("call_image", "tool image", llm.ImagePart("image/jpeg", "Yg==")),
@@ -234,12 +230,9 @@ func TestChatCompletionsRequestRejectsUnsupportedInput(t *testing.T) {
 		errorMatch string
 	}{
 		{name: "missing model", request: validChatCompletionsDomainRequest(), errorMatch: "model"},
-		{name: "missing messages", request: llm.Request{Model: "model", Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "messages"},
-		{name: "temperature below range", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{llm.UserMessage("hello")}}, Temperature: -0.1, MaxOutputTokens: 10}, errorMatch: "temperature"},
-		{name: "temperature above range", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{llm.UserMessage("hello")}}, Temperature: 2.1, MaxOutputTokens: 10}, errorMatch: "temperature"},
-		{name: "missing max tokens", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{llm.UserMessage("hello")}}, Temperature: 0.2}, errorMatch: "max output tokens"},
-		{name: "tool role missing call ID", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{{Role: llm.RoleTool, Content: "result"}}}, Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "call ID"},
-		{name: "unknown role", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{{Role: llm.Role("observer"), Content: "hello"}}}, Temperature: 0.2, MaxOutputTokens: 10}, errorMatch: "unsupported role"},
+		{name: "missing messages", request: llm.Request{Model: "model"}, errorMatch: "messages"},
+		{name: "tool role missing call ID", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{{Role: llm.RoleTool, Content: "result"}}}}, errorMatch: "call ID"},
+		{name: "unknown role", request: llm.Request{Model: "model", Prompt: llm.Prompt{Input: []llm.ResponseItem{{Role: llm.Role("observer"), Content: "hello"}}}}, errorMatch: "unsupported role"},
 	}
 	tests[0].request.Model = ""
 
@@ -258,9 +251,7 @@ func TestChatCompletionsRequestRejectsUnsupportedInput(t *testing.T) {
 
 func validChatCompletionsDomainRequest() llm.Request {
 	return llm.Request{
-		Model:           "model",
-		Prompt:          llm.Prompt{Input: []llm.ResponseItem{llm.UserMessage("hello")}},
-		Temperature:     0.2,
-		MaxOutputTokens: 10,
+		Model:  "model",
+		Prompt: llm.Prompt{Input: []llm.ResponseItem{llm.UserMessage("hello")}},
 	}
 }

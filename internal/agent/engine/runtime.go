@@ -25,7 +25,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/websearch"
 )
 
-type ClientFactory func(string, config.ProviderConfig) (llm.Client, error)
+type ClientFactory func(string, string, config.ModelProviderInfo) (llm.Client, error)
 
 type ServicesOptions struct {
 	Config            config.Config
@@ -51,7 +51,8 @@ type Services struct {
 	configured        config.Config
 	project           project.Root
 	providerName      string
-	provider          config.ProviderConfig
+	provider          config.ModelProviderInfo
+	modelInfo         llm.ModelInfo
 	client            llm.Client
 	modelMessages     llm.ModelMessages
 	registry          *tool.Registry
@@ -86,15 +87,22 @@ func NewServices(options ServicesOptions) (*Services, error) {
 	if createClient == nil {
 		createClient = DefaultClientFactory
 	}
-	providerName := options.Config.DefaultProvider
-	provider := options.Config.Providers[providerName]
-	client, err := createClient(providerName, provider)
+	providerName := options.Config.ModelProvider
+	provider := options.Config.ModelProviders[providerName]
+	client, err := createClient(providerName, options.Config.Model, provider)
 	if err != nil {
 		return nil, fmt.Errorf("create provider client: %w", err)
 	}
 	if client == nil {
 		return nil, errors.New("create provider client: factory returned nil")
 	}
+	modelInfo := client.Model()
+	modelInfo.Provider = providerName
+	modelInfo.Name = options.Config.Model
+	modelInfo.ContextWindow = options.Config.ModelContextWindow
+	modelInfo.AutoCompactTokenLimit = options.Config.ModelAutoCompactTokenLimit
+	modelInfo.ToolOutputTokenLimit = options.Config.ToolOutputTokenLimit
+	modelInfo = modelInfo.Normalized()
 	coordinator, err := policy.NewApprovalCoordinator(options.Approvals)
 	if err != nil {
 		return nil, fmt.Errorf("create approval coordinator: %w", err)
@@ -117,7 +125,7 @@ func NewServices(options ServicesOptions) (*Services, error) {
 	}
 	return &Services{
 		configured: options.Config, project: options.Project, providerName: providerName, provider: provider,
-		client: client, modelMessages: options.ModelMessages, registry: registry, toolService: toolService,
+		modelInfo: modelInfo, client: client, modelMessages: options.ModelMessages, registry: registry, toolService: toolService,
 		processes: processes, extensionAssembly: options.ExtensionAssembly,
 		fileSystemPolicy: options.FileSystemPolicy, permissions: options.Permissions, instructions: options.Instructions,
 		visibility: visibility, skillWarnings: options.ExtensionAssembly.SkillWarnings(), auditCloser: options.AuditCloser,
@@ -137,13 +145,6 @@ func (runtime *Services) NewModelClientSession() (*ModelClientSession, error) {
 	})
 }
 
-func (runtime *Services) ModelTemperature() float64 {
-	if runtime == nil {
-		return 0
-	}
-	return runtime.provider.Temperature
-}
-
 func (runtime *Services) TurnBudget() TurnBudget {
 	if runtime == nil {
 		return TurnBudget{}
@@ -159,15 +160,10 @@ func (runtime *Services) ExecuteBatchScoped(ctx context.Context, calls []tool.To
 }
 
 func (runtime *Services) ModelInfo() llm.ModelInfo {
-	if runtime == nil || runtime.client == nil {
+	if runtime == nil {
 		return llm.ModelInfo{}
 	}
-	model := runtime.client.Model()
-	model.ContextWindow = runtime.provider.ContextWindow
-	model.MaxOutputTokens = runtime.provider.MaxOutputTokens
-	model.AutoCompactTokenLimit = runtime.provider.AutoCompactTokenLimit
-	model.ToolOutputMaxTokens = runtime.provider.ToolOutputMaxTokens
-	return model.Normalized()
+	return runtime.modelInfo
 }
 
 func (runtime *Services) ModelMessages(model llm.ModelInfo) (llm.ModelMessages, error) {
@@ -281,6 +277,6 @@ func (runtime *Services) Close() error {
 	return runtime.closeErr
 }
 
-func DefaultClientFactory(providerName string, provider config.ProviderConfig) (llm.Client, error) {
-	return openaiadapter.NewAdapter(providerName, provider)
+func DefaultClientFactory(providerName, model string, provider config.ModelProviderInfo) (llm.Client, error) {
+	return openaiadapter.NewAdapter(providerName, model, provider)
 }

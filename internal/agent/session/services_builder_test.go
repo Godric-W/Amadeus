@@ -76,10 +76,10 @@ func (host *builderTestHost) ContextUpdate(key agentcontext.UpdateKey) string {
 
 func TestServicesBuilderReusesSessionServicesAcrossRegularTasks(t *testing.T) {
 	configured := config.Default()
-	provider := configured.Providers[configured.DefaultProvider]
+	provider := configured.ModelProviders[configured.ModelProvider]
 	provider.APIKey = "test-key"
 	provider.Model = "test-model"
-	configured.Providers[configured.DefaultProvider] = provider
+	configured.ModelProviders[configured.ModelProvider] = provider
 	root, err := project.NewRoot(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestServicesBuilderReusesSessionServicesAcrossRegularTasks(t *testing.T) {
 	}
 	builder, err := NewServicesBuilder(ServicesOptions{
 		Config: configured, Project: root, AmadeusRoot: t.TempDir(), ModelMessages: modelMessages,
-		ClientFactory: func(providerName string, provider config.ProviderConfig) (llm.Client, error) {
+		ClientFactory: func(providerName string, provider config.ModelProviderInfo) (llm.Client, error) {
 			return &builderTestClient{model: llm.ModelInfo{Provider: providerName, Name: provider.Model}}, nil
 		},
 		AuditFactory: func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), closer, nil },
@@ -112,7 +112,7 @@ func TestServicesBuilderReusesSessionServicesAcrossRegularTasks(t *testing.T) {
 	}
 	host.runtime = runtime
 	requestContext := turn.TurnContext{
-		ThreadID: "thread-1", TurnID: "turn-1", Provider: configured.DefaultProvider, Model: provider.Model,
+		ThreadID: "thread-1", TurnID: "turn-1", Provider: configured.ModelProvider, Model: provider.Model,
 		CWD: root.Path(), Mode: turn.ModeKindDefault,
 	}
 	session.services.AgentServices = runtime

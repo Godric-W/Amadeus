@@ -15,7 +15,7 @@ func TestConfigFlagsOverrideEnvironmentConfiguration(t *testing.T) {
 	command.SetArgs([]string{
 		"version",
 		"--provider", "cli",
-		"--api", string(config.APIChatCompletions),
+		"--api", string(config.WireAPIChatCompletions),
 		"--dialect", string(config.DialectGLM),
 		"--base-url", "https://cli.example.invalid/v1",
 		"--model", "cli-model",
@@ -26,7 +26,7 @@ func TestConfigFlagsOverrideEnvironmentConfiguration(t *testing.T) {
 	}
 
 	environmentProvider := "environment"
-	environmentAPI := config.APIResponses
+	environmentAPI := config.WireAPIResponses
 	environmentDialect := config.DialectOpenAI
 	environmentBaseURL := "https://environment.example.invalid/v1"
 	environmentModel := "environment-model"
@@ -39,12 +39,12 @@ func TestConfigFlagsOverrideEnvironmentConfiguration(t *testing.T) {
 	})
 
 	configured = flags.apply(command, configured)
-	if configured.DefaultProvider != "cli" {
-		t.Fatalf("CLI provider did not win: got %q", configured.DefaultProvider)
+	if configured.ModelProvider != "cli" {
+		t.Fatalf("CLI provider did not win: got %q", configured.ModelProvider)
 	}
-	provider := configured.Providers["cli"]
-	if provider.API != config.APIChatCompletions {
-		t.Fatalf("CLI API mode did not win: got %q", provider.API)
+	provider := configured.ModelProviders["cli"]
+	if provider.WireAPI != config.WireAPIChatCompletions {
+		t.Fatalf("CLI API mode did not win: got %q", provider.WireAPI)
 	}
 	if provider.Dialect != config.DialectGLM {
 		t.Fatalf("CLI dialect did not win: got %q", provider.Dialect)
@@ -89,13 +89,13 @@ func TestConfigFlagsAllowExplicitEmptyValues(t *testing.T) {
 	}
 
 	configured := config.Default()
-	provider := configured.Providers[configured.DefaultProvider]
+	provider := configured.ModelProviders[configured.ModelProvider]
 	provider.Model = "environment-model"
-	configured.Providers[configured.DefaultProvider] = provider
+	configured.ModelProviders[configured.ModelProvider] = provider
 
 	configured = flags.apply(command, configured)
-	if configured.Providers[configured.DefaultProvider].Model != "" {
-		t.Fatalf("explicit empty model did not override configuration: %#v", configured.Providers[configured.DefaultProvider])
+	if configured.ModelProviders[configured.ModelProvider].Model != "" {
+		t.Fatalf("explicit empty model did not override configuration: %#v", configured.ModelProviders[configured.ModelProvider])
 	}
 }
 

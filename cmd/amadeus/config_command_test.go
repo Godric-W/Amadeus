@@ -54,7 +54,7 @@ providers:
     api: invalid
 `)
 	command, output := newTestRootCommand(amadeusRoot)
-	command.SetArgs([]string{"config", "check", "--api", string(config.APIResponses)})
+	command.SetArgs([]string{"config", "check", "--api", string(config.WireAPIResponses)})
 
 	if err := command.Execute(); err != nil {
 		t.Fatalf("CLI flag did not repair file configuration before validation: %v", err)

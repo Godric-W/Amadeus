@@ -58,7 +58,7 @@ func (snapshot PromptSnapshot) NeedsCompaction(model llm.ModelInfo) bool {
 	if model.AutoCompactTokenLimit > 0 && snapshot.Usage.EstimatedInputTokens >= model.AutoCompactTokenLimit {
 		return true
 	}
-	return model.ContextWindow > 0 && snapshot.Usage.EstimatedInputTokens+int64(model.MaxOutputTokens) >= model.ContextWindow
+	return model.ContextWindow > 0 && snapshot.Usage.EstimatedInputTokens >= model.ContextWindow
 }
 
 func estimatePromptOverhead(prompt llm.Prompt, estimator Estimator) int64 {

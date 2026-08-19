@@ -1,90 +1,79 @@
 package config
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
 
 func TestConfigCanBeConstructed(t *testing.T) {
 	configured := Config{
-		Version:         1,
-		DefaultProvider: "compatible",
-		Providers: map[string]ProviderConfig{
+		Version:                 CurrentVersion,
+		Model:                   "test-model",
+		ModelProvider:           "compatible",
+		ModelContextWindow:      128_000,
+		ToolOutputTokenLimit:    DefaultToolOutputTokenLimit,
+		ModelProviders: map[string]ModelProviderInfo{
 			"compatible": {
-				API:               APIChatCompletions,
+				WireAPI:           WireAPIChatCompletions,
 				Dialect:           DialectDeepSeek,
 				APIKey:            "test-key",
 				BaseURL:           "https://example.invalid/v1",
-				Model:             "test-model",
 				Timeout:           30 * time.Second,
 				RequestMaxRetries: 1,
 				StreamMaxRetries:  2,
 				StreamIdleTimeout: time.Minute,
-				Temperature:       0.5,
-				MaxOutputTokens:   4096,
 			},
 		},
-		Agent: AgentConfig{
-			MaxParallelTools: 2,
-		},
-		Logging: LoggingConfig{
-			Level:    LogLevelDebug,
-			TraceLLM: true,
-		},
+		Agent:   AgentConfig{MaxParallelTools: 2},
+		Logging: LoggingConfig{Level: LogLevelDebug, TraceLLM: true},
 	}
 
-	provider := configured.Providers[configured.DefaultProvider]
-	if provider.API != APIChatCompletions {
-		t.Fatalf("unexpected API mode: got %q", provider.API)
+	provider := configured.ModelProviders[configured.ModelProvider]
+	if provider.WireAPI != WireAPIChatCompletions || provider.Dialect != DialectDeepSeek {
+		t.Fatalf("unexpected provider: %#v", provider)
 	}
-	if provider.Dialect != DialectDeepSeek {
-		t.Fatalf("unexpected provider dialect: got %q", provider.Dialect)
-	}
-	if configured.Agent.MaxParallelTools != 2 {
-		t.Fatalf("unexpected agent config: %#v", configured.Agent)
+	if configured.Model != "test-model" || configured.Agent.MaxParallelTools != 2 {
+		t.Fatalf("unexpected model config: %#v", configured)
 	}
 }
 
-func TestDefault(t *testing.T) {
+func TestDefaultContainsFieldDefaultsWithoutBuiltInProvider(t *testing.T) {
 	configured := Default()
-	provider, ok := configured.Providers[DefaultProviderName]
-	if !ok {
-		t.Fatalf("default provider %q is missing", DefaultProviderName)
-	}
-
 	if configured.Version != CurrentVersion {
 		t.Fatalf("unexpected config version: got %d, want %d", configured.Version, CurrentVersion)
 	}
-	if configured.DefaultProvider != DefaultProviderName {
-		t.Fatalf("unexpected default provider: got %q, want %q", configured.DefaultProvider, DefaultProviderName)
+	if configured.Model != "" || configured.ModelProvider != "" || len(configured.ModelProviders) != 0 {
+		t.Fatalf("default config must not synthesize a model provider: %#v", configured)
 	}
-	if provider.API != APIResponses {
-		t.Fatalf("unexpected default API mode: got %q, want %q", provider.API, APIResponses)
+	if configured.ToolOutputTokenLimit != 10_000 {
+		t.Fatalf("unexpected tool output token limit: %d", configured.ToolOutputTokenLimit)
 	}
-	if provider.Dialect != DialectOpenAI {
-		t.Fatalf("unexpected default dialect: got %q, want %q", provider.Dialect, DialectOpenAI)
+	if configured.Agent.MaxParallelTools != 4 || configured.Logging.Level != LogLevelInfo {
+		t.Fatalf("unexpected field defaults: %#v", configured)
 	}
-	if provider.Timeout != 2*time.Minute {
-		t.Fatalf("unexpected default timeout: got %s", provider.Timeout)
+}
+
+func TestDefaultModelProviderInfo(t *testing.T) {
+	provider := defaultModelProviderInfo()
+	want := ModelProviderInfo{
+		WireAPI:           WireAPIResponses,
+		Dialect:           DialectStandard,
+		Timeout:           2 * time.Minute,
+		RequestMaxRetries: 4,
+		StreamMaxRetries:  5,
+		StreamIdleTimeout: 5 * time.Minute,
 	}
-	if provider.RequestMaxRetries != 4 || provider.StreamMaxRetries != 5 || provider.StreamIdleTimeout != 5*time.Minute {
-		t.Fatalf("unexpected provider retry defaults: %#v", provider)
-	}
-	if configured.Agent.MaxParallelTools != 4 {
-		t.Fatalf("unexpected default agent config: %#v", configured.Agent)
-	}
-	if configured.Logging.Level != LogLevelInfo {
-		t.Fatalf("unexpected log level: got %q, want %q", configured.Logging.Level, LogLevelInfo)
+	if !reflect.DeepEqual(provider, want) {
+		t.Fatalf("unexpected provider defaults: got %#v, want %#v", provider, want)
 	}
 }
 
 func TestDefaultReturnsIndependentProviderMaps(t *testing.T) {
 	first := Default()
 	second := Default()
-
-	delete(first.Providers, DefaultProviderName)
-
-	if _, ok := second.Providers[DefaultProviderName]; !ok {
+	first.ModelProviders["local"] = defaultModelProviderInfo()
+	if len(second.ModelProviders) != 0 {
 		t.Fatal("mutating one default config changed another default config")
 	}
 }

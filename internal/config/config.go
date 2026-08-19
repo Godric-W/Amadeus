@@ -2,23 +2,6 @@ package config
 
 import "time"
 
-type APIMode string
-
-const (
-	APIResponses       APIMode = "responses"
-	APIChatCompletions APIMode = "chat_completions"
-)
-
-type ProviderDialect string
-
-const (
-	DialectStandard ProviderDialect = "standard"
-	DialectOpenAI   ProviderDialect = "openai"
-	DialectDeepSeek ProviderDialect = "deepseek"
-	DialectQwen     ProviderDialect = "qwen"
-	DialectGLM      ProviderDialect = "glm"
-)
-
 type LogLevel string
 
 const (
@@ -38,12 +21,16 @@ const (
 )
 
 type Config struct {
-	Version         int                       `yaml:"version"`
-	DefaultProvider string                    `yaml:"default_provider"`
-	Providers       map[string]ProviderConfig `yaml:"providers"`
-	Agent           AgentConfig               `yaml:"agent"`
-	Web             WebConfig                 `yaml:"web"`
-	Logging         LoggingConfig             `yaml:"logging"`
+	Version                       int                          `yaml:"version"`
+	Model                         string                       `yaml:"model"`
+	ModelProvider                 string                       `yaml:"model_provider"`
+	ModelContextWindow            int64                        `yaml:"model_context_window"`
+	ModelAutoCompactTokenLimit    int64                        `yaml:"model_auto_compact_token_limit"`
+	ToolOutputTokenLimit          int64                        `yaml:"tool_output_token_limit"`
+	ModelProviders                map[string]ModelProviderInfo `yaml:"model_providers"`
+	Agent                         AgentConfig                  `yaml:"agent"`
+	Web                           WebConfig                    `yaml:"web"`
+	Logging                       LoggingConfig                `yaml:"logging"`
 }
 
 type WebConfig struct {
@@ -65,23 +52,6 @@ type WebSearchConfig struct {
 	BaseURL    string            `yaml:"base_url"`
 	Timeout    time.Duration     `yaml:"timeout"`
 	MaxResults int               `yaml:"max_results"`
-}
-
-type ProviderConfig struct {
-	API                   APIMode         `yaml:"api"`
-	Dialect               ProviderDialect `yaml:"dialect"`
-	APIKey                string          `yaml:"api_key"`
-	BaseURL               string          `yaml:"base_url"`
-	Model                 string          `yaml:"model"`
-	Timeout               time.Duration   `yaml:"timeout"`
-	RequestMaxRetries     int             `yaml:"request_max_retries"`
-	StreamMaxRetries      int             `yaml:"stream_max_retries"`
-	StreamIdleTimeout     time.Duration   `yaml:"stream_idle_timeout"`
-	Temperature           float64         `yaml:"temperature"`
-	MaxOutputTokens       int             `yaml:"max_output_tokens"`
-	ContextWindow         int64           `yaml:"context_window"`
-	AutoCompactTokenLimit int64           `yaml:"auto_compact_token_limit"`
-	ToolOutputMaxTokens   int64           `yaml:"tool_output_max_tokens"`
 }
 
 type AgentConfig struct {

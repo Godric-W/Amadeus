@@ -14,30 +14,31 @@ import (
 type Adapter struct {
 	sdk          openaisdk.Client
 	providerName string
-	provider     config.ProviderConfig
+	model        string
+	provider     config.ModelProviderInfo
 	dialect      Dialect
 }
 
-func NewAdapter(providerName string, provider config.ProviderConfig) (*Adapter, error) {
+func NewAdapter(providerName, model string, provider config.ModelProviderInfo) (*Adapter, error) {
 	if strings.TrimSpace(providerName) == "" {
 		return nil, errors.New("provider name is empty")
 	}
-	if strings.TrimSpace(provider.Model) == "" {
-		return nil, errors.New("provider model is empty")
+	if strings.TrimSpace(model) == "" {
+		return nil, errors.New("model is empty")
 	}
-	switch provider.API {
-	case config.APIResponses, config.APIChatCompletions:
+	switch provider.WireAPI {
+	case config.WireAPIResponses, config.WireAPIChatCompletions:
 	default:
-		return nil, errors.New("provider API mode is unsupported")
+		return nil, errors.New("provider wire API is unsupported")
 	}
 	dialect, err := resolveDialect(provider.Dialect)
 	if err != nil {
 		return nil, err
 	}
-	if !dialect.SupportsAPI(provider.API) {
+	if !dialect.SupportsWireAPI(provider.WireAPI) {
 		return nil, &DialectError{
 			Dialect: provider.Dialect,
-			API:     provider.API,
+			WireAPI: provider.WireAPI,
 			Reason:  "select chat_completions or choose a compatible dialect",
 		}
 	}
@@ -46,7 +47,7 @@ func NewAdapter(providerName string, provider config.ProviderConfig) (*Adapter, 
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{sdk: sdk, providerName: providerName, provider: provider, dialect: dialect}, nil
+	return &Adapter{sdk: sdk, providerName: providerName, model: model, provider: provider, dialect: dialect}, nil
 }
 
 func (adapter *Adapter) Complete(ctx context.Context, request llm.Request) (llm.Response, error) {
@@ -66,15 +67,15 @@ func (adapter *Adapter) Stream(ctx context.Context, request llm.Request) (llm.St
 	if requestHasImages(request) && !adapter.Capabilities().SupportsImages {
 		return nil, &llm.ProviderError{Kind: llm.ProviderErrorInvalidRequest, Message: "provider does not support image content parts"}
 	}
-	switch adapter.provider.API {
-	case config.APIResponses:
+	switch adapter.provider.WireAPI {
+	case config.WireAPIResponses:
 		return openResponsesStream(ctx, adapter.sdk, request)
-	case config.APIChatCompletions:
+	case config.WireAPIChatCompletions:
 		return openChatCompletionsStreamForDialect(ctx, adapter.sdk, request, adapter.dialect)
 	default:
 		return nil, &llm.ProviderError{
 			Kind:    llm.ProviderErrorInvalidRequest,
-			Message: "provider API mode is unsupported",
+			Message: "provider wire API is unsupported",
 		}
 	}
 }
@@ -97,18 +98,14 @@ func (adapter *Adapter) Model() llm.ModelInfo {
 	}
 	return llm.ModelInfo{
 		Provider:                  adapter.providerName,
-		Name:                      adapter.provider.Model,
-		ContextWindow:             adapter.provider.ContextWindow,
-		AutoCompactTokenLimit:     adapter.provider.AutoCompactTokenLimit,
-		MaxOutputTokens:           adapter.provider.MaxOutputTokens,
-		ToolOutputMaxTokens:       adapter.provider.ToolOutputMaxTokens,
-		SupportsParallelToolCalls: adapter.dialect.Capabilities(adapter.provider.API).SupportsParallelToolCalls,
+		Name:                      adapter.model,
+		SupportsParallelToolCalls: adapter.dialect.Capabilities(adapter.provider.WireAPI).SupportsParallelToolCalls,
 		InputModalities:           modalities,
 	}
 }
 
 func (adapter *Adapter) Capabilities() llm.Capabilities {
-	return adapter.dialect.Capabilities(adapter.provider.API)
+	return adapter.dialect.Capabilities(adapter.provider.WireAPI)
 }
 
 func (adapter *Adapter) Dialect() config.ProviderDialect {

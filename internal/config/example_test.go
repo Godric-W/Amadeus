@@ -25,19 +25,19 @@ func TestExampleConfigLoadsAndValidatesWithoutEnvironment(t *testing.T) {
 		t.Fatalf("validate example config: %v", err)
 	}
 
-	if configured.DefaultProvider != DefaultProviderName {
-		t.Fatalf("unexpected default provider: got %q", configured.DefaultProvider)
+	if configured.ModelProvider != "openai" {
+		t.Fatalf("unexpected model provider: got %q", configured.ModelProvider)
 	}
-	if configured.Providers[DefaultProviderName].API != APIResponses {
-		t.Fatalf("unexpected OpenAI API mode: got %q", configured.Providers[DefaultProviderName].API)
+	if configured.ModelProviders["openai"].WireAPI != WireAPIResponses {
+		t.Fatalf("unexpected OpenAI wire API: got %q", configured.ModelProviders["openai"].WireAPI)
 	}
-	if configured.Providers["compatible"].API != APIChatCompletions {
-		t.Fatalf("unexpected compatible API mode: got %q", configured.Providers["compatible"].API)
+	if configured.ModelProviders["compatible"].WireAPI != WireAPIChatCompletions {
+		t.Fatalf("unexpected compatible API mode: got %q", configured.ModelProviders["compatible"].WireAPI)
 	}
 	if configured.Agent.MaxParallelTools != 4 {
 		t.Fatalf("unexpected example Agent config: %#v", configured.Agent)
 	}
-	for name, provider := range configured.Providers {
+	for name, provider := range configured.ModelProviders {
 		if provider.APIKey != "" {
 			t.Fatalf("example provider %q contains an API key", name)
 		}

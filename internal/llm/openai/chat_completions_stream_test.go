@@ -186,7 +186,7 @@ func TestChatCompletionsStreamReturnsDecodeError(t *testing.T) {
 
 func chatCompletionsFixtureClient(t *testing.T, fixture string) openaisdk.Client {
 	t.Helper()
-	provider := config.Default().Providers[config.DefaultProviderName]
+	provider := configuredProvider()
 	provider.APIKey = "test-secret"
 	provider.BaseURL = "https://chat-stream.example.invalid/v1"
 	provider.RequestMaxRetries = 0
