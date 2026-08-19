@@ -9,17 +9,27 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
-func (runtime *Services) Compact(ctx context.Context, lines []rollout.Line) ([]rollout.Item, error) {
+type CompactRequest struct {
+	Lines        []rollout.Line
+	ModelSession *ModelClientSession
+	Events       protocol.EventSink
+}
+
+func (runtime *Services) Compact(ctx context.Context, request CompactRequest) ([]rollout.Item, error) {
 	if runtime == nil || runtime.client == nil {
 		return nil, errors.New("compactor runtime is unavailable")
 	}
-	projection, err := projectCompactionSource(lines)
+	if request.ModelSession == nil || request.Events == nil {
+		return nil, errors.New("compactor model session is incomplete")
+	}
+	projection, err := projectCompactionSource(request.Lines)
 	if err != nil {
 		return nil, err
 	}
@@ -37,9 +47,12 @@ func (runtime *Services) Compact(ctx context.Context, lines []rollout.Line) ([]r
 	if maxOutputTokens <= 0 || maxOutputTokens > 4096 {
 		maxOutputTokens = 4096
 	}
-	response, err := runtime.client.Complete(ctx, llm.Request{
-		Model: runtime.provider.Model, Prompt: llm.Prompt{BaseInstructions: compactionInstructions, Input: input},
-		Temperature: 0, MaxOutputTokens: maxOutputTokens,
+	response, err := request.ModelSession.Complete(ctx, CompleteRequest{
+		Request: llm.Request{
+			Model: runtime.provider.Model, Prompt: llm.Prompt{BaseInstructions: compactionInstructions, Input: input},
+			Temperature: 0, MaxOutputTokens: maxOutputTokens,
+		},
+		Events: request.Events,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("generate conversation summary: %w", err)

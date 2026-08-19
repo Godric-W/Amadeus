@@ -90,6 +90,8 @@ type fullscreenModel struct {
 	draft                  string
 	running                bool
 	status                 string
+	statusDetails          string
+	retryStatus            savedStatus
 	model                  string
 	sessionTitle           string
 	inputUsage             int64
@@ -120,6 +122,12 @@ type fullscreenModel struct {
 	mcpRequestID           uint64
 	clearing               bool
 	shutdownRequested      bool
+}
+
+type savedStatus struct {
+	header  string
+	details string
+	active  bool
 }
 
 type fullscreenApproval struct {

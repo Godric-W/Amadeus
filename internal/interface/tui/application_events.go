@@ -12,6 +12,9 @@ import (
 )
 
 func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
+	if streamError, retrying := event.Message.(protocol.StreamError); !retrying || !streamError.WillRetry {
+		model.restoreRetryStatus()
+	}
 	if model.runtimeTranscript == nil {
 		model.runtimeTranscript = protocol.NewTranscriptState(event.ThreadID)
 	}
@@ -30,6 +33,7 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 	message := event.Message
 	switch item := message.(type) {
 	case protocol.TurnStarted:
+		model.clearRetryStatus()
 		model.running = true
 		model.runStartedAt = item.StartedAt
 		if model.runStartedAt.IsZero() {
@@ -67,6 +71,10 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 		model.status = taskPhase(TaskSubmission{Content: task, Mode: model.collaboration})
 		return tea.Batch(model.submitTask(TaskSubmission{Content: task, Mode: model.collaboration}), model.workingTick())
 	case protocol.AssistantMessageDelta:
+		if item.Reset {
+			model.draft = item.Delta
+			break
+		}
 		if model.draft == "" && model.transcript.HadWorkActivity && model.transcript.NeedsFinalMessageSeparator {
 			model.flushActiveHistoryCell()
 			model.insertHistoryCell(FinalMessageSeparator{Elapsed: model.runElapsed()})
@@ -74,7 +82,7 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 		}
 		model.draft += item.Delta
 	case protocol.ReasoningDelta:
-		if strings.TrimSpace(item.Delta) != "" {
+		if !item.Reset && strings.TrimSpace(item.Delta) != "" {
 			model.status = "thinking"
 		}
 	case protocol.ThreadTokenUsageUpdated:
@@ -173,11 +181,16 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 		model.finishDraft()
 		model.insertHistoryCell(NewWarningHistoryCell(item.Message))
 	case protocol.StreamError:
+		if item.WillRetry {
+			model.showRetryStatus(item)
+			return model.workingTick()
+		}
 		model.finishDraft()
-		if strings.TrimSpace(item.Error) != "" {
-			model.insertHistoryCell(NewErrorHistoryCell(item.Error))
+		if strings.TrimSpace(item.Message) != "" {
+			model.insertHistoryCell(NewErrorHistoryCell(item.Message))
 		}
 	case protocol.TurnCompleted:
+		model.clearRetryStatus()
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
 			model.flushActiveHistoryCell()
 		}
@@ -186,6 +199,7 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 		model.running = false
 		model.status = "completed"
 	case protocol.TurnAborted:
+		model.clearRetryStatus()
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
 			model.flushActiveHistoryCell()
 		}
@@ -194,6 +208,7 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 		model.running = false
 		model.status = "aborted"
 	case protocol.TurnRejected:
+		model.clearRetryStatus()
 		model.finishDraft()
 		model.running = false
 		model.status = "idle"

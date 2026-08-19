@@ -49,7 +49,7 @@ func SourcesFor(configured Config) Sources {
 	sort.Strings(providerNames)
 	for _, name := range providerNames {
 		prefix := "providers." + name + "."
-		for _, field := range []string{"api", "dialect", "api_key", "base_url", "model", "timeout", "max_retries", "temperature", "max_output_tokens", "context_window"} {
+		for _, field := range []string{"api", "dialect", "api_key", "base_url", "model", "timeout", "request_max_retries", "stream_max_retries", "stream_idle_timeout", "temperature", "max_output_tokens", "context_window"} {
 			set(prefix + field)
 		}
 	}
@@ -102,6 +102,9 @@ func InspectYAMLSources(path string) (Sources, error) {
 
 	sources := make(Sources)
 	if len(document.Content) > 0 {
+		if err := migrateConfigDocument(document.Content[0]); err != nil {
+			return nil, fmt.Errorf("migrate config source %q: %w", path, err)
+		}
 		collectYAMLSources(document.Content[0], nil, path, sources)
 	}
 	return sources, nil

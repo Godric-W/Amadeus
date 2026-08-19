@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -39,18 +38,46 @@ type SampleResult struct {
 	ToolCalls []tool.ToolCall
 }
 
-type ModelClientSession struct {
-	client llm.Client
+type CompleteRequest struct {
+	Request llm.Request
+	Events  protocol.EventSink
 }
 
-func NewModelClientSession(client llm.Client) (*ModelClientSession, error) {
+type ModelClientSession struct {
+	client            llm.Client
+	streamIdleTimeout time.Duration
+	retry             responseRetryPolicy
+}
+
+type ModelClientSessionConfig struct {
+	StreamMaxRetries  int
+	StreamIdleTimeout time.Duration
+
+	backoff func(int) time.Duration
+	sleep   func(context.Context, time.Duration) error
+}
+
+func NewModelClientSession(client llm.Client, config ModelClientSessionConfig) (*ModelClientSession, error) {
 	if client == nil {
 		return nil, errors.New("model client is nil")
 	}
 	if strings.TrimSpace(client.Model().Name) == "" {
 		return nil, errors.New("model client model is empty")
 	}
-	return &ModelClientSession{client: client}, nil
+	if config.StreamMaxRetries < 0 {
+		return nil, errors.New("model stream max retries must not be negative")
+	}
+	if config.StreamIdleTimeout <= 0 {
+		return nil, errors.New("model stream idle timeout must be greater than zero")
+	}
+	retry := newResponseRetryPolicy(config.StreamMaxRetries)
+	if config.backoff != nil {
+		retry.backoff = config.backoff
+	}
+	if config.sleep != nil {
+		retry.sleep = config.sleep
+	}
+	return &ModelClientSession{client: client, streamIdleTimeout: config.StreamIdleTimeout, retry: retry}, nil
 }
 
 func (session *ModelClientSession) Sample(ctx context.Context, request SampleRequest) (SampleResult, error) {
@@ -70,7 +97,7 @@ func (session *ModelClientSession) Sample(ctx context.Context, request SampleReq
 	for index, spec := range request.Tools {
 		definitions[index] = llm.ToolSpec{Name: spec.Name, Description: spec.Description, InputSchema: append([]byte(nil), spec.InputSchema...)}
 	}
-	stream, err := session.client.Stream(ctx, llm.Request{
+	modelRequest := llm.Request{
 		Model: session.client.Model().Name,
 		Prompt: llm.Prompt{
 			BaseInstructions: request.BaseInstructions,
@@ -80,79 +107,96 @@ func (session *ModelClientSession) Sample(ctx context.Context, request SampleReq
 			OutputSchemaStrict: request.OutputSchemaStrict,
 		},
 		Temperature: request.Temperature, MaxOutputTokens: request.MaxOutputTokens, Reasoning: request.Reasoning,
+	}
+	projection := sampleStreamProjection{
+		assistantID: request.ID + ":assistant",
+		reasoningID: request.ID + ":reasoning",
+		events:      request.Events,
+	}
+	response, err := session.runResponseStream(ctx, modelRequest, request.Events, func(attemptCtx context.Context, stream llm.Stream, retryCount int) (llm.Response, error) {
+		return consumeResponseStream(attemptCtx, stream, session.streamIdleTimeout, func(chunkCtx context.Context, chunk llm.StreamChunk, firstChunk bool) error {
+			return projection.observe(chunkCtx, chunk, firstChunk, retryCount > 0)
+		})
 	})
 	if err != nil {
-		return SampleResult{}, publishSampleFailure(ctx, request.Events, err)
-	}
-	response, consumeErr := consumeStream(ctx, request.ID, request.Events, stream)
-	closeErr := stream.Close()
-	if consumeErr != nil || closeErr != nil {
-		return SampleResult{Response: response}, publishSampleFailure(ctx, request.Events, errors.Join(consumeErr, closeErr))
+		return SampleResult{Response: response}, err
 	}
 	result, err := classifySample(response)
 	if err != nil {
-		return SampleResult{Response: response}, publishSampleFailure(ctx, request.Events, err)
+		providerError := normalizeResponseStreamError(err)
+		publishErr := publishStreamFailure(context.WithoutCancel(ctx), request.Events, session.client.Model().Provider, providerError, false, providerError.Error())
+		return SampleResult{Response: response}, errors.Join(providerError, publishErr)
 	}
 	return result, nil
 }
 
-func consumeStream(ctx context.Context, sampleID string, events protocol.EventSink, stream llm.Stream) (llm.Response, error) {
-	response := llm.Response{Message: llm.AssistantMessage("")}
-	assistantID := sampleID + ":assistant"
-	reasoningID := sampleID + ":reasoning"
-	assistantStarted, reasoningStarted := false, false
-	for {
-		chunk, err := stream.Recv()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return response, &llm.ProviderError{Kind: llm.ProviderErrorProtocol, Message: "provider stream ended before model sample completed"}
-			}
-			return response, err
-		}
-		if chunk.ID != "" {
-			response.ID = chunk.ID
-		}
-		if chunk.RequestID != "" {
-			response.RequestID = chunk.RequestID
-		}
-		if chunk.ReasoningDelta != "" {
-			response.Message.Reasoning += chunk.ReasoningDelta
-			if !reasoningStarted {
-				if err := publishStreamItemStarted(ctx, events, reasoningID, protocol.ItemReasoning); err != nil {
-					return response, err
-				}
-				reasoningStarted = true
-			}
-			if err := events.Publish(ctx, protocol.SessionEvent{Message: protocol.ReasoningDelta{ItemID: reasoningID, Delta: chunk.ReasoningDelta}}); err != nil {
-				return response, fmt.Errorf("publish model reasoning delta: %w", err)
-			}
-		}
-		if chunk.ContentDelta != "" {
-			response.Message.Content += chunk.ContentDelta
-			if !assistantStarted {
-				if err := publishStreamItemStarted(ctx, events, assistantID, protocol.ItemAssistantMessage); err != nil {
-					return response, err
-				}
-				assistantStarted = true
-			}
-			if err := events.Publish(ctx, protocol.SessionEvent{Message: protocol.AssistantMessageDelta{ItemID: assistantID, Delta: chunk.ContentDelta}}); err != nil {
-				return response, fmt.Errorf("publish model text delta: %w", err)
-			}
-		}
-		response.Message.ToolCalls = append(response.Message.ToolCalls, chunk.ToolCalls...)
-		if chunk.Usage != nil {
-			response.Usage = *chunk.Usage
-			if err := events.Publish(ctx, protocol.SessionEvent{Message: protocol.ThreadTokenUsageUpdated{Usage: response.Usage}}); err != nil {
-				return response, fmt.Errorf("publish model usage: %w", err)
-			}
-		}
-		if !chunk.Completed() {
-			continue
-		}
-		response.FinishReason = chunk.FinishReason
-		response.ProviderFinishReason = chunk.ProviderFinishReason
-		return response, nil
+func (session *ModelClientSession) Complete(ctx context.Context, request CompleteRequest) (llm.Response, error) {
+	if session == nil || session.client == nil {
+		return llm.Response{}, errors.New("model client session is nil")
 	}
+	if request.Events == nil {
+		return llm.Response{}, errors.New("model completion event sink is nil")
+	}
+	if strings.TrimSpace(request.Request.Model) == "" {
+		request.Request.Model = session.client.Model().Name
+	}
+	if strings.TrimSpace(request.Request.Model) == "" || strings.TrimSpace(request.Request.Prompt.BaseInstructions.Text) == "" || len(request.Request.Prompt.Input) == 0 {
+		return llm.Response{}, errors.New("model completion request is incomplete")
+	}
+	return session.runResponseStream(ctx, request.Request, request.Events, func(attemptCtx context.Context, stream llm.Stream, _ int) (llm.Response, error) {
+		return consumeResponseStream(attemptCtx, stream, session.streamIdleTimeout, nil)
+	})
+}
+
+type sampleStreamProjection struct {
+	assistantID      string
+	reasoningID      string
+	events           protocol.EventSink
+	assistantStarted bool
+	reasoningStarted bool
+}
+
+func (projection *sampleStreamProjection) observe(ctx context.Context, chunk llm.StreamChunk, firstChunk, retryAttempt bool) error {
+	if firstChunk && retryAttempt {
+		if projection.reasoningStarted {
+			if err := projection.events.Publish(ctx, protocol.SessionEvent{Message: protocol.ReasoningDelta{ItemID: projection.reasoningID, Reset: true}}); err != nil {
+				return fmt.Errorf("reset model reasoning draft: %w", err)
+			}
+		}
+		if projection.assistantStarted {
+			if err := projection.events.Publish(ctx, protocol.SessionEvent{Message: protocol.AssistantMessageDelta{ItemID: projection.assistantID, Reset: true}}); err != nil {
+				return fmt.Errorf("reset model text draft: %w", err)
+			}
+		}
+	}
+	if chunk.ReasoningDelta != "" {
+		if !projection.reasoningStarted {
+			if err := publishStreamItemStarted(ctx, projection.events, projection.reasoningID, protocol.ItemReasoning); err != nil {
+				return err
+			}
+			projection.reasoningStarted = true
+		}
+		if err := projection.events.Publish(ctx, protocol.SessionEvent{Message: protocol.ReasoningDelta{ItemID: projection.reasoningID, Delta: chunk.ReasoningDelta}}); err != nil {
+			return fmt.Errorf("publish model reasoning delta: %w", err)
+		}
+	}
+	if chunk.ContentDelta != "" {
+		if !projection.assistantStarted {
+			if err := publishStreamItemStarted(ctx, projection.events, projection.assistantID, protocol.ItemAssistantMessage); err != nil {
+				return err
+			}
+			projection.assistantStarted = true
+		}
+		if err := projection.events.Publish(ctx, protocol.SessionEvent{Message: protocol.AssistantMessageDelta{ItemID: projection.assistantID, Delta: chunk.ContentDelta}}); err != nil {
+			return fmt.Errorf("publish model text delta: %w", err)
+		}
+	}
+	if chunk.Usage != nil {
+		if err := projection.events.Publish(ctx, protocol.SessionEvent{Message: protocol.ThreadTokenUsageUpdated{Usage: *chunk.Usage}}); err != nil {
+			return fmt.Errorf("publish model usage: %w", err)
+		}
+	}
+	return nil
 }
 
 func classifySample(response llm.Response) (SampleResult, error) {
@@ -173,14 +217,6 @@ func classifySample(response llm.Response) (SampleResult, error) {
 		return SampleResult{}, &llm.ProviderError{Kind: llm.ProviderErrorProtocol, Message: "model sample returned neither text nor tool calls"}
 	}
 	return SampleResult{Kind: SampleFinal, Response: response}, nil
-}
-
-func publishSampleFailure(ctx context.Context, events protocol.EventSink, sampleErr error) error {
-	if sampleErr == nil {
-		return nil
-	}
-	publishErr := events.Publish(context.WithoutCancel(ctx), protocol.SessionEvent{Message: protocol.StreamError{Error: sampleErr.Error()}})
-	return errors.Join(sampleErr, publishErr)
 }
 
 func publishStreamItemStarted(ctx context.Context, events protocol.EventSink, id string, kind protocol.ItemKind) error {

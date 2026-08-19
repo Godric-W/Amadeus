@@ -36,7 +36,9 @@ func defaultProviderConfig() ProviderConfig {
 	return ProviderConfig{
 		Dialect:             DialectStandard,
 		Timeout:             2 * time.Minute,
-		MaxRetries:          2,
+		RequestMaxRetries:   4,
+		StreamMaxRetries:    5,
+		StreamIdleTimeout:   5 * time.Minute,
 		Temperature:         0.2,
 		MaxOutputTokens:     8192,
 		ContextWindow:       128_000,

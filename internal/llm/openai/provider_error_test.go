@@ -87,6 +87,7 @@ func TestNewProviderErrorClassifiesStreamCode(t *testing.T) {
 		"model",
 		"slow down",
 		"request_456",
+		0,
 		nil,
 	)
 	if providerError.Kind != llm.ProviderErrorRateLimit || providerError.Code != "rate_limit_exceeded" || providerError.RequestID != "request_456" {

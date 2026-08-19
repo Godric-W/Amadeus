@@ -134,7 +134,20 @@ type Warning struct{ Message string }
 
 func (Warning) isEventMessage() {}
 
-type StreamError struct{ Error string }
+type ProviderErrorInfo struct {
+	Kind       string
+	Code       string
+	StatusCode int
+	RequestID  string
+	Provider   string
+}
+
+type StreamError struct {
+	Message           string
+	AdditionalDetails *string
+	ProviderError     *ProviderErrorInfo
+	WillRetry         bool
+}
 
 func (StreamError) isEventMessage() {}
 

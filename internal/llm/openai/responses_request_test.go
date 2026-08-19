@@ -31,7 +31,7 @@ func TestResponsesRequestSerializesDomainTextFields(t *testing.T) {
 	provider := config.Default().Providers[config.DefaultProviderName]
 	provider.APIKey = "test-secret"
 	provider.BaseURL = server.URL + "/v1"
-	provider.MaxRetries = 0
+	provider.RequestMaxRetries = 0
 	client, err := newSDKClient(provider, nil)
 	if err != nil {
 		t.Fatalf("create SDK client: %v", err)
@@ -105,7 +105,7 @@ func TestResponsesRequestSerializesStandardToolProtocol(t *testing.T) {
 	provider := config.Default().Providers[config.DefaultProviderName]
 	provider.APIKey = "test-secret"
 	provider.BaseURL = server.URL + "/v1"
-	provider.MaxRetries = 0
+	provider.RequestMaxRetries = 0
 	client, err := newSDKClient(provider, nil)
 	if err != nil {
 		t.Fatalf("create SDK client: %v", err)
@@ -153,7 +153,7 @@ func TestResponsesRequestSerializesUserAndToolImagesAsContentParts(t *testing.T)
 	provider := config.Default().Providers[config.DefaultProviderName]
 	provider.APIKey = "test-secret"
 	provider.BaseURL = "https://responses.example.invalid/v1"
-	provider.MaxRetries = 0
+	provider.RequestMaxRetries = 0
 	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if err := json.NewDecoder(request.Body).Decode(&requestBody); err != nil {
 			t.Fatalf("decode Responses image request: %v", err)

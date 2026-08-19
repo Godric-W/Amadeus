@@ -11,15 +11,17 @@ func TestConfigCanBeConstructed(t *testing.T) {
 		DefaultProvider: "compatible",
 		Providers: map[string]ProviderConfig{
 			"compatible": {
-				API:             APIChatCompletions,
-				Dialect:         DialectDeepSeek,
-				APIKey:          "test-key",
-				BaseURL:         "https://example.invalid/v1",
-				Model:           "test-model",
-				Timeout:         30 * time.Second,
-				MaxRetries:      1,
-				Temperature:     0.5,
-				MaxOutputTokens: 4096,
+				API:               APIChatCompletions,
+				Dialect:           DialectDeepSeek,
+				APIKey:            "test-key",
+				BaseURL:           "https://example.invalid/v1",
+				Model:             "test-model",
+				Timeout:           30 * time.Second,
+				RequestMaxRetries: 1,
+				StreamMaxRetries:  2,
+				StreamIdleTimeout: time.Minute,
+				Temperature:       0.5,
+				MaxOutputTokens:   4096,
 			},
 		},
 		Agent: AgentConfig{
@@ -64,6 +66,9 @@ func TestDefault(t *testing.T) {
 	}
 	if provider.Timeout != 2*time.Minute {
 		t.Fatalf("unexpected default timeout: got %s", provider.Timeout)
+	}
+	if provider.RequestMaxRetries != 4 || provider.StreamMaxRetries != 5 || provider.StreamIdleTimeout != 5*time.Minute {
+		t.Fatalf("unexpected provider retry defaults: %#v", provider)
 	}
 	if configured.Agent.MaxParallelTools != 4 {
 		t.Fatalf("unexpected default agent config: %#v", configured.Agent)

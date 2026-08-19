@@ -78,7 +78,9 @@ providers:
     base_url: https://api.openai.com/v1
     model: your-model
     timeout: 120s
-    max_retries: 2
+    request_max_retries: 4
+    stream_max_retries: 5
+    stream_idle_timeout: 5m
     temperature: 0.2
     max_output_tokens: 8192
 

@@ -13,13 +13,15 @@ func TestRedactMasksEveryConfiguredAPIKey(t *testing.T) {
 	openAI.APIKey = "openai-secret"
 	configured.Providers[DefaultProviderName] = openAI
 	configured.Providers["compatible"] = ProviderConfig{
-		API:             APIChatCompletions,
-		APIKey:          "compatible-secret",
-		BaseURL:         "https://compatible.example.invalid/v1",
-		Timeout:         openAI.Timeout,
-		MaxRetries:      openAI.MaxRetries,
-		Temperature:     openAI.Temperature,
-		MaxOutputTokens: openAI.MaxOutputTokens,
+		API:               APIChatCompletions,
+		APIKey:            "compatible-secret",
+		BaseURL:           "https://compatible.example.invalid/v1",
+		Timeout:           openAI.Timeout,
+		RequestMaxRetries: openAI.RequestMaxRetries,
+		StreamMaxRetries:  openAI.StreamMaxRetries,
+		StreamIdleTimeout: openAI.StreamIdleTimeout,
+		Temperature:       openAI.Temperature,
+		MaxOutputTokens:   openAI.MaxOutputTokens,
 	}
 	configured.Web.Search.APIKey = "web-search-secret"
 

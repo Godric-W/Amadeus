@@ -39,7 +39,9 @@ type providerPatch struct {
 	BaseURL               *string          `yaml:"base_url"`
 	Model                 *string          `yaml:"model"`
 	Timeout               *time.Duration   `yaml:"timeout"`
-	MaxRetries            *int             `yaml:"max_retries"`
+	RequestMaxRetries     *int             `yaml:"request_max_retries"`
+	StreamMaxRetries      *int             `yaml:"stream_max_retries"`
+	StreamIdleTimeout     *time.Duration   `yaml:"stream_idle_timeout"`
 	Temperature           *float64         `yaml:"temperature"`
 	MaxOutputTokens       *int             `yaml:"max_output_tokens"`
 	ContextWindow         *int64           `yaml:"context_window"`
@@ -108,7 +110,9 @@ func (patch providerPatch) apply(provider *ProviderConfig) {
 	assign(&provider.BaseURL, patch.BaseURL)
 	assign(&provider.Model, patch.Model)
 	assign(&provider.Timeout, patch.Timeout)
-	assign(&provider.MaxRetries, patch.MaxRetries)
+	assign(&provider.RequestMaxRetries, patch.RequestMaxRetries)
+	assign(&provider.StreamMaxRetries, patch.StreamMaxRetries)
+	assign(&provider.StreamIdleTimeout, patch.StreamIdleTimeout)
 	assign(&provider.Temperature, patch.Temperature)
 	assign(&provider.MaxOutputTokens, patch.MaxOutputTokens)
 	assign(&provider.ContextWindow, patch.ContextWindow)

@@ -72,7 +72,7 @@ providers:
     api_key: core-tools-secret
     base_url: %s/v1
     model: mock-model
-    max_retries: 0
+    request_max_retries: 0
 agent:
   max_parallel_tools: 2
 `, api, dialect, server.URL))
@@ -165,7 +165,7 @@ providers:
     api_key: denied-write-secret
     base_url: %s/v1
     model: mock-model
-    max_retries: 0
+    request_max_retries: 0
 agent:
   max_parallel_tools: 1
 `, api, dialect, server.URL))
@@ -271,7 +271,7 @@ providers:
     api_key: permission-grant-secret
     base_url: %s/v1
     model: mock-model
-    max_retries: 0
+    request_max_retries: 0
 agent:
   max_parallel_tools: 1
 `, api, dialect, server.URL))

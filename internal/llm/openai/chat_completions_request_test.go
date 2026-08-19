@@ -17,7 +17,7 @@ func TestChatCompletionsRequestSerializesCompatibleTextFields(t *testing.T) {
 	provider := config.Default().Providers[config.DefaultProviderName]
 	provider.APIKey = "test-secret"
 	provider.BaseURL = "https://chat.example.invalid/v1"
-	provider.MaxRetries = 0
+	provider.RequestMaxRetries = 0
 	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.String() != "https://chat.example.invalid/v1/chat/completions" {
 			t.Fatalf("unexpected chat request URL: %s", request.URL)
@@ -123,7 +123,7 @@ func TestChatCompletionsRequestSerializesStandardToolProtocol(t *testing.T) {
 	provider := config.Default().Providers[config.DefaultProviderName]
 	provider.APIKey = "test-secret"
 	provider.BaseURL = "https://chat.example.invalid/v1"
-	provider.MaxRetries = 0
+	provider.RequestMaxRetries = 0
 	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if err := json.NewDecoder(request.Body).Decode(&requestBody); err != nil {
 			t.Fatalf("decode chat request body: %v", err)
@@ -183,7 +183,7 @@ func TestChatCompletionsRequestSerializesUserAndSyntheticToolImages(t *testing.T
 	provider := config.Default().Providers[config.DefaultProviderName]
 	provider.APIKey = "test-secret"
 	provider.BaseURL = "https://chat.example.invalid/v1"
-	provider.MaxRetries = 0
+	provider.RequestMaxRetries = 0
 	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if err := json.NewDecoder(request.Body).Decode(&requestBody); err != nil {
 			t.Fatalf("decode Chat image request: %v", err)

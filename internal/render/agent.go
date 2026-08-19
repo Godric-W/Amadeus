@@ -90,9 +90,12 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent protoco
 	case protocol.Warning:
 		return renderer.writeStatus("warning: %s", typed.Message)
 	case protocol.StreamError:
-		message := typed.Error
+		message := typed.Message
 		if strings.TrimSpace(message) == "" {
 			message = "request failed"
+		}
+		if typed.WillRetry {
+			return renderer.writeStatus("%s", message)
 		}
 		return renderer.writeStatus("error: %s", message)
 	case protocol.ReasoningDelta, protocol.CommandOutputDelta, protocol.ContextCompacted:

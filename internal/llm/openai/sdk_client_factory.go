@@ -3,8 +3,10 @@ package openai
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/Godric-W/Amadeus/internal/config"
 	openaisdk "github.com/openai/openai-go/v3"
@@ -19,12 +21,12 @@ func newSDKClient(provider config.ProviderConfig, httpClient option.HTTPClient) 
 	options := []option.RequestOption{
 		option.WithAPIKey(provider.APIKey),
 		option.WithBaseURL(strings.TrimSpace(provider.BaseURL)),
-		option.WithRequestTimeout(provider.Timeout),
-		option.WithMaxRetries(provider.MaxRetries),
+		option.WithMaxRetries(provider.RequestMaxRetries),
 	}
-	if httpClient != nil {
-		options = append(options, option.WithHTTPClient(httpClient))
+	if httpClient == nil {
+		httpClient = providerHTTPClient(provider.Timeout)
 	}
+	options = append(options, option.WithHTTPClient(httpClient))
 
 	return openaisdk.NewClient(options...), nil
 }
@@ -48,9 +50,15 @@ func validateClientConfig(provider config.ProviderConfig) error {
 	if provider.Timeout <= 0 {
 		return errors.New("provider timeout must be greater than zero")
 	}
-	if provider.MaxRetries < 0 {
-		return fmt.Errorf("provider max retries must not be negative: %d", provider.MaxRetries)
+	if provider.RequestMaxRetries < 0 {
+		return fmt.Errorf("provider request max retries must not be negative: %d", provider.RequestMaxRetries)
 	}
 
 	return nil
+}
+
+func providerHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = responseHeaderTimeout
+	return &http.Client{Transport: transport}
 }

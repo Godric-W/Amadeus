@@ -131,7 +131,10 @@ func (runtime *Services) NewModelClientSession() (*ModelClientSession, error) {
 	if runtime == nil || runtime.client == nil {
 		return nil, errors.New("session model client is unavailable")
 	}
-	return NewModelClientSession(runtime.client)
+	return NewModelClientSession(runtime.client, ModelClientSessionConfig{
+		StreamMaxRetries:  runtime.provider.StreamMaxRetries,
+		StreamIdleTimeout: runtime.provider.StreamIdleTimeout,
+	})
 }
 
 func (runtime *Services) ModelTemperature() float64 {

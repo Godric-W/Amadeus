@@ -113,6 +113,7 @@ func (stream *responsesStream) Recv() (llm.StreamChunk, error) {
 				responseError.Param,
 				responseError.Message,
 				"",
+				0,
 				nil,
 			)
 		}
@@ -162,7 +163,7 @@ func responseFailure(response responses.Response) error {
 		message = "response failed"
 	}
 	code := string(response.Error.Code)
-	return newProviderError(providerErrorKind(0, code), 0, code, "", message, response.ID, nil)
+	return newProviderError(providerErrorKind(0, code), 0, code, "", message, response.ID, 0, nil)
 }
 
 var _ llm.Stream = (*responsesStream)(nil)

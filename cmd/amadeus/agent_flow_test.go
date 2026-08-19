@@ -472,7 +472,7 @@ providers:
     base_url: https://example.invalid/v1
     model: mock-model
     timeout: 5s
-    max_retries: 0
+    request_max_retries: 0
     temperature: 0.1
     max_output_tokens: 512
 agent:

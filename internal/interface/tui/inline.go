@@ -107,8 +107,14 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent protoc
 		}
 		return renderer.statusLine("turn aborted: %s", typed.Reason)
 	case protocol.StreamError:
+		if typed.WillRetry {
+			if typed.AdditionalDetails != nil && strings.TrimSpace(*typed.AdditionalDetails) != "" {
+				return renderer.statusLine("%s — %s", typed.Message, *typed.AdditionalDetails)
+			}
+			return renderer.statusLine("%s", typed.Message)
+		}
 		renderer.phase = "error"
-		return renderer.statusLine("error: %s", typed.Error)
+		return renderer.statusLine("error: %s", typed.Message)
 	case protocol.Warning:
 		return renderer.statusLine("warning: %s", typed.Message)
 	default:

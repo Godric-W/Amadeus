@@ -30,12 +30,13 @@ func TestValidateReportsStableFieldPaths(t *testing.T) {
 	configured.Version = 2
 	configured.DefaultProvider = "missing"
 	configured.Providers["broken"] = ProviderConfig{
-		API:             "invalid",
-		Dialect:         "invalid",
-		BaseURL:         "ftp://example.invalid/v1",
-		MaxRetries:      -1,
-		Temperature:     3,
-		MaxOutputTokens: 0,
+		API:               "invalid",
+		Dialect:           "invalid",
+		BaseURL:           "ftp://example.invalid/v1",
+		RequestMaxRetries: -1,
+		StreamMaxRetries:  maxProviderRetries + 1,
+		Temperature:       3,
+		MaxOutputTokens:   0,
 	}
 	configured.Agent = AgentConfig{}
 	configured.Logging.Level = "invalid"
@@ -57,7 +58,9 @@ func TestValidateReportsStableFieldPaths(t *testing.T) {
 		"providers.broken.dialect",
 		"providers.broken.base_url",
 		"providers.broken.timeout",
-		"providers.broken.max_retries",
+		"providers.broken.request_max_retries",
+		"providers.broken.stream_max_retries",
+		"providers.broken.stream_idle_timeout",
 		"providers.broken.temperature",
 		"providers.broken.max_output_tokens",
 		"agent.max_parallel_tools",
@@ -67,6 +70,18 @@ func TestValidateReportsStableFieldPaths(t *testing.T) {
 		if !strings.Contains(err.Error(), path+":") {
 			t.Fatalf("validation error does not contain %q: %v", path, err)
 		}
+	}
+}
+
+func TestValidateAllowsRetryDisableWithExplicitZero(t *testing.T) {
+	configured := Default()
+	provider := configured.Providers[configured.DefaultProvider]
+	provider.RequestMaxRetries = 0
+	provider.StreamMaxRetries = 0
+	configured.Providers[configured.DefaultProvider] = provider
+
+	if err := Validate(configured); err != nil {
+		t.Fatalf("zero retry counts should be valid: %v", err)
 	}
 }
 
@@ -182,7 +197,7 @@ func TestCustomProvidersReceiveOperationalDefaults(t *testing.T) {
 	if provider.Dialect != DialectStandard {
 		t.Fatalf("custom provider did not receive the standard dialect: %#v", provider)
 	}
-	if provider.Timeout <= 0 || provider.MaxOutputTokens <= 0 {
+	if provider.Timeout <= 0 || provider.RequestMaxRetries != 4 || provider.StreamMaxRetries != 5 || provider.StreamIdleTimeout != 5*time.Minute || provider.MaxOutputTokens <= 0 {
 		t.Fatalf("custom provider did not receive operational defaults: %#v", provider)
 	}
 	if err := Validate(configured); err != nil {

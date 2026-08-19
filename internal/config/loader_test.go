@@ -35,7 +35,9 @@ providers:
     base_url: https://example.invalid/v1
     model: compatible-model
     timeout: 45s
-    max_retries: 1
+    request_max_retries: 1
+    stream_max_retries: 2
+    stream_idle_timeout: 90s
     temperature: 0.5
     max_output_tokens: 4096
 agent:
@@ -72,6 +74,9 @@ logging:
 	if compatible.Timeout != 45*time.Second {
 		t.Fatalf("unexpected compatible timeout: got %s", compatible.Timeout)
 	}
+	if compatible.RequestMaxRetries != 1 || compatible.StreamMaxRetries != 2 || compatible.StreamIdleTimeout != 90*time.Second {
+		t.Fatalf("unexpected compatible retry config: %#v", compatible)
+	}
 	if configured.Agent.MaxParallelTools != 2 {
 		t.Fatalf("unexpected agent config: %#v", configured.Agent)
 	}
@@ -83,6 +88,43 @@ logging:
 	}
 	if configured.Logging.Level != LogLevelDebug || !configured.Logging.TraceLLM {
 		t.Fatalf("unexpected logging config: %#v", configured.Logging)
+	}
+}
+
+func TestLoadMigratesLegacyMaxRetriesToRequestRetriesOnly(t *testing.T) {
+	loader := newTestLoader(t.TempDir())
+	writeConfig(t, loader, `
+providers:
+  openai:
+    model: configured-model
+    max_retries: 2
+`)
+
+	configured, err := loader.Load()
+	if err != nil {
+		t.Fatalf("load legacy retry config: %v", err)
+	}
+	provider := configured.Providers[DefaultProviderName]
+	if provider.RequestMaxRetries != 2 {
+		t.Fatalf("legacy max_retries did not migrate to request retries: %#v", provider)
+	}
+	if provider.StreamMaxRetries != 5 {
+		t.Fatalf("legacy max_retries changed stream retries: %#v", provider)
+	}
+}
+
+func TestLoadRejectsLegacyAndCurrentRequestRetriesTogether(t *testing.T) {
+	loader := newTestLoader(t.TempDir())
+	writeConfig(t, loader, `
+providers:
+  openai:
+    max_retries: 2
+    request_max_retries: 3
+`)
+
+	_, err := loader.Load()
+	if err == nil || !strings.Contains(err.Error(), "cannot both be set") {
+		t.Fatalf("expected conflicting retry fields to fail clearly: %v", err)
 	}
 }
 

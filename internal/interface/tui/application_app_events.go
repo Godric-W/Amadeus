@@ -169,6 +169,7 @@ func (model *fullscreenModel) attachSnapshot(snapshot application.ThreadViewSnap
 }
 
 func (model *fullscreenModel) clearInteractiveState() {
+	model.clearRetryStatus()
 	model.resetHistory()
 	model.details = newTranscriptDetailStore(0, 0)
 	model.draft = ""

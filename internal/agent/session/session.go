@@ -397,7 +397,7 @@ func (session *Session) rejectTurn(turnID turn.ID, err error, fatal bool) {
 		err = errors.New("turn was rejected")
 	}
 	session.publishStatus(turnID, false)
-	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.StreamError{Error: err.Error()}})
+	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.StreamError{Message: err.Error()}})
 	session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.TurnRejected{Error: err.Error(), RejectedAt: session.services.Clock().UTC()}})
 	if fatal {
 		session.cancel(fmt.Errorf("start turn persistence: %w", err))
@@ -443,7 +443,7 @@ func (session *Session) finishTurn(completion Completion) {
 		session.active = nil
 		session.publishStatus(completion.TurnID, false)
 		if persistErr != nil {
-			session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: protocol.StreamError{Error: persistErr.Error()}})
+			session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: protocol.StreamError{Message: persistErr.Error()}})
 			session.cancel(fmt.Errorf("persist aborted turn: %w", persistErr))
 			return
 		}
@@ -484,7 +484,7 @@ func (session *Session) finishTurn(completion Completion) {
 	session.active = nil
 	session.publishStatus(completion.TurnID, false)
 	if persistErr != nil {
-		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: protocol.StreamError{Error: persistErr.Error()}})
+		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: protocol.StreamError{Message: persistErr.Error()}})
 		session.cancel(fmt.Errorf("persist completed turn: %w", persistErr))
 		return
 	}
@@ -531,7 +531,7 @@ func (session *Session) completeWithoutTask(turnID turn.ID, taskErr error) {
 	persistErr := session.appendItemsDurable(cleanupCtx, turnID, terminal)
 	cancel()
 	if persistErr != nil {
-		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.StreamError{Error: persistErr.Error()}})
+		session.publish(protocol.SessionEvent{ThreadID: session.threadID, TurnID: turnID, Message: protocol.StreamError{Message: persistErr.Error()}})
 		session.cancel(fmt.Errorf("persist rejected turn: %w", persistErr))
 		return
 	}

@@ -51,7 +51,7 @@ func TestAgentRendererRendersCompleteAgentEventSequence(t *testing.T) {
 		sessionMessage(protocol.ItemCompleted{Item: completed}),
 		sessionMessage(protocol.ThreadTokenUsageUpdated{Usage: llm.Usage{InputTokens: 10, CachedInputTokens: 2, OutputTokens: 4, ReasoningTokens: 1, TotalTokens: 14}}),
 		sessionMessage(protocol.Warning{Message: "output was truncated"}),
-		sessionMessage(protocol.StreamError{Error: "provider\nfailed"}),
+		sessionMessage(protocol.StreamError{Message: "provider\nfailed"}),
 		sessionMessage(protocol.TurnAborted{Reason: "user interrupted", FinishedAt: time.Now().UTC()}),
 	}
 	for _, runtimeEvent := range events {

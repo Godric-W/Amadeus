@@ -8,7 +8,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Godric-W/Amadeus/internal/llm"
 	openaisdk "github.com/openai/openai-go/v3"
@@ -23,10 +25,10 @@ func normalizeProviderError(err error) error {
 		return err
 	}
 	if errors.Is(err, context.Canceled) {
-		return newProviderError(llm.ProviderErrorCancelled, 0, "", "", "request cancelled", "", err)
+		return newProviderError(llm.ProviderErrorCancelled, 0, "", "", "request cancelled", "", 0, err)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return newProviderError(llm.ProviderErrorTimeout, 0, "", "", "provider request timed out", "", err)
+		return newProviderError(llm.ProviderErrorTimeout, 0, "", "", "provider request timed out", "", 0, err)
 	}
 
 	var apiError *openaisdk.Error
@@ -38,21 +40,22 @@ func normalizeProviderError(err error) error {
 			apiError.Param,
 			apiError.Message,
 			providerRequestID(apiError.Response),
+			providerRetryDelay(apiError.Response),
 			err,
 		)
 	}
 
 	var syntaxError *json.SyntaxError
 	if errors.As(err, &syntaxError) {
-		return newProviderError(llm.ProviderErrorProtocol, 0, "", "", "invalid provider response", "", err)
+		return newProviderError(llm.ProviderErrorProtocol, 0, "", "", "invalid provider response", "", 0, err)
 	}
 	if isNetworkError(err) {
-		return newProviderError(llm.ProviderErrorNetwork, 0, "", "", "provider network request failed", "", err)
+		return newProviderError(llm.ProviderErrorNetwork, 0, "", "", "provider network request failed", "", 0, err)
 	}
-	return newProviderError(llm.ProviderErrorUnknown, 0, "", "", err.Error(), "", err)
+	return newProviderError(llm.ProviderErrorUnknown, 0, "", "", err.Error(), "", 0, err)
 }
 
-func newProviderError(kind llm.ProviderErrorKind, statusCode int, code, param, message, requestID string, cause error) *llm.ProviderError {
+func newProviderError(kind llm.ProviderErrorKind, statusCode int, code, param, message, requestID string, retryDelay time.Duration, cause error) *llm.ProviderError {
 	if !kind.Valid() {
 		kind = providerErrorKind(statusCode, code)
 	}
@@ -61,13 +64,27 @@ func newProviderError(kind llm.ProviderErrorKind, statusCode int, code, param, m
 		message = providerErrorMessage(kind, statusCode)
 	}
 	return &llm.ProviderError{
-		Kind:       kind,
-		StatusCode: statusCode,
-		Code:       strings.TrimSpace(code),
-		Param:      strings.TrimSpace(param),
-		RequestID:  strings.TrimSpace(requestID),
-		Message:    message,
-		Cause:      cause,
+		Kind:              kind,
+		StatusCode:        statusCode,
+		Code:              strings.TrimSpace(code),
+		Param:             strings.TrimSpace(param),
+		RequestID:         strings.TrimSpace(requestID),
+		Message:           message,
+		AdditionalDetails: message,
+		Retryable:         retryableProviderError(kind, statusCode),
+		RetryDelay:        retryDelay,
+		Cause:             cause,
+	}
+}
+
+func retryableProviderError(kind llm.ProviderErrorKind, statusCode int) bool {
+	switch kind {
+	case llm.ProviderErrorRateLimit, llm.ProviderErrorNetwork, llm.ProviderErrorTimeout, llm.ProviderErrorUnavailable:
+		return true
+	case llm.ProviderErrorUnknown:
+		return statusCode == http.StatusRequestTimeout || statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError
+	default:
+		return false
 	}
 }
 
@@ -121,6 +138,31 @@ func providerRequestID(response *http.Response) string {
 		return requestID
 	}
 	return response.Header.Get("request-id")
+}
+
+func providerRetryDelay(response *http.Response) time.Duration {
+	if response == nil {
+		return 0
+	}
+	if milliseconds, err := strconv.ParseFloat(strings.TrimSpace(response.Header.Get("retry-after-ms")), 64); err == nil && milliseconds >= 0 {
+		return time.Duration(milliseconds * float64(time.Millisecond))
+	}
+	retryAfter := strings.TrimSpace(response.Header.Get("Retry-After"))
+	if retryAfter == "" {
+		return 0
+	}
+	if seconds, err := strconv.ParseFloat(retryAfter, 64); err == nil && seconds >= 0 {
+		return time.Duration(seconds * float64(time.Second))
+	}
+	when, err := http.ParseTime(retryAfter)
+	if err != nil {
+		return 0
+	}
+	delay := time.Until(when)
+	if delay < 0 {
+		return 0
+	}
+	return delay
 }
 
 func providerErrorMessage(kind llm.ProviderErrorKind, statusCode int) string {

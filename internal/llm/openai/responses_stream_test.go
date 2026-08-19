@@ -254,7 +254,7 @@ func responsesFixtureClient(t *testing.T, fixture string) openaisdk.Client {
 	provider := config.Default().Providers[config.DefaultProviderName]
 	provider.APIKey = "test-secret"
 	provider.BaseURL = "https://stream.example.invalid/v1"
-	provider.MaxRetries = 0
+	provider.RequestMaxRetries = 0
 	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.String() != "https://stream.example.invalid/v1/responses" {
 			t.Fatalf("unexpected streaming request URL: %s", request.URL)

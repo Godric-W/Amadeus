@@ -92,6 +92,7 @@ func (ItemCompleted) isEventMessage() {}
 type AssistantMessageDelta struct {
 	ItemID string
 	Delta  string
+	Reset  bool
 }
 
 func (AssistantMessageDelta) isEventMessage() {}
@@ -99,6 +100,7 @@ func (AssistantMessageDelta) isEventMessage() {}
 type ReasoningDelta struct {
 	ItemID string
 	Delta  string
+	Reset  bool
 }
 
 func (ReasoningDelta) isEventMessage() {}
@@ -197,11 +199,11 @@ func (state *TranscriptState) Apply(event SessionEvent) error {
 		delete(state.Active, message.Item.ID)
 		replaceTranscriptItem(&state.Items, message.Item)
 	case AssistantMessageDelta:
-		return state.appendDelta(message.ItemID, message.Delta)
+		return state.applyDelta(message.ItemID, message.Delta, message.Reset)
 	case ReasoningDelta:
-		return state.appendDelta(message.ItemID, message.Delta)
+		return state.applyDelta(message.ItemID, message.Delta, message.Reset)
 	case CommandOutputDelta:
-		return state.appendDelta(message.ItemID, message.Delta)
+		return state.applyDelta(message.ItemID, message.Delta, false)
 	case PlanUpdated:
 		copy := message
 		state.Plan = &copy
@@ -213,12 +215,14 @@ func (state *TranscriptState) Apply(event SessionEvent) error {
 	case Warning:
 		state.Warning = message.Message
 	case StreamError:
-		state.Error = message.Error
+		if !message.WillRetry {
+			state.Error = message.Message
+		}
 	}
 	return nil
 }
 
-func (state *TranscriptState) appendDelta(itemID, delta string) error {
+func (state *TranscriptState) applyDelta(itemID, delta string, reset bool) error {
 	if strings.TrimSpace(itemID) == "" {
 		return errors.New("transcript delta item ID is empty")
 	}
@@ -231,7 +235,11 @@ func (state *TranscriptState) appendDelta(itemID, delta string) error {
 		}
 		return fmt.Errorf("transcript delta references unknown item %q", itemID)
 	}
-	item.Text += delta
+	if reset {
+		item.Text = delta
+	} else {
+		item.Text += delta
+	}
 	state.Active[itemID] = item
 	return nil
 }

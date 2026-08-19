@@ -10,7 +10,7 @@ import (
 
 const (
 	maxProviderTimeout = 30 * time.Minute
-	maxProviderRetries = 10
+	maxProviderRetries = 100
 	maxOutputTokens    = 1_000_000
 	maxContextWindow   = int64(100_000_000)
 	maxParallelTools   = 64
@@ -150,8 +150,14 @@ func validateProvider(name string, provider ProviderConfig, addIssue func(string
 	if provider.Timeout <= 0 || provider.Timeout > maxProviderTimeout {
 		addIssue(path+".timeout", fmt.Sprintf("must be greater than 0 and at most %s", maxProviderTimeout))
 	}
-	if provider.MaxRetries < 0 || provider.MaxRetries > maxProviderRetries {
-		addIssue(path+".max_retries", fmt.Sprintf("must be between 0 and %d", maxProviderRetries))
+	if provider.RequestMaxRetries < 0 || provider.RequestMaxRetries > maxProviderRetries {
+		addIssue(path+".request_max_retries", fmt.Sprintf("must be between 0 and %d", maxProviderRetries))
+	}
+	if provider.StreamMaxRetries < 0 || provider.StreamMaxRetries > maxProviderRetries {
+		addIssue(path+".stream_max_retries", fmt.Sprintf("must be between 0 and %d", maxProviderRetries))
+	}
+	if provider.StreamIdleTimeout <= 0 {
+		addIssue(path+".stream_idle_timeout", "must be greater than 0")
 	}
 	if provider.Temperature < 0 || provider.Temperature > 2 {
 		addIssue(path+".temperature", "must be between 0 and 2")

@@ -26,15 +26,18 @@ type interactiveCompactionClient struct {
 }
 
 func (client *interactiveCompactionClient) Complete(_ context.Context, request llm.Request) (llm.Response, error) {
-	client.request = request
-	if client.err != nil {
-		return llm.Response{}, client.err
-	}
-	return llm.Response{Message: llm.AssistantMessage("## Handoff\n\nInspection completed; continue with tests."), FinishReason: llm.FinishReasonStop}, nil
+	return llm.Response{}, errors.New("unexpected complete call")
 }
 
-func (*interactiveCompactionClient) Stream(context.Context, llm.Request) (llm.Stream, error) {
-	return nil, errors.New("unexpected stream call")
+func (client *interactiveCompactionClient) Stream(_ context.Context, request llm.Request) (llm.Stream, error) {
+	client.request = request
+	if client.err != nil {
+		return nil, client.err
+	}
+	return &compactTestStream{chunks: []llm.StreamChunk{
+		{ContentDelta: "## Handoff\n\nInspection completed; continue with tests."},
+		{FinishReason: llm.FinishReasonStop},
+	}}, nil
 }
 
 func (*interactiveCompactionClient) Model() llm.ModelInfo {
@@ -42,6 +45,19 @@ func (*interactiveCompactionClient) Model() llm.ModelInfo {
 }
 
 func (*interactiveCompactionClient) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+
+type compactTestStream struct{ chunks []llm.StreamChunk }
+
+func (stream *compactTestStream) Recv() (llm.StreamChunk, error) {
+	if len(stream.chunks) == 0 {
+		return llm.StreamChunk{}, io.EOF
+	}
+	chunk := stream.chunks[0]
+	stream.chunks = stream.chunks[1:]
+	return chunk, nil
+}
+
+func (*compactTestStream) Close() error { return nil }
 
 type compactTestHost struct {
 	lines   []rollout.Line
@@ -79,7 +95,7 @@ func TestCompactTaskProducesSemanticReplacementHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := (&compactTask{runtime: runtime}).Run(context.Background(), session, &turn.TurnContext{}, nil)
+	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +129,7 @@ func TestCompactTaskPreservesLatestUserTurnOutsideReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	session.state.History = host.lines
-	result, err := (&compactTask{runtime: runtime}).Run(context.Background(), session, &turn.TurnContext{}, nil)
+	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,10 +153,14 @@ func TestCompactTaskFailureDoesNotReturnItems(t *testing.T) {
 		t.Fatal(err)
 	}
 	client.err = errors.New("provider unavailable")
-	result, err := (&compactTask{runtime: runtime}).Run(context.Background(), session, &turn.TurnContext{}, nil)
+	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil)
 	if err == nil || len(result.Items) != 0 {
 		t.Fatalf("failed compaction result=%#v err=%v", result, err)
 	}
+}
+
+func compactTurnContext() *turn.TurnContext {
+	return &turn.TurnContext{ThreadID: "thread-1", TurnID: "turn-2"}
 }
 
 func newCompactionTestRuntime(t *testing.T) (*ServicesBuilder, *compactTestHost, *interactiveCompactionClient) {

@@ -143,7 +143,11 @@ func (builder *ServicesBuilder) NewCompactTask(ctx context.Context, session *Ses
 	if err := snapshot.Validate(); err != nil {
 		return nil, turn.TurnContext{}, err
 	}
-	return &compactTask{runtime: runtime}, snapshot, nil
+	events, err := protocol.NewScopedSink(session, snapshot.ThreadID, snapshot.TurnID)
+	if err != nil {
+		return nil, turn.TurnContext{}, err
+	}
+	return &compactTask{runtime: runtime, events: events}, snapshot, nil
 }
 
 func (builder *ServicesBuilder) validateTaskRequest(ctx context.Context, session *Session) error {
@@ -261,7 +265,10 @@ func (sessionTask *regularTask) Abort(context.Context, *Session, *turn.TurnConte
 	return nil
 }
 
-type compactTask struct{ runtime *engine.Services }
+type compactTask struct {
+	runtime *engine.Services
+	events  protocol.EventSink
+}
 
 func (*compactTask) Kind() TaskKind { return TaskKindCompact }
 

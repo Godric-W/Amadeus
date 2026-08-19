@@ -97,6 +97,9 @@ func decodeAndApply(base Config, reader io.Reader, lookupEnv EnvLookup) (Config,
 	if len(document.Content) == 0 {
 		return clone(base), nil
 	}
+	if err := migrateConfigDocument(document.Content[0]); err != nil {
+		return Config{}, err
+	}
 	if err := expandEnvironment(document.Content[0], nil, lookupEnv); err != nil {
 		return Config{}, err
 	}
