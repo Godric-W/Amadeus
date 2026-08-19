@@ -46,6 +46,12 @@ func (session *Session) continueTurn(ctx context.Context, runtime *engine.Servic
 				continue
 			}
 		}
+		if err := events.Publish(ctx, protocol.SessionEvent{Message: protocol.ThreadTokenUsageUpdated{
+			EstimatedInputTokens: step.Prompt.Usage.EstimatedInputTokens,
+			ContextWindow:        step.Model.ContextWindow,
+		}}); err != nil {
+			return engine.RunResult{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: failed"}, fmt.Errorf("publish context usage: %w", err)
+		}
 		if !completionReminderSent && budget.Nearing(stepNumber-1, toolCallCount, time.Since(startedAt)) {
 			step.Prompt.Items = append(step.Prompt.Items, llm.DeveloperMessage("The Turn is approaching its internal safety budget. Finish the highest-value remaining work now and provide a concise final response; do not start optional work."))
 			completionReminderSent = true

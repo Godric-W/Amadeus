@@ -77,7 +77,7 @@ func (fetch *WebFetch) Execute(toolContext tool.ToolUseContext, prepared tool.Pr
 	}
 	document, err := fetch.fetcher.Fetch(toolContext.Context, state.URL)
 	if err != nil {
-		return tool.ToolResult{}, err
+		return tool.ToolResult{ToolName: "web_fetch", Text: "web_fetch failed: " + err.Error(), Data: map[string]any{"url": state.URL, "error": err.Error()}, Metadata: map[string]any{"url": state.URL, "error_kind": "fetch"}}, err
 	}
 	text := document.Text
 	if document.Title != "" {
@@ -134,7 +134,13 @@ func (search *WebSearch) Execute(toolContext tool.ToolUseContext, prepared tool.
 	}
 	results, err := search.provider.Search(toolContext.Context, arguments.Query, arguments.Limit)
 	if err != nil {
-		return tool.ToolResult{}, err
+		metadata := map[string]any{"query": arguments.Query, "error": err.Error()}
+		var providerErr *websearch.Error
+		if errors.As(err, &providerErr) {
+			metadata["error_kind"] = string(providerErr.Kind)
+			metadata["provider"] = providerErr.Provider
+		}
+		return tool.ToolResult{ToolName: "web_search", Text: "web_search failed: " + err.Error(), Data: metadata, Metadata: metadata}, err
 	}
 	encoded, err := json.Marshal(results)
 	if err != nil {

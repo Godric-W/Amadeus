@@ -1,9 +1,9 @@
 # Amadeus 开发进度
 
-> 最近更新：2026-08-17
+> 最近更新：2026-08-18
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：H. Extensions + Release
-> 下一任务：H-02 MCP
+> 当前阶段：H. Extensions + Release（DONE）
+> 下一任务：无（H 阶段验收完成）
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
@@ -464,14 +464,30 @@ G 不重写已经稳定的 Tool、Approval、Diff、MCP、Skill 或 Web 行为�
 - [x] Default/Plan、ApprovalPolicy、PermissionProfile 与 SessionPermissionContext 不再混用同一个 PermissionMode。
 - [x] regular、compact、plan、interrupt、approval、resume 与连续 Turn 通过同一 Session 主链端到端运行。
 
-## 10. H. Extensions + Release — `DOING`
+## 10. H. Extensions + Release — `DONE`
 
 - `H-01 TUI Tool Projection Convergence`：`DONE`。按 Codex HistoryCell/树状 activity 和 Claude Code Tool-specific UI projection 收敛工具展示。以真实 `TurnItem.ToolName` 为身份来源：`read`/`grep`/`glob` 进入 Codex 风格 `Exploring`/`Explored` 树，`execute_command` 进入 Codex 风格 `Running`/`Ran` 树，`update_plan` 直接沿用 Codex Plan/PlanUpdated 展示，`write`/`edit` 使用 Claude Code 风格独立展示。已覆盖 Tool 状态生命周期、结构化 ToolDisplayResult/文件变更摘要、Approval waiting/denied 展示、Rich/Raw、Inline、Live/Replay 一致性测试；`apply_patch` 明确排除在默认 Tool Catalog、Event、Rollout 和 TUI 主链之外，仅保留遗留代码。受影响包测试、race、vet、build、architecture guard 和 `git diff --check` 通过；全量测试中仍有既有 `internal/thread/manager` 环境时序超时，相关代码未修改。
-- `H-02 MCP`：按当前 ToolDefinition、Approval 和 Event Contract 接入 MCP 工具，并复用通用 Tool Display Contract。
-- `H-03 Skill`：实现 Skill 发现、说明、调用和脚本执行边界，并提供稳定的 Tool/Approval/TUI 摘要。
-- `H-04 Web`：完善可配置 Web Search Provider、超时、重试和结果归一化，并完成搜索 Tool 的 TUI 结果展示。
-- `H-05 Release Cleanup`：清理 Extensions 与发布阶段产生的临时适配代码；A/B/F/G 的旧 Runtime、Persistence、Context 和 Agent Engine 过渡主链必须在对应 Closure 内删除，不推迟到 H。
-- `H-06 Release Validation`：跨平台构建、端到端测试、文档同步和发布验收。
+- `H-02 MCP Runtime Convergence`：`DONE`。已删除旧 `Manager`/动态 Adapter 生产主链，完成 `MCPRuntime`、`MCPBinding`、typed Tool/Resource Catalog、lazy discovery、schema validation、read-only permission、typed stale/remote error、refresh/reconnect、shutdown、Resume ToolResult persistence 和 TUI typed projection；全量测试与 race 验收通过。
+  - `[x] H-02.1`：MCP 配置、Client、Server binding、ToolCatalog、ResourceCatalog 和 Binding Revision 已统一进入 `MCPRuntime` owner；`ExtensionAssembly` 仅装配，Tool/TUI 消费 typed snapshot。
+  - `[x] H-02.2`：已稳定 server/tool identity、description、input schema、read-only/idempotent/parallel capability、resource metadata 和 catalog revision；生产路径不再注册动态 MCP Tool Adapter。
+  - `[x] H-02.3`：保留 lazy discovery；`mcp_list_tools`/`mcp_call` Prepare 验证 binding、server catalog、tool identity 和 input schema，Execute 再校验 catalog revision。
+  - `[x] H-02.4`：MCP List/Resource Read 默认 Allow，MCP Call 默认 Ask；结果进入统一 ToolResult/TUI projection，远程输出保持不可信。
+  - `[x] H-02.5`：Catalog 保留远程 annotation/capability；明确只读 Tool 标记为具备并行资格，写入/未知 Tool 保持串行。由于基础版统一通过参数化动态 `mcp_call` 暴露远程调用，Tool Registry 无法按单次调用选择并发，故动态入口安全固定串行；未来 direct MCP Tool 投影再启用有界并行，不复制第二套调用链。
+  - `[x] H-02.6`：startup、lazy start、refresh、disconnect/reconnect、shutdown、schema/remote error、Session/Resume/stale revision 已有覆盖并通过全量测试与 race；不实现 OAuth、Elicitation、Plugin/Remote Connector 和 MCP dependency installer。
+- `H-03 Skill Catalog and Resource Convergence`：`DONE`。已完成 metadata/document 分离、resource index、渐进式披露、explicit selection、stale read、script attribution、Resume projection 和旧 Skill 类型清理；全量测试与 race 验收通过。
+  - `[x] H-03.1`：Skill discovery、metadata、enabled settings、resource index 和 revision 已统一由 `SkillCatalog` 管理；`ExtensionAssembly` 只装配和转换 Context injection。
+  - `[x] H-03.2`：已实现 `name`、`description`、`short_description`、`path_to_skills_md`、`source/scope`、`enabled`、`policy`、`references`、`scripts`、`assets` 和 `revision`；Index 不携带正文。
+  - `[x] H-03.3`：保留 `$skill-name` 显式选择和 `read_skill`；正文为 `SkillInjection`，references 只能 bounded、line-aware、path-contained 按需读取；TUI 只负责 enabled policy，不直接注入正文。
+  - `[x] H-03.4`：已建立 `SKILL.md`、`references/*`、`scripts/*`、`assets/*` 边界；scripts/assets 不可被普通 reference 路径读取或自动注入。
+  - `[x] H-03.5`：`execute_command` Prepare 已解析脚本归属并复用普通 Command Permission、Approval、Host Runner、ProcessManager、取消和 `write_stdin`；未创建独立 Skill Script Executor。
+  - `[x] H-03.6`：已实现显式注入、`SKILL.md` 读取和实际 Skill Script 执行 attribution；归属识别不改变 Allow/Ask。
+  - `[x] H-03.7a`：Skill Script attribution 已下沉至 `process.Command`/`process.Snapshot`，因此首次 `execute_command`、后续 `write_stdin`、Resume/ToolResult projection 使用同一份生命周期事实；不在 Tool 层复制或推断归属。
+  - `[x] H-03.7b`：补充 disabled/override、同名 project precedence、资源 revision、path escape、常见解释器 flags 和无法确定脚本时的普通命令 fallback；不解析任意 Shell AST。
+  - `[x] H-03.7`：Catalog/Resource/Policy revision、stale read/command、resume、disabled/override、same-name precedence、warning、path escape 和 TUI/ToolResult 已覆盖并通过全量测试与 race；不实现 Plugin/Remote Skill、MCP dependency installation、Product gating 和 package manager。
+- H-02 与 H-03 的完成顺序：先完成 owner/data model 和旧生产主链删除，再做 lazy/resource/injection 行为，最后补 stale/lifecycle/resume 验收；仅新增字段或兼容 alias 不得标记子任务完成。
+- `H-04 Web`：`DONE`。已完成 DuckDuckGo/Tavily/SearXNG/Brave Provider、统一错误分类、超时/重试、URL 校验/去重/结果上限、web_search/web_fetch Permission Contract 和 TUI Network projection；搜索/抓取失败保留可见 ToolResult 与稳定 error metadata。
+- `H-05 Release Cleanup`：`DONE`。删除旧 MCP Manager/Tool Adapter、旧 Skill 混合对象和泛化 Extension Runtime；生产 owner 已收敛为 `MCPRuntime`、`SkillCatalog`、`ExtensionAssembly`，目录与文件职责已拆分，未保留 alias/wrapper 双主链。
+- `H-06 Release Validation`：`DONE`。Linux/Windows/Darwin 目标构建、全量测试、全量 race、`go vet ./...`、架构 guard、文档同步和 `git diff --check` 已完成；当前沙箱偶发的 httptest loopback 监听失败不属于代码失败，独立重跑全量测试已通过。
 
 ## 11. I. Prompt Construction + Optimization — `DONE`
 

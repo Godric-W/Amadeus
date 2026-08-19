@@ -137,6 +137,9 @@ func normalizeResults(values []Result, limit int) []Result {
 	for _, value := range values {
 		value.Title = strings.TrimSpace(value.Title)
 		value.Snippet = strings.TrimSpace(value.Snippet)
+		if len([]rune(value.Snippet)) > 2000 {
+			value.Snippet = string([]rune(value.Snippet)[:1999]) + "…"
+		}
 		parsed, err := url.Parse(strings.TrimSpace(value.URL))
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 			continue

@@ -25,36 +25,7 @@ const (
 	defaultMaxDescription = 512
 )
 
-type Source string
-
-const (
-	SourceUser    Source = "user"
-	SourceProject Source = "project"
-)
-
-type Skill struct {
-	Name        string
-	Description string
-	Content     string
-	Source      Source
-	Root        string
-	Path        string
-	Size        int64
-	Revision    string
-	Enabled     bool
-}
-
-type IndexEntry struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Source      Source `json:"source"`
-	Path        string `json:"path"`
-	Size        int64  `json:"size"`
-	Revision    string `json:"revision"`
-	Enabled     bool   `json:"enabled"`
-}
-
-type Catalog struct {
+type SkillCatalog struct {
 	mutex       sync.RWMutex
 	values      map[string]catalogEntry
 	disabled    map[Source]map[string]bool
@@ -64,7 +35,7 @@ type Catalog struct {
 }
 
 type catalogEntry struct {
-	metadata Skill
+	metadata SkillMetadata
 }
 
 type LoadOptions struct {
@@ -78,13 +49,13 @@ func DefaultLoadOptions() LoadOptions {
 	return LoadOptions{MaxSkills: defaultMaxSkills, MaxSkillBytes: defaultMaxSkillBytes, MaxIndexBytes: defaultMaxIndexBytes, MaxDescription: defaultMaxDescription}
 }
 
-func Load(userRoot string, root project.Root, options LoadOptions) (*Catalog, []error, error) {
+func Load(userRoot string, root project.Root, options LoadOptions) (*SkillCatalog, []error, error) {
 	if root.Path() == "" {
 		return nil, nil, errors.New("skill project root is empty")
 	}
 	options = normalizeOptions(options)
 	disabled, settingsWarnings := loadSettings(userRoot, root.Path())
-	catalog := &Catalog{
+	catalog := &SkillCatalog{
 		values: make(map[string]catalogEntry), disabled: disabled, userRoot: strings.TrimSpace(userRoot),
 		projectRoot: root.Path(), options: options,
 	}
@@ -112,70 +83,88 @@ func Load(userRoot string, root project.Root, options LoadOptions) (*Catalog, []
 	return catalog, warnings, nil
 }
 
-func (catalog *Catalog) Lookup(name string) (Skill, bool) {
+func (catalog *SkillCatalog) Lookup(name string) (SkillMetadata, bool) {
 	if catalog == nil {
-		return Skill{}, false
+		return SkillMetadata{}, false
 	}
 	catalog.mutex.RLock()
 	defer catalog.mutex.RUnlock()
 	entry, ok := catalog.values[strings.TrimSpace(name)]
+	if ok {
+		entry.metadata.References = cloneResources(entry.metadata.References)
+		entry.metadata.Scripts = cloneResources(entry.metadata.Scripts)
+		entry.metadata.Assets = cloneResources(entry.metadata.Assets)
+	}
 	return entry.metadata, ok
 }
 
-func (catalog *Catalog) Load(name string) (Skill, error) {
+func (catalog *SkillCatalog) LoadDocument(name string) (SkillDocument, error) {
 	if catalog == nil {
-		return Skill{}, errors.New("skill catalog is nil")
+		return SkillDocument{}, errors.New("skill catalog is nil")
 	}
 	catalog.mutex.RLock()
 	entry, ok := catalog.values[strings.TrimSpace(name)]
 	catalog.mutex.RUnlock()
 	if !ok {
-		return Skill{}, fmt.Errorf("skill %q is not available", strings.TrimSpace(name))
+		return SkillDocument{}, fmt.Errorf("skill %q is not available", strings.TrimSpace(name))
 	}
 	if !entry.metadata.Enabled {
-		return Skill{}, fmt.Errorf("skill %q is disabled", entry.metadata.Name)
+		return SkillDocument{}, fmt.Errorf("skill %q is disabled", entry.metadata.Name)
 	}
-	value, err := parse(entry.metadata.Path, entry.metadata.Source, entry.metadata.Root, catalog.options)
+	value, err := parse(entry.metadata.PathToSkillMD, entry.metadata.Source, filepath.Dir(entry.metadata.PathToSkillMD), catalog.options)
 	if err != nil {
-		return Skill{}, fmt.Errorf("load Skill %q: %w", entry.metadata.Name, err)
+		return SkillDocument{}, fmt.Errorf("load Skill %q: %w", entry.metadata.Name, err)
 	}
-	if value.Name != entry.metadata.Name || value.Source != entry.metadata.Source || value.Root != entry.metadata.Root {
-		return Skill{}, fmt.Errorf("Skill %q metadata changed since catalog discovery", entry.metadata.Name)
+	if value.Name != entry.metadata.Name || value.Source != entry.metadata.Source || value.PathToSkillMD != entry.metadata.PathToSkillMD {
+		return SkillDocument{}, fmt.Errorf("Skill %q metadata changed since catalog discovery", entry.metadata.Name)
 	}
 	value.Enabled = true
 	return value, nil
 }
 
-func (catalog *Catalog) Index() []IndexEntry {
+func (catalog *SkillCatalog) Index() []SkillMetadata {
 	if catalog == nil {
 		return nil
 	}
 	catalog.mutex.RLock()
 	defer catalog.mutex.RUnlock()
-	entries := make([]IndexEntry, 0, len(catalog.values))
+	entries := make([]SkillMetadata, 0, len(catalog.values))
 	for _, entry := range catalog.values {
 		value := entry.metadata
-		entries = append(entries, IndexEntry{Name: value.Name, Description: value.Description, Source: value.Source, Path: value.Path, Size: value.Size, Revision: value.Revision, Enabled: value.Enabled})
+		value.References = cloneResources(value.References)
+		value.Scripts = cloneResources(value.Scripts)
+		value.Assets = cloneResources(value.Assets)
+		entries = append(entries, value)
 	}
 	sort.Slice(entries, func(left, right int) bool { return entries[left].Name < entries[right].Name })
 	return entries
 }
 
-func (catalog *Catalog) Revision() (string, error) {
+func (catalog *SkillCatalog) Revision() (string, error) {
 	if catalog == nil {
 		return "", errors.New("skill catalog is nil")
 	}
 	entries := catalog.Index()
 	for index := range entries {
-		if !entries[index].Enabled {
-			continue
+		catalog.mutex.RLock()
+		entry, exists := catalog.values[entries[index].Name]
+		catalog.mutex.RUnlock()
+		if !exists {
+			return "", fmt.Errorf("skill %q disappeared from catalog", entries[index].Name)
 		}
-		value, err := catalog.Load(entries[index].Name)
+		value, err := parse(entry.metadata.PathToSkillMD, entry.metadata.Source, filepath.Dir(entry.metadata.PathToSkillMD), catalog.options)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("refresh Skill %q revision: %w", entries[index].Name, err)
 		}
+		if value.Name != entry.metadata.Name || value.Source != entry.metadata.Source || value.PathToSkillMD != entry.metadata.PathToSkillMD {
+			return "", fmt.Errorf("Skill %q metadata changed since catalog discovery", entry.metadata.Name)
+		}
+		value.Enabled = entry.metadata.Enabled
 		entries[index].Size = value.Size
 		entries[index].Revision = value.Revision
+		entries[index].References = cloneResources(value.References)
+		entries[index].Scripts = cloneResources(value.Scripts)
+		entries[index].Assets = cloneResources(value.Assets)
 	}
 	encoded, err := json.Marshal(entries)
 	if err != nil {
@@ -185,7 +174,22 @@ func (catalog *Catalog) Revision() (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func (catalog *Catalog) Len() int {
+func (catalog *SkillCatalog) ValidateRevision(expected string) error {
+	expected = strings.TrimSpace(expected)
+	if expected == "" {
+		return nil
+	}
+	current, err := catalog.Revision()
+	if err != nil {
+		return err
+	}
+	if current != expected {
+		return &StaleRevisionError{Expected: expected, Current: current}
+	}
+	return nil
+}
+
+func (catalog *SkillCatalog) Len() int {
 	if catalog == nil {
 		return 0
 	}
@@ -194,7 +198,7 @@ func (catalog *Catalog) Len() int {
 	return len(catalog.values)
 }
 
-func (catalog *Catalog) SetEnabled(name string, enabled bool) error {
+func (catalog *SkillCatalog) SetEnabled(name string, enabled bool) error {
 	if catalog == nil {
 		return errors.New("skill catalog is nil")
 	}
@@ -225,7 +229,7 @@ func (catalog *Catalog) SetEnabled(name string, enabled bool) error {
 	return nil
 }
 
-func (catalog *Catalog) applyEnabledState() {
+func (catalog *SkillCatalog) applyEnabledState() {
 	for name, entry := range catalog.values {
 		entry.metadata.Enabled = !catalog.disabled[entry.metadata.Source][name]
 		catalog.values[name] = entry
@@ -271,62 +275,85 @@ func scan(root string, source Source, options LoadOptions) (map[string]catalogEn
 			continue
 		}
 		value.Content = ""
-		values[value.Name] = catalogEntry{metadata: value}
+		values[value.Name] = catalogEntry{metadata: value.SkillMetadata}
 	}
 	return values, warnings
 }
 
-func parse(path string, source Source, root string, options LoadOptions) (Skill, error) {
+func parse(path string, source Source, root string, options LoadOptions) (SkillDocument, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return Skill{}, err
+		return SkillDocument{}, err
 	}
 	if !info.Mode().IsRegular() {
-		return Skill{}, errors.New("SKILL.md is not a regular file")
+		return SkillDocument{}, errors.New("SKILL.md is not a regular file")
 	}
 	if info.Size() > options.MaxSkillBytes {
-		return Skill{}, fmt.Errorf("SKILL.md exceeds maximum byte size %d", options.MaxSkillBytes)
+		return SkillDocument{}, fmt.Errorf("SKILL.md exceeds maximum byte size %d", options.MaxSkillBytes)
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return Skill{}, err
+		return SkillDocument{}, err
 	}
 	if !utf8.Valid(content) {
-		return Skill{}, errors.New("SKILL.md is not valid UTF-8")
+		return SkillDocument{}, errors.New("SKILL.md is not valid UTF-8")
 	}
-	metadata, body, err := splitFrontmatter(string(content))
+	frontmatter, body, err := splitFrontmatter(string(content))
 	if err != nil {
-		return Skill{}, err
+		return SkillDocument{}, err
 	}
 	var header struct {
-		Name        string `yaml:"name"`
-		Description string `yaml:"description"`
+		Name             string `yaml:"name"`
+		Description      string `yaml:"description"`
+		ShortDescription string `yaml:"short_description"`
+		AllowImplicit    *bool  `yaml:"allow_implicit_invocation"`
 	}
-	decoder := yaml.NewDecoder(strings.NewReader(metadata))
+	decoder := yaml.NewDecoder(strings.NewReader(frontmatter))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&header); err != nil {
-		return Skill{}, fmt.Errorf("parse frontmatter: %w", err)
+		return SkillDocument{}, fmt.Errorf("parse frontmatter: %w", err)
 	}
 	header.Name = strings.TrimSpace(header.Name)
 	header.Description = strings.TrimSpace(header.Description)
+	header.ShortDescription = strings.TrimSpace(header.ShortDescription)
 	if !validName(header.Name) {
-		return Skill{}, errors.New("frontmatter name must contain only lowercase letters, digits, and hyphens")
+		return SkillDocument{}, errors.New("frontmatter name must contain only lowercase letters, digits, and hyphens")
 	}
 	if header.Description == "" {
-		return Skill{}, errors.New("frontmatter description is empty")
+		return SkillDocument{}, errors.New("frontmatter description is empty")
 	}
 	if len([]rune(header.Description)) > options.MaxDescription {
-		return Skill{}, fmt.Errorf("frontmatter description exceeds %d runes", options.MaxDescription)
+		return SkillDocument{}, fmt.Errorf("frontmatter description exceeds %d runes", options.MaxDescription)
 	}
 	body = strings.TrimSpace(body)
 	if body == "" {
-		return Skill{}, errors.New("SKILL.md body is empty")
+		return SkillDocument{}, errors.New("SKILL.md body is empty")
 	}
-	digest := sha256.Sum256([]byte(body))
-	return Skill{
-		Name: header.Name, Description: header.Description, Content: body, Source: source, Root: root,
-		Path: filepath.Clean(path), Size: info.Size(), Revision: hex.EncodeToString(digest[:]), Enabled: true,
-	}, nil
+	path = filepath.Clean(path)
+	resources, err := discoverResources(root)
+	if err != nil {
+		return SkillDocument{}, err
+	}
+	policy := Policy{AllowImplicitInvocation: true}
+	if header.AllowImplicit != nil {
+		policy.AllowImplicitInvocation = *header.AllowImplicit
+	}
+	metadata := SkillMetadata{
+		Name: header.Name, Description: header.Description, ShortDescription: header.ShortDescription,
+		PathToSkillMD: path, Source: source, Scope: scopeForSource(source), Enabled: true,
+		Policy: policy, References: resources[ResourceReference], Scripts: resources[ResourceScript], Assets: resources[ResourceAsset], Size: info.Size(),
+	}
+	revisionInput := struct {
+		Metadata SkillMetadata `json:"metadata"`
+		Content  string        `json:"content"`
+	}{Metadata: metadata, Content: body}
+	encoded, err := json.Marshal(revisionInput)
+	if err != nil {
+		return SkillDocument{}, err
+	}
+	digest := sha256.Sum256(encoded)
+	metadata.Revision = hex.EncodeToString(digest[:])
+	return SkillDocument{SkillMetadata: metadata, Root: root, Content: body}, nil
 }
 
 func splitFrontmatter(content string) (string, string, error) {
@@ -377,10 +404,17 @@ func inside(root, candidate string) bool {
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
 }
 
-func indexBytes(entries []IndexEntry) int {
+func indexBytes(entries []SkillMetadata) int {
 	total := 0
 	for _, entry := range entries {
-		total += len(entry.Name) + len(entry.Description) + len(entry.Source) + len(entry.Path) + len(entry.Revision) + 8
+		total += len(entry.Name) + len(entry.Description) + len(entry.Source) + len(entry.PathToSkillMD) + len(entry.Revision) + 8
 	}
 	return total
+}
+
+func scopeForSource(source Source) Scope {
+	if source == SourceProject {
+		return ScopeProject
+	}
+	return ScopeUser
 }

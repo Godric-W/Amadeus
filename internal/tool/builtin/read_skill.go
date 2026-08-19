@@ -1,14 +1,10 @@
 package builtin
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
-	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/project"
@@ -22,7 +18,7 @@ type ReadSkillOptions struct {
 }
 
 type ReadSkill struct {
-	catalog *skill.Catalog
+	catalog *skill.SkillCatalog
 	options ReadSkillOptions
 }
 
@@ -35,11 +31,11 @@ type readSkillArguments struct {
 
 type preparedReadSkill struct {
 	arguments readSkillArguments
-	skill     skill.Skill
+	skill     skill.SkillDocument
 	path      string
 }
 
-func NewReadSkill(catalog *skill.Catalog, options ReadSkillOptions) (*ReadSkill, error) {
+func NewReadSkill(catalog *skill.SkillCatalog, options ReadSkillOptions) (*ReadSkill, error) {
 	if catalog == nil {
 		return nil, errors.New("read_skill catalog is nil")
 	}
@@ -69,13 +65,16 @@ func (reader *ReadSkill) ValidateInput(_ tool.ToolUseContext, invocation tool.In
 	return nil
 }
 
-func (reader *ReadSkill) Prepare(_ tool.ToolUseContext, invocation tool.Invocation) (tool.PreparedToolUse, error) {
+func (reader *ReadSkill) Prepare(toolContext tool.ToolUseContext, invocation tool.Invocation) (tool.PreparedToolUse, error) {
 	var arguments readSkillArguments
 	if err := decodeArguments(invocation.Call.Payload, &arguments); err != nil {
 		return tool.PreparedToolUse{}, err
 	}
 	arguments.Name, arguments.Path = strings.TrimSpace(arguments.Name), strings.TrimSpace(arguments.Path)
-	value, err := reader.catalog.Load(arguments.Name)
+	if err := reader.catalog.ValidateRevision(toolContext.Snapshot.SkillRevision); err != nil {
+		return tool.PreparedToolUse{}, err
+	}
+	value, err := reader.catalog.LoadDocument(arguments.Name)
 	if err != nil {
 		return tool.PreparedToolUse{}, err
 	}
@@ -105,20 +104,20 @@ func (reader *ReadSkill) Execute(toolContext tool.ToolUseContext, prepared tool.
 		return tool.ToolResult{}, errors.New("read_skill preparation state is invalid")
 	}
 	arguments, value, preparedPath := state.arguments, state.skill, state.path
+	if err := reader.catalog.ValidateRevision(toolContext.Snapshot.SkillRevision); err != nil {
+		return tool.ToolResult{}, err
+	}
 	if arguments.Path == "" {
-		references, err := listSkillReferences(toolContext.Context, value)
-		if err != nil {
-			return tool.ToolResult{}, err
-		}
+		references := value.References
 		content := value.Content
 		partial := false
 		if len(content) > reader.options.MaxBytes {
 			content = workspaceHead(content, reader.options.MaxBytes)
 			partial = true
 		}
-		data := map[string]any{"name": value.Name, "description": value.Description, "source": string(value.Source), "references": references, "truncated": partial}
+		data := map[string]any{"name": value.Name, "description": value.Description, "source": string(value.Source), "revision": value.Revision, "references": references, "truncated": partial}
 		return tool.ToolResult{ToolName: "read_skill", Text: content, Partial: partial, Data: data, Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayText, Title: value.Name, Summary: value.Description}, Metadata: map[string]any{
-			"name": value.Name, "description": value.Description, "source": string(value.Source), "references": references,
+			"name": value.Name, "description": value.Description, "source": string(value.Source), "revision": value.Revision, "references": references,
 		}}, nil
 	}
 	referencesRoot, err := skillReferencesRoot(value)
@@ -133,52 +132,11 @@ func (reader *ReadSkill) Execute(toolContext tool.ToolUseContext, prepared tool.
 	if err != nil {
 		return tool.ToolResult{}, fmt.Errorf("read Skill %q reference %q: %w", value.Name, arguments.Path, err)
 	}
-	data := map[string]any{"name": value.Name, "path": arguments.Path, "start_line": read.StartLine, "end_line": read.EndLine, "total_lines": read.TotalLines, "truncated": read.Partial}
+	data := map[string]any{"name": value.Name, "path": arguments.Path, "revision": value.Revision, "start_line": read.StartLine, "end_line": read.EndLine, "total_lines": read.TotalLines, "truncated": read.Partial}
 	return tool.ToolResult{ToolName: "read_skill", Text: read.Text, Partial: read.Partial, Data: data, Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayText, Title: value.Name + "/" + arguments.Path}, Metadata: map[string]any{
-		"name": value.Name, "description": value.Description, "source": string(value.Source), "path": arguments.Path,
+		"name": value.Name, "description": value.Description, "source": string(value.Source), "revision": value.Revision, "path": arguments.Path,
 		"start_line": read.StartLine, "end_line": read.EndLine, "next_line": read.NextLine, "total_lines": read.TotalLines,
 	}}, nil
-}
-
-func listSkillReferences(ctx context.Context, value skill.Skill) ([]string, error) {
-	root := filepath.Join(value.Root, "references")
-	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	} else if err != nil {
-		return nil, err
-	}
-	references := make([]string, 0)
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if path == root {
-			return nil
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		references = append(references, filepath.ToSlash(relative))
-		if len(references) >= 256 {
-			return fs.SkipAll
-		}
-		return nil
-	})
-	sort.Strings(references)
-	return references, err
 }
 
 func workspaceHead(value string, maxBytes int) string {
@@ -192,7 +150,7 @@ func workspaceHead(value string, maxBytes int) string {
 	return value[:end]
 }
 
-func skillReferencesRoot(value skill.Skill) (project.Root, error) {
+func skillReferencesRoot(value skill.SkillDocument) (project.Root, error) {
 	logical := filepath.Join(value.Root, "references")
 	realPath, err := filepath.EvalSymlinks(logical)
 	if err != nil {

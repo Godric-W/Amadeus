@@ -14,6 +14,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/policy"
 	processdomain "github.com/Godric-W/Amadeus/internal/process"
 	"github.com/Godric-W/Amadeus/internal/project"
+	"github.com/Godric-W/Amadeus/internal/skill"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -37,6 +38,7 @@ type ExecuteCommandOptions struct {
 	ProcessManager   *processdomain.Manager
 	FileSystemPolicy *project.FileSystemPolicy
 	Audit            audit.Sink
+	SkillCatalog     *skill.SkillCatalog
 }
 
 type ExecuteCommand struct {
@@ -57,10 +59,11 @@ type executeCommandArguments struct {
 }
 
 type ExecRequest struct {
-	owner      string
-	displayCWD string
-	yield      time.Duration
-	command    processdomain.Command
+	owner       string
+	displayCWD  string
+	yield       time.Duration
+	command     processdomain.Command
+	skillScript *skill.ScriptInvocation
 }
 
 type ProcessResult struct {
@@ -74,6 +77,9 @@ type ProcessResult struct {
 	DurationMS      int64               `json:"duration_ms"`
 	OutputBytes     int64               `json:"output_bytes"`
 	OutputTruncated bool                `json:"output_truncated"`
+	SkillName       string              `json:"skill_name,omitempty"`
+	SkillScript     string              `json:"skill_script,omitempty"`
+	SkillRevision   string              `json:"skill_revision,omitempty"`
 }
 
 func NewExecuteCommand(root project.Root, options ExecuteCommandOptions) (*ExecuteCommand, error) {
@@ -149,6 +155,18 @@ func (executeCommand *ExecuteCommand) Prepare(toolContext tool.ToolUseContext, i
 	if err != nil {
 		return tool.PreparedToolUse{}, err
 	}
+	if catalog := executeCommand.options.SkillCatalog; catalog != nil {
+		if err := catalog.ValidateRevision(toolContext.Snapshot.SkillRevision); err != nil {
+			return tool.PreparedToolUse{}, err
+		}
+		script, found, findErr := catalog.FindScript(arguments.Command, request.command.Directory)
+		if findErr != nil {
+			return tool.PreparedToolUse{}, findErr
+		}
+		if found {
+			request.skillScript = &script
+		}
+	}
 	command := arguments.Command
 	cwd := request.command.Directory
 	assessment, err := executeCommand.guard.Assess(command)
@@ -182,6 +200,11 @@ func (executeCommand *ExecuteCommand) Execute(toolContext tool.ToolUseContext, p
 	request, ok := prepared.State.(ExecRequest)
 	if !ok {
 		return tool.ToolResult{}, errors.New("execute_command preparation state is invalid")
+	}
+	if catalog := executeCommand.options.SkillCatalog; catalog != nil {
+		if err := catalog.ValidateRevision(toolContext.Snapshot.SkillRevision); err != nil {
+			return tool.ToolResult{}, err
+		}
 	}
 	return executeCommand.executeExecRequest(toolContext.Context, request)
 }
@@ -248,6 +271,11 @@ func (executeCommand *ExecuteCommand) writeCommandAudit(ctx context.Context, cal
 
 func (executeCommand *ExecuteCommand) executeExecRequest(ctx context.Context, request ExecRequest) (tool.ToolResult, error) {
 	startedAt := time.Now()
+	if request.skillScript != nil {
+		request.command.Attribution = processdomain.Attribution{
+			Name: request.skillScript.Skill.Name, Resource: request.skillScript.Script.Path, Revision: request.skillScript.Skill.Revision,
+		}
+	}
 	processID, err := executeCommand.manager.Start(request.owner, request.command, configureCommandProcess)
 	if err != nil {
 		return tool.ToolResult{}, fmt.Errorf("start execute_command: %w", err)
@@ -274,18 +302,24 @@ func durationFromMilliseconds(value int64, fallback, maximum time.Duration) time
 }
 
 func commandSnapshotResult(toolName, cwd string, snapshot processdomain.Snapshot, duration time.Duration) (tool.ToolResult, error) {
-	processResult := ProcessResult{ProcessID: string(snapshot.ID), OriginCallID: snapshot.OriginCallID, State: snapshot.State, Output: snapshot.Output, ExitCode: snapshot.ExitCode, StartedAt: snapshot.StartedAt, FinishedAt: snapshot.FinishedAt, DurationMS: duration.Milliseconds(), OutputBytes: snapshot.TotalOutputBytes, OutputTruncated: snapshot.OutputTruncated}
+	processResult := ProcessResult{ProcessID: string(snapshot.ID), OriginCallID: snapshot.OriginCallID, State: snapshot.State, Output: snapshot.Output, ExitCode: snapshot.ExitCode, StartedAt: snapshot.StartedAt, FinishedAt: snapshot.FinishedAt, DurationMS: duration.Milliseconds(), OutputBytes: snapshot.TotalOutputBytes, OutputTruncated: snapshot.OutputTruncated, SkillName: snapshot.Attribution.Name, SkillScript: snapshot.Attribution.Resource, SkillRevision: snapshot.Attribution.Revision}
+	metadata := map[string]any{
+		"process_id": string(snapshot.ID), "status": string(snapshot.State), "cwd": cwd, "exit_code": snapshot.ExitCode,
+		"origin_call_id": snapshot.OriginCallID,
+		"duration_ms":    duration.Milliseconds(), "timed_out": snapshot.State == processdomain.StateTimedOut,
+		"cancelled": snapshot.State == processdomain.StateCancelled, "output_bytes": snapshot.TotalOutputBytes,
+		"output_truncated": snapshot.OutputTruncated,
+	}
+	if processResult.SkillName != "" {
+		metadata["skill_name"] = processResult.SkillName
+		metadata["skill_script"] = processResult.SkillScript
+		metadata["skill_revision"] = processResult.SkillRevision
+	}
 	result := tool.ToolResult{
 		ToolName: toolName, Text: snapshot.Output,
 		Data: processResult, Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayProcess, Title: toolName, Summary: string(snapshot.State), Data: processResult},
-		Partial: snapshot.OutputTruncated || snapshot.State == processdomain.StateRunning || snapshot.State == processdomain.StateTimedOut || snapshot.State == processdomain.StateCancelled,
-		Metadata: map[string]any{
-			"process_id": string(snapshot.ID), "status": string(snapshot.State), "cwd": cwd, "exit_code": snapshot.ExitCode,
-			"origin_call_id": snapshot.OriginCallID,
-			"duration_ms":    duration.Milliseconds(), "timed_out": snapshot.State == processdomain.StateTimedOut,
-			"cancelled": snapshot.State == processdomain.StateCancelled, "output_bytes": snapshot.TotalOutputBytes,
-			"output_truncated": snapshot.OutputTruncated,
-		},
+		Partial:  snapshot.OutputTruncated || snapshot.State == processdomain.StateRunning || snapshot.State == processdomain.StateTimedOut || snapshot.State == processdomain.StateCancelled,
+		Metadata: metadata,
 	}
 	switch snapshot.State {
 	case processdomain.StateRunning, processdomain.StateCompleted:

@@ -14,5 +14,5 @@ func (ConservativeEstimator) EstimateText(content string) int64 {
 	if content == "" {
 		return 0
 	}
-	return int64((len([]byte(content)) + 2) / 3)
+	return int64((len([]byte(content)) + 3) / 4)
 }

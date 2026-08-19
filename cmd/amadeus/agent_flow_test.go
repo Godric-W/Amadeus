@@ -306,7 +306,7 @@ func TestCodingAgentInjectsExplicitSkillIntoFirstRequestContext(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatalf("execute explicit Skill task: %v\nstderr=%s", err, stderr.String())
 	}
-	if len(client.streamRequests) != 1 || !requestContains(client.streamRequests[0], "amadeus.skill_injection.v1") || !requestContains(client.streamRequests[0], "PROJECT-EXPLICIT-SKILL") {
+	if len(client.streamRequests) != 1 || !requestContains(client.streamRequests[0], "amadeus.skill_injection.v2") || !requestContains(client.streamRequests[0], "PROJECT-EXPLICIT-SKILL") {
 		t.Fatalf("explicit Skill was not frozen into the first RequestContext: %#v", client.streamRequests)
 	}
 }

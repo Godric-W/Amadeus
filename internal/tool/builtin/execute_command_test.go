@@ -12,6 +12,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
+	"github.com/Godric-W/Amadeus/internal/skill"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -134,6 +135,98 @@ func TestExecuteCommandAllowsReadableExternalCWD(t *testing.T) {
 	}
 	if _, err := executePreparedTool(t, context.Background(), executeCommand, json.RawMessage(`{"command":"pwd","cwd":".."}`)); err != nil {
 		t.Fatalf("external readable cwd rejected: %v", err)
+	}
+}
+
+func TestExecuteCommandAttributesSkillScriptWithoutChangingApproval(t *testing.T) {
+	rootPath := t.TempDir()
+	skillRoot := filepath.Join(rootPath, ".amadeus", "skills", "review")
+	scriptPath := filepath.Join(skillRoot, "scripts", "check.sh")
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillRoot, "SKILL.md"), []byte("---\nname: review\ndescription: review code\n---\nReview workflow\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scriptPath, []byte("printf skill-script\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, err := project.NewRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, warnings, err := skill.Load("", root, skill.DefaultLoadOptions())
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("load skill catalog: warnings=%v err=%v", warnings, err)
+	}
+	executeCommand, err := NewExecuteCommand(root, ExecuteCommandOptions{DefaultTimeout: 5 * time.Second, MaxTimeout: 5 * time.Second, MaxOutputBytes: 1024, MaxOutputLines: 100, SkillCatalog: catalog})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := executePreparedTool(t, context.Background(), executeCommand, json.RawMessage(`{"command":"bash .amadeus/skills/review/scripts/check.sh"}`))
+	if err != nil || result.Metadata["skill_name"] != "review" || result.Metadata["skill_script"] != "scripts/check.sh" || result.Metadata["skill_revision"] == "" {
+		t.Fatalf("skill script attribution failed: result=%#v err=%v", result, err)
+	}
+}
+
+func TestWriteStdinPreservesSkillScriptAttribution(t *testing.T) {
+	rootPath := t.TempDir()
+	skillRoot := filepath.Join(rootPath, ".amadeus", "skills", "review")
+	scriptPath := filepath.Join(skillRoot, "scripts", "check.sh")
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillRoot, "SKILL.md"), []byte("---\nname: review\ndescription: review code\n---\nReview workflow\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scriptPath, []byte("read value; printf 'got:%s' \"$value\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, err := project.NewRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, _, err := skill.Load("", root, skill.DefaultLoadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	executeCommand, err := NewExecuteCommand(root, ExecuteCommandOptions{
+		DefaultTimeout: 5 * time.Second, MaxTimeout: 5 * time.Second, DefaultYield: 10 * time.Millisecond,
+		MaxYield: 100 * time.Millisecond, MaxOutputBytes: 1024, MaxOutputLines: 100, SkillCatalog: catalog,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeStdin, err := NewWriteStdin(WriteStdinOptions{Manager: executeCommand.ProcessManager(), DefaultYield: 10 * time.Millisecond, MaxYield: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executeCall := tool.NewCall("call-1", "execute_command", json.RawMessage(`{"command":"bash .amadeus/skills/review/scripts/check.sh","yield_time_ms":1}`))
+	executeInvocation := tool.Invocation{TurnID: "turn-1", Call: executeCall, Source: tool.ToolCallSourceModel}
+	prepared, err := executeCommand.Prepare(tool.ToolUseContext{Context: context.Background(), Invocation: executeInvocation}, executeInvocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := executeCommand.Execute(tool.ToolUseContext{Context: context.Background(), Invocation: executeInvocation}, prepared)
+	if err != nil && !errors.Is(err, ErrCommandTimeout) {
+		t.Fatal(err)
+	}
+	processResult, ok := first.Data.(ProcessResult)
+	if !ok || processResult.ProcessID == "" {
+		t.Fatalf("execute_command did not return process state: %#v err=%v", first, err)
+	}
+	stdinCall := tool.NewCall("call-2", "write_stdin", json.RawMessage(`{"process_id":"`+processResult.ProcessID+`","origin_call_id":"call-1","chars":"hello\n","yield_time_ms":100}`))
+	stdinInvocation := tool.Invocation{TurnID: "turn-1", Call: stdinCall, Source: tool.ToolCallSourceModel}
+	stdinPrepared, err := writeStdin.Prepare(tool.ToolUseContext{Context: context.Background(), Invocation: stdinInvocation}, stdinInvocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continued, err := writeStdin.Execute(tool.ToolUseContext{Context: context.Background(), Invocation: stdinInvocation}, stdinPrepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if continued.Metadata["skill_name"] != "review" || continued.Metadata["skill_script"] != "scripts/check.sh" || continued.Metadata["skill_revision"] == "" || !strings.Contains(continued.Text, "got:hello") {
+		t.Fatalf("write_stdin lost Skill attribution: result=%#v", continued)
 	}
 }
 

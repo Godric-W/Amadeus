@@ -18,9 +18,12 @@ import (
 const defaultTimeout = 30 * time.Second
 
 type RemoteTool struct {
-	Name        string
-	Description string
-	InputSchema json.RawMessage
+	Name                  string
+	Description           string
+	InputSchema           json.RawMessage
+	ReadOnlyHint          bool
+	IdempotentHint        bool
+	SupportsParallelCalls bool
 }
 
 type RemoteResult struct {
@@ -115,7 +118,16 @@ func (client *nativeClient) ListTools(ctx context.Context) ([]RemoteTool, error)
 				return nil, fmt.Errorf("encode MCP tool %q schema: %w", value.Name, err)
 			}
 		}
-		tools = append(tools, RemoteTool{Name: value.Name, Description: value.Description, InputSchema: append(json.RawMessage(nil), schema...)})
+		readOnly := value.Annotations.ReadOnlyHint != nil && *value.Annotations.ReadOnlyHint
+		idempotent := value.Annotations.IdempotentHint != nil && *value.Annotations.IdempotentHint
+		tools = append(tools, RemoteTool{
+			Name:                  value.Name,
+			Description:           value.Description,
+			InputSchema:           append(json.RawMessage(nil), schema...),
+			ReadOnlyHint:          readOnly,
+			IdempotentHint:        idempotent,
+			SupportsParallelCalls: readOnly,
+		})
 	}
 	sort.Slice(tools, func(left, right int) bool { return tools[left].Name < tools[right].Name })
 	return tools, nil

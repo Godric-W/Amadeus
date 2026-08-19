@@ -1,7 +1,7 @@
 # Amadeus 架构设计
 
 > 状态：Target Architecture v1
-> 最近修订：2026-08-17
+> 最近修订：2026-08-18
 > 目标语言：Go
 > 产品形态：面向真实软件工程任务的本地 Coding Agent CLI
 > 架构骨架：`../codex-main`
@@ -234,8 +234,8 @@ internal/state/sqlite/       SQLite State DB 与历史数据 Migration
 internal/interface/tui/      Codex 风格 Rich Inline TUI
 internal/interface/cli/      CLI 参数和非交互输出
 internal/instruction/        AGENTS.md 发现与合并
-internal/mcp/                MCP Client 与 Tool Binding
-internal/skill/              Skill 发现与 Prompt/Script 元数据
+internal/mcp/                MCP Config、Session Runtime、Binding 与 Tool/Resource Adapter
+internal/skill/              Skill Catalog、Metadata、Injection 与 Resource Boundary
 internal/diff/               Structured Diff
 internal/config/             配置加载、校验、脱敏
 ```
@@ -486,9 +486,9 @@ type SessionServices struct {
     ToolService      *ToolExecutionService
     Processes        *ProcessManager
     Instructions     *AgentsMdManager
-    Extensions       *ExtensionRegistry
-    Skills           *SkillsService
-    MCP              *MCPRuntime
+    ExtensionAssembly *ExtensionAssembly
+    SkillCatalog     *SkillCatalog
+    MCPRuntime       *MCPRuntime
     Web              WebServices
     Approvals        ApprovalService
     Permissions      *SessionPermissionContext
@@ -510,6 +510,36 @@ type SessionServices struct {
 - SessionServices 不通过通用 `Capabilities` facade 向上泄漏；AmadeusThread/Application 需要的查询由 Session/Thread 提供明确的 typed API。
 
 SessionServices 不直接持有 SQLite Repository、JSONL 文件句柄或 Rollout Path；这些细节封装在 LiveThread → ThreadStore → LocalThreadStore 中。
+
+#### 8.8.1 MCP 与 Skill Capability Lifecycle
+
+MCP 与 Skill 都是 SessionServices 持有的 Session-scoped capability，但二者的生命周期和数据所有权不同：
+
+```text
+MCP:
+SessionConfiguration
+→ MCP Config
+→ MCPRuntime
+→ MCPBinding + lazy ToolCatalog/ResourceCatalog snapshot
+→ StepContext
+→ ToolExecutionService
+
+Skill:
+Skill Roots + Settings
+→ SkillCatalog
+→ SkillMetadata snapshot
+→ explicit Skill selection / read_skill
+→ ContextManager Skill update
+→ StepContext
+```
+
+- `MCPRuntime` 是当前 Session 的 Server 生命周期、连接、发现结果、Resource Catalog 和 Binding Revision 的唯一 owner；MCP Client 不直接暴露给 Tool、Task 或 TUI。
+- `SkillCatalog` 是当前 Session 的 Skill Root 扫描、metadata、启用状态、资源路径和 Catalog Revision 的唯一 owner；Skill 正文不作为常驻 Catalog 历史保存。
+- MCPRuntime 和 SkillCatalog 在 Session spawn 时初始化并在 Session 内复用；MCP Server 连接、Tool Catalog、Resource Catalog 仍按需 lazy startup/discovery。Session shutdown 关闭 MCP Client、Process 和其他由 Session 拥有的资源。
+- 配置、Server Catalog、Skill Metadata 或 Skill Resource 发生变化时，Runtime 生成新的 Revision；下一次 Model Step 重新 capture StepContext，旧 Deferred/Lazy Tool Call 必须返回 typed stale result，而不能继续使用旧 binding。
+- MCP/Skill 不拥有第二套 Prompt、Agent Loop、Process Runner、Approval UI 或持久化历史。它们只向统一 Tool Registry、ContextManager、ToolExecutionService、Event/Rollout 和 TUI 提供 typed capability。
+
+MCP 与 Skill 的命名以 Codex 领域术语为准：使用 `MCPRuntime`、`MCPBinding`、`ToolCatalog`、`ResourceCatalog`、`SkillCatalog`、`SkillMetadata`、`SkillInjection` 和 `SkillResource`；不得继续以 `Extension`、`Capability` 或 `GenericProvider` 作为这些对象的生产职责名称。
 
 ### 8.9 LiveThread、ThreadStore 与 LocalThreadStore
 
@@ -710,7 +740,7 @@ User Input
 → 创建 RunningTask 并设置 ActiveTurn
 → 发布 TurnStarted
 → RegularTask 调用 Session 模块内 run_turn
-→ capture StepContext：动态指令、环境、MCP binding 与 ToolRouter snapshot
+→ capture StepContext：动态指令、环境、MCP binding、Skill snapshot 与 ToolRouter snapshot
 → 必要时通过 Compactor 追加 compaction 并重新 capture StepContext
 → Turn-scoped ModelClientSession 发起 LLM Stream
 → 发布 ItemStarted 与 Assistant/Reasoning Delta
@@ -1550,16 +1580,19 @@ update_plan
 ```text
 write_stdin
 view_image
-skill
+read_skill
 web_search
 web_fetch
-MCP Tools
+mcp_list_tools
+mcp_call
+mcp_list_resources
+mcp_read_resource
 request_user_input
 ```
 
 模型可见 Tool Catalog 和默认 Core Registry 只包含当前公开工具：`read`、`edit`、`write`、`glob`、`grep`、`execute_command`、`write_stdin`、`update_plan`，以及按配置启用的条件工具。旧 `read_file`、`list_dir`、`glob_files`、`grep_code`、`request_permissions` 已物理删除，不再提供兼容注册。
 
-保留 `execute_command` 而不命名为 `Bash`，因为 Amadeus 面向多平台；Skill Script 统一通过它执行。
+保留 `execute_command` 而不命名为 `Bash`，因为 Amadeus 面向多平台；Skill Script 统一通过它执行。MCP 初期保留 Codex 对齐的统一 Lazy Tool 边界 `mcp_list_tools/mcp_call`，不在每次模型请求中复制一套动态 Tool Registry；后续可在不改变 MCPRuntime 和 Tool Contract 的前提下增加动态 Tool Search/直接 ToolSpec 投影。
 
 ### 14.5 内置 Tool 的源码参考与优化边界
 
@@ -2327,21 +2360,128 @@ LiveThread.AppendItems
 
 ### 22.1 MCP
 
-- MCP Tool 进入统一 Tool Registry。
-- MCP 不建立第二套 Agent Loop、历史或 Approval UI。
-- MCP Server 生命周期属于 internal Session 的 SessionServices。
-- Tool Catalog 使用 lazy discovery 和 snapshot，单次模型请求看到稳定集合。
-- MCP List 与 Resource Read 默认 Allow；MCP Call 默认 Ask，无法确认安全性时保持 Ask。
-- MCP Server 不可信输出按 ToolResult 处理，不能注入系统级指令。
+MCP 的最小稳定数据模型如下；真实 Client/SDK 类型只能在 `internal/mcp` 内部使用，不能越过 Tool/Session 边界：
+
+```go
+type MCPBinding struct {
+    Revision string
+    Servers  []MCPServerBinding
+}
+
+type MCPServerBinding struct {
+    Name                    string
+    ConnectionGeneration    uint64
+    ToolCatalogRevision     uint64
+    ResourceCatalogRevision uint64
+    Connected               bool
+    ToolsLoaded             bool
+    ResourcesLoaded         bool
+}
+
+type ToolCatalog struct {
+    Server  string
+    Revision string
+    Tools   []MCPToolMetadata
+}
+
+type ResourceCatalog struct {
+    Server    string
+    Revision  string
+    Resources []MCPResourceMetadata
+}
+
+type MCPToolMetadata struct {
+    Server                string
+    Name                  string
+    Description           string
+    InputSchema           json.RawMessage
+    ReadOnly              bool
+    SupportsParallelCalls bool
+    Revision              string
+}
+
+type MCPResourceMetadata struct {
+    Server      string
+    URI         string
+    Name        string
+    Description string
+    MIMEType    string
+    Revision    string
+}
+```
+
+- MCP 以 Codex 的 `MCPRuntime`、`MCPBinding`、`ToolCatalog`、`ResourceCatalog` 和 per-step snapshot 为目标命名与职责模型；现有 `Manager` 可以作为迁移起点，但不能继续作为最终生产领域名称或第二套 owner。
+- `MCPRuntime` 是 Session 内唯一的 MCP Server 生命周期 owner，负责配置投影、Client 启停、连接状态、Server refresh、Tool/Resource discovery、Catalog Revision 和当前 Binding；Tool、Task、TUI 不直接持有 MCP Client。
+- MCP Tool 通过统一 `ToolRegistry`/`ToolExecutionService` 执行，不建立第二套 Agent Loop、历史、Process Runner 或 Approval UI。
+- Tool Discovery 初期采用 Codex 对齐的 lazy discovery：模型先看到 `mcp_list_tools`，按需获得某个 Server 的 `ToolCatalog`，再通过 `mcp_call` 调用具体 Tool。`MCPBinding` 只描述当前 Server 连接和 catalog 代次；工具/资源 metadata 必须留在各自 typed catalog，不把所有发现结果塞回 Binding。
+- `ToolCatalog` 必须包含稳定的 server/tool identity、description、input schema、read-only/parallel capability 和 catalog revision；`ResourceCatalog` 必须包含 server、URI、name、description、MIME type 和 resource revision。两个 Catalog 都是 Runtime 发布的不可变 snapshot，Tool 和 TUI 不得持有可变 Client 引用。
+- `mcp_call` 在 Prepare 阶段必须校验当前 StepContext 的 `MCPBinding`、Server Catalog 和具体 Tool schema；执行阶段只使用已验证的 server/tool identity，不接受任意未发现的远程名称。
+- `mcp_list_resources` 与 `mcp_read_resource` 复用同一个 MCPRuntime、Binding、ResourceCatalog 和 Tool Contract；Resource 内容按不可信 ToolResult 处理。
+- MCP List 和只读 Resource Read 默认 Allow；MCP Call 默认 Ask，无法确认安全性时保持 Ask。若实现需要对 Resource Read 采用 Ask，必须同步修改 Tool/Approval Contract，不得让代码与本文分叉。
+- MCP Tool 的并发能力来自远程 annotation/capability，并保存在 `MCPToolMetadata`；明确只读的 Tool 才具备未来有界并行的资格，写入或未知能力必须串行。基础版仍通过统一的动态 `mcp_call` Tool 暴露远程调用，因 Tool Registry 无法按单次参数表达 capability，`mcp_call.SupportsParallelToolCalls()` 安全返回 `false`；不得据此删除 Catalog 中的真实 capability，也不得把未知 Tool 标为并发安全。若后续投影 direct MCP Tool，才按 metadata 选择有界并发。
+- MCP Server 配置、连接代次或 Catalog 变化后生成新的 Binding Revision；下一 Model Step 使用新的 StepContext，旧 Lazy/Deferred Call 返回 typed `stale_mcp_binding`，不能误路由到新 Server/Tool。`Refresh` 必须使 ToolCatalog 和 ResourceCatalog 同时失效，不能只刷新其中一类。
+- MCP Server 的 startup、refresh、disconnect、reconnect、shutdown、schema error 和 remote error 必须产生可观察的诊断或 ToolResult；不允许只写日志后让 Turn 永久等待。
+- MCP Server 不可信输出只能进入 ToolResult/Contextual User Fragment，不能注入 BaseInstructions、Developer Instructions 或系统级 Prompt。
+- 不在当前基础能力范围内实现 Codex 的完整 OAuth、Elicitation、Plugin/Remote Connector、MCP dependency installer 或独立 Tool Search 服务；这些能力不得以伪字段或未接线 Prompt 宣称已支持。
 
 ### 22.2 Skill
 
-- 用户级 Skill 位于 `$AMADEUS_HOME/skills`。
-- 项目级 Skill 位于项目约定目录。
-- Skill 的 `SKILL.md` 提供显式工作流和说明。
-- Skill 可以引用脚本，但脚本统一通过 `execute_command` 执行，复用命令 Permission、Approval 和 Host Runner。
-- Skill 不拥有独立进程执行器。
-- Skill 只在被选择或明确触发时注入完整内容，避免污染 Context。
+Skill 的最小稳定数据模型如下；Plugin、Remote 和 Dependency 字段可以先保持为空或不暴露，但不能让正文、执行器和 Catalog metadata 混为一个对象：
+
+```go
+type SkillMetadata struct {
+    Name             string
+    Description      string
+    ShortDescription string
+    PathToSkillMD    string
+    Source           SkillSource
+    Scope            SkillScope
+    Enabled          bool
+    Policy           SkillPolicy
+    References       []SkillResource
+    Scripts          []SkillResource
+    Assets           []SkillResource
+    Revision         string
+}
+
+type SkillResource struct {
+    Path     string
+    Kind     SkillResourceKind
+    Size     int64
+    Revision string
+}
+
+type SkillInjection struct {
+    Name     string
+    Path     string
+    Revision string
+    Content  string
+}
+
+type SkillResourceKind string // reference | script | asset
+```
+
+- Skill 以 Codex 的 `SkillCatalog`、`SkillMetadata`、`SkillInjection`、`SkillPolicy` 和 Resource/Invocation 边界为目标命名与职责模型；Amadeus 可暂不实现 Codex 的 Plugin/Remote/Dependency 全套能力，但不得用旧的通用 Extension 对象继续承担 Skill 领域职责。
+- 用户级 Skill 位于 `$AMADEUS_HOME/skills/<name>/SKILL.md`；项目级 Skill 位于 `<project>/.amadeus/skills/<name>/SKILL.md`，项目同名 Skill 覆盖用户级 Skill。每个 Skill 的 root 是包含 `SKILL.md` 的目录，不能通过符号链接逃逸其所属 Skill Root。
+- `SkillMetadata` 是 Catalog 常驻数据，至少包含 `name`、`description`、`short_description`、`path_to_skills_md`、`source/scope`、`enabled`、`policy`、`references`、`scripts` 和 `revision`；完整 `SKILL.md` 正文只在显式选择或 `read_skill` 时加载。
+- `SkillCatalog` 负责 Root discovery、frontmatter 校验、同名覆盖、enabled/disabled settings、资源索引、增量 Revision 和 load warning；它不负责 Prompt 装配、Tool 执行、Approval 或进程生命周期。
+- `SkillCatalog` 的常驻对象是 `SkillMetadata`/`SkillResource`；完整正文和资源内容属于按需加载的 read result，不得缓存为另一套 Skill owner。`ExtensionAssembly` 只负责在 Composition Root 装配 Catalog，并向 SessionServices 注入它。
+- `SKILL.md` 是显式工作流和说明的唯一正文入口。普通 Turn 只注入 Skill Index/metadata；用户在输入中使用 `$skill-name` 后，Session 生成 `SkillInjection`，由 ContextManager 追加带 name/path/revision 的动态 Context Update；TUI 的 Skill 操作只改变 enabled policy，不伪造正文注入。
+- `read_skill` 是唯一的 Skill 正文/资源读取边界：读取 `SKILL.md` 或受限的 `references/*`，支持 bounded bytes、line/limit、稳定路径和 path-escape rejection。Skill Resource 返回立即的不可信 Tool Observation，不成为系统 Prompt。
+- Skill 资源至少分为 `SKILL.md`、`references/*`、`scripts/*` 和 `assets/*`：
+  - `SKILL.md`：显式注入或按需完整读取；
+  - `references/*`：按需分页读取，不默认注入；
+  - `scripts/*`：不作为普通 reference 大量注入，只提供可验证脚本 metadata；
+  - `assets/*`：不直接注入文本，按真实媒体/文件 Tool 能力读取。
+- Skill Script 不拥有独立进程执行器。模型只能通过 `execute_command` 执行脚本；Command Prepare 必须解析目标脚本、确认它属于 enabled Skill 的 `scripts/` 目录、记录 Skill attribution，然后复用普通 Command Permission、Approval、Host Runner、ProcessManager、取消和 `write_stdin`。
+- Skill Script 的归属识别不等于自动 Allow；脚本仍受工作目录、命令规则、文件系统策略、Approval 和 Session Grant 约束。脚本路径不属于 Skill `scripts/` 时按普通命令处理，不得伪装成 Skill Script。
+- 基础版 Skill Script attribution 只解析直接脚本命令和常见解释器（含简单解释器 flags）；不解析任意 Shell AST、管道、重定向、`cd &&` 或 `sh -c` 内嵌脚本。无法确定唯一脚本时按普通命令处理，不阻断命令执行。
+- 初期只实现 Codex 风格的隐式 Skill invocation detection/attribution：检测已执行的 Skill Script 或明确读取的 `SKILL.md` 并记录一次 invocation；不因隐式检测自动注入完整 Skill 正文，避免 Context 膨胀和执行前事实变化。
+- Skill Catalog/Resource/Policy 变化后生成新的 Skill Revision；下一 Model Step 重新 capture Skill snapshot。旧 `read_skill` 或 Skill-aware Command 使用过期 snapshot 时返回 typed stale result。
+- Skill 生命周期必须区分三种事实：discovery 产生 metadata/index，显式 `$skill-name` 产生一次 `SkillInjection`，`read_skill` 产生一次 bounded `ToolResult`。后两者都不能反向修改 Catalog，也不能把 references、scripts 或 assets 自动提升为系统 Prompt。
+- 不在当前基础能力范围内实现 Codex 的 Plugin Skill、Remote Skill、MCP dependency installation、Product gating、图标/UI metadata 或独立 Skill package manager；未实现能力不得写入 Prompt 或 Tool Spec。
+
+MCP/Skill convergence 不是把旧 `ExtensionRuntime`、旧 Manager 或旧 read path 增加一层 Codex 命名 wrapper。生产装配类型使用 `ExtensionAssembly`，不承担 Session capability owner；迁移任务必须同时完成 owner 迁移、生产调用方切换、StepContext/Prompt/Event/Tool Contract 对齐和旧主链删除；如果旧类型只剩兼容测试或历史解码用途，必须明确标注为 migration-only，不能继续作为生产 capability owner。
 
 ## 23. Web 与网络
 
@@ -2675,6 +2815,10 @@ Runtime 正确性不能依赖 TUI 消费速度：
 - denied、validation failed、stale、command non-zero 和普通 Tool failure 都形成模型可见 Tool Result 并允许下一 Model Step；只有协议、持久化或 Runtime invariant 失败终止 Turn。
 - 重复 Tool Call/Tool Error 不因固定低阈值被 Runtime 自动判定 stalled；可选 reminder 不拥有 Turn 终止权。
 - Approval Presentation 快照覆盖工作目录内/外 Edit、Create、Overwrite、External Read、Command、Skill、Web Fetch 和 MCP。
+- MCP List/Resource Read 的默认 Allow、MCP Call 的默认 Ask、MCP binding stale rejection 和不可信结果投影形成同一 Approval/ToolResult Contract。
+- MCP Tool Catalog 的 server/tool identity、schema、read-only/parallel capability 和 revision 在 Model Step、Tool Prepare、Event、Rollout 与 Resume projection 中保持一致。
+- Skill Catalog 只常驻 metadata；显式 Skill Injection、`read_skill` reference read、Skill Script attribution 和 Skill revision 在 ContextManager、StepContext、ToolResult 与 Resume projection 中保持一致。
+- Skill Script 只能经 `execute_command`，其 Permission、Approval、ProcessManager、取消和 `write_stdin` 语义与普通 Command 完全一致，不存在第二个 Skill Executor。
 - 默认 Tool Catalog、Prompt Snapshot、Registry、Event 和 Rollout 中均不存在 `apply_patch` 或 sandbox Tool。
 
 ### 27.5 TUI
@@ -2724,8 +2868,12 @@ Amadeus 至少通过以下真实场景：
 15. Tool Result 在即时 Model Step、下一 Model Step 和 Resume 后保持 status/error/partial/metadata 语义一致。
 16. Agent 首次进入带更深层 AGENTS.md 的目录时，副作用操作在新指令进入 Prompt 前不会执行。
 17. 同一 Turn 中 MCP/Skill/Tool revision 变化后，下一 Model Step 使用新的 StepContext；旧 Tool Call 按 stale snapshot 明确失败而不是误路由。
-18. 相同只读调用或相同可恢复错误出现两次不会被 `run_turn` 强制终止；模型仍可调整方案并继续。
-19. 进程在 ItemCompleted 后、TurnCompleted 前退出，Resume 仍能从 canonical response_item 与 Completed TurnItem 恢复已完成工作。
+18. MCP Server 在 lazy startup、refresh、disconnect/reconnect 和 shutdown 时不会泄漏 goroutine、进程或 pending request；失败以可见诊断或 ToolResult 结束。
+19. MCP Tool Catalog 的 schema 和 read-only/parallel capability 在 List、Prepare、Execute、Event、Rollout 和 Resume 中保持一致；未发现或 stale Tool 不会被远程调用。
+20. Skill Index 不包含完整正文；显式 `$skill-name` 才生成 SkillInjection，`read_skill` 只能读取受限 `SKILL.md`/`references/*`，路径逃逸被拒绝。
+21. Skill Script 只能通过 `execute_command`，enabled Skill `scripts/` attribution 不扩大命令权限；脚本仍经过普通 Permission/Approval/Process lifecycle。
+22. 相同只读调用或相同可恢复错误出现两次不会被 `run_turn` 强制终止；模型仍可调整方案并继续。
+23. 进程在 ItemCompleted 后、TurnCompleted 前退出，Resume 仍能从 canonical response_item 与 Completed TurnItem 恢复已完成工作。
 
 ## 29. 最终架构结论
 
@@ -2738,11 +2886,13 @@ Amadeus 至少通过以下真实场景：
 7. `execute_command` 默认 Ask，经 Session 精确规则复用授权后直接在宿主执行；不解析任意命令的完整路径副作用。
 8. Prompt 构造以 Codex 的 `Prompt`、`BaseInstructions`、`ResponseItem`、`ToolSpec`、`ModelMessages`、`WorldState` 和 Collaboration Mode 语义为唯一目标；不保留旧 Prompt 装配兼容层。
 9. 普通/Plan/Compact Prompt 使用 Codex 对应机制与 Prompt 资产；Claude Code 只提供 `read`、`edit`、`write`、`glob`、`grep` 的 Tool Guidance，Codex 提供 `update_plan`、`write_stdin` 和命令续接 Guidance。
-8. JSONL RolloutItem 是完整历史的唯一事实；SQLite StoredThread 只保存可重建 metadata/index。
-9. ThreadManager 是 Thread 创建和恢复入口；LiveThread → ThreadStore → LocalThreadStore 是唯一持久化链。
-10. AmadeusThread 是 Interface 唯一 Runtime 句柄；TUI 只提交 Op、消费 SessionEvent 并回答 InteractiveRequest。
-11. TurnItem 是 Event、Rollout Replay 和 HistoryCell 的稳定业务项；Delta 只服务实时更新，Completed Item 才是恢复事实。
-12. Slash Command 分为 TUI Local、Application Action 与 Core Op，不直接拥有 Runtime 或持久化状态。
-13. internal Session 是 SessionTask、ActiveTurn、Context History、Event Delivery 和终态收尾的唯一所有者。
-14. 生产 SessionTask 由 Session 直接创建和执行，不反向调用 CLI/Application executor；SessionServices 是唯一 Session capability owner，不存在 CodingRuntime、CodingFactory、通用 TaskFactory 或 invocation/result side channel。
-15. canonical Rollout payload 使用统一 typed contract；live、replay、Context 和 TUI 对同一业务事实共享 schema 与语义。
+10. MCP 以 Session-owned `MCPRuntime`、稳定的 `MCPBinding`、lazy `ToolCatalog`/`ResourceCatalog` 和 StepContext snapshot 为唯一生产主链；基础版不复制 Codex 的 OAuth、Elicitation、Plugin 和 Remote Connector 复杂度。
+11. Skill 以 `SkillCatalog`、`SkillMetadata`、`SkillInjection` 和 Resource Boundary 为唯一生产主链；正文渐进式披露，references 按需读取，scripts 统一经 `execute_command`，不建立独立 Skill Executor。
+12. JSONL RolloutItem 是完整历史的唯一事实；SQLite StoredThread 只保存可重建 metadata/index。
+13. ThreadManager 是 Thread 创建和恢复入口；LiveThread → ThreadStore → LocalThreadStore 是唯一持久化链。
+14. AmadeusThread 是 Interface 唯一 Runtime 句柄；TUI 只提交 Op、消费 SessionEvent 并回答 InteractiveRequest。
+15. TurnItem 是 Event、Rollout Replay 和 HistoryCell 的稳定业务项；Delta 只服务实时更新，Completed Item 才是恢复事实。
+16. Slash Command 分为 TUI Local、Application Action 与 Core Op，不直接拥有 Runtime 或持久化状态。
+17. internal Session 是 SessionTask、ActiveTurn、Context History、Event Delivery 和终态收尾的唯一所有者。
+18. 生产 SessionTask 由 Session 直接创建和执行，不反向调用 CLI/Application executor；SessionServices 是唯一 Session capability owner，不存在 CodingRuntime、CodingFactory、通用 TaskFactory 或 invocation/result side channel。
+19. canonical Rollout payload 使用统一 typed contract；live、replay、Context 和 TUI 对同一业务事实共享 schema 与语义。

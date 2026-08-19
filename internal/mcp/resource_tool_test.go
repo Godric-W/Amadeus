@@ -19,7 +19,7 @@ func TestResourceToolsListReadTextAndImage(t *testing.T) {
 			{URI: "fixture://doc", MIMEType: "image/png", Blob: imageData},
 		},
 	}
-	manager, err := NewManager(Config{Servers: map[string]ServerConfig{"demo": {Transport: TransportStdio, Command: "demo"}}}, func(context.Context, ServerConfig) (Client, error) { return client, nil })
+	manager, err := NewMCPRuntime(Config{Servers: map[string]ServerConfig{"demo": {Transport: TransportStdio, Command: "demo"}}}, func(context.Context, ServerConfig) (Client, error) { return client, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestResourceToolRejectsUnknownAndInvalidImage(t *testing.T) {
 		resources: []RemoteResource{{URI: "fixture://doc", Name: "Doc"}},
 		contents:  []RemoteResourceContent{{URI: "fixture://doc", MIMEType: "image/png", Blob: "not-base64"}},
 	}
-	manager, err := NewManager(Config{Servers: map[string]ServerConfig{"demo": {Transport: TransportStdio, Command: "demo"}}}, func(context.Context, ServerConfig) (Client, error) { return client, nil })
+	manager, err := NewMCPRuntime(Config{Servers: map[string]ServerConfig{"demo": {Transport: TransportStdio, Command: "demo"}}}, func(context.Context, ServerConfig) (Client, error) { return client, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,5 +57,26 @@ func TestResourceToolRejectsUnknownAndInvalidImage(t *testing.T) {
 	}
 	if _, err := executePreparedTool(t, context.Background(), read, json.RawMessage(`{"server":"demo","uri":"fixture://doc"}`)); err == nil {
 		t.Fatal("invalid image base64 was accepted")
+	}
+}
+
+func TestResourceReadUsesAllowPermission(t *testing.T) {
+	client := &fakeClient{resources: []RemoteResource{{URI: "fixture://doc", Name: "Doc"}}}
+	manager, err := NewMCPRuntime(Config{Servers: map[string]ServerConfig{"demo": {Transport: TransportStdio, Command: "demo"}}}, func(context.Context, ServerConfig) (Client, error) { return client, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	_, read, err := NewResourceTools(manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := tool.Invocation{Call: tool.NewCall("call", "mcp_read_resource", json.RawMessage(`{"server":"demo","uri":"fixture://doc"}`))}
+	prepared, err := read.Prepare(tool.ToolUseContext{Context: context.Background(), Invocation: invocation}, invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Permission.Decision != tool.PermissionAllow {
+		t.Fatalf("resource read requested approval: %#v", prepared.Permission)
 	}
 }

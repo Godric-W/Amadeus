@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -76,6 +77,26 @@ func TestFullscreenBannerUsesLogoAndRestrainedMetadata(t *testing.T) {
 	}
 	if maxLineWidth(banner) >= model.width {
 		t.Fatalf("banner touches terminal edge: width=%d\n%s", model.width, banner)
+	}
+}
+
+func TestFullscreenContextStatusUsesEstimatedAndProviderUsage(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.ThreadTokenUsageUpdated{
+		EstimatedInputTokens: 12_000,
+		ContextWindow:        128_000,
+	}})
+	if model.contextUsage != 12_000 || model.contextLimit != 128_000 {
+		t.Fatalf("estimated context usage = %d/%d", model.contextUsage, model.contextLimit)
+	}
+	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.ThreadTokenUsageUpdated{
+		Usage: llm.Usage{InputTokens: 14_000, OutputTokens: 500},
+	}})
+	if model.contextUsage != 14_000 || model.inputUsage != 14_000 || model.outputUsage != 500 {
+		t.Fatalf("provider context usage = %d, input/output = %d/%d", model.contextUsage, model.inputUsage, model.outputUsage)
+	}
+	if rendered := xansi.Strip(model.statusBar()); !strings.Contains(rendered, "Context 10% used") {
+		t.Fatalf("status bar omitted context usage: %q", rendered)
 	}
 }
 

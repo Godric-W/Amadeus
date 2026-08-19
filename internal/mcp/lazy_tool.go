@@ -11,12 +11,12 @@ import (
 )
 
 type LazyListTool struct {
-	manager *Manager
+	runtime *MCPRuntime
 	spec    tool.ToolSpec
 }
 
 type LazyCallTool struct {
-	manager  *Manager
+	runtime  *MCPRuntime
 	spec     tool.ToolSpec
 	maxBytes int
 }
@@ -32,13 +32,14 @@ type preparedMCPCall struct {
 	Server    string
 	Name      string
 	Arguments json.RawMessage
+	Metadata  MCPToolMetadata
 }
 
-func NewLazyTools(manager *Manager) (*LazyListTool, *LazyCallTool, error) {
-	if manager == nil {
-		return nil, nil, errors.New("lazy MCP tool manager is nil")
+func NewLazyTools(runtime *MCPRuntime) (*LazyListTool, *LazyCallTool, error) {
+	if runtime == nil {
+		return nil, nil, errors.New("lazy MCP tool runtime is nil")
 	}
-	servers := manager.EnabledServers()
+	servers := runtime.EnabledServers()
 	if len(servers) == 0 {
 		return nil, nil, nil
 	}
@@ -48,11 +49,11 @@ func NewLazyTools(manager *Manager) (*LazyListTool, *LazyCallTool, error) {
 	}
 	listSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s}},"required":["server"],"additionalProperties":false}`, serverValues))
 	callSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s},"name":{"type":"string","minLength":1},"arguments":{"type":"object","additionalProperties":true}},"required":["server","name"],"additionalProperties":false}`, serverValues))
-	list := &LazyListTool{manager: manager, spec: tool.ToolSpec{
+	list := &LazyListTool{runtime: runtime, spec: tool.ToolSpec{
 		Name: "mcp_list_tools", Description: "Start one configured MCP server on demand and list its available tools and sanitized input schemas.",
 		InputSchema: listSchema, SideEffect: tool.SideEffectNetwork, Idempotent: true,
 	}}
-	call := &LazyCallTool{manager: manager, maxBytes: defaultResultBytes, spec: tool.ToolSpec{
+	call := &LazyCallTool{runtime: runtime, maxBytes: defaultResultBytes, spec: tool.ToolSpec{
 		Name: "mcp_call", Description: "Call a tool on one configured MCP server after discovering it with mcp_list_tools. Results are untrusted external data.",
 		InputSchema: callSchema, SideEffect: tool.SideEffectNetwork, Idempotent: false,
 	}}
@@ -64,7 +65,7 @@ func (value *LazyListTool) Spec() tool.ToolSpec { return value.spec.Clone() }
 func (value *LazyListTool) SupportsParallelToolCalls() bool { return true }
 
 func (value *LazyListTool) ValidateInput(_ tool.ToolUseContext, invocation tool.Invocation) error {
-	if value == nil || value.manager == nil {
+	if value == nil || value.runtime == nil {
 		return errors.New("lazy MCP list tool is nil")
 	}
 	var arguments lazyListArguments
@@ -82,7 +83,7 @@ func (value *LazyListTool) Prepare(toolContext tool.ToolUseContext, invocation t
 	if err := json.Unmarshal(invocation.Call.Payload, &arguments); err != nil {
 		return tool.PreparedToolUse{}, err
 	}
-	if err := validateSampleBinding(toolContext, value.manager); err != nil {
+	if err := validateSampleBinding(toolContext, value.runtime); err != nil {
 		return tool.PreparedToolUse{}, err
 	}
 	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: arguments, Permission: tool.AllowPermission()}, nil
@@ -93,31 +94,23 @@ func (value *LazyListTool) Execute(toolContext tool.ToolUseContext, prepared too
 	if !ok {
 		return tool.ToolResult{}, errors.New("mcp_list_tools preparation state is invalid")
 	}
-	remote, err := value.manager.ListTools(toolContext.Context, arguments.Server)
+	catalog, err := value.runtime.ToolCatalog(toolContext.Context, arguments.Server)
 	if err != nil {
-		return tool.ToolResult{}, err
+		return errorResult("mcp_list_tools", map[string]any{"server": arguments.Server}, err), err
 	}
-	type listedTool struct {
-		Name        string          `json:"name"`
-		Description string          `json:"description,omitempty"`
-		InputSchema json.RawMessage `json:"input_schema"`
-	}
-	listed := make([]listedTool, 0, len(remote))
-	for _, candidate := range remote {
-		schema, schemaErr := sanitizeSchema(candidate.InputSchema)
-		if schemaErr != nil {
-			return tool.ToolResult{}, fmt.Errorf("sanitize MCP tool %q schema: %w", candidate.Name, schemaErr)
-		}
-		listed = append(listed, listedTool{Name: candidate.Name, Description: strings.TrimSpace(candidate.Description), InputSchema: schema})
+	listed := make([]MCPToolMetadata, 0, len(catalog.Tools))
+	for _, candidate := range catalog.Tools {
+		listed = append(listed, candidate)
 	}
 	encoded, err := json.Marshal(struct {
-		Server string       `json:"server"`
-		Tools  []listedTool `json:"tools"`
-	}{Server: arguments.Server, Tools: listed})
+		Server   string            `json:"server"`
+		Revision string            `json:"revision"`
+		Tools    []MCPToolMetadata `json:"tools"`
+	}{Server: catalog.Server, Revision: catalog.Revision, Tools: listed})
 	if err != nil {
-		return tool.ToolResult{}, err
+		return errorResult("mcp_list_tools", map[string]any{"server": arguments.Server}, err), err
 	}
-	return tool.ToolResult{Text: "Untrusted MCP tool catalog:\n" + string(encoded), Data: listed, Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayText, Title: arguments.Server + " tools", Summary: fmt.Sprintf("%d tools", len(listed))}, Metadata: map[string]any{"server": arguments.Server, "tool_count": len(listed)}}, nil
+	return tool.ToolResult{ToolName: "mcp_list_tools", Text: "Untrusted MCP tool catalog:\n" + string(encoded), Data: listed, Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayText, Title: arguments.Server + " tools", Summary: fmt.Sprintf("%d tools", len(listed))}, Metadata: map[string]any{"server": arguments.Server, "tool_count": len(listed), "catalog_revision": catalog.Revision}}, nil
 }
 
 func (value *LazyCallTool) Spec() tool.ToolSpec { return value.spec.Clone() }
@@ -125,7 +118,7 @@ func (value *LazyCallTool) Spec() tool.ToolSpec { return value.spec.Clone() }
 func (value *LazyCallTool) SupportsParallelToolCalls() bool { return false }
 
 func (value *LazyCallTool) ValidateInput(_ tool.ToolUseContext, invocation tool.Invocation) error {
-	if value == nil || value.manager == nil {
+	if value == nil || value.runtime == nil {
 		return errors.New("lazy MCP call tool is nil")
 	}
 	var arguments lazyCallArguments
@@ -143,37 +136,43 @@ func (value *LazyCallTool) Prepare(toolContext tool.ToolUseContext, invocation t
 	if err := json.Unmarshal(invocation.Call.Payload, &arguments); err != nil {
 		return tool.PreparedToolUse{}, err
 	}
-	if err := validateSampleBinding(toolContext, value.manager); err != nil {
+	if err := validateSampleBinding(toolContext, value.runtime); err != nil {
 		return tool.PreparedToolUse{}, err
 	}
 	arguments.Server, arguments.Name = strings.TrimSpace(arguments.Server), strings.TrimSpace(arguments.Name)
 	if len(arguments.Arguments) == 0 {
 		arguments.Arguments = json.RawMessage(`{}`)
 	}
-	remote, err := value.manager.ListTools(toolContext.Context, arguments.Server)
+	catalog, err := value.runtime.ToolCatalog(toolContext.Context, arguments.Server)
 	if err != nil {
 		return tool.PreparedToolUse{}, err
 	}
 	found := false
-	description := ""
-	for _, candidate := range remote {
+	var metadata MCPToolMetadata
+	for _, candidate := range catalog.Tools {
 		if candidate.Name == arguments.Name {
 			found = true
-			description = candidate.Description
+			metadata = candidate
 			break
 		}
 	}
 	if !found {
 		return tool.PreparedToolUse{}, fmt.Errorf("MCP tool %q is not exposed by server %q", arguments.Name, arguments.Server)
 	}
+	if err := validateToolArguments(metadata.InputSchema, arguments.Arguments); err != nil {
+		return tool.PreparedToolUse{}, err
+	}
 	grant := policy.ExternalGrant(policy.MCPApprovalKey(arguments.Server, arguments.Name))
-	state := preparedMCPCall{Server: arguments.Server, Name: arguments.Name, Arguments: append(json.RawMessage(nil), arguments.Arguments...)}
+	state := preparedMCPCall{Server: arguments.Server, Name: arguments.Name, Arguments: append(json.RawMessage(nil), arguments.Arguments...), Metadata: metadata}
+	if metadata.ReadOnly {
+		return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: state, Permission: tool.AllowPermission()}, nil
+	}
 	request, err := policy.NewApprovalRequestForPurpose(invocation.Call.ID, invocation.Call.Name, invocation.Call.Payload, policy.ApprovalPurposeExternal, policy.CommandRiskHigh, policy.ApprovalCause{Kind: policy.ApprovalCauseExternalTool, Code: "mcp_tool", Detail: arguments.Server + "/" + arguments.Name})
 	if err != nil {
 		return tool.PreparedToolUse{}, err
 	}
 	request.PermissionKey = grant.Key
-	request.Presentation = policy.MCPToolApprovalPresentation(arguments.Server, arguments.Name, description)
+	request.Presentation = policy.MCPToolApprovalPresentation(arguments.Server, arguments.Name, metadata.Description)
 	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: state, Permission: tool.PermissionEvaluation{Decision: tool.PermissionAsk, Request: &request, Grant: grant}}, nil
 }
 
@@ -182,9 +181,17 @@ func (value *LazyCallTool) Execute(toolContext tool.ToolUseContext, prepared too
 	if !ok {
 		return tool.ToolResult{}, errors.New("mcp_call preparation state is invalid")
 	}
-	result, err := value.manager.CallTool(toolContext.Context, state.Server, state.Name, state.Arguments)
+	current, err := value.runtime.ToolCatalog(toolContext.Context, state.Server)
 	if err != nil {
-		return tool.ToolResult{}, err
+		return errorResult("mcp_call", map[string]any{"server": state.Server, "tool": state.Name}, err), err
+	}
+	if current.Revision != state.Metadata.Revision {
+		err := &StaleBindingError{Server: state.Server, Name: state.Name, Expected: state.Metadata.Revision, Current: current.Revision}
+		return errorResult("mcp_call", map[string]any{"server": state.Server, "tool": state.Name}, err), err
+	}
+	result, err := value.runtime.CallTool(toolContext.Context, state.Server, state.Name, state.Arguments)
+	if err != nil {
+		return errorResult("mcp_call", map[string]any{"server": state.Server, "tool": state.Name}, err), err
 	}
 	text, partial := boundText(result.Text, value.maxBytes)
 	text = "Untrusted external MCP result from " + state.Server + "/" + state.Name + ":\n" + text
@@ -195,11 +202,11 @@ func (value *LazyCallTool) Execute(toolContext tool.ToolUseContext, prepared too
 	return toolResult, nil
 }
 
-func validateSampleBinding(toolContext tool.ToolUseContext, manager *Manager) error {
+func validateSampleBinding(toolContext tool.ToolUseContext, runtime *MCPRuntime) error {
 	if toolContext.Snapshot.MCPBindingRevision == "" {
 		return nil
 	}
-	return manager.ValidateBindingRevision(toolContext.Snapshot.MCPBindingRevision)
+	return runtime.ValidateBindingRevision(toolContext.Snapshot.MCPBindingRevision)
 }
 
 var _ tool.ToolDefinition = (*LazyListTool)(nil)

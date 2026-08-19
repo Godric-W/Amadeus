@@ -51,10 +51,11 @@ type contextUpdateState struct {
 // SkillInjection is the explicitly requested portion of a Skill that becomes
 // part of the turn's developer context.
 type SkillInjection struct {
-	Name        string
-	Content     string
-	ContentHash string
-	Source      string
+	Name     string
+	Path     string
+	Revision string
+	Content  string
+	Source   string
 }
 
 type Manager struct {

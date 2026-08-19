@@ -228,7 +228,7 @@ func TestManagerCompactionThresholdAccountsForFullPromptAndOutputReserve(t *test
 	if err := manager.Rebuild([]rollout.Line{contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: strings.Repeat("h", 300)})}); err != nil {
 		t.Fatal(err)
 	}
-	model := llm.ModelInfo{ContextWindow: 1000, AutoCompactTokenLimit: 900, MaxOutputTokens: 400}
+	model := llm.ModelInfo{ContextWindow: 900, AutoCompactTokenLimit: 800, MaxOutputTokens: 400}
 	bare := llm.Prompt{}
 	bareSnapshot := manager.Snapshot(model, bare)
 	if bareSnapshot.NeedsCompaction(model) {

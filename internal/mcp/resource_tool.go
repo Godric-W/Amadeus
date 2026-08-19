@@ -7,16 +7,15 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type ListResourcesTool struct {
-	manager *Manager
+	runtime *MCPRuntime
 	spec    tool.ToolSpec
 }
 type ReadResourceTool struct {
-	manager  *Manager
+	runtime  *MCPRuntime
 	spec     tool.ToolSpec
 	maxBytes int
 }
@@ -28,11 +27,16 @@ type readResourceArguments struct {
 	URI    string `json:"uri"`
 }
 
-func NewResourceTools(manager *Manager) (*ListResourcesTool, *ReadResourceTool, error) {
-	if manager == nil {
-		return nil, nil, errors.New("MCP resource tool manager is nil")
+type preparedResourceRead struct {
+	Arguments readResourceArguments
+	Revision  string
+}
+
+func NewResourceTools(runtime *MCPRuntime) (*ListResourcesTool, *ReadResourceTool, error) {
+	if runtime == nil {
+		return nil, nil, errors.New("MCP resource tool runtime is nil")
 	}
-	servers := manager.EnabledServers()
+	servers := runtime.EnabledServers()
 	if len(servers) == 0 {
 		return nil, nil, nil
 	}
@@ -42,8 +46,8 @@ func NewResourceTools(manager *Manager) (*ListResourcesTool, *ReadResourceTool, 
 	}
 	listSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s}},"required":["server"],"additionalProperties":false}`, encoded))
 	readSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s},"uri":{"type":"string","minLength":1}},"required":["server","uri"],"additionalProperties":false}`, encoded))
-	list := &ListResourcesTool{manager: manager, spec: tool.ToolSpec{Name: "mcp_list_resources", Description: "List untrusted resources exposed by one configured MCP server.", InputSchema: listSchema, SideEffect: tool.SideEffectNetwork, Idempotent: true}}
-	read := &ReadResourceTool{manager: manager, maxBytes: defaultResultBytes, spec: tool.ToolSpec{Name: "mcp_read_resource", Description: "Read one previously discovered MCP resource. Text and image blobs are returned as bounded untrusted content.", InputSchema: readSchema, SideEffect: tool.SideEffectNetwork, Idempotent: true}}
+	list := &ListResourcesTool{runtime: runtime, spec: tool.ToolSpec{Name: "mcp_list_resources", Description: "List untrusted resources exposed by one configured MCP server.", InputSchema: listSchema, SideEffect: tool.SideEffectNetwork, Idempotent: true}}
+	read := &ReadResourceTool{runtime: runtime, maxBytes: defaultResultBytes, spec: tool.ToolSpec{Name: "mcp_read_resource", Description: "Read one previously discovered MCP resource. Text and image blobs are returned as bounded untrusted content.", InputSchema: readSchema, SideEffect: tool.SideEffectNetwork, Idempotent: true}}
 	return list, read, nil
 }
 
@@ -64,7 +68,7 @@ func (value *ListResourcesTool) Prepare(toolContext tool.ToolUseContext, invocat
 	if err := json.Unmarshal(invocation.Call.Payload, &arguments); err != nil {
 		return tool.PreparedToolUse{}, err
 	}
-	if err := validateSampleBinding(toolContext, value.manager); err != nil {
+	if err := validateSampleBinding(toolContext, value.runtime); err != nil {
 		return tool.PreparedToolUse{}, err
 	}
 	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: arguments, Permission: tool.AllowPermission()}, nil
@@ -74,19 +78,16 @@ func (value *ListResourcesTool) Execute(toolContext tool.ToolUseContext, prepare
 	if !ok {
 		return tool.ToolResult{}, errors.New("mcp_list_resources preparation state is invalid")
 	}
-	resources, err := value.manager.ListResources(toolContext.Context, arguments.Server)
+	catalog, err := value.runtime.ResourceCatalog(toolContext.Context, arguments.Server)
 	if err != nil {
-		return tool.ToolResult{}, err
+		return errorResult("mcp_list_resources", map[string]any{"server": arguments.Server}, err), err
 	}
-	encoded, err := json.Marshal(struct {
-		Server    string           `json:"server"`
-		Resources []RemoteResource `json:"resources"`
-	}{arguments.Server, resources})
+	encoded, err := json.Marshal(catalog)
 	if err != nil {
-		return tool.ToolResult{}, err
+		return errorResult("mcp_list_resources", map[string]any{"server": arguments.Server}, err), err
 	}
 	text, partial := boundText(string(encoded), defaultResultBytes)
-	return tool.ToolResult{ToolName: "mcp_list_resources", Text: "Untrusted MCP resource catalog:\n" + text, Partial: partial, Data: resources, Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayText, Title: arguments.Server + " resources", Summary: fmt.Sprintf("%d resources", len(resources))}, Metadata: map[string]any{"server": arguments.Server, "resource_count": len(resources)}}, nil
+	return tool.ToolResult{ToolName: "mcp_list_resources", Text: "Untrusted MCP resource catalog:\n" + text, Partial: partial, Data: catalog.Resources, Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayText, Title: arguments.Server + " resources", Summary: fmt.Sprintf("%d resources", len(catalog.Resources))}, Metadata: map[string]any{"server": arguments.Server, "resource_count": len(catalog.Resources), "catalog_revision": catalog.Revision}}, nil
 }
 func (value *ReadResourceTool) Spec() tool.ToolSpec             { return value.spec.Clone() }
 func (value *ReadResourceTool) SupportsParallelToolCalls() bool { return true }
@@ -105,16 +106,16 @@ func (value *ReadResourceTool) Prepare(toolContext tool.ToolUseContext, invocati
 	if err := json.Unmarshal(invocation.Call.Payload, &arguments); err != nil {
 		return tool.PreparedToolUse{}, err
 	}
-	if err := validateSampleBinding(toolContext, value.manager); err != nil {
+	if err := validateSampleBinding(toolContext, value.runtime); err != nil {
 		return tool.PreparedToolUse{}, err
 	}
 	arguments.Server, arguments.URI = strings.TrimSpace(arguments.Server), strings.TrimSpace(arguments.URI)
-	resources, err := value.manager.ListResources(toolContext.Context, arguments.Server)
+	catalog, err := value.runtime.ResourceCatalog(toolContext.Context, arguments.Server)
 	if err != nil {
 		return tool.PreparedToolUse{}, err
 	}
 	found := false
-	for _, resource := range resources {
+	for _, resource := range catalog.Resources {
 		if resource.URI == arguments.URI {
 			found = true
 			break
@@ -123,24 +124,25 @@ func (value *ReadResourceTool) Prepare(toolContext tool.ToolUseContext, invocati
 	if !found {
 		return tool.PreparedToolUse{}, fmt.Errorf("MCP resource %q is not exposed by server %q", arguments.URI, arguments.Server)
 	}
-	key := "mcp-resource:" + arguments.Server + "/" + arguments.URI
-	grant := policy.ExternalGrant(key)
-	request, err := policy.NewApprovalRequestForPurpose(invocation.Call.ID, invocation.Call.Name, invocation.Call.Payload, policy.ApprovalPurposeExternal, policy.CommandRiskModerate, policy.ApprovalCause{Kind: policy.ApprovalCauseExternalTool, Code: "mcp_resource", Detail: key})
-	if err != nil {
-		return tool.PreparedToolUse{}, err
-	}
-	request.PermissionKey = grant.Key
-	request.Presentation = policy.MCPResourceApprovalPresentation(arguments.Server, arguments.URI)
-	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: arguments, Permission: tool.PermissionEvaluation{Decision: tool.PermissionAsk, Request: &request, Grant: grant}}, nil
+	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: preparedResourceRead{Arguments: arguments, Revision: catalog.Revision}, Permission: tool.AllowPermission()}, nil
 }
 func (value *ReadResourceTool) Execute(toolContext tool.ToolUseContext, prepared tool.PreparedToolUse) (tool.ToolResult, error) {
-	arguments, ok := prepared.State.(readResourceArguments)
+	state, ok := prepared.State.(preparedResourceRead)
 	if !ok {
 		return tool.ToolResult{}, errors.New("mcp_read_resource preparation state is invalid")
 	}
-	contents, err := value.manager.ReadResource(toolContext.Context, arguments.Server, arguments.URI)
+	current, err := value.runtime.ResourceCatalog(toolContext.Context, state.Arguments.Server)
 	if err != nil {
-		return tool.ToolResult{}, err
+		return errorResult("mcp_read_resource", map[string]any{"server": state.Arguments.Server, "uri": state.Arguments.URI}, err), err
+	}
+	if current.Revision != state.Revision {
+		err := &StaleBindingError{Server: state.Arguments.Server, Resource: state.Arguments.URI, Expected: state.Revision, Current: current.Revision}
+		return errorResult("mcp_read_resource", map[string]any{"server": state.Arguments.Server, "uri": state.Arguments.URI}, err), err
+	}
+	arguments := state.Arguments
+	contents, err := value.runtime.ReadResource(toolContext.Context, arguments.Server, arguments.URI)
+	if err != nil {
+		return errorResult("mcp_read_resource", map[string]any{"server": arguments.Server, "uri": arguments.URI}, err), err
 	}
 	var text strings.Builder
 	parts := make([]tool.ContentPart, 0)
@@ -159,7 +161,8 @@ func (value *ReadResourceTool) Execute(toolContext tool.ToolUseContext, prepared
 			}
 			decoded, decodeErr := base64.StdEncoding.DecodeString(content.Blob)
 			if decodeErr != nil {
-				return tool.ToolResult{}, fmt.Errorf("decode MCP resource image %q: %w", content.URI, decodeErr)
+				err := fmt.Errorf("decode MCP resource image %q: %w", content.URI, decodeErr)
+				return errorResult("mcp_read_resource", map[string]any{"server": arguments.Server, "uri": arguments.URI}, err), err
 			}
 			if len(decoded) > value.maxBytes {
 				partial = true

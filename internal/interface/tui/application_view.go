@@ -96,30 +96,25 @@ func (model fullscreenModel) banner() (rendered string) {
 			rendered = xansi.Strip(rendered)
 		}
 	}()
-	width := maxInt(40, model.width)
+	width := maxInt(4, model.width)
 	logo := model.palette.plain().Render(strings.Trim(terminalLogo(width), "\r\n"))
 	version := strings.TrimSpace(model.startup.Version)
 	if version != "" {
 		version = " (" + version + ")"
 	}
-	title := model.palette.bold().Render("Amadeus") + model.palette.dim().Render(version)
+	title := model.palette.dim().Render(">_ ") + model.palette.bold().Render("Amadeus") + model.palette.dim().Render(version)
 	modelName := strings.TrimSpace(model.model)
 	project := strings.TrimSpace(model.startup.Project)
-	rows := []string{title}
-	rowWidth := width
-	if width >= 60 {
-		rowWidth = maxInt(20, width-8)
-	}
+	rows := []string{title, ""}
+	innerWidth := minInt(maxInt(0, width-4), 56)
+	rowWidth := maxInt(12, innerWidth-2)
 	if modelName != "" {
 		rows = append(rows, bannerMetadataRow("model:", modelName, rowWidth))
 	}
 	if project != "" {
 		rows = append(rows, bannerMetadataRow("directory:", project, rowWidth))
 	}
-	if width < 60 {
-		return logo + "\n" + strings.Join(rows, "\n")
-	}
-	panelWidth := maxInt(24, width-6)
+	panelWidth := maxInt(4, innerWidth)
 	panel := fullscreenPanelStyle.BorderForeground(model.palette.border().GetForeground()).Width(panelWidth).Render(strings.Join(rows, "\n"))
 	return logo + "\n\n" + panel
 }

@@ -18,16 +18,16 @@ import (
 )
 
 type toolRuntimeOptions struct {
-	configured       config.Config
-	project          project.Root
-	client           llm.Client
-	events           protocol.EventSink
-	planUpdater      builtin.PlanUpdater
-	audit            audit.Sink
-	extensions       *extensionruntime.Runtime
-	webFetcher       webfetch.Fetcher
-	webSearch        websearch.Provider
-	fileSystemPolicy *project.FileSystemPolicy
+	configured        config.Config
+	project           project.Root
+	client            llm.Client
+	events            protocol.EventSink
+	planUpdater       builtin.PlanUpdater
+	audit             audit.Sink
+	extensionAssembly *extensionruntime.Assembly
+	webFetcher        webfetch.Fetcher
+	webSearch         websearch.Provider
+	fileSystemPolicy  *project.FileSystemPolicy
 }
 
 func buildToolRuntime(options toolRuntimeOptions) (*tool.Registry, *processdomain.Manager, map[string]bool, error) {
@@ -37,6 +37,7 @@ func buildToolRuntime(options toolRuntimeOptions) (*tool.Registry, *processdomai
 	coreOptions.Events = options.events
 	coreOptions.ExecuteCommand.Audit = options.audit
 	coreOptions.ExecuteCommand.ProcessManager = processes
+	coreOptions.ExecuteCommand.SkillCatalog = options.extensionAssembly.SkillCatalog()
 	coreOptions.PlanUpdater = options.planUpdater
 	registry, err := builtin.NewCoreRegistry(options.project, coreOptions)
 	if err != nil {
@@ -99,7 +100,7 @@ func buildToolRuntime(options toolRuntimeOptions) (*tool.Registry, *processdomai
 		}
 		visibility["web.search.configured"] = true
 	}
-	if skills := options.extensions.Skills(); skills != nil && skills.Len() > 0 {
+	if skills := options.extensionAssembly.SkillCatalog(); skills != nil && skills.Len() > 0 {
 		definition, createErr := builtin.NewReadSkill(skills, builtin.ReadSkillOptions{})
 		if createErr != nil {
 			processes.Close()
@@ -111,8 +112,8 @@ func buildToolRuntime(options toolRuntimeOptions) (*tool.Registry, *processdomai
 		}
 		visibility["skills.available"] = true
 	}
-	mcpManager := options.extensions.MCP()
-	mcpList, mcpCall, err := mcp.NewLazyTools(mcpManager)
+	mcpRuntime := options.extensionAssembly.MCPRuntime()
+	mcpList, mcpCall, err := mcp.NewLazyTools(mcpRuntime)
 	if err != nil {
 		processes.Close()
 		return nil, nil, nil, err
@@ -129,7 +130,7 @@ func buildToolRuntime(options toolRuntimeOptions) (*tool.Registry, *processdomai
 			return nil, nil, nil, err
 		}
 	}
-	listResources, readResource, err := mcp.NewResourceTools(mcpManager)
+	listResources, readResource, err := mcp.NewResourceTools(mcpRuntime)
 	if err != nil {
 		processes.Close()
 		return nil, nil, nil, err
@@ -146,7 +147,7 @@ func buildToolRuntime(options toolRuntimeOptions) (*tool.Registry, *processdomai
 			return nil, nil, nil, err
 		}
 	}
-	if mcpManager != nil && len(mcpManager.EnabledServers()) > 0 {
+	if mcpRuntime != nil && len(mcpRuntime.EnabledServers()) > 0 {
 		visibility["mcp.configured"] = true
 		visibility["mcp.catalog"] = true
 		visibility["mcp.resources"] = true

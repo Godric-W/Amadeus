@@ -66,9 +66,9 @@ func (runtime *Services) CaptureStep(snapshot func(llm.ModelInfo, llm.Prompt) ag
 	}
 	promptSnapshot := snapshot(model, promptShape)
 	requestSnapshot := tool.RequestSnapshot{ToolRevision: runtime.registry.Revision()}
-	if runtime.extensions != nil {
-		requestSnapshot.SkillRevision = runtime.extensions.SkillRevision()
-		requestSnapshot.MCPBindingRevision = runtime.extensions.MCPBinding().Revision
+	if runtime.extensionAssembly != nil {
+		requestSnapshot.SkillRevision = runtime.extensionAssembly.SkillRevision()
+		requestSnapshot.MCPBindingRevision = runtime.extensionAssembly.MCPBinding().Revision
 	}
 	return StepContext{
 		Turn: turnContext, Prompt: promptSnapshot, Model: model, BaseInstructions: baseInstructions,

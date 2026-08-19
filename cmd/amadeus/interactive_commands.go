@@ -95,17 +95,17 @@ func (runner *agentController) writeInteractiveMCP(ctx context.Context, invocati
 			}
 			continue
 		}
-		tools, listErr := capabilities.MCPTools(ctx, server)
+		catalog, listErr := capabilities.MCPTools(ctx, server)
 		if listErr != nil {
 			if _, err := fmt.Fprintf(writer, "%s  error: %v\n", server, listErr); err != nil {
 				return err
 			}
 			continue
 		}
-		if _, err := fmt.Fprintf(writer, "%s  %d tools\n", server, len(tools)); err != nil {
+		if _, err := fmt.Fprintf(writer, "%s  %d tools\n", server, len(catalog.Tools)); err != nil {
 			return err
 		}
-		for _, remote := range tools {
+		for _, remote := range catalog.Tools {
 			if _, err := fmt.Fprintf(writer, "  %s  %s\n", remote.Name, remote.Description); err != nil {
 				return err
 			}

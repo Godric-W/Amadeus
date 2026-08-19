@@ -28,45 +28,45 @@ import (
 type ClientFactory func(string, config.ProviderConfig) (llm.Client, error)
 
 type ServicesOptions struct {
-	Config           config.Config
-	Project          project.Root
-	ClientFactory    ClientFactory
-	Events           protocol.EventSink
-	Approvals        policy.ApprovalPort
-	PlanUpdater      builtin.PlanUpdater
-	Audit            audit.Sink
-	AuditCloser      io.Closer
-	Extensions       *extensionruntime.Runtime
-	WebFetcher       webfetch.Fetcher
-	WebSearch        websearch.Provider
-	FileSystemPolicy *project.FileSystemPolicy
-	Permissions      *policy.SessionPermissionContext
-	Instructions     *instruction.WorkspaceResolver
-	ModelMessages    llm.ModelMessages
+	Config            config.Config
+	Project           project.Root
+	ClientFactory     ClientFactory
+	Events            protocol.EventSink
+	Approvals         policy.ApprovalPort
+	PlanUpdater       builtin.PlanUpdater
+	Audit             audit.Sink
+	AuditCloser       io.Closer
+	ExtensionAssembly *extensionruntime.Assembly
+	WebFetcher        webfetch.Fetcher
+	WebSearch         websearch.Provider
+	FileSystemPolicy  *project.FileSystemPolicy
+	Permissions       *policy.SessionPermissionContext
+	Instructions      *instruction.WorkspaceResolver
+	ModelMessages     llm.ModelMessages
 }
 
 // Services owns the capabilities shared by every Turn in one Session.
 // Turn-specific state is captured by StepContext and never stored here.
 type Services struct {
-	configured       config.Config
-	project          project.Root
-	providerName     string
-	provider         config.ProviderConfig
-	client           llm.Client
-	modelMessages    llm.ModelMessages
-	registry         *tool.Registry
-	toolService      *tool.ToolExecutionService
-	processes        *processdomain.Manager
-	extensions       *extensionruntime.Runtime
-	fileSystemPolicy *project.FileSystemPolicy
-	permissions      *policy.SessionPermissionContext
-	instructions     *instruction.WorkspaceResolver
-	visibility       map[string]bool
-	skillWarnings    []error
-	budget           TurnBudget
-	auditCloser      io.Closer
-	closeOnce        sync.Once
-	closeErr         error
+	configured        config.Config
+	project           project.Root
+	providerName      string
+	provider          config.ProviderConfig
+	client            llm.Client
+	modelMessages     llm.ModelMessages
+	registry          *tool.Registry
+	toolService       *tool.ToolExecutionService
+	processes         *processdomain.Manager
+	extensionAssembly *extensionruntime.Assembly
+	fileSystemPolicy  *project.FileSystemPolicy
+	permissions       *policy.SessionPermissionContext
+	instructions      *instruction.WorkspaceResolver
+	visibility        map[string]bool
+	skillWarnings     []error
+	budget            TurnBudget
+	auditCloser       io.Closer
+	closeOnce         sync.Once
+	closeErr          error
 }
 
 func NewServices(options ServicesOptions) (*Services, error) {
@@ -76,7 +76,7 @@ func NewServices(options ServicesOptions) (*Services, error) {
 	if options.Project.Path() == "" || options.Events == nil || options.Approvals == nil || options.PlanUpdater == nil || options.Audit == nil {
 		return nil, errors.New("services composition is incomplete")
 	}
-	if options.Extensions == nil || options.FileSystemPolicy == nil || options.Permissions == nil || options.Instructions == nil {
+	if options.ExtensionAssembly == nil || options.FileSystemPolicy == nil || options.Permissions == nil || options.Instructions == nil {
 		return nil, errors.New("session services are incomplete")
 	}
 	if !options.ModelMessages.HasInstructions() {
@@ -101,7 +101,7 @@ func NewServices(options ServicesOptions) (*Services, error) {
 	}
 	registry, processes, visibility, err := buildToolRuntime(toolRuntimeOptions{
 		configured: options.Config, project: options.Project, client: client, events: options.Events,
-		planUpdater: options.PlanUpdater, audit: options.Audit, extensions: options.Extensions,
+		planUpdater: options.PlanUpdater, audit: options.Audit, extensionAssembly: options.ExtensionAssembly,
 		webFetcher: options.WebFetcher, webSearch: options.WebSearch, fileSystemPolicy: options.FileSystemPolicy,
 	})
 	if err != nil {
@@ -118,9 +118,9 @@ func NewServices(options ServicesOptions) (*Services, error) {
 	return &Services{
 		configured: options.Config, project: options.Project, providerName: providerName, provider: provider,
 		client: client, modelMessages: options.ModelMessages, registry: registry, toolService: toolService,
-		processes: processes, extensions: options.Extensions,
+		processes: processes, extensionAssembly: options.ExtensionAssembly,
 		fileSystemPolicy: options.FileSystemPolicy, permissions: options.Permissions, instructions: options.Instructions,
-		visibility: visibility, skillWarnings: options.Extensions.SkillWarnings(), auditCloser: options.AuditCloser,
+		visibility: visibility, skillWarnings: options.ExtensionAssembly.SkillWarnings(), auditCloser: options.AuditCloser,
 		budget: DefaultTurnBudget(),
 	}, nil
 }
@@ -192,11 +192,11 @@ func (runtime *Services) AvailableTools() []tool.ToolSpec {
 	return result
 }
 
-func (runtime *Services) SkillIndex() []skill.IndexEntry {
-	if runtime == nil || runtime.extensions == nil || runtime.extensions.Skills() == nil {
+func (runtime *Services) SkillIndex() []skill.SkillMetadata {
+	if runtime == nil || runtime.extensionAssembly == nil || runtime.extensionAssembly.SkillCatalog() == nil {
 		return nil
 	}
-	return runtime.extensions.Skills().Index()
+	return runtime.extensionAssembly.SkillCatalog().Index()
 }
 
 func (runtime *Services) PermissionGrantCount() int {
@@ -207,69 +207,47 @@ func (runtime *Services) PermissionGrantCount() int {
 }
 
 func (runtime *Services) SkillRevision() string {
-	if runtime == nil || runtime.extensions == nil {
+	if runtime == nil || runtime.extensionAssembly == nil {
 		return ""
 	}
-	return runtime.extensions.SkillRevision()
+	return runtime.extensionAssembly.SkillRevision()
 }
 
 func (runtime *Services) MCPRevision() string {
-	if runtime == nil || runtime.extensions == nil {
+	if runtime == nil || runtime.extensionAssembly == nil {
 		return ""
 	}
-	return runtime.extensions.MCPRevision()
+	return runtime.extensionAssembly.MCPRevision()
 }
 
-func (runtime *Services) Skills() []skill.IndexEntry { return runtime.SkillIndex() }
+func (runtime *Services) Skills() []skill.SkillMetadata { return runtime.SkillIndex() }
 
 func (runtime *Services) SetSkillEnabled(name string, enabled bool) error {
-	if runtime == nil || runtime.extensions == nil {
+	if runtime == nil || runtime.extensionAssembly == nil {
 		return errors.New("skill catalog is unavailable")
 	}
-	return runtime.extensions.SetSkillEnabled(name, enabled)
+	return runtime.extensionAssembly.SetSkillEnabled(name, enabled)
 }
 
 func (runtime *Services) MCPServers() []string {
-	if runtime == nil || runtime.extensions == nil || runtime.extensions.MCP() == nil {
+	if runtime == nil || runtime.extensionAssembly == nil || runtime.extensionAssembly.MCPRuntime() == nil {
 		return nil
 	}
-	return runtime.extensions.MCP().EnabledServers()
+	return runtime.extensionAssembly.MCPRuntime().EnabledServers()
 }
 
-func (runtime *Services) MCPBindings() mcp.BindingSnapshot {
-	if runtime == nil || runtime.extensions == nil {
-		return mcp.BindingSnapshot{}
+func (runtime *Services) MCPBindings() mcp.MCPBinding {
+	if runtime == nil || runtime.extensionAssembly == nil {
+		return mcp.MCPBinding{}
 	}
-	return runtime.extensions.MCPBinding()
+	return runtime.extensionAssembly.MCPBinding()
 }
 
-func (runtime *Services) MCPTools(ctx context.Context, server string) ([]mcp.RemoteTool, error) {
-	if runtime == nil || runtime.extensions == nil || runtime.extensions.MCP() == nil {
-		return nil, errors.New("MCP manager is unavailable")
+func (runtime *Services) MCPTools(ctx context.Context, server string) (mcp.ToolCatalog, error) {
+	if runtime == nil || runtime.extensionAssembly == nil || runtime.extensionAssembly.MCPRuntime() == nil {
+		return mcp.ToolCatalog{}, errors.New("MCP runtime is unavailable")
 	}
-	return runtime.extensions.MCP().ListTools(ctx, server)
-}
-
-func (runtime *Services) RefreshMCP(ctx context.Context) []error {
-	if runtime == nil || runtime.extensions == nil || runtime.extensions.MCP() == nil || runtime.registry == nil {
-		return nil
-	}
-	warnings := make([]error, 0)
-	for _, server := range runtime.extensions.MCP().EnabledServers() {
-		adapters, err := runtime.extensions.MCP().ToolAdapters(ctx, server, mcp.AdapterOptions{})
-		if err != nil {
-			warnings = append(warnings, fmt.Errorf("refresh MCP server %q: %w", server, err))
-			continue
-		}
-		definitions := make([]tool.ToolDefinition, len(adapters))
-		for index, adapter := range adapters {
-			definitions[index] = adapter
-		}
-		if err := runtime.registry.ReplaceDefinitionGroupWithRegistration("mcp:"+server, definitions, tool.Registration{Exposure: tool.ExposureDeferred, Condition: "mcp.catalog"}); err != nil {
-			warnings = append(warnings, fmt.Errorf("register MCP server %q tools: %w", server, err))
-		}
-	}
-	return warnings
+	return runtime.extensionAssembly.MCPRuntime().ToolCatalog(ctx, server)
 }
 
 func (runtime *Services) SkillWarnings() []error {
@@ -287,8 +265,8 @@ func (runtime *Services) Close() error {
 		if runtime.processes != nil {
 			runtime.processes.Close()
 		}
-		if runtime.extensions != nil {
-			runtime.closeErr = errors.Join(runtime.closeErr, runtime.extensions.Close())
+		if runtime.extensionAssembly != nil {
+			runtime.closeErr = errors.Join(runtime.closeErr, runtime.extensionAssembly.Close())
 		}
 		if runtime.auditCloser != nil {
 			runtime.closeErr = errors.Join(runtime.closeErr, runtime.auditCloser.Close())

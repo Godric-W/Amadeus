@@ -43,6 +43,15 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) {
 	case protocol.ThreadTokenUsageUpdated:
 		model.inputUsage = item.Usage.InputTokens
 		model.outputUsage = item.Usage.OutputTokens
+		if item.EstimatedInputTokens > 0 {
+			model.contextUsage = item.EstimatedInputTokens
+		}
+		if item.ContextWindow > 0 {
+			model.contextLimit = item.ContextWindow
+		}
+		if item.Usage.InputTokens > 0 {
+			model.contextUsage = item.Usage.InputTokens
+		}
 	case protocol.PlanUpdated:
 		model.finishDraft()
 		model.insertHistoryCell(NewPlanUpdateCell(item))

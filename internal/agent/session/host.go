@@ -98,11 +98,11 @@ type CapabilityView interface {
 	PermissionGrantCount() int
 	SkillRevision() string
 	MCPRevision() string
-	Skills() []skill.IndexEntry
+	Skills() []skill.SkillMetadata
 	SetSkillEnabled(string, bool) error
 	MCPServers() []string
-	MCPBindings() mcp.BindingSnapshot
-	MCPTools(context.Context, string) ([]mcp.RemoteTool, error)
+	MCPBindings() mcp.MCPBinding
+	MCPTools(context.Context, string) (mcp.ToolCatalog, error)
 }
 
 func (session *Session) CapabilityView() (CapabilityView, bool) {

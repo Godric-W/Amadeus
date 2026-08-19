@@ -378,7 +378,7 @@ func TestCodingAgentSkillWorkflowUsesProjectOverrideAndNextRequestContext(t *tes
 		t.Fatalf("unexpected request count: %d", len(client.requests))
 	}
 	first, second := client.requests[0], client.requests[1]
-	if !requestContains(first, "amadeus.skill_index.v1") || !requestContains(first, "Project review guidance") || requestContains(first, "PROJECT-SKILL-BODY") {
+	if !requestContains(first, "amadeus.skill_index.v2") || !requestContains(first, "Project review guidance") || requestContains(first, "PROJECT-SKILL-BODY") {
 		t.Fatalf("initial request did not contain disclosure-safe project Skill index: %#v", first.Prompt.Input)
 	}
 	if !requestContains(second, "PROJECT-SKILL-BODY") || requestContains(second, "USER-SKILL-BODY") {

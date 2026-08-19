@@ -62,7 +62,7 @@ func toolDisplayCategoryForName(toolName string) ToolDisplayCategory {
 		return ToolDisplayCommand
 	case "write", "edit":
 		return ToolDisplayWrite
-	case "web_search":
+	case "web_search", "web_fetch", "mcp_list_tools", "mcp_call", "mcp_list_resources", "mcp_read_resource":
 		return ToolDisplayNetwork
 	default:
 		return ToolDisplayGeneric
@@ -87,6 +87,16 @@ func toolUserFacingName(toolName string) string {
 		return "Edit"
 	case "web_search":
 		return "Web search"
+	case "web_fetch":
+		return "Web fetch"
+	case "mcp_list_tools":
+		return "List MCP tools"
+	case "mcp_call":
+		return "Call MCP tool"
+	case "mcp_list_resources":
+		return "List MCP resources"
+	case "mcp_read_resource":
+		return "Read MCP resource"
 	default:
 		return strings.TrimSpace(toolName)
 	}

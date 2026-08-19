@@ -150,15 +150,16 @@ type TurnAborted struct {
 // turn item. It deliberately lives in rollout rather than importing the agent
 // protocol package, keeping canonical persistence independent from the runtime.
 type TurnItemCompleted struct {
-	ID          string          `json:"id"`
-	Kind        string          `json:"kind"`
-	Status      string          `json:"status"`
-	CreatedAt   time.Time       `json:"created_at"`
-	CompletedAt time.Time       `json:"completed_at,omitempty"`
-	Text        string          `json:"text,omitempty"`
-	ToolName    string          `json:"tool_name,omitempty"`
-	CallID      string          `json:"call_id,omitempty"`
-	Payload     json.RawMessage `json:"payload,omitempty"`
+	ID          string           `json:"id"`
+	Kind        string           `json:"kind"`
+	Status      string           `json:"status"`
+	CreatedAt   time.Time        `json:"created_at"`
+	CompletedAt time.Time        `json:"completed_at,omitempty"`
+	Text        string           `json:"text,omitempty"`
+	ToolName    string           `json:"tool_name,omitempty"`
+	CallID      string           `json:"call_id,omitempty"`
+	Payload     json.RawMessage  `json:"payload,omitempty"`
+	ToolResult  *tool.ToolResult `json:"tool_result,omitempty"`
 }
 
 type ContextUpdate struct {

@@ -8,35 +8,35 @@ import (
 	"github.com/Godric-W/Amadeus/internal/project"
 )
 
-func TestRuntimeLoadsStableSessionScopedRevisions(t *testing.T) {
+func TestAssemblyLoadsStableSessionScopedRevisions(t *testing.T) {
 	userRoot := t.TempDir()
 	projectPath := t.TempDir()
-	writeRuntimeSkill(t, filepath.Join(userRoot, "skills", "review", "SKILL.md"), "first body")
+	writeAssemblySkill(t, filepath.Join(userRoot, "skills", "review", "SKILL.md"), "first body")
 	root, err := project.NewRoot(projectPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	first, err := New(userRoot, root, Options{})
+	first, err := Assemble(userRoot, root, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.Close()
-	if first.Skills() == nil || first.Skills().Len() != 1 || len(first.SkillRevision()) != 64 || len(first.MCPRevision()) != 64 || first.MCP() == nil {
-		t.Fatalf("incomplete extension runtime: skills=%v skill_revision=%q mcp_revision=%q", first.Skills(), first.SkillRevision(), first.MCPRevision())
+	if first.SkillCatalog() == nil || first.SkillCatalog().Len() != 1 || len(first.SkillRevision()) != 64 || len(first.MCPRevision()) != 64 || first.MCPRuntime() == nil {
+		t.Fatalf("incomplete extension runtime: skills=%v skill_revision=%q mcp_revision=%q", first.SkillCatalog(), first.SkillRevision(), first.MCPRevision())
 	}
 	injections, err := first.ResolveSkillInjections("use $review and $review")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(injections) != 1 || injections[0].Name != "review" || len(injections[0].ContentHash) != 64 {
+	if len(injections) != 1 || injections[0].Name != "review" || injections[0].Path == "" || len(injections[0].Revision) != 64 {
 		t.Fatalf("unexpected explicit Skill injections: %#v", injections)
 	}
 	if _, err := first.ResolveSkillInjections("use $missing"); err == nil {
 		t.Fatal("missing explicit Skill was accepted")
 	}
 
-	second, err := New(userRoot, root, Options{})
+	second, err := Assemble(userRoot, root, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,8 +51,8 @@ func TestRuntimeLoadsStableSessionScopedRevisions(t *testing.T) {
 	}
 
 	originalRevision := first.SkillRevision()
-	writeRuntimeSkill(t, filepath.Join(userRoot, "skills", "review", "SKILL.md"), "changed body")
-	changed, err := New(userRoot, root, Options{})
+	writeAssemblySkill(t, filepath.Join(userRoot, "skills", "review", "SKILL.md"), "changed body")
+	changed, err := Assemble(userRoot, root, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestRuntimeLoadsStableSessionScopedRevisions(t *testing.T) {
 	}
 }
 
-func writeRuntimeSkill(t *testing.T, path, body string) {
+func writeAssemblySkill(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)

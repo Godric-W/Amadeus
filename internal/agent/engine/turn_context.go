@@ -12,6 +12,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/instruction"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/skill"
 )
 
 type InstructionScope interface {
@@ -101,13 +102,22 @@ func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnConte
 		return err
 	}
 	skillParts := make([]string, 0)
-	if runtime.extensions != nil {
-		injections, err := runtime.extensions.ResolveSkillInjections(goal)
+	if runtime.extensionAssembly != nil {
+		injections, err := runtime.extensionAssembly.ResolveSkillInjections(goal)
 		if err != nil {
 			return err
 		}
 		for _, injection := range injections {
-			skillParts = append(skillParts, "{\"type\":\"amadeus.skill_injection.v1\",\"name\":\""+injection.Name+"\"}\n"+injection.Content)
+			encoded, encodeErr := json.Marshal(struct {
+				Type     string `json:"type"`
+				Name     string `json:"name"`
+				Path     string `json:"path"`
+				Revision string `json:"revision"`
+			}{Type: "amadeus.skill_injection.v2", Name: injection.Name, Path: injection.Path, Revision: injection.Revision})
+			if encodeErr != nil {
+				return encodeErr
+			}
+			skillParts = append(skillParts, string(encoded)+"\n"+injection.Content)
 		}
 		if err := setUpdate(agentcontext.UpdateMCP, "MCP tools are available only through their exposed Tool Specs and current bindings."); err != nil {
 			return err
@@ -122,7 +132,14 @@ func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnConte
 		}
 	}
 	if len(indexParts) > 0 {
-		skillParts = append([]string{"## Skills And Extensions\n\n{\"type\":\"amadeus.skill_index.v1\",\"skills\":\n" + strings.Join(indexParts, "\n")}, skillParts...)
+		encoded, encodeErr := json.Marshal(struct {
+			Type   string                `json:"type"`
+			Skills []skill.SkillMetadata `json:"skills"`
+		}{Type: "amadeus.skill_index.v2", Skills: runtime.SkillIndex()})
+		if encodeErr != nil {
+			return encodeErr
+		}
+		skillParts = append([]string{"## Skills And Extensions\n\n" + string(encoded)}, skillParts...)
 	} else if len(skillParts) > 0 {
 		skillParts = append([]string{"## Skills And Extensions"}, skillParts...)
 	} else {

@@ -30,6 +30,7 @@ var ErrOwnerMismatch = errors.New("process owner mismatch")
 
 type Command struct {
 	OriginCallID   string
+	Attribution    Attribution
 	Shell          string
 	Command        string
 	Executable     string
@@ -40,9 +41,16 @@ type Command struct {
 	MaxOutputBytes int
 }
 
+type Attribution struct {
+	Name     string
+	Resource string
+	Revision string
+}
+
 type Snapshot struct {
 	ID               ID
 	OriginCallID     string
+	Attribution      Attribution
 	Owner            string
 	State            State
 	Output           string
@@ -64,6 +72,7 @@ type managed struct {
 	ioMutex      sync.Mutex
 	id           ID
 	originCallID string
+	attribution  Attribution
 	owner        string
 	command      *exec.Cmd
 	stdin        io.WriteCloser
@@ -112,7 +121,7 @@ func (manager *Manager) Start(owner string, command Command, configure func(*exe
 		return "", err
 	}
 	value := &managed{
-		id: id, originCallID: command.OriginCallID, owner: owner, command: cmd, stdin: stdin, cancel: cancel, output: output,
+		id: id, originCallID: command.OriginCallID, attribution: command.Attribution, owner: owner, command: cmd, stdin: stdin, cancel: cancel, output: output,
 		state: StateRunning, exitCode: -1, startedAt: time.Now(), done: make(chan struct{}),
 	}
 	manager.mutex.Lock()
@@ -264,7 +273,7 @@ func (value *managed) snapshot() Snapshot {
 	defer value.mutex.Unlock()
 	output, total, truncated := value.output.snapshot()
 	result := Snapshot{
-		ID: value.id, OriginCallID: value.originCallID, Owner: value.owner, State: value.state, Output: output, ExitCode: value.exitCode,
+		ID: value.id, OriginCallID: value.originCallID, Attribution: value.attribution, Owner: value.owner, State: value.state, Output: output, ExitCode: value.exitCode,
 		StartedAt: value.startedAt, FinishedAt: value.finishedAt, TotalOutputBytes: total, OutputTruncated: truncated,
 	}
 	if value.err != nil {

@@ -43,23 +43,23 @@ type ServicesOptions struct {
 }
 
 type ServicesBuilder struct {
-	mu               sync.Mutex
-	configured       config.Config
-	project          project.Root
-	amadeusRoot      string
-	clientFactory    engine.ClientFactory
-	mcpClientFactory mcp.ClientFactory
-	webFetcher       webfetch.Fetcher
-	webSearch        websearch.Provider
-	auditFactory     AuditFactory
-	extensions       *extensionruntime.Runtime
-	permissions      *policy.SessionPermissionContext
-	fileSystemPolicy *project.FileSystemPolicy
-	instructions     *instruction.WorkspaceResolver
-	modelMessages    llm.ModelMessages
-	clock            func() time.Time
-	runtime          *engine.Services
-	closed           bool
+	mu                sync.Mutex
+	configured        config.Config
+	project           project.Root
+	amadeusRoot       string
+	clientFactory     engine.ClientFactory
+	mcpClientFactory  mcp.ClientFactory
+	webFetcher        webfetch.Fetcher
+	webSearch         websearch.Provider
+	auditFactory      AuditFactory
+	extensionAssembly *extensionruntime.Assembly
+	permissions       *policy.SessionPermissionContext
+	fileSystemPolicy  *project.FileSystemPolicy
+	instructions      *instruction.WorkspaceResolver
+	modelMessages     llm.ModelMessages
+	clock             func() time.Time
+	runtime           *engine.Services
+	closed            bool
 }
 
 func NewServicesBuilder(options ServicesOptions) (*ServicesBuilder, error) {
@@ -106,14 +106,14 @@ func NewServicesBuilder(options ServicesOptions) (*ServicesBuilder, error) {
 	if err != nil {
 		return nil, err
 	}
-	extensions, err := extensionruntime.New(options.AmadeusRoot, options.Project, extensionruntime.Options{MCPClientFactory: options.MCPClientFactory})
+	extensionAssembly, err := extensionruntime.Assemble(options.AmadeusRoot, options.Project, extensionruntime.Options{MCPClientFactory: options.MCPClientFactory})
 	if err != nil {
 		return nil, err
 	}
 	return &ServicesBuilder{
 		configured: options.Config, project: options.Project, amadeusRoot: options.AmadeusRoot, clientFactory: options.ClientFactory,
 		mcpClientFactory: options.MCPClientFactory, webFetcher: options.WebFetcher, webSearch: options.WebSearch,
-		auditFactory: options.AuditFactory, extensions: extensions, permissions: policy.NewSessionPermissionContext(),
+		auditFactory: options.AuditFactory, extensionAssembly: extensionAssembly, permissions: policy.NewSessionPermissionContext(),
 		fileSystemPolicy: fileSystemPolicy, instructions: instructions,
 		modelMessages: options.ModelMessages, clock: options.Clock,
 	}, nil
@@ -197,7 +197,7 @@ func (builder *ServicesBuilder) BuildServices(ctx context.Context, session *Sess
 	runtime, err := engine.NewServices(engine.ServicesOptions{
 		Config: builder.configured, Project: builder.project, ClientFactory: builder.clientFactory,
 		Events: session, Approvals: approvals, PlanUpdater: session,
-		Audit: auditSink, AuditCloser: auditCloser, Extensions: builder.extensions,
+		Audit: auditSink, AuditCloser: auditCloser, ExtensionAssembly: builder.extensionAssembly,
 		WebFetcher: builder.webFetcher, WebSearch: builder.webSearch,
 		FileSystemPolicy: builder.fileSystemPolicy, Permissions: builder.permissions,
 		Instructions: builder.instructions, ModelMessages: builder.modelMessages,
@@ -232,14 +232,14 @@ func (builder *ServicesBuilder) Close() error {
 	}
 	builder.closed = true
 	runtime := builder.runtime
-	extensions := builder.extensions
+	extensionAssembly := builder.extensionAssembly
 	builder.mu.Unlock()
 	if runtime != nil {
 		return runtime.Close()
 	}
 	builder.permissions.Clear()
-	if extensions != nil {
-		return extensions.Close()
+	if extensionAssembly != nil {
+		return extensionAssembly.Close()
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 // NewCompletedItem converts the runtime item into its durable, self-contained
@@ -24,7 +25,7 @@ func NewCompletedItem(item TurnItem) (rollout.Item, error) {
 	return rollout.NewItem(rollout.KindTurnItemCompleted, rollout.TurnItemCompleted{
 		ID: item.ID, Kind: string(item.Kind), Status: string(item.Status),
 		CreatedAt: item.CreatedAt, CompletedAt: item.CompletedAt, Text: item.Text,
-		ToolName: item.ToolName, CallID: item.CallID, Payload: payload,
+		ToolName: item.ToolName, CallID: item.CallID, Payload: payload, ToolResult: cloneToolResult(item.ToolResult),
 	})
 }
 
@@ -47,12 +48,20 @@ func DecodeCompletedItem(line rollout.Line) (TurnItem, error) {
 	item := TurnItem{
 		ID: payload.ID, Kind: ItemKind(payload.Kind), Status: ItemStatus(payload.Status),
 		CreatedAt: payload.CreatedAt, CompletedAt: payload.CompletedAt, Text: payload.Text,
-		ToolName: payload.ToolName, CallID: payload.CallID, Payload: itemPayload,
+		ToolName: payload.ToolName, CallID: payload.CallID, Payload: itemPayload, ToolResult: cloneToolResult(payload.ToolResult),
 	}
 	if err := item.Validate(); err != nil {
 		return TurnItem{}, fmt.Errorf("validate completed item %q: %w", payload.ID, err)
 	}
 	return item, nil
+}
+
+func cloneToolResult(value *tool.ToolResult) *tool.ToolResult {
+	if value == nil {
+		return nil
+	}
+	cloned := value.Clone()
+	return &cloned
 }
 
 // ProjectCompletedItems returns only durable completed items in rollout order.
