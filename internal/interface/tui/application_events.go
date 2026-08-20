@@ -121,7 +121,7 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 		}
 		model.transcript.HadWorkActivity = true
 		model.transcript.NeedsFinalMessageSeparator = true
-		model.status = "executing"
+		model.status = "working"
 	case protocol.ItemCompletedEvent:
 		switch item.Item.Kind {
 		case protocol.ItemUserMessage:

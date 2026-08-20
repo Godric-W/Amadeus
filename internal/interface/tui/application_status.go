@@ -44,8 +44,6 @@ func statusHeader(value string) string {
 		return "Working"
 	case "thinking":
 		return "Thinking"
-	case "executing":
-		return "Executing"
 	case "planning":
 		return "Planning"
 	case "compacting context":

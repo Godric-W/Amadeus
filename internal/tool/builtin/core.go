@@ -122,5 +122,5 @@ func grepSpec() tool.ToolSpec {
 }
 
 func executeCommandSpec() tool.ToolSpec {
-	return tool.ToolSpec{Name: "execute_command", Description: "Run a shell command in the requested working directory after safety checks and approval.", InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","minLength":1},"cwd":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1},"yield_time_ms":{"type":"integer","minimum":0},"max_output_tokens":{"type":"integer","minimum":1},"tty":{"type":"boolean"}},"required":["command"],"additionalProperties":false}`), SideEffect: tool.SideEffectExecute, Idempotent: false}
+	return tool.ToolSpec{Name: "execute_command", Description: "Run a shell command in the requested working directory after safety checks and approval.", InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","minLength":1},"description":{"type":"string","description":"Clear, concise description of what the command does in active voice."},"cwd":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1},"yield_time_ms":{"type":"integer","minimum":0},"max_output_tokens":{"type":"integer","minimum":1},"tty":{"type":"boolean"}},"required":["command"],"additionalProperties":false}`), SideEffect: tool.SideEffectExecute, Idempotent: false}
 }

@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/filechange"
 	"github.com/Godric-W/Amadeus/internal/policy"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 func TestApprovalDialogBoundsDiffViewportAndSelection(t *testing.T) {
@@ -41,5 +44,57 @@ func TestApprovalDiffLinesPreserveStructuredHunks(t *testing.T) {
 		if lines[index] != want[index] {
 			t.Fatalf("diff line %d = %q, want %q", index, lines[index], want[index])
 		}
+	}
+}
+
+func TestApprovalDialogRendersClaudeStyleCommandPrompt(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	request, err := policy.NewApprovalRequestForPurpose(
+		"approval-1",
+		"execute_command",
+		json.RawMessage(`{"command":"go test ./...","description":"Run the project test suite"}`),
+		policy.ApprovalPurposeCommand,
+		policy.CommandRiskModerate,
+		policy.ApprovalCause{Kind: policy.ApprovalCauseCommand, Code: "host_command"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Command = "go test ./..."
+	request.Presentation = policy.CommandApprovalPresentation(request.Command, "Run the project test suite", "/workspace/amadeus")
+	model.approval = &fullscreenApproval{requestID: request.ID, request: request}
+	model.approvalDialog = newApprovalDialog(request)
+
+	rendered := xansi.Strip(model.renderApprovalDialog(72))
+	lines := strings.Split(rendered, "\n")
+	if len(lines) == 0 || strings.Trim(lines[0], "─") != "" || len([]rune(lines[0])) != 72 {
+		t.Fatalf("approval separator = %q", lines[0])
+	}
+	ordered := []string{
+		"Bash command",
+		"go test ./...",
+		"Run the project test suite",
+		"This command requires approval",
+		"Do you want to proceed?",
+		"1. Yes",
+		"2. Yes, and don't ask again for this exact command during this session",
+		"3. No",
+		"Esc to reject",
+	}
+	position := -1
+	for _, fragment := range ordered {
+		next := strings.Index(rendered[position+1:], fragment)
+		if next < 0 {
+			t.Fatalf("approval prompt omitted %q:\n%s", fragment, rendered)
+		}
+		position += next + 1
+	}
+	for _, forbidden := range []string{"╭", "╮", "╰", "╯", "Command: go test ./...", "Working directory:"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("approval prompt unexpectedly contains %q:\n%s", forbidden, rendered)
+		}
+	}
+	if strings.Contains(rendered, "❯") {
+		t.Fatalf("approval prompt unexpectedly contains a selection pointer:\n%s", rendered)
 	}
 }

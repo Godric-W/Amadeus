@@ -51,6 +51,7 @@ type ExecuteCommand struct {
 
 type executeCommandArguments struct {
 	Command         string `json:"command"`
+	Description     string `json:"description,omitempty"`
 	CWD             string `json:"cwd,omitempty"`
 	TimeoutMS       int64  `json:"timeout_ms,omitempty"`
 	YieldTimeMS     int64  `json:"yield_time_ms,omitempty"`
@@ -191,7 +192,7 @@ func (executeCommand *ExecuteCommand) Prepare(toolContext tool.ToolUseContext, i
 	}
 	approval.Command = command
 	approval.CWD = cwd
-	approval.Presentation = policy.CommandApprovalPresentation(command, cwd)
+	approval.Presentation = policy.CommandApprovalPresentation(command, arguments.Description, cwd)
 	target := tool.ContextTarget{Path: cwd, Kind: tool.ContextTargetCommandCWD, SideEffect: tool.SideEffectExecute}
 	return tool.PreparedToolUse{Invocation: invocation, Input: arguments, State: request, Target: &target, Permission: tool.PermissionEvaluation{Decision: tool.PermissionAsk, Request: &approval, Grant: grant, Observe: auditDecision}}, nil
 }

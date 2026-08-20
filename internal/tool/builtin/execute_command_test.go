@@ -27,7 +27,7 @@ func TestExecuteCommandApprovalUsesClearClaudeStylePresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := withTestApprovalCoordinator(context.Background(), coordinator)
-	if _, err := executePreparedTool(t, ctx, executeCommand, json.RawMessage(`{"command":"printf ok"}`)); err != nil {
+	if _, err := executePreparedTool(t, ctx, executeCommand, json.RawMessage(`{"command":"printf ok","description":"Print a success marker"}`)); err != nil {
 		t.Fatalf("execute command: %v", err)
 	}
 	if len(approvalPort.requests) != 1 {
@@ -39,6 +39,9 @@ func TestExecuteCommandApprovalUsesClearClaudeStylePresentation(t *testing.T) {
 	}
 	if request.Presentation.Title != "Bash command" || request.Presentation.Question != "Do you want to proceed?" {
 		t.Fatalf("unexpected command approval presentation: %#v", request.Presentation)
+	}
+	if !strings.Contains(strings.Join(request.Presentation.Details, "\n"), "Description: Print a success marker") {
+		t.Fatalf("unexpected command approval details: %#v", request.Presentation.Details)
 	}
 	text := request.Presentation.Title + " " + request.Presentation.Question + " " + strings.Join(request.Presentation.Details, " ")
 	for _, option := range request.Presentation.Options {

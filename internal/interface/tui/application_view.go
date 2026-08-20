@@ -286,9 +286,9 @@ func (model fullscreenModel) workingLine() string {
 		now = model.clock.Now()
 	}
 	elapsed := elapsedRunDurationAt(model.runStartedAt, now)
-	marker := activityIndicator(now, model.motionStartedAt, model.motion, model.palette)
+	marker := spinnerGlyph(now, model.motionStartedAt, model.motion, model.palette)
 	word := shimmerText(statusHeader(model.status), now, model.motionStartedAt, model.motion, model.palette)
-	line := marker + " " + word + model.palette.dim().Render(fmt.Sprintf(" (%s • esc to interrupt)", formatElapsedCompact(elapsed)))
+	line := marker + word + model.palette.dim().Render(fmt.Sprintf(" (%s • esc to interrupt)", formatElapsedCompact(elapsed)))
 	line = xansi.Truncate(line, maxInt(12, model.width), "")
 	if details := strings.TrimSpace(model.statusDetails); details != "" {
 		detailLine := model.palette.dim().Render("  └ " + xansi.Truncate(details, maxInt(8, model.width-4), ""))

@@ -25,8 +25,17 @@ func TestInlineRendererKeepsTextAndStatusBlocksSeparate(t *testing.T) {
 	if err := renderer.Publish(ctx, testProtocolEvent("thread-1", "turn-1", started)); err != nil {
 		t.Fatal(err)
 	}
-	if text.String() != "hello\n" || !strings.Contains(status.String(), "Exploring") || !strings.Contains(status.String(), "Read file") {
+	if text.String() != "hello\n" || !strings.Contains(status.String(), "Exploring") || !strings.Contains(status.String(), "Read file") || !strings.Contains(status.String(), "status: phase=working") {
 		t.Fatalf("unexpected inline output: text=%q status=%q", text.String(), status.String())
+	}
+}
+
+func TestDefaultTaskPhaseUsesWorking(t *testing.T) {
+	if got := taskPhase(TaskSubmission{Mode: CollaborationExecute}); got != "working" {
+		t.Fatalf("default task phase = %q, want working", got)
+	}
+	if got := statusHeader("working"); got != "Working" {
+		t.Fatalf("working status header = %q", got)
 	}
 }
 

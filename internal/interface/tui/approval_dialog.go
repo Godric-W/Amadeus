@@ -51,6 +51,11 @@ func (model fullscreenModel) handleApprovalKey(key tea.KeyMsg) (tea.Model, tea.C
 	case "esc", "ctrl+c":
 		choices := model.approvalDialog.choices
 		return model.resolveApproval(choices[len(choices)-1].decision)
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		index := int(key.String()[0] - '1')
+		if index < len(model.approvalDialog.choices) {
+			return model.resolveApproval(model.approvalDialog.choices[index].decision)
+		}
 	case "up", "k":
 		model.approvalDialog.move(-1)
 	case "down", "j":
@@ -90,16 +95,41 @@ func approvalDiffLines(request policy.ApprovalRequest) []string {
 func (model fullscreenModel) renderApprovalDialog(width int) string {
 	request := model.approval.request
 	dialog := model.approvalDialog
-	contentWidth := maxInt(24, width-6)
-	rows := []string{model.palette.strong().Render(request.Presentation.Title)}
+	contentWidth := maxInt(24, width-4)
+	title := strings.TrimSpace(request.Presentation.Title)
+	if title == "" {
+		title = "Tool use"
+	}
+	rows := []string{
+		model.palette.separator().Render(strings.Repeat("─", maxInt(1, width))),
+		" " + model.palette.strong().Render(title),
+	}
+	if request.Purpose == policy.ApprovalPurposeCommand {
+		rows = append(rows, "")
+		command := strings.TrimSpace(request.Command)
+		if command == "" {
+			command = approvalDetailValue(request.Presentation.Details, "Command:")
+		}
+		for _, line := range strings.Split(command, "\n") {
+			rows = append(rows, "   "+model.palette.plain().Render(truncateFullscreen(line, maxInt(12, contentWidth-3))))
+		}
+		if description := approvalDetailValue(request.Presentation.Details, "Description:"); description != "" {
+			rows = append(rows, "   "+model.palette.dim().Render(truncateFullscreen(description, maxInt(12, contentWidth-3))))
+		}
+		rows = append(rows, "", " "+model.palette.plain().Render("This command requires approval"))
+	} else {
+		if len(request.Presentation.Details) > 0 {
+			rows = append(rows, "")
+		}
+		for _, detail := range request.Presentation.Details {
+			rows = append(rows, "   "+model.palette.dim().Render(truncateFullscreen(detail, maxInt(12, contentWidth-3))))
+		}
+	}
 	question := strings.TrimSpace(request.Presentation.Question)
 	if question == "" {
 		question = "Do you want to proceed?"
 	}
-	rows = append(rows, model.palette.plain().Render(question))
-	for _, detail := range request.Presentation.Details {
-		rows = append(rows, model.palette.dim().Render(truncateFullscreen(detail, contentWidth)))
-	}
+	rows = append(rows, "", " "+model.palette.dim().Render(question))
 	lines := approvalDiffLines(request)
 	if len(lines) > 0 {
 		viewportHeight := model.approvalDiffHeight()
@@ -125,17 +155,22 @@ func (model fullscreenModel) renderApprovalDialog(width int) string {
 	}
 	rows = append(rows, "")
 	for index, choice := range dialog.choices {
-		prefix := "  "
+		prefix := "   "
 		style := model.palette.plain()
 		if index == dialog.selected {
-			prefix = "› "
 			style = model.palette.selection()
 		}
-		rows = append(rows, style.Render(prefix+choice.label))
-		if description := strings.TrimSpace(choice.description); description != "" {
-			rows = append(rows, model.palette.dim().Render("    "+truncateFullscreen(description, maxInt(12, contentWidth-4))))
+		rows = append(rows, prefix+style.Render(fmt.Sprintf("%d. %s", index+1, choice.label)))
+	}
+	rows = append(rows, "", " "+model.palette.dim().Render("Esc to reject"))
+	return strings.Join(rows, "\n")
+}
+
+func approvalDetailValue(details []string, prefix string) string {
+	for _, detail := range details {
+		if strings.HasPrefix(detail, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(detail, prefix))
 		}
 	}
-	rows = append(rows, model.palette.dim().Render("↑/↓ choose · Enter confirm · Esc deny"))
-	return fullscreenPanelStyle.BorderForeground(model.palette.border().GetForeground()).Width(contentWidth).Render(strings.Join(rows, "\n"))
+	return ""
 }

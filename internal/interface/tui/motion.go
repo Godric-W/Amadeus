@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"time"
 
@@ -27,10 +28,13 @@ func (c fixedMotionClock) Now() time.Time { return c.now }
 
 const (
 	motionFrameInterval = 32 * time.Millisecond
+	spinnerFramePeriod  = 120 * time.Millisecond
 	shimmerSweepPeriod  = 2 * time.Second
 	shimmerPadding      = 10
 	shimmerBandHalf     = 5.0
 )
+
+var spinnerFrames = [...]string{"·", "✢", "✱", "✶", "✻", "✽", "✽", "✻", "✶", "✱", "✢", "·"}
 
 func shimmerText(text string, now, startedAt time.Time, mode motionMode, palette terminalPalette) string {
 	if text == "" || mode == motionReduced || palette.NoColor {
@@ -58,6 +62,20 @@ func shimmerText(text string, now, startedAt time.Time, mode motionMode, palette
 		result.WriteString(style.Render(string(character)))
 	}
 	return result.String()
+}
+
+func spinnerGlyph(now, startedAt time.Time, mode motionMode, palette terminalPalette) string {
+	style := palette.plain().Width(2)
+	if mode == motionReduced {
+		return style.Render("✻")
+	}
+	elapsed := maxDuration(0, now.Sub(startedAt))
+	frame := int(elapsed/spinnerFramePeriod) % len(spinnerFrames)
+	glyph := spinnerFrames[frame]
+	if os.Getenv("TERM") == "xterm-ghostty" && glyph == "✽" {
+		glyph = "*"
+	}
+	return style.Render(glyph)
 }
 
 func activityIndicator(now, startedAt time.Time, mode motionMode, palette terminalPalette) string {

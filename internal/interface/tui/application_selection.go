@@ -18,7 +18,7 @@ func (model fullscreenModel) resolveApproval(decision policy.ApprovalDecision) (
 	}
 	model.selection = nil
 	model.selectionKind = ""
-	model.status = "executing"
+	model.status = "working"
 	commands := []tea.Cmd{model.input.Focus()}
 	if prompt != nil {
 		requestID := prompt.requestID

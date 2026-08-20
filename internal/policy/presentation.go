@@ -37,10 +37,14 @@ func FileApprovalPresentation(operation, path string, change *filechange.Preview
 	}
 }
 
-func CommandApprovalPresentation(command, cwd string) ApprovalPresentation {
+func CommandApprovalPresentation(command, description, cwd string) ApprovalPresentation {
+	details := []string{"Command: " + command}
+	if description = strings.TrimSpace(description); description != "" {
+		details = append(details, "Description: "+description)
+	}
+	details = append(details, "Working directory: "+cwd)
 	return ApprovalPresentation{
-		Title: "Bash command", Question: "Do you want to proceed?",
-		Details: []string{"Command: " + command, "Working directory: " + cwd},
+		Title: "Bash command", Question: "Do you want to proceed?", Details: details,
 		Options: []ApprovalOption{
 			{ID: "allow", Label: "Yes", Description: "Run this command once", Outcome: ApprovalAllow, Scope: ApprovalOnce},
 			{ID: "allow-session", Label: "Yes, and don't ask again for this exact command during this session", Description: "Only the same command in " + cwd + " will be allowed", Outcome: ApprovalAllow, Scope: ApprovalSession},

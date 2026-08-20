@@ -32,7 +32,7 @@ func TestVisualRuntimeNoColorSnapshots(t *testing.T) {
 	search.Apply(toolCompletedMessage(searchStarted, protocol.ItemStatusCompleted, "", "0s", false))
 
 	for name, test := range map[string]struct{ got, want string }{
-		"working":   {got: activityIndicator(ctx.Now, ctx.MotionStart, ctx.Motion, ctx.Palette) + " " + shimmerText("Working", ctx.Now, ctx.MotionStart, ctx.Motion, ctx.Palette) + " (1m 05s • esc to interrupt)", want: "• Working (1m 05s • esc to interrupt)"},
+		"working":   {got: spinnerGlyph(ctx.Now, ctx.MotionStart, ctx.Motion, ctx.Palette) + shimmerText("Working", ctx.Now, ctx.MotionStart, ctx.Motion, ctx.Palette) + " (1m 05s • esc to interrupt)", want: "✻ Working (1m 05s • esc to interrupt)"},
 		"exec":      {got: xansi.Strip(renderHistoryCellForTest(exec, ctx)), want: "• Ran go test ./...\n  └ ok"},
 		"explore":   {got: xansi.Strip(renderHistoryCellForTest(explore, ctx)), want: "• Explored\n  └ Read docs/design.md"},
 		"web":       {got: xansi.Strip(renderHistoryCellForTest(search, ctx)), want: "• Searched the web\n  └ Amadeus TUI"},

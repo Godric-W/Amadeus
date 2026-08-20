@@ -122,7 +122,7 @@ func taskPhase(task TaskSubmission) string {
 	if task.Mode == CollaborationPlan {
 		return "planning"
 	}
-	return "executing"
+	return "working"
 }
 
 func (model fullscreenModel) loadSessions() tea.Cmd {

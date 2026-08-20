@@ -80,7 +80,7 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, event protocol.Even
 		if typed.Item.ToolName == "update_plan" {
 			return nil
 		}
-		renderer.phase = "executing"
+		renderer.phase = "working"
 		renderer.toolCalls++
 		return renderer.toolBlock(typed.Item, false)
 	case protocol.TurnStartedEvent:
@@ -187,7 +187,7 @@ func inlinePhase(status string) string {
 	case "planning":
 		return "planning"
 	case "scheduling", "task_running", "running":
-		return "executing"
+		return "working"
 	case "cancelled", "cancelling":
 		return "cancelling"
 	case "failed":

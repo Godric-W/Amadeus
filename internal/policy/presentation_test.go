@@ -9,12 +9,12 @@ import (
 )
 
 func TestCommandApprovalPresentationDescribesExactSessionScope(t *testing.T) {
-	presentation := CommandApprovalPresentation("go test ./...", "/workspace/amadeus")
+	presentation := CommandApprovalPresentation("go test ./...", "Run the project test suite", "/workspace/amadeus")
 	assertApprovalPresentationOptions(t, presentation)
 	if presentation.Title != "Bash command" || presentation.Question != "Do you want to proceed?" {
 		t.Fatalf("unexpected command presentation: %#v", presentation)
 	}
-	assertStringsEqual(t, presentation.Details, []string{"Command: go test ./...", "Working directory: /workspace/amadeus"})
+	assertStringsEqual(t, presentation.Details, []string{"Command: go test ./...", "Description: Run the project test suite", "Working directory: /workspace/amadeus"})
 	if !strings.Contains(presentation.Options[1].Label, "this exact command during this session") {
 		t.Fatalf("session option does not describe exact-command scope: %#v", presentation.Options[1])
 	}
