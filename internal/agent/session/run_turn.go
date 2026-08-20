@@ -9,9 +9,9 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 )
 
-func (session *Session) runTurn(ctx context.Context, runtime *engine.Services, turnContext turn.TurnContext, inputs []TurnInput, events protocol.EventSink, instructions engine.StepInstructionScope) (engine.RunResult, error) {
+func (session *Session) runTurn(ctx context.Context, runtime *SessionServices, turnContext turn.TurnContext, events protocol.EventSink, instructions engine.StepInstructionScope) (TaskOutput, error) {
 	if session == nil || runtime == nil || events == nil || instructions == nil {
-		return engine.RunResult{}, errors.New("session turn execution is incomplete")
+		return TaskOutput{}, errors.New("session turn execution is incomplete")
 	}
-	return session.runTurnLoop(ctx, runtime, turnContext, inputs, events, instructions)
+	return session.runTurnLoop(ctx, runtime, turnContext, events, instructions)
 }

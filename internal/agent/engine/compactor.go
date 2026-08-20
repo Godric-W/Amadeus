@@ -22,8 +22,14 @@ type CompactRequest struct {
 	Events       protocol.EventSink
 }
 
-func (runtime *Services) Compact(ctx context.Context, request CompactRequest) ([]rollout.RolloutItem, error) {
-	if runtime == nil || runtime.client == nil {
+type Compactor struct {
+	ProviderName  string
+	ModelInfo     llm.ModelInfo
+	ModelMessages llm.ModelMessages
+}
+
+func (compactor *Compactor) Compact(ctx context.Context, request CompactRequest) ([]rollout.RolloutItem, error) {
+	if compactor == nil {
 		return nil, errors.New("compactor runtime is unavailable")
 	}
 	if request.ModelSession == nil || request.Events == nil {
@@ -33,19 +39,23 @@ func (runtime *Services) Compact(ctx context.Context, request CompactRequest) ([
 	if err != nil {
 		return nil, err
 	}
-	modelMessages, err := runtime.ModelMessages(runtime.ModelInfo())
-	if err != nil {
-		return nil, err
+	modelMessages := compactor.ModelMessages
+	if compactor.ModelInfo.ModelMessages.HasInstructions() {
+		modelMessages = compactor.ModelInfo.ModelMessages
 	}
+	if !modelMessages.HasInstructions() {
+		return nil, errors.New("compactor model messages are unavailable")
+	}
+	modelMessages = modelMessages.Normalized()
 	compactionInstructions, summaryPrefix, err := internalprompt.CompactionMessages(modelMessages)
 	if err != nil {
 		return nil, err
 	}
-	input := agentcontext.NormalizeResponseItems(projection.Covered, runtime.ModelInfo(), nil)
+	input := agentcontext.NormalizeResponseItems(projection.Covered, compactor.ModelInfo, nil)
 	input = append(input, llm.UserMessage("Create the handoff summary now. Return only the summary and do not call tools."))
 	response, err := request.ModelSession.Complete(ctx, CompleteRequest{
 		Request: llm.Request{
-			Model: runtime.modelInfo.Name, Prompt: llm.Prompt{BaseInstructions: compactionInstructions, Input: input},
+			Model: compactor.ModelInfo.Name, Prompt: llm.Prompt{BaseInstructions: compactionInstructions, Input: input},
 		},
 		Events: request.Events,
 	})
@@ -69,7 +79,7 @@ func (runtime *Services) Compact(ctx context.Context, request CompactRequest) ([
 	compactionItem := rollout.CompactedItem{
 		Summary: summary, ReplacementHistory: replacement,
 		CoveredThroughSequence: projection.SourceSequences[len(projection.Covered)-1],
-		SourceHash:             hex.EncodeToString(digest[:]), Provider: runtime.providerName, Model: runtime.modelInfo.Name,
+		SourceHash:             hex.EncodeToString(digest[:]), Provider: compactor.ProviderName, Model: compactor.ModelInfo.Name,
 	}
 	usageItem, err := UsageItem(response.Usage)
 	if err != nil {

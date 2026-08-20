@@ -9,24 +9,10 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	statesqlite "github.com/Godric-W/Amadeus/internal/state/sqlite"
 	"github.com/Godric-W/Amadeus/internal/thread/local"
 	threadmanager "github.com/Godric-W/Amadeus/internal/thread/manager"
 )
-
-type workspaceTaskSource struct{}
-
-func (workspaceTaskSource) NewTask(_ context.Context, _ *agentsession.Session, kind agentsession.TaskKind, _ string, value turn.TurnContext) (agentsession.SessionTask, turn.TurnContext, error) {
-	return agentsession.FuncTask{
-		TaskKind: kind,
-		RunFunc: func(context.Context, *agentsession.Session, *turn.TurnContext, []agentsession.TurnInput) (agentsession.Result, error) {
-			return agentsession.Result{Summary: "completed"}, nil
-		},
-	}, value, nil
-}
-
-func (workspaceTaskSource) Close() error { return nil }
 
 func TestThreadWorkspaceOwnsCurrentThreadLifecycle(t *testing.T) {
 	ctx := context.Background()
@@ -45,15 +31,7 @@ func TestThreadWorkspaceOwnsCurrentThreadLifecycle(t *testing.T) {
 	}
 	var sequence atomic.Uint64
 	manager, err := threadmanager.New(ctx, threadStore, threadmanager.SharedServices{
-		DefaultSessionSetup: agentsession.SessionSetup{TaskConstructors: agentsession.TaskConstructors{
-			Regular: func(ctx context.Context, active *agentsession.Session, input string, value turn.TurnContext) (agentsession.SessionTask, turn.TurnContext, error) {
-				return workspaceTaskSource{}.NewTask(ctx, active, agentsession.TaskKindRegular, input, value)
-			},
-			Compact: func(ctx context.Context, active *agentsession.Session, input string, value turn.TurnContext) (agentsession.SessionTask, turn.TurnContext, error) {
-				return workspaceTaskSource{}.NewTask(ctx, active, agentsession.TaskKindCompact, input, value)
-			},
-			Close: workspaceTaskSource{}.Close,
-		}},
+		SessionAdapters: appSessionAdapters(t, &appTestClient{}),
 		NextID: func(prefix string) string {
 			return prefix + "-" + time.Unix(0, int64(sequence.Add(1))).UTC().Format("150405.000000000")
 		},
@@ -66,10 +44,7 @@ func TestThreadWorkspaceOwnsCurrentThreadLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer workspace.Close(context.Background())
-	configuration := agentsession.Configuration{
-		CWD: filepath.Clean(t.TempDir()), Provider: "mock", Model: "model",
-		Mode: turn.ModeKindDefault,
-	}
+	configuration := appSessionConfiguration(t, filepath.Clean(t.TempDir()))
 	current, err := workspace.EnsureCurrent(ctx, configuration)
 	if err != nil {
 		t.Fatal(err)

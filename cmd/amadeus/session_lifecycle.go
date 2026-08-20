@@ -22,7 +22,7 @@ func (runner *agentController) ensureActiveThread(ctx context.Context, invocatio
 	if err != nil {
 		return nil, config.Config{}, err
 	}
-	active, err := workspace.EnsureCurrent(ctx, sessionConfiguration(configured, invocation))
+	active, err := workspace.EnsureCurrent(ctx, runner.sessionConfiguration(configured, invocation))
 	if err != nil {
 		return nil, config.Config{}, err
 	}
@@ -58,7 +58,7 @@ func (runner *agentController) prepareSession(ctx context.Context, invocation ag
 			fmt.Fprintln(invocation.ErrorOutput, "session: no previous session; using a new draft")
 			return nil
 		}
-		active, err := workspace.Resume(ctx, threads[0].ID, sessionConfiguration(configured, invocation))
+		active, err := workspace.Resume(ctx, threads[0].ID, runner.sessionConfiguration(configured, invocation))
 		if err != nil {
 			return err
 		}
@@ -80,7 +80,7 @@ func (runner *agentController) prepareSession(ctx context.Context, invocation ag
 				break
 			}
 		}
-		if _, err := workspace.Resume(ctx, invocation.SessionID, sessionConfiguration(configured, invocation)); err != nil {
+		if _, err := workspace.Resume(ctx, invocation.SessionID, runner.sessionConfiguration(configured, invocation)); err != nil {
 			return err
 		}
 		fmt.Fprintf(invocation.ErrorOutput, "session: resumed %s (%s)\n", invocation.SessionID, title)
@@ -177,7 +177,7 @@ func (runner *agentController) selectSession(ctx context.Context, invocation age
 		}
 		selected = threads[index-1].ID
 	}
-	active, err := workspace.Resume(ctx, selected, sessionConfiguration(configured, invocation))
+	active, err := workspace.Resume(ctx, selected, runner.sessionConfiguration(configured, invocation))
 	if err != nil {
 		return err
 	}

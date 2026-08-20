@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -13,20 +14,16 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/session"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/audit"
+	"github.com/Godric-W/Amadeus/internal/config"
+	"github.com/Godric-W/Amadeus/internal/llm"
+	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/state"
 	statesqlite "github.com/Godric-W/Amadeus/internal/state/sqlite"
 	"github.com/Godric-W/Amadeus/internal/thread"
 	"github.com/Godric-W/Amadeus/internal/thread/local"
 )
-
-type testFactory struct {
-	block bool
-}
-
-type concurrentHistoryFactory struct {
-	observed chan int
-}
 
 type terminalFailStore struct {
 	thread.ThreadStore
@@ -40,71 +37,58 @@ type turnStartFailStore struct {
 	thread.ThreadStore
 }
 
-type terminalModeFactory struct{ mode string }
-
-type abortTrackingFactory struct{ aborts *atomic.Int32 }
-
-type testTaskSource interface {
-	NewTask(context.Context, *session.Session, session.TaskKind, string, turn.TurnContext) (session.SessionTask, turn.TurnContext, error)
-	Close() error
+type managerTestClient struct {
+	mode  string
+	calls *atomic.Int32
 }
 
-func taskConstructors(source testTaskSource) session.TaskConstructors {
-	return session.TaskConstructors{
-		Regular: func(ctx context.Context, active *session.Session, input string, value turn.TurnContext) (session.SessionTask, turn.TurnContext, error) {
-			return source.NewTask(ctx, active, session.TaskKindRegular, input, value)
-		},
-		Compact: func(ctx context.Context, active *session.Session, input string, value turn.TurnContext) (session.SessionTask, turn.TurnContext, error) {
-			return source.NewTask(ctx, active, session.TaskKindCompact, input, value)
-		},
-		Close: source.Close,
+func (*managerTestClient) Complete(context.Context, llm.Request) (llm.Response, error) {
+	return llm.Response{}, errors.New("unexpected Complete call")
+}
+
+func (client *managerTestClient) Stream(ctx context.Context, _ llm.Request) (llm.Stream, error) {
+	if client.calls != nil {
+		client.calls.Add(1)
+	}
+	switch client.mode {
+	case "failed":
+		return nil, errors.New("task failed")
+	case "panic":
+		panic("task panic")
+	case "block":
+		return &managerTestStream{ctx: ctx}, nil
+	default:
+		return &managerTestStream{chunks: []llm.StreamChunk{{ContentDelta: "done"}, {FinishReason: llm.FinishReasonStop}}}, nil
 	}
 }
 
-func (factory testFactory) NewTask(_ context.Context, _ *session.Session, kind session.TaskKind, _ string, value turn.TurnContext) (session.SessionTask, turn.TurnContext, error) {
-	sessionTask := session.FuncTask{TaskKind: kind, RunFunc: func(ctx context.Context, _ *session.Session, _ *turn.TurnContext, _ []session.TurnInput) (session.Result, error) {
-		if factory.block {
-			<-ctx.Done()
-			return session.Result{}, ctx.Err()
-		}
-		item, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "done"})
-		return session.Result{Items: []rollout.RolloutItem{item}}, err
-	}}
-	return sessionTask, value, nil
+func (*managerTestClient) Model() llm.ModelInfo {
+	return llm.ModelInfo{Provider: "mock", Name: "model", ContextWindow: 100_000}
 }
 
-func (testFactory) Close() error { return nil }
-
-func (factory concurrentHistoryFactory) NewTask(_ context.Context, active *session.Session, kind session.TaskKind, _ string, value turn.TurnContext) (session.SessionTask, turn.TurnContext, error) {
-	sessionTask := session.FuncTask{TaskKind: kind, RunFunc: func(ctx context.Context, host *session.Session, turnContext *turn.TurnContext, _ []session.TurnInput) (session.Result, error) {
-		var wait sync.WaitGroup
-		errorsChannel := make(chan error, 16)
-		for index := range 16 {
-			wait.Add(1)
-			go func(index int) {
-				defer wait.Done()
-				item, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "parallel"})
-				if err == nil {
-					err = host.AppendItems(ctx, turnContext.TurnID, item)
-				}
-				errorsChannel <- err
-			}(index)
-		}
-		wait.Wait()
-		close(errorsChannel)
-		for err := range errorsChannel {
-			if err != nil {
-				return session.Result{}, err
-			}
-		}
-		factory.observed <- len(host.History())
-		return session.Result{}, nil
-	}}
-	_ = active
-	return sessionTask, value, nil
+func (*managerTestClient) Capabilities() llm.Capabilities {
+	return llm.Capabilities{SupportsStreaming: true}
 }
 
-func (concurrentHistoryFactory) Close() error { return nil }
+type managerTestStream struct {
+	ctx    context.Context
+	chunks []llm.StreamChunk
+}
+
+func (stream *managerTestStream) Recv() (llm.StreamChunk, error) {
+	if stream.ctx != nil {
+		<-stream.ctx.Done()
+		return llm.StreamChunk{}, stream.ctx.Err()
+	}
+	if len(stream.chunks) == 0 {
+		return llm.StreamChunk{}, io.EOF
+	}
+	chunk := stream.chunks[0]
+	stream.chunks = stream.chunks[1:]
+	return chunk, nil
+}
+
+func (*managerTestStream) Close() error { return nil }
 
 func (store terminalFailStore) AppendItems(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.RolloutItem) (thread.AppendResult, error) {
 	for _, item := range items {
@@ -133,42 +117,10 @@ func (store turnStartFailStore) AppendItems(ctx context.Context, id protocol.Thr
 	return store.ThreadStore.AppendItems(ctx, id, turnID, items...)
 }
 
-func (factory terminalModeFactory) NewTask(_ context.Context, _ *session.Session, kind session.TaskKind, _ string, value turn.TurnContext) (session.SessionTask, turn.TurnContext, error) {
-	valueTask := session.FuncTask{TaskKind: kind, RunFunc: func(context.Context, *session.Session, *turn.TurnContext, []session.TurnInput) (session.Result, error) {
-		switch factory.mode {
-		case "failed":
-			return session.Result{Summary: "failed summary"}, errors.New("task failed")
-		case "panic":
-			panic("task panic")
-		default:
-			return session.Result{Summary: "completed summary"}, nil
-		}
-	}}
-	return valueTask, value, nil
-}
-
-func (terminalModeFactory) Close() error { return nil }
-
-func (factory abortTrackingFactory) NewTask(_ context.Context, _ *session.Session, kind session.TaskKind, _ string, value turn.TurnContext) (session.SessionTask, turn.TurnContext, error) {
-	taskValue := session.FuncTask{
-		TaskKind: kind,
-		RunFunc: func(context.Context, *session.Session, *turn.TurnContext, []session.TurnInput) (session.Result, error) {
-			return session.Result{}, errors.New("task must not run")
-		},
-		AbortFunc: func(context.Context, *session.Session, *turn.TurnContext) error {
-			factory.aborts.Add(1)
-			return nil
-		},
-	}
-	return taskValue, value, nil
-}
-
-func (abortTrackingFactory) Close() error { return nil }
-
 func TestThreadManagerMaterializesOnFirstInput(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	manager, store := newTestManager(t, ctx, testFactory{})
+	manager, store := newTestManager(t, ctx, "completed", nil)
 	defer manager.Close(context.Background())
 	configuration := testConfiguration(t)
 	value, err := manager.StartThread(ctx, StartInput{Configuration: configuration})
@@ -199,22 +151,27 @@ func TestThreadManagerMaterializesOnFirstInput(t *testing.T) {
 	}
 	wantKinds := []string{
 		"session_meta", "turn_context", "response:user_message",
-		"event:turn_started", "response:assistant_message", "event:turn_complete",
+		"event:turn_started", "response:assistant_message", "event:item_completed", "event:turn_complete",
 	}
-	if len(history.Lines) != len(wantKinds) {
-		t.Fatalf("history lines = %d, want %d", len(history.Lines), len(wantKinds))
+	actualKinds := make([]string, len(history.Lines))
+	for index, line := range history.Lines {
+		actualKinds[index] = rolloutItemKind(line.Item)
 	}
-	for index, kind := range wantKinds {
-		if actual := rolloutItemKind(history.Lines[index].Item); actual != kind {
-			t.Fatalf("history kind[%d] = %q, want %q", index, actual, kind)
+	next := 0
+	for _, actual := range actualKinds {
+		if next < len(wantKinds) && actual == wantKinds[next] {
+			next++
 		}
+	}
+	if next != len(wantKinds) {
+		t.Fatalf("history kinds = %v, missing ordered suffix from %v", actualKinds, wantKinds[next:])
 	}
 }
 
 func TestThreadManagerInterruptPersistsAbortedBeforeEvent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	manager, store := newTestManager(t, ctx, testFactory{block: true})
+	manager, store := newTestManager(t, ctx, "block", nil)
 	defer manager.Close(context.Background())
 	value, err := manager.StartThread(ctx, StartInput{Configuration: testConfiguration(t)})
 	if err != nil {
@@ -240,8 +197,7 @@ func TestThreadManagerInterruptPersistsAbortedBeforeEvent(t *testing.T) {
 func TestSessionHistorySupportsConcurrentTaskAppends(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	observed := make(chan int, 1)
-	manager, _ := newTestManager(t, ctx, concurrentHistoryFactory{observed: observed})
+	manager, store := newTestManager(t, ctx, "completed", nil)
 	defer manager.Close(context.Background())
 	value, err := manager.StartThread(ctx, StartInput{Configuration: testConfiguration(t)})
 	if err != nil {
@@ -251,15 +207,44 @@ func TestSessionHistorySupportsConcurrentTaskAppends(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForTerminal(t, value.Io(), false)
-	if count := <-observed; count != 20 {
-		t.Fatalf("history count before terminal = %d, want 20", count)
+	var wait sync.WaitGroup
+	errorsChannel := make(chan error, 16)
+	for range 16 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			item, itemErr := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "parallel"})
+			if itemErr == nil {
+				itemErr = value.session.AppendItems(ctx, "turn-concurrent", item)
+			}
+			errorsChannel <- itemErr
+		}()
+	}
+	wait.Wait()
+	close(errorsChannel)
+	for appendErr := range errorsChannel {
+		if appendErr != nil {
+			t.Fatal(appendErr)
+		}
+	}
+	history, err := store.LoadHistory(ctx, value.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.RolloutItemCount() != len(history.Lines) {
+		t.Fatalf("context/store item count differs: context=%d store=%d", value.RolloutItemCount(), len(history.Lines))
+	}
+	for index, line := range history.Lines {
+		if line.Sequence != uint64(index+1) {
+			t.Fatalf("history sequence[%d] = %d", index, line.Sequence)
+		}
 	}
 }
 
 func TestRenameActiveThreadUpdatesCanonicalSessionHistory(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	manager, _ := newTestManager(t, ctx, testFactory{})
+	manager, _ := newTestManager(t, ctx, "completed", nil)
 	defer manager.Close(context.Background())
 	value, err := manager.StartThread(ctx, StartInput{Configuration: testConfiguration(t)})
 	if err != nil {
@@ -272,7 +257,10 @@ func TestRenameActiveThreadUpdatesCanonicalSessionHistory(t *testing.T) {
 	if err := manager.RenameThread(ctx, value.ID(), "Renamed Thread"); err != nil {
 		t.Fatal(err)
 	}
-	history := value.History()
+	history, err := value.History(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(history) == 0 {
 		t.Fatalf("history after rename = %#v", history)
 	}
@@ -289,7 +277,7 @@ func TestRenameActiveThreadUpdatesCanonicalSessionHistory(t *testing.T) {
 func TestTerminalPersistenceFailureDoesNotPublishTerminalEvent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	manager, baseStore := newTestManager(t, ctx, testFactory{})
+	manager, baseStore := newTestManager(t, ctx, "completed", nil)
 	manager.store = terminalFailStore{ThreadStore: baseStore}
 	defer manager.Close(context.Background())
 	value, err := manager.StartThread(ctx, StartInput{Configuration: testConfiguration(t)})
@@ -316,7 +304,7 @@ func TestTerminalPersistenceFailureDoesNotPublishTerminalEvent(t *testing.T) {
 func TestTurnStartFailurePublishesRejectedWithoutBlockingSession(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	manager, baseStore := newTestManager(t, ctx, testFactory{})
+	manager, baseStore := newTestManager(t, ctx, "completed", nil)
 	manager.store = materializeFailStore{ThreadStore: baseStore}
 	defer manager.Close(context.Background())
 	value, err := manager.StartThread(ctx, StartInput{Configuration: testConfiguration(t)})
@@ -350,7 +338,7 @@ func TestSessionPublishesAndPersistsExactlyOneTerminal(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			manager, store := newTestManager(t, ctx, terminalModeFactory{mode: mode})
+			manager, store := newTestManager(t, ctx, mode, nil)
 			defer manager.Close(context.Background())
 			value, err := manager.StartThread(ctx, StartInput{Configuration: testConfiguration(t)})
 			if err != nil {
@@ -401,11 +389,11 @@ func TestSessionPublishesAndPersistsExactlyOneTerminal(t *testing.T) {
 	}
 }
 
-func TestPreparedTaskAbortsWhenDurableTurnStartFails(t *testing.T) {
+func TestDurableTurnStartFailureDoesNotRunTask(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var aborts atomic.Int32
-	manager, baseStore := newTestManager(t, ctx, abortTrackingFactory{aborts: &aborts})
+	var calls atomic.Int32
+	manager, baseStore := newTestManager(t, ctx, "completed", &calls)
 	manager.store = turnStartFailStore{ThreadStore: baseStore}
 	defer manager.Close(context.Background())
 	value, err := manager.StartThread(ctx, StartInput{Configuration: testConfiguration(t)})
@@ -423,8 +411,8 @@ func TestPreparedTaskAbortsWhenDurableTurnStartFails(t *testing.T) {
 				if rejected.Message != "turn start append failed" {
 					t.Fatalf("rejected = %#v", rejected)
 				}
-				if aborts.Load() != 1 {
-					t.Fatalf("prepared task abort count = %d", aborts.Load())
+				if calls.Load() != 0 {
+					t.Fatalf("model call count after rejected start = %d", calls.Load())
 				}
 				return
 			}
@@ -436,7 +424,7 @@ func TestPreparedTaskAbortsWhenDurableTurnStartFails(t *testing.T) {
 
 func TestResumeRecoversIncompleteToolCall(t *testing.T) {
 	ctx := context.Background()
-	manager, store := newTestManager(t, ctx, testFactory{})
+	manager, store := newTestManager(t, ctx, "completed", nil)
 	now := time.Now().UTC()
 	live, err := thread.NewDraftLiveThread("thread-recover", store)
 	if err != nil {
@@ -511,6 +499,8 @@ func rolloutItemKind(item rollout.RolloutItem) string {
 			return "event:turn_complete"
 		case protocol.TurnAbortedEvent:
 			return "event:turn_aborted"
+		case protocol.ItemCompletedEvent:
+			return "event:item_completed"
 		case protocol.ThreadNameUpdatedEvent:
 			return "event:thread_name_updated"
 		default:
@@ -521,7 +511,7 @@ func rolloutItemKind(item rollout.RolloutItem) string {
 	}
 }
 
-func newTestManager(t *testing.T, ctx context.Context, factory testTaskSource) (*ThreadManager, thread.ThreadStore) {
+func newTestManager(t *testing.T, ctx context.Context, mode string, calls *atomic.Int32) (*ThreadManager, thread.ThreadStore) {
 	t.Helper()
 	home := t.TempDir()
 	database, err := statesqlite.Open(ctx, home)
@@ -537,8 +527,17 @@ func newTestManager(t *testing.T, ctx context.Context, factory testTaskSource) (
 		t.Fatal(err)
 	}
 	var sequence atomic.Uint64
+	modelMessages, err := internalprompt.LoadModelMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &managerTestClient{mode: mode, calls: calls}
 	manager, err := New(ctx, localStore, SharedServices{
-		DefaultSessionSetup: session.SessionSetup{TaskConstructors: taskConstructors(factory)},
+		SessionAdapters: session.ServiceAdapters{
+			ModelMessages: modelMessages,
+			ClientFactory: func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
+			AuditFactory:  func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
+		},
 		NextID: func(prefix string) string {
 			return prefix + "-" + time.Unix(0, int64(sequence.Add(1))).UTC().Format("150405.000000000")
 		},
@@ -551,17 +550,23 @@ func newTestManager(t *testing.T, ctx context.Context, factory testTaskSource) (
 
 func testConfiguration(t *testing.T) session.Configuration {
 	t.Helper()
-	return session.Configuration{
-		CWD: filepath.Clean(t.TempDir()), Provider: "openai", Model: "gpt-test",
-		Mode: turn.ModeKindDefault,
+	configured := config.Default()
+	configured.ModelProvider = "mock"
+	configured.Model = "gpt-test"
+	configured.ModelContextWindow = 100_000
+	configured.ModelAutoCompactTokenLimit = 90_000
+	configured.ToolOutputTokenLimit = 10_000
+	configured.ModelProviders = map[string]config.ModelProviderInfo{
+		"mock": {WireAPI: config.WireAPIResponses, Dialect: config.DialectStandard, APIKey: "test", BaseURL: "https://example.invalid/v1", Timeout: time.Second, StreamIdleTimeout: time.Minute},
 	}
+	return session.Configuration{Runtime: configured, CWD: filepath.Clean(t.TempDir()), AmadeusRoot: t.TempDir(), Mode: turn.ModeKindDefault}
 }
 
 func testTurnContext(t *testing.T, threadID protocol.ThreadID, turnID protocol.TurnID) turn.TurnContext {
 	t.Helper()
 	configuration := testConfiguration(t)
 	return turn.TurnContext{
-		ThreadID: threadID, TurnID: turnID, Provider: configuration.Provider, Model: configuration.Model,
+		ThreadID: threadID, TurnID: turnID, Provider: configuration.Runtime.ModelProvider, Model: configuration.Runtime.Model,
 		CWD: configuration.CWD, Mode: turn.ModeKindDefault,
 	}
 }

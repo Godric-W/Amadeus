@@ -116,12 +116,8 @@ func (host *compactTestHost) ContextUpdate(key agentcontext.UpdateKey) string {
 }
 
 func TestCompactTaskProducesSemanticReplacementHistory(t *testing.T) {
-	builder, host, client := newCompactionTestRuntime(t)
-	session := newTestSession(host.lines, host.context)
-	runtime, err := builder.BuildServices(context.Background(), session)
-	if err != nil {
-		t.Fatal(err)
-	}
+	session, host, client := newCompactionTestRuntime(t)
+	runtime := &session.services
 	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -152,8 +148,7 @@ func TestCompactTaskProducesSemanticReplacementHistory(t *testing.T) {
 }
 
 func TestCompactTaskUsesEffectiveToolOutputTokenLimit(t *testing.T) {
-	builder, host, client := newCompactionTestRuntime(t)
-	builder.configured.ToolOutputTokenLimit = 40
+	session, host, client := newCompactionTestRuntimeWithOptions(t, 5, 40)
 	toolCall, err := rollout.NewResponseItem(rollout.ResponseItem{
 		Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-1", Name: "read", Arguments: []byte(`{"path":"large.txt"}`),
 	})
@@ -176,11 +171,7 @@ func TestCompactTaskUsesEffectiveToolOutputTokenLimit(t *testing.T) {
 	if err := host.AppendItems(context.Background(), "turn-1", toolCall, toolResult, assistant); err != nil {
 		t.Fatal(err)
 	}
-	session := newTestSession(host.lines, host.context)
-	runtime, err := builder.BuildServices(context.Background(), session)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := &session.services
 	if _, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -196,12 +187,8 @@ func TestCompactTaskUsesEffectiveToolOutputTokenLimit(t *testing.T) {
 }
 
 func TestCompactTaskPreservesLatestUserTurnOutsideReplacement(t *testing.T) {
-	builder, host, _ := newCompactionTestRuntime(t)
-	session := newTestSession(host.lines, host.context)
-	runtime, err := builder.BuildServices(context.Background(), session)
-	if err != nil {
-		t.Fatal(err)
-	}
+	session, host, _ := newCompactionTestRuntime(t)
+	runtime := &session.services
 	latest, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "now run the tests"})
 	if err != nil {
 		t.Fatal(err)
@@ -209,7 +196,6 @@ func TestCompactTaskPreservesLatestUserTurnOutsideReplacement(t *testing.T) {
 	if err := host.AppendItems(context.Background(), "turn-2", latest); err != nil {
 		t.Fatal(err)
 	}
-	session.state.History = host.lines
 	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -227,12 +213,8 @@ func TestCompactTaskPreservesLatestUserTurnOutsideReplacement(t *testing.T) {
 }
 
 func TestCompactTaskFailureDoesNotReturnItems(t *testing.T) {
-	builder, host, client := newCompactionTestRuntime(t)
-	session := newTestSession(host.lines, host.context)
-	runtime, err := builder.BuildServices(context.Background(), session)
-	if err != nil {
-		t.Fatal(err)
-	}
+	session, host, client := newCompactionTestRuntime(t)
+	runtime := &session.services
 	client.err = errors.New("provider unavailable")
 	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil)
 	if err == nil || len(result.Items) != 0 {
@@ -241,13 +223,9 @@ func TestCompactTaskFailureDoesNotReturnItems(t *testing.T) {
 }
 
 func TestCompactTaskRetriesResponseStreamAndKeepsCanonicalResult(t *testing.T) {
-	builder, host, client := newCompactionTestRuntimeWithRetries(t, 1)
+	session, host, client := newCompactionTestRuntimeWithRetries(t, 1)
 	client.streams = []llm.Stream{compactRetryFailure("connection reset"), successfulCompactStream()}
-	session := newTestSession(host.lines, host.context)
-	runtime, err := builder.BuildServices(context.Background(), session)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := &session.services
 	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -262,20 +240,16 @@ func TestCompactTaskRetriesResponseStreamAndKeepsCanonicalResult(t *testing.T) {
 }
 
 func TestCompactTaskRetryExhaustionDoesNotChangeReplacementHistory(t *testing.T) {
-	builder, host, client := newCompactionTestRuntimeWithRetries(t, 1)
+	session, host, client := newCompactionTestRuntimeWithRetries(t, 1)
 	client.streams = []llm.Stream{compactRetryFailure("first failure"), compactRetryFailure("second failure")}
-	session := newTestSession(host.lines, host.context)
-	original := session.History()
-	runtime, err := builder.BuildServices(context.Background(), session)
-	if err != nil {
-		t.Fatal(err)
-	}
+	original := session.ContextProjection()
+	runtime := &session.services
 	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil)
 	if err == nil || len(result.Items) != 0 {
 		t.Fatalf("exhausted compaction result=%#v err=%v", result, err)
 	}
-	if !reflect.DeepEqual(session.History(), original) {
-		t.Fatalf("failed compaction changed history: before=%#v after=%#v", original, session.History())
+	if current := session.ContextProjection(); !reflect.DeepEqual(current, original) {
+		t.Fatalf("failed compaction changed history projection: before=%#v after=%#v", original, current)
 	}
 	if retrying, terminal := compactStreamErrorCounts(host.events); retrying != 1 || terminal != 1 {
 		t.Fatalf("exhausted compaction events retrying=%d terminal=%d events=%#v", retrying, terminal, host.events)
@@ -310,17 +284,22 @@ func compactTurnContext() *turn.TurnContext {
 	return &turn.TurnContext{ThreadID: "thread-1", TurnID: "turn-2"}
 }
 
-func newCompactionTestRuntime(t *testing.T) (*ServicesBuilder, *compactTestHost, *interactiveCompactionClient) {
+func newCompactionTestRuntime(t *testing.T) (*Session, *compactTestHost, *interactiveCompactionClient) {
 	return newCompactionTestRuntimeWithRetries(t, 5)
 }
 
-func newCompactionTestRuntimeWithRetries(t *testing.T, streamMaxRetries int) (*ServicesBuilder, *compactTestHost, *interactiveCompactionClient) {
+func newCompactionTestRuntimeWithRetries(t *testing.T, streamMaxRetries int) (*Session, *compactTestHost, *interactiveCompactionClient) {
+	return newCompactionTestRuntimeWithOptions(t, streamMaxRetries, 10_000)
+}
+
+func newCompactionTestRuntimeWithOptions(t *testing.T, streamMaxRetries, toolOutputTokenLimit int) (*Session, *compactTestHost, *interactiveCompactionClient) {
 	t.Helper()
 	client := &interactiveCompactionClient{}
 	configured := config.Default()
 	configured.Model = "compact-model"
 	configured.ModelProvider = "mock"
 	configured.ModelContextWindow = 8_192
+	configured.ToolOutputTokenLimit = int64(toolOutputTokenLimit)
 	configured.ModelProviders = map[string]config.ModelProviderInfo{
 		"mock": {
 			WireAPI:           config.WireAPIResponses,
@@ -337,17 +316,13 @@ func newCompactionTestRuntimeWithRetries(t *testing.T, streamMaxRetries int) (*S
 	if err != nil {
 		t.Fatal(err)
 	}
-	builder, err := NewServicesBuilder(ServicesOptions{
-		Config: configured, Project: root, AmadeusRoot: t.TempDir(), ModelMessages: mustLoadModelMessages(t),
+	adapters := ServiceAdapters{
+		ModelMessages: mustLoadModelMessages(t),
 		ClientFactory: func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 		AuditFactory: func() (audit.Sink, io.Closer, error) {
 			return audit.NewMemorySink(), io.NopCloser(strings.NewReader("")), nil
 		},
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = builder.Close() })
 	user, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "inspect project"})
 	if err != nil {
 		t.Fatal(err)
@@ -360,7 +335,15 @@ func newCompactionTestRuntimeWithRetries(t *testing.T, streamMaxRetries int) (*S
 	if err := host.AppendItems(context.Background(), "turn-1", user, assistant); err != nil {
 		t.Fatal(err)
 	}
-	return builder, host, client
+	session := newTestSession(host.lines, host.context)
+	session.state.Configuration = Configuration{Runtime: configured, CWD: root.Path(), AmadeusRoot: t.TempDir(), Mode: turn.ModeKindDefault}
+	services, err := buildSessionServices(context.Background(), session, session.services, adapters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.services = services
+	t.Cleanup(func() { _ = session.services.Close() })
+	return session, host, client
 }
 
 func compactRetryFailure(message string) llm.Stream {

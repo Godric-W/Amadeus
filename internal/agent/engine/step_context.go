@@ -1,11 +1,12 @@
 package engine
 
 import (
-	"errors"
+	"context"
 	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
+	"github.com/Godric-W/Amadeus/internal/instruction"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -15,8 +16,11 @@ type StepInstructionScope interface {
 	MarkSampled()
 }
 
-// StepContext is an immutable request snapshot. The prompt-visible tool specs
-// and the execution allow-list are derived together and must stay paired.
+type InstructionScope interface {
+	StepInstructionScope
+	Initialize(context.Context, string) (instruction.ResolveRequest, error)
+}
+
 type StepContext struct {
 	Turn                  turn.TurnContext
 	Prompt                agentcontext.PromptSnapshot
@@ -33,54 +37,7 @@ type StepContext struct {
 	RequestSnapshot       tool.RequestSnapshot
 }
 
-func (runtime *Services) CaptureStep(snapshot func(llm.ModelInfo, llm.Prompt) agentcontext.PromptSnapshot, turnContext turn.TurnContext) (StepContext, error) {
-	if runtime == nil || snapshot == nil {
-		return StepContext{}, errors.New("step context capture is incomplete")
-	}
-	tools := runtime.AvailableTools()
-	if turnContext.Mode == turn.ModeKindPlan {
-		tools = planModeTools(tools)
-	}
-	toolNames := make([]string, len(tools))
-	definitions := make([]llm.ToolSpec, len(tools))
-	toolSpecRevisions := make([]string, len(tools))
-	for index, spec := range tools {
-		toolNames[index] = spec.Name
-		definitions[index] = llm.ToolSpec{Name: spec.Name, Description: spec.Description, InputSchema: append([]byte(nil), spec.InputSchema...)}
-		toolSpecRevisions[index] = definitions[index].RevisionID()
-	}
-	model := runtime.ModelInfo()
-	modelMessages, err := runtime.ModelMessages(model)
-	if err != nil {
-		return StepContext{}, err
-	}
-	baseInstructions, err := modelMessages.ResolveBaseInstructions(string(turnContext.Personality))
-	if err != nil {
-		return StepContext{}, err
-	}
-	promptShape := llm.Prompt{
-		BaseInstructions: baseInstructions, Tools: definitions,
-		ParallelToolCalls:  model.SupportsParallelToolCalls,
-		OutputSchema:       append(llm.OutputSchema(nil), turnContext.OutputSchema...),
-		OutputSchemaStrict: turnContext.OutputSchemaStrict,
-	}
-	promptSnapshot := snapshot(model, promptShape)
-	requestSnapshot := tool.RequestSnapshot{ToolRevision: runtime.registry.Revision()}
-	if runtime.extensionAssembly != nil {
-		requestSnapshot.SkillRevision = runtime.extensionAssembly.SkillRevision()
-		requestSnapshot.MCPBindingRevision = runtime.extensionAssembly.MCPBinding().Revision
-	}
-	return StepContext{
-		Turn: turnContext, Prompt: promptSnapshot, Model: model, BaseInstructions: baseInstructions,
-		Tools: cloneToolSpecs(tools), ToolNames: append([]string(nil), toolNames...),
-		ToolSpecRevisions: append([]string(nil), toolSpecRevisions...),
-		ToolRevision:      requestSnapshot.ToolRevision, SkillRevision: requestSnapshot.SkillRevision,
-		MCPRevision: requestSnapshot.MCPBindingRevision, ModelMessagesRevision: modelMessages.Revision,
-		WorldStateRevision: promptSnapshot.WorldStateRevision, RequestSnapshot: requestSnapshot,
-	}, nil
-}
-
-func planModeTools(specs []tool.ToolSpec) []tool.ToolSpec {
+func PlanModeTools(specs []tool.ToolSpec) []tool.ToolSpec {
 	allowedNetwork := map[string]struct{}{"web_search": {}, "web_fetch": {}, "mcp_list_tools": {}, "mcp_list_resources": {}, "mcp_read_resource": {}}
 	result := make([]tool.ToolSpec, 0, len(specs))
 	for _, spec := range specs {
@@ -94,14 +51,6 @@ func planModeTools(specs []tool.ToolSpec) []tool.ToolSpec {
 		if _, ok := allowedNetwork[strings.TrimSpace(spec.Name)]; ok {
 			result = append(result, spec.Clone())
 		}
-	}
-	return result
-}
-
-func cloneToolSpecs(specs []tool.ToolSpec) []tool.ToolSpec {
-	result := make([]tool.ToolSpec, len(specs))
-	for index, spec := range specs {
-		result[index] = spec.Clone()
 	}
 	return result
 }

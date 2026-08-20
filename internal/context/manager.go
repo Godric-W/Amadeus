@@ -66,7 +66,6 @@ type Manager struct {
 	items           []llm.ResponseItem
 	sourceSequences []int64
 	updates         map[UpdateKey]contextUpdateState
-	historyVersion  uint64
 	lastSequence    uint64
 	providerUsage   llm.Usage
 	hasUsage        bool
@@ -100,7 +99,6 @@ func (manager *Manager) Rebuild(lines []rollout.Line) error {
 	}
 	manager.mu.Lock()
 	manager.applyRecordState(state)
-	manager.historyVersion++
 	manager.mu.Unlock()
 	return nil
 }
@@ -118,7 +116,6 @@ func (manager *Manager) Record(firstSequence uint64, items ...rollout.RolloutIte
 		}
 	}
 	manager.applyRecordState(state)
-	manager.historyVersion++
 	return nil
 }
 
@@ -451,6 +448,10 @@ func cloneResponseItems(items []llm.ResponseItem) []llm.ResponseItem {
 	for index, item := range items {
 		cloned[index] = item
 		cloned[index].Parts = append([]llm.ContentPart(nil), item.Parts...)
+		if item.ToolCalls == nil {
+			cloned[index].ToolCalls = nil
+			continue
+		}
 		cloned[index].ToolCalls = make([]llm.ToolCall, len(item.ToolCalls))
 		for callIndex, call := range item.ToolCalls {
 			cloned[index].ToolCalls[callIndex] = call

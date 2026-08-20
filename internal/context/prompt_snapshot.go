@@ -22,7 +22,7 @@ func (manager *Manager) Snapshot(model llm.ModelInfo, prompt llm.Prompt) PromptS
 		updates[key] = value.Content
 		worldStateParts = append(worldStateParts, string(key)+":"+value.Revision)
 	}
-	version := manager.historyVersion
+	version := manager.lastSequence
 	usage := UsageSnapshot{ProviderUsage: manager.providerUsage, HasProviderUsage: manager.hasUsage}
 	estimator := manager.estimator
 	manager.mu.RUnlock()

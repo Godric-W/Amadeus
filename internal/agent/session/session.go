@@ -13,6 +13,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/config"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
@@ -20,9 +21,10 @@ import (
 )
 
 type Configuration struct {
+	Runtime            config.Config
 	CWD                string
-	Provider           string
-	Model              string
+	WorkspaceRoots     []string
+	AmadeusRoot        string
 	Shell              string
 	CurrentDate        string
 	Timezone           string
@@ -43,14 +45,6 @@ type SessionState struct {
 	Plan          *plan.State
 }
 
-type SessionServices struct {
-	LiveThread       *thread.LiveThread
-	TaskConstructors TaskConstructors
-	AgentServices    *engine.Services
-	Clock            func() time.Time
-	NextID           func(string) string
-}
-
 type SessionIo struct {
 	Submissions chan<- protocol.Submission
 	Events      <-chan protocol.Event
@@ -58,11 +52,11 @@ type SessionIo struct {
 }
 
 type SpawnArgs struct {
-	ThreadID      protocol.ThreadID
-	History       thread.InitialHistory
-	State         SessionState
-	Services      SessionServices
-	BuildServices func(context.Context, *Session) (*engine.Services, error)
+	ThreadID protocol.ThreadID
+	History  thread.InitialHistory
+	State    SessionState
+	Services SessionServices
+	Adapters ServiceAdapters
 }
 
 type ActiveTurn struct {
@@ -100,7 +94,7 @@ type requestDelivery struct {
 var ErrInterrupted = errors.New("turn interrupted by user")
 
 func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) {
-	if parent == nil || args.ThreadID == "" || args.Services.LiveThread == nil || !args.Services.TaskConstructors.Valid() || args.Services.NextID == nil {
+	if parent == nil || args.ThreadID == "" || args.Services.LiveThread == nil || args.Services.NextID == nil || !args.Adapters.configured() {
 		return nil, SessionIo{}, errors.New("session spawn arguments are incomplete")
 	}
 	if args.Services.Clock == nil {
@@ -111,9 +105,7 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 	}
 	ctx, cancel := context.WithCancelCause(parent)
 	closeSpawnServices := func() {
-		if args.Services.TaskConstructors.Close != nil {
-			_ = args.Services.TaskConstructors.Close()
-		}
+		_ = args.Services.Close()
 		_ = args.Services.LiveThread.Shutdown(context.Background())
 	}
 	value := &Session{
@@ -140,14 +132,14 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 		}
 	}
 	value.state.Mode = ModeState{Mode: value.state.Configuration.Mode}
-	if args.BuildServices != nil {
-		capabilities, buildErr := args.BuildServices(ctx, value)
+	if args.Adapters.configured() {
+		capabilities, buildErr := buildSessionServices(ctx, value, value.services, args.Adapters)
 		if buildErr != nil {
 			cancel(buildErr)
 			closeSpawnServices()
 			return nil, SessionIo{}, fmt.Errorf("build session services: %w", buildErr)
 		}
-		value.services.AgentServices = capabilities
+		value.services = capabilities
 	}
 	io := SessionIo{
 		Submissions: value.submissions, Events: value.events, Terminated: value.terminated,
@@ -168,21 +160,12 @@ func (session *Session) loop() {
 		defer cancel()
 		_ = session.services.LiveThread.Shutdown(cleanupCtx)
 	}()
-	defer func() {
-		if session.services.AgentServices != nil {
-			_ = session.services.AgentServices.Close()
-		}
-	}()
-	defer func() {
-		if session.services.TaskConstructors.Close != nil {
-			_ = session.services.TaskConstructors.Close()
-		}
-	}()
+	defer func() { _ = session.services.Close() }()
 	session.publish(protocol.Event{Msg: protocol.SessionConfiguredEvent{
 		ThreadID: protocol.ThreadID(session.threadID),
 		Configuration: protocol.SessionConfiguration{
-			CWD: session.state.Configuration.CWD, Provider: session.state.Configuration.Provider,
-			Model: session.state.Configuration.Model, Mode: string(session.state.Configuration.Mode),
+			CWD: session.state.Configuration.CWD, Provider: session.state.Configuration.Runtime.ModelProvider,
+			Model: session.state.Configuration.Runtime.Model, Mode: string(session.state.Configuration.Mode),
 		},
 	}})
 	sessionDone := session.ctx.Done()
@@ -294,8 +277,8 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input stri
 	turnID := protocol.TurnID(session.services.NextID("turn"))
 	baseContext := turn.TurnContext{
 		SubmissionID: submissionID,
-		ThreadID:     session.threadID, TurnID: turnID, Provider: session.state.Configuration.Provider,
-		Model: session.state.Configuration.Model, CWD: session.state.Configuration.CWD, Shell: session.state.Configuration.Shell,
+		ThreadID:     session.threadID, TurnID: turnID, Provider: session.state.Configuration.Runtime.ModelProvider,
+		Model: session.state.Configuration.Runtime.Model, CWD: session.state.Configuration.CWD, Shell: session.state.Configuration.Shell,
 		CurrentDate: session.state.Configuration.CurrentDate, Timezone: session.state.Configuration.Timezone,
 		Mode: session.Mode(), Personality: session.state.Configuration.Personality,
 		OutputSchema:       append(json.RawMessage(nil), session.state.Configuration.OutputSchema...),
@@ -303,7 +286,7 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input stri
 	}
 	createInput := thread.CreateInput{
 		ID: session.threadID, CWD: session.state.Configuration.CWD, Title: titleFromInput(input),
-		ModelProvider: session.state.Configuration.Provider, Model: session.state.Configuration.Model, CreatedAt: now,
+		ModelProvider: session.state.Configuration.Runtime.ModelProvider, Model: session.state.Configuration.Runtime.Model, CreatedAt: now,
 	}
 	materialized, err := session.materialize(session.ctx, createInput)
 	if err != nil {
@@ -313,11 +296,7 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input stri
 	if materialized.MetadataWarning != nil {
 		session.publish(protocol.Event{ID: submissionID, Msg: protocol.WarningEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID), Message: materialized.MetadataWarning.Error()}})
 	}
-	constructor := session.services.TaskConstructors.Regular
-	if compact {
-		constructor = session.services.TaskConstructors.Compact
-	}
-	taskValue, turnValue, err := constructor(session.ctx, session, input, baseContext)
+	taskValue, turnValue, err := session.createTask(session.ctx, input, baseContext, compact)
 	if err != nil {
 		session.rejectTurn(submissionID, turnID, err, false)
 		return
@@ -327,11 +306,6 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input stri
 		return
 	}
 	turnContext := &turnValue
-	abortPrepared := func() {
-		abortCtx, cancel := context.WithTimeout(context.WithoutCancel(session.ctx), 2*time.Second)
-		defer cancel()
-		_ = taskValue.Abort(abortCtx, session, turnContext)
-	}
 	kind := protocol.TaskKindRegular
 	if compact {
 		kind = protocol.TaskKindCompact
@@ -343,7 +317,6 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input stri
 	if !compact {
 		responseItem, responseErr := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: string(llm.RoleUser), Content: input})
 		if responseErr != nil {
-			abortPrepared()
 			session.rejectTurn(submissionID, turnID, responseErr, false)
 			return
 		}
@@ -351,13 +324,11 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input stri
 	}
 	items = append(items, rollout.EventMsgItem{Msg: startedEvent})
 	if err := session.appendItemsDurable(session.ctx, turnID, items...); err != nil {
-		abortPrepared()
 		session.rejectTurn(submissionID, turnID, err, true)
 		return
 	}
-	running, err := NewRunningTask(session.ctx, session, taskValue, turnContext, []TurnInput{{Content: input}})
+	running, err := NewRunningTask(session.ctx, session, taskValue, turnContext)
 	if err != nil {
-		abortPrepared()
 		session.completeWithoutTask(submissionID, turnID, err)
 		return
 	}
@@ -391,9 +362,9 @@ func (session *Session) finishTurn(completion Completion) {
 		return
 	}
 	submissionID := session.active.SubmissionID
-	completedItems := append([]rollout.RolloutItem(nil), completion.Result.Items...)
-	if completion.Result.Usage.TotalTokens > 0 {
-		if usageItem, usageErr := engine.UsageItem(completion.Result.Usage); usageErr == nil {
+	completedItems := append([]rollout.RolloutItem(nil), completion.Output.Items...)
+	if completion.Output.Usage.TotalTokens > 0 {
+		if usageItem, usageErr := engine.UsageItem(completion.Output.Usage); usageErr == nil {
 			completedItems = append(completedItems, usageItem)
 		} else if completion.Error == nil {
 			completion.Error = usageErr
@@ -413,7 +384,7 @@ func (session *Session) finishTurn(completion Completion) {
 	finishedAt := session.services.Clock().UTC()
 	if errors.Is(completion.Cause, ErrInterrupted) || errors.Is(completion.Error, context.Canceled) && completion.Cause != nil {
 		reason := completion.Cause.Error()
-		summary := completion.Result.Summary
+		summary := completion.Output.Summary
 		if summary == "" {
 			summary = "result: cancelled"
 		}
@@ -436,20 +407,20 @@ func (session *Session) finishTurn(completion Completion) {
 		return
 	}
 	status := protocol.TurnStatusCompleted
-	outcome := completion.Result.Outcome
+	outcome := completion.Output.Outcome
 	if !outcome.Valid() {
-		outcome = OutcomeCompleted
+		outcome = protocol.TurnOutcomeCompleted
 	}
-	reason := strings.TrimSpace(completion.Result.Reason)
+	reason := strings.TrimSpace(completion.Output.Reason)
 	errorText := ""
 	if completion.Error != nil {
 		status = protocol.TurnStatusFailed
-		outcome = OutcomeFailed
+		outcome = protocol.TurnOutcomeFailed
 		errorText = completion.Error.Error()
 		if reason == "" {
 			reason = errorText
 		}
-	} else if outcome == OutcomeFailed {
+	} else if outcome == protocol.TurnOutcomeFailed {
 		status = protocol.TurnStatusFailed
 		errorText = reason
 		if errorText == "" {
@@ -459,7 +430,7 @@ func (session *Session) finishTurn(completion Completion) {
 	completedEvent := protocol.TurnCompleteEvent{
 		ThreadID: session.threadID, TurnID: completion.TurnID,
 		Status: status, Outcome: outcome, Reason: reason,
-		Summary: completion.Result.Summary, Error: errorText, FinishedAt: finishedAt,
+		Summary: completion.Output.Summary, Error: errorText, FinishedAt: finishedAt,
 	}
 	cleanupCtx, cancel := session.cleanupContext()
 	persistErr := session.appendItemsDurable(cleanupCtx, completion.TurnID, rollout.EventMsgItem{Msg: completedEvent})
@@ -529,11 +500,6 @@ func (session *Session) cancelActive(cause error) {
 		return
 	}
 	session.active.Task.Cancel(cause)
-	abortCtx, cancel := context.WithTimeout(context.WithoutCancel(session.ctx), 2*time.Second)
-	defer cancel()
-	if err := session.active.Task.Abort(abortCtx); err != nil {
-		session.publish(protocol.Event{ID: session.active.SubmissionID, Msg: protocol.WarningEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(session.active.Task.Context().TurnID), Message: err.Error()}})
-	}
 }
 
 func (session *Session) cleanupContext() (context.Context, context.CancelFunc) {

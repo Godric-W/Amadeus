@@ -8,11 +8,98 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/config"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
+
+type Services struct {
+	providerName  string
+	provider      config.ModelProviderInfo
+	modelInfo     llm.ModelInfo
+	client        llm.Client
+	modelMessages llm.ModelMessages
+	registry      *tool.Registry
+	toolService   *tool.ToolExecutionService
+	visibility    map[string]bool
+	budget        TurnBudget
+}
+
+func (runtime *Services) NewModelClientSession() (*ModelClientSession, error) {
+	if runtime == nil || runtime.client == nil {
+		return nil, errors.New("test model client is unavailable")
+	}
+	return NewModelClientSession(runtime.client, ModelClientSessionConfig{
+		StreamMaxRetries: runtime.provider.StreamMaxRetries, StreamIdleTimeout: runtime.provider.StreamIdleTimeout,
+	})
+}
+
+func (runtime *Services) ModelInfo() llm.ModelInfo {
+	if runtime == nil {
+		return llm.ModelInfo{}
+	}
+	return runtime.modelInfo
+}
+
+func (runtime *Services) ModelMessages(model llm.ModelInfo) (llm.ModelMessages, error) {
+	if model.ModelMessages.HasInstructions() {
+		return model.ModelMessages.Normalized(), nil
+	}
+	if runtime != nil && runtime.modelMessages.HasInstructions() {
+		return runtime.modelMessages.Normalized(), nil
+	}
+	return llm.ModelMessages{}, errors.New("test model messages are unavailable")
+}
+
+func (runtime *Services) CaptureStep(snapshot func(llm.ModelInfo, llm.Prompt) agentcontext.PromptSnapshot, turnContext turn.TurnContext) (StepContext, error) {
+	if runtime == nil || snapshot == nil || runtime.registry == nil {
+		return StepContext{}, errors.New("test step capture is incomplete")
+	}
+	entries := runtime.registry.VisibleSnapshot(runtime.visibility)
+	tools := make([]tool.ToolSpec, 0, len(entries))
+	for _, entry := range entries {
+		tools = append(tools, entry.Spec.Clone())
+	}
+	if turnContext.Mode == turn.ModeKindPlan {
+		tools = PlanModeTools(tools)
+	}
+	toolNames := make([]string, len(tools))
+	definitions := make([]llm.ToolSpec, len(tools))
+	toolSpecRevisions := make([]string, len(tools))
+	for index, spec := range tools {
+		toolNames[index] = spec.Name
+		definitions[index] = llm.ToolSpec{Name: spec.Name, Description: spec.Description, InputSchema: append([]byte(nil), spec.InputSchema...)}
+		toolSpecRevisions[index] = definitions[index].RevisionID()
+	}
+	model := runtime.ModelInfo()
+	messages, err := runtime.ModelMessages(model)
+	if err != nil {
+		return StepContext{}, err
+	}
+	base, err := messages.ResolveBaseInstructions(string(turnContext.Personality))
+	if err != nil {
+		return StepContext{}, err
+	}
+	prompt := llm.Prompt{BaseInstructions: base, Tools: definitions, ParallelToolCalls: model.SupportsParallelToolCalls, OutputSchema: append(llm.OutputSchema(nil), turnContext.OutputSchema...), OutputSchemaStrict: turnContext.OutputSchemaStrict}
+	promptSnapshot := snapshot(model, prompt)
+	requestSnapshot := tool.RequestSnapshot{ToolRevision: runtime.registry.Revision()}
+	return StepContext{
+		Turn: turnContext, Prompt: promptSnapshot, Model: model, BaseInstructions: base,
+		Tools: cloneTestToolSpecs(tools), ToolNames: toolNames, ToolSpecRevisions: toolSpecRevisions,
+		ToolRevision: requestSnapshot.ToolRevision, ModelMessagesRevision: messages.Revision,
+		WorldStateRevision: promptSnapshot.WorldStateRevision, RequestSnapshot: requestSnapshot,
+	}, nil
+}
+
+func cloneTestToolSpecs(specs []tool.ToolSpec) []tool.ToolSpec {
+	cloned := make([]tool.ToolSpec, len(specs))
+	for index, spec := range specs {
+		cloned[index] = spec.Clone()
+	}
+	return cloned
+}
 
 type RunRequest struct {
 	Snapshot     func(llm.ModelInfo, llm.Prompt) agentcontext.PromptSnapshot

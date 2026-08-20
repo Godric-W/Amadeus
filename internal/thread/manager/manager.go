@@ -16,10 +16,9 @@ import (
 )
 
 type SharedServices struct {
-	DefaultSessionSetup agentsession.SessionSetup
-	NewSessionSetup     func(protocol.ThreadID) (agentsession.SessionSetup, error)
-	Clock               func() time.Time
-	NextID              func(string) string
+	SessionAdapters agentsession.ServiceAdapters
+	Clock           func() time.Time
+	NextID          func(string) string
 }
 
 type StartInput struct {
@@ -98,27 +97,15 @@ func (manager *ThreadManager) spawn(ctx context.Context, id protocol.ThreadID, l
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	setup := manager.services.DefaultSessionSetup
-	if manager.services.NewSessionSetup != nil {
-		var err error
-		setup, err = manager.services.NewSessionSetup(id)
-		if err != nil {
-			_ = live.Shutdown(context.Background())
-			return nil, err
-		}
-	}
-	if !setup.TaskConstructors.Valid() {
-		if setup.TaskConstructors.Close != nil {
-			_ = setup.TaskConstructors.Close()
-		}
+	if !manager.services.SessionAdapters.ModelMessages.HasInstructions() {
 		_ = live.Shutdown(context.Background())
-		return nil, errors.New("thread session task constructors are unavailable")
+		return nil, errors.New("thread session services are unavailable")
 	}
 	session, io, err := agentsession.Spawn(manager.ctx, agentsession.SpawnArgs{
 		ThreadID: id, History: history,
-		State:         agentsession.SessionState{Configuration: input.Configuration},
-		Services:      agentsession.SessionServices{LiveThread: live, TaskConstructors: setup.TaskConstructors, Clock: manager.services.Clock, NextID: manager.services.NextID},
-		BuildServices: setup.BuildServices,
+		State:    agentsession.SessionState{Configuration: input.Configuration},
+		Services: agentsession.SessionServices{LiveThread: live, Clock: manager.services.Clock, NextID: manager.services.NextID},
+		Adapters: manager.services.SessionAdapters,
 	})
 	if err != nil {
 		_ = live.Shutdown(context.Background())
@@ -260,13 +247,6 @@ func (threadRuntime *AmadeusThread) RolloutItemCount() int {
 		return 0
 	}
 	return threadRuntime.session.RolloutItemCount()
-}
-
-func (threadRuntime *AmadeusThread) CapabilityView() (agentsession.CapabilityView, bool) {
-	if threadRuntime == nil || threadRuntime.session == nil {
-		return nil, false
-	}
-	return threadRuntime.session.CapabilityView()
 }
 
 func (threadRuntime *AmadeusThread) Mode() turn.ModeKind {

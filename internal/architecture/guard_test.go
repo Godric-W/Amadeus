@@ -271,7 +271,7 @@ func TestContextArchitectureHasOneCanonicalWriteAndProjectionChain(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"func (manager *Manager) Record", "func (manager *Manager) Replace", "func (manager *Manager) ReplaceUpdate", "func (manager *Manager) UpdateUsage", "func (manager *Manager) ForPrompt", "func (manager *Manager) EstimatePromptTokens"} {
+	for _, forbidden := range []string{"func (manager *Manager) Replace", "func (manager *Manager) ReplaceUpdate", "func (manager *Manager) UpdateUsage", "func (manager *Manager) ForPrompt", "func (manager *Manager) EstimatePromptTokens"} {
 		if strings.Contains(string(manager), forbidden) {
 			t.Errorf("legacy ContextManager mutation/projection API remains: %s", forbidden)
 		}
@@ -280,8 +280,15 @@ func TestContextArchitectureHasOneCanonicalWriteAndProjectionChain(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(sessionHost), "session.state.Context.Rebuild(session.History())") {
-		t.Fatal("Session is not the canonical ContextManager rebuild owner")
+	for _, required := range []string{"session.state.Context.ValidateRecord", "session.state.Context.Record"} {
+		if !strings.Contains(string(sessionHost), required) {
+			t.Fatalf("Session does not own incremental ContextManager commit through %q", required)
+		}
+	}
+	for _, forbidden := range []string{"SessionState.History", "session.History()", "session.state.Context.Rebuild"} {
+		if strings.Contains(string(sessionHost), forbidden) {
+			t.Fatalf("Session retains legacy ContextManager rebuild path %q", forbidden)
+		}
 	}
 }
 

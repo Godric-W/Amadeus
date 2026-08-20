@@ -2,85 +2,38 @@ package session
 
 import (
 	"context"
-	"errors"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
-type TaskKind string
-
-const (
-	TaskKindRegular TaskKind = "regular"
-	TaskKindCompact TaskKind = "compact"
-)
-
-type TurnInput struct {
-	Content string
-}
-
-type Outcome = protocol.TurnOutcome
-
-const (
-	OutcomeCompleted = protocol.TurnOutcomeCompleted
-	OutcomeBlocked   = protocol.TurnOutcomeBlocked
-	OutcomeFailed    = protocol.TurnOutcomeFailed
-	OutcomeAborted   = protocol.TurnOutcomeAborted
-)
-
-type Result struct {
+type TaskOutput struct {
 	Items         []rollout.RolloutItem
 	Summary       string
-	Outcome       Outcome
+	Outcome       protocol.TurnOutcome
 	Reason        string
 	Usage         llm.Usage
 	ToolCallCount int
 }
 
 type SessionTask interface {
-	Kind() TaskKind
-	Run(context.Context, *Session, *turn.TurnContext, []TurnInput) (Result, error)
-	Abort(context.Context, *Session, *turn.TurnContext) error
+	Run(context.Context, *Session, *turn.TurnContext) (TaskOutput, error)
 }
 
-type TaskConstructors struct {
-	Regular func(context.Context, *Session, string, turn.TurnContext) (SessionTask, turn.TurnContext, error)
-	Compact func(context.Context, *Session, string, turn.TurnContext) (SessionTask, turn.TurnContext, error)
-	Close   func() error
+type regularTask struct {
+	runtime      *SessionServices
+	goal         string
+	events       protocol.EventSink
+	instructions *targetInstructionScope
 }
 
-type SessionSetup struct {
-	TaskConstructors TaskConstructors
-	BuildServices    func(context.Context, *Session) (*engine.Services, error)
+func (sessionTask *regularTask) Run(ctx context.Context, session *Session, turnContext *turn.TurnContext) (TaskOutput, error) {
+	return sessionTask.run(ctx, session, turnContext)
 }
 
-func (constructors TaskConstructors) Valid() bool {
-	return constructors.Regular != nil && constructors.Compact != nil && constructors.Close != nil
-}
-
-type FuncTask struct {
-	TaskKind  TaskKind
-	RunFunc   func(context.Context, *Session, *turn.TurnContext, []TurnInput) (Result, error)
-	AbortFunc func(context.Context, *Session, *turn.TurnContext) error
-}
-
-func (value FuncTask) Kind() TaskKind {
-	return value.TaskKind
-}
-
-func (value FuncTask) Run(ctx context.Context, session *Session, turnContext *turn.TurnContext, inputs []TurnInput) (Result, error) {
-	if value.RunFunc == nil {
-		return Result{}, errors.New("session task run function is nil")
-	}
-	return value.RunFunc(ctx, session, turnContext, inputs)
-}
-
-func (value FuncTask) Abort(ctx context.Context, session *Session, turnContext *turn.TurnContext) error {
-	if value.AbortFunc == nil {
-		return nil
-	}
-	return value.AbortFunc(ctx, session, turnContext)
+type compactTask struct {
+	runtime *SessionServices
+	events  protocol.EventSink
 }

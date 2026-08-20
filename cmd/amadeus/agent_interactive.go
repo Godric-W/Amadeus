@@ -38,7 +38,7 @@ func (runner *agentController) runFullscreenInteractive(ctx context.Context, inv
 		return err
 	}
 	interactive, err := application.NewInteractiveApplication(ctx, application.InteractiveOptions{
-		Workspace: workspace, Configuration: sessionConfiguration(configured, invocation),
+		Workspace: workspace, Configuration: runner.sessionConfiguration(configured, invocation),
 		Project: invocation.Project.Path(), Provider: configured.ModelProvider, Model: configured.Model,
 		ContextWindow: configured.ModelContextWindow, MaxTaskBytes: maxRootTaskBytes,
 	})

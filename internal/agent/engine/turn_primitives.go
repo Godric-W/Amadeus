@@ -13,14 +13,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
-type RunResult struct {
-	Usage         llm.Usage
-	ToolCallCount int
-	Summary       string
-	Outcome       protocol.TurnOutcome
-	Reason        string
-}
-
 type TurnBudget struct {
 	MaxSamples   int
 	MaxToolCalls int

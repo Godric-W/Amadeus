@@ -8,17 +8,20 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 )
 
+type panicSessionTask struct{}
+
+func (panicSessionTask) Run(context.Context, *Session, *turn.TurnContext, []TurnInput) (Result, error) {
+	panic("boom")
+}
+
+func (panicSessionTask) Abort(context.Context, *Session, *turn.TurnContext) error { return nil }
+
 func TestRunningTaskReportsPanicAsCompletion(t *testing.T) {
 	turnContext := &turn.TurnContext{
 		ThreadID: "thread-1", TurnID: "turn-1", Provider: "openai", Model: "gpt-test", CWD: "/workspace",
 		Mode: turn.ModeKindDefault,
 	}
-	running, err := NewRunningTask(context.Background(), &Session{}, FuncTask{
-		TaskKind: TaskKindRegular,
-		RunFunc: func(context.Context, *Session, *turn.TurnContext, []TurnInput) (Result, error) {
-			panic("boom")
-		},
-	}, turnContext, nil)
+	running, err := NewRunningTask(context.Background(), &Session{}, panicSessionTask{}, turnContext, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

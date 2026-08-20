@@ -8,10 +8,10 @@ import (
 )
 
 func newTestSession(history []rollout.Line, manager *agentcontext.Manager) *Session {
+	_ = history
 	return &Session{
 		threadID: "test-thread",
 		state: SessionState{
-			History: history,
 			Context: manager,
 			Mode:    ModeState{Mode: "default"},
 		},

@@ -6,7 +6,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/app"
@@ -64,38 +63,21 @@ func (runner *agentController) ensureWorkspace(ctx context.Context, invocation a
 	if lifecycleCtx == nil {
 		lifecycleCtx = ctx
 	}
-	newBuilder := func() (*agentsession.ServicesBuilder, error) {
-		auditFactory := runner.runtime.auditSinkFactory
-		if auditFactory == nil {
-			auditFactory = defaultAuditSinkFactory(runner.runtime.lookupEnv, os.UserHomeDir)
+	auditFactory := runner.runtime.auditSinkFactory
+	if auditFactory == nil {
+		auditFactory = defaultAuditSinkFactory(runner.runtime.lookupEnv, os.UserHomeDir)
+	}
+	adapters := agentsession.ServiceAdapters{
+		MCPClientFactory: runner.runtime.mcpClientFactory, WebFetcher: runner.runtime.webFetcher,
+		WebSearch: runner.runtime.webSearch, AuditFactory: agentsession.AuditFactory(auditFactory), ModelMessages: modelMessages,
+	}
+	if runner.runtime.llmClientFactory != nil {
+		adapters.ClientFactory = func(providerName, model string, providerConfig config.ModelProviderInfo) (llm.Client, error) {
+			return runner.runtime.llmClientFactory(providerName, model, providerConfig)
 		}
-		options := agentsession.ServicesOptions{
-			Config: configured, Project: invocation.Project, WorkspaceRoots: append([]string(nil), invocation.WorkspaceRoots...),
-			AmadeusRoot: runner.runtime.amadeusRoot, MCPClientFactory: runner.runtime.mcpClientFactory,
-			WebFetcher: runner.runtime.webFetcher, WebSearch: runner.runtime.webSearch,
-			AuditFactory: agentsession.AuditFactory(auditFactory), ModelMessages: modelMessages, Clock: clock,
-		}
-		if runner.runtime.llmClientFactory != nil {
-			options.ClientFactory = func(providerName, model string, providerConfig config.ModelProviderInfo) (llm.Client, error) {
-				return runner.runtime.llmClientFactory(providerName, model, providerConfig)
-			}
-		}
-		return agentsession.NewServicesBuilder(options)
 	}
 	manager, err := threadmanager.New(lifecycleCtx, store, threadmanager.SharedServices{
-		Clock: clock, NextID: idFactory,
-		NewSessionSetup: func(id protocol.ThreadID) (agentsession.SessionSetup, error) {
-			builder, err := newBuilder()
-			if err != nil {
-				return agentsession.SessionSetup{}, err
-			}
-			return agentsession.SessionSetup{
-				TaskConstructors: agentsession.TaskConstructors{
-					Regular: builder.NewRegularTask, Compact: builder.NewCompactTask, Close: builder.Close,
-				},
-				BuildServices: builder.BuildServices,
-			}, nil
-		},
+		Clock: clock, NextID: idFactory, SessionAdapters: adapters,
 	})
 	if err != nil {
 		_ = store.Close()
@@ -119,13 +101,13 @@ func (runner *agentController) currentWorkspace() *app.ThreadWorkspace {
 	return runner.workspace
 }
 
-func sessionConfiguration(configured config.Config, invocation agentInvocation) agentsession.Configuration {
+func (runner *agentController) sessionConfiguration(configured config.Config, invocation agentInvocation) agentsession.Configuration {
 	mode := turn.ModeKindDefault
 	if invocation.RunMode == "plan" {
 		mode = turn.ModeKindPlan
 	}
 	return agentsession.Configuration{
-		CWD: invocation.Project.Path(), Provider: configured.ModelProvider, Model: configured.Model,
-		Mode: mode,
+		Runtime: configured, CWD: invocation.Project.Path(), WorkspaceRoots: append([]string(nil), invocation.WorkspaceRoots...),
+		AmadeusRoot: runner.runtime.amadeusRoot, Mode: mode,
 	}
 }

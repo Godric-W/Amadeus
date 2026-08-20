@@ -1,4 +1,4 @@
-package engine
+package session
 
 import (
 	"context"
@@ -7,33 +7,28 @@ import (
 	"html"
 	"strings"
 
+	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
-	"github.com/Godric-W/Amadeus/internal/instruction"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/skill"
 )
 
-type InstructionScope interface {
-	StepInstructionScope
-	Initialize(context.Context, string) (instruction.ResolveRequest, error)
-}
-
-func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnContext *turn.TurnContext, scope InstructionScope, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error) error {
-	if runtime == nil || turnContext == nil || scope == nil || contextUpdate == nil || appendItems == nil {
+func (services *SessionServices) PrepareTurn(ctx context.Context, goal string, turnContext *turn.TurnContext, scope engine.InstructionScope, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error) error {
+	if services == nil || turnContext == nil || scope == nil || contextUpdate == nil || appendItems == nil {
 		return fmt.Errorf("turn context preparation is incomplete")
 	}
-	tools := runtime.AvailableTools()
+	tools := services.AvailableTools()
 	if turnContext.Mode == turn.ModeKindPlan {
-		tools = planModeTools(tools)
+		tools = engine.PlanModeTools(tools)
 	}
 	toolNames := make([]string, len(tools))
 	for index, spec := range tools {
 		toolNames[index] = spec.Name
 	}
-	modelMessages, err := runtime.ModelMessages(runtime.ModelInfo())
+	modelMessages, err := services.ModelMessages(services.ModelInfo())
 	if err != nil {
 		return err
 	}
@@ -63,9 +58,7 @@ func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnConte
 		if contextUpdate(key) == rendered {
 			return nil
 		}
-		item, err := rollout.NewEventMsgItem(protocol.ContextUpdateEvent{
-			Key: string(key), Content: rendered, Revision: fragment.Revision(),
-		})
+		item, err := rollout.NewEventMsgItem(protocol.ContextUpdateEvent{Key: string(key), Content: rendered, Revision: fragment.Revision()})
 		if err != nil {
 			return err
 		}
@@ -82,7 +75,7 @@ func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnConte
 	if err := setUpdate(agentcontext.UpdateEnvironment, fmt.Sprintf("<cwd>%s</cwd>\n<instruction_target>%s</instruction_target>", html.EscapeString(turnContext.CWD), html.EscapeString(request.TargetPath))); err != nil {
 		return err
 	}
-	effective := runtime.fileSystemPolicy.EffectiveProfile()
+	effective := services.fileSystem.EffectiveProfile()
 	permissionPayload := struct {
 		ReadHost       bool     `json:"read_host"`
 		WorkspaceRoots []string `json:"workspace_roots"`
@@ -93,7 +86,7 @@ func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnConte
 	}{
 		ReadHost: effective.ReadHost, WorkspaceRoots: effective.WorkspaceRoots,
 		TemporaryRoots: effective.TemporaryRoots, ReadOnlyRoots: effective.ReadOnlyRoots,
-		DeniedRoots: effective.DeniedRoots, ApprovalCount: runtime.permissions.GrantCount(),
+		DeniedRoots: effective.DeniedRoots, ApprovalCount: services.permissions.GrantCount(),
 	}
 	encodedPermission, err := json.Marshal(permissionPayload)
 	if err != nil {
@@ -103,31 +96,34 @@ func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnConte
 		return err
 	}
 	skillParts := make([]string, 0)
-	if runtime.extensionAssembly != nil {
-		injections, err := runtime.extensionAssembly.ResolveSkillInjections(goal)
-		if err != nil {
-			return err
+	if services.skills != nil {
+		documents, resolveErr := services.skills.ResolveExplicit(goal)
+		if resolveErr != nil {
+			return resolveErr
 		}
-		for _, injection := range injections {
+		for _, document := range documents {
 			encoded, encodeErr := json.Marshal(struct {
 				Type     string `json:"type"`
 				Name     string `json:"name"`
 				Path     string `json:"path"`
 				Revision string `json:"revision"`
-			}{Type: "amadeus.skill_injection.v2", Name: injection.Name, Path: injection.Path, Revision: injection.Revision})
+			}{Type: "amadeus.skill_injection.v2", Name: document.Name, Path: document.PathToSkillMD, Revision: document.Revision})
 			if encodeErr != nil {
 				return encodeErr
 			}
-			skillParts = append(skillParts, string(encoded)+"\n"+injection.Content)
+			skillParts = append(skillParts, string(encoded)+"\n"+strings.TrimSpace(document.Content))
 		}
+	}
+	if services.mcp != nil {
 		if err := setUpdate(agentcontext.UpdateMCP, "MCP tools are available only through their exposed Tool Specs and current bindings."); err != nil {
 			return err
 		}
 	} else if err := setUpdate(agentcontext.UpdateMCP, ""); err != nil {
 		return err
 	}
-	indexParts := make([]string, 0)
-	for _, entry := range runtime.SkillIndex() {
+	index := services.SkillIndex()
+	indexParts := make([]string, 0, len(index))
+	for _, entry := range index {
 		if entry.Enabled {
 			indexParts = append(indexParts, fmt.Sprintf("- `%s`: %s", entry.Name, entry.Description))
 		}
@@ -136,7 +132,7 @@ func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnConte
 		encoded, encodeErr := json.Marshal(struct {
 			Type   string                `json:"type"`
 			Skills []skill.SkillMetadata `json:"skills"`
-		}{Type: "amadeus.skill_index.v2", Skills: runtime.SkillIndex()})
+		}{Type: "amadeus.skill_index.v2", Skills: index})
 		if encodeErr != nil {
 			return encodeErr
 		}

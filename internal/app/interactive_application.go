@@ -267,11 +267,9 @@ func (application *InteractiveApplication) Status() StatusSnapshot {
 		Provider: application.provider, Model: application.model, Mode: active.Mode(), Phase: phase,
 		Usage: usage.Usage, ContextWindow: application.contextWindow, RolloutItems: active.RolloutItemCount(),
 	}
-	if capabilities, ok := active.CapabilityView(); ok {
-		result.PermissionGrantCount = capabilities.PermissionGrantCount()
-		result.SkillRevision = shortRevision(capabilities.SkillRevision())
-		result.MCPRevision = shortRevision(capabilities.MCPRevision())
-	}
+	result.PermissionGrantCount = active.PermissionGrantCount()
+	result.SkillRevision = shortRevision(active.SkillRevision())
+	result.MCPRevision = shortRevision(active.MCPRevision())
 	_ = generation
 	return result
 }
@@ -283,13 +281,7 @@ func (application *InteractiveApplication) LoadMCP(ctx context.Context, requestI
 		return
 	}
 	result := MCPInventoryLoaded{RequestID: requestID, Generation: generation, ThreadID: active.ID(), Detail: detail}
-	capabilities, ok := active.CapabilityView()
-	if !ok {
-		result.Error = errors.New("active thread capabilities are unavailable")
-		application.emit(result)
-		return
-	}
-	configured := capabilities.MCPConfiguration()
+	configured := active.MCPConfiguration()
 	servers := make([]string, 0, len(configured.Servers))
 	for server := range configured.Servers {
 		servers = append(servers, server)
@@ -302,14 +294,14 @@ func (application *InteractiveApplication) LoadMCP(ctx context.Context, requestI
 			result.Inventory.Servers = append(result.Inventory.Servers, status)
 			continue
 		}
-		catalog, listErr := capabilities.MCPTools(ctx, server)
+		catalog, listErr := active.MCPTools(ctx, server)
 		if listErr != nil {
 			status.Error = listErr.Error()
 		} else {
 			status.Tools = append(status.Tools, catalog.Tools...)
 		}
 		if detail == MCPDetailVerbose {
-			resources, resourceErr := capabilities.MCPResources(ctx, server)
+			resources, resourceErr := active.MCPResources(ctx, server)
 			if resourceErr != nil {
 				if status.Error == "" {
 					status.Error = resourceErr.Error()
@@ -343,12 +335,7 @@ func (application *InteractiveApplication) LoadSkills() {
 		application.emit(SkillsLoaded{Error: err})
 		return
 	}
-	capabilities, ok := active.CapabilityView()
-	if !ok {
-		application.emit(SkillsLoaded{Generation: generation, Error: errors.New("active thread capabilities are unavailable")})
-		return
-	}
-	metadata := capabilities.Skills()
+	metadata := active.Skills()
 	values := make([]SkillOption, 0, len(metadata))
 	for _, value := range metadata {
 		values = append(values, SkillOption{
@@ -365,13 +352,8 @@ func (application *InteractiveApplication) SetSkillEnabled(path string, enabled 
 		application.emit(SkillEnabledSet{Generation: generation, Path: path, Enabled: enabled, Error: err})
 		return
 	}
-	capabilities, ok := active.CapabilityView()
-	if !ok {
-		application.emit(SkillEnabledSet{Generation: generation, Path: path, Enabled: enabled, Error: errors.New("active thread capabilities are unavailable")})
-		return
-	}
 	name := ""
-	for _, value := range capabilities.Skills() {
+	for _, value := range active.Skills() {
 		if value.PathToSkillMD == path {
 			name = value.Name
 			break
@@ -381,7 +363,7 @@ func (application *InteractiveApplication) SetSkillEnabled(path string, enabled 
 		application.emit(SkillEnabledSet{Generation: generation, Path: path, Enabled: enabled, Error: fmt.Errorf("skill path %q is unavailable", path)})
 		return
 	}
-	err = capabilities.SetSkillEnabled(name, enabled)
+	err = active.SetSkillEnabled(name, enabled)
 	application.emit(SkillEnabledSet{Generation: generation, Path: path, Enabled: enabled, Error: err})
 }
 

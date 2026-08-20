@@ -6,14 +6,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
-	"github.com/Godric-W/Amadeus/internal/mcp"
 	"github.com/Godric-W/Amadeus/internal/rollout"
-	"github.com/Godric-W/Amadeus/internal/skill"
 	"github.com/Godric-W/Amadeus/internal/thread"
 )
 
@@ -136,32 +133,6 @@ func (session *Session) RolloutItemCount() int {
 		return 0
 	}
 	return session.state.Context.RolloutItemCount()
-}
-
-type CapabilityView interface {
-	PermissionGrantCount() int
-	SkillRevision() string
-	MCPRevision() string
-	Skills() []skill.SkillMetadata
-	SetSkillEnabled(string, bool) error
-	MCPConfiguration() mcp.Config
-	MCPTools(context.Context, string) (mcp.ToolCatalog, error)
-	MCPResources(context.Context, string) (mcp.ResourceCatalog, error)
-}
-
-func (session *Session) CapabilityView() (CapabilityView, bool) {
-	services := session.AgentServices()
-	if services == nil {
-		return nil, false
-	}
-	return services, true
-}
-
-func (session *Session) AgentServices() *engine.Services {
-	if session == nil {
-		return nil
-	}
-	return session.services.AgentServices
 }
 
 func (session *Session) Rename(ctx context.Context, title string, at time.Time) error {
