@@ -16,7 +16,7 @@ func TestToolHistoryRoutesCanonicalToolNames(t *testing.T) {
 	read := toolStartedMessage("read", "read", "read", "Read internal/a.go", "")
 	grep := toolStartedMessage("grep", "grep", "read", "Search Approval in internal", "")
 	glob := toolStartedMessage("glob", "glob", "read", "Find **/*.go", "")
-	for _, started := range []protocol.ItemStarted{read, grep, glob} {
+	for _, started := range []protocol.ItemStartedEvent{read, grep, glob} {
 		cell.Apply(started)
 		cell.Apply(toolCompletedMessage(started, protocol.ItemStatusCompleted, "", "0s", false))
 	}
@@ -51,7 +51,7 @@ func TestFileChangeCellRendersStructuredPreview(t *testing.T) {
 			},
 		},
 	}
-	cell.Apply(protocol.ItemCompleted{Item: completed})
+	cell.Apply(protocol.ItemCompletedEvent{Item: completed})
 
 	rendered := xansi.Strip(renderHistoryCellForTest(cell, noColorRenderContext()))
 	if !strings.Contains(rendered, "Created internal/new.go") || !strings.Contains(rendered, "+8 -0 lines") {

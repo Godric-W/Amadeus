@@ -15,9 +15,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/mcp"
 	"github.com/Godric-W/Amadeus/internal/policy"
-	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/state"
-	"github.com/Godric-W/Amadeus/internal/thread"
 	threadmanager "github.com/Godric-W/Amadeus/internal/thread/manager"
 )
 
@@ -47,7 +45,7 @@ type InteractiveApplication struct {
 	attachmentCancel context.CancelFunc
 	phase            string
 	title            string
-	usage            protocol.ThreadTokenUsageUpdated
+	usage            protocol.TokenCountEvent
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -135,7 +133,7 @@ func (application *InteractiveApplication) ResolveApproval(ctx context.Context, 
 		return err
 	}
 	return active.Submit(ctx, protocol.ApprovalDecisionOp{
-		RequestID: requestID, OptionID: decision.OptionID, Outcome: string(decision.Outcome),
+		RequestID: protocol.RequestID(requestID), OptionID: decision.OptionID, Outcome: string(decision.Outcome),
 		Scope: string(decision.Scope), Source: string(decision.Source), Reason: decision.Reason,
 	})
 }
@@ -150,10 +148,10 @@ func (application *InteractiveApplication) LoadSessions(ctx context.Context) {
 	application.emit(SessionsLoaded{Sessions: options, Error: err})
 }
 
-func (application *InteractiveApplication) Resume(ctx context.Context, id rollout.ThreadID) {
+func (application *InteractiveApplication) Resume(ctx context.Context, id protocol.ThreadID) {
 	application.operationMu.Lock()
 	defer application.operationMu.Unlock()
-	prepared, err := application.workspace.PrepareResume(ctx, thread.ID(id), application.configuration)
+	prepared, err := application.workspace.PrepareResume(ctx, protocol.ThreadID(id), application.configuration)
 	if err != nil {
 		application.emit(ThreadAttachFailed{Error: err})
 		return
@@ -423,7 +421,7 @@ func (application *InteractiveApplication) snapshot(ctx context.Context, active 
 	}, nil
 }
 
-func (application *InteractiveApplication) metadata(ctx context.Context, id thread.ID) (state.StoredThread, error) {
+func (application *InteractiveApplication) metadata(ctx context.Context, id protocol.ThreadID) (state.StoredThread, error) {
 	values, err := application.workspace.List(ctx, state.ListQuery{CWD: application.project, IncludeArchived: true})
 	if err != nil {
 		return state.StoredThread{}, err
@@ -454,7 +452,7 @@ func (application *InteractiveApplication) installAttachment(active *threadmanag
 	application.attachmentCancel = cancel
 	application.title = snapshot.Title
 	application.phase = "idle"
-	application.usage = protocol.ThreadTokenUsageUpdated{Usage: snapshot.Usage, ContextWindow: snapshot.ContextWindow}
+	application.usage = protocol.TokenCountEvent{Usage: snapshot.Usage, ContextWindow: snapshot.ContextWindow}
 	application.mu.Unlock()
 	go application.pumpAttachment(ctx, active, snapshot.Generation)
 }
@@ -481,10 +479,8 @@ func (application *InteractiveApplication) stopAttachment() {
 func (application *InteractiveApplication) pumpAttachment(ctx context.Context, active *threadmanager.AmadeusThread, generation uint64) {
 	io := active.Io()
 	events := io.Events
-	requests := io.Requests
-	statuses := io.Status
 	terminated := io.Terminated
-	for events != nil || requests != nil || statuses != nil || terminated != nil {
+	for events != nil || terminated != nil {
 		select {
 		case <-ctx.Done():
 			return
@@ -495,27 +491,14 @@ func (application *InteractiveApplication) pumpAttachment(ctx context.Context, a
 			}
 			application.observeSessionEvent(generation, event)
 			application.emit(SessionEventObserved{Generation: generation, Event: event})
-		case request, ok := <-requests:
-			if !ok {
-				requests = nil
-				continue
+			if request, ok := event.Msg.(protocol.ApprovalRequestEvent); ok {
+				var approval policy.ApprovalRequest
+				if err := json.Unmarshal(request.Approval.Raw, &approval); err != nil {
+					application.emit(ApplicationError{Operation: "decode approval request", Error: err})
+					continue
+				}
+				application.emit(ApprovalRequested{Generation: generation, RequestID: string(request.RequestID), Request: approval})
 			}
-			if request.Kind != protocol.RequestApproval || request.Approval == nil || len(request.Approval.Raw) == 0 {
-				application.emit(ApplicationError{Operation: "interactive request", Error: fmt.Errorf("unsupported interactive request %q", request.Kind)})
-				continue
-			}
-			var approval policy.ApprovalRequest
-			if err := json.Unmarshal(request.Approval.Raw, &approval); err != nil {
-				application.emit(ApplicationError{Operation: "decode approval request", Error: err})
-				continue
-			}
-			application.emit(ApprovalRequested{Generation: generation, RequestID: request.RequestID, Request: approval})
-		case status, ok := <-statuses:
-			if !ok {
-				statuses = nil
-				continue
-			}
-			application.emit(AgentStatusChanged{Generation: generation, Status: status})
 		case _, ok := <-terminated:
 			if !ok {
 				terminated = nil
@@ -524,26 +507,26 @@ func (application *InteractiveApplication) pumpAttachment(ctx context.Context, a
 	}
 }
 
-func (application *InteractiveApplication) observeSessionEvent(generation uint64, event protocol.SessionEvent) {
+func (application *InteractiveApplication) observeSessionEvent(generation uint64, event protocol.Event) {
 	application.mu.Lock()
 	defer application.mu.Unlock()
-	if application.generation != generation || application.active == nil || application.active.ID() != event.ThreadID {
+	if application.generation != generation || application.active == nil || protocol.ThreadID(application.active.ID()) != protocol.ThreadIDOf(event.Msg) {
 		return
 	}
-	switch message := event.Message.(type) {
-	case protocol.TurnStarted:
+	switch message := event.Msg.(type) {
+	case protocol.TurnStartedEvent:
 		if message.Kind == protocol.TaskKindCompact {
 			application.phase = "compacting"
 		} else {
 			application.phase = "working"
 		}
-	case protocol.TurnCompleted:
+	case protocol.TurnCompleteEvent:
 		application.phase = "completed"
-	case protocol.TurnAborted:
+	case protocol.TurnAbortedEvent:
 		application.phase = "aborted"
-	case protocol.TurnRejected:
+	case protocol.ErrorEvent:
 		application.phase = "idle"
-	case protocol.ThreadTokenUsageUpdated:
+	case protocol.TokenCountEvent:
 		application.usage = message
 	}
 }

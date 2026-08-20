@@ -6,12 +6,11 @@ import (
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/mcp"
 	"github.com/Godric-W/Amadeus/internal/policy"
-	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
 type ThreadViewSnapshot struct {
 	Generation    uint64
-	ThreadID      rollout.ThreadID
+	ThreadID      protocol.ThreadID
 	Title         string
 	Mode          turn.ModeKind
 	Items         []protocol.TurnItem
@@ -22,7 +21,7 @@ type ThreadViewSnapshot struct {
 }
 
 type SessionOption struct {
-	ID      rollout.ThreadID
+	ID      protocol.ThreadID
 	Title   string
 	Current bool
 }
@@ -64,7 +63,7 @@ type MCPInventory struct {
 }
 
 type StatusSnapshot struct {
-	ThreadID             rollout.ThreadID
+	ThreadID             protocol.ThreadID
 	Title                string
 	Project              string
 	Provider             string
@@ -83,7 +82,7 @@ type InteractiveEvent interface{ isInteractiveEvent() }
 
 type SessionEventObserved struct {
 	Generation uint64
-	Event      protocol.SessionEvent
+	Event      protocol.Event
 }
 
 func (SessionEventObserved) isInteractiveEvent() {}
@@ -95,13 +94,6 @@ type ApprovalRequested struct {
 }
 
 func (ApprovalRequested) isInteractiveEvent() {}
-
-type AgentStatusChanged struct {
-	Generation uint64
-	Status     protocol.AgentStatus
-}
-
-func (AgentStatusChanged) isInteractiveEvent() {}
 
 type ThreadAttached struct{ Snapshot ThreadViewSnapshot }
 
@@ -120,7 +112,7 @@ func (SessionsLoaded) isInteractiveEvent() {}
 
 type ThreadNameUpdated struct {
 	Generation uint64
-	ThreadID   rollout.ThreadID
+	ThreadID   protocol.ThreadID
 	Name       string
 }
 
@@ -130,7 +122,7 @@ type ThreadRenameFailed struct{ Error error }
 
 func (ThreadRenameFailed) isInteractiveEvent() {}
 
-type ThreadDeleted struct{ ThreadID rollout.ThreadID }
+type ThreadDeleted struct{ ThreadID protocol.ThreadID }
 
 func (ThreadDeleted) isInteractiveEvent() {}
 
@@ -145,7 +137,7 @@ func (ClearUIStarted) isInteractiveEvent() {}
 type MCPInventoryLoaded struct {
 	RequestID  uint64
 	Generation uint64
-	ThreadID   rollout.ThreadID
+	ThreadID   protocol.ThreadID
 	Detail     MCPDetail
 	Inventory  MCPInventory
 	Error      error

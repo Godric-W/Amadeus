@@ -154,12 +154,12 @@ type sampleStreamProjection struct {
 func (projection *sampleStreamProjection) observe(ctx context.Context, chunk llm.StreamChunk, firstChunk, retryAttempt bool) error {
 	if firstChunk && retryAttempt {
 		if projection.reasoningStarted {
-			if err := projection.events.Publish(ctx, protocol.SessionEvent{Message: protocol.ReasoningDelta{ItemID: projection.reasoningID, Reset: true}}); err != nil {
+			if err := projection.events.Publish(ctx, protocol.Event{Msg: protocol.ReasoningContentDeltaEvent{ItemID: protocol.ItemID(projection.reasoningID), Reset: true}}); err != nil {
 				return fmt.Errorf("reset model reasoning draft: %w", err)
 			}
 		}
 		if projection.assistantStarted {
-			if err := projection.events.Publish(ctx, protocol.SessionEvent{Message: protocol.AssistantMessageDelta{ItemID: projection.assistantID, Reset: true}}); err != nil {
+			if err := projection.events.Publish(ctx, protocol.Event{Msg: protocol.AgentMessageContentDeltaEvent{ItemID: protocol.ItemID(projection.assistantID), Reset: true}}); err != nil {
 				return fmt.Errorf("reset model text draft: %w", err)
 			}
 		}
@@ -171,7 +171,7 @@ func (projection *sampleStreamProjection) observe(ctx context.Context, chunk llm
 			}
 			projection.reasoningStarted = true
 		}
-		if err := projection.events.Publish(ctx, protocol.SessionEvent{Message: protocol.ReasoningDelta{ItemID: projection.reasoningID, Delta: chunk.ReasoningDelta}}); err != nil {
+		if err := projection.events.Publish(ctx, protocol.Event{Msg: protocol.ReasoningContentDeltaEvent{ItemID: protocol.ItemID(projection.reasoningID), Delta: chunk.ReasoningDelta}}); err != nil {
 			return fmt.Errorf("publish model reasoning delta: %w", err)
 		}
 	}
@@ -182,12 +182,12 @@ func (projection *sampleStreamProjection) observe(ctx context.Context, chunk llm
 			}
 			projection.assistantStarted = true
 		}
-		if err := projection.events.Publish(ctx, protocol.SessionEvent{Message: protocol.AssistantMessageDelta{ItemID: projection.assistantID, Delta: chunk.ContentDelta}}); err != nil {
+		if err := projection.events.Publish(ctx, protocol.Event{Msg: protocol.AgentMessageContentDeltaEvent{ItemID: protocol.ItemID(projection.assistantID), Delta: chunk.ContentDelta}}); err != nil {
 			return fmt.Errorf("publish model text delta: %w", err)
 		}
 	}
 	if chunk.Usage != nil {
-		if err := projection.events.Publish(ctx, protocol.SessionEvent{Message: protocol.ThreadTokenUsageUpdated{Usage: *chunk.Usage}}); err != nil {
+		if err := projection.events.Publish(ctx, protocol.Event{Msg: protocol.TokenCountEvent{Usage: *chunk.Usage}}); err != nil {
 			return fmt.Errorf("publish model usage: %w", err)
 		}
 	}
@@ -216,5 +216,5 @@ func classifySample(response llm.Response) (SampleResult, error) {
 
 func publishStreamItemStarted(ctx context.Context, events protocol.EventSink, id string, kind protocol.ItemKind) error {
 	now := time.Now().UTC()
-	return events.Publish(ctx, protocol.SessionEvent{Message: protocol.ItemStarted{Item: protocol.TurnItem{ID: id, Kind: kind, Status: protocol.ItemInProgress, CreatedAt: now}}})
+	return events.Publish(ctx, protocol.Event{Msg: protocol.ItemStartedEvent{Item: protocol.TurnItem{ID: protocol.ItemID(id), Kind: kind, Status: protocol.ItemInProgress, CreatedAt: now}}})
 }

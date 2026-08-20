@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/instruction"
 	"github.com/Godric-W/Amadeus/internal/llm"
@@ -22,7 +22,7 @@ type instructionScopeHost struct {
 	lines   []rollout.Line
 }
 
-func (host *instructionScopeHost) AppendItems(_ context.Context, turnID turn.ID, items ...rollout.Item) error {
+func (host *instructionScopeHost) AppendItems(_ context.Context, turnID protocol.TurnID, items ...rollout.Item) error {
 	for _, item := range items {
 		host.lines = append(host.lines, rollout.Line{Sequence: uint64(len(host.lines) + 1), TurnID: turnID, Item: item})
 	}

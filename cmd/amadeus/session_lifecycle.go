@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/app"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/state"
-	"github.com/Godric-W/Amadeus/internal/thread"
 	threadmanager "github.com/Godric-W/Amadeus/internal/thread/manager"
 )
 
@@ -118,7 +118,7 @@ func (runner *agentController) renameCurrent(ctx context.Context, title string) 
 	return title, nil
 }
 
-func (runner *agentController) deleteCurrent(ctx context.Context) (thread.ID, error) {
+func (runner *agentController) deleteCurrent(ctx context.Context) (protocol.ThreadID, error) {
 	workspace := runner.currentWorkspace()
 	if workspace == nil {
 		return "", nil
@@ -170,7 +170,7 @@ func (runner *agentController) selectSession(ctx context.Context, invocation age
 		fmt.Fprintln(invocation.ErrorOutput, "session: selection cancelled")
 		return nil
 	}
-	selected := thread.ID(value)
+	selected := protocol.ThreadID(value)
 	if index, parseErr := strconv.Atoi(value); parseErr == nil {
 		if index < 1 || index > len(threads) {
 			return fmt.Errorf("session selection %d is out of range", index)

@@ -12,7 +12,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
-	"github.com/Godric-W/Amadeus/internal/thread"
 	"github.com/spf13/cobra"
 )
 
@@ -32,7 +31,7 @@ type agentInvocation struct {
 	Task           string
 	RunMode        turn.ModeKind
 	SessionMode    sessionStartMode
-	SessionID      thread.ID
+	SessionID      protocol.ThreadID
 	Interactive    bool
 	EventSink      protocol.EventSink
 	Approvals      policy.ApprovalPort

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/state"
 	statesqlite "github.com/Godric-W/Amadeus/internal/state/sqlite"
@@ -201,7 +202,7 @@ type orderedRecorder struct {
 	flushError  error
 }
 
-func (recorder orderedRecorder) Append(ctx context.Context, turnID rollout.TurnID, items ...rollout.Item) ([]rollout.Line, error) {
+func (recorder orderedRecorder) Append(ctx context.Context, turnID protocol.TurnID, items ...rollout.Item) ([]rollout.Line, error) {
 	*recorder.calls = append(*recorder.calls, "append")
 	if recorder.appendError != nil {
 		return nil, recorder.appendError

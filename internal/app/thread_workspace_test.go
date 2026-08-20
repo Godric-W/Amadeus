@@ -118,11 +118,11 @@ func waitForWorkspaceTerminal(t *testing.T, value interface{ Io() agentsession.S
 	for {
 		select {
 		case event := <-value.Io().Events:
-			switch event.Message.(type) {
-			case protocol.TurnCompleted, protocol.TurnAborted:
+			switch event.Msg.(type) {
+			case protocol.TurnCompleteEvent, protocol.TurnAbortedEvent:
 				return
-			case protocol.StreamError:
-				t.Fatalf("stream error: %#v", event.Message)
+			case protocol.StreamErrorEvent:
+				t.Fatalf("stream error: %#v", event.Msg)
 			}
 		case <-timeout:
 			t.Fatal("timed out waiting for terminal")

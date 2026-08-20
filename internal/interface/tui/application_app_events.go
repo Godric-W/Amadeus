@@ -14,7 +14,7 @@ import (
 func (model *fullscreenModel) handleAppEvent(event application.InteractiveEvent) tea.Cmd {
 	switch event := event.(type) {
 	case application.SessionEventObserved:
-		if event.Generation != model.generation || event.Event.ThreadID != applicationThreadID(model.startup.Session) {
+		if event.Generation != model.generation || protocol.ThreadIDOf(event.Event.Msg) != protocol.ThreadID(applicationThreadID(model.startup.Session)) {
 			return nil
 		}
 		return model.applyEvent(event.Event)
@@ -29,14 +29,6 @@ func (model *fullscreenModel) handleAppEvent(event application.InteractiveEvent)
 		}
 		model.status = "awaiting approval"
 		model.input.Blur()
-	case application.AgentStatusChanged:
-		if event.Generation != model.generation || event.Status.ThreadID != applicationThreadID(model.startup.Session) {
-			return nil
-		}
-		model.running = event.Status.Working
-		if !event.Status.Working && model.status != "completed" && model.status != "aborted" {
-			model.status = "idle"
-		}
 	case application.ThreadAttached:
 		return model.attachSnapshot(event.Snapshot)
 	case application.ThreadAttachFailed:
@@ -158,7 +150,7 @@ func (model *fullscreenModel) attachSnapshot(snapshot application.ThreadViewSnap
 	model.outputUsage = snapshot.Usage.OutputTokens
 	model.contextUsage = snapshot.Usage.TotalTokens
 	model.contextLimit = snapshot.ContextWindow
-	model.runtimeTranscript = protocol.NewTranscriptState(snapshot.ThreadID)
+	model.runtimeTranscript = protocol.NewTranscriptState(protocol.ThreadID(snapshot.ThreadID))
 	model.restoreCompletedItems(snapshot.Items)
 	model.pendingHistoryCells = append([]HistoryCell(nil), model.historyCells...)
 	model.hasEmittedHistoryLines = false

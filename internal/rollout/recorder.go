@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/Godric-W/Amadeus/internal/agent/protocol/identity"
 )
 
 type Clock func() time.Time
@@ -18,13 +20,13 @@ type Recorder struct {
 	mu       sync.Mutex
 	file     *os.File
 	path     string
-	threadID ThreadID
+	threadID identity.ThreadID
 	next     uint64
 	clock    Clock
 	closed   bool
 }
 
-func Create(path string, threadID ThreadID, clock Clock) (*Recorder, error) {
+func Create(path string, threadID identity.ThreadID, clock Clock) (*Recorder, error) {
 	if err := validateID("thread", string(threadID)); err != nil {
 		return nil, err
 	}
@@ -41,7 +43,7 @@ func Create(path string, threadID ThreadID, clock Clock) (*Recorder, error) {
 	return &Recorder{file: file, path: path, threadID: threadID, next: 1, clock: clock}, nil
 }
 
-func Open(path string, threadID ThreadID, clock Clock) (*Recorder, []Line, error) {
+func Open(path string, threadID identity.ThreadID, clock Clock) (*Recorder, []Line, error) {
 	if err := validateID("thread", string(threadID)); err != nil {
 		return nil, nil, err
 	}
@@ -98,7 +100,7 @@ func Open(path string, threadID ThreadID, clock Clock) (*Recorder, []Line, error
 	return &Recorder{file: file, path: path, threadID: threadID, next: uint64(len(lines)) + 1, clock: clock}, lines, nil
 }
 
-func Read(path string, threadID ThreadID) ([]Line, error) {
+func Read(path string, threadID identity.ThreadID) ([]Line, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open rollout: %w", err)
@@ -108,7 +110,7 @@ func Read(path string, threadID ThreadID) ([]Line, error) {
 	return lines, err
 }
 
-func (recorder *Recorder) Append(ctx context.Context, turnID TurnID, items ...Item) ([]Line, error) {
+func (recorder *Recorder) Append(ctx context.Context, items ...RolloutItem) ([]Line, error) {
 	if recorder == nil {
 		return nil, errors.New("rollout recorder is nil")
 	}
@@ -128,7 +130,7 @@ func (recorder *Recorder) Append(ctx context.Context, turnID TurnID, items ...It
 	for index, item := range items {
 		line := Line{
 			Version: CurrentVersion, Sequence: recorder.next + uint64(index), Timestamp: recorder.clock().UTC(),
-			ThreadID: recorder.threadID, TurnID: turnID, Item: item,
+			Item: item,
 		}
 		if err := line.Validate(recorder.threadID, line.Sequence); err != nil {
 			return nil, err
@@ -207,7 +209,7 @@ func (recorder *Recorder) Path() string {
 	return recorder.path
 }
 
-func readLines(file *os.File, threadID ThreadID) ([]Line, int64, error) {
+func readLines(file *os.File, threadID identity.ThreadID) ([]Line, int64, error) {
 	if _, err := file.Seek(0, 0); err != nil {
 		return nil, 0, fmt.Errorf("seek rollout start: %w", err)
 	}

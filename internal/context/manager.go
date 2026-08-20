@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
@@ -95,11 +96,12 @@ func (manager *Manager) Rebuild(lines []rollout.Line) error {
 	var providerUsage llm.Usage
 	hasUsage := false
 	for _, line := range lines {
-		if line.Item.Kind == rollout.KindContextUpdate {
-			var update rollout.ContextUpdate
-			if err := json.Unmarshal(line.Item.Payload, &update); err != nil {
-				return err
-			}
+		event, ok := line.Item.(rollout.EventMsgItem)
+		if !ok {
+			continue
+		}
+		switch update := event.Msg.(type) {
+		case protocol.ContextUpdateEvent:
 			key := UpdateKey(strings.TrimSpace(update.Key))
 			if validUpdateKey(key) {
 				content := strings.TrimSpace(update.Content)
@@ -109,20 +111,10 @@ func (manager *Manager) Rebuild(lines []rollout.Line) error {
 					updates[key] = contextUpdateState{Content: content, Revision: strings.TrimSpace(update.Revision)}
 				}
 			}
+		case protocol.TokenCountEvent:
+			providerUsage = addUsage(providerUsage, update.Usage)
+			hasUsage = true
 		}
-		if line.Item.Kind != rollout.KindTokenUsage {
-			continue
-		}
-		usage, decodeErr := rollout.DecodePayload[rollout.TokenUsage](line.Item)
-		if decodeErr != nil {
-			return decodeErr
-		}
-		providerUsage = addUsage(providerUsage, llm.Usage{
-			InputTokens: usage.InputTokens, CachedInputTokens: usage.CachedInputTokens,
-			OutputTokens: usage.OutputTokens, ReasoningTokens: usage.ReasoningTokens,
-			TotalTokens: usage.TotalTokens,
-		})
-		hasUsage = true
 	}
 	manager.mu.Lock()
 	manager.items = cloneResponseItems(projection.Messages)

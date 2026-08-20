@@ -13,13 +13,13 @@ import (
 	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
-func sessionMessage(message protocol.EventMessage) protocol.SessionEvent {
-	return protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: message}
+func sessionMessage(message protocol.EventMsg) protocol.Event {
+	return protocol.Event{ID: "submission-1", Msg: protocol.ScopeEventMsg(message, "thread-1", "turn-1")}
 }
 
 func toolItem(id, name string, status protocol.ItemStatus, text string) protocol.TurnItem {
 	now := time.Now().UTC()
-	item := protocol.TurnItem{ID: id, Kind: protocol.ItemToolCall, Status: status, CreatedAt: now, ToolName: name, CallID: id, Text: text}
+	item := protocol.TurnItem{ID: protocol.ItemID(id), Kind: protocol.ItemToolCall, Status: status, CreatedAt: now, ToolName: name, CallID: id, Text: text}
 	if status != protocol.ItemInProgress {
 		item.CompletedAt = now
 	}
@@ -42,17 +42,17 @@ func TestAgentRendererRendersCompleteAgentEventSequence(t *testing.T) {
 	completedAssistant := assistant
 	completedAssistant.Status = protocol.ItemStatusCompleted
 	completedAssistant.CompletedAt = time.Now().UTC()
-	events := []protocol.SessionEvent{
-		sessionMessage(protocol.TurnStarted{StartedAt: time.Now().UTC(), Input: "test"}),
-		sessionMessage(protocol.ItemStarted{Item: assistant}),
-		sessionMessage(protocol.AssistantMessageDelta{ItemID: "assistant-1", Delta: "working"}),
-		sessionMessage(protocol.ItemCompleted{Item: completedAssistant}),
-		sessionMessage(protocol.ItemStarted{Item: started}),
-		sessionMessage(protocol.ItemCompleted{Item: completed}),
-		sessionMessage(protocol.ThreadTokenUsageUpdated{Usage: llm.Usage{InputTokens: 10, CachedInputTokens: 2, OutputTokens: 4, ReasoningTokens: 1, TotalTokens: 14}}),
-		sessionMessage(protocol.Warning{Message: "output was truncated"}),
-		sessionMessage(protocol.StreamError{Message: "provider\nfailed"}),
-		sessionMessage(protocol.TurnAborted{Reason: "user interrupted", FinishedAt: time.Now().UTC()}),
+	events := []protocol.Event{
+		sessionMessage(protocol.TurnStartedEvent{StartedAt: time.Now().UTC(), Input: "test"}),
+		sessionMessage(protocol.ItemStartedEvent{Item: assistant}),
+		sessionMessage(protocol.AgentMessageContentDeltaEvent{ItemID: "assistant-1", Delta: "working"}),
+		sessionMessage(protocol.ItemCompletedEvent{Item: completedAssistant}),
+		sessionMessage(protocol.ItemStartedEvent{Item: started}),
+		sessionMessage(protocol.ItemCompletedEvent{Item: completed}),
+		sessionMessage(protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 10, CachedInputTokens: 2, OutputTokens: 4, ReasoningTokens: 1, TotalTokens: 14}}),
+		sessionMessage(protocol.WarningEvent{Message: "output was truncated"}),
+		sessionMessage(protocol.StreamErrorEvent{Message: "provider\nfailed"}),
+		sessionMessage(protocol.TurnAbortedEvent{Reason: "user interrupted", FinishedAt: time.Now().UTC()}),
 	}
 	for _, runtimeEvent := range events {
 		if err := renderer.Publish(context.Background(), runtimeEvent); err != nil {
@@ -86,9 +86,9 @@ func TestAgentRendererRendersSuccessPartialAndFallbacks(t *testing.T) {
 	}
 	item := toolItem("call", "execute_command", protocol.ItemFailed, "exit 1")
 	item.Payload = map[string]any{"partial": true}
-	for _, runtimeEvent := range []protocol.SessionEvent{
-		sessionMessage(protocol.ItemCompleted{Item: item}),
-		sessionMessage(protocol.StreamError{}),
+	for _, runtimeEvent := range []protocol.Event{
+		sessionMessage(protocol.ItemCompletedEvent{Item: item}),
+		sessionMessage(protocol.StreamErrorEvent{}),
 	} {
 		if err := renderer.Publish(context.Background(), runtimeEvent); err != nil {
 			t.Fatalf("render: %v", err)
@@ -106,7 +106,7 @@ func TestAgentRendererKeepsDiffStateOutOfPlainTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := renderer.Publish(context.Background(), sessionMessage(protocol.Warning{Message: "diff is shown during approval"})); err != nil {
+	if err := renderer.Publish(context.Background(), sessionMessage(protocol.WarningEvent{Message: "diff is shown during approval"})); err != nil {
 		t.Fatal(err)
 	}
 	if stdout.Len() != 0 || stderr.Len() == 0 {
@@ -121,7 +121,7 @@ func TestAgentRendererSanitizesAndBoundsStatusText(t *testing.T) {
 		t.Fatal(err)
 	}
 	message := "line one\n\x1b[31mline two " + strings.Repeat("x", maxAgentEventTextRunes+100)
-	if err := renderer.Publish(context.Background(), sessionMessage(protocol.Warning{Message: message})); err != nil {
+	if err := renderer.Publish(context.Background(), sessionMessage(protocol.WarningEvent{Message: message})); err != nil {
 		t.Fatal(err)
 	}
 	output := stderr.String()
@@ -136,18 +136,18 @@ func TestAgentRendererPropagatesWriterErrorsAndContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := renderer.Publish(context.Background(), sessionMessage(protocol.Warning{Message: "warning"})); !errors.Is(err, expected) {
+	if err := renderer.Publish(context.Background(), sessionMessage(protocol.WarningEvent{Message: "warning"})); !errors.Is(err, expected) {
 		t.Fatalf("unexpected writer error: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := renderer.Publish(ctx, sessionMessage(protocol.Warning{Message: "ignored"})); !errors.Is(err, context.Canceled) {
+	if err := renderer.Publish(ctx, sessionMessage(protocol.WarningEvent{Message: "ignored"})); !errors.Is(err, context.Canceled) {
 		t.Fatalf("unexpected cancelled error: %v", err)
 	}
-	if err := renderer.Publish(nil, sessionMessage(protocol.Warning{Message: "ignored"})); err == nil {
+	if err := renderer.Publish(nil, sessionMessage(protocol.WarningEvent{Message: "ignored"})); err == nil {
 		t.Fatal("expected nil context error")
 	}
-	if err := renderer.Publish(context.Background(), protocol.SessionEvent{}); err == nil {
+	if err := renderer.Publish(context.Background(), protocol.Event{}); err == nil {
 		t.Fatal("expected invalid event error")
 	}
 }

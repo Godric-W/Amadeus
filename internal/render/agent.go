@@ -22,7 +22,7 @@ type AgentRenderer struct {
 	stdout    io.Writer
 	stderr    io.Writer
 	mutex     sync.Mutex
-	openTurns map[string]bool
+	openTurns map[protocol.ItemID]bool
 }
 
 func NewAgentRenderer(stdout, stderr io.Writer) (*AgentRenderer, error) {
@@ -32,10 +32,10 @@ func NewAgentRenderer(stdout, stderr io.Writer) (*AgentRenderer, error) {
 	if stderr == nil {
 		return nil, errors.New("Agent renderer stderr is nil")
 	}
-	return &AgentRenderer{stdout: stdout, stderr: stderr, openTurns: make(map[string]bool)}, nil
+	return &AgentRenderer{stdout: stdout, stderr: stderr, openTurns: make(map[protocol.ItemID]bool)}, nil
 }
 
-func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent protocol.SessionEvent) error {
+func (renderer *AgentRenderer) Publish(ctx context.Context, event protocol.Event) error {
 	if renderer == nil {
 		return errors.New("Agent renderer is nil")
 	}
@@ -45,21 +45,21 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent protoco
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := runtimeEvent.Validate(); err != nil {
+	if err := event.Validate(); err != nil {
 		return err
 	}
 
 	renderer.mutex.Lock()
 	defer renderer.mutex.Unlock()
-	switch typed := runtimeEvent.Message.(type) {
-	case protocol.AssistantMessageDelta:
+	switch typed := event.Msg.(type) {
+	case protocol.AgentMessageContentDeltaEvent:
 		return renderer.writeText(typed)
-	case protocol.ItemStarted:
+	case protocol.ItemStartedEvent:
 		if typed.Item.Kind == protocol.ItemAssistantMessage || typed.Item.Kind == protocol.ItemReasoning || typed.Item.ToolName == "update_plan" {
 			return nil
 		}
 		return renderer.writeStatus("tool: %s (%s) started", typed.Item.ToolName, typed.Item.CallID)
-	case protocol.ItemCompleted:
+	case protocol.ItemCompletedEvent:
 		if typed.Item.Kind == protocol.ItemAssistantMessage {
 			return renderer.closeTurn(typed.Item.ID)
 		}
@@ -71,25 +71,25 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent protoco
 			status = "failed"
 		}
 		return renderer.writeStatus("tool: %s (%s) %s: %s", typed.Item.ToolName, typed.Item.CallID, status, typed.Item.Text)
-	case protocol.PlanUpdated:
+	case protocol.PlanUpdateEvent:
 		return renderer.writeStatus("plan: updated revision=%d items=%d", typed.Revision, len(typed.Items))
-	case protocol.ThreadTokenUsageUpdated:
+	case protocol.TokenCountEvent:
 		return renderer.writeStatus("usage: input=%d cached=%d output=%d reasoning=%d total=%d", typed.Usage.InputTokens, typed.Usage.CachedInputTokens, typed.Usage.OutputTokens, typed.Usage.ReasoningTokens, typed.Usage.TotalTokens)
-	case protocol.TurnStarted:
+	case protocol.TurnStartedEvent:
 		return renderer.writeStatus("turn: started")
-	case protocol.TurnCompleted:
+	case protocol.TurnCompleteEvent:
 		if typed.Summary != "" {
 			return renderer.writeStatus("%s", typed.Summary)
 		}
 		return renderer.writeStatus("turn: completed: %s", typed.Error)
-	case protocol.TurnAborted:
+	case protocol.TurnAbortedEvent:
 		if typed.Summary != "" {
 			return renderer.writeStatus("%s", typed.Summary)
 		}
 		return renderer.writeStatus("turn: aborted: %s", typed.Reason)
-	case protocol.Warning:
+	case protocol.WarningEvent:
 		return renderer.writeStatus("warning: %s", typed.Message)
-	case protocol.StreamError:
+	case protocol.StreamErrorEvent:
 		message := typed.Message
 		if strings.TrimSpace(message) == "" {
 			message = "request failed"
@@ -98,14 +98,14 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, runtimeEvent protoco
 			return renderer.writeStatus("%s", message)
 		}
 		return renderer.writeStatus("error: %s", message)
-	case protocol.ReasoningDelta, protocol.CommandOutputDelta, protocol.ContextCompacted:
+	case protocol.ReasoningContentDeltaEvent, protocol.CommandOutputDeltaEvent, protocol.ContextCompactedEvent:
 		return nil
 	default:
 		return nil
 	}
 }
 
-func (renderer *AgentRenderer) writeText(delta protocol.AssistantMessageDelta) error {
+func (renderer *AgentRenderer) writeText(delta protocol.AgentMessageContentDeltaEvent) error {
 	if delta.Delta == "" {
 		return nil
 	}
@@ -119,14 +119,14 @@ func (renderer *AgentRenderer) writeText(delta protocol.AssistantMessageDelta) e
 	return nil
 }
 
-func (renderer *AgentRenderer) closeTurn(turnID string) error {
-	if !renderer.openTurns[turnID] {
+func (renderer *AgentRenderer) closeTurn(itemID protocol.ItemID) error {
+	if !renderer.openTurns[itemID] {
 		return nil
 	}
 	if _, err := io.WriteString(renderer.stdout, "\n"); err != nil {
 		return fmt.Errorf("write Agent completion newline: %w", err)
 	}
-	delete(renderer.openTurns, turnID)
+	delete(renderer.openTurns, itemID)
 	return nil
 }
 

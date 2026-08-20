@@ -106,7 +106,7 @@ func (factory concurrentHistoryFactory) NewTask(_ context.Context, active *sessi
 
 func (concurrentHistoryFactory) Close() error { return nil }
 
-func (store terminalFailStore) AppendItems(ctx context.Context, id thread.ID, turnID thread.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
+func (store terminalFailStore) AppendItems(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
 	for _, item := range items {
 		if item.Kind == rollout.KindTurnCompleted || item.Kind == rollout.KindTurnAborted {
 			return thread.AppendResult{}, errors.New("terminal persistence failed")
@@ -119,7 +119,7 @@ func (store materializeFailStore) Materialize(context.Context, thread.CreateInpu
 	return thread.AppendResult{}, errors.New("materialize failed")
 }
 
-func (store turnStartFailStore) AppendItems(ctx context.Context, id thread.ID, turnID thread.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
+func (store turnStartFailStore) AppendItems(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
 	for _, item := range items {
 		if item.Kind == rollout.KindTurnContext || item.Kind == rollout.KindTurnStarted {
 			return thread.AppendResult{}, errors.New("turn start append failed")
@@ -295,10 +295,10 @@ func TestTerminalPersistenceFailureDoesNotPublishTerminalEvent(t *testing.T) {
 	}
 	var streamError bool
 	for event := range value.Io().Events {
-		switch event.Message.(type) {
-		case protocol.StreamError:
+		switch event.Msg.(type) {
+		case protocol.StreamErrorEvent:
 			streamError = true
-		case protocol.TurnCompleted, protocol.TurnAborted:
+		case protocol.TurnCompleteEvent, protocol.TurnAbortedEvent:
 			t.Fatal("terminal event was published without durable terminal rollout")
 		}
 	}
@@ -325,14 +325,14 @@ func TestTurnStartFailurePublishesRejectedWithoutBlockingSession(t *testing.T) {
 		for {
 			select {
 			case event := <-value.Io().Events:
-				if rejected, ok := event.Message.(protocol.TurnRejected); ok {
-					if rejected.Error != "materialize failed" {
+				if rejected, ok := event.Msg.(protocol.ErrorEvent); ok {
+					if rejected.Message != "materialize failed" {
 						t.Fatalf("rejected = %#v", rejected)
 					}
 					goto nextAttempt
 				}
 			case <-timeout:
-				t.Fatal("timed out waiting for TurnRejected")
+				t.Fatal("timed out waiting for ErrorEvent")
 			}
 		}
 	nextAttempt:
@@ -358,8 +358,8 @@ func TestSessionPublishesAndPersistsExactlyOneTerminal(t *testing.T) {
 			for terminalEvents == 0 {
 				select {
 				case event := <-value.Io().Events:
-					switch event.Message.(type) {
-					case protocol.TurnCompleted, protocol.TurnAborted:
+					switch event.Msg.(type) {
+					case protocol.TurnCompleteEvent, protocol.TurnAbortedEvent:
 						terminalEvents++
 					}
 				case <-timeout:
@@ -370,8 +370,8 @@ func TestSessionPublishesAndPersistsExactlyOneTerminal(t *testing.T) {
 				t.Fatal(err)
 			}
 			for event := range value.Io().Events {
-				switch event.Message.(type) {
-				case protocol.TurnCompleted, protocol.TurnAborted:
+				switch event.Msg.(type) {
+				case protocol.TurnCompleteEvent, protocol.TurnAbortedEvent:
 					terminalEvents++
 				}
 			}
@@ -413,8 +413,8 @@ func TestPreparedTaskAbortsWhenDurableTurnStartFails(t *testing.T) {
 	for {
 		select {
 		case event := <-value.Io().Events:
-			if rejected, ok := event.Message.(protocol.TurnRejected); ok {
-				if rejected.Error != "turn start append failed" {
+			if rejected, ok := event.Msg.(protocol.ErrorEvent); ok {
+				if rejected.Message != "turn start append failed" {
 					t.Fatalf("rejected = %#v", rejected)
 				}
 				if aborts.Load() != 1 {
@@ -511,7 +511,7 @@ func testConfiguration(t *testing.T) session.Configuration {
 	}
 }
 
-func testTurnContext(t *testing.T, threadID rollout.ThreadID, turnID rollout.TurnID) turn.TurnContext {
+func testTurnContext(t *testing.T, threadID protocol.ThreadID, turnID protocol.TurnID) turn.TurnContext {
 	t.Helper()
 	configuration := testConfiguration(t)
 	return turn.TurnContext{
@@ -526,7 +526,7 @@ func waitForStarted(t *testing.T, io session.SessionIo) {
 	for {
 		select {
 		case event := <-io.Events:
-			if _, ok := event.Message.(protocol.TurnStarted); ok {
+			if _, ok := event.Msg.(protocol.TurnStartedEvent); ok {
 				return
 			}
 		case <-timeout:
@@ -541,19 +541,19 @@ func waitForTerminal(t *testing.T, io session.SessionIo, aborted bool) {
 	for {
 		select {
 		case event := <-io.Events:
-			switch event.Message.(type) {
-			case protocol.TurnCompleted:
+			switch event.Msg.(type) {
+			case protocol.TurnCompleteEvent:
 				if aborted {
 					t.Fatal("received TurnCompleted, want TurnAborted")
 				}
 				return
-			case protocol.TurnAborted:
+			case protocol.TurnAbortedEvent:
 				if !aborted {
 					t.Fatal("received TurnAborted, want TurnCompleted")
 				}
 				return
-			case protocol.StreamError:
-				t.Fatalf("stream error: %#v", event.Message)
+			case protocol.StreamErrorEvent:
+				t.Fatalf("stream error: %#v", event.Msg)
 			}
 		case <-timeout:
 			t.Fatal("timed out waiting for terminal event")

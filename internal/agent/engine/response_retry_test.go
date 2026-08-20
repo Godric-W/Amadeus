@@ -27,7 +27,7 @@ func TestPublishStreamFailureRedactsSensitiveDetails(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := sink.Snapshot()
-	streamError, ok := events[0].Message.(protocol.StreamError)
+	streamError, ok := events[0].Msg.(protocol.StreamErrorEvent)
 	if !ok || streamError.AdditionalDetails == nil {
 		t.Fatalf("stream error = %#v", events)
 	}

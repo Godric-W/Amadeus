@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/instruction"
 	"github.com/Godric-W/Amadeus/internal/rollout"
@@ -18,15 +18,15 @@ import (
 type targetInstructionScope struct {
 	mu              sync.Mutex
 	contextUpdate   func(agentcontext.UpdateKey) string
-	appendItems     func(context.Context, turn.ID, ...rollout.Item) error
+	appendItems     func(context.Context, protocol.TurnID, ...rollout.Item) error
 	resolver        *instruction.WorkspaceResolver
-	turnID          turn.ID
+	turnID          protocol.TurnID
 	documents       map[string]instruction.InstructionDocument
 	revision        uint64
 	sampledRevision uint64
 }
 
-func newTargetInstructionScope(contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, turn.ID, ...rollout.Item) error, resolver *instruction.WorkspaceResolver, turnID turn.ID) (*targetInstructionScope, error) {
+func newTargetInstructionScope(contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.Item) error, resolver *instruction.WorkspaceResolver, turnID protocol.TurnID) (*targetInstructionScope, error) {
 	if contextUpdate == nil || appendItems == nil {
 		return nil, errors.New("instruction scope callbacks are incomplete")
 	}

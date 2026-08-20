@@ -116,7 +116,7 @@ func (host *engineTestHost) History() []rollout.Line {
 	return append([]rollout.Line(nil), host.lines...)
 }
 
-func (host *engineTestHost) AppendItems(_ context.Context, turnID turn.ID, items ...rollout.Item) error {
+func (host *engineTestHost) AppendItems(_ context.Context, turnID protocol.TurnID, items ...rollout.Item) error {
 	host.mu.Lock()
 	defer host.mu.Unlock()
 	for _, item := range items {
@@ -130,13 +130,13 @@ func (host *engineTestHost) Snapshot(model llm.ModelInfo, prompt llm.Prompt) age
 	return host.context.Snapshot(model, prompt)
 }
 
-func (host *engineTestHost) Publish(_ context.Context, event protocol.SessionEvent) error {
+func (host *engineTestHost) Publish(_ context.Context, event protocol.Event) error {
 	host.mu.Lock()
 	defer host.mu.Unlock()
-	switch message := event.Message.(type) {
-	case protocol.ItemCompleted:
+	switch message := event.Msg.(type) {
+	case protocol.ItemCompletedEvent:
 		host.order = append(host.order, "complete:"+string(message.Item.Kind))
-	case protocol.ItemStarted:
+	case protocol.ItemStartedEvent:
 		host.order = append(host.order, "start:"+string(message.Item.Kind))
 	}
 	return nil

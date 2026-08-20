@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -14,10 +13,10 @@ import (
 func TestToolEventObserverPersistsPresentationOnCompletedItem(t *testing.T) {
 	sink := protocol.NewMemorySink()
 	var appended []rollout.Item
-	observer := NewToolEventObserver(func(_ context.Context, _ turn.ID, items ...rollout.Item) error {
+	observer := NewToolEventObserver(func(_ context.Context, _ protocol.TurnID, items ...rollout.Item) error {
 		appended = append(appended, items...)
 		return nil
-	}, turn.ID("turn-1"), sink)
+	}, protocol.TurnID("turn-1"), sink)
 	call := tool.NewCall("call-1", "grep", []byte(`{"query":"Approval","path":"internal"}`))
 	if err := observer.ToolCallStarted(context.Background(), tool.ToolSpec{Name: "grep", SideEffect: tool.SideEffectRead}, call); err != nil {
 		t.Fatal(err)
@@ -36,9 +35,9 @@ func TestToolEventObserverPersistsPresentationOnCompletedItem(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("events = %d, want 2", len(events))
 	}
-	completed, ok := events[1].Message.(protocol.ItemCompleted)
+	completed, ok := events[1].Msg.(protocol.ItemCompletedEvent)
 	if !ok {
-		t.Fatalf("completed event = %T", events[1].Message)
+		t.Fatalf("completed event = %T", events[1].Msg)
 	}
 	payload, ok := completed.Item.Payload.(map[string]any)
 	if !ok {

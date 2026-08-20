@@ -13,7 +13,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/interface/tui"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/render"
-	"github.com/Godric-W/Amadeus/internal/rollout"
 	threadmanager "github.com/Godric-W/Amadeus/internal/thread/manager"
 )
 
@@ -64,7 +63,7 @@ func (runner *agentController) runOnce(ctx context.Context, invocation agentInvo
 
 func (runner *agentController) waitTurn(ctx context.Context, active *threadmanager.AmadeusThread, renderer protocol.EventSink, approvals policy.ApprovalPort) error {
 	io := active.Io()
-	var turnID rollout.TurnID
+	var turnID protocol.TurnID
 	interruptSent := false
 	var renderErr error
 	for {
@@ -78,37 +77,34 @@ func (runner *agentController) waitTurn(ctx context.Context, active *threadmanag
 					renderErr = errors.Join(renderErr, err)
 				}
 			}
-			switch message := eventValue.Message.(type) {
-			case protocol.TurnStarted:
-				turnID = eventValue.TurnID
-			case protocol.TurnRejected:
-				return errors.Join(errors.New(message.Error), renderErr)
-			case protocol.TurnCompleted:
-				if turnID == "" || eventValue.TurnID == turnID {
+			switch message := eventValue.Msg.(type) {
+			case protocol.TurnStartedEvent:
+				turnID = message.TurnID
+			case protocol.ErrorEvent:
+				return errors.Join(errors.New(message.Message), renderErr)
+			case protocol.TurnCompleteEvent:
+				if turnID == "" || message.TurnID == turnID {
 					return errors.Join(commandErrorFromTerminal(message.Error), renderErr)
 				}
-			case protocol.TurnAborted:
-				if turnID == "" || eventValue.TurnID == turnID {
+			case protocol.TurnAbortedEvent:
+				if turnID == "" || message.TurnID == turnID {
 					return errors.Join(&commandExitError{code: exitCodeCancelled, message: message.Reason, reported: true}, renderErr)
 				}
-			}
-		case request, ok := <-io.Requests:
-			if !ok || request.Kind != protocol.RequestApproval {
-				continue
-			}
-			if approvals == nil {
-				return errors.Join(errors.New("interactive approval port is unavailable"), renderErr)
-			}
-			policyRequest, err := approvalRequestFromInteractive(request)
-			if err != nil {
-				return errors.Join(err, renderErr)
-			}
-			decision, err := approvals.Decide(ctx, policyRequest)
-			if err != nil {
-				return errors.Join(err, renderErr)
-			}
-			if err := active.Submit(ctx, approvalDecisionOp(request.RequestID, decision)); err != nil {
-				return errors.Join(err, renderErr)
+			case protocol.ApprovalRequestEvent:
+				if approvals == nil {
+					return errors.Join(errors.New("interactive approval port is unavailable"), renderErr)
+				}
+				policyRequest, err := approvalRequestFromEvent(message)
+				if err != nil {
+					return errors.Join(err, renderErr)
+				}
+				decision, err := approvals.Decide(ctx, policyRequest)
+				if err != nil {
+					return errors.Join(err, renderErr)
+				}
+				if err := active.Submit(ctx, approvalDecisionOp(message.RequestID, decision)); err != nil {
+					return errors.Join(err, renderErr)
+				}
 			}
 		case <-ctx.Done():
 			if !interruptSent {

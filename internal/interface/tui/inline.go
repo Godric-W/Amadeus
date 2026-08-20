@@ -37,7 +37,7 @@ func NewInlineRenderer(output, status io.Writer) (*InlineRenderer, error) {
 	return &InlineRenderer{output: output, status: status, phase: "idle"}, nil
 }
 
-func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent protocol.SessionEvent) error {
+func (renderer *InlineRenderer) Publish(ctx context.Context, event protocol.Event) error {
 	if renderer == nil {
 		return errors.New("inline renderer is nil")
 	}
@@ -47,13 +47,13 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent protoc
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := runtimeEvent.Validate(); err != nil {
+	if err := event.Validate(); err != nil {
 		return err
 	}
 	renderer.mutex.Lock()
 	defer renderer.mutex.Unlock()
-	switch typed := runtimeEvent.Message.(type) {
-	case protocol.AssistantMessageDelta:
+	switch typed := event.Msg.(type) {
+	case protocol.AgentMessageContentDeltaEvent:
 		if typed.Delta == "" {
 			return nil
 		}
@@ -62,7 +62,7 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent protoc
 		}
 		renderer.openText = true
 		return nil
-	case protocol.ItemCompleted:
+	case protocol.ItemCompletedEvent:
 		if typed.Item.Kind == protocol.ItemAssistantMessage {
 			return renderer.finishText()
 		}
@@ -70,23 +70,23 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent protoc
 			return nil
 		}
 		return renderer.toolBlock(typed.Item, true)
-	case protocol.PlanUpdated:
+	case protocol.PlanUpdateEvent:
 		renderer.phase = "planning"
 		if typed.Revision > 1 {
 			renderer.phase = "replanning"
 		}
 		return renderer.planBlock(typed)
-	case protocol.ItemStarted:
+	case protocol.ItemStartedEvent:
 		if typed.Item.ToolName == "update_plan" {
 			return nil
 		}
 		renderer.phase = "executing"
 		renderer.toolCalls++
 		return renderer.toolBlock(typed.Item, false)
-	case protocol.TurnStarted:
+	case protocol.TurnStartedEvent:
 		renderer.phase = "starting"
 		return renderer.statusLine("turn started")
-	case protocol.ThreadTokenUsageUpdated:
+	case protocol.TokenCountEvent:
 		renderer.inputTokens = typed.Usage.InputTokens
 		renderer.outputTokens = typed.Usage.OutputTokens
 		total := typed.Usage.TotalTokens
@@ -94,19 +94,19 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent protoc
 			total = typed.Usage.InputTokens + typed.Usage.OutputTokens
 		}
 		return renderer.statusLine("usage: input=%d output=%d total=%d", typed.Usage.InputTokens, typed.Usage.OutputTokens, total)
-	case protocol.TurnCompleted:
+	case protocol.TurnCompleteEvent:
 		renderer.phase = "idle"
 		if typed.Summary != "" {
 			return renderer.statusLine("%s", typed.Summary)
 		}
 		return renderer.statusLine("turn completed: %s", typed.Error)
-	case protocol.TurnAborted:
+	case protocol.TurnAbortedEvent:
 		renderer.phase = "idle"
 		if typed.Summary != "" {
 			return renderer.statusLine("%s", typed.Summary)
 		}
 		return renderer.statusLine("turn aborted: %s", typed.Reason)
-	case protocol.StreamError:
+	case protocol.StreamErrorEvent:
 		if typed.WillRetry {
 			if typed.AdditionalDetails != nil && strings.TrimSpace(*typed.AdditionalDetails) != "" {
 				return renderer.statusLine("%s — %s", typed.Message, *typed.AdditionalDetails)
@@ -115,14 +115,14 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, runtimeEvent protoc
 		}
 		renderer.phase = "error"
 		return renderer.statusLine("error: %s", typed.Message)
-	case protocol.Warning:
+	case protocol.WarningEvent:
 		return renderer.statusLine("warning: %s", typed.Message)
 	default:
 		return nil
 	}
 }
 
-func (renderer *InlineRenderer) planBlock(plan protocol.PlanUpdated) error {
+func (renderer *InlineRenderer) planBlock(plan protocol.PlanUpdateEvent) error {
 	if err := renderer.finishText(); err != nil {
 		return err
 	}
@@ -142,9 +142,9 @@ func (renderer *InlineRenderer) toolBlock(item protocol.TurnItem, completed bool
 	started := item
 	started.Status = protocol.ItemInProgress
 	started.CompletedAt = time.Time{}
-	cell.Apply(protocol.ItemStarted{Item: started})
+	cell.Apply(protocol.ItemStartedEvent{Item: started})
 	if completed {
-		cell.Apply(protocol.ItemCompleted{Item: item})
+		cell.Apply(protocol.ItemCompletedEvent{Item: item})
 	}
 	for _, line := range cell.RawLines() {
 		if _, err := fmt.Fprintln(renderer.status, sanitizeInlineEventText(line)); err != nil {

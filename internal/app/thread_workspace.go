@@ -5,9 +5,9 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
 	"github.com/Godric-W/Amadeus/internal/state"
-	"github.com/Godric-W/Amadeus/internal/thread"
 	threadmanager "github.com/Godric-W/Amadeus/internal/thread/manager"
 )
 
@@ -118,7 +118,7 @@ func (workspace *ThreadWorkspace) EnsureCurrent(ctx context.Context, configurati
 	return current, nil
 }
 
-func (workspace *ThreadWorkspace) Resume(ctx context.Context, id thread.ID, configuration agentsession.Configuration) (*threadmanager.AmadeusThread, error) {
+func (workspace *ThreadWorkspace) Resume(ctx context.Context, id protocol.ThreadID, configuration agentsession.Configuration) (*threadmanager.AmadeusThread, error) {
 	prepared, err := workspace.PrepareResume(ctx, id, configuration)
 	if err != nil {
 		return nil, err
@@ -138,7 +138,7 @@ func (workspace *ThreadWorkspace) Resume(ctx context.Context, id thread.ID, conf
 	return prepared.Target(), nil
 }
 
-func (workspace *ThreadWorkspace) PrepareResume(ctx context.Context, id thread.ID, configuration agentsession.Configuration) (*PreparedThreadSwitch, error) {
+func (workspace *ThreadWorkspace) PrepareResume(ctx context.Context, id protocol.ThreadID, configuration agentsession.Configuration) (*PreparedThreadSwitch, error) {
 	manager := workspace.managerSnapshot()
 	if manager == nil {
 		return nil, errors.New("thread workspace is closed")
@@ -202,7 +202,7 @@ func (workspace *ThreadWorkspace) RenameCurrent(ctx context.Context, title strin
 	return manager.RenameThread(ctx, current.ID(), title)
 }
 
-func (workspace *ThreadWorkspace) DeleteCurrent(ctx context.Context) (thread.ID, error) {
+func (workspace *ThreadWorkspace) DeleteCurrent(ctx context.Context) (protocol.ThreadID, error) {
 	manager := workspace.managerSnapshot()
 	if manager == nil {
 		return "", errors.New("thread workspace is closed")

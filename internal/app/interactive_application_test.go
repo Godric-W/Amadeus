@@ -47,7 +47,7 @@ func TestInteractiveApplicationOwnsThreadLifecycleAndReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings := waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
-		updated, ok := event.Event.Message.(protocol.ThreadSettingsUpdated)
+		updated, ok := event.Event.Msg.(protocol.ThreadSettingsAppliedEvent)
 		return ok && updated.Mode == string(turn.ModeKindPlan)
 	})
 	if settings.Generation != initial.Generation {
@@ -58,8 +58,8 @@ func TestInteractiveApplicationOwnsThreadLifecycleAndReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
-		_, ok := event.Event.Message.(protocol.TurnCompleted)
-		return ok && event.Event.ThreadID == firstID
+		_, ok := event.Event.Msg.(protocol.TurnCompleteEvent)
+		return ok && protocol.ThreadIDOf(event.Event.Msg) == protocol.ThreadID(firstID)
 	})
 
 	application.Clear(ctx)
@@ -101,26 +101,26 @@ func TestInteractiveApplicationCompactPublishesTypedLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
-		_, ok := event.Event.Message.(protocol.TurnCompleted)
+		_, ok := event.Event.Msg.(protocol.TurnCompleteEvent)
 		return ok
 	})
 	if err := application.SubmitCompact(ctx); err != nil {
 		t.Fatal(err)
 	}
 	started := waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
-		value, ok := event.Event.Message.(protocol.TurnStarted)
+		value, ok := event.Event.Msg.(protocol.TurnStartedEvent)
 		return ok && value.Kind == protocol.TaskKindCompact
 	})
 	compacted := waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
-		_, ok := event.Event.Message.(protocol.ContextCompacted)
+		_, ok := event.Event.Msg.(protocol.ContextCompactedEvent)
 		return ok
 	})
 	warning := waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
-		value, ok := event.Event.Message.(protocol.Warning)
+		value, ok := event.Event.Msg.(protocol.WarningEvent)
 		return ok && value.Message == "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted."
 	})
 	completed := waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
-		_, ok := event.Event.Message.(protocol.TurnCompleted)
+		_, ok := event.Event.Msg.(protocol.TurnCompleteEvent)
 		return ok
 	})
 	if started.Generation != compacted.Generation || compacted.Generation != warning.Generation || warning.Generation != completed.Generation {

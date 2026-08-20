@@ -17,7 +17,7 @@ import (
 
 type SharedServices struct {
 	DefaultSessionSetup agentsession.SessionSetup
-	NewSessionSetup     func(thread.ID) (agentsession.SessionSetup, error)
+	NewSessionSetup     func(protocol.ThreadID) (agentsession.SessionSetup, error)
 	Clock               func() time.Time
 	NextID              func(string) string
 }
@@ -32,14 +32,15 @@ type ThreadManager struct {
 	ctx       context.Context
 	store     thread.ThreadStore
 	services  SharedServices
-	threads   map[thread.ID]*AmadeusThread
+	threads   map[protocol.ThreadID]*AmadeusThread
 	closed    bool
 }
 
 type AmadeusThread struct {
-	id      thread.ID
+	id      protocol.ThreadID
 	session *agentsession.Session
 	io      agentsession.SessionIo
+	nextID  func(string) string
 }
 
 func New(ctx context.Context, store thread.ThreadStore, services SharedServices) (*ThreadManager, error) {
@@ -49,7 +50,7 @@ func New(ctx context.Context, store thread.ThreadStore, services SharedServices)
 	if services.Clock == nil {
 		services.Clock = time.Now
 	}
-	return &ThreadManager{ctx: ctx, store: store, services: services, threads: make(map[thread.ID]*AmadeusThread)}, nil
+	return &ThreadManager{ctx: ctx, store: store, services: services, threads: make(map[protocol.ThreadID]*AmadeusThread)}, nil
 }
 
 func (manager *ThreadManager) StartThread(ctx context.Context, input StartInput) (*AmadeusThread, error) {
@@ -58,7 +59,7 @@ func (manager *ThreadManager) StartThread(ctx context.Context, input StartInput)
 	if manager.closed {
 		return nil, errors.New("thread manager is closed")
 	}
-	id := thread.ID(manager.services.NextID("thread"))
+	id := protocol.ThreadID(manager.services.NextID("thread"))
 	live, err := thread.NewDraftLiveThread(id, manager.store)
 	if err != nil {
 		return nil, err
@@ -66,7 +67,7 @@ func (manager *ThreadManager) StartThread(ctx context.Context, input StartInput)
 	return manager.spawn(ctx, id, live, thread.InitialHistory{Kind: thread.InitialHistoryNew}, input)
 }
 
-func (manager *ThreadManager) ResumeThread(ctx context.Context, id thread.ID, input StartInput) (*AmadeusThread, error) {
+func (manager *ThreadManager) ResumeThread(ctx context.Context, id protocol.ThreadID, input StartInput) (*AmadeusThread, error) {
 	manager.lifecycle.RLock()
 	defer manager.lifecycle.RUnlock()
 	if manager.closed {
@@ -92,7 +93,7 @@ func (manager *ThreadManager) ResumeThread(ctx context.Context, id thread.ID, in
 	return manager.spawn(ctx, id, live, history, input)
 }
 
-func (manager *ThreadManager) spawn(ctx context.Context, id thread.ID, live *thread.LiveThread, history thread.InitialHistory, input StartInput) (*AmadeusThread, error) {
+func (manager *ThreadManager) spawn(ctx context.Context, id protocol.ThreadID, live *thread.LiveThread, history thread.InitialHistory, input StartInput) (*AmadeusThread, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -122,7 +123,7 @@ func (manager *ThreadManager) spawn(ctx context.Context, id thread.ID, live *thr
 		_ = live.Shutdown(context.Background())
 		return nil, err
 	}
-	value := &AmadeusThread{id: id, session: session, io: io}
+	value := &AmadeusThread{id: id, session: session, io: io, nextID: manager.services.NextID}
 	manager.mu.Lock()
 	if existing := manager.threads[id]; existing != nil {
 		manager.mu.Unlock()
@@ -138,7 +139,7 @@ func (manager *ThreadManager) spawn(ctx context.Context, id thread.ID, live *thr
 	return value, nil
 }
 
-func (manager *ThreadManager) GetThread(id thread.ID) (*AmadeusThread, bool) {
+func (manager *ThreadManager) GetThread(id protocol.ThreadID) (*AmadeusThread, bool) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	value, ok := manager.threads[id]
@@ -154,7 +155,7 @@ func (manager *ThreadManager) ListThreads(ctx context.Context, query state.ListQ
 	return manager.store.ListThreads(ctx, query)
 }
 
-func (manager *ThreadManager) RenameThread(ctx context.Context, id thread.ID, title string) error {
+func (manager *ThreadManager) RenameThread(ctx context.Context, id protocol.ThreadID, title string) error {
 	manager.lifecycle.RLock()
 	defer manager.lifecycle.RUnlock()
 	if manager.closed {
@@ -169,7 +170,7 @@ func (manager *ThreadManager) RenameThread(ctx context.Context, id thread.ID, ti
 	return manager.store.RenameThread(ctx, id, title, manager.services.Clock().UTC())
 }
 
-func (manager *ThreadManager) DeleteThread(ctx context.Context, id thread.ID) error {
+func (manager *ThreadManager) DeleteThread(ctx context.Context, id protocol.ThreadID) error {
 	manager.lifecycle.RLock()
 	defer manager.lifecycle.RUnlock()
 	if manager.closed {
@@ -183,7 +184,7 @@ func (manager *ThreadManager) DeleteThread(ctx context.Context, id thread.ID) er
 	return manager.store.DeleteThread(ctx, id, manager.services.Clock().UTC())
 }
 
-func (manager *ThreadManager) ShutdownThread(ctx context.Context, id thread.ID) error {
+func (manager *ThreadManager) ShutdownThread(ctx context.Context, id protocol.ThreadID) error {
 	manager.lifecycle.RLock()
 	defer manager.lifecycle.RUnlock()
 	if manager.closed {
@@ -200,7 +201,7 @@ func (manager *ThreadManager) ShutdownThread(ctx context.Context, id thread.ID) 
 	return nil
 }
 
-func (manager *ThreadManager) removeThread(id thread.ID, expected *AmadeusThread) {
+func (manager *ThreadManager) removeThread(id protocol.ThreadID, expected *AmadeusThread) {
 	manager.mu.Lock()
 	if manager.threads[id] == expected {
 		delete(manager.threads, id)
@@ -228,7 +229,7 @@ func (manager *ThreadManager) Close(ctx context.Context) error {
 	return errors.Join(result, manager.store.Close())
 }
 
-func (threadRuntime *AmadeusThread) ID() thread.ID {
+func (threadRuntime *AmadeusThread) ID() protocol.ThreadID {
 	if threadRuntime == nil {
 		return ""
 	}
@@ -264,24 +265,18 @@ func (threadRuntime *AmadeusThread) Mode() turn.ModeKind {
 }
 
 func (threadRuntime *AmadeusThread) Submit(ctx context.Context, op protocol.Op) error {
-	if threadRuntime == nil || op == nil {
+	if threadRuntime == nil || op == nil || threadRuntime.nextID == nil {
 		return errors.New("thread submission is empty")
 	}
+	submission := protocol.Submission{ID: protocol.SubmissionID(threadRuntime.nextID("submission")), Op: op}
 	select {
-	case threadRuntime.io.Submissions <- protocol.Submission{Op: op}:
+	case threadRuntime.io.Submissions <- submission:
 		return nil
 	case <-threadRuntime.io.Terminated:
 		return errors.New("thread is terminated")
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-func (threadRuntime *AmadeusThread) Request(ctx context.Context, request protocol.InteractiveRequest) (protocol.Op, error) {
-	if threadRuntime == nil || threadRuntime.session == nil {
-		return nil, errors.New("thread request is unavailable")
-	}
-	return threadRuntime.session.Request(ctx, request)
 }
 
 func (threadRuntime *AmadeusThread) Shutdown(ctx context.Context) error {

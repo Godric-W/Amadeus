@@ -109,7 +109,7 @@ func publishStreamFailure(ctx context.Context, events protocol.EventSink, provid
 	if details != "" {
 		detailPointer = &details
 	}
-	return events.Publish(ctx, protocol.SessionEvent{Message: protocol.StreamError{
+	return events.Publish(ctx, protocol.Event{Msg: protocol.StreamErrorEvent{
 		Message:           message,
 		AdditionalDetails: detailPointer,
 		ProviderError: &protocol.ProviderErrorInfo{

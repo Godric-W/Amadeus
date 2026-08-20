@@ -6,13 +6,13 @@ import (
 	"os"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/app"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
-	"github.com/Godric-W/Amadeus/internal/thread"
 	threadmanager "github.com/Godric-W/Amadeus/internal/thread/manager"
 )
 
@@ -84,7 +84,7 @@ func (runner *agentController) ensureWorkspace(ctx context.Context, invocation a
 	}
 	manager, err := threadmanager.New(lifecycleCtx, store, threadmanager.SharedServices{
 		Clock: clock, NextID: idFactory,
-		NewSessionSetup: func(id thread.ID) (agentsession.SessionSetup, error) {
+		NewSessionSetup: func(id protocol.ThreadID) (agentsession.SessionSetup, error) {
 			builder, err := newBuilder()
 			if err != nil {
 				return agentsession.SessionSetup{}, err

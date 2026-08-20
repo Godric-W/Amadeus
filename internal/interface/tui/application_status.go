@@ -6,7 +6,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 )
 
-func (model *fullscreenModel) showRetryStatus(event protocol.StreamError) {
+func (model *fullscreenModel) showRetryStatus(event protocol.StreamErrorEvent) {
 	if !model.retryStatus.active {
 		model.retryStatus = savedStatus{header: model.status, details: model.statusDetails, active: true}
 	}

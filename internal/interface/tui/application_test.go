@@ -14,7 +14,6 @@ import (
 	application "github.com/Godric-W/Amadeus/internal/app"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/policy"
-	"github.com/Godric-W/Amadeus/internal/rollout"
 	tea "github.com/charmbracelet/bubbletea"
 	xansi "github.com/charmbracelet/x/ansi"
 )
@@ -26,7 +25,7 @@ type fakeFullscreenApplication struct {
 	modes        []turn.ModeKind
 	interrupts   int
 	approvals    []string
-	resumed      []rollout.ThreadID
+	resumed      []protocol.ThreadID
 	renamed      []string
 	deleted      []uint64
 	clears       int
@@ -70,7 +69,7 @@ func (fake *fakeFullscreenApplication) ResolveApproval(_ context.Context, reques
 	return fake.approvalErr
 }
 func (fake *fakeFullscreenApplication) LoadSessions(context.Context) {}
-func (fake *fakeFullscreenApplication) Resume(_ context.Context, id rollout.ThreadID) {
+func (fake *fakeFullscreenApplication) Resume(_ context.Context, id protocol.ThreadID) {
 	fake.resumed = append(fake.resumed, id)
 }
 func (fake *fakeFullscreenApplication) Clear(context.Context) { fake.clears++ }
@@ -187,9 +186,9 @@ func TestFullscreenBannerUsesRestrainedMetadata(t *testing.T) {
 
 func TestFullscreenContextStatusUsesRuntimeUsage(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
-	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.ThreadTokenUsageUpdated{
+	model.applyEvent(testProtocolEvent("thread-1", "turn-1", protocol.TokenCountEvent{
 		Usage: llm.Usage{InputTokens: 13000, OutputTokens: 800}, EstimatedInputTokens: 12000, ContextWindow: 128000,
-	}})
+	}))
 	if model.contextUsage != 13000 || model.inputUsage != 13000 || model.outputUsage != 800 {
 		t.Fatalf("usage = context %d input %d output %d", model.contextUsage, model.inputUsage, model.outputUsage)
 	}
@@ -217,9 +216,9 @@ func TestFullscreenPlanTaskWaitsForSettingsAcknowledgement(t *testing.T) {
 	if len(fake.modes) != 1 || len(fake.submitted) != 0 || model.running {
 		t.Fatalf("before acknowledgement modes=%v submitted=%v running=%v", fake.modes, fake.submitted, model.running)
 	}
-	updated, command = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: protocol.SessionEvent{
-		ThreadID: "thread-1", Message: protocol.ThreadSettingsUpdated{Mode: string(turn.ModeKindPlan)},
-	}}})
+	updated, command = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: testProtocolEvent(
+		"thread-1", "", protocol.ThreadSettingsAppliedEvent{Mode: string(turn.ModeKindPlan)},
+	)}})
 	model = updated.(fullscreenModel)
 	executeCommand(t, command)
 	if model.collaboration != CollaborationPlan || len(fake.submitted) != 1 || fake.submitted[0] != "inspect the repository" {
@@ -253,7 +252,7 @@ func TestFullscreenResumeReplaysSnapshotAndRejectsStaleEvents(t *testing.T) {
 	if model.generation != 2 || model.startup.Session != "thread-2" || len(model.historyCells) != 2 || cellContent(model.historyCells[0]) != "hello" || cellContent(model.historyCells[1]) != "world" {
 		t.Fatalf("snapshot not restored: generation=%d session=%s cells=%v", model.generation, model.startup.Session, model.historyCells)
 	}
-	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: protocol.SessionEvent{ThreadID: "thread-1", Message: protocol.Warning{Message: "stale"}}}})
+	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: testProtocolEvent("thread-1", "", protocol.WarningEvent{Message: "stale"})}})
 	model = updated.(fullscreenModel)
 	if strings.Contains(lastCellContent(model), "stale") {
 		t.Fatal("stale event changed active transcript")
@@ -324,12 +323,12 @@ func TestFullscreenCompactHasPendingAndCompletedStates(t *testing.T) {
 		t.Fatalf("pending compact state running=%v status=%q", model.running, model.status)
 	}
 	executeCommand(t, command)
-	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: protocol.SessionEvent{ThreadID: "thread-1", Message: protocol.ContextCompacted{ItemID: "compact-1"}}}})
+	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: testProtocolEvent("thread-1", "turn-1", protocol.ContextCompactedEvent{ItemID: "compact-1"})}})
 	model = updated.(fullscreenModel)
 	if lastCellContent(model) != "Context compacted" {
 		t.Fatalf("compact result = %q", lastCellContent(model))
 	}
-	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: protocol.SessionEvent{ThreadID: "thread-1", Message: protocol.Warning{Message: "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted."}}}})
+	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: testProtocolEvent("thread-1", "turn-1", protocol.WarningEvent{Message: "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted."})}})
 	model = updated.(fullscreenModel)
 	if lastCellContent(model) != "⚠ Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted." {
 		t.Fatalf("compact transcript = %q", renderHistoryCells(model.historyCells, HistoryRenderRaw, noColorRenderContext()))

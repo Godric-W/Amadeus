@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/tool"
@@ -21,43 +22,32 @@ type RolloutMessageProjection struct {
 func ProjectRolloutMessages(lines []rollout.Line) (RolloutMessageProjection, error) {
 	projection := RolloutMessageProjection{}
 	for _, line := range lines {
-		switch line.Item.Kind {
-		case rollout.KindResponseItem:
-			if err := projection.appendResponse(line); err != nil {
+		switch item := line.Item.(type) {
+		case rollout.ResponseItem:
+			if err := projection.appendResponse(line.Sequence, item); err != nil {
 				return RolloutMessageProjection{}, err
 			}
-		case rollout.KindPlanUpdate:
-			projection.append(llm.DeveloperMessage("Current soft execution plan from canonical history:\n"+string(line.Item.Payload)), line.Sequence)
-		case rollout.KindTurnAborted:
-			payload, err := rollout.DecodePayload[rollout.TurnAborted](line.Item)
-			if err != nil {
-				return RolloutMessageProjection{}, err
+		case rollout.EventMsgItem:
+			switch message := item.Msg.(type) {
+			case protocol.PlanUpdateEvent:
+				encoded, err := json.Marshal(message)
+				if err != nil {
+					return RolloutMessageProjection{}, err
+				}
+				projection.append(llm.DeveloperMessage("Current soft execution plan from canonical history:\n"+string(encoded)), line.Sequence)
+			case protocol.TurnAbortedEvent:
+				projection.append(llm.DeveloperMessage("Previous turn was interrupted: "+message.Reason+". Re-plan from the current workspace state."), line.Sequence)
+			case protocol.TurnCompleteEvent:
+				if message.Status == protocol.TurnStatusFailed {
+					projection.append(llm.DeveloperMessage("Previous turn failed: "+message.Error+". Re-plan from the current workspace state."), line.Sequence)
+				}
+			case protocol.ContextUpdateEvent:
+				if strings.TrimSpace(message.Key) != "" {
+					continue
+				}
 			}
-			projection.append(llm.DeveloperMessage("Previous turn was interrupted: "+payload.Reason+". Re-plan from the current workspace state."), line.Sequence)
-		case rollout.KindTurnCompleted:
-			payload, err := rollout.DecodePayload[rollout.TurnCompleted](line.Item)
-			if err != nil {
-				return RolloutMessageProjection{}, err
-			}
-			if payload.Status == rollout.TurnStatusFailed {
-				projection.append(llm.DeveloperMessage("Previous turn failed: "+payload.Error+". Re-plan from the current workspace state."), line.Sequence)
-			}
-		case rollout.KindContextUpdate:
-			var update rollout.ContextUpdate
-			if err := json.Unmarshal(line.Item.Payload, &update); err != nil {
-				return RolloutMessageProjection{}, fmt.Errorf("decode context update at sequence %d: %w", line.Sequence, err)
-			}
-			if strings.TrimSpace(update.Key) != "" {
-				// Dynamic context updates are replayed by ContextManager.Rebuild;
-				// they are not mixed into the response-item history here.
-				continue
-			}
-		case rollout.KindCompaction:
-			payload, err := rollout.DecodePayload[rollout.Compaction](line.Item)
-			if err != nil {
-				return RolloutMessageProjection{}, err
-			}
-			if err := projection.applyCompaction(payload); err != nil {
+		case rollout.CompactedItem:
+			if err := projection.applyCompaction(item); err != nil {
 				return RolloutMessageProjection{}, fmt.Errorf("apply compaction at sequence %d: %w", line.Sequence, err)
 			}
 		}
@@ -65,20 +55,16 @@ func ProjectRolloutMessages(lines []rollout.Line) (RolloutMessageProjection, err
 	return projection, nil
 }
 
-func (projection *RolloutMessageProjection) appendResponse(line rollout.Line) error {
-	item, err := rollout.DecodeResponseItem(line.Item)
-	if err != nil {
-		return fmt.Errorf("decode response_item at sequence %d: %w", line.Sequence, err)
-	}
+func (projection *RolloutMessageProjection) appendResponse(sequence uint64, item rollout.ResponseItem) error {
 	switch item.Type {
 	case rollout.ResponseUserMessage:
-		projection.append(llm.UserMessage(item.Content), line.Sequence)
+		projection.append(llm.UserMessage(item.Content), sequence)
 	case rollout.ResponseAssistantMessage:
-		projection.append(llm.ResponseItem{Role: llm.RoleAssistant, Content: item.Content, Reasoning: item.Reasoning}, line.Sequence)
+		projection.append(llm.ResponseItem{Role: llm.RoleAssistant, Content: item.Content, Reasoning: item.Reasoning}, sequence)
 	case rollout.ResponseToolCall:
 		callID := strings.TrimSpace(item.CallID)
 		if callID == "" {
-			callID = fmt.Sprintf("incomplete-call-%d", line.Sequence)
+			callID = fmt.Sprintf("incomplete-call-%d", sequence)
 		}
 		name := strings.TrimSpace(item.Name)
 		if name == "" {
@@ -91,7 +77,7 @@ func (projection *RolloutMessageProjection) appendResponse(line rollout.Line) er
 		projection.appendAssistantToolCall(llm.ResponseItem{
 			Role: llm.RoleAssistant, Content: item.Content, Reasoning: item.Reasoning,
 			ToolCalls: []llm.ToolCall{{ID: callID, Name: name, Arguments: arguments}},
-		}, line.Sequence)
+		}, sequence)
 	case rollout.ResponseToolResult:
 		if strings.TrimSpace(item.CallID) == "" {
 			return nil
@@ -111,7 +97,7 @@ func (projection *RolloutMessageProjection) appendResponse(line rollout.Line) er
 		if projectErr != nil {
 			return projectErr
 		}
-		projection.append(message, line.Sequence)
+		projection.append(message, sequence)
 	}
 	return nil
 }
@@ -138,7 +124,7 @@ func (projection *RolloutMessageProjection) append(message llm.ResponseItem, seq
 	projection.SourceSequences = append(projection.SourceSequences, int64(sequence))
 }
 
-func (projection *RolloutMessageProjection) applyCompaction(payload rollout.Compaction) error {
+func (projection *RolloutMessageProjection) applyCompaction(payload rollout.CompactedItem) error {
 	covered := 0
 	for covered < len(projection.SourceSequences) && projection.SourceSequences[covered] <= payload.CoveredThroughSequence {
 		covered++

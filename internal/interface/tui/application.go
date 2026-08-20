@@ -11,7 +11,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	application "github.com/Godric-W/Amadeus/internal/app"
 	"github.com/Godric-W/Amadeus/internal/policy"
-	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -40,7 +39,7 @@ type FullscreenApplicationPort interface {
 	Interrupt(context.Context) error
 	ResolveApproval(context.Context, string, policy.ApprovalDecision) error
 	LoadSessions(context.Context)
-	Resume(context.Context, rollout.ThreadID)
+	Resume(context.Context, protocol.ThreadID)
 	Clear(context.Context)
 	Rename(context.Context, uint64, string)
 	Delete(context.Context, uint64)
@@ -313,7 +312,7 @@ func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscr
 		sessionTitle: snapshot.Title,
 		palette:      palette, clock: systemMotionClock{}, motion: motionAnimated, motionStartedAt: time.Now(),
 		details: newTranscriptDetailStore(0, 0), detailViewport: newTranscriptViewport(initialWidth, 30),
-		runtimeTranscript: protocol.NewTranscriptState(rollout.ThreadID(startup.Session)), generation: snapshot.Generation,
+		runtimeTranscript: protocol.NewTranscriptState(protocol.ThreadID(startup.Session)), generation: snapshot.Generation,
 	}
 	if snapshot.Mode == turn.ModeKindPlan {
 		model.collaboration = CollaborationPlan

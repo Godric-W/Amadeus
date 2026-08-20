@@ -59,7 +59,7 @@ type SessionIo struct {
 }
 
 type SpawnArgs struct {
-	ThreadID      thread.ID
+	ThreadID      protocol.ThreadID
 	History       thread.InitialHistory
 	State         SessionState
 	Services      SessionServices
@@ -74,7 +74,7 @@ type ActiveTurn struct {
 }
 
 type Session struct {
-	threadID  thread.ID
+	threadID  protocol.ThreadID
 	state     SessionState
 	services  SessionServices
 	active    *ActiveTurn
@@ -294,7 +294,7 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input stri
 		return
 	}
 	now := session.services.Clock().UTC()
-	turnID := turn.ID(session.services.NextID("turn"))
+	turnID := protocol.TurnID(session.services.NextID("turn"))
 	baseContext := turn.TurnContext{
 		SubmissionID: submissionID,
 		ThreadID: session.threadID, TurnID: turnID, Provider: session.state.Configuration.Provider,
@@ -388,7 +388,7 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input stri
 	}()
 }
 
-func (session *Session) rejectTurn(submissionID protocol.SubmissionID, turnID turn.ID, err error, fatal bool) {
+func (session *Session) rejectTurn(submissionID protocol.SubmissionID, turnID protocol.TurnID, err error, fatal bool) {
 	if err == nil {
 		err = errors.New("turn was rejected")
 	}
@@ -497,7 +497,7 @@ func (session *Session) Mode() turn.ModeKind {
 	return session.state.Mode.Mode
 }
 
-func (session *Session) publishCompactionEvents(submissionID protocol.SubmissionID, turnID turn.ID, items []rollout.Item) {
+func (session *Session) publishCompactionEvents(submissionID protocol.SubmissionID, turnID protocol.TurnID, items []rollout.Item) {
 	for _, item := range items {
 		if item.Kind != rollout.KindCompaction {
 			continue
@@ -521,7 +521,7 @@ func (session *Session) publishCompactionEvents(submissionID protocol.Submission
 	}
 }
 
-func (session *Session) completeWithoutTask(submissionID protocol.SubmissionID, turnID turn.ID, taskErr error) {
+func (session *Session) completeWithoutTask(submissionID protocol.SubmissionID, turnID protocol.TurnID, taskErr error) {
 	terminal, _ := rollout.NewItem(rollout.KindTurnCompleted, rollout.TurnCompleted{Status: rollout.TurnStatusFailed, Outcome: OutcomeFailed, Reason: taskErr.Error(), Error: taskErr.Error()})
 	cleanupCtx, cancel := session.cleanupContext()
 	persistErr := session.appendItemsDurable(cleanupCtx, turnID, terminal)

@@ -6,17 +6,16 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
-	"github.com/Godric-W/Amadeus/internal/rollout"
 	tea "github.com/charmbracelet/bubbletea"
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
-func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
-	if streamError, retrying := event.Message.(protocol.StreamError); !retrying || !streamError.WillRetry {
+func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
+	if streamError, retrying := event.Msg.(protocol.StreamErrorEvent); !retrying || !streamError.WillRetry {
 		model.restoreRetryStatus()
 	}
 	if model.runtimeTranscript == nil {
-		model.runtimeTranscript = protocol.NewTranscriptState(event.ThreadID)
+		model.runtimeTranscript = protocol.NewTranscriptState(protocol.ThreadIDOf(event.Msg))
 	}
 	if err := model.runtimeTranscript.Apply(event); err != nil {
 		// A live provider may emit a delta before the UI observes its start
@@ -30,9 +29,9 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 			return nil
 		}
 	}
-	message := event.Message
+	message := event.Msg
 	switch item := message.(type) {
-	case protocol.TurnStarted:
+	case protocol.TurnStartedEvent:
 		model.clearRetryStatus()
 		model.running = true
 		model.runStartedAt = item.StartedAt
@@ -50,7 +49,7 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 			model.status = "working"
 		}
 		return model.workingTick()
-	case protocol.ThreadSettingsUpdated:
+	case protocol.ThreadSettingsAppliedEvent:
 		if item.Mode == string(turn.ModeKindPlan) {
 			model.collaboration = CollaborationPlan
 			model.status = "plan mode"
@@ -70,7 +69,7 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 		model.motionStartedAt = model.runStartedAt
 		model.status = taskPhase(TaskSubmission{Content: task, Mode: model.collaboration})
 		return tea.Batch(model.submitTask(TaskSubmission{Content: task, Mode: model.collaboration}), model.workingTick())
-	case protocol.AssistantMessageDelta:
+	case protocol.AgentMessageContentDeltaEvent:
 		if item.Reset {
 			model.draft = item.Delta
 			break
@@ -81,11 +80,11 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 			model.transcript.NeedsFinalMessageSeparator = false
 		}
 		model.draft += item.Delta
-	case protocol.ReasoningDelta:
+	case protocol.ReasoningContentDeltaEvent:
 		if !item.Reset && strings.TrimSpace(item.Delta) != "" {
 			model.status = "thinking"
 		}
-	case protocol.ThreadTokenUsageUpdated:
+	case protocol.TokenCountEvent:
 		model.inputUsage = item.Usage.InputTokens
 		model.outputUsage = item.Usage.OutputTokens
 		if item.EstimatedInputTokens > 0 {
@@ -97,11 +96,11 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 		if item.Usage.InputTokens > 0 {
 			model.contextUsage = item.Usage.InputTokens
 		}
-	case protocol.PlanUpdated:
+	case protocol.PlanUpdateEvent:
 		model.finishDraft()
 		model.insertHistoryCell(NewPlanUpdateCell(item))
 		model.status = "planning"
-	case protocol.ItemStarted:
+	case protocol.ItemStartedEvent:
 		switch item.Item.Kind {
 		case protocol.ItemAssistantMessage, protocol.ItemReasoning, protocol.ItemUserMessage, protocol.ItemPlan, protocol.ItemContextCompaction:
 			return nil
@@ -122,7 +121,7 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 		model.transcript.HadWorkActivity = true
 		model.transcript.NeedsFinalMessageSeparator = true
 		model.status = "executing"
-	case protocol.ItemCompleted:
+	case protocol.ItemCompletedEvent:
 		switch item.Item.Kind {
 		case protocol.ItemUserMessage:
 			model.flushCompletedActivityBeforeBoundary()
@@ -141,7 +140,7 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 			return nil
 		case protocol.ItemPlan:
 			model.flushCompletedActivityBeforeBoundary()
-			if update, ok := item.Item.Payload.(protocol.PlanUpdated); ok {
+			if update, ok := item.Item.Payload.(protocol.PlanUpdateEvent); ok {
 				model.insertHistoryCell(NewPlanUpdateCell(update))
 			}
 			return nil
@@ -159,7 +158,7 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 		}
 		if model.transcript.ActiveCell == nil {
 			cell := newToolHistoryCell()
-			cell.Apply(protocol.ItemStarted{Item: protocol.TurnItem{ID: item.Item.ID, Kind: item.Item.Kind, Status: protocol.ItemInProgress, CreatedAt: item.Item.CreatedAt, ToolName: item.Item.ToolName, CallID: item.Item.CallID, Payload: item.Item.Payload}})
+			cell.Apply(protocol.ItemStartedEvent{Item: protocol.TurnItem{ID: item.Item.ID, Kind: item.Item.Kind, Status: protocol.ItemInProgress, CreatedAt: item.Item.CreatedAt, ToolName: item.Item.ToolName, CallID: item.Item.CallID, Payload: item.Item.Payload}})
 			model.transcript.ActiveCell = cell
 		}
 		if model.transcript.ActiveCell.Apply(item) {
@@ -181,10 +180,10 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 				}
 			}
 		}
-	case protocol.Warning:
+	case protocol.WarningEvent:
 		model.finishDraft()
 		model.insertHistoryCell(NewWarningHistoryCell(item.Message))
-	case protocol.StreamError:
+	case protocol.StreamErrorEvent:
 		if item.WillRetry {
 			model.showRetryStatus(item)
 			return model.workingTick()
@@ -193,7 +192,7 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 		if strings.TrimSpace(item.Message) != "" {
 			model.insertHistoryCell(NewErrorHistoryCell(item.Message))
 		}
-	case protocol.TurnCompleted:
+	case protocol.TurnCompleteEvent:
 		model.clearRetryStatus()
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
 			model.flushActiveHistoryCell()
@@ -202,7 +201,7 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 		model.finishTurn(model.runElapsed())
 		model.running = false
 		model.status = "completed"
-	case protocol.TurnAborted:
+	case protocol.TurnAbortedEvent:
 		model.clearRetryStatus()
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
 			model.flushActiveHistoryCell()
@@ -211,42 +210,42 @@ func (model *fullscreenModel) applyEvent(event protocol.SessionEvent) tea.Cmd {
 		model.finishTurn(model.runElapsed())
 		model.running = false
 		model.status = "aborted"
-	case protocol.TurnRejected:
+	case protocol.ErrorEvent:
 		model.clearRetryStatus()
 		model.finishDraft()
 		model.running = false
 		model.status = "idle"
-		if strings.TrimSpace(item.Error) != "" {
-			model.insertHistoryCell(NewErrorHistoryCell(item.Error))
+		if strings.TrimSpace(item.Message) != "" {
+			model.insertHistoryCell(NewErrorHistoryCell(item.Message))
 		}
-	case protocol.ContextCompacted:
+	case protocol.ContextCompactedEvent:
 		model.insertHistoryCell(NewContextCompactedCell())
-	case protocol.ShutdownComplete:
+	case protocol.ShutdownCompleteEvent:
 		model.status = "shutting down"
 	}
 	return nil
 }
 
-func (model *fullscreenModel) recoverDeltaStart(event protocol.SessionEvent) bool {
-	var itemID string
+func (model *fullscreenModel) recoverDeltaStart(event protocol.Event) bool {
+	var itemID protocol.ItemID
 	var kind protocol.ItemKind
-	switch message := event.Message.(type) {
-	case protocol.AssistantMessageDelta:
+	switch message := event.Msg.(type) {
+	case protocol.AgentMessageContentDeltaEvent:
 		itemID, kind = message.ItemID, protocol.ItemAssistantMessage
-	case protocol.ReasoningDelta:
+	case protocol.ReasoningContentDeltaEvent:
 		itemID, kind = message.ItemID, protocol.ItemReasoning
-	case protocol.CommandOutputDelta:
+	case protocol.CommandOutputDeltaEvent:
 		itemID, kind = message.ItemID, protocol.ItemCommandExecution
 	default:
 		return false
 	}
-	if strings.TrimSpace(itemID) == "" {
+	if strings.TrimSpace(string(itemID)) == "" {
 		return false
 	}
 	now := time.Now().UTC()
-	return model.runtimeTranscript.Apply(protocol.SessionEvent{
-		ThreadID: event.ThreadID, TurnID: event.TurnID,
-		Message: protocol.ItemStarted{Item: protocol.TurnItem{ID: itemID, Kind: kind, Status: protocol.ItemInProgress, CreatedAt: now}},
+	return model.runtimeTranscript.Apply(protocol.Event{
+		ID:  event.ID,
+		Msg: protocol.ItemStartedEvent{ThreadID: protocol.ThreadIDOf(event.Msg), TurnID: protocol.TurnIDOf(event.Msg), Item: protocol.TurnItem{ID: itemID, Kind: kind, Status: protocol.ItemInProgress, CreatedAt: now}},
 	}) == nil
 }
 
@@ -254,7 +253,7 @@ func (model *fullscreenModel) restoreCompletedItems(items []protocol.TurnItem) {
 	if model == nil {
 		return
 	}
-	threadID := rollout.ThreadID(model.startup.Session)
+	threadID := protocol.ThreadID(model.startup.Session)
 	for _, item := range items {
 		switch item.Kind {
 		case protocol.ItemUserMessage:
@@ -267,14 +266,14 @@ func (model *fullscreenModel) restoreCompletedItems(items []protocol.TurnItem) {
 		case protocol.ItemReasoning:
 		case protocol.ItemPlan:
 			model.flushCompletedActivityBeforeBoundary()
-			if update, ok := item.Payload.(protocol.PlanUpdated); ok {
+			if update, ok := item.Payload.(protocol.PlanUpdateEvent); ok {
 				model.insertHistoryCell(NewPlanUpdateCell(update))
 			}
 		case protocol.ItemContextCompaction:
 			model.flushCompletedActivityBeforeBoundary()
 			model.insertHistoryCell(NewContextCompactedCell())
 		default:
-			event := protocol.SessionEvent{ThreadID: threadID, Message: protocol.ItemCompleted{Item: item}}
+			event := protocol.Event{ID: "replay", Msg: protocol.ItemCompletedEvent{ThreadID: threadID, Item: item}}
 			model.applyEvent(event)
 		}
 	}

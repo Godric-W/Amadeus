@@ -18,12 +18,12 @@ func renderHistoryCellForTest(cell HistoryCell, ctx HistoryRenderContext) string
 	return renderStyledLines(historyLinesForMode(cell, HistoryRenderRich, ctx), ctx)
 }
 
-func toolStartedMessage(callID, toolName, sideEffect, summary, detail string) protocol.ItemStarted {
+func toolStartedMessage(callID, toolName, sideEffect, summary, detail string) protocol.ItemStartedEvent {
 	now := time.Now().UTC()
-	return protocol.ItemStarted{Item: protocol.TurnItem{ID: callID, CallID: callID, ToolName: toolName, Kind: protocol.ItemToolCall, Status: protocol.ItemInProgress, CreatedAt: now, Payload: map[string]any{"side_effect": sideEffect, "action_summary": summary, "detail": detail}}}
+	return protocol.ItemStartedEvent{Item: protocol.TurnItem{ID: protocol.ItemID(callID), CallID: callID, ToolName: toolName, Kind: protocol.ItemToolCall, Status: protocol.ItemInProgress, CreatedAt: now, Payload: map[string]any{"side_effect": sideEffect, "action_summary": summary, "detail": detail}}}
 }
 
-func toolCompletedMessage(started protocol.ItemStarted, status protocol.ItemStatus, text, duration string, partial bool) protocol.ItemCompleted {
+func toolCompletedMessage(started protocol.ItemStartedEvent, status protocol.ItemStatus, text, duration string, partial bool) protocol.ItemCompletedEvent {
 	now := time.Now().UTC()
 	item := started.Item
 	item.Status = status
@@ -36,12 +36,12 @@ func toolCompletedMessage(started protocol.ItemStarted, status protocol.ItemStat
 		}
 	}
 	item.Payload = payload
-	return protocol.ItemCompleted{Item: item}
+	return protocol.ItemCompletedEvent{Item: item}
 }
 
 func TestToolHistoryCellGroupsExplorationAndDeduplicatesReads(t *testing.T) {
 	cell := newToolHistoryCell()
-	for _, started := range []protocol.ItemStarted{
+	for _, started := range []protocol.ItemStartedEvent{
 		toolStartedMessage("read-1", "read", "read", "Read docs/design.md", ""),
 		toolStartedMessage("read-2", "read", "read", "Read docs/design.md", ""),
 		toolStartedMessage("search-1", "grep", "read", "Search M9V", ""),

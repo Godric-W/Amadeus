@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/state"
 )
 
@@ -56,7 +56,7 @@ func (store *Store) UpsertThread(ctx context.Context, thread state.StoredThread)
 	return nil
 }
 
-func (store *Store) GetThread(ctx context.Context, id rollout.ThreadID) (state.StoredThread, error) {
+func (store *Store) GetThread(ctx context.Context, id protocol.ThreadID) (state.StoredThread, error) {
 	row := store.database.db.QueryRowContext(ctx, `SELECT id, rollout_path, cwd, title, preview,
         model_provider, model, tokens_used, created_at, updated_at, archived,
         git_sha, git_branch, git_origin_url FROM threads WHERE id = ?`, id)
@@ -103,7 +103,7 @@ func (store *Store) ListThreads(ctx context.Context, query state.ListQuery) ([]s
 	return threads, nil
 }
 
-func (store *Store) RenameThread(ctx context.Context, id rollout.ThreadID, title string, updatedAt time.Time) error {
+func (store *Store) RenameThread(ctx context.Context, id protocol.ThreadID, title string, updatedAt time.Time) error {
 	title = strings.TrimSpace(title)
 	if title == "" || updatedAt.IsZero() {
 		return errors.New("thread rename is incomplete")
@@ -115,7 +115,7 @@ func (store *Store) RenameThread(ctx context.Context, id rollout.ThreadID, title
 	return requireAffected(result)
 }
 
-func (store *Store) ArchiveThread(ctx context.Context, id rollout.ThreadID, updatedAt time.Time) error {
+func (store *Store) ArchiveThread(ctx context.Context, id protocol.ThreadID, updatedAt time.Time) error {
 	if updatedAt.IsZero() {
 		return errors.New("thread archive time is zero")
 	}

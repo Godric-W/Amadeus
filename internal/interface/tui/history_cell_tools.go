@@ -69,12 +69,12 @@ func (cell *ToolHistoryCell) SetApprovalState(callID string, pending bool) bool 
 	activity.PendingApproval = pending
 	return true
 }
-func (cell *ToolHistoryCell) Apply(message protocol.EventMessage) bool {
+func (cell *ToolHistoryCell) Apply(message protocol.EventMsg) bool {
 	if cell == nil {
 		return false
 	}
 	switch item := message.(type) {
-	case protocol.ItemStarted:
+	case protocol.ItemStartedEvent:
 		if item.Item.ToolName == "" {
 			return false
 		}
@@ -86,7 +86,7 @@ func (cell *ToolHistoryCell) Apply(message protocol.EventMessage) bool {
 		cell.activities = append(cell.activities, activity)
 		cell.byCallID[item.Item.CallID] = activity
 		return true
-	case protocol.ItemCompleted:
+	case protocol.ItemCompletedEvent:
 		if item.Item.ToolName == "" {
 			return false
 		}

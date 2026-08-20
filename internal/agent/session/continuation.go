@@ -133,7 +133,7 @@ func (session *Session) runTurnLoop(ctx context.Context, runtime *engine.Service
 	})
 }
 
-func (session *Session) compactCallback(runtime *engine.Services, modelSession *engine.ModelClientSession, turnID turn.ID, events protocol.EventSink) compactFunc {
+func (session *Session) compactCallback(runtime *engine.Services, modelSession *engine.ModelClientSession, turnID protocol.TurnID, events protocol.EventSink) compactFunc {
 	return func(ctx context.Context) (bool, error) {
 		items, err := runtime.Compact(ctx, engine.CompactRequest{Lines: session.History(), ModelSession: modelSession, Events: events})
 		if err != nil {

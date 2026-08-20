@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/state"
 )
 
@@ -66,7 +66,7 @@ func TestStoreThreadLifecycle(t *testing.T) {
 	if len(listed) != 1 || !listed[0].Archived {
 		t.Fatalf("archived list = %#v", listed)
 	}
-	if _, err := store.GetThread(ctx, rollout.ThreadID("missing")); !errors.Is(err, state.ErrNotFound) {
+	if _, err := store.GetThread(ctx, protocol.ThreadID("missing")); !errors.Is(err, state.ErrNotFound) {
 		t.Fatalf("missing error = %v", err)
 	}
 }

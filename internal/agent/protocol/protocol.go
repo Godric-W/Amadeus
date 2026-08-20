@@ -3,7 +3,6 @@ package protocol
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -267,6 +266,12 @@ func ScopeEventMsg(message EventMsg, threadID ThreadID, turnID TurnID) EventMsg 
 	case ThreadSettingsAppliedEvent:
 		value.ThreadID = threadID
 		return value
+	case ThreadNameUpdatedEvent:
+		value.ThreadID = threadID
+		return value
+	case ThreadArchivedEvent:
+		value.ThreadID = threadID
+		return value
 	case ShutdownCompleteEvent:
 		value.ThreadID = threadID
 		return value
@@ -291,6 +296,9 @@ func ScopeEventMsg(message EventMsg, threadID ThreadID, turnID TurnID) EventMsg 
 	case ApprovalRequestEvent:
 		value.ThreadID, value.TurnID = threadID, turnID
 		return value
+	case ContextUpdateEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
 	default:
 		return ScopeItemEventMsg(message, threadID, turnID)
 	}
@@ -301,6 +309,10 @@ func ThreadIDOf(message EventMsg) ThreadID {
 	case SessionConfiguredEvent:
 		return value.ThreadID
 	case ThreadSettingsAppliedEvent:
+		return value.ThreadID
+	case ThreadNameUpdatedEvent:
+		return value.ThreadID
+	case ThreadArchivedEvent:
 		return value.ThreadID
 	case ShutdownCompleteEvent:
 		return value.ThreadID
@@ -317,6 +329,8 @@ func ThreadIDOf(message EventMsg) ThreadID {
 	case StreamErrorEvent:
 		return value.ThreadID
 	case ApprovalRequestEvent:
+		return value.ThreadID
+	case ContextUpdateEvent:
 		return value.ThreadID
 	default:
 		return ItemEventThreadID(message)
@@ -338,6 +352,8 @@ func TurnIDOf(message EventMsg) TurnID {
 	case StreamErrorEvent:
 		return value.TurnID
 	case ApprovalRequestEvent:
+		return value.TurnID
+	case ContextUpdateEvent:
 		return value.TurnID
 	default:
 		return ItemEventTurnID(message)

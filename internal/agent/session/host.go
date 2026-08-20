@@ -11,7 +11,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/mcp"
@@ -20,15 +19,15 @@ import (
 	"github.com/Godric-W/Amadeus/internal/thread"
 )
 
-func (session *Session) AppendItems(ctx context.Context, turnID turn.ID, items ...rollout.Item) error {
+func (session *Session) AppendItems(ctx context.Context, turnID protocol.TurnID, items ...rollout.Item) error {
 	return session.appendItems(ctx, turnID, false, items...)
 }
 
-func (session *Session) appendItemsDurable(ctx context.Context, turnID turn.ID, items ...rollout.Item) error {
+func (session *Session) appendItemsDurable(ctx context.Context, turnID protocol.TurnID, items ...rollout.Item) error {
 	return session.appendItems(ctx, turnID, true, items...)
 }
 
-func (session *Session) appendItems(ctx context.Context, turnID turn.ID, durable bool, items ...rollout.Item) error {
+func (session *Session) appendItems(ctx context.Context, turnID protocol.TurnID, durable bool, items ...rollout.Item) error {
 	if session == nil {
 		return errors.New("session is nil")
 	}
@@ -58,7 +57,7 @@ func (session *Session) appendItems(ctx context.Context, turnID turn.ID, durable
 	return nil
 }
 
-func (session *Session) UpdatePlan(ctx context.Context, turnID turn.ID, update plan.Update) (plan.Snapshot, error) {
+func (session *Session) UpdatePlan(ctx context.Context, turnID protocol.TurnID, update plan.Update) (plan.Snapshot, error) {
 	if session == nil || session.state.Plan == nil {
 		return plan.Snapshot{}, errors.New("session plan state is unavailable")
 	}

@@ -75,7 +75,11 @@ func TestModelClientSessionRetriesDroppedStreamAndReplacesAttemptDraft(t *testin
 			{chunk: llm.StreamChunk{FinishReason: llm.FinishReasonStop}},
 		}},
 	}}
-	sink := protocol.NewMemorySink()
+	rootEvents := protocol.NewMemorySink()
+	sink, err := protocol.NewScopedSink(rootEvents, "submission-1", "memory-thread", "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	session := newTestModelClientSession(t, client, 2, time.Second)
 
 	result, err := session.Sample(context.Background(), sampleRequest(sink))
@@ -89,14 +93,14 @@ func TestModelClientSessionRetriesDroppedStreamAndReplacesAttemptDraft(t *testin
 		t.Fatalf("unexpected stream attempts: %d", len(client.requests))
 	}
 
-	events := sink.Snapshot()
+	events := rootEvents.Snapshot()
 	var retryEvents int
 	var assistantResetEvents int
 	var reasoningResetEvents int
 	var terminalErrors int
 	state := protocol.NewTranscriptState("memory-thread")
 	for _, event := range events {
-		if streamError, ok := event.Message.(protocol.StreamError); ok {
+		if streamError, ok := event.Msg.(protocol.StreamErrorEvent); ok {
 			if streamError.WillRetry {
 				retryEvents++
 				if streamError.Message != "Reconnecting... 1/2" {
@@ -106,10 +110,10 @@ func TestModelClientSessionRetriesDroppedStreamAndReplacesAttemptDraft(t *testin
 				terminalErrors++
 			}
 		}
-		if delta, ok := event.Message.(protocol.AssistantMessageDelta); ok && delta.Reset {
+		if delta, ok := event.Msg.(protocol.AgentMessageContentDeltaEvent); ok && delta.Reset {
 			assistantResetEvents++
 		}
-		if delta, ok := event.Message.(protocol.ReasoningDelta); ok && delta.Reset {
+		if delta, ok := event.Msg.(protocol.ReasoningContentDeltaEvent); ok && delta.Reset {
 			reasoningResetEvents++
 		}
 		if err := state.Apply(event); err != nil {
@@ -163,7 +167,7 @@ func TestModelClientSessionPublishesTerminalErrorAfterRetryExhaustion(t *testing
 	var retryEvents int
 	var terminalEvents int
 	for _, event := range sink.Snapshot() {
-		if streamError, ok := event.Message.(protocol.StreamError); ok {
+		if streamError, ok := event.Msg.(protocol.StreamErrorEvent); ok {
 			if streamError.WillRetry {
 				retryEvents++
 			} else {
@@ -198,7 +202,7 @@ func TestModelClientSessionHonorsProviderRetryDelay(t *testing.T) {
 		t.Fatalf("unexpected retry delays: %v", delays)
 	}
 	for _, event := range sink.Snapshot() {
-		streamError, ok := event.Message.(protocol.StreamError)
+		streamError, ok := event.Msg.(protocol.StreamErrorEvent)
 		if !ok || !streamError.WillRetry {
 			continue
 		}
@@ -227,7 +231,7 @@ func TestModelClientSessionCancellationStopsBackoffWithoutTerminalError(t *testi
 	var retryEvents int
 	var terminalEvents int
 	for _, event := range sink.Snapshot() {
-		if streamError, ok := event.Message.(protocol.StreamError); ok {
+		if streamError, ok := event.Msg.(protocol.StreamErrorEvent); ok {
 			if streamError.WillRetry {
 				retryEvents++
 			} else {
@@ -338,9 +342,9 @@ func TestRetryErrorDetailsAreSafeAndStructured(t *testing.T) {
 	if len(events) == 0 {
 		t.Fatal("missing terminal stream error")
 	}
-	streamError, ok := events[len(events)-1].Message.(protocol.StreamError)
+	streamError, ok := events[len(events)-1].Msg.(protocol.StreamErrorEvent)
 	if !ok || streamError.WillRetry || streamError.ProviderError == nil || streamError.ProviderError.Kind != string(llm.ProviderErrorNetwork) {
-		t.Fatalf("unexpected structured stream error: %#v", events[len(events)-1].Message)
+		t.Fatalf("unexpected structured stream error: %#v", events[len(events)-1].Msg)
 	}
 	if streamError.AdditionalDetails == nil || !strings.Contains(*streamError.AdditionalDetails, "network unavailable") {
 		t.Fatalf("missing stream error details: %#v", streamError)

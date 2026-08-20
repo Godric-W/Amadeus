@@ -16,7 +16,7 @@ import (
 
 type RunRequest struct {
 	Snapshot     func(llm.ModelInfo, llm.Prompt) agentcontext.PromptSnapshot
-	AppendItems  func(context.Context, turn.ID, ...rollout.Item) error
+	AppendItems  func(context.Context, protocol.TurnID, ...rollout.Item) error
 	Progress     func(llm.Usage, int)
 	ModelSession *ModelClientSession
 	Turn         turn.TurnContext

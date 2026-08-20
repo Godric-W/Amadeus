@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 )
 
 type Completion struct {
-	TurnID turn.ID
+	TurnID protocol.TurnID
 	Result Result
 	Error  error
 	Cause  error

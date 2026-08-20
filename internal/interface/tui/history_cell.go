@@ -57,7 +57,7 @@ type HistoryCell interface {
 
 type ActiveHistoryCell interface {
 	HistoryCell
-	Apply(protocol.EventMessage) bool
+	Apply(protocol.EventMsg) bool
 	Complete() HistoryCell
 	IsComplete() bool
 }
@@ -244,7 +244,7 @@ type PlanUpdateCell struct {
 	Items       []protocol.PlanItem
 }
 
-func NewPlanUpdateCell(update protocol.PlanUpdated) HistoryCell {
+func NewPlanUpdateCell(update protocol.PlanUpdateEvent) HistoryCell {
 	return PlanUpdateCell{
 		Explanation: strings.TrimSpace(update.Explanation),
 		Items:       append([]protocol.PlanItem(nil), update.Items...),

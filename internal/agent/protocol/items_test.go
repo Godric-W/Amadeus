@@ -4,33 +4,29 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/Godric-W/Amadeus/internal/agent/plan"
-	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
-func TestSessionEventValidate(t *testing.T) {
-	if err := (SessionEvent{}).Validate(); err == nil {
-		t.Fatal("expected an empty session event to be rejected")
+func TestEventValidate(t *testing.T) {
+	if err := (Event{}).Validate(); err == nil {
+		t.Fatal("expected an empty event to be rejected")
 	}
-	if err := (SessionEvent{ThreadID: "thread-1"}).Validate(); err == nil {
+	if err := (Event{ID: "submission-1"}).Validate(); err == nil {
 		t.Fatal("expected an event without a message to be rejected")
 	}
 }
 
-func TestInteractiveRequestValidateTypedPayload(t *testing.T) {
-	request := InteractiveRequest{
+func TestApprovalRequestEventValidateTypedPayload(t *testing.T) {
+	request := ApprovalRequestEvent{
 		RequestID: "request-1",
 		ThreadID:  "thread-1",
 		TurnID:    "turn-1",
-		Kind:      RequestApproval,
-		Approval:  &ApprovalRequest{ID: "request-1", ToolName: "edit"},
+		Approval:  ApprovalRequest{ID: "request-1", ToolName: "edit"},
 	}
 	if err := request.Validate(); err != nil {
 		t.Fatalf("valid approval request rejected: %v", err)
 	}
 
-	request.Approval = nil
+	request.Approval = ApprovalRequest{}
 	if err := request.Validate(); err == nil {
 		t.Fatal("expected approval request without payload to be rejected")
 	}
@@ -49,22 +45,22 @@ func TestTranscriptStateLiveItemLifecycle(t *testing.T) {
 	started := TurnItem{
 		ID: "assistant-1", Kind: ItemAssistantMessage, Status: ItemInProgress, CreatedAt: created,
 	}
-	if err := state.Apply(SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: TurnStarted{}}); err != nil {
+	if err := state.Apply(scopedTestEvent(TurnStartedEvent{})); err != nil {
 		t.Fatalf("apply turn start: %v", err)
 	}
 	if !state.Working {
 		t.Fatal("turn start did not set working state")
 	}
-	if err := state.Apply(SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: ItemStarted{Item: started}}); err != nil {
+	if err := state.Apply(scopedTestEvent(ItemStartedEvent{Item: started})); err != nil {
 		t.Fatalf("apply item start: %v", err)
 	}
-	if err := state.Apply(SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: AssistantMessageDelta{ItemID: started.ID, Delta: "hello"}}); err != nil {
+	if err := state.Apply(scopedTestEvent(AgentMessageContentDeltaEvent{ItemID: started.ID, Delta: "hello"})); err != nil {
 		t.Fatalf("apply delta: %v", err)
 	}
 	finished := started
 	finished.Status = ItemStatusCompleted
 	finished.CompletedAt = created.Add(time.Second)
-	if err := state.Apply(SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: ItemCompleted{Item: finished}}); err != nil {
+	if err := state.Apply(scopedTestEvent(ItemCompletedEvent{Item: finished})); err != nil {
 		t.Fatalf("apply item completion: %v", err)
 	}
 	if len(state.Active) != 0 || len(state.Items) != 1 {
@@ -73,7 +69,7 @@ func TestTranscriptStateLiveItemLifecycle(t *testing.T) {
 	if state.Items[0].Text != "" {
 		t.Fatalf("completion should be authoritative, got text %q", state.Items[0].Text)
 	}
-	if err := state.Apply(SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: TurnCompleted{}}); err != nil {
+	if err := state.Apply(scopedTestEvent(TurnCompleteEvent{})); err != nil {
 		t.Fatalf("apply turn completion: %v", err)
 	}
 	if state.Working {
@@ -88,7 +84,7 @@ func TestTranscriptStateReplayCompletedWithoutStart(t *testing.T) {
 		ID: "tool-1", Kind: ItemToolCall, Status: ItemStatusCompleted,
 		CreatedAt: completedAt.Add(-time.Second), CompletedAt: completedAt, Text: "done",
 	}
-	if err := state.Apply(SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: ItemCompleted{Item: item}}); err != nil {
+	if err := state.Apply(scopedTestEvent(ItemCompletedEvent{Item: item})); err != nil {
 		t.Fatalf("apply replay completion: %v", err)
 	}
 	if len(state.Items) != 1 || state.Items[0].ID != item.ID {
@@ -100,12 +96,12 @@ func TestTranscriptStateRepeatedCompletionIsIdempotent(t *testing.T) {
 	state := NewTranscriptState("thread-1")
 	when := time.Date(2026, time.August, 13, 0, 0, 0, 0, time.UTC)
 	item := TurnItem{ID: "tool-1", Kind: ItemToolCall, Status: ItemStatusCompleted, CreatedAt: when, CompletedAt: when.Add(time.Second), Text: "first"}
-	event := SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: ItemCompleted{Item: item}}
+	event := scopedTestEvent(ItemCompletedEvent{Item: item})
 	if err := state.Apply(event); err != nil {
 		t.Fatalf("apply first completion: %v", err)
 	}
 	item.Text = "second"
-	if err := state.Apply(SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: ItemCompleted{Item: item}}); err != nil {
+	if err := state.Apply(scopedTestEvent(ItemCompletedEvent{Item: item})); err != nil {
 		t.Fatalf("apply repeated completion: %v", err)
 	}
 	if len(state.Items) != 1 || state.Items[0].Text != "second" {
@@ -117,10 +113,10 @@ func TestTranscriptStateLateDeltaDoesNotMutateCompletedItem(t *testing.T) {
 	state := NewTranscriptState("thread-1")
 	when := time.Date(2026, time.August, 13, 0, 0, 0, 0, time.UTC)
 	item := TurnItem{ID: "assistant-1", Kind: ItemAssistantMessage, Status: ItemStatusCompleted, CreatedAt: when, CompletedAt: when.Add(time.Second), Text: "final"}
-	if err := state.Apply(SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: ItemCompleted{Item: item}}); err != nil {
+	if err := state.Apply(scopedTestEvent(ItemCompletedEvent{Item: item})); err != nil {
 		t.Fatalf("apply completion: %v", err)
 	}
-	if err := state.Apply(SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: AssistantMessageDelta{ItemID: item.ID, Delta: " late"}}); err != nil {
+	if err := state.Apply(scopedTestEvent(AgentMessageContentDeltaEvent{ItemID: item.ID, Delta: " late"})); err != nil {
 		t.Fatalf("late delta should be ignored, got %v", err)
 	}
 	if state.Items[0].Text != "final" || len(state.Active) != 0 {
@@ -130,7 +126,7 @@ func TestTranscriptStateLateDeltaDoesNotMutateCompletedItem(t *testing.T) {
 
 func TestTranscriptStateUnknownDeltaIsRejected(t *testing.T) {
 	state := NewTranscriptState("thread-1")
-	err := state.Apply(SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: AssistantMessageDelta{ItemID: "missing", Delta: "x"}})
+	err := state.Apply(scopedTestEvent(AgentMessageContentDeltaEvent{ItemID: "missing", Delta: "x"}))
 	if err == nil || !strings.Contains(err.Error(), "unknown item") {
 		t.Fatalf("expected unknown item error, got %v", err)
 	}
@@ -138,7 +134,7 @@ func TestTranscriptStateUnknownDeltaIsRejected(t *testing.T) {
 
 func TestTranscriptStateContextCompacted(t *testing.T) {
 	state := NewTranscriptState("thread-1")
-	if err := state.Apply(SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: ContextCompacted{ItemID: "compact-1"}}); err != nil {
+	if err := state.Apply(scopedTestEvent(ContextCompactedEvent{ItemID: "compact-1"})); err != nil {
 		t.Fatalf("apply compaction: %v", err)
 	}
 	if len(state.Items) != 1 || state.Items[0].Kind != ItemContextCompaction || state.Items[0].Text != "" {
@@ -146,79 +142,6 @@ func TestTranscriptStateContextCompacted(t *testing.T) {
 	}
 }
 
-var _ rollout.ThreadID
-
-func TestCompletedItemRoundTripAndReplay(t *testing.T) {
-	created := time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
-	item := TurnItem{
-		ID: "call-1", Kind: ItemCommandExecution, Status: ItemStatusCompleted,
-		CreatedAt: created, CompletedAt: created.Add(time.Second), Text: "ok",
-		ToolName: "execute_command", CallID: "call-1", Payload: map[string]any{"command": "pwd"},
-	}
-	rolloutItem, err := NewCompletedItem(item)
-	if err != nil {
-		t.Fatal(err)
-	}
-	line := rollout.Line{Version: rollout.CurrentVersion, Sequence: 1, Timestamp: created, ThreadID: "thread-1", TurnID: "turn-1", Item: rolloutItem}
-	decoded, err := DecodeCompletedItem(line)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if decoded.ID != item.ID || decoded.Kind != item.Kind || decoded.Status != item.Status || decoded.Text != item.Text {
-		t.Fatalf("decoded item = %#v", decoded)
-	}
-	projection, err := ProjectThreadItems([]rollout.Line{line})
-	if err != nil || len(projection.Items) != 1 || projection.Items[0].ID != item.ID {
-		t.Fatalf("replay items = %#v, err=%v", projection.Items, err)
-	}
-}
-
-func TestProjectThreadItemsPreservesCanonicalVisibleOrder(t *testing.T) {
-	now := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
-	user, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "inspect"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assistant, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "working"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	planItem, err := rollout.NewItem(rollout.KindPlanUpdate, plan.Snapshot{
-		Explanation: "ordered", UpdatedAt: now.Add(2 * time.Second), Revision: 1,
-		Items: []plan.Item{{Step: "test", Status: plan.ItemInProgress}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	compaction, err := rollout.NewItem(rollout.KindCompaction, rollout.Compaction{
-		Summary: "budget", ReplacementHistory: []rollout.ReplacementMessage{{Role: "user", Content: "summary"}},
-		CoveredThroughSequence: 2, SourceHash: "hash",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	projection, err := ProjectThreadItems([]rollout.Line{
-		{Version: rollout.CurrentVersion, Sequence: 1, Timestamp: now, ThreadID: "thread-1", TurnID: "turn-1", Item: user},
-		{Version: rollout.CurrentVersion, Sequence: 2, Timestamp: now.Add(time.Second), ThreadID: "thread-1", TurnID: "turn-1", Item: assistant},
-		{Version: rollout.CurrentVersion, Sequence: 3, Timestamp: now.Add(2 * time.Second), ThreadID: "thread-1", TurnID: "turn-2", Item: planItem},
-		{Version: rollout.CurrentVersion, Sequence: 4, Timestamp: now.Add(3 * time.Second), ThreadID: "thread-1", TurnID: "turn-2", Item: compaction},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []ItemKind{ItemUserMessage, ItemAssistantMessage, ItemPlan, ItemContextCompaction}
-	if len(projection.Items) != len(want) {
-		t.Fatalf("projection items = %#v", projection.Items)
-	}
-	for index, kind := range want {
-		if projection.Items[index].Kind != kind {
-			t.Fatalf("item %d kind = %q, want %q", index, projection.Items[index].Kind, kind)
-		}
-	}
-	if projection.Items[3].Text != "" {
-		t.Fatalf("compaction summary leaked into replay text: %q", projection.Items[3].Text)
-	}
-	if payload, ok := projection.Items[3].Payload.(rollout.Compaction); !ok || payload.Summary != "budget" {
-		t.Fatalf("compaction payload = %#v", projection.Items[3].Payload)
-	}
+func scopedTestEvent(message EventMsg) Event {
+	return Event{ID: "submission-1", Msg: ScopeEventMsg(message, "thread-1", "turn-1")}
 }

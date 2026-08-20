@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Godric-W/Amadeus/internal/agent/protocol/identity"
 )
 
 func TestRecorderConcurrentAppendAndReopen(t *testing.T) {
@@ -31,7 +33,7 @@ func TestRecorderConcurrentAppendAndReopen(t *testing.T) {
 		wait.Add(1)
 		go func(index int) {
 			defer wait.Done()
-			_, appendErr := recorder.Append(context.Background(), TurnID(fmt.Sprintf("turn-%d", index)), item)
+			_, appendErr := recorder.Append(context.Background(), identity.TurnID(fmt.Sprintf("turn-%d", index)), item)
 			errors <- appendErr
 		}(index)
 	}

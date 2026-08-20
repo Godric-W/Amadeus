@@ -7,7 +7,6 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -16,7 +15,7 @@ type testPlanUpdater struct {
 	calls    int
 }
 
-func (updater *testPlanUpdater) UpdatePlan(_ context.Context, _ turn.ID, update plan.Update) (plan.Snapshot, error) {
+func (updater *testPlanUpdater) UpdatePlan(_ context.Context, _ protocol.TurnID, update plan.Update) (plan.Snapshot, error) {
 	state := plan.NewState()
 	if updater.snapshot.Revision > 0 {
 		if err := state.Restore(updater.snapshot); err != nil {
@@ -34,7 +33,7 @@ func (updater *testPlanUpdater) UpdatePlan(_ context.Context, _ turn.ID, update 
 func TestUpdatePlanAppliesAndPublishes(t *testing.T) {
 	updater := &testPlanUpdater{}
 	rootEvents := protocol.NewMemorySink()
-	events, err := protocol.NewScopedSink(rootEvents, "thread-1", "turn-1")
+	events, err := protocol.NewScopedSink(rootEvents, "submission-1", "thread-1", "turn-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +59,7 @@ func TestUpdatePlanAppliesAndPublishes(t *testing.T) {
 }
 
 func TestUpdatePlanRejectsMultipleInProgressItems(t *testing.T) {
-	events, err := protocol.NewScopedSink(protocol.NewMemorySink(), "thread-1", "turn-1")
+	events, err := protocol.NewScopedSink(protocol.NewMemorySink(), "submission-1", "thread-1", "turn-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +75,7 @@ func TestUpdatePlanRejectsMultipleInProgressItems(t *testing.T) {
 }
 
 func TestUpdatePlanRequiresTurnID(t *testing.T) {
-	events, err := protocol.NewScopedSink(protocol.NewMemorySink(), "thread-1", "turn-1")
+	events, err := protocol.NewScopedSink(protocol.NewMemorySink(), "submission-1", "thread-1", "turn-1")
 	if err != nil {
 		t.Fatal(err)
 	}

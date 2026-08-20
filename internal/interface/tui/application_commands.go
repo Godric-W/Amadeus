@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	application "github.com/Godric-W/Amadeus/internal/app"
-	"github.com/Godric-W/Amadeus/internal/rollout"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -114,8 +114,8 @@ func (model fullscreenModel) dispatchCommand(invocation SlashInvocation) (tea.Mo
 	}
 }
 
-func applicationThreadID(value string) rollout.ThreadID {
-	return rollout.ThreadID(strings.TrimSpace(value))
+func applicationThreadID(value string) protocol.ThreadID {
+	return protocol.ThreadID(strings.TrimSpace(value))
 }
 
 func taskPhase(task TaskSubmission) string {

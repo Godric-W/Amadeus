@@ -9,10 +9,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
-	"github.com/Godric-W/Amadeus/internal/rollout"
 )
-
-type ID = rollout.TurnID
 
 type ModeKind string
 
@@ -25,12 +22,12 @@ type Personality string
 
 type TurnContext struct {
 	SubmissionID protocol.SubmissionID `json:"-"`
-	ThreadID rollout.ThreadID `json:"thread_id"`
-	TurnID   ID               `json:"turn_id"`
-	Provider string           `json:"provider"`
-	Model    string           `json:"model"`
-	CWD      string           `json:"cwd"`
-	Shell    string           `json:"shell,omitempty"`
+	ThreadID     protocol.ThreadID     `json:"thread_id"`
+	TurnID       protocol.TurnID       `json:"turn_id"`
+	Provider     string                `json:"provider"`
+	Model        string                `json:"model"`
+	CWD          string                `json:"cwd"`
+	Shell        string                `json:"shell,omitempty"`
 
 	CurrentDate string `json:"current_date,omitempty"`
 	Timezone    string `json:"timezone,omitempty"`

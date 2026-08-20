@@ -18,11 +18,11 @@ func TestInlineRendererKeepsTextAndStatusBlocksSeparate(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := renderer.Publish(ctx, protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.AssistantMessageDelta{ItemID: "assistant-1", Delta: "hello"}}); err != nil {
+	if err := renderer.Publish(ctx, testProtocolEvent("thread-1", "turn-1", protocol.AgentMessageContentDeltaEvent{ItemID: "assistant-1", Delta: "hello"})); err != nil {
 		t.Fatal(err)
 	}
 	started := toolStartedMessage("read", "read", "read", "Read file", "")
-	if err := renderer.Publish(ctx, protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: started}); err != nil {
+	if err := renderer.Publish(ctx, testProtocolEvent("thread-1", "turn-1", started)); err != nil {
 		t.Fatal(err)
 	}
 	if text.String() != "hello\n" || !strings.Contains(status.String(), "Exploring") || !strings.Contains(status.String(), "Read file") {
@@ -37,15 +37,15 @@ func TestInlineRendererRendersPlanAndUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	started := toolStartedMessage("write-1", "write", "write", "Create file", "")
-	for _, event := range []protocol.SessionEvent{
-		{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.PlanUpdated{Revision: 1, Items: []protocol.PlanItem{{Step: "Read source", Status: "pending"}}}},
-		{ThreadID: "thread-1", TurnID: "turn-1", Message: started},
-		{ThreadID: "thread-1", TurnID: "turn-1", Message: toolCompletedMessage(started, protocol.ItemStatusCompleted, "done", "0s", false)},
-		{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.ThreadTokenUsageUpdated{Usage: llm.Usage{InputTokens: 3, OutputTokens: 5}}},
-		{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.TurnCompleted{Status: "completed", FinishedAt: time.Now().UTC()}},
+	for _, event := range []protocol.Event{
+		testProtocolEvent("thread-1", "turn-1", protocol.PlanUpdateEvent{Revision: 1, Items: []protocol.PlanItem{{Step: "Read source", Status: "pending"}}}),
+		testProtocolEvent("thread-1", "turn-1", started),
+		testProtocolEvent("thread-1", "turn-1", toolCompletedMessage(started, protocol.ItemStatusCompleted, "done", "0s", false)),
+		testProtocolEvent("thread-1", "turn-1", protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 3, OutputTokens: 5}}),
+		testProtocolEvent("thread-1", "turn-1", protocol.TurnCompleteEvent{Status: "completed", FinishedAt: time.Now().UTC()}),
 	} {
 		if err := renderer.Publish(context.Background(), event); err != nil {
-			t.Fatalf("publish %T: %v", event.Message, err)
+			t.Fatalf("publish %T: %v", event.Msg, err)
 		}
 	}
 	output := status.String()
@@ -63,9 +63,9 @@ func TestInlineRendererRetryDoesNotEnterErrorPhase(t *testing.T) {
 		t.Fatal(err)
 	}
 	details := "idle timeout waiting for provider stream"
-	if err := renderer.Publish(context.Background(), protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.StreamError{
+	if err := renderer.Publish(context.Background(), testProtocolEvent("thread-1", "turn-1", protocol.StreamErrorEvent{
 		Message: "Reconnecting... 1/5", AdditionalDetails: &details, WillRetry: true,
-	}}); err != nil {
+	})); err != nil {
 		t.Fatal(err)
 	}
 	if renderer.phase == "error" || !strings.Contains(status.String(), "Reconnecting... 1/5") || !strings.Contains(status.String(), details) {

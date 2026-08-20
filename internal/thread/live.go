@@ -5,25 +5,26 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol/identity"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
 type LiveThread struct {
 	mu           sync.Mutex
-	id           ID
+	id           identity.ThreadID
 	store        ThreadStore
 	materialized bool
 	closed       bool
 }
 
-func NewDraftLiveThread(id ID, store ThreadStore) (*LiveThread, error) {
+func NewDraftLiveThread(id identity.ThreadID, store ThreadStore) (*LiveThread, error) {
 	if id == "" || store == nil {
 		return nil, errors.New("draft live thread is incomplete")
 	}
 	return &LiveThread{id: id, store: store}, nil
 }
 
-func NewResumedLiveThread(ctx context.Context, id ID, store ThreadStore) (*LiveThread, InitialHistory, error) {
+func NewResumedLiveThread(ctx context.Context, id identity.ThreadID, store ThreadStore) (*LiveThread, InitialHistory, error) {
 	if id == "" || store == nil {
 		return nil, InitialHistory{}, errors.New("resumed live thread is incomplete")
 	}
@@ -34,7 +35,7 @@ func NewResumedLiveThread(ctx context.Context, id ID, store ThreadStore) (*LiveT
 	return &LiveThread{id: id, store: store, materialized: true}, history, nil
 }
 
-func (thread *LiveThread) ID() ID {
+func (thread *LiveThread) ID() identity.ThreadID {
 	if thread == nil {
 		return ""
 	}
@@ -59,7 +60,7 @@ func (thread *LiveThread) Materialize(ctx context.Context, input CreateInput) (A
 	return result, nil
 }
 
-func (thread *LiveThread) AppendItems(ctx context.Context, turnID TurnID, items ...rollout.Item) (AppendResult, error) {
+func (thread *LiveThread) AppendItems(ctx context.Context, turnID identity.TurnID, items ...rollout.RolloutItem) (AppendResult, error) {
 	thread.mu.Lock()
 	defer thread.mu.Unlock()
 	if thread.closed {
@@ -74,7 +75,7 @@ func (thread *LiveThread) AppendItems(ctx context.Context, turnID TurnID, items 
 // AppendItemsBuffered appends facts without advancing the durable metadata
 // index. Session uses this only for high-frequency intermediate response facts;
 // a later durable append flushes the buffered tail before synchronizing SQLite.
-func (thread *LiveThread) AppendItemsBuffered(ctx context.Context, turnID TurnID, items ...rollout.Item) (AppendResult, error) {
+func (thread *LiveThread) AppendItemsBuffered(ctx context.Context, turnID identity.TurnID, items ...rollout.RolloutItem) (AppendResult, error) {
 	thread.mu.Lock()
 	defer thread.mu.Unlock()
 	if thread.closed {
@@ -84,7 +85,7 @@ func (thread *LiveThread) AppendItemsBuffered(ctx context.Context, turnID TurnID
 		return AppendResult{}, errors.New("live thread is not materialized")
 	}
 	if buffered, ok := thread.store.(interface {
-		AppendItemsBuffered(context.Context, ID, TurnID, ...rollout.Item) (AppendResult, error)
+		AppendItemsBuffered(context.Context, identity.ThreadID, identity.TurnID, ...rollout.RolloutItem) (AppendResult, error)
 	}); ok {
 		return buffered.AppendItemsBuffered(ctx, thread.id, turnID, items...)
 	}

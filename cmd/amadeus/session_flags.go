@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/thread"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/spf13/cobra"
 )
 
@@ -34,7 +34,7 @@ func (flags *sessionFlags) bind(command *cobra.Command) {
 	command.Flags().Lookup(flagResume).NoOptDefVal = resumeSelectorFlag
 }
 
-func (flags *sessionFlags) resolve(command *cobra.Command) (sessionStartMode, thread.ID, error) {
+func (flags *sessionFlags) resolve(command *cobra.Command) (sessionStartMode, protocol.ThreadID, error) {
 	if command == nil {
 		return "", "", errors.New("session flags command is nil")
 	}
@@ -52,5 +52,5 @@ func (flags *sessionFlags) resolve(command *cobra.Command) (sessionStartMode, th
 	if value == resumeSelectorFlag || value == "" {
 		return sessionStartSelect, "", nil
 	}
-	return sessionStartResume, thread.ID(value), nil
+	return sessionStartResume, protocol.ThreadID(value), nil
 }

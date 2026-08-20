@@ -51,7 +51,7 @@ type builderTestHost struct {
 
 func (host *builderTestHost) AgentServices() *engine.Services { return host.runtime }
 
-func (host *builderTestHost) AppendItems(_ context.Context, turnID turn.ID, items ...rollout.Item) error {
+func (host *builderTestHost) AppendItems(_ context.Context, turnID protocol.TurnID, items ...rollout.Item) error {
 	for _, item := range items {
 		host.lines = append(host.lines, rollout.Line{Sequence: uint64(len(host.lines) + 1), TurnID: turnID, Item: item})
 	}
@@ -60,11 +60,11 @@ func (host *builderTestHost) AppendItems(_ context.Context, turnID turn.ID, item
 func (host *builderTestHost) History() []rollout.Line {
 	return append([]rollout.Line(nil), host.lines...)
 }
-func (*builderTestHost) Publish(context.Context, protocol.SessionEvent) error { return nil }
-func (*builderTestHost) Request(context.Context, protocol.InteractiveRequest) (protocol.Op, error) {
+func (*builderTestHost) Publish(context.Context, protocol.Event) error { return nil }
+func (*builderTestHost) Request(context.Context, protocol.ApprovalRequestEvent) (protocol.Op, error) {
 	return nil, errors.New("unexpected interactive request")
 }
-func (*builderTestHost) UpdatePlan(context.Context, turn.ID, plan.Update) (plan.Snapshot, error) {
+func (*builderTestHost) UpdatePlan(context.Context, protocol.TurnID, plan.Update) (plan.Snapshot, error) {
 	return plan.Snapshot{}, nil
 }
 func (host *builderTestHost) Snapshot(model llm.ModelInfo, prompt llm.Prompt) agentcontext.PromptSnapshot {
@@ -127,7 +127,7 @@ func TestServicesBuilderReusesSessionServicesAcrossRegularTasks(t *testing.T) {
 	}
 	host.runtime = runtime
 	requestContext := turn.TurnContext{
-		ThreadID: "thread-1", TurnID: "turn-1", Provider: configured.ModelProvider, Model: configured.Model,
+		SubmissionID: "submission-1", ThreadID: "thread-1", TurnID: "turn-1", Provider: configured.ModelProvider, Model: configured.Model,
 		CWD: root.Path(), Mode: turn.ModeKindDefault,
 	}
 	session.services.AgentServices = runtime

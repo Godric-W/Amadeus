@@ -91,12 +91,12 @@ func TestTranscriptStateFlushesActiveHistoryCellOnce(t *testing.T) {
 
 func TestTranscriptStateBumpsActiveCellRevision(t *testing.T) {
 	model := fullscreenModel{transcript: TranscriptState{ActiveCell: newToolHistoryCell()}}
-	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: toolStarted("call")})
+	model.applyEvent(testProtocolEvent("thread-1", "turn-1", toolStarted("call")))
 	if model.transcript.ActiveCellRevision == 0 {
 		t.Fatal("active cell revision did not change after mutation")
 	}
 	before := model.transcript.ActiveCellRevision
-	model.applyEvent(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: toolCompleted("call")})
+	model.applyEvent(testProtocolEvent("thread-1", "turn-1", toolCompleted("call")))
 	if model.transcript.ActiveCellRevision <= before {
 		t.Fatalf("revision = %d, want > %d", model.transcript.ActiveCellRevision, before)
 	}
@@ -155,10 +155,10 @@ func TestHistoryCellArchitectureHasNoLegacyMainChain(t *testing.T) {
 	}
 }
 
-func toolStarted(callID string) protocol.ItemStarted {
+func toolStarted(callID string) protocol.ItemStartedEvent {
 	return toolStartedMessage(callID, "read", "read", "Read file", "")
 }
 
-func toolCompleted(callID string) protocol.ItemCompleted {
+func toolCompleted(callID string) protocol.ItemCompletedEvent {
 	return toolCompletedMessage(toolStarted(callID), protocol.ItemStatusCompleted, "", "0s", false)
 }

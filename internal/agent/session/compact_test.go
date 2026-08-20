@@ -84,10 +84,10 @@ func (*compactTestStream) Close() error { return nil }
 type compactTestHost struct {
 	lines   []rollout.Line
 	context *agentcontext.Manager
-	events  []protocol.SessionEvent
+	events  []protocol.Event
 }
 
-func (host *compactTestHost) AppendItems(_ context.Context, turnID turn.ID, items ...rollout.Item) error {
+func (host *compactTestHost) AppendItems(_ context.Context, turnID protocol.TurnID, items ...rollout.Item) error {
 	for _, item := range items {
 		host.lines = append(host.lines, rollout.Line{Version: rollout.CurrentVersion, Sequence: uint64(len(host.lines) + 1), Timestamp: time.Now().UTC(), ThreadID: "thread-1", TurnID: turnID, Item: item})
 	}
@@ -97,14 +97,14 @@ func (host *compactTestHost) AppendItems(_ context.Context, turnID turn.ID, item
 func (host *compactTestHost) History() []rollout.Line {
 	return append([]rollout.Line(nil), host.lines...)
 }
-func (host *compactTestHost) Publish(_ context.Context, event protocol.SessionEvent) error {
+func (host *compactTestHost) Publish(_ context.Context, event protocol.Event) error {
 	host.events = append(host.events, event)
 	return nil
 }
-func (*compactTestHost) Request(context.Context, protocol.InteractiveRequest) (protocol.Op, error) {
+func (*compactTestHost) Request(context.Context, protocol.ApprovalRequestEvent) (protocol.Op, error) {
 	return nil, errors.New("unexpected interactive request")
 }
-func (*compactTestHost) UpdatePlan(context.Context, turn.ID, plan.Update) (plan.Snapshot, error) {
+func (*compactTestHost) UpdatePlan(context.Context, protocol.TurnID, plan.Update) (plan.Snapshot, error) {
 	return plan.Snapshot{}, nil
 }
 func (host *compactTestHost) Snapshot(model llm.ModelInfo, prompt llm.Prompt) agentcontext.PromptSnapshot {
@@ -278,21 +278,21 @@ func TestCompactionSuccessEventOrderRemainsContextWarningTerminal(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := &Session{threadID: "thread-1", ctx: context.Background(), events: make(chan protocol.SessionEvent, 3)}
-	session.publishCompactionEvents("turn-1", []rollout.Item{item})
-	session.publish(protocol.SessionEvent{ThreadID: "thread-1", TurnID: "turn-1", Message: protocol.TurnCompleted{}})
+	session := &Session{threadID: "thread-1", ctx: context.Background(), events: make(chan protocol.Event, 3)}
+	session.publishCompactionEvents("submission-1", "turn-1", []rollout.Item{item})
+	session.publish(protocol.Event{ID: "submission-1", Msg: protocol.TurnCompleteEvent{ThreadID: "thread-1", TurnID: "turn-1"}})
 
 	first := <-session.events
 	second := <-session.events
 	third := <-session.events
-	if _, ok := first.Message.(protocol.ContextCompacted); !ok {
-		t.Fatalf("first event = %T", first.Message)
+	if _, ok := first.Msg.(protocol.ContextCompactedEvent); !ok {
+		t.Fatalf("first event = %T", first.Msg)
 	}
-	if warning, ok := second.Message.(protocol.Warning); !ok || warning.Message != compactionWarningMessage {
-		t.Fatalf("second event = %#v", second.Message)
+	if warning, ok := second.Msg.(protocol.WarningEvent); !ok || warning.Message != compactionWarningMessage {
+		t.Fatalf("second event = %#v", second.Msg)
 	}
-	if _, ok := third.Message.(protocol.TurnCompleted); !ok {
-		t.Fatalf("third event = %T", third.Message)
+	if _, ok := third.Msg.(protocol.TurnCompleteEvent); !ok {
+		t.Fatalf("third event = %T", third.Msg)
 	}
 }
 
@@ -359,9 +359,9 @@ func compactRetryFailure(message string) llm.Stream {
 	}}
 }
 
-func compactStreamErrorCounts(events []protocol.SessionEvent) (retrying, terminal int) {
+func compactStreamErrorCounts(events []protocol.Event) (retrying, terminal int) {
 	for _, event := range events {
-		streamError, ok := event.Message.(protocol.StreamError)
+		streamError, ok := event.Msg.(protocol.StreamErrorEvent)
 		if !ok {
 			continue
 		}

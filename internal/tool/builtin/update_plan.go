@@ -10,12 +10,11 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type PlanUpdater interface {
-	UpdatePlan(context.Context, turn.ID, plan.Update) (plan.Snapshot, error)
+	UpdatePlan(context.Context, protocol.TurnID, plan.Update) (plan.Snapshot, error)
 }
 
 type UpdatePlanOptions struct {
@@ -70,7 +69,7 @@ func (updatePlan *UpdatePlan) Execute(toolContext tool.ToolUseContext, prepared 
 		return tool.ToolResult{}, errors.New("update_plan preparation state is invalid")
 	}
 	invocation := prepared.Invocation
-	turnID := turn.ID(strings.TrimSpace(invocation.TurnID))
+	turnID := protocol.TurnID(strings.TrimSpace(invocation.TurnID))
 	if turnID == "" {
 		return tool.ToolResult{}, errors.New("update_plan turn ID is empty")
 	}
@@ -82,7 +81,8 @@ func (updatePlan *UpdatePlan) Execute(toolContext tool.ToolUseContext, prepared 
 	for _, item := range snapshot.Items {
 		items = append(items, protocol.PlanItem{Step: item.Step, Status: string(item.Status)})
 	}
-	if err := updatePlan.options.Events.Publish(toolContext.Context, protocol.SessionEvent{TurnID: turnID, Message: protocol.PlanUpdated{
+	if err := updatePlan.options.Events.Publish(toolContext.Context, protocol.Event{Msg: protocol.PlanUpdateEvent{
+		TurnID: protocol.TurnID(turnID), ItemID: protocol.ItemID(invocation.Call.ID),
 		Explanation: snapshot.Explanation, Items: items, Revision: snapshot.Revision, UpdatedAt: snapshot.UpdatedAt,
 	}}); err != nil {
 		return tool.ToolResult{}, fmt.Errorf("publish plan update: %w", err)

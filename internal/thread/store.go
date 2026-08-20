@@ -7,16 +7,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol/identity"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/state"
 )
 
-type ID = rollout.ThreadID
-
-type TurnID = rollout.TurnID
-
 type CreateInput struct {
-	ID            ID
+	ID            identity.ThreadID
 	CWD           string
 	Title         string
 	ModelProvider string
@@ -52,7 +49,7 @@ type InitialHistory struct {
 	Lines []rollout.Line
 }
 
-func (history InitialHistory) Validate(id ID) error {
+func (history InitialHistory) Validate(id identity.ThreadID) error {
 	if id == "" {
 		return errors.New("initial history thread ID is empty")
 	}
@@ -62,7 +59,10 @@ func (history InitialHistory) Validate(id ID) error {
 			return errors.New("new initial history must be empty")
 		}
 	case InitialHistoryResumed:
-		if len(history.Lines) == 0 || history.Lines[0].Item.Kind != rollout.KindSessionMeta {
+		if len(history.Lines) == 0 {
+			return errors.New("resumed initial history must begin with session_meta")
+		}
+		if _, ok := history.Lines[0].Item.(rollout.SessionMetaItem); !ok {
 			return errors.New("resumed initial history must begin with session_meta")
 		}
 		for index, line := range history.Lines {
@@ -83,15 +83,15 @@ type AppendResult struct {
 
 type ThreadStore interface {
 	Materialize(context.Context, CreateInput) (AppendResult, error)
-	OpenWriter(context.Context, ID) (InitialHistory, error)
-	AppendItems(context.Context, ID, TurnID, ...rollout.Item) (AppendResult, error)
-	Flush(context.Context, ID) error
-	CloseWriter(context.Context, ID) error
-	LoadHistory(context.Context, ID) (InitialHistory, error)
-	GetThread(context.Context, ID) (state.StoredThread, error)
+	OpenWriter(context.Context, identity.ThreadID) (InitialHistory, error)
+	AppendItems(context.Context, identity.ThreadID, identity.TurnID, ...rollout.RolloutItem) (AppendResult, error)
+	Flush(context.Context, identity.ThreadID) error
+	CloseWriter(context.Context, identity.ThreadID) error
+	LoadHistory(context.Context, identity.ThreadID) (InitialHistory, error)
+	GetThread(context.Context, identity.ThreadID) (state.StoredThread, error)
 	ListThreads(context.Context, state.ListQuery) ([]state.StoredThread, error)
-	RenameThread(context.Context, ID, string, time.Time) error
-	DeleteThread(context.Context, ID, time.Time) error
+	RenameThread(context.Context, identity.ThreadID, string, time.Time) error
+	DeleteThread(context.Context, identity.ThreadID, time.Time) error
 	RebuildIndex(context.Context) error
 	Close() error
 }

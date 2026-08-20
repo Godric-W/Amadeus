@@ -9,15 +9,14 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type toolEventObserver struct {
-	appendItems   func(context.Context, turn.ID, ...rollout.Item) error
-	turnID        turn.ID
+	appendItems   func(context.Context, protocol.TurnID, ...rollout.Item) error
+	turnID        protocol.TurnID
 	events        protocol.EventSink
 	mu            sync.Mutex
 	presentations map[string]toolCallPresentation
@@ -39,7 +38,7 @@ func (presentation toolCallPresentation) payload(duration time.Duration, partial
 	}
 }
 
-func NewToolEventObserver(appendItems func(context.Context, turn.ID, ...rollout.Item) error, turnID turn.ID, events protocol.EventSink) tool.LifecycleObserver {
+func NewToolEventObserver(appendItems func(context.Context, protocol.TurnID, ...rollout.Item) error, turnID protocol.TurnID, events protocol.EventSink) tool.LifecycleObserver {
 	return &toolEventObserver{appendItems: appendItems, turnID: turnID, events: events, presentations: map[string]toolCallPresentation{}}
 }
 
@@ -49,8 +48,8 @@ func (observer *toolEventObserver) ToolCallStarted(ctx context.Context, spec too
 	observer.mu.Lock()
 	observer.presentations[call.ID] = snapshot
 	observer.mu.Unlock()
-	item := protocol.TurnItem{ID: call.ID, Kind: toolItemKind(call.Name, spec.SideEffect), Status: protocol.ItemInProgress, CreatedAt: time.Now().UTC(), ToolName: call.Name, CallID: call.ID, Payload: snapshot.payload(0, false)}
-	if err := observer.events.Publish(ctx, protocol.SessionEvent{Message: protocol.ItemStarted{Item: item}}); err != nil {
+	item := protocol.TurnItem{ID: protocol.ItemID(call.ID), Kind: toolItemKind(call.Name, spec.SideEffect), Status: protocol.ItemInProgress, CreatedAt: time.Now().UTC(), ToolName: call.Name, CallID: call.ID, Payload: snapshot.payload(0, false)}
+	if err := observer.events.Publish(ctx, protocol.Event{Msg: protocol.ItemStartedEvent{Item: item}}); err != nil {
 		observer.mu.Lock()
 		delete(observer.presentations, call.ID)
 		observer.mu.Unlock()
@@ -90,7 +89,7 @@ func (observer *toolEventObserver) ToolCallCompleted(ctx context.Context, execut
 	delete(observer.presentations, execution.Call.ID)
 	observer.mu.Unlock()
 	itemPayload := presentation.payload(execution.Outcome.Duration, execution.Output.Partial)
-	turnItem := protocol.TurnItem{ID: execution.Call.ID, Kind: toolItemKind(execution.Call.Name, ""), Status: status, CreatedAt: now, CompletedAt: now, Text: toolExecutionSummary(execution), ToolName: execution.Call.Name, CallID: execution.Call.ID, ToolResult: &result, Payload: itemPayload}
+	turnItem := protocol.TurnItem{ID: protocol.ItemID(execution.Call.ID), Kind: toolItemKind(execution.Call.Name, ""), Status: status, CreatedAt: now, CompletedAt: now, Text: toolExecutionSummary(execution), ToolName: execution.Call.Name, CallID: execution.Call.ID, ToolResult: &result, Payload: itemPayload}
 	completedItem, err := protocol.NewCompletedItem(turnItem)
 	if err != nil {
 		return err
@@ -99,7 +98,7 @@ func (observer *toolEventObserver) ToolCallCompleted(ctx context.Context, execut
 	if err := observer.appendItems(completionCtx, observer.turnID, responseItem, completedItem); err != nil {
 		return fmt.Errorf("persist tool completion: %w", err)
 	}
-	return observer.events.Publish(completionCtx, protocol.SessionEvent{Message: protocol.ItemCompleted{Item: turnItem}})
+	return observer.events.Publish(completionCtx, protocol.Event{Msg: protocol.ItemCompletedEvent{Item: turnItem}})
 }
 
 func toolItemKind(name string, effect tool.SideEffect) protocol.ItemKind {

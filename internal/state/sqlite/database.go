@@ -60,10 +60,6 @@ func Open(ctx context.Context, amadeusHome string) (*Database, error) {
 		_ = database.Close()
 		return nil, err
 	}
-	if err := migrateLegacyHistory(ctx, amadeusHome, database); err != nil {
-		_ = database.Close()
-		return nil, err
-	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		_ = database.Close()
 		return nil, fmt.Errorf("secure state database: %w", err)

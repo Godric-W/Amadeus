@@ -7,6 +7,7 @@ import (
 	"html"
 	"strings"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/instruction"
@@ -20,7 +21,7 @@ type InstructionScope interface {
 	Initialize(context.Context, string) (instruction.ResolveRequest, error)
 }
 
-func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnContext *turn.TurnContext, scope InstructionScope, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, turn.ID, ...rollout.Item) error) error {
+func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnContext *turn.TurnContext, scope InstructionScope, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.Item) error) error {
 	if runtime == nil || turnContext == nil || scope == nil || contextUpdate == nil || appendItems == nil {
 		return fmt.Errorf("turn context preparation is incomplete")
 	}

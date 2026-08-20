@@ -7,26 +7,26 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 )
 
 var ErrNotFound = errors.New("thread metadata not found")
 
 type StoredThread struct {
-	ID            rollout.ThreadID `json:"id"`
-	RolloutPath   string           `json:"rollout_path"`
-	CWD           string           `json:"cwd"`
-	Title         string           `json:"title"`
-	Preview       string           `json:"preview,omitempty"`
-	ModelProvider string           `json:"model_provider,omitempty"`
-	Model         string           `json:"model,omitempty"`
-	TokensUsed    int64            `json:"tokens_used"`
-	CreatedAt     time.Time        `json:"created_at"`
-	UpdatedAt     time.Time        `json:"updated_at"`
-	Archived      bool             `json:"archived"`
-	GitSHA        string           `json:"git_sha,omitempty"`
-	GitBranch     string           `json:"git_branch,omitempty"`
-	GitOriginURL  string           `json:"git_origin_url,omitempty"`
+	ID            protocol.ThreadID `json:"id"`
+	RolloutPath   string            `json:"rollout_path"`
+	CWD           string            `json:"cwd"`
+	Title         string            `json:"title"`
+	Preview       string            `json:"preview,omitempty"`
+	ModelProvider string            `json:"model_provider,omitempty"`
+	Model         string            `json:"model,omitempty"`
+	TokensUsed    int64             `json:"tokens_used"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+	Archived      bool              `json:"archived"`
+	GitSHA        string            `json:"git_sha,omitempty"`
+	GitBranch     string            `json:"git_branch,omitempty"`
+	GitOriginURL  string            `json:"git_origin_url,omitempty"`
 }
 
 func (thread StoredThread) Validate() error {
@@ -56,10 +56,10 @@ type ListQuery struct {
 
 type DB interface {
 	UpsertThread(context.Context, StoredThread) error
-	GetThread(context.Context, rollout.ThreadID) (StoredThread, error)
+	GetThread(context.Context, protocol.ThreadID) (StoredThread, error)
 	ListThreads(context.Context, ListQuery) ([]StoredThread, error)
-	RenameThread(context.Context, rollout.ThreadID, string, time.Time) error
-	ArchiveThread(context.Context, rollout.ThreadID, time.Time) error
+	RenameThread(context.Context, protocol.ThreadID, string, time.Time) error
+	ArchiveThread(context.Context, protocol.ThreadID, time.Time) error
 	ReplaceThreads(context.Context, []StoredThread) error
 	Close() error
 }

@@ -13,16 +13,16 @@ import (
 func TestFullscreenRetryPreservesDraftAndDoesNotCreateHistory(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	startedAt := time.Date(2026, time.August, 19, 10, 0, 0, 0, time.UTC)
-	applyFullscreenSessionEvent(t, &model, protocol.TurnStarted{Kind: protocol.TaskKindRegular, StartedAt: startedAt})
-	applyFullscreenSessionEvent(t, &model, protocol.ItemStarted{Item: protocol.TurnItem{ID: "assistant-1", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemInProgress, CreatedAt: startedAt}})
-	applyFullscreenSessionEvent(t, &model, protocol.AssistantMessageDelta{ItemID: "assistant-1", Delta: "partial"})
+	applyFullscreenSessionEvent(t, &model, protocol.TurnStartedEvent{Kind: protocol.TaskKindRegular, StartedAt: startedAt})
+	applyFullscreenSessionEvent(t, &model, protocol.ItemStartedEvent{Item: protocol.TurnItem{ID: "assistant-1", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemInProgress, CreatedAt: startedAt}})
+	applyFullscreenSessionEvent(t, &model, protocol.AgentMessageContentDeltaEvent{ItemID: "assistant-1", Delta: "partial"})
 	if model.transcript.ActiveCell != nil {
 		t.Fatalf("assistant stream created tool activity cell: %T", model.transcript.ActiveCell)
 	}
 	historyCount := len(model.historyCells)
 
 	details := "idle timeout waiting for provider stream"
-	applyFullscreenSessionEvent(t, &model, protocol.StreamError{Message: "Reconnecting... 1/5", AdditionalDetails: &details, WillRetry: true})
+	applyFullscreenSessionEvent(t, &model, protocol.StreamErrorEvent{Message: "Reconnecting... 1/5", AdditionalDetails: &details, WillRetry: true})
 
 	if model.draft != "partial" || len(model.historyCells) != historyCount {
 		t.Fatalf("retry mutated transcript: draft=%q history=%d want=%d", model.draft, len(model.historyCells), historyCount)
@@ -35,17 +35,17 @@ func TestFullscreenRetryPreservesDraftAndDoesNotCreateHistory(t *testing.T) {
 func TestFullscreenRetryRestoresStatusAndReplacesDraft(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	startedAt := time.Date(2026, time.August, 19, 10, 0, 0, 0, time.UTC)
-	applyFullscreenSessionEvent(t, &model, protocol.TurnStarted{Kind: protocol.TaskKindRegular, StartedAt: startedAt})
-	applyFullscreenSessionEvent(t, &model, protocol.ItemStarted{Item: protocol.TurnItem{ID: "assistant-1", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemInProgress, CreatedAt: startedAt}})
-	applyFullscreenSessionEvent(t, &model, protocol.AssistantMessageDelta{ItemID: "assistant-1", Delta: "partial"})
-	applyFullscreenSessionEvent(t, &model, protocol.StreamError{Message: "Reconnecting... 1/5", WillRetry: true})
-	applyFullscreenSessionEvent(t, &model, protocol.StreamError{Message: "Reconnecting... 2/5", WillRetry: true})
+	applyFullscreenSessionEvent(t, &model, protocol.TurnStartedEvent{Kind: protocol.TaskKindRegular, StartedAt: startedAt})
+	applyFullscreenSessionEvent(t, &model, protocol.ItemStartedEvent{Item: protocol.TurnItem{ID: "assistant-1", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemInProgress, CreatedAt: startedAt}})
+	applyFullscreenSessionEvent(t, &model, protocol.AgentMessageContentDeltaEvent{ItemID: "assistant-1", Delta: "partial"})
+	applyFullscreenSessionEvent(t, &model, protocol.StreamErrorEvent{Message: "Reconnecting... 1/5", WillRetry: true})
+	applyFullscreenSessionEvent(t, &model, protocol.StreamErrorEvent{Message: "Reconnecting... 2/5", WillRetry: true})
 
 	if model.retryStatus.header != "working" {
 		t.Fatalf("consecutive retry overwrote saved status: %#v", model.retryStatus)
 	}
-	applyFullscreenSessionEvent(t, &model, protocol.AssistantMessageDelta{ItemID: "assistant-1", Reset: true})
-	applyFullscreenSessionEvent(t, &model, protocol.AssistantMessageDelta{ItemID: "assistant-1", Delta: "recovered"})
+	applyFullscreenSessionEvent(t, &model, protocol.AgentMessageContentDeltaEvent{ItemID: "assistant-1", Reset: true})
+	applyFullscreenSessionEvent(t, &model, protocol.AgentMessageContentDeltaEvent{ItemID: "assistant-1", Delta: "recovered"})
 	if model.status != "working" || model.statusDetails != "" || model.retryStatus.active || model.draft != "recovered" {
 		t.Fatalf("recovery state: status=%q details=%q saved=%#v draft=%q", model.status, model.statusDetails, model.retryStatus, model.draft)
 	}
@@ -55,13 +55,13 @@ func TestFullscreenRetryTerminalAndAttachClearTransientState(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	model.running = true
 	model.status = "thinking"
-	applyFullscreenSessionEvent(t, &model, protocol.StreamError{Message: "Reconnecting... 1/5", WillRetry: true})
-	applyFullscreenSessionEvent(t, &model, protocol.StreamError{Message: "provider unavailable"})
+	applyFullscreenSessionEvent(t, &model, protocol.StreamErrorEvent{Message: "Reconnecting... 1/5", WillRetry: true})
+	applyFullscreenSessionEvent(t, &model, protocol.StreamErrorEvent{Message: "provider unavailable"})
 	if model.retryStatus.active || !strings.Contains(lastCellContent(model), "provider unavailable") {
 		t.Fatalf("terminal retry state=%#v history=%q", model.retryStatus, lastCellContent(model))
 	}
 
-	applyFullscreenSessionEvent(t, &model, protocol.StreamError{Message: "Reconnecting... 1/5", WillRetry: true})
+	applyFullscreenSessionEvent(t, &model, protocol.StreamErrorEvent{Message: "Reconnecting... 1/5", WillRetry: true})
 	updated, _ := model.Update(fullscreenAppEventMsg{event: application.ThreadAttached{Snapshot: application.ThreadViewSnapshot{Generation: 2, ThreadID: "thread-2", Model: "test-model"}}})
 	model = updated.(fullscreenModel)
 	if model.retryStatus.active || model.statusDetails != "" || model.status != "idle" || !model.input.Focused() {
@@ -76,7 +76,7 @@ func TestFullscreenRetryWorkingLineHandlesHiddenNoColorAndNarrowLayout(t *testin
 	model.runStartedAt = time.Date(2026, time.August, 19, 10, 0, 0, 0, time.UTC)
 	model.clock = fixedMotionClock{now: model.runStartedAt.Add(time.Second)}
 	details := "idle timeout waiting for a very slow provider stream"
-	applyFullscreenSessionEvent(t, &model, protocol.StreamError{Message: "Reconnecting... 2/5", AdditionalDetails: &details, WillRetry: true})
+	applyFullscreenSessionEvent(t, &model, protocol.StreamErrorEvent{Message: "Reconnecting... 2/5", AdditionalDetails: &details, WillRetry: true})
 
 	line := model.workingLine()
 	parts := strings.Split(line, "\n")
@@ -90,11 +90,11 @@ func TestFullscreenRetryWorkingLineHandlesHiddenNoColorAndNarrowLayout(t *testin
 	}
 }
 
-func applyFullscreenSessionEvent(t *testing.T, model *fullscreenModel, message protocol.EventMessage) {
+func applyFullscreenSessionEvent(t *testing.T, model *fullscreenModel, message protocol.EventMsg) {
 	t.Helper()
 	updated, _ := model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{
 		Generation: model.generation,
-		Event:      protocol.SessionEvent{ThreadID: applicationThreadID(model.startup.Session), TurnID: "turn-1", Message: message},
+		Event:      testProtocolEvent(string(applicationThreadID(model.startup.Session)), "turn-1", message),
 	}})
 	*model = updated.(fullscreenModel)
 }

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/state"
 	"github.com/Godric-W/Amadeus/internal/thread"
@@ -21,11 +22,11 @@ type Store struct {
 	home      string
 	state     state.DB
 	clock     rollout.Clock
-	recorders map[thread.ID]durableRecorder
+	recorders map[protocol.ThreadID]durableRecorder
 }
 
 type durableRecorder interface {
-	Append(context.Context, rollout.TurnID, ...rollout.Item) ([]rollout.Line, error)
+	Append(context.Context, ...rollout.RolloutItem) ([]rollout.Line, error)
 	Flush(context.Context) error
 	Close(context.Context) error
 	Path() string
@@ -41,7 +42,7 @@ func NewStore(home string, stateDB state.DB, clock rollout.Clock) (*Store, error
 	if clock == nil {
 		clock = time.Now
 	}
-	return &Store{home: home, state: stateDB, clock: clock, recorders: make(map[thread.ID]durableRecorder)}, nil
+	return &Store{home: home, state: stateDB, clock: clock, recorders: make(map[protocol.ThreadID]durableRecorder)}, nil
 }
 
 func (store *Store) Materialize(ctx context.Context, input thread.CreateInput) (thread.AppendResult, error) {
@@ -64,15 +65,15 @@ func (store *Store) Materialize(ctx context.Context, input thread.CreateInput) (
 	}
 	store.recorders[input.ID] = recorder
 	store.mu.Unlock()
-	meta, err := rollout.NewItem(rollout.KindSessionMeta, rollout.SessionMeta{
-		CWD: input.CWD, Title: input.Title, ModelProvider: input.ModelProvider, Model: input.Model,
+	meta := rollout.SessionMetaItem{
+		ThreadID: input.ID, CWD: input.CWD, Title: input.Title, ModelProvider: input.ModelProvider, Model: input.Model,
 		GitSHA: input.GitSHA, GitBranch: input.GitBranch, GitOriginURL: input.GitOriginURL, CreatedAt: input.CreatedAt.UTC(),
-	})
-	if err != nil {
+	}
+	if err := meta.Validate(); err != nil {
 		_ = store.CloseWriter(context.Background(), input.ID)
 		return thread.AppendResult{}, err
 	}
-	lines, err := recorder.Append(ctx, "", meta)
+	lines, err := recorder.Append(ctx, meta)
 	if err != nil {
 		_ = store.CloseWriter(context.Background(), input.ID)
 		return thread.AppendResult{}, err
@@ -89,7 +90,7 @@ func (store *Store) Materialize(ctx context.Context, input thread.CreateInput) (
 	return thread.AppendResult{Lines: lines, MetadataWarning: warning}, nil
 }
 
-func (store *Store) OpenWriter(ctx context.Context, id thread.ID) (thread.InitialHistory, error) {
+func (store *Store) OpenWriter(ctx context.Context, id protocol.ThreadID) (thread.InitialHistory, error) {
 	metadata, err := store.state.GetThread(ctx, id)
 	if err != nil {
 		return thread.InitialHistory{}, err
@@ -115,7 +116,7 @@ func (store *Store) OpenWriter(ctx context.Context, id thread.ID) (thread.Initia
 	return thread.InitialHistory{Kind: thread.InitialHistoryResumed, Lines: lines}, nil
 }
 
-func (store *Store) AppendItems(ctx context.Context, id thread.ID, turnID thread.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
+func (store *Store) AppendItems(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.RolloutItem) (thread.AppendResult, error) {
 	result, recorder, err := store.appendItems(ctx, id, turnID, items...)
 	if err != nil {
 		return thread.AppendResult{}, err
@@ -127,24 +128,28 @@ func (store *Store) AppendItems(ctx context.Context, id thread.ID, turnID thread
 	return result, nil
 }
 
-func (store *Store) AppendItemsBuffered(ctx context.Context, id thread.ID, turnID thread.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
+func (store *Store) AppendItemsBuffered(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.RolloutItem) (thread.AppendResult, error) {
 	result, _, err := store.appendItems(ctx, id, turnID, items...)
 	return result, err
 }
 
-func (store *Store) appendItems(ctx context.Context, id thread.ID, turnID thread.TurnID, items ...rollout.Item) (thread.AppendResult, durableRecorder, error) {
+func (store *Store) appendItems(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.RolloutItem) (thread.AppendResult, durableRecorder, error) {
 	recorder, err := store.recorder(id)
 	if err != nil {
 		return thread.AppendResult{}, nil, err
 	}
-	lines, err := recorder.Append(ctx, turnID, items...)
+	scoped := make([]rollout.RolloutItem, len(items))
+	for index, item := range items {
+		scoped[index] = rollout.ScopeItem(item, id, turnID)
+	}
+	lines, err := recorder.Append(ctx, scoped...)
 	if err != nil {
 		return thread.AppendResult{}, nil, err
 	}
 	return thread.AppendResult{Lines: lines}, recorder, nil
 }
 
-func (store *Store) syncMetadata(ctx context.Context, id thread.ID, recorder durableRecorder) error {
+func (store *Store) syncMetadata(ctx context.Context, id protocol.ThreadID, recorder durableRecorder) error {
 	history, err := rollout.Read(recorder.Path(), id)
 	if err != nil {
 		return err
@@ -156,7 +161,7 @@ func (store *Store) syncMetadata(ctx context.Context, id thread.ID, recorder dur
 	return store.state.UpsertThread(ctx, projected)
 }
 
-func (store *Store) Flush(ctx context.Context, id thread.ID) error {
+func (store *Store) Flush(ctx context.Context, id protocol.ThreadID) error {
 	recorder, err := store.recorder(id)
 	if err != nil {
 		return err
@@ -164,7 +169,7 @@ func (store *Store) Flush(ctx context.Context, id thread.ID) error {
 	return recorder.Flush(ctx)
 }
 
-func (store *Store) CloseWriter(ctx context.Context, id thread.ID) error {
+func (store *Store) CloseWriter(ctx context.Context, id protocol.ThreadID) error {
 	store.mu.Lock()
 	recorder, exists := store.recorders[id]
 	if exists {
@@ -177,7 +182,7 @@ func (store *Store) CloseWriter(ctx context.Context, id thread.ID) error {
 	return recorder.Close(ctx)
 }
 
-func (store *Store) LoadHistory(ctx context.Context, id thread.ID) (thread.InitialHistory, error) {
+func (store *Store) LoadHistory(ctx context.Context, id protocol.ThreadID) (thread.InitialHistory, error) {
 	metadata, err := store.state.GetThread(ctx, id)
 	if err != nil {
 		return thread.InitialHistory{}, err
@@ -192,7 +197,7 @@ func (store *Store) LoadHistory(ctx context.Context, id thread.ID) (thread.Initi
 	return thread.InitialHistory{Kind: thread.InitialHistoryResumed, Lines: lines}, nil
 }
 
-func (store *Store) GetThread(ctx context.Context, id thread.ID) (state.StoredThread, error) {
+func (store *Store) GetThread(ctx context.Context, id protocol.ThreadID) (state.StoredThread, error) {
 	return store.state.GetThread(ctx, id)
 }
 
@@ -200,7 +205,7 @@ func (store *Store) ListThreads(ctx context.Context, query state.ListQuery) ([]s
 	return store.state.ListThreads(ctx, query)
 }
 
-func (store *Store) RenameThread(ctx context.Context, id thread.ID, title string, at time.Time) error {
+func (store *Store) RenameThread(ctx context.Context, id protocol.ThreadID, title string, at time.Time) error {
 	if at.IsZero() {
 		return errors.New("thread rename time is zero")
 	}
@@ -212,7 +217,7 @@ func (store *Store) RenameThread(ctx context.Context, id thread.ID, title string
 	return err
 }
 
-func (store *Store) DeleteThread(ctx context.Context, id thread.ID, at time.Time) error {
+func (store *Store) DeleteThread(ctx context.Context, id protocol.ThreadID, at time.Time) error {
 	if at.IsZero() {
 		return errors.New("thread archive time is zero")
 	}
@@ -273,7 +278,7 @@ func (store *Store) Close() error {
 	return errors.Join(result, store.state.Close())
 }
 
-func (store *Store) recorder(id thread.ID) (durableRecorder, error) {
+func (store *Store) recorder(id protocol.ThreadID) (durableRecorder, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	recorder, exists := store.recorders[id]
@@ -283,7 +288,7 @@ func (store *Store) recorder(id thread.ID) (durableRecorder, error) {
 	return recorder, nil
 }
 
-func (store *Store) appendWithTemporaryWriter(ctx context.Context, id thread.ID, turnID thread.TurnID, item rollout.Item) (thread.AppendResult, error) {
+func (store *Store) appendWithTemporaryWriter(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, item rollout.Item) (thread.AppendResult, error) {
 	store.mu.Lock()
 	_, active := store.recorders[id]
 	store.mu.Unlock()
@@ -297,7 +302,7 @@ func (store *Store) appendWithTemporaryWriter(ctx context.Context, id thread.ID,
 	return store.AppendItems(ctx, id, turnID, item)
 }
 
-func (store *Store) rolloutPath(id thread.ID, at time.Time) string {
+func (store *Store) rolloutPath(id protocol.ThreadID, at time.Time) string {
 	stamp := at.UTC().Format("2006-01-02T15-04-05.000000000Z")
 	return filepath.Join(store.home, "sessions", at.UTC().Format("2006"), at.UTC().Format("01"), at.UTC().Format("02"), fmt.Sprintf("rollout-%s-%s.jsonl", stamp, id))
 }
