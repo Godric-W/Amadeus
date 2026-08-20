@@ -112,7 +112,8 @@ func InvocationMetadataFromContext(ctx context.Context) InvocationMetadata {
 type RequestSnapshot struct {
 	MCPBindingRevision string
 	SkillRevision      string
-	ToolRevision       string
+	AgentsMdRevision   string
+	ToolRouterRevision string
 }
 
 type requestSnapshotContextKey struct{}

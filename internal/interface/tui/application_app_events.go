@@ -8,6 +8,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	application "github.com/Godric-W/Amadeus/internal/app"
+	runtimeprojection "github.com/Godric-W/Amadeus/internal/app/transcript"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -150,7 +151,7 @@ func (model *fullscreenModel) attachSnapshot(snapshot application.ThreadViewSnap
 	model.outputUsage = snapshot.Usage.OutputTokens
 	model.contextUsage = snapshot.Usage.TotalTokens
 	model.contextLimit = snapshot.ContextWindow
-	model.runtimeTranscript = protocol.NewTranscriptState(protocol.ThreadID(snapshot.ThreadID))
+	model.runtimeTranscript = runtimeprojection.New(protocol.ThreadID(snapshot.ThreadID))
 	model.restoreCompletedItems(snapshot.Items)
 	model.pendingHistoryCells = append([]HistoryCell(nil), model.historyCells...)
 	model.hasEmittedHistoryLines = false

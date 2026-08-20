@@ -105,7 +105,16 @@ func (application *InteractiveApplication) SubmitCompact(ctx context.Context) er
 	if err != nil {
 		return err
 	}
-	return active.Submit(ctx, protocol.CompactOp{})
+	application.mu.Lock()
+	application.phase = "compacting"
+	application.mu.Unlock()
+	if err := active.Submit(ctx, protocol.CompactOp{}); err != nil {
+		application.mu.Lock()
+		application.phase = "idle"
+		application.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (application *InteractiveApplication) SetMode(ctx context.Context, mode turn.ModeKind) error {
@@ -501,9 +510,7 @@ func (application *InteractiveApplication) observeSessionEvent(generation uint64
 	}
 	switch message := event.Msg.(type) {
 	case protocol.TurnStartedEvent:
-		if message.Kind == protocol.TaskKindCompact {
-			application.phase = "compacting"
-		} else {
+		if application.phase != "compacting" {
 			application.phase = "working"
 		}
 	case protocol.TurnCompleteEvent:

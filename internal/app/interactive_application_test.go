@@ -102,8 +102,8 @@ func TestInteractiveApplicationCompactPublishesTypedLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	started := waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
-		value, ok := event.Event.Msg.(protocol.TurnStartedEvent)
-		return ok && value.Kind == protocol.TaskKindCompact
+		_, ok := event.Event.Msg.(protocol.TurnStartedEvent)
+		return ok
 	})
 	compacted := waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
 		_, ok := event.Event.Msg.(protocol.ContextCompactedEvent)

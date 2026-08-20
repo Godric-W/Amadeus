@@ -13,7 +13,7 @@ import (
 func TestFullscreenRetryPreservesDraftAndDoesNotCreateHistory(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	startedAt := time.Date(2026, time.August, 19, 10, 0, 0, 0, time.UTC)
-	applyFullscreenSessionEvent(t, &model, protocol.TurnStartedEvent{Kind: protocol.TaskKindRegular, StartedAt: startedAt})
+	applyFullscreenSessionEvent(t, &model, protocol.TurnStartedEvent{StartedAt: startedAt})
 	applyFullscreenSessionEvent(t, &model, protocol.ItemStartedEvent{Item: protocol.TurnItem{ID: "assistant-1", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemInProgress, CreatedAt: startedAt}})
 	applyFullscreenSessionEvent(t, &model, protocol.AgentMessageContentDeltaEvent{ItemID: "assistant-1", Delta: "partial"})
 	if model.transcript.ActiveCell != nil {
@@ -35,7 +35,7 @@ func TestFullscreenRetryPreservesDraftAndDoesNotCreateHistory(t *testing.T) {
 func TestFullscreenRetryRestoresStatusAndReplacesDraft(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	startedAt := time.Date(2026, time.August, 19, 10, 0, 0, 0, time.UTC)
-	applyFullscreenSessionEvent(t, &model, protocol.TurnStartedEvent{Kind: protocol.TaskKindRegular, StartedAt: startedAt})
+	applyFullscreenSessionEvent(t, &model, protocol.TurnStartedEvent{StartedAt: startedAt})
 	applyFullscreenSessionEvent(t, &model, protocol.ItemStartedEvent{Item: protocol.TurnItem{ID: "assistant-1", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemInProgress, CreatedAt: startedAt}})
 	applyFullscreenSessionEvent(t, &model, protocol.AgentMessageContentDeltaEvent{ItemID: "assistant-1", Delta: "partial"})
 	applyFullscreenSessionEvent(t, &model, protocol.StreamErrorEvent{Message: "Reconnecting... 1/5", WillRetry: true})

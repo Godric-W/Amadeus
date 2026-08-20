@@ -4,11 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
 type ModeKind string
@@ -49,71 +46,4 @@ func (value TurnContext) Validate() error {
 		return errors.New("turn output schema is invalid")
 	}
 	return nil
-}
-
-type TurnState struct {
-	mu            sync.RWMutex
-	StartedAt     time.Time
-	Usage         llm.Usage
-	ToolCallCount int
-	Terminal      bool
-	Interrupted   bool
-	TerminalError string
-}
-
-func (state *TurnState) Snapshot() StateSnapshot {
-	if state == nil {
-		return StateSnapshot{}
-	}
-	state.mu.RLock()
-	defer state.mu.RUnlock()
-	return StateSnapshot{
-		StartedAt: state.StartedAt, Usage: state.Usage, ToolCallCount: state.ToolCallCount,
-		Terminal: state.Terminal, Interrupted: state.Interrupted, TerminalError: state.TerminalError,
-	}
-}
-
-func (state *TurnState) Record(usage llm.Usage, toolCalls int) {
-	if state == nil {
-		return
-	}
-	state.mu.Lock()
-	state.Usage.InputTokens += usage.InputTokens
-	state.Usage.CachedInputTokens += usage.CachedInputTokens
-	state.Usage.OutputTokens += usage.OutputTokens
-	state.Usage.ReasoningTokens += usage.ReasoningTokens
-	state.Usage.TotalTokens += usage.TotalTokens
-	state.ToolCallCount += toolCalls
-	state.mu.Unlock()
-}
-
-func (state *TurnState) MarkTerminal(err error) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.Terminal = true
-	if err != nil {
-		state.TerminalError = err.Error()
-	}
-}
-
-func (state *TurnState) MarkInterrupted(err error) {
-	if state == nil {
-		return
-	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.Interrupted = true
-	state.Terminal = true
-	if err != nil {
-		state.TerminalError = err.Error()
-	}
-}
-
-type StateSnapshot struct {
-	StartedAt     time.Time
-	Usage         llm.Usage
-	ToolCallCount int
-	Terminal      bool
-	Interrupted   bool
-	TerminalError string
 }

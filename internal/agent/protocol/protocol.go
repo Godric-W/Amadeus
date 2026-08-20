@@ -110,23 +110,10 @@ type ShutdownCompleteEvent struct{ ThreadID ThreadID }
 
 func (ShutdownCompleteEvent) isEventMsg() {}
 
-type TaskKind string
-
-const (
-	TaskKindRegular TaskKind = "regular"
-	TaskKindCompact TaskKind = "compact"
-)
-
-func (kind TaskKind) Valid() bool {
-	return kind == TaskKindRegular || kind == TaskKindCompact
-}
-
 type TurnStartedEvent struct {
 	ThreadID  ThreadID
 	TurnID    TurnID
 	StartedAt time.Time
-	Input     string
-	Kind      TaskKind
 }
 
 func (TurnStartedEvent) isEventMsg() {}

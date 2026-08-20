@@ -1,7 +1,7 @@
 # Amadeus 架构设计
 
 > 状态：Target Architecture v2
-> 最近修订：2026-08-19
+> 最近修订：2026-08-20
 > 目标语言：Go
 > 产品形态：面向真实软件工程任务的本地 Coding Agent CLI
 > 架构骨架：`../codex-main`
@@ -137,7 +137,7 @@ Amadeus 不引入以下主链：
 │ Agent Runtime                                            │
 │ AmadeusThread · SessionIo · internal Session              │
 │ SessionState · ActiveTurn · RunningTask · SessionTask     │
-│ TurnContext · StepContext · TurnState · ContextManager    │
+│ TurnContext · StepContext · ContextManager                │
 │ SessionServices · ModelClient · ModelClientSession        │
 │ run_turn · ToolRouter                                     │
 ├──────────────────────────────────────────────────────────┤
@@ -234,9 +234,8 @@ internal/app/                Application Services
 internal/thread/             LiveThread、ThreadStore、InitialHistory 与恢复逻辑
 internal/thread/local/       LocalThreadStore 组合与本地路径布局
 internal/thread/manager/     ThreadManager 与 AmadeusThread
-internal/agent/session/      Session、SessionState、SessionServices、StepContext 与 run_turn
-internal/agent/turn/         TurnContext、TurnState 与 TurnInput
-internal/agent/task/         RunningTask、SessionTask、RegularTask、CompactTask
+internal/agent/session/      Session、SessionState、SessionServices、ActiveTurn、RunningTask、SessionTask、StepContext 与 run_turn
+internal/agent/turn/         TurnContext、ModeKind 与 Personality
 internal/agent/plan/         Session Plan 投影、update_plan 数据模型与校验
 internal/agent/protocol/     Identity、Submission、Event、EventMsg 与 TurnItem DTO
 internal/context/            ContextManager、Token Accounting、Projection 与 Compaction
@@ -255,7 +254,6 @@ internal/interface/cli/      CLI 参数和非交互输出
 internal/agentsmd/           AgentsMdManager、LoadedAgentsMd、发现与作用域合并
 internal/mcp/                MCP Config、MCPRuntime、Binding 与 Tool/Resource Catalog
 internal/skill/              Skill Catalog、Metadata、Injection 与 Resource Boundary
-internal/diff/               Structured Diff
 internal/config/             配置加载、校验、脱敏
 ```
 
@@ -275,7 +273,7 @@ internal/config/             配置加载、校验、脱敏
 ```text
 cmd/amadeus (Composition Root)
 ├─→ internal/interface + internal/app + internal/thread/manager
-│   → internal/agent/session + internal/agent/task
+│   → internal/agent/session + internal/agent/turn
 │   → internal/context + internal/tool + internal/llm domain ports
 └─→ infrastructure adapters
     → internal/thread + internal/state + internal/tool + internal/llm domain ports
@@ -516,11 +514,11 @@ type SessionServices struct {
 
 依赖与生命周期规则：
 
-- CLI flags 和 invocation 必须先归一化为 typed SessionConfiguration、Submission 或 TurnInput，再跨越 Runtime 边界。
+- CLI flags 和 invocation 必须先归一化为 typed SessionConfiguration 或 `Submission{ID, Op}`，再跨越 Runtime 边界。
 - `SessionState.Configuration` 是当前 Session 配置的唯一事实源；SessionServices 或 closure 不得保存另一份 configured snapshot。
 - Provider client、ToolRegistry、ToolExecutionService、ProcessManager、AgentsMdManager、Approval、Permission、MCP、Skill、Web 和 Compactor 不得在每个 Turn 中重新创建。
 - Session 根据 Op 和 Turn 类型直接创建 `RegularTask`、`CompactTask` 或后续 ReviewTask，不经过 factory closure、`Factory.Prepare`、`PrepareRequest`、`Prepared` 或 capability type assertion。
-- `RegularTask` 接收 Session、TurnContext、TurnInput 和 cancellation，调用 Session 模块内 `run_turn`；Task 不持有或关闭 SessionServices。
+- `RegularTask` 持有从 `UserInputOp` 接纳的目标、scoped EventSink 和 SessionServices 引用，并以 Session、TurnContext 和 cancellation 调用 Session 模块内 `run_turn`；Task 不持有或关闭 SessionServices。
 - SessionTask 不反向调用 Application 的 `execute*Turn` 方法，也不持有 `cmd/amadeus` controller、Cobra command、TUI model 或完整 CLI invocation。
 - SessionServices 不通过通用 `Capabilities` facade 或 `CapabilityView` 向上泄漏；AmadeusThread/Application 需要的查询由 Session/Thread 提供明确的 typed API。
 
@@ -617,7 +615,7 @@ TurnContext 必须在本 Turn 的 Provider、ModelInfo、Collaboration Mode、Ap
 
 - BaseInstructions 和 ContextManager 属于 SessionConfiguration/SessionState。
 - Provider Client、Tool Registry、AgentsMdManager、MCP 与 Skill Runtime 属于 SessionServices。
-- Cancellation、done、execution handle、timing 和 terminal error 属于 RunningTask/TurnState。
+- Cancellation、done、execution handle 和 panic/error capture 属于 RunningTask；终态映射与 ActiveTurn 清理由 Session 完成。
 - 完整 Tool Specs 与本次采样的可见工具集合属于 StepContext。
 
 ### 8.11 StepContext
@@ -626,11 +624,13 @@ TurnContext 必须在本 Turn 的 Provider、ModelInfo、Collaboration Mode、Ap
 
 ```go
 type StepContext struct {
-    Turn         *TurnContext
-    Environment  EnvironmentSnapshot
-    MCP          MCPBinding
-    ToolRouter   *ToolRouter
-    Instructions LoadedAgentsMd
+    Turn                  TurnContext
+    Prompt                PromptSnapshot
+    Model                 ModelInfo
+    BaseInstructions      BaseInstructions
+    ToolRouter            ToolRouter
+    ModelMessagesRevision string
+    WorldStateRevision    string
 }
 ```
 
@@ -638,22 +638,23 @@ type StepContext struct {
 
 - 每次模型采样前重新 capture；同一次采样构建 Prompt、向模型声明 Tool 和执行模型返回的 Tool Call 必须使用同一个 StepContext/ToolRouter。
 - StepContext 是进程内 immutable value，不作为 TurnContextItem 持久化；其中需要恢复的变化通过 typed ResponseItem 或对应 EventMsgItem 记录。
-- ToolRouter/ToolSet 是当前 Step 最终广告和允许执行的工具计划；必要的 registry、MCP、Skill、instruction revision 可以作为 router 内部 snapshot，由 ToolExecutionService 用于拒绝 stale deferred/lazy capability。
-- capture 顺序必须先解析 target-scoped instructions、环境与动态 capability，再构造 ToolRouter；Prompt 在 sampling request 构建阶段从 ContextManager、TurnContext 与 StepContext 统一生成，不能把可变 Prompt、EventSink 或 mutable instruction handle 塞进 StepContext。
+- ToolRouter 是当前 Step 最终广告和允许执行的工具计划；它冻结 exact ToolDefinition binding、visibility、parallel capability，以及 MCP、Skill、AgentsMd 和 router revision，由 ToolExecutionService 用于拒绝 stale deferred/lazy capability。
+- capture 顺序必须先刷新 AgentsMd、Skill 与 MCP snapshot，再构造 ToolRouter 和 PromptSnapshot；Prompt 在 sampling request 构建阶段从 ContextManager、TurnContext 与 StepContext 统一生成，不能把可变 Prompt、EventSink 或 mutable resolver handle 塞进 StepContext。
 - Plan Mode 通过 TurnContext.Mode 驱动 Prompt assembly，并在 StepContext.ToolRouter 中应用 Tool mask；不创建另一种 SessionTask 或另一条 Engine 主链。
 
-### 8.12 ActiveTurn 与 TurnState
+### 8.12 ActiveTurn
 
 `ActiveTurn` 表示 Session 当前正在执行的 Turn：
 
 ```go
 type ActiveTurn struct {
-    State *TurnState
-    Task  *RunningTask
+    SubmissionID SubmissionID
+    Task         *RunningTask
+    pending      map[RequestID]chan Op
 }
 ```
 
-TurnState 保存 Usage、Tool Call 计数、typed Pending Approval 和终态标记；当前可见 Plan 由 SessionState 持有。SessionPermissionContext 属于 SessionServices，不进入单个 TurnState；Turn 完成后，Session 清除 ActiveTurn，历史 Turn 生命周期继续保存在 canonical Rollout 中。
+ActiveTurn 只保存当前 Submission correlation、RunningTask 和 typed pending Approval waiter。Usage 与 Tool Call 计数由 `run_turn` 累计并通过最小 `TaskOutput` 返回；当前可见 Plan 由 SessionState 持有，SessionPermissionContext 属于 SessionServices。Turn 完成后，Session 清除 pending waiter 与 ActiveTurn，历史 Turn 生命周期继续保存在 canonical Rollout 中。
 
 ### 8.13 RunningTask 与 SessionTask
 
@@ -661,12 +662,11 @@ TurnState 保存 Usage、Tool Call 计数、typed Pending Approval 和终态标�
 
 ```go
 type SessionTask interface {
-    Run(context.Context, *Session, *TurnContext, []TurnInput) (TaskOutput, error)
-    Abort(context.Context, *Session, *TurnContext)
+    Run(context.Context, *Session, *TurnContext) (TaskOutput, error)
 }
 ```
 
-SessionTask 直接使用 Session 提供的 typed 方法，不引入 `TaskHost`、`TurnHost`、`PromptHost`、`ContextHost` 等为绕开 Session 所有权而建立的碎片化接口。ContextManager 的 mutation 只能由 Session 对已接纳的 canonical facts 执行。`TaskOutput` 只表达任务产生的最小业务输出；不再经过 `engine.RunResult → session.Result → terminal payload` 多级转换。TurnCompleteEvent、TurnAbortedEvent、ErrorEvent、Usage、Tool count、canonical append 和 Event 发布由 Session/TurnState 统一创建。`RunningTask` 是 Session 保存的运行记录，持有具体 Task、TurnContext、cancellation、execution handle 和 completion notification；启动 goroutine、清理 ActiveTurn 与终态收尾属于 Session。`TaskKind` 只在 Protocol/Session 生命周期保留一份定义。
+SessionTask 直接使用 Session 提供的 typed 方法，不引入 `TaskHost`、`TurnHost`、`PromptHost`、`ContextHost` 等为绕开 Session 所有权而建立的碎片化接口。ContextManager 的 mutation 只能由 Session 对已接纳的 canonical facts 执行。`TaskOutput` 只表达任务产生的最小业务输出；不再经过 `engine.RunResult → session.Result → terminal payload` 多级转换。TurnCompleteEvent、TurnAbortedEvent、ErrorEvent、Usage、Tool count、canonical append 和 Event 发布由 Session 统一创建。`RunningTask` 是 Session 保存的运行记录，持有具体 Task、TurnContext、cancellation、execution handle 和 completion notification；启动 goroutine、取消、清理 ActiveTurn 与终态收尾属于 Session。Protocol 与 Session 中不存在重复 `TaskKind`。
 
 首批 SessionTask：
 
@@ -738,7 +738,7 @@ User Input
 → 创建 RunningTask 并设置 ActiveTurn
 → 发布 TurnStartedEvent
 → RegularTask 调用 Session 模块内 run_turn
-→ capture StepContext：动态指令、环境、MCP binding、Skill snapshot 与 ToolRouter snapshot
+→ capture StepContext：AgentsMd、环境、MCP binding、Skill snapshot 与 ToolRouter snapshot
 → 必要时通过 Compactor 追加 CompactedItem/ContextCompactedEvent 并重新 capture StepContext
 → Turn-scoped ModelClientSession 发起 LLM Stream
 → 发布 ItemStartedEvent 与 Agent/Reasoning Delta Event
@@ -873,7 +873,7 @@ Amadeus 不保留经典 `Think → Analyze → Act → Observe` Reactor 作为�
 - 每 Turn 创建并关闭完整 `agentruntime.Agent`、Tool Registry、ProcessManager、Iterator 和 Runner 的路径。
 - RegularTask 内直接调用另一个 CompactTask 的嵌套 Task 执行方式。
 
-可以保留的能力必须迁入准确边界：Session-scoped `ModelClient` 与 Turn-scoped `ModelClientSession` 负责 Provider 会话生命周期；stream 聚合属于 sampling request 处理；Tool batch 执行继续由 ToolExecutionService 负责；预算计数进入 TurnState；Compaction 属于 SessionServices；内部 Model Step 仅用于 trace/telemetry。
+可以保留的能力必须迁入准确边界：Session-scoped `ModelClient` 与 Turn-scoped `ModelClientSession` 负责 Provider 会话生命周期；stream 聚合属于 sampling request 处理；Tool batch 执行继续由 ToolExecutionService 负责；预算计数由 `run_turn` 局部累计并进入 TaskOutput/TokenCountEvent；Compaction 属于 SessionServices；内部 Model Step 仅用于 trace/telemetry。
 
 ### 10.2 SessionServices 与直接 Task 创建
 
@@ -892,7 +892,7 @@ ThreadManager
 - Session spawn 时构造完整 SessionServices；不得通过首次 `Prepare` 惰性创建第二层 capability aggregate。
 - Provider client、ToolRegistry、ToolExecutionService、ProcessManager、MCP/Skill/Web、Approval、Permission 和 Compactor 不在每 Turn 重建。
 - Session 根据 Op 直接创建 Task；不存在通用 TaskFactory、PrepareRequest、Prepared 或 Factory capability facade。
-- RegularTask 只把 Session、TurnContext、TurnInput 和 cancellation 交给 `run_turn`。
+- RegularTask 只把 Session、TurnContext、目标和 cancellation 交给 `run_turn`。
 - CompactTask 与自动压缩共享 SessionServices.Compactor；自动压缩是 `run_turn` 操作，不是嵌套 SessionTask。
 - Session shutdown 直接关闭 SessionServices 中由本 Session 拥有的资源，不通过 Factory Close 间接释放。
 
@@ -904,9 +904,9 @@ ThreadManager
 func runTurn(
     context.Context,
     *Session,
-    *TurnContext,
-    []TurnInput,
-    *ModelClientSession,
+    *SessionServices,
+    TurnContext,
+    EventSink,
 ) (TaskOutput, error)
 ```
 
@@ -916,7 +916,7 @@ func runTurn(
 - append typed canonical facts；
 - 在 canonical append 成功后发布 Item lifecycle Event；
 - 发布 ApprovalRequestEvent 并等待 correlated ApprovalDecisionOp；
-- 查询并 drain ActiveTurn/TurnState 的 pending input；
+- 通过 Session-owned Approval port 等待 ActiveTurn 中 correlated pending decision；
 - 读取 Session-owned Plan projection；
 - 更新 Turn usage/tool-call counters，但不直接完成或清除 ActiveTurn。
 
@@ -1026,7 +1026,7 @@ Response stream retry Event 是 live、transient、non-canonical notification。
 - 最大 Turn wall-clock；
 - Model context/token limit。
 
-这些限制是 Amadeus 明确保留的高阈值 runaway safety，并非声称与 Codex 一比一同构。它们不再暴露旧 `agent.max_iterations`、`agent.max_tool_calls` 或 `agent.max_duration` 配置，避免形成低阈值且行为不稳定的产品契约。接近预算时只向模型注入一次明确的完成提醒，使其总结当前结果；真正耗尽后返回 typed blocked outcome，而不是伪装成 Provider 或 Tool infrastructure error。模型采样、Tool Call、token 与 elapsed time 在 Turn 执行期间累计，最终 Usage/Tool count 写入 TurnState，canonical TokenCountEvent 支持 Resume 后重建累计事实。
+这些限制是 Amadeus 明确保留的高阈值 runaway safety，并非声称与 Codex 一比一同构。它们不再暴露旧 `agent.max_iterations`、`agent.max_tool_calls` 或 `agent.max_duration` 配置，避免形成低阈值且行为不稳定的产品契约。接近预算时只向模型注入一次明确的完成提醒，使其总结当前结果；真正耗尽后返回 typed blocked outcome，而不是伪装成 Provider 或 Tool infrastructure error。模型采样、Tool Call、token 与 elapsed time 在 Turn 执行期间累计，最终 Usage/Tool count 进入 TaskOutput，canonical TokenCountEvent 支持 Resume 后重建累计事实。
 
 ### 10.7 默认执行与软计划
 
@@ -2602,7 +2602,7 @@ type ToolDisplaySpec struct {
 }
 ```
 
-具体的 `Diff`、文件变更统计、进程输出和媒体数据继续通过 `ToolDisplayResult` 的 typed 数据承载，不在 TUI 中从文本重新解析。`apply_patch` 是遗留代码，不注册、不暴露给模型，也不进入本展示 Contract。
+具体的 `Diff`、文件变更统计、进程输出和媒体数据继续通过 `ToolDisplayResult` 的 typed 数据承载，不在 TUI 中从文本重新解析。`apply_patch` 是遗留设计，其生产实现已删除，也不进入本展示 Contract。
 
 首批内置 Tool 的展示规则如下：
 

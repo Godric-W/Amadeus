@@ -23,12 +23,14 @@ type Entry struct {
 	Tool      ToolDefinition
 	Exposure  Exposure
 	Condition string
+	bindingID uint64
 }
 
 type Registry struct {
-	mutex  sync.RWMutex
-	tools  map[string]Entry
-	groups map[string]map[string]struct{}
+	mutex         sync.RWMutex
+	tools         map[string]Entry
+	groups        map[string]map[string]struct{}
+	nextBindingID uint64
 }
 
 func NewRegistry() *Registry {
@@ -78,6 +80,8 @@ func (registry *Registry) ReplaceDefinitionGroupWithRegistration(group string, c
 	}
 	owned := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
+		registry.nextBindingID++
+		entry.bindingID = registry.nextBindingID
 		registry.tools[entry.Spec.Name], owned[entry.Spec.Name] = entry, struct{}{}
 	}
 	registry.groups[group] = owned
@@ -105,7 +109,8 @@ func (registry *Registry) RegisterDefinitionWithRegistration(definition ToolDefi
 	if _, exists := registry.tools[spec.Name]; exists {
 		return fmt.Errorf("%w: %s", ErrDuplicateTool, spec.Name)
 	}
-	registry.tools[spec.Name] = Entry{Spec: spec, Tool: definition, Exposure: registration.Exposure, Condition: registration.Condition}
+	registry.nextBindingID++
+	registry.tools[spec.Name] = Entry{Spec: spec, Tool: definition, Exposure: registration.Exposure, Condition: registration.Condition, bindingID: registry.nextBindingID}
 	return nil
 }
 
@@ -130,7 +135,7 @@ func (registry *Registry) Snapshot() []Entry {
 	registry.mutex.RLock()
 	entries := make([]Entry, 0, len(registry.tools))
 	for _, entry := range registry.tools {
-		entries = append(entries, Entry{Spec: entry.Spec.Clone(), Tool: entry.Tool, Exposure: entry.Exposure, Condition: entry.Condition})
+		entries = append(entries, Entry{Spec: entry.Spec.Clone(), Tool: entry.Tool, Exposure: entry.Exposure, Condition: entry.Condition, bindingID: entry.bindingID})
 	}
 	registry.mutex.RUnlock()
 	sort.Slice(entries, func(left, right int) bool {

@@ -56,145 +56,33 @@ agent:
 	}
 }
 
-func TestLoadMigratesUnambiguousConfigV1(t *testing.T) {
-	loader := newTestLoader(t.TempDir())
-	writeConfig(t, loader, `
-version: 1
-default_provider: compatible
-providers:
-  compatible:
-    api: chat_completions
-    base_url: https://example.invalid/v1
-    model: compatible-model
-    context_window: 128000
-    auto_compact_token_limit: 100000
-    tool_output_max_tokens: 9000
-    max_retries: 2
-`)
-
-	configured, err := loader.Load()
-	if err != nil {
-		t.Fatalf("migrate config v1: %v", err)
-	}
-	provider := configured.ModelProviders["compatible"]
-	if configured.Version != 2 || configured.ModelProvider != "compatible" || configured.Model != "compatible-model" {
-		t.Fatalf("top-level migration failed: %#v", configured)
-	}
-	if configured.ModelContextWindow != 128_000 || configured.ModelAutoCompactTokenLimit != 100_000 || configured.ToolOutputTokenLimit != 9_000 {
-		t.Fatalf("model override migration failed: %#v", configured)
-	}
-	if provider.WireAPI != WireAPIChatCompletions || provider.RequestMaxRetries != 2 || provider.StreamMaxRetries != 5 {
-		t.Fatalf("provider migration failed: %#v", provider)
-	}
-}
-
-func TestLoadRejectsAmbiguousProviderLocalModelMigration(t *testing.T) {
-	loader := newTestLoader(t.TempDir())
-	writeConfig(t, loader, `
-providers:
-  first:
-    model: model-a
-  second:
-    model: model-b
-`)
-	_, err := loader.Load()
-	if err == nil || !strings.Contains(err.Error(), "providers define different values") {
-		t.Fatalf("expected ambiguous model migration error: %v", err)
-	}
-}
-
-func TestLoadMigratesEqualProviderLocalModelPolicyValues(t *testing.T) {
-	loader := newTestLoader(t.TempDir())
-	writeConfig(t, loader, `
-default_provider: first
-providers:
-  first:
-    model: shared-model
-    context_window: 128000
-    auto_compact_token_limit: 100000
-    tool_output_max_tokens: 9000
-  second:
-    model: shared-model
-    context_window: 128000
-    auto_compact_token_limit: 100000
-    tool_output_max_tokens: 9000
-`)
-	configured, err := loader.Load()
-	if err != nil {
-		t.Fatalf("migrate equal Provider-local policy: %v", err)
-	}
-	if configured.Model != "shared-model" || configured.ModelContextWindow != 128_000 || configured.ModelAutoCompactTokenLimit != 100_000 || configured.ToolOutputTokenLimit != 9_000 {
-		t.Fatalf("equal Provider-local policy was not promoted: %#v", configured)
-	}
-}
-
-func TestLoadRejectsTopLevelAndProviderLocalModelPolicyTogether(t *testing.T) {
+func TestLoadRejectsLegacyConfigSchema(t *testing.T) {
 	tests := []struct {
-		current string
-		legacy  string
-		value   string
+		name    string
+		content string
+		field   string
 	}{
-		{current: "model", legacy: "model", value: "shared-model"},
-		{current: "model_context_window", legacy: "context_window", value: "128000"},
-		{current: "model_auto_compact_token_limit", legacy: "auto_compact_token_limit", value: "100000"},
-		{current: "tool_output_token_limit", legacy: "tool_output_max_tokens", value: "9000"},
+		{name: "version one", content: "version: 1\n", field: "version"},
+		{name: "default provider", content: "default_provider: compatible\n", field: "default_provider"},
+		{name: "providers", content: "providers: {}\n", field: "providers"},
+		{name: "provider api", content: "model_providers:\n  compatible:\n    api: responses\n", field: "api"},
+		{name: "provider retries", content: "model_providers:\n  compatible:\n    max_retries: 2\n", field: "max_retries"},
+		{name: "provider model", content: "model_providers:\n  compatible:\n    model: old-model\n", field: "model"},
+		{name: "provider context", content: "model_providers:\n  compatible:\n    context_window: 128000\n", field: "context_window"},
+		{name: "provider compact", content: "model_providers:\n  compatible:\n    auto_compact_token_limit: 100000\n", field: "auto_compact_token_limit"},
+		{name: "provider tool output", content: "model_providers:\n  compatible:\n    tool_output_max_tokens: 9000\n", field: "tool_output_max_tokens"},
+		{name: "provider temperature", content: "model_providers:\n  compatible:\n    temperature: 0.2\n", field: "temperature"},
+		{name: "provider max output", content: "model_providers:\n  compatible:\n    max_output_tokens: 8192\n", field: "max_output_tokens"},
 	}
 	for _, test := range tests {
-		t.Run(test.current, func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			loader := newTestLoader(t.TempDir())
-			writeConfig(t, loader, test.current+": "+test.value+"\nproviders:\n  compatible:\n    "+test.legacy+": "+test.value+"\n")
+			writeConfig(t, loader, test.content)
 			_, err := loader.Load()
-			if err == nil || !strings.Contains(err.Error(), test.current) || !strings.Contains(err.Error(), test.legacy) || !strings.Contains(err.Error(), "cannot both be set") {
-				t.Fatalf("expected %s/%s conflict: %v", test.current, test.legacy, err)
+			if err == nil || !strings.Contains(err.Error(), test.field) {
+				t.Fatalf("legacy field %q was not rejected: %v", test.field, err)
 			}
 		})
-	}
-}
-
-func TestLoadRejectsLegacyAndCurrentProviderTransportFieldsTogether(t *testing.T) {
-	tests := []struct {
-		legacy  string
-		current string
-		value   string
-	}{
-		{legacy: "api", current: "wire_api", value: "responses"},
-		{legacy: "max_retries", current: "request_max_retries", value: "2"},
-	}
-	for _, test := range tests {
-		t.Run(test.current, func(t *testing.T) {
-			loader := newTestLoader(t.TempDir())
-			writeConfig(t, loader, "providers:\n  compatible:\n    "+test.legacy+": "+test.value+"\n    "+test.current+": "+test.value+"\n")
-			_, err := loader.Load()
-			if err == nil || !strings.Contains(err.Error(), "model_providers.compatible") || !strings.Contains(err.Error(), test.current) || !strings.Contains(err.Error(), test.legacy) {
-				t.Fatalf("expected Provider transport conflict: %v", err)
-			}
-		})
-	}
-}
-
-func TestLoadRejectsRemovedSamplingFields(t *testing.T) {
-	for _, field := range []string{"temperature: 0.2", "max_output_tokens: 8192"} {
-		t.Run(strings.Split(field, ":")[0], func(t *testing.T) {
-			loader := newTestLoader(t.TempDir())
-			writeConfig(t, loader, "providers:\n  compatible:\n    "+field+"\n")
-			_, err := loader.Load()
-			path := "model_providers.compatible." + strings.Split(field, ":")[0]
-			if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "was removed in config version 2") {
-				t.Fatalf("expected removed-field error: %v", err)
-			}
-		})
-	}
-}
-
-func TestLoadRejectsLegacyAndCurrentFieldsTogether(t *testing.T) {
-	loader := newTestLoader(t.TempDir())
-	writeConfig(t, loader, `
-model_provider: compatible
-default_provider: compatible
-`)
-	_, err := loader.Load()
-	if err == nil || !strings.Contains(err.Error(), "cannot both be set") {
-		t.Fatalf("expected conflicting field error: %v", err)
 	}
 }
 

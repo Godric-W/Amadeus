@@ -1,9 +1,9 @@
 # Amadeus 开发进度
 
-> 最近更新：2026-08-19
+> 最近更新：2026-08-20
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：M. Codex Architecture Realignment（TODO）
-> 下一任务：M-01 Protocol Identity + Event Envelope
+> 当前阶段：M. Codex Architecture Realignment（DONE）
+> 下一任务：待定义后续阶段
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
@@ -271,7 +271,7 @@ C-R 只完成了基础统一，作为 C-T 的起点：
 
 #### C-T-08：遗留隔离与验证
 
-- [x] 明确 `apply_patch` 与 sandbox 仅为遗留代码：不注册、不暴露给模型、不接入 ToolExecutionService/Approval/Event/Rollout/TUI 主链。
+- [x] 当时先将 `apply_patch` 与 sandbox 隔离为遗留能力；M-08 已进一步物理删除 `apply_patch` handler、patch executor、Diff Tracker 和兼容测试。
 - [x] 增加 Tool/Approval/TUI Contract 测试：请求文案、目标范围、Grant 作用域、拒绝、stale conflict、Diff 截断/滚动和 Resume 后权限清空。
 - [x] 增加只读截断、`write_stdin` Approval 复用与并发、`update_plan` concise result/Event、默认 Catalog 无 `apply_patch` 的测试。
 - [x] 完成 C-T 后重新核对 D 的 Event/TUI 结果模型和当前进度断言，删除“已完成 Diff/Approval”一类过度承诺。
@@ -410,41 +410,30 @@ G 完成了当时的第一轮 Runtime 收敛和可工作主链，但其 `engine.
 
 ### G-01：SessionServices Ownership — `DONE`
 
-已完成第一轮 ownership 收敛：`engine.Services` 明确表示 Session-scoped capability；ThreadManager/Composition Root 为每个 Thread 创建 typed services builder，Session spawn 显式构造并保存 Agent services；连续 Turn 复用同一实例，Session shutdown 负责触发 capability close；TUI capability 查询改为从 Session-owned view 获取。Provider client 继续由 Session services 持有，单个 Turn 在 `run_turn` 中创建并复用 `ModelClientSession`。
-
-- 将 ModelClient、ToolRegistry、ToolExecutionService、ProcessManager、Instruction/AGENTS、Extension、MCP、Skill、Web、Approval、SessionPermissionContext、Compactor、LiveThread 与 TimeProvider 归位到真正的 SessionServices。
-- Session spawn 一次性构造完整 SessionState/SessionServices；Session shutdown 直接关闭本 Session 拥有的资源，连续 Turn 复用同一 capability。
-- SessionState 只保留 SessionConfiguration、ContextManager、Plan 与 PreviousTurnSettings 等跨 Turn 状态；canonical Rollout 由 LiveThread 持有，不并列维护第二份 history owner。
+G 当时完成了 capability 的 Session-scoped 复用；其过渡 `engine.Services`/builder/view 模型已由 M-04 删除。当前最终实现由 `SessionServices` 直接拥有 ModelClient、ToolRegistry、ToolExecutionService、ProcessManager、AgentsMdManager、MCPRuntime、SkillCatalog、Web、Approval、Permission、Compactor、LiveThread、Clock 与 ID service；SessionState 只保存 Configuration、Mode、ContextManager 和 Plan。
 
 ### G-02：删除 Coding Factory/Runtime — `DONE`
 
 - 删除 `CodingFactory`、`CodingFactoryOptions`、`CodingRuntime`、`RuntimeOptions`、通用 `task.Factory`、`PrepareRequest`、`Prepared`、`Capabilities` facade 与惰性 `ensureRuntime` 主链。
-- 生产代码已删除上述旧 runtime/factory/preparation 符号；`ServicesBuilder` 仅负责 Session spawn 的一次性 typed services 构造，不提供 capability facade 或惰性 runtime 兼容层。
-- ThreadManager/Composition Root 通过单一 `SessionSetup` 向 Session spawn 注入 typed configuration、shared managers、按 Op 区分的 task constructors 和 services build callback，不通过通用 TaskFactory 或双阶段 builder map 间接创建 capability。
+- G 当时仍保留的 services builder、session setup 和 task constructor closure 已由 M-04/M-05 删除；Composition Root 现在只注入外部 Adapter 与 Session spawn args，Session 自己构造 services 并按 Op 直接创建 Task。
 - architecture guard 禁止生产代码重新引入 `Coding*Runtime`、`Coding*Factory`、`SessionRuntime` 或 Factory capability type assertion。
 
 ### G-03：SessionTask 与 `run_turn` 主链 — `DONE`
 
-- Session 根据 Op 直接选择 `TaskConstructors.Regular` / `TaskConstructors.Compact` 创建 `RegularTask`、`CompactTask` 和后续 ReviewTask，并通过 Session-owned spawn/start task 生命周期运行。
-- `SessionTask` 直接接收 Session、TurnContext、TurnInput 与 cancellation；删除 `TaskHost`、`TurnHost`、`PromptHost`、`ContextHost`、`RolloutHost` 等碎片化 Host interfaces。
-- 将 continuation loop 从 Runtime method 收敛为 Session 模块内唯一 `run_turn`；SessionTaskResult 只表达最后 Agent message 或 typed error，terminal append、Usage、Tool count、ActiveTurn cleanup 和 Event 发布由 Session/TurnState 统一负责。
-- RunningTask 收敛为 Session 保存的运行记录；goroutine 启动、panic 收敛、abort、completion 与 cleanup 不形成第二套 owner。
-- `run_turn` 已成为 Session 的唯一执行入口；Engine 只提供无状态采样/工具执行所需的 typed primitive，不再提供 `Services.RunTurn` method。
+- Session 根据 Op 直接创建 `regularTask`/`compactTask`；`SessionTask.Run(context.Context, *Session, *TurnContext)` 返回最小 TaskOutput，不存在 constructor map、Prepare/Prepared、Abort hook 或 CLI controller callback。
+- `run_turn` 是 Session 模块内唯一 regular continuation loop；RunningTask 只拥有 goroutine、cancellation、panic/error capture 和 completion notification，Session 唯一创建 terminal Event 并清理 ActiveTurn。
+- G 的 Engine test-only `Services/RunTurn/RunResult` 复制循环也已由 M 删除，相关覆盖迁到真实 Session continuation loop。
 
 ### G-04：Turn、Mode 与 Interaction State — `DONE`
 
-已完成术语迁移的第一步：生产链路使用 `TurnContext`、`TurnState`、`TaskKind`、`TurnInput` 和 `ModeKind`，Thread settings 使用 `Mode` 字段；pending waiter 已归属 `ActiveTurn`，tool/usage 进度与 interruption/terminal 状态由 `TurnState` 记录。
-
-- 将 `turn.Context`、`turn.State`、`task.Kind`、`task.Input` 等泛化术语收敛为 `TurnContext`、`TurnState`、`TaskKind`、`TurnInput` 对应职责。
-- 将 Default/Plan 从 `PermissionMode` 拆为 `ModeKind`/CollaborationMode；ApprovalPolicy、PermissionProfile 与 SessionPermissionContext 保持独立，迁移 Thread settings、Prompt、Tool mask、TUI callback 与 Rollout schema。
-- 将 pending approval、pending user input、Turn input queue、tool-call count 和终态状态归入 ActiveTurn/TurnState 生命周期；Turn 结束或取消时统一清理 waiter。
+G 完成了 `TurnContext` 与 `ModeKind` 的第一轮术语迁移；M-05 随后删除未消费的 TurnState、TaskKind、TurnInput 和 pending user-input 模型。当前 ActiveTurn 只保存 Submission correlation、RunningTask 与 typed pending Approval，Usage/Tool count 经 TaskOutput 返回，terminal mapping 归 Session。
 
 ### G-05：StepContext 与混合 Tool Boundary — `DONE`
 
-- StepContext 只捕获 Turn、环境、MCP binding、Loaded AGENTS.md 和当前 Step 的 immutable ToolRouter/ToolSet，不持有 EventSink、mutable instruction handle 或完整 Prompt aggregate；事件与 instruction scope 已移到 Session-owned sampling request。
+- StepContext 捕获 Turn、PromptSnapshot、ModelInfo、BaseInstructions 与 immutable ToolRouter；MCP/Skill/AgentsMd revision 和 exact handler binding 由 ToolRouter 的 RequestSnapshot 冻结。
 - Prompt 由 ContextManager、TurnContext 与 StepContext 在 sampling request 构建阶段统一生成；同一 ToolRouter 同时提供模型可见 Specs 和执行路由。
 - 保留 ToolExecutionService、Validate/Prepare/Permission/Approval/Execute、PreparedToolUse、RequestSnapshot、ApprovalCoordinator 与 ApprovalPort；明确它们是 Claude-style Tool 内层，不承担 Session、Turn terminal 或 Tool catalog owner。
-- stale registry/MCP/Skill/instruction snapshot 继续返回 typed ToolResult，不把 Codex 对齐误解为删除现有安全检查。
+- stale registry/MCP/Skill/AgentsMd snapshot 继续返回 typed ToolResult，不把 Codex 对齐误解为删除现有安全检查。
 
 ### G-06：Model Client、Context 与 Compaction Lifecycle — `DONE`
 
@@ -467,7 +456,7 @@ G 完成了当时的第一轮 Runtime 收敛和可工作主链，但其 `engine.
 以下出口是 G 当时的验收记录；SessionServices ownership、ToolRouter snapshot、Rollout/Event 和 factory removal 结论已被 M 重新打开。
 
 - [x] 生产代码不存在 `CodingFactory`、`CodingRuntime`、通用 TaskFactory/Prepare 主链或为规避 Session 所有权建立的 Host interface 网络。
-- [x] SessionServices 是 Session capability 的唯一 owner，SessionState、ActiveTurn、TurnState、SessionTask、StepContext 与 `run_turn` 职责和术语与 Codex 对应。
+- [x] G 建立的可工作 Session 主链已由 M 收敛为最终 SessionServices、SessionState、ActiveTurn、SessionTask、StepContext 与 `run_turn` ownership。
 - [x] Tool 调用链明确为 Codex-style StepContext/ToolRouter + Claude-style ToolExecutionService/Approval，现有安全与用户交互行为不回退。
 - [x] Default/Plan、ApprovalPolicy、PermissionProfile 与 SessionPermissionContext 不再混用同一个 PermissionMode。
 - [x] regular、compact、plan、interrupt、approval、resume 与连续 Turn 通过同一 Session 主链端到端运行。
@@ -476,7 +465,7 @@ G 完成了当时的第一轮 Runtime 收敛和可工作主链，但其 `engine.
 
 H 的 MCP、Skill 和 Web 行为能力仍保留；其中 `ExtensionAssembly` 作为装配层的架构结论被 M-07 取代，M 将让 SessionServices 直接拥有 MCPRuntime 与 SkillCatalog，并删除 generic Extension 聚合。
 
-- `H-01 TUI Tool Projection Convergence`：`DONE`。按 Codex HistoryCell/树状 activity 和 Claude Code Tool-specific UI projection 收敛工具展示。以真实 `TurnItem.ToolName` 为身份来源：`read`/`grep`/`glob` 进入 Codex 风格 `Exploring`/`Explored` 树，`execute_command` 进入 Codex 风格 `Running`/`Ran` 树，`update_plan` 直接沿用 Codex Plan/PlanUpdated 展示，`write`/`edit` 使用 Claude Code 风格独立展示。已覆盖 Tool 状态生命周期、结构化 ToolDisplayResult/文件变更摘要、Approval waiting/denied 展示、Rich/Raw、Inline、Live/Replay 一致性测试；`apply_patch` 明确排除在默认 Tool Catalog、Event、Rollout 和 TUI 主链之外，仅保留遗留代码。受影响包测试、race、vet、build、architecture guard 和 `git diff --check` 通过；全量测试中仍有既有 `internal/thread/manager` 环境时序超时，相关代码未修改。
+- `H-01 TUI Tool Projection Convergence`：`DONE`。按 Codex HistoryCell/树状 activity 和 Claude Code Tool-specific UI projection 收敛工具展示。以真实 `TurnItem.ToolName` 为身份来源：`read`/`grep`/`glob` 进入 Codex 风格 `Exploring`/`Explored` 树，`execute_command` 进入 Codex 风格 `Running`/`Ran` 树，`update_plan` 直接沿用 Codex Plan/PlanUpdated 展示，`write`/`edit` 使用 Claude Code 风格独立展示。已覆盖 Tool 状态生命周期、结构化 ToolDisplayResult/文件变更摘要、Approval waiting/denied 展示、Rich/Raw、Inline、Live/Replay 一致性测试；当时 `apply_patch` 仅排除在主链外，M-08 已物理删除其生产实现与兼容测试。受影响包测试、race、vet、build、architecture guard 和 `git diff --check` 通过；全量测试中仍有既有 `internal/thread/manager` 环境时序超时，相关代码未修改。
 - `H-02 MCP Runtime Convergence`：`DONE`。已删除旧 `Manager`/动态 Adapter 生产主链，完成 `MCPRuntime`、`MCPBinding`、typed Tool/Resource Catalog、lazy discovery、schema validation、read-only permission、typed stale/remote error、refresh/reconnect、shutdown、Resume ToolResult persistence 和 TUI typed projection；全量测试与 race 验收通过。
   - `[x] H-02.1`：MCP 配置、Client、Server binding、ToolCatalog、ResourceCatalog 和 Binding Revision 已统一进入 `MCPRuntime` owner；当时保留的 `ExtensionAssembly` 装配层由 M-07 删除。
   - `[x] H-02.2`：已稳定 server/tool identity、description、input schema、read-only/idempotent/parallel capability、resource metadata 和 catalog revision；生产路径不再注册动态 MCP Tool Adapter。
@@ -782,11 +771,13 @@ K 完成 Provider connection recovery 生命周期后，L 针对旧 `ProviderCon
 - `tool_output_token_limit=10000` 作为唯一用户可配置 Tool/Function Output 上下文预算，并通过唯一 projector 保持 live/Resume 一致。
 - 生产路径不存在 Provider-owned model/context/sampling 字段、Config v1 双主链或只换名称的兼容 Facade。
 
-## 15. M. Codex Architecture Realignment — `TODO`
+## 15. M. Codex Architecture Realignment — `DONE`
 
 M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/J 阶段仍保留的过渡 owner、factory、Protocol、Rollout 和 Extension/Instruction 模型。Amadeus 尚未发布，本阶段不考虑旧读写兼容：替换完成后直接删除旧 reader、writer、decoder、migration、alias、wrapper、Adapter、Facade、fixture 和兼容测试；旧 JSONL、SQLite、Config 和本地开发数据由开发者清理后按当前 schema 重建。
 
-### M-01：Protocol Identity + Event Envelope — `TODO`
+完成记录：2026-08-20 完成 Protocol identity/Event envelope、typed Rollout、Context 增量 owner、SessionServices、SessionTask/terminal、immutable ToolRouter、AgentsMd/Skill/MCP owner 与 UI projection 的整体收敛；物理删除 Config v1 migration、Extension/Instruction aggregate、旧 Engine test loop、`apply_patch` handler/patch executor/Diff Tracker 和其他 compatibility-only 代码。README、design、Config v2 example、Provider fixture 与本地开发模板均已核对为当前 schema；旧 `bin` SQLite/Rollout 数据已清理并由当前构建重新生成二进制。针对性测试、live/Resume E2E、全量测试、全量 race、vet、build、`make check`、architecture grep 和 `git diff --check` 全部通过。
+
+### M-01：Protocol Identity + Event Envelope — `DONE`
 
 - 将 ThreadID、TurnID、SubmissionID、RequestID 和 ItemID 归入 Protocol/Identity domain，删除 rollout/thread/turn package 对 ID 的定义或 alias。
 - 建立 `Submission{ID, Op}`、`Event{ID, Msg}` 和 typed `EventMsg`；按需在 payload 中携带 ThreadID、TurnID、RequestID 和 ItemID。
@@ -794,7 +785,7 @@ M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/
 - 将 Approval request 作为 EventMsg，回答使用 correlated `ApprovalDecisionOp`；删除 `SessionIo.Requests`、公开 `SessionIo.Status`、`InteractiveRequest`、`TurnRejected` 和重复 terminal/status 协议。
 - AgentStatus 仅保留为 Event reducer 派生的内部 watch/read model，不成为第二公开输出主链。
 
-### M-02：Typed RolloutItem + Persistence Reset — `TODO`
+### M-02：Typed RolloutItem + Persistence Reset — `DONE`
 
 - 建立 `SessionMetaItem`、`ResponseItem`、`CompactedItem`、`TurnContextItem` 和 `EventMsgItem` typed sum，RolloutLine 只负责当前格式的 version/sequence/timestamp。
 - 原样持久化 store policy 选中的 EventMsg；删除 `KindTurnItemCompleted`、`TurnItemCompleted`、`NewCompletedItem`、completed-item queue 和 response/completed fallback projector。
@@ -802,7 +793,7 @@ M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/
 - 删除旧 Rollout reader/writer、legacy decoder、migration projector、旧 SQLite canonical tables 和兼容 fixture；未知旧格式直接返回 unsupported-format 诊断。
 - SQLite 只接受当前 schema version；metadata index 可以从当前格式 Rollout 重建，旧 JSONL/SQLite 开发数据直接清理。
 
-### M-03：SessionState + Context Ownership — `TODO`
+### M-03：SessionState + Context Ownership — `DONE`
 
 - 让 ContextManager 成为活动 Session 的内存 history owner，SessionState 不保存 `[]rollout.Line` 或第二份历史集合。
 - Resume 时从 typed Rollout 重建一次；运行期间在 durable append 成功后按 typed fact 增量 record，不再每次 append 全量 rebuild。
@@ -810,7 +801,7 @@ M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/
 - Compaction replacement 继续允许原位 atomic rebuild，但与普通 append 的增量路径共享 normalization/projector 语义。
 - 增加 live incremental 与 Resume rebuild 的 semantic-equivalence、ToolCall/ToolResult pairing、interrupt 和 compaction contract tests。
 
-### M-04：SessionServices Ownership — `TODO`
+### M-04：SessionServices Ownership — `DONE`
 
 - 让 `SessionServices` 直接拥有 ModelClient、ToolRegistry、ToolExecutionService、ProcessManager、AgentsMdManager、MCPRuntime、SkillCatalog、Web、Approval、Permission、Compactor、LiveThread 和 ID/Time services。
 - 删除 `engine.Services`、`AgentServices`、`ServicesBuilder`、`SessionSetup`、`TaskConstructors`、CLI factory closure、`CapabilityView` 和相关 adapter/guard exceptions。
@@ -818,15 +809,15 @@ M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/
 - `SessionState.Configuration` 成为当前配置唯一事实源，删除 `engine.Services.configured`、首次 closure capture 和其他重复 configuration snapshot。
 - 更新 ThreadManager、Application typed query、fixtures 和 mocks，禁止通过 capability facade 或 type assertion 取回 Session 内部服务。
 
-### M-05：SessionTask + Turn Lifecycle — `TODO`
+### M-05：SessionTask + Turn Lifecycle — `DONE`
 
 - Session 根据 Op 直接创建 RegularTask/CompactTask，不经过 constructor map、factory callback、Prepare/Prepared 或 CLI controller。
 - 将 runtime `TurnContext` 与 durable `TurnContextItem` 分离；运行对象不直接序列化，durable DTO 只保存稳定恢复事实。
 - 删除 `engine.RunResult → session.Result → rollout/protocol terminal` 多级转换；Task 只返回最小 TaskOutput，Session 唯一创建 TurnCompleteEvent、TurnAbortedEvent 和 ErrorEvent。
-- ActiveTurn/TurnState 只保存 typed pending approval、usage、tool count、cancellation 和 terminal state；删除重复 TaskKind、pending user input 和未消费 lifecycle 字段。
+- ActiveTurn 只保存 Submission correlation、RunningTask 和 typed pending approval；usage/tool count 由 `run_turn` 局部累计并通过 TaskOutput 返回，cancellation 归 RunningTask，终态映射归 Session；删除重复 TaskKind、pending user input 和未消费 lifecycle 字段。
 - 固化 accepted、startup error、completed、blocked、failed、aborted、panic、interrupt 和 shutdown 的唯一完成协议。
 
-### M-06：Immutable StepContext + ToolRouter — `TODO`
+### M-06：Immutable StepContext + ToolRouter — `DONE`
 
 - StepContext 中的 immutable ToolRouter 同时保存模型可见 specs、exact ToolDefinition handler、MCP binding、visibility 和 parallel flags。
 - 同一次 sampling 的 Prompt Tool Specs 与随后 Tool dispatch 必须使用同一 router；执行时不得按名称重新查询当前 mutable registry。
@@ -834,7 +825,7 @@ M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/
 - 保留 Claude-style `Validate → Prepare → Permission → Approval → Execute` 内层协议、Read-before-write、Diff Preview、revalidate 和 atomic apply。
 - 增加 registry/MCP/Skill 变化、同名 handler replacement、Plan tool mask 和 parallel capability snapshot tests。
 
-### M-07：AgentsMd + Skills + MCP Ownership — `TODO`
+### M-07：AgentsMd + Skills + MCP Ownership — `DONE`
 
 - 删除 `ExtensionAssembly`、generic Extension aggregate 和相关 conversion wrapper；SessionServices 直接拥有 MCPRuntime 与 SkillCatalog。
 - 建立 `AgentsMdManager + LoadedAgentsMd` 唯一模型，删除 generic `WorkspaceResolver`、`InstructionScope`、target instruction service、`MarkSampled` 和 `context_refresh_required` 主链。
@@ -842,7 +833,7 @@ M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/
 - 保留 MCP lazy discovery、typed Catalog/Binding、Skill progressive disclosure、script attribution 和普通 Permission/Approval 行为。
 - 更新 Prompt、Context Update、Tool Prepare、TUI query 和 architecture guards，确认 AgentsMd/Skill/MCP 各有直接且唯一 owner。
 
-### M-08：Protocol/UI Projection + Legacy Cleanup Acceptance — `TODO`
+### M-08：Protocol/UI Projection + Legacy Cleanup Acceptance — `DONE`
 
 - 将 TranscriptState、EventReducer、History projection 和 Rollout replay 从 `internal/agent/protocol` 迁出；Protocol package 只保留 identity、DTO 和 contracts。
 - 删除重复 TaskKind、旧 Event aliases、request/status side channel、completed-item projector、Config v1 migration、旧 schema tests 和所有只服务兼容的 production code。

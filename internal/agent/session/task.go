@@ -23,10 +23,9 @@ type SessionTask interface {
 }
 
 type regularTask struct {
-	runtime      *SessionServices
-	goal         string
-	events       protocol.EventSink
-	instructions *targetInstructionScope
+	runtime *SessionServices
+	goal    string
+	events  protocol.EventSink
 }
 
 func (sessionTask *regularTask) Run(ctx context.Context, session *Session, turnContext *turn.TurnContext) (TaskOutput, error) {

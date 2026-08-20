@@ -16,9 +16,19 @@ import (
 	"github.com/Godric-W/Amadeus/internal/skill"
 )
 
-func (services *SessionServices) PrepareTurn(ctx context.Context, goal string, turnContext *turn.TurnContext, scope engine.InstructionScope, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error) error {
-	if services == nil || turnContext == nil || scope == nil || contextUpdate == nil || appendItems == nil {
+func (session *Session) prepareTurn(ctx context.Context, services *SessionServices, goal string, turnContext *turn.TurnContext) error {
+	if session == nil || services == nil || turnContext == nil {
 		return fmt.Errorf("turn context preparation is incomplete")
+	}
+	if err := session.refreshAgentsMd(ctx, services, turnContext.TurnID, turnContext.CWD); err != nil {
+		return err
+	}
+	return services.prepareDynamicContext(ctx, goal, turnContext, session.ContextUpdate, session.AppendItems)
+}
+
+func (services *SessionServices) prepareDynamicContext(ctx context.Context, goal string, turnContext *turn.TurnContext, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error) error {
+	if services == nil || turnContext == nil || contextUpdate == nil || appendItems == nil {
+		return fmt.Errorf("dynamic context preparation is incomplete")
 	}
 	tools := services.AvailableTools()
 	if turnContext.Mode == turn.ModeKindPlan {
@@ -68,11 +78,7 @@ func (services *SessionServices) PrepareTurn(ctx context.Context, goal string, t
 	if err := setUpdate(agentcontext.UpdateCollaborationMode, developer); err != nil {
 		return err
 	}
-	request, err := scope.Initialize(ctx, turnContext.CWD)
-	if err != nil {
-		return err
-	}
-	if err := setUpdate(agentcontext.UpdateEnvironment, fmt.Sprintf("<cwd>%s</cwd>\n<instruction_target>%s</instruction_target>", html.EscapeString(turnContext.CWD), html.EscapeString(request.TargetPath))); err != nil {
+	if err := setUpdate(agentcontext.UpdateEnvironment, fmt.Sprintf("<cwd>%s</cwd>", html.EscapeString(turnContext.CWD))); err != nil {
 		return err
 	}
 	effective := services.fileSystem.EffectiveProfile()
@@ -136,11 +142,11 @@ func (services *SessionServices) PrepareTurn(ctx context.Context, goal string, t
 		if encodeErr != nil {
 			return encodeErr
 		}
-		skillParts = append([]string{"## Skills And Extensions\n\n" + string(encoded)}, skillParts...)
+		skillParts = append([]string{"## Skills\n\n" + string(encoded)}, skillParts...)
 	} else if len(skillParts) > 0 {
-		skillParts = append([]string{"## Skills And Extensions"}, skillParts...)
+		skillParts = append([]string{"## Skills"}, skillParts...)
 	} else {
-		skillParts = []string{"## Skills And Extensions\n\nNo Skills are currently available."}
+		skillParts = []string{"## Skills\n\nNo Skills are currently available."}
 	}
 	if err := setUpdate(agentcontext.UpdateSkills, strings.Join(skillParts, "\n\n")); err != nil {
 		return err

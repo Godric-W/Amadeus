@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
@@ -61,7 +60,6 @@ type SpawnArgs struct {
 
 type ActiveTurn struct {
 	SubmissionID protocol.SubmissionID
-	State        *turn.TurnState
 	Task         *RunningTask
 	pending      map[protocol.RequestID]chan protocol.Op
 }
@@ -306,12 +304,8 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input stri
 		return
 	}
 	turnContext := &turnValue
-	kind := protocol.TaskKindRegular
-	if compact {
-		kind = protocol.TaskKindCompact
-	}
 	startedEvent := protocol.TurnStartedEvent{
-		ThreadID: session.threadID, TurnID: turnID, StartedAt: now, Input: input, Kind: kind,
+		ThreadID: session.threadID, TurnID: turnID, StartedAt: now,
 	}
 	items := []rollout.RolloutItem{turnContextItem(*turnContext)}
 	if !compact {
@@ -332,7 +326,7 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input stri
 		session.completeWithoutTask(submissionID, turnID, err)
 		return
 	}
-	session.active = &ActiveTurn{SubmissionID: submissionID, State: &turn.TurnState{StartedAt: now}, Task: running, pending: make(map[protocol.RequestID]chan protocol.Op)}
+	session.active = &ActiveTurn{SubmissionID: submissionID, Task: running, pending: make(map[protocol.RequestID]chan protocol.Op)}
 	session.publish(protocol.Event{ID: submissionID, Msg: startedEvent})
 	done := running.Start()
 	go func() {
@@ -345,109 +339,6 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input stri
 		case <-session.terminated:
 		}
 	}()
-}
-
-func (session *Session) rejectTurn(submissionID protocol.SubmissionID, turnID protocol.TurnID, err error, fatal bool) {
-	if err == nil {
-		err = errors.New("turn was rejected")
-	}
-	session.publish(protocol.Event{ID: submissionID, Msg: protocol.ErrorEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID), Code: "turn_start_failed", Message: err.Error(), At: session.services.Clock().UTC()}})
-	if fatal {
-		session.cancel(fmt.Errorf("start turn persistence: %w", err))
-	}
-}
-
-func (session *Session) finishTurn(completion Completion) {
-	if session.active == nil || session.active.Task.Context().TurnID != completion.TurnID {
-		return
-	}
-	submissionID := session.active.SubmissionID
-	completedItems := append([]rollout.RolloutItem(nil), completion.Output.Items...)
-	if completion.Output.Usage.TotalTokens > 0 {
-		if usageItem, usageErr := engine.UsageItem(completion.Output.Usage); usageErr == nil {
-			completedItems = append(completedItems, usageItem)
-		} else if completion.Error == nil {
-			completion.Error = usageErr
-		}
-	}
-	if len(completedItems) > 0 {
-		cleanupCtx, cancel := session.cleanupContext()
-		err := session.appendItemsDurable(cleanupCtx, completion.TurnID, completedItems...)
-		cancel()
-		if err != nil && completion.Error == nil {
-			completion.Error = err
-		}
-		if err == nil {
-			session.publishCompactionEvents(submissionID, completion.TurnID, completedItems)
-		}
-	}
-	finishedAt := session.services.Clock().UTC()
-	if errors.Is(completion.Cause, ErrInterrupted) || errors.Is(completion.Error, context.Canceled) && completion.Cause != nil {
-		reason := completion.Cause.Error()
-		summary := completion.Output.Summary
-		if summary == "" {
-			summary = "result: cancelled"
-		}
-		abortedEvent := protocol.TurnAbortedEvent{
-			ThreadID: session.threadID, TurnID: completion.TurnID,
-			Summary: summary, Reason: reason, FinishedAt: finishedAt,
-		}
-		cleanupCtx, cancel := session.cleanupContext()
-		persistErr := session.appendItemsDurable(cleanupCtx, completion.TurnID, rollout.EventMsgItem{Msg: abortedEvent})
-		cancel()
-		session.active.State.MarkInterrupted(errors.Join(completion.Cause, persistErr))
-		session.clearPendingRequests()
-		session.active = nil
-		if persistErr != nil {
-			session.publish(protocol.Event{ID: submissionID, Msg: protocol.StreamErrorEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(completion.TurnID), Message: persistErr.Error()}})
-			session.cancel(fmt.Errorf("persist aborted turn: %w", persistErr))
-			return
-		}
-		session.publish(protocol.Event{ID: submissionID, Msg: abortedEvent})
-		return
-	}
-	status := protocol.TurnStatusCompleted
-	outcome := completion.Output.Outcome
-	if !outcome.Valid() {
-		outcome = protocol.TurnOutcomeCompleted
-	}
-	reason := strings.TrimSpace(completion.Output.Reason)
-	errorText := ""
-	if completion.Error != nil {
-		status = protocol.TurnStatusFailed
-		outcome = protocol.TurnOutcomeFailed
-		errorText = completion.Error.Error()
-		if reason == "" {
-			reason = errorText
-		}
-	} else if outcome == protocol.TurnOutcomeFailed {
-		status = protocol.TurnStatusFailed
-		errorText = reason
-		if errorText == "" {
-			errorText = "task reported failed outcome"
-		}
-	}
-	completedEvent := protocol.TurnCompleteEvent{
-		ThreadID: session.threadID, TurnID: completion.TurnID,
-		Status: status, Outcome: outcome, Reason: reason,
-		Summary: completion.Output.Summary, Error: errorText, FinishedAt: finishedAt,
-	}
-	cleanupCtx, cancel := session.cleanupContext()
-	persistErr := session.appendItemsDurable(cleanupCtx, completion.TurnID, rollout.EventMsgItem{Msg: completedEvent})
-	cancel()
-	if persistErr != nil {
-		status = protocol.TurnStatusFailed
-		errorText = errors.Join(completion.Error, persistErr).Error()
-	}
-	session.active.State.MarkTerminal(errors.Join(completion.Error, persistErr))
-	session.clearPendingRequests()
-	session.active = nil
-	if persistErr != nil {
-		session.publish(protocol.Event{ID: submissionID, Msg: protocol.StreamErrorEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(completion.TurnID), Message: persistErr.Error()}})
-		session.cancel(fmt.Errorf("persist completed turn: %w", persistErr))
-		return
-	}
-	session.publish(protocol.Event{ID: submissionID, Msg: completedEvent})
 }
 
 func (session *Session) Mode() turn.ModeKind {
@@ -476,23 +367,6 @@ func (session *Session) publishCompactionEvents(submissionID protocol.Submission
 			Msg: protocol.WarningEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID), Message: compactionWarningMessage},
 		})
 	}
-}
-
-func (session *Session) completeWithoutTask(submissionID protocol.SubmissionID, turnID protocol.TurnID, taskErr error) {
-	completedEvent := protocol.TurnCompleteEvent{
-		ThreadID: session.threadID, TurnID: turnID,
-		Status: protocol.TurnStatusFailed, Outcome: protocol.TurnOutcomeFailed,
-		Reason: taskErr.Error(), Error: taskErr.Error(), FinishedAt: session.services.Clock().UTC(),
-	}
-	cleanupCtx, cancel := session.cleanupContext()
-	persistErr := session.appendItemsDurable(cleanupCtx, turnID, rollout.EventMsgItem{Msg: completedEvent})
-	cancel()
-	if persistErr != nil {
-		session.publish(protocol.Event{ID: submissionID, Msg: protocol.StreamErrorEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID), Message: persistErr.Error()}})
-		session.cancel(fmt.Errorf("persist rejected turn: %w", persistErr))
-		return
-	}
-	session.publish(protocol.Event{ID: submissionID, Msg: completedEvent})
 }
 
 func (session *Session) cancelActive(cause error) {

@@ -10,18 +10,16 @@ import (
 
 type panicSessionTask struct{}
 
-func (panicSessionTask) Run(context.Context, *Session, *turn.TurnContext, []TurnInput) (Result, error) {
+func (panicSessionTask) Run(context.Context, *Session, *turn.TurnContext) (TaskOutput, error) {
 	panic("boom")
 }
-
-func (panicSessionTask) Abort(context.Context, *Session, *turn.TurnContext) error { return nil }
 
 func TestRunningTaskReportsPanicAsCompletion(t *testing.T) {
 	turnContext := &turn.TurnContext{
 		ThreadID: "thread-1", TurnID: "turn-1", Provider: "openai", Model: "gpt-test", CWD: "/workspace",
 		Mode: turn.ModeKindDefault,
 	}
-	running, err := NewRunningTask(context.Background(), &Session{}, panicSessionTask{}, turnContext, nil)
+	running, err := NewRunningTask(context.Background(), &Session{}, panicSessionTask{}, turnContext)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -21,35 +21,33 @@ type LifecycleObserver interface {
 type NormalizedCallRecorder func(context.Context, []ToolCall) error
 
 type ToolExecutionServiceOptions struct {
-	Observer      LifecycleObserver
-	MaxParallel   int
-	Visibility    map[string]bool
-	Approvals     *policy.ApprovalCoordinator
-	Permissions   *policy.SessionPermissionContext
-	FileReadState *FileReadStateStore
-	ContextScope  ContextScope
+	Observer       LifecycleObserver
+	MaxParallel    int
+	Visibility     map[string]bool
+	Approvals      *policy.ApprovalCoordinator
+	Permissions    *policy.SessionPermissionContext
+	FileReadState  *FileReadStateStore
+	TargetObserver TargetObserver
 }
 
 // ExecutionScope binds request-scoped capabilities to one model step without
 // rebuilding the session-scoped registry, validator, permission state, or file
 // read state.
 type ExecutionScope struct {
-	Observer     LifecycleObserver
-	ContextScope ContextScope
-	AllowedTools []string
+	Observer LifecycleObserver
+	Router   *ToolRouter
 }
 
 type ToolExecutionService struct {
-	registry      *Registry
-	validator     *ArgumentValidator
-	observer      LifecycleObserver
-	maxParallel   int
-	visibility    map[string]bool
-	now           func() time.Time
-	permissions   *PermissionService
-	fileReadState *FileReadStateStore
-	contextScope  ContextScope
-	allowedTools  map[string]struct{}
+	registry       *Registry
+	validator      *ArgumentValidator
+	observer       LifecycleObserver
+	maxParallel    int
+	visibility     map[string]bool
+	now            func() time.Time
+	permissions    *PermissionService
+	fileReadState  *FileReadStateStore
+	targetObserver TargetObserver
 }
 
 func NewToolExecutionService(registry *Registry, validator *ArgumentValidator, options ToolExecutionServiceOptions) (*ToolExecutionService, error) {
@@ -69,12 +67,12 @@ func NewToolExecutionService(registry *Registry, validator *ArgumentValidator, o
 		registry: registry, validator: validator, observer: options.Observer,
 		maxParallel: options.MaxParallel, visibility: cloneVisibility(options.Visibility),
 		now: time.Now, permissions: NewPermissionService(options.Permissions, options.Approvals),
-		fileReadState: options.FileReadState, contextScope: options.ContextScope,
+		fileReadState: options.FileReadState, targetObserver: options.TargetObserver,
 	}, nil
 }
 
 func (service *ToolExecutionService) Execute(ctx context.Context, call ToolCall) (ToolExecution, error) {
-	routed := service.prepareCall(call)
+	routed := service.prepareCall(service.currentRouter(), call, "not_registered")
 	if routed.failure != nil {
 		return service.publishFailure(ctx, *routed.failure)
 	}
@@ -82,10 +80,14 @@ func (service *ToolExecutionService) Execute(ctx context.Context, call ToolCall)
 }
 
 func (service *ToolExecutionService) ExecuteBatch(ctx context.Context, calls []ToolCall, recorder NormalizedCallRecorder) ([]ToolExecution, error) {
+	return service.executeBatch(ctx, calls, recorder, service.currentRouter(), "not_registered")
+}
+
+func (service *ToolExecutionService) executeBatch(ctx context.Context, calls []ToolCall, recorder NormalizedCallRecorder, router ToolRouter, unavailableKind string) ([]ToolExecution, error) {
 	routed := make([]executionCall, len(calls))
 	normalized := make([]ToolCall, len(calls))
 	for index, call := range calls {
-		routed[index] = service.prepareCall(call)
+		routed[index] = service.prepareCall(router, call, unavailableKind)
 		routed[index].index = index
 		normalized[index] = routed[index].call.Clone()
 	}
@@ -110,7 +112,7 @@ func (service *ToolExecutionService) ExecuteBatch(ctx context.Context, calls []T
 			index++
 			continue
 		}
-		if !current.tool.SupportsParallelToolCalls() {
+		if !current.parallel {
 			execution, err := service.executeCall(ctx, current)
 			if err != nil {
 				return nil, err
@@ -120,7 +122,7 @@ func (service *ToolExecutionService) ExecuteBatch(ctx context.Context, calls []T
 			continue
 		}
 		end := index + 1
-		for end < len(routed) && routed[end].failure == nil && routed[end].tool.SupportsParallelToolCalls() {
+		for end < len(routed) && routed[end].failure == nil && routed[end].parallel {
 			end++
 		}
 		parallel, err := service.executeParallel(ctx, routed[index:end])
@@ -162,17 +164,11 @@ func (service *ToolExecutionService) ExecuteBatchScoped(ctx context.Context, cal
 	bound := *service
 	orderedObserver := &orderedBatchObserver{delegate: scope.Observer}
 	bound.observer = orderedObserver
-	bound.contextScope = scope.ContextScope
-	if scope.AllowedTools != nil {
-		bound.allowedTools = make(map[string]struct{}, len(scope.AllowedTools))
-		for _, name := range scope.AllowedTools {
-			name = strings.TrimSpace(name)
-			if name != "" {
-				bound.allowedTools[name] = struct{}{}
-			}
-		}
+	if scope.Router == nil || !scope.Router.isConfigured() {
+		return nil, errors.New("tool execution scope has no frozen router")
 	}
-	executions, err := bound.ExecuteBatch(ctx, calls, recorder)
+	ctx = WithRequestSnapshot(ctx, scope.Router.RequestSnapshot())
+	executions, err := bound.executeBatch(ctx, calls, recorder, *scope.Router, "tool_not_available")
 	if err != nil {
 		return nil, err
 	}
@@ -201,8 +197,7 @@ func (observer *orderedBatchObserver) ToolCallStarted(ctx context.Context, spec 
 func (*orderedBatchObserver) ToolCallCompleted(context.Context, ToolExecution) error { return nil }
 
 func (service *ToolExecutionService) SupportsParallelToolCalls(name string) bool {
-	toolImpl, ok := service.registry.LookupVisible(name, service.visibility)
-	return ok && toolImpl.SupportsParallelToolCalls()
+	return service.currentRouter().SupportsParallelToolCalls(name)
 }
 
 type executionCall struct {
@@ -210,12 +205,13 @@ type executionCall struct {
 	call      ToolCall
 	spec      ToolSpec
 	tool      ToolDefinition
+	parallel  bool
 	startedAt time.Time
 	repairs   []ArgumentRepairKind
 	failure   *ToolExecution
 }
 
-func (service *ToolExecutionService) prepareCall(call ToolCall) executionCall {
+func (service *ToolExecutionService) prepareCall(router ToolRouter, call ToolCall, unavailableKind string) executionCall {
 	startedAt := service.now()
 	safeCall := protocolSafeCall(call)
 	if strings.TrimSpace(call.ID) == "" {
@@ -226,26 +222,31 @@ func (service *ToolExecutionService) prepareCall(call ToolCall) executionCall {
 		failure := service.failure(safeCall, "invalid_call", errors.New("tool call name is empty"), startedAt)
 		return executionCall{call: safeCall, startedAt: startedAt, failure: &failure}
 	}
-	toolImpl, ok := service.registry.LookupVisible(call.Name, service.visibility)
+	route, ok := router.resolve(call.Name)
 	if !ok {
-		failure := service.failure(safeCall, "not_registered", fmt.Errorf("tool %q is not registered or visible", call.Name), startedAt)
+		message := fmt.Errorf("tool %q is not registered or visible", call.Name)
+		if unavailableKind == "tool_not_available" {
+			message = fmt.Errorf("tool %q is not available in this model step", call.Name)
+		}
+		failure := service.failure(safeCall, unavailableKind, message, startedAt)
 		return executionCall{call: safeCall, startedAt: startedAt, failure: &failure}
 	}
-	if service.allowedTools != nil {
-		if _, allowed := service.allowedTools[call.Name]; !allowed {
-			failure := service.failure(safeCall, "tool_not_available", fmt.Errorf("tool %q is not available in this model step", call.Name), startedAt)
-			return executionCall{call: safeCall, startedAt: startedAt, failure: &failure}
-		}
-	}
-	spec := toolImpl.Spec()
+	spec := route.spec.Clone()
 	normalized, err := service.validator.Normalize(spec, call.Payload)
 	if err != nil {
 		failureCall := call.Clone()
 		failureCall.Payload = json.RawMessage(`null`)
 		failure := service.failure(failureCall, "invalid_arguments", err, startedAt)
-		return executionCall{call: failureCall, spec: spec, tool: toolImpl, startedAt: startedAt, failure: &failure}
+		return executionCall{call: failureCall, spec: spec, tool: route.definition, parallel: route.parallel, startedAt: startedAt, failure: &failure}
 	}
-	return executionCall{call: NewCall(call.ID, call.Name, normalized.Payload), spec: spec, tool: toolImpl, startedAt: startedAt, repairs: normalized.RepairKinds}
+	return executionCall{call: NewCall(call.ID, call.Name, normalized.Payload), spec: spec, tool: route.definition, parallel: route.parallel, startedAt: startedAt, repairs: normalized.RepairKinds}
+}
+
+func (service *ToolExecutionService) currentRouter() ToolRouter {
+	if service == nil || service.registry == nil {
+		return ToolRouter{}
+	}
+	return service.registry.SnapshotRouter(service.visibility, RequestSnapshot{}, nil)
 }
 
 func protocolSafeCall(call ToolCall) ToolCall {
@@ -300,8 +301,8 @@ func (service *ToolExecutionService) executeCall(ctx context.Context, routed exe
 		execution := service.complete(routed.call, ToolResult{}, &phaseError{kind: "preparation_failed", err: errors.New("prepared invocation does not match routed invocation")}, routed.startedAt)
 		return service.publishCompleted(ctx, execution)
 	}
-	if prepared.Target != nil && service.contextScope != nil {
-		if err := service.contextScope.Ensure(ctx, *prepared.Target); err != nil {
+	if prepared.Target != nil && service.targetObserver != nil {
+		if err := service.targetObserver.ObserveTarget(ctx, *prepared.Target, toolContext.Snapshot); err != nil {
 			execution := service.complete(routed.call, ToolResult{}, err, routed.startedAt)
 			return service.publishCompleted(ctx, execution)
 		}

@@ -43,7 +43,7 @@ func TestAgentRendererRendersCompleteAgentEventSequence(t *testing.T) {
 	completedAssistant.Status = protocol.ItemStatusCompleted
 	completedAssistant.CompletedAt = time.Now().UTC()
 	events := []protocol.Event{
-		sessionMessage(protocol.TurnStartedEvent{StartedAt: time.Now().UTC(), Input: "test"}),
+		sessionMessage(protocol.TurnStartedEvent{StartedAt: time.Now().UTC()}),
 		sessionMessage(protocol.ItemStartedEvent{Item: assistant}),
 		sessionMessage(protocol.AgentMessageContentDeltaEvent{ItemID: "assistant-1", Delta: "working"}),
 		sessionMessage(protocol.ItemCompletedEvent{Item: completedAssistant}),

@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
+	"github.com/Godric-W/Amadeus/internal/agentsmd"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
-	"github.com/Godric-W/Amadeus/internal/instruction"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	openaiadapter "github.com/Godric-W/Amadeus/internal/llm/openai"
 	"github.com/Godric-W/Amadeus/internal/mcp"
@@ -57,7 +57,7 @@ type SessionServices struct {
 	tools         *tool.Registry
 	toolExecutor  *tool.ToolExecutionService
 	processes     *processdomain.Manager
-	instructions  *instruction.WorkspaceResolver
+	agentsMd      *agentsmd.AgentsMdManager
 	skills        *skill.SkillCatalog
 	mcp           *mcp.MCPRuntime
 	webFetcher    webfetch.Fetcher
@@ -71,8 +71,12 @@ type SessionServices struct {
 	auditCloser   io.Closer
 	budget        engine.TurnBudget
 
-	closeOnce sync.Once
-	closeErr  error
+	closeState *sessionServicesCloseState
+}
+
+type sessionServicesCloseState struct {
+	once sync.Once
+	err  error
 }
 
 func buildSessionServices(ctx context.Context, owner *Session, base SessionServices, adapters ServiceAdapters) (SessionServices, error) {
@@ -102,10 +106,6 @@ func buildSessionServices(ctx context.Context, owner *Session, base SessionServi
 	if err != nil {
 		return SessionServices{}, err
 	}
-	userLoader, err := instruction.NewUserLoader(configuration.AmadeusRoot, instruction.UserLoaderOptions{})
-	if err != nil {
-		return SessionServices{}, fmt.Errorf("create user instruction loader: %w", err)
-	}
 	roots := []project.Root{root}
 	for _, workspaceRoot := range configuration.WorkspaceRoots {
 		resolved, resolveErr := project.NewRoot(workspaceRoot)
@@ -114,7 +114,7 @@ func buildSessionServices(ctx context.Context, owner *Session, base SessionServi
 		}
 		roots = append(roots, resolved)
 	}
-	instructions, err := instruction.NewWorkspaceResolver(userLoader, roots, instruction.ProjectLoaderOptions{})
+	agentsMd, err := agentsmd.NewManager(configuration.AmadeusRoot, roots, agentsmd.Options{})
 	if err != nil {
 		return SessionServices{}, err
 	}
@@ -190,7 +190,7 @@ func buildSessionServices(ctx context.Context, owner *Session, base SessionServi
 	permissions := policy.NewSessionPermissionContext()
 	toolExecutor, err := tool.NewToolExecutionService(toolRuntime.Registry, tool.NewArgumentValidator(), tool.ToolExecutionServiceOptions{
 		MaxParallel: configuration.Runtime.Agent.MaxParallelTools, Visibility: toolRuntime.Visibility,
-		Approvals: coordinator, Permissions: permissions,
+		Approvals: coordinator, Permissions: permissions, TargetObserver: agentsMd,
 	})
 	if err != nil {
 		toolRuntime.Processes.Close()
@@ -206,7 +206,7 @@ func buildSessionServices(ctx context.Context, owner *Session, base SessionServi
 	base.tools = toolRuntime.Registry
 	base.toolExecutor = toolExecutor
 	base.processes = toolRuntime.Processes
-	base.instructions = instructions
+	base.agentsMd = agentsMd
 	base.skills = skills
 	base.mcp = mcpRuntime
 	base.webFetcher = toolRuntime.WebFetcher
@@ -219,6 +219,7 @@ func buildSessionServices(ctx context.Context, owner *Session, base SessionServi
 	base.skillWarnings = append([]error(nil), skillWarnings...)
 	base.auditCloser = auditCloser
 	base.budget = engine.DefaultTurnBudget()
+	base.closeState = &sessionServicesCloseState{}
 	cleanupMCP = false
 	return base, nil
 }
@@ -227,21 +228,25 @@ func (services *SessionServices) Close() error {
 	if services == nil {
 		return nil
 	}
-	services.closeOnce.Do(func() {
+	if services.closeState == nil {
+		services.closeState = &sessionServicesCloseState{}
+	}
+	state := services.closeState
+	state.once.Do(func() {
 		if services.processes != nil {
 			services.processes.Close()
 		}
 		if services.mcp != nil {
-			services.closeErr = errors.Join(services.closeErr, services.mcp.Close())
+			state.err = errors.Join(state.err, services.mcp.Close())
 		}
 		if services.auditCloser != nil {
-			services.closeErr = errors.Join(services.closeErr, services.auditCloser.Close())
+			state.err = errors.Join(state.err, services.auditCloser.Close())
 		}
 		if services.permissions != nil {
 			services.permissions.Clear()
 		}
 	})
-	return services.closeErr
+	return state.err
 }
 
 func amadeusDeniedRoots(root string) []string {

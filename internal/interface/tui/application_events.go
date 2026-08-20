@@ -6,6 +6,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	runtimeprojection "github.com/Godric-W/Amadeus/internal/app/transcript"
 	tea "github.com/charmbracelet/bubbletea"
 	xansi "github.com/charmbracelet/x/ansi"
 )
@@ -15,7 +16,7 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 		model.restoreRetryStatus()
 	}
 	if model.runtimeTranscript == nil {
-		model.runtimeTranscript = protocol.NewTranscriptState(protocol.ThreadIDOf(event.Msg))
+		model.runtimeTranscript = runtimeprojection.New(protocol.ThreadIDOf(event.Msg))
 	}
 	if err := model.runtimeTranscript.Apply(event); err != nil {
 		// A live provider may emit a delta before the UI observes its start
@@ -41,12 +42,12 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 		model.motionStartedAt = model.runStartedAt
 		model.transcript.HadWorkActivity = false
 		model.transcript.NeedsFinalMessageSeparator = false
-		if item.Kind == protocol.TaskKindCompact {
-			model.status = "compacting context"
-		} else if model.collaboration == CollaborationPlan {
-			model.status = "planning"
-		} else {
-			model.status = "working"
+		if model.status != "compacting context" {
+			if model.collaboration == CollaborationPlan {
+				model.status = "planning"
+			} else {
+				model.status = "working"
+			}
 		}
 		return model.workingTick()
 	case protocol.ThreadSettingsAppliedEvent:

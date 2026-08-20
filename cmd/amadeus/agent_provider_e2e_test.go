@@ -70,6 +70,9 @@ agent:
 			if err := os.WriteFile(filepath.Join(projectDirectory, "README.md"), []byte("provider e2e readme\n"), 0o600); err != nil {
 				t.Fatalf("write Provider E2E fixture: %v", err)
 			}
+			if err := os.WriteFile(filepath.Join(projectDirectory, "AGENTS.md"), []byte("Follow the provider E2E project instructions.\n"), 0o600); err != nil {
+				t.Fatalf("write Provider E2E AGENTS.md fixture: %v", err)
+			}
 			auditSink := audit.NewMemorySink()
 			runtime := commandRuntime{
 				amadeusRoot: amadeusHome, workingDirectory: projectDirectory, lookupEnv: emptyEnvLookup,
@@ -143,7 +146,7 @@ func assertProviderPromptContract(t *testing.T, api config.WireAPI, body map[str
 	combined := strings.Join(contents, "\n")
 	for _, required := range []string{
 		"You are Amadeus", "## Execute Mode", "<collaboration_mode>", "<environment_context>", "<permission_context>",
-		"## Persistent Instructions", "## Skills And Extensions", "## `execute_command`", "amadeus.instructions.v1", "Read README and report",
+		"## AGENTS.md Instructions", "## Skills", "## `execute_command`", "amadeus.agents_md.v1", "Read README and report",
 	} {
 		if !strings.Contains(combined, required) {
 			t.Fatalf("%s Provider request omitted Prompt contract %q: %s", api, required, combined)

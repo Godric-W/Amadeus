@@ -14,17 +14,25 @@ func (services *SessionServices) CaptureStep(snapshot func(llm.ModelInfo, llm.Pr
 	if services == nil || snapshot == nil {
 		return engine.StepContext{}, errors.New("step context capture is incomplete")
 	}
-	tools := services.AvailableTools()
-	if turnContext.Mode == turn.ModeKindPlan {
-		tools = engine.PlanModeTools(tools)
+	requestSnapshot := tool.RequestSnapshot{}
+	if services.skills != nil {
+		requestSnapshot.SkillRevision, _ = services.skills.Revision()
 	}
-	toolNames := make([]string, len(tools))
+	if services.mcp != nil {
+		requestSnapshot.MCPBindingRevision = services.mcp.Binding().Revision
+	}
+	if services.agentsMd != nil {
+		requestSnapshot.AgentsMdRevision = services.agentsMd.Current().Revision
+	}
+	var include tool.ToolRouteFilter
+	if turnContext.Mode == turn.ModeKindPlan {
+		include = engine.PlanModeToolAllowed
+	}
+	router := services.tools.SnapshotRouter(services.visibility, requestSnapshot, include)
+	tools := router.Specs()
 	definitions := make([]llm.ToolSpec, len(tools))
-	toolSpecRevisions := make([]string, len(tools))
 	for index, spec := range tools {
-		toolNames[index] = spec.Name
 		definitions[index] = llm.ToolSpec{Name: spec.Name, Description: spec.Description, InputSchema: append([]byte(nil), spec.InputSchema...)}
-		toolSpecRevisions[index] = definitions[index].RevisionID()
 	}
 	model := services.ModelInfo()
 	modelMessages, err := services.ModelMessages(model)
@@ -41,27 +49,9 @@ func (services *SessionServices) CaptureStep(snapshot func(llm.ModelInfo, llm.Pr
 		OutputSchema:      append(llm.OutputSchema(nil), turnContext.OutputSchema...), OutputSchemaStrict: turnContext.OutputSchemaStrict,
 	}
 	promptSnapshot := snapshot(model, promptShape)
-	requestSnapshot := tool.RequestSnapshot{ToolRevision: services.tools.Revision()}
-	if services.skills != nil {
-		requestSnapshot.SkillRevision, _ = services.skills.Revision()
-	}
-	if services.mcp != nil {
-		requestSnapshot.MCPBindingRevision = services.mcp.Binding().Revision
-	}
 	return engine.StepContext{
 		Turn: turnContext, Prompt: promptSnapshot, Model: model, BaseInstructions: baseInstructions,
-		Tools: cloneSessionToolSpecs(tools), ToolNames: append([]string(nil), toolNames...),
-		ToolSpecRevisions: append([]string(nil), toolSpecRevisions...),
-		ToolRevision:      requestSnapshot.ToolRevision, SkillRevision: requestSnapshot.SkillRevision,
-		MCPRevision: requestSnapshot.MCPBindingRevision, ModelMessagesRevision: modelMessages.Revision,
-		WorldStateRevision: promptSnapshot.WorldStateRevision, RequestSnapshot: requestSnapshot,
+		ToolRouter: router, ModelMessagesRevision: modelMessages.Revision,
+		WorldStateRevision: promptSnapshot.WorldStateRevision,
 	}, nil
-}
-
-func cloneSessionToolSpecs(specs []tool.ToolSpec) []tool.ToolSpec {
-	result := make([]tool.ToolSpec, len(specs))
-	for index, spec := range specs {
-		result[index] = spec.Clone()
-	}
-	return result
 }

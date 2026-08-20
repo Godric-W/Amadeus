@@ -11,8 +11,8 @@ import (
 
 func TestIncompleteTurnFindsLatestStillOpenTurn(t *testing.T) {
 	lines := []rollout.Line{
-		{Item: rollout.EventMsgItem{Msg: protocol.TurnStartedEvent{ThreadID: "thread-1", TurnID: "turn-1", Input: "work", StartedAt: time.Now().UTC()}}},
-		{Item: rollout.EventMsgItem{Msg: protocol.TurnStartedEvent{ThreadID: "thread-1", TurnID: "turn-2", Input: "work", StartedAt: time.Now().UTC()}}},
+		{Item: rollout.EventMsgItem{Msg: protocol.TurnStartedEvent{ThreadID: "thread-1", TurnID: "turn-1", StartedAt: time.Now().UTC()}}},
+		{Item: rollout.EventMsgItem{Msg: protocol.TurnStartedEvent{ThreadID: "thread-1", TurnID: "turn-2", StartedAt: time.Now().UTC()}}},
 		{Item: rollout.EventMsgItem{Msg: protocol.TurnCompleteEvent{ThreadID: "thread-1", TurnID: "turn-2", Status: protocol.TurnStatusCompleted, Outcome: protocol.TurnOutcomeCompleted, FinishedAt: time.Now().UTC()}}},
 	}
 	if got := incompleteTurn(lines); got != "turn-1" {

@@ -32,6 +32,11 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 		"TurnHost", "TaskHost", "PromptHost", "ContextHost", "RolloutHost", "ModelSampler", "RunRequest", "RunTurn",
 		"request_user_input", "RequestUserInput", "UserInputRequest", "UserInputResponseOp",
 		"KindTurnItemCompleted", "TurnItemCompleted", "NewCompletedItem", "ProjectThreadItems",
+		"AgentServices", "ServicesBuilder", "SessionSetup", "TaskConstructors", "CapabilityView",
+		"ExtensionAssembly", "WorkspaceResolver", "InstructionScope", "targetInstructionScope",
+		"InteractiveRequest", "AllowedTools", "ToolRevision", "context_refresh_required",
+		"InstructionResolution", "migrateConfigDocument", "TaskKind",
+		"NewApplyPatch", "ApplyPatchOptions", "applyPatchSpec", "type ApplyPatch struct",
 		"schema_migrations", "func migrate(",
 	}
 	for _, relative := range []string{"cmd", "internal"} {
@@ -60,9 +65,58 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 			t.Fatalf("scan %s: %v", relative, err)
 		}
 	}
-	for _, relative := range []string{"internal/agent/react", "internal/agent/runtime", "internal/agent/reflect", "internal/session", "internal/snapshot"} {
+	for _, relative := range []string{
+		"internal/agent/react", "internal/agent/runtime", "internal/agent/reflect", "internal/session", "internal/snapshot",
+		"internal/instruction", "internal/extension", "internal/tool/patch", "internal/diff",
+	} {
 		if _, err := os.Stat(filepath.Join(root, relative)); err == nil {
 			t.Errorf("removed production package still exists: %s", relative)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("inspect %s: %v", relative, err)
+		}
+	}
+}
+
+func TestProtocolContainsContractsWithoutUIProjection(t *testing.T) {
+	root := repositoryRoot(t)
+	protocolRoot := filepath.Join(root, "internal", "agent", "protocol")
+	forbidden := []string{
+		"type TranscriptState", "func NewTranscriptState", "type EventReducer",
+		"ProjectThreadItems", "replaceTranscriptItem", "applyDelta(",
+	}
+	err := filepath.WalkDir(protocolRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		for _, symbol := range forbidden {
+			if strings.Contains(string(content), symbol) {
+				t.Errorf("Protocol owns UI/replay projection %q in %s", symbol, filepath.ToSlash(path[len(root)+1:]))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCurrentSchemasHaveNoMigrationProductionFiles(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, relative := range []string{
+		"internal/config/migration.go",
+		"internal/rollout/migration.go",
+		"internal/rollout/legacy.go",
+		"internal/thread/local/migration.go",
+	} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); err == nil {
+			t.Errorf("legacy schema production file still exists: %s", relative)
 		} else if !os.IsNotExist(err) {
 			t.Fatalf("inspect %s: %v", relative, err)
 		}
@@ -337,23 +391,6 @@ func TestToolsOnlyExecuteThroughToolExecutionService(t *testing.T) {
 	}
 }
 
-func TestRunDiffConsumesOnlyTypedPatchDeltas(t *testing.T) {
-	root := repositoryRoot(t)
-	tracker, err := os.ReadFile(filepath.Join(root, "internal", "diff", "tracker.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(tracker)
-	if !strings.Contains(content, "[]patchtool.AppliedPatchDelta") {
-		t.Fatal("RunDiff Projector does not consume typed AppliedPatchDelta values")
-	}
-	for _, forbidden := range []string{"tool.Output", `Metadata["operations"]`, "decodeOperations"} {
-		if strings.Contains(content, forbidden) {
-			t.Errorf("RunDiff Projector still depends on generic Tool metadata through %q", forbidden)
-		}
-	}
-}
-
 func repositoryRoot(t *testing.T) string {
 	t.Helper()
 	_, current, _, ok := runtime.Caller(0)
@@ -571,10 +608,10 @@ func TestModelProviderConfigurationHasCodexOwnershipBoundaries(t *testing.T) {
 	}
 
 	compactor := mustReadArchitectureFile(t, root, "internal/agent/engine/compactor.go")
-	if !strings.Contains(compactor, "NormalizeResponseItems(projection.Covered, runtime.ModelInfo(), nil)") {
+	if !strings.Contains(compactor, "NormalizeResponseItems(projection.Covered, compactor.ModelInfo, nil)") {
 		t.Fatal("Compactor does not use the effective ModelInfo projection policy")
 	}
-	if strings.Contains(compactor, "runtime.client.Model()") {
+	if strings.Contains(compactor, ".modelClient.Model()") || strings.Contains(compactor, ".client.Model()") {
 		t.Fatal("Compactor bypasses the effective ModelInfo with Adapter metadata")
 	}
 }

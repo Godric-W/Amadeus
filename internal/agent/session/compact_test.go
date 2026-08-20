@@ -118,7 +118,7 @@ func (host *compactTestHost) ContextUpdate(key agentcontext.UpdateKey) string {
 func TestCompactTaskProducesSemanticReplacementHistory(t *testing.T) {
 	session, host, client := newCompactionTestRuntime(t)
 	runtime := &session.services
-	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil)
+	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestCompactTaskUsesEffectiveToolOutputTokenLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := &session.services
-	if _, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil); err != nil {
+	if _, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext()); err != nil {
 		t.Fatal(err)
 	}
 	for _, item := range client.request.Prompt.Input {
@@ -196,7 +196,7 @@ func TestCompactTaskPreservesLatestUserTurnOutsideReplacement(t *testing.T) {
 	if err := host.AppendItems(context.Background(), "turn-2", latest); err != nil {
 		t.Fatal(err)
 	}
-	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil)
+	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestCompactTaskFailureDoesNotReturnItems(t *testing.T) {
 	session, host, client := newCompactionTestRuntime(t)
 	runtime := &session.services
 	client.err = errors.New("provider unavailable")
-	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil)
+	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext())
 	if err == nil || len(result.Items) != 0 {
 		t.Fatalf("failed compaction result=%#v err=%v", result, err)
 	}
@@ -226,7 +226,7 @@ func TestCompactTaskRetriesResponseStreamAndKeepsCanonicalResult(t *testing.T) {
 	session, host, client := newCompactionTestRuntimeWithRetries(t, 1)
 	client.streams = []llm.Stream{compactRetryFailure("connection reset"), successfulCompactStream()}
 	runtime := &session.services
-	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil)
+	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestCompactTaskRetryExhaustionDoesNotChangeReplacementHistory(t *testing.T)
 	client.streams = []llm.Stream{compactRetryFailure("first failure"), compactRetryFailure("second failure")}
 	original := session.ContextProjection()
 	runtime := &session.services
-	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext(), nil)
+	result, err := (&compactTask{runtime: runtime, events: host}).Run(context.Background(), session, compactTurnContext())
 	if err == nil || len(result.Items) != 0 {
 		t.Fatalf("exhausted compaction result=%#v err=%v", result, err)
 	}

@@ -16,8 +16,8 @@ import (
 
 type compactFunc func(context.Context) (bool, error)
 
-func (session *Session) continueTurn(ctx context.Context, runtime *SessionServices, modelSession *engine.ModelClientSession, turnContext turn.TurnContext, events protocol.EventSink, instructions engine.StepInstructionScope, compact compactFunc, progress func(llm.Usage, int)) (TaskOutput, error) {
-	if runtime == nil || modelSession == nil || events == nil || instructions == nil {
+func (session *Session) continueTurn(ctx context.Context, runtime *SessionServices, modelSession *engine.ModelClientSession, turnContext turn.TurnContext, events protocol.EventSink, compact compactFunc) (TaskOutput, error) {
+	if runtime == nil || modelSession == nil || events == nil {
 		return TaskOutput{}, errors.New("session continuation is incomplete")
 	}
 	var usage llm.Usage
@@ -27,19 +27,19 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 	budget := runtime.TurnBudget()
 	for stepNumber := 1; ; stepNumber++ {
 		if err := ctx.Err(); err != nil {
-			return TaskOutput{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: cancelled", Outcome: protocol.TurnOutcomeAborted, Reason: err.Error()}, err
+			return taskProgress(usage, toolCallCount), err
 		}
 		if reason := budget.Exhausted(stepNumber-1, toolCallCount, time.Since(startedAt)); reason != "" {
 			return TaskOutput{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: blocked", Outcome: protocol.TurnOutcomeBlocked, Reason: reason}, nil
 		}
-		step, err := runtime.CaptureStep(session.Snapshot, turnContext)
+		step, err := session.captureStep(ctx, runtime, turnContext)
 		if err != nil {
-			return TaskOutput{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: failed"}, err
+			return taskProgress(usage, toolCallCount), err
 		}
 		if step.Prompt.NeedsCompaction(step.Model) && compact != nil {
 			compacted, compactErr := compact(ctx)
 			if compactErr != nil {
-				return TaskOutput{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: failed"}, compactErr
+				return taskProgress(usage, toolCallCount), compactErr
 			}
 			if compacted {
 				continue
@@ -49,41 +49,33 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 			EstimatedInputTokens: step.Prompt.Usage.EstimatedInputTokens,
 			ContextWindow:        step.Model.ContextWindow,
 		}}); err != nil {
-			return TaskOutput{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: failed"}, fmt.Errorf("publish context usage: %w", err)
+			return taskProgress(usage, toolCallCount), fmt.Errorf("publish context usage: %w", err)
 		}
 		if !completionReminderSent && budget.Nearing(stepNumber-1, toolCallCount, time.Since(startedAt)) {
 			step.Prompt.Items = append(step.Prompt.Items, llm.DeveloperMessage("The Turn is approaching its internal safety budget. Finish the highest-value remaining work now and provide a concise final response; do not start optional work."))
 			completionReminderSent = true
 		}
 		sampleID := fmt.Sprintf("%s/step-%d", turnContext.TurnID, stepNumber)
-		instructions.MarkSampled()
-		stepCtx := tool.WithRequestSnapshot(ctx, step.RequestSnapshot)
-		stepCtx = tool.WithInvocationMetadata(stepCtx, tool.InvocationMetadata{SessionID: string(turnContext.ThreadID), TurnID: string(turnContext.TurnID), Source: tool.ToolCallSourceModel})
+		stepCtx := tool.WithInvocationMetadata(ctx, tool.InvocationMetadata{SessionID: string(turnContext.ThreadID), TurnID: string(turnContext.TurnID), Source: tool.ToolCallSourceModel})
 		sample, sampleErr := modelSession.Sample(stepCtx, engine.SampleRequest{
 			ID: sampleID, Messages: step.Prompt.Items, BaseInstructions: step.BaseInstructions,
-			Tools: step.Tools, OutputSchema: llm.OutputSchema(turnContext.OutputSchema), OutputSchemaStrict: turnContext.OutputSchemaStrict,
+			Tools: step.ToolRouter.Specs(), OutputSchema: llm.OutputSchema(turnContext.OutputSchema), OutputSchemaStrict: turnContext.OutputSchemaStrict,
 			Events: events,
 		})
 		usage = addUsage(usage, sample.Response.Usage)
-		if progress != nil {
-			progress(sample.Response.Usage, 0)
-		}
 		if sampleErr != nil {
-			return TaskOutput{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: failed"}, sampleErr
+			return taskProgress(usage, toolCallCount), sampleErr
 		}
 		if sample.Kind == engine.SampleFinal {
 			if err := engine.PersistAssistantResponse(stepCtx, session.AppendItems, turnContext.TurnID, sample.Response.Message, nil); err != nil {
-				return TaskOutput{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: failed"}, err
+				return taskProgress(usage, toolCallCount), err
 			}
 			if err := engine.PublishModelCompletions(stepCtx, session.AppendItems, turnContext.TurnID, events, sampleID, sample.Response.Message); err != nil {
-				return TaskOutput{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: failed"}, err
+				return taskProgress(usage, toolCallCount), err
 			}
 			return TaskOutput{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: completed", Outcome: protocol.TurnOutcomeCompleted}, nil
 		}
 		toolCallCount += len(sample.ToolCalls)
-		if progress != nil {
-			progress(llm.Usage{}, len(sample.ToolCalls))
-		}
 		observer := engine.NewToolEventObserver(session.AppendItems, turnContext.TurnID, events)
 		recorded := false
 		recorder := func(recordCtx context.Context, normalized []tool.ToolCall) error {
@@ -93,14 +85,18 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 			}
 			return engine.PublishModelCompletions(recordCtx, session.AppendItems, turnContext.TurnID, events, sampleID, sample.Response.Message)
 		}
-		_, err = runtime.ExecuteBatchScoped(stepCtx, sample.ToolCalls, recorder, tool.ExecutionScope{Observer: observer, ContextScope: instructions, AllowedTools: step.ToolNames})
+		_, err = runtime.ExecuteBatchScoped(stepCtx, sample.ToolCalls, recorder, tool.ExecutionScope{Observer: observer, Router: &step.ToolRouter})
 		if err != nil {
-			return TaskOutput{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: failed"}, err
+			return taskProgress(usage, toolCallCount), err
 		}
 		if !recorded {
-			return TaskOutput{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: failed"}, errors.New("tool execution did not record model response")
+			return taskProgress(usage, toolCallCount), errors.New("tool execution did not record model response")
 		}
 	}
+}
+
+func taskProgress(usage llm.Usage, toolCallCount int) TaskOutput {
+	return TaskOutput{Usage: usage, ToolCallCount: toolCallCount}
 }
 
 func addUsage(total, next llm.Usage) llm.Usage {
@@ -112,21 +108,13 @@ func addUsage(total, next llm.Usage) llm.Usage {
 	return total
 }
 
-func (session *Session) runTurnLoop(ctx context.Context, runtime *SessionServices, turnContext turn.TurnContext, events protocol.EventSink, instructions engine.StepInstructionScope) (TaskOutput, error) {
+func (session *Session) runTurnLoop(ctx context.Context, runtime *SessionServices, turnContext turn.TurnContext, events protocol.EventSink) (TaskOutput, error) {
 	modelSession, err := runtime.NewModelClientSession()
 	if err != nil {
 		return TaskOutput{}, err
 	}
 	compact := session.compactCallback(runtime, modelSession, turnContext.TurnID, events)
-	var progress *turn.TurnState
-	if session.active != nil {
-		progress = session.active.State
-	}
-	return session.continueTurn(ctx, runtime, modelSession, turnContext, events, instructions, compact, func(usage llm.Usage, tools int) {
-		if progress != nil {
-			progress.Record(usage, tools)
-		}
-	})
+	return session.continueTurn(ctx, runtime, modelSession, turnContext, events, compact)
 }
 
 func (session *Session) compactCallback(runtime *SessionServices, modelSession *engine.ModelClientSession, turnID protocol.TurnID, events protocol.EventSink) compactFunc {

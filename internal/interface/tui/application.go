@@ -10,6 +10,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	application "github.com/Godric-W/Amadeus/internal/app"
+	runtimeprojection "github.com/Godric-W/Amadeus/internal/app/transcript"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -81,7 +82,7 @@ type fullscreenModel struct {
 	width                  int
 	height                 int
 	transcript             TranscriptState
-	runtimeTranscript      *protocol.TranscriptState
+	runtimeTranscript      *runtimeprojection.State
 	historyCells           []HistoryCell
 	pendingHistoryCells    []HistoryCell
 	hasEmittedHistoryLines bool
@@ -312,7 +313,7 @@ func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscr
 		sessionTitle: snapshot.Title,
 		palette:      palette, clock: systemMotionClock{}, motion: motionAnimated, motionStartedAt: time.Now(),
 		details: newTranscriptDetailStore(0, 0), detailViewport: newTranscriptViewport(initialWidth, 30),
-		runtimeTranscript: protocol.NewTranscriptState(protocol.ThreadID(startup.Session)), generation: snapshot.Generation,
+		runtimeTranscript: runtimeprojection.New(protocol.ThreadID(startup.Session)), generation: snapshot.Generation,
 	}
 	if snapshot.Mode == turn.ModeKindPlan {
 		model.collaboration = CollaborationPlan

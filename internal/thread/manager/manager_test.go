@@ -439,7 +439,7 @@ func TestResumeRecoversIncompleteToolCall(t *testing.T) {
 		Provider: turnContext.Provider, Model: turnContext.Model, CWD: turnContext.CWD, Mode: string(turnContext.Mode),
 	}
 	userItem, _ := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "run"})
-	startedItem := rollout.EventMsgItem{Msg: protocol.TurnStartedEvent{Input: "run", StartedAt: now, Kind: protocol.TaskKindRegular}}
+	startedItem := rollout.EventMsgItem{Msg: protocol.TurnStartedEvent{StartedAt: now}}
 	toolCall, _ := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-1", Name: "execute_command", Arguments: json.RawMessage(`{}`)})
 	if _, err := live.AppendItems(ctx, "turn-old", contextItem, userItem, startedItem, toolCall); err != nil {
 		t.Fatal(err)

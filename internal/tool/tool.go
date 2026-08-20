@@ -47,8 +47,8 @@ func (target ContextTarget) Validate() error {
 	return nil
 }
 
-type ContextScope interface {
-	Ensure(context.Context, ContextTarget) error
+type TargetObserver interface {
+	ObserveTarget(context.Context, ContextTarget, RequestSnapshot) error
 }
 
 func (toolContext ToolUseContext) Validate() error {

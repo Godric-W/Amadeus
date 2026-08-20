@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/app/transcript"
 	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
@@ -98,7 +99,7 @@ func TestModelClientSessionRetriesDroppedStreamAndReplacesAttemptDraft(t *testin
 	var assistantResetEvents int
 	var reasoningResetEvents int
 	var terminalErrors int
-	state := protocol.NewTranscriptState("memory-thread")
+	state := transcript.New("memory-thread")
 	for _, event := range events {
 		if streamError, ok := event.Msg.(protocol.StreamErrorEvent); ok {
 			if streamError.WillRetry {

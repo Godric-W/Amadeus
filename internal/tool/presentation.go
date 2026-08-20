@@ -49,8 +49,6 @@ func PresentCall(spec ToolSpec, call ToolCall) CallPresentation {
 			return CallPresentation{ActionSummary: joinAction("Read skill reference", path)}
 		}
 		return CallPresentation{ActionSummary: joinAction("Read skill", value("name"))}
-	case "apply_patch":
-		return CallPresentation{ActionSummary: "Applied patch"}
 	case "execute_command":
 		command := value("command")
 		if command == "" {

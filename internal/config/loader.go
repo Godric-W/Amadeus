@@ -97,9 +97,6 @@ func decodeAndApply(base Config, reader io.Reader, lookupEnv EnvLookup) (Config,
 	if len(document.Content) == 0 {
 		return clone(base), nil
 	}
-	if err := migrateConfigDocument(document.Content[0]); err != nil {
-		return Config{}, err
-	}
 	if err := expandEnvironment(document.Content[0], nil, lookupEnv); err != nil {
 		return Config{}, err
 	}
@@ -116,5 +113,9 @@ func decodeAndApply(base Config, reader io.Reader, lookupEnv EnvLookup) (Config,
 		return Config{}, err
 	}
 
-	return patch.apply(base), nil
+	configured := patch.apply(base)
+	if configured.Version != CurrentVersion {
+		return Config{}, fmt.Errorf("config version is %d, expected %d", configured.Version, CurrentVersion)
+	}
+	return configured, nil
 }

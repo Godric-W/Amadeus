@@ -50,16 +50,16 @@ type executionServiceScope struct {
 	targets []ContextTarget
 }
 
-func (scope *executionServiceScope) Ensure(_ context.Context, target ContextTarget) error {
+func (scope *executionServiceScope) ObserveTarget(_ context.Context, target ContextTarget, _ RequestSnapshot) error {
 	scope.targets = append(scope.targets, target)
 	return scope.err
 }
 
-type executionServiceContextRefreshError struct{}
+type executionServiceStaleAgentsMdError struct{}
 
-func (executionServiceContextRefreshError) Error() string { return "context refresh required" }
-func (executionServiceContextRefreshError) ToolErrorKind() string {
-	return "context_refresh_required"
+func (executionServiceStaleAgentsMdError) Error() string { return "AGENTS.md snapshot is stale" }
+func (executionServiceStaleAgentsMdError) ToolErrorKind() string {
+	return "stale_agents_md"
 }
 
 func (toolImpl *executionServiceTestTool) Execute(toolContext ToolUseContext, prepared PreparedToolUse) (ToolResult, error) {
@@ -158,9 +158,10 @@ func TestToolExecutionServiceScopedBindingsDoNotLeak(t *testing.T) {
 	baseObserver := &recordingLifecycleObserver{}
 	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{Observer: baseObserver}, toolImpl)
 	deniedObserver := &recordingLifecycleObserver{}
+	deniedRouter := service.registry.SnapshotRouter(service.visibility, RequestSnapshot{}, func(ToolSpec) bool { return false })
 	executions, err := service.ExecuteBatchScoped(context.Background(), []ToolCall{
 		NewCall("call-denied", toolImpl.name, json.RawMessage(`{"value":"ok"}`)),
-	}, nil, ExecutionScope{Observer: deniedObserver, AllowedTools: []string{"different_tool"}})
+	}, nil, ExecutionScope{Observer: deniedObserver, Router: &deniedRouter})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,12 +218,13 @@ func TestToolExecutionServiceScopedCompletionPreservesCallOrder(t *testing.T) {
 	}}
 	observer := &recordingLifecycleObserver{}
 	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{MaxParallel: 2}, toolImpl)
+	router := service.registry.SnapshotRouter(service.visibility, RequestSnapshot{}, nil)
 	done := make(chan error, 1)
 	go func() {
 		_, err := service.ExecuteBatchScoped(context.Background(), []ToolCall{
 			NewCall("call-1", toolImpl.name, json.RawMessage(`{"value":"one"}`)),
 			NewCall("call-2", toolImpl.name, json.RawMessage(`{"value":"two"}`)),
-		}, nil, ExecutionScope{Observer: observer, AllowedTools: []string{toolImpl.name}})
+		}, nil, ExecutionScope{Observer: observer, Router: &router})
 		done <- err
 	}()
 	<-secondDone
@@ -316,8 +318,8 @@ func TestToolExecutionServiceChecksTargetScopeBeforePermissionAndExecution(t *te
 		handled.Add(1)
 		return ToolResult{Text: "changed"}, nil
 	}}
-	scope := &executionServiceScope{err: executionServiceContextRefreshError{}}
-	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{ContextScope: scope}, toolImpl)
+	scope := &executionServiceScope{err: executionServiceStaleAgentsMdError{}}
+	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{TargetObserver: scope}, toolImpl)
 	execution, err := service.Execute(context.Background(), executionServiceCall("call-1", toolImpl.name))
 	if err != nil {
 		t.Fatal(err)
@@ -325,8 +327,8 @@ func TestToolExecutionServiceChecksTargetScopeBeforePermissionAndExecution(t *te
 	if handled.Load() != 0 || len(scope.targets) != 1 || scope.targets[0] != *target {
 		t.Fatalf("scope gate did not fail closed: execution=%#v targets=%#v handled=%d", execution, scope.targets, handled.Load())
 	}
-	if execution.Outcome.Status != ToolCallFailed || execution.Outcome.Blocking || execution.Outcome.Error == nil || execution.Outcome.Error.Kind != "context_refresh_required" {
-		t.Fatalf("context refresh outcome = %#v", execution.Outcome)
+	if execution.Outcome.Status != ToolCallFailed || execution.Outcome.Blocking || execution.Outcome.Error == nil || execution.Outcome.Error.Kind != "stale_agents_md" {
+		t.Fatalf("stale AGENTS.md outcome = %#v", execution.Outcome)
 	}
 }
 

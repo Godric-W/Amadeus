@@ -31,10 +31,10 @@ func (*servicesTestClient) Capabilities() llm.Capabilities {
 	return llm.Capabilities{SupportsStreaming: true}
 }
 
-type servicesTestCloser struct{ closed bool }
+type servicesTestCloser struct{ calls int }
 
 func (closer *servicesTestCloser) Close() error {
-	closer.closed = true
+	closer.calls++
 	return nil
 }
 
@@ -103,16 +103,17 @@ func TestSessionServicesAreConstructedOnceAndReusedAcrossTasks(t *testing.T) {
 	if secondTask.(*regularTask).runtime != regular.runtime {
 		t.Fatal("regular tasks did not reuse SessionServices")
 	}
-	if err := preparedTask.Abort(context.Background(), session, &preparedContext); err != nil {
-		t.Fatal(err)
+	if closer.calls != 0 {
+		t.Fatal("task creation closed Session-scoped resources")
 	}
-	if closer.closed {
-		t.Fatal("turn abort closed Session-scoped resources")
+	servicesCopy := session.services
+	if err := servicesCopy.Close(); err != nil {
+		t.Fatal(err)
 	}
 	if err := session.services.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if !closer.closed {
-		t.Fatal("SessionServices.Close did not release audit resources")
+	if closer.calls != 1 {
+		t.Fatalf("SessionServices copies closed audit resources %d times", closer.calls)
 	}
 }
