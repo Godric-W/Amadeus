@@ -87,7 +87,7 @@ func (store *Store) Materialize(ctx context.Context, input thread.CreateInput) (
 		return thread.AppendResult{}, err
 	}
 	warning := store.state.UpsertThread(ctx, metadata)
-	return thread.AppendResult{Lines: lines, MetadataWarning: warning}, nil
+	return appendResult(lines, warning), nil
 }
 
 func (store *Store) OpenWriter(ctx context.Context, id protocol.ThreadID) (thread.InitialHistory, error) {
@@ -146,7 +146,15 @@ func (store *Store) appendItems(ctx context.Context, id protocol.ThreadID, turnI
 	if err != nil {
 		return thread.AppendResult{}, nil, err
 	}
-	return thread.AppendResult{Lines: lines}, recorder, nil
+	return appendResult(lines, nil), recorder, nil
+}
+
+func appendResult(lines []rollout.Line, warning error) thread.AppendResult {
+	result := thread.AppendResult{Count: len(lines), MetadataWarning: warning}
+	if len(lines) > 0 {
+		result.FirstSequence = lines[0].Sequence
+	}
+	return result
 }
 
 func (store *Store) syncMetadata(ctx context.Context, id protocol.ThreadID, recorder durableRecorder) error {
@@ -209,11 +217,8 @@ func (store *Store) RenameThread(ctx context.Context, id protocol.ThreadID, titl
 	if at.IsZero() {
 		return errors.New("thread rename time is zero")
 	}
-	item, err := rollout.NewItem(rollout.KindContextUpdate, rollout.ContextUpdate{Title: strings.TrimSpace(title)})
-	if err != nil {
-		return err
-	}
-	_, err = store.appendWithTemporaryWriter(ctx, id, "", item)
+	item := rollout.EventMsgItem{Msg: protocol.ThreadNameUpdatedEvent{Name: strings.TrimSpace(title)}}
+	_, err := store.appendWithTemporaryWriter(ctx, id, "", item)
 	return err
 }
 
@@ -221,12 +226,8 @@ func (store *Store) DeleteThread(ctx context.Context, id protocol.ThreadID, at t
 	if at.IsZero() {
 		return errors.New("thread archive time is zero")
 	}
-	archived := true
-	item, err := rollout.NewItem(rollout.KindContextUpdate, rollout.ContextUpdate{Archived: &archived})
-	if err != nil {
-		return err
-	}
-	_, err = store.appendWithTemporaryWriter(ctx, id, "", item)
+	item := rollout.EventMsgItem{Msg: protocol.ThreadArchivedEvent{Archived: true}}
+	_, err := store.appendWithTemporaryWriter(ctx, id, "", item)
 	return err
 }
 
@@ -288,7 +289,7 @@ func (store *Store) recorder(id protocol.ThreadID) (durableRecorder, error) {
 	return recorder, nil
 }
 
-func (store *Store) appendWithTemporaryWriter(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, item rollout.Item) (thread.AppendResult, error) {
+func (store *Store) appendWithTemporaryWriter(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, item rollout.RolloutItem) (thread.AppendResult, error) {
 	store.mu.Lock()
 	_, active := store.recorders[id]
 	store.mu.Unlock()
@@ -308,56 +309,46 @@ func (store *Store) rolloutPath(id protocol.ThreadID, at time.Time) string {
 }
 
 func projectMetadata(path string, lines []rollout.Line) (state.StoredThread, error) {
-	if len(lines) == 0 || lines[0].Item.Kind != rollout.KindSessionMeta {
+	if len(lines) == 0 {
 		return state.StoredThread{}, errors.New("rollout does not begin with session_meta")
 	}
-	meta, err := rollout.DecodePayload[rollout.SessionMeta](lines[0].Item)
-	if err != nil {
-		return state.StoredThread{}, err
+	meta, ok := lines[0].Item.(rollout.SessionMetaItem)
+	if !ok {
+		return state.StoredThread{}, errors.New("rollout does not begin with session_meta")
 	}
 	thread := state.StoredThread{
-		ID: lines[0].ThreadID, RolloutPath: path, CWD: meta.CWD, Title: meta.Title,
+		ID: meta.ThreadID, RolloutPath: path, CWD: meta.CWD, Title: meta.Title,
 		ModelProvider: meta.ModelProvider, Model: meta.Model, CreatedAt: meta.CreatedAt.UTC(), UpdatedAt: lines[0].Timestamp.UTC(),
 		GitSHA: meta.GitSHA, GitBranch: meta.GitBranch, GitOriginURL: meta.GitOriginURL, Archived: meta.Archived,
 	}
 	for _, line := range lines[1:] {
 		thread.UpdatedAt = line.Timestamp.UTC()
-		switch line.Item.Kind {
-		case rollout.KindContextUpdate:
-			update, decodeErr := rollout.DecodePayload[rollout.ContextUpdate](line.Item)
-			if decodeErr != nil {
-				return state.StoredThread{}, decodeErr
+		switch item := line.Item.(type) {
+		case rollout.EventMsgItem:
+			switch event := item.Msg.(type) {
+			case protocol.ThreadNameUpdatedEvent:
+				if title := strings.TrimSpace(event.Name); title != "" {
+					thread.Title = title
+				}
+			case protocol.ThreadArchivedEvent:
+				thread.Archived = event.Archived
+			case protocol.TokenCountEvent:
+				thread.TokensUsed += event.Usage.TotalTokens
 			}
-			if title := strings.TrimSpace(update.Title); title != "" {
-				thread.Title = title
-			}
-			if update.Archived != nil {
-				thread.Archived = *update.Archived
-			}
-		case rollout.KindTokenUsage:
-			usage, decodeErr := rollout.DecodePayload[rollout.TokenUsage](line.Item)
-			if decodeErr != nil {
-				return state.StoredThread{}, decodeErr
-			}
-			thread.TokensUsed += usage.TotalTokens
-		case rollout.KindResponseItem:
+		case rollout.ResponseItem:
 			if thread.Preview == "" {
-				thread.Preview = responsePreview(line.Item)
+				thread.Preview = responsePreview(item)
 			}
 		}
 	}
 	return thread, thread.Validate()
 }
 
-func responsePreview(item rollout.Item) string {
-	value, err := rollout.DecodeResponseItem(item)
-	if err != nil {
+func responsePreview(item rollout.ResponseItem) string {
+	if item.Type != rollout.ResponseUserMessage {
 		return ""
 	}
-	if value.Type != rollout.ResponseUserMessage {
-		return ""
-	}
-	content := strings.TrimSpace(value.Content)
+	content := strings.TrimSpace(item.Content)
 	if len([]rune(content)) > 160 {
 		content = string([]rune(content)[:160])
 	}

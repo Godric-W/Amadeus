@@ -77,7 +77,8 @@ func (history InitialHistory) Validate(id identity.ThreadID) error {
 }
 
 type AppendResult struct {
-	Lines           []rollout.Line
+	FirstSequence   uint64
+	Count           int
 	MetadataWarning error
 }
 

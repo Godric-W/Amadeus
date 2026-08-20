@@ -43,7 +43,7 @@ func (sessionTask *regularTask) run(ctx context.Context, session *Session, turnC
 		return Result{}, err
 	}
 	runResult, err := session.runTurn(ctx, sessionTask.runtime, *turnContext, []TurnInput{{Content: sessionTask.goal}}, sessionTask.events, sessionTask.instructions)
-	items := make([]rollout.Item, 0)
+	items := make([]rollout.RolloutItem, 0)
 	if err != nil {
 		if ctx.Err() != nil {
 			return Result{Items: items, Summary: "result: cancelled", Outcome: OutcomeAborted, Reason: context.Cause(ctx).Error(), Usage: runResult.Usage, ToolCallCount: runResult.ToolCallCount}, err

@@ -16,7 +16,7 @@ func (sessionTask *compactTask) Run(ctx context.Context, session *Session, turnC
 	if err != nil {
 		return Result{}, err
 	}
-	items, err := sessionTask.runtime.Compact(ctx, engine.CompactRequest{Lines: session.History(), ModelSession: modelSession, Events: sessionTask.events})
+	items, err := sessionTask.runtime.Compact(ctx, engine.CompactRequest{History: session.ContextProjection(), ModelSession: modelSession, Events: sessionTask.events})
 	if err != nil {
 		return Result{}, err
 	}

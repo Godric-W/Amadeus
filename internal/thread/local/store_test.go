@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/state"
 	statesqlite "github.com/Godric-W/Amadeus/internal/state/sqlite"
@@ -43,10 +44,7 @@ func TestStoreDurableHistoryAndRebuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	usage, err := rollout.NewItem(rollout.KindTokenUsage, rollout.TokenUsage{TotalTokens: 42})
-	if err != nil {
-		t.Fatal(err)
-	}
+	usage := rollout.EventMsgItem{Msg: protocol.TokenCountEvent{Usage: llm.Usage{TotalTokens: 42}}}
 	result, err = store.AppendItems(ctx, "thread-1", "turn-1", response, usage)
 	if err != nil {
 		t.Fatal(err)
@@ -64,14 +62,8 @@ func TestStoreDurableHistoryAndRebuild(t *testing.T) {
 	if err := stateStore.ReplaceThreads(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
-	rename, err := rollout.NewItem(rollout.KindContextUpdate, rollout.ContextUpdate{Title: "Recovered Index"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	moreUsage, err := rollout.NewItem(rollout.KindTokenUsage, rollout.TokenUsage{TotalTokens: 8})
-	if err != nil {
-		t.Fatal(err)
-	}
+	rename := rollout.EventMsgItem{Msg: protocol.ThreadNameUpdatedEvent{Name: "Recovered Index"}}
+	moreUsage := rollout.EventMsgItem{Msg: protocol.TokenCountEvent{Usage: llm.Usage{TotalTokens: 8}}}
 	result, err = store.AppendItems(ctx, "thread-1", "", rename)
 	if err != nil {
 		t.Fatal(err)
@@ -165,10 +157,7 @@ func TestBufferedAppendDoesNotAdvanceSQLiteBeforeDurableAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	usage, err := rollout.NewItem(rollout.KindTokenUsage, rollout.TokenUsage{TotalTokens: 17})
-	if err != nil {
-		t.Fatal(err)
-	}
+	usage := rollout.EventMsgItem{Msg: protocol.TokenCountEvent{Usage: llm.Usage{TotalTokens: 17}}}
 	if _, err := store.AppendItemsBuffered(ctx, "thread-buffered", "turn-1", response, usage); err != nil {
 		t.Fatal(err)
 	}
@@ -179,10 +168,7 @@ func TestBufferedAppendDoesNotAdvanceSQLiteBeforeDurableAppend(t *testing.T) {
 	if metadata.Preview != "" || metadata.TokensUsed != 0 {
 		t.Fatalf("buffered metadata advanced before flush: %#v", metadata)
 	}
-	terminal, err := rollout.NewItem(rollout.KindTurnCompleted, rollout.TurnCompleted{Status: rollout.TurnStatusCompleted})
-	if err != nil {
-		t.Fatal(err)
-	}
+	terminal := rollout.EventMsgItem{Msg: protocol.TurnCompleteEvent{Status: protocol.TurnStatusCompleted, Outcome: protocol.TurnOutcomeCompleted, FinishedAt: time.Now().UTC()}}
 	if _, err := store.AppendItems(ctx, "thread-buffered", "turn-1", terminal); err != nil {
 		t.Fatal(err)
 	}
@@ -202,12 +188,12 @@ type orderedRecorder struct {
 	flushError  error
 }
 
-func (recorder orderedRecorder) Append(ctx context.Context, turnID protocol.TurnID, items ...rollout.Item) ([]rollout.Line, error) {
+func (recorder orderedRecorder) Append(ctx context.Context, items ...rollout.RolloutItem) ([]rollout.Line, error) {
 	*recorder.calls = append(*recorder.calls, "append")
 	if recorder.appendError != nil {
 		return nil, recorder.appendError
 	}
-	return recorder.durableRecorder.Append(ctx, turnID, items...)
+	return recorder.durableRecorder.Append(ctx, items...)
 }
 
 func (recorder orderedRecorder) Flush(ctx context.Context) error {
@@ -287,10 +273,7 @@ func TestDurableAppendOrdersAppendFlushAndMetadataSync(t *testing.T) {
 	calls = nil
 	store.recorders["thread-order"] = orderedRecorder{durableRecorder: original, calls: &calls}
 	store.state = orderedStateDB{DB: stateStore, calls: &calls, upsertError: errors.New("upsert failed")}
-	terminal, err := rollout.NewItem(rollout.KindTurnCompleted, rollout.TurnCompleted{Status: rollout.TurnStatusCompleted})
-	if err != nil {
-		t.Fatal(err)
-	}
+	terminal := rollout.EventMsgItem{Msg: protocol.TurnCompleteEvent{Status: protocol.TurnStatusCompleted, Outcome: protocol.TurnOutcomeCompleted, FinishedAt: time.Now().UTC()}}
 	result, err := store.AppendItems(ctx, "thread-order", "turn-1", terminal)
 	if err != nil {
 		t.Fatal(err)
@@ -310,10 +293,7 @@ func TestDurableAppendOrdersAppendFlushAndMetadataSync(t *testing.T) {
 	}
 
 	store.state = stateStore
-	usage, err := rollout.NewItem(rollout.KindTokenUsage, rollout.TokenUsage{TotalTokens: 3})
-	if err != nil {
-		t.Fatal(err)
-	}
+	usage := rollout.EventMsgItem{Msg: protocol.TokenCountEvent{Usage: llm.Usage{TotalTokens: 3}}}
 	if _, err := store.AppendItems(ctx, "thread-order", "turn-2", usage); err != nil {
 		t.Fatal(err)
 	}

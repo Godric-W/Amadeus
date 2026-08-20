@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/config"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
@@ -50,7 +51,7 @@ func TestResponseRetryPersistsOnlySuccessfulAttempt(t *testing.T) {
 		Snapshot: host.Snapshot, AppendItems: host.AppendItems, Events: host, Instructions: &engineTestScope{},
 		Turn: turn.TurnContext{ThreadID: "thread-1", TurnID: "turn-1", Provider: "test-provider", Model: "test-model", CWD: t.TempDir(), Mode: turn.ModeKindDefault},
 	})
-	if err != nil || result.Outcome != rollout.TurnOutcomeCompleted {
+	if err != nil || result.Outcome != protocol.TurnOutcomeCompleted {
 		t.Fatalf("run result=%#v err=%v", result, err)
 	}
 	projection, err := agentcontext.ProjectRolloutMessages(host.History())

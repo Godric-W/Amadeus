@@ -51,14 +51,15 @@ type builderTestHost struct {
 
 func (host *builderTestHost) AgentServices() *engine.Services { return host.runtime }
 
-func (host *builderTestHost) AppendItems(_ context.Context, turnID protocol.TurnID, items ...rollout.Item) error {
+func (host *builderTestHost) AppendItems(_ context.Context, turnID protocol.TurnID, items ...rollout.RolloutItem) error {
 	for _, item := range items {
-		host.lines = append(host.lines, rollout.Line{Sequence: uint64(len(host.lines) + 1), TurnID: turnID, Item: item})
+		scoped := rollout.ScopeItem(item, "thread-1", turnID)
+		host.lines = append(host.lines, rollout.Line{Version: rollout.CurrentVersion, Sequence: uint64(len(host.lines) + 1), Timestamp: time.Now().UTC(), Item: scoped})
 	}
 	return host.context.Rebuild(host.lines)
 }
 func (host *builderTestHost) History() []rollout.Line {
-	return append([]rollout.Line(nil), host.lines...)
+	return rollout.CloneLines(host.lines)
 }
 func (*builderTestHost) Publish(context.Context, protocol.Event) error { return nil }
 func (*builderTestHost) Request(context.Context, protocol.ApprovalRequestEvent) (protocol.Op, error) {

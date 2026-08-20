@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/tool"
@@ -46,9 +47,9 @@ func TestManagerDynamicUpdatesAreStableAndOrdered(t *testing.T) {
 	manager := NewManager(nil)
 	lines := []rollout.Line{
 		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "hello"}),
-		contextTestLine(t, 2, rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(UpdateMCP), Content: "mcp"}),
-		contextTestLine(t, 3, rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(UpdateCollaborationMode), Content: "developer"}),
-		contextTestLine(t, 4, rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(UpdateAgents), Content: "agents"}),
+		contextEventLine(t, 2, protocol.ContextUpdateEvent{Key: string(UpdateMCP), Content: "mcp"}),
+		contextEventLine(t, 3, protocol.ContextUpdateEvent{Key: string(UpdateCollaborationMode), Content: "developer"}),
+		contextEventLine(t, 4, protocol.ContextUpdateEvent{Key: string(UpdateAgents), Content: "agents"}),
 	}
 	if err := manager.Rebuild(lines); err != nil {
 		t.Fatal(err)
@@ -62,8 +63,8 @@ func TestManagerDynamicUpdatesAreStableAndOrdered(t *testing.T) {
 func TestManagerWorldStateRevisionPreservesLiveResumePromptIdentity(t *testing.T) {
 	lines := []rollout.Line{
 		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "hello"}),
-		contextTestLine(t, 2, rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(UpdateEnvironment), Content: "<environment_context>\nworkspace\n</environment_context>", Revision: "environment-r1"}),
-		contextTestLine(t, 3, rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(UpdatePermissionMode), Content: "<permission_context>\npermission\n</permission_context>", Revision: "permission-r1"}),
+		contextEventLine(t, 2, protocol.ContextUpdateEvent{Key: string(UpdateEnvironment), Content: "<environment_context>\nworkspace\n</environment_context>", Revision: "environment-r1"}),
+		contextEventLine(t, 3, protocol.ContextUpdateEvent{Key: string(UpdatePermissionMode), Content: "<permission_context>\npermission\n</permission_context>", Revision: "permission-r1"}),
 	}
 	live := NewManager(nil)
 	for index := range lines {
@@ -90,8 +91,8 @@ func TestManagerSeparatesProviderAndEstimatedUsage(t *testing.T) {
 	manager := NewManager(nil)
 	lines := []rollout.Line{
 		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "hello"}),
-		contextTestLine(t, 2, rollout.KindTokenUsage, rollout.TokenUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}),
-		contextTestLine(t, 3, rollout.KindTokenUsage, rollout.TokenUsage{InputTokens: 7, OutputTokens: 3, TotalTokens: 10}),
+		contextEventLine(t, 2, protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}}),
+		contextEventLine(t, 3, protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 7, OutputTokens: 3, TotalTokens: 10}}),
 	}
 	if err := manager.Rebuild(lines); err != nil {
 		t.Fatal(err)
@@ -112,8 +113,8 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 	manager := NewManager(nil)
 	if err := manager.Rebuild([]rollout.Line{
 		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "stale history"}),
-		contextTestLine(t, 2, rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(UpdateMCP), Content: "stale mcp"}),
-		contextTestLine(t, 3, rollout.KindTokenUsage, rollout.TokenUsage{TotalTokens: 999}),
+		contextEventLine(t, 2, protocol.ContextUpdateEvent{Key: string(UpdateMCP), Content: "stale mcp"}),
+		contextEventLine(t, 3, protocol.TokenCountEvent{Usage: llm.Usage{TotalTokens: 999}}),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -134,8 +135,8 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 	}
 	digest := sha256.Sum256(encoded)
 	lines := append(coveredLines,
-		contextTestLine(t, 5, rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(UpdateAgents), Content: "project agents"}),
-		contextTestLine(t, 6, rollout.KindCompaction, rollout.Compaction{
+		contextEventLine(t, 5, protocol.ContextUpdateEvent{Key: string(UpdateAgents), Content: "project agents"}),
+		contextItemLine(t, 6, rollout.CompactedItem{
 			Summary: "inspection complete", CoveredThroughSequence: 4,
 			SourceHash: hex.EncodeToString(digest[:]),
 			ReplacementHistory: []rollout.ReplacementMessage{
@@ -145,8 +146,8 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 		}),
 		contextResponseLine(t, 7, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "now run tests"}),
 		contextResponseLine(t, 8, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-2", Name: "execute_command", Arguments: json.RawMessage(`{"command":"go test ./..."}`)}),
-		contextTestLine(t, 9, rollout.KindTurnAborted, rollout.TurnAborted{Reason: "interrupted"}),
-		contextTestLine(t, 10, rollout.KindTokenUsage, rollout.TokenUsage{InputTokens: 40, OutputTokens: 8, TotalTokens: 48}),
+		contextEventLine(t, 9, protocol.TurnAbortedEvent{Reason: "interrupted", FinishedAt: time.Unix(9, 0).UTC()}),
+		contextEventLine(t, 10, protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 40, OutputTokens: 8, TotalTokens: 48}}),
 	)
 	if err := manager.Rebuild(lines); err != nil {
 		t.Fatal(err)
@@ -247,13 +248,19 @@ func TestManagerCompactionThresholdAccountsForFullPrompt(t *testing.T) {
 	}
 }
 
-func contextTestLine(t *testing.T, sequence uint64, kind rollout.Kind, payload any) rollout.Line {
+func contextItemLine(t *testing.T, sequence uint64, item rollout.RolloutItem) rollout.Line {
 	t.Helper()
-	item, err := rollout.NewItem(kind, payload)
-	if err != nil {
+	item = rollout.ScopeItem(item, "thread-1", "turn-1")
+	line := rollout.Line{Version: rollout.CurrentVersion, Sequence: sequence, Timestamp: time.Unix(int64(sequence), 0).UTC(), Item: item}
+	if err := line.Validate("thread-1", sequence); err != nil {
 		t.Fatal(err)
 	}
-	return rollout.Line{Version: rollout.CurrentVersion, Sequence: sequence, Timestamp: time.Unix(int64(sequence), 0).UTC(), ThreadID: "thread-1", TurnID: "turn-1", Item: item}
+	return line
+}
+
+func contextEventLine(t *testing.T, sequence uint64, event protocol.EventMsg) rollout.Line {
+	t.Helper()
+	return contextItemLine(t, sequence, rollout.EventMsgItem{Msg: event})
 }
 
 func contextResponseLine(t *testing.T, sequence uint64, payload rollout.ResponseItem) rollout.Line {
@@ -262,5 +269,5 @@ func contextResponseLine(t *testing.T, sequence uint64, payload rollout.Response
 	if err != nil {
 		t.Fatal(err)
 	}
-	return rollout.Line{Version: rollout.CurrentVersion, Sequence: sequence, Timestamp: time.Unix(int64(sequence), 0).UTC(), ThreadID: "thread-1", TurnID: "turn-1", Item: item}
+	return contextItemLine(t, sequence, item)
 }

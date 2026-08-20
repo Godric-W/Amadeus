@@ -38,6 +38,7 @@ type ThreadManager struct {
 
 type AmadeusThread struct {
 	id      protocol.ThreadID
+	live    *thread.LiveThread
 	session *agentsession.Session
 	io      agentsession.SessionIo
 	nextID  func(string) string
@@ -123,7 +124,7 @@ func (manager *ThreadManager) spawn(ctx context.Context, id protocol.ThreadID, l
 		_ = live.Shutdown(context.Background())
 		return nil, err
 	}
-	value := &AmadeusThread{id: id, session: session, io: io, nextID: manager.services.NextID}
+	value := &AmadeusThread{id: id, live: live, session: session, io: io, nextID: manager.services.NextID}
 	manager.mu.Lock()
 	if existing := manager.threads[id]; existing != nil {
 		manager.mu.Unlock()
@@ -243,11 +244,22 @@ func (threadRuntime *AmadeusThread) Io() agentsession.SessionIo {
 	return threadRuntime.io
 }
 
-func (threadRuntime *AmadeusThread) History() []rollout.Line {
-	if threadRuntime == nil || threadRuntime.session == nil {
-		return nil
+func (threadRuntime *AmadeusThread) History(ctx context.Context) ([]rollout.Line, error) {
+	if threadRuntime == nil || threadRuntime.live == nil {
+		return nil, errors.New("thread history is unavailable")
 	}
-	return threadRuntime.session.History()
+	history, err := threadRuntime.live.History(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return rollout.CloneLines(history.Lines), nil
+}
+
+func (threadRuntime *AmadeusThread) RolloutItemCount() int {
+	if threadRuntime == nil || threadRuntime.session == nil {
+		return 0
+	}
+	return threadRuntime.session.RolloutItemCount()
 }
 
 func (threadRuntime *AmadeusThread) CapabilityView() (agentsession.CapabilityView, bool) {

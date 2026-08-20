@@ -17,7 +17,7 @@ type RunResult struct {
 	Usage         llm.Usage
 	ToolCallCount int
 	Summary       string
-	Outcome       rollout.TurnOutcome
+	Outcome       protocol.TurnOutcome
 	Reason        string
 }
 
@@ -55,8 +55,8 @@ func (budget TurnBudget) Exhausted(samples, toolCalls int, elapsed time.Duration
 	}
 }
 
-func PersistAssistantResponse(ctx context.Context, appendItems func(context.Context, protocol.TurnID, ...rollout.Item) error, turnID protocol.TurnID, message llm.ResponseItem, normalized []tool.ToolCall) error {
-	items := make([]rollout.Item, 0, len(normalized)+1)
+func PersistAssistantResponse(ctx context.Context, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error, turnID protocol.TurnID, message llm.ResponseItem, normalized []tool.ToolCall) error {
+	items := make([]rollout.RolloutItem, 0, len(normalized)+1)
 	if strings.TrimSpace(message.Content) != "" || strings.TrimSpace(message.Reasoning) != "" {
 		item, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: string(llm.RoleAssistant), Content: strings.TrimSpace(message.Content), Reasoning: strings.TrimSpace(message.Reasoning)})
 		if err != nil {
@@ -77,7 +77,7 @@ func PersistAssistantResponse(ctx context.Context, appendItems func(context.Cont
 	return appendItems(ctx, turnID, items...)
 }
 
-func PublishModelCompletions(ctx context.Context, appendItems func(context.Context, protocol.TurnID, ...rollout.Item) error, turnID protocol.TurnID, events protocol.EventSink, sampleID string, message llm.ResponseItem) error {
+func PublishModelCompletions(ctx context.Context, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error, turnID protocol.TurnID, events protocol.EventSink, sampleID string, message llm.ResponseItem) error {
 	if strings.TrimSpace(message.Content) != "" {
 		if err := persistAndPublishModelCompletion(ctx, appendItems, turnID, events, sampleID+":assistant", protocol.ItemAssistantMessage, message.Content); err != nil {
 			return err
@@ -91,10 +91,10 @@ func PublishModelCompletions(ctx context.Context, appendItems func(context.Conte
 	return nil
 }
 
-func persistAndPublishModelCompletion(ctx context.Context, appendItems func(context.Context, protocol.TurnID, ...rollout.Item) error, turnID protocol.TurnID, events protocol.EventSink, id string, kind protocol.ItemKind, text string) error {
+func persistAndPublishModelCompletion(ctx context.Context, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error, turnID protocol.TurnID, events protocol.EventSink, id string, kind protocol.ItemKind, text string) error {
 	now := time.Now().UTC()
 	turnItem := protocol.TurnItem{ID: protocol.ItemID(id), Kind: kind, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now, Text: text}
-	item, err := protocol.NewCompletedItem(turnItem)
+	item, err := rollout.NewEventMsgItem(protocol.ItemCompletedEvent{Item: turnItem})
 	if err != nil {
 		return err
 	}
@@ -114,9 +114,6 @@ func addUsage(total, next llm.Usage) llm.Usage {
 	return total
 }
 
-func UsageItem(usage llm.Usage) (rollout.Item, error) {
-	return rollout.NewItem(rollout.KindTokenUsage, rollout.TokenUsage{
-		InputTokens: usage.InputTokens, CachedInputTokens: usage.CachedInputTokens,
-		OutputTokens: usage.OutputTokens, ReasoningTokens: usage.ReasoningTokens, TotalTokens: usage.TotalTokens,
-	})
+func UsageItem(usage llm.Usage) (rollout.RolloutItem, error) {
+	return rollout.NewEventMsgItem(protocol.TokenCountEvent{Usage: usage})
 }

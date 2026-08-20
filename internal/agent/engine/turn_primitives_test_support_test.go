@@ -16,7 +16,7 @@ import (
 
 type RunRequest struct {
 	Snapshot     func(llm.ModelInfo, llm.Prompt) agentcontext.PromptSnapshot
-	AppendItems  func(context.Context, protocol.TurnID, ...rollout.Item) error
+	AppendItems  func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error
 	Progress     func(llm.Usage, int)
 	ModelSession *ModelClientSession
 	Turn         turn.TurnContext
@@ -43,10 +43,10 @@ func RunTurn(ctx context.Context, runtime *Services, request RunRequest) (RunRes
 	completionReminderSent := false
 	for stepNumber := 1; ; stepNumber++ {
 		if err := ctx.Err(); err != nil {
-			return RunResult{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: cancelled", Outcome: rollout.TurnOutcomeAborted, Reason: err.Error()}, err
+			return RunResult{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: cancelled", Outcome: protocol.TurnOutcomeAborted, Reason: err.Error()}, err
 		}
 		if reason := runtime.budget.Exhausted(stepNumber-1, toolCallCount, time.Since(startedAt)); reason != "" {
-			return RunResult{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: blocked", Outcome: rollout.TurnOutcomeBlocked, Reason: reason}, nil
+			return RunResult{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: blocked", Outcome: protocol.TurnOutcomeBlocked, Reason: reason}, nil
 		}
 		step, err := runtime.CaptureStep(request.Snapshot, request.Turn)
 		if err != nil {
@@ -84,7 +84,7 @@ func RunTurn(ctx context.Context, runtime *Services, request RunRequest) (RunRes
 			if err := PublishModelCompletions(stepCtx, request.AppendItems, request.Turn.TurnID, request.Events, sampleID, sample.Response.Message); err != nil {
 				return RunResult{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: failed"}, err
 			}
-			return RunResult{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: completed", Outcome: rollout.TurnOutcomeCompleted}, nil
+			return RunResult{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: completed", Outcome: protocol.TurnOutcomeCompleted}, nil
 		}
 		toolCallCount += len(sample.ToolCalls)
 		if request.Progress != nil {

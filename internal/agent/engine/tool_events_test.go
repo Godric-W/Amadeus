@@ -12,8 +12,8 @@ import (
 
 func TestToolEventObserverPersistsPresentationOnCompletedItem(t *testing.T) {
 	sink := protocol.NewMemorySink()
-	var appended []rollout.Item
-	observer := NewToolEventObserver(func(_ context.Context, _ protocol.TurnID, items ...rollout.Item) error {
+	var appended []rollout.RolloutItem
+	observer := NewToolEventObserver(func(_ context.Context, _ protocol.TurnID, items ...rollout.RolloutItem) error {
 		appended = append(appended, items...)
 		return nil
 	}, protocol.TurnID("turn-1"), sink)
@@ -30,6 +30,16 @@ func TestToolEventObserverPersistsPresentationOnCompletedItem(t *testing.T) {
 	}
 	if len(appended) != 2 {
 		t.Fatalf("appended items = %d, want 2", len(appended))
+	}
+	if _, ok := appended[0].(rollout.ResponseItem); !ok {
+		t.Fatalf("first appended item = %T, want rollout.ResponseItem", appended[0])
+	}
+	completedRollout, ok := appended[1].(rollout.EventMsgItem)
+	if !ok {
+		t.Fatalf("second appended item = %T, want rollout.EventMsgItem", appended[1])
+	}
+	if _, ok := completedRollout.Msg.(protocol.ItemCompletedEvent); !ok {
+		t.Fatalf("persisted event = %T, want protocol.ItemCompletedEvent", completedRollout.Msg)
 	}
 	events := sink.Snapshot()
 	if len(events) != 2 {

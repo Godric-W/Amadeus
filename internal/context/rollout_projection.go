@@ -22,37 +22,47 @@ type RolloutMessageProjection struct {
 func ProjectRolloutMessages(lines []rollout.Line) (RolloutMessageProjection, error) {
 	projection := RolloutMessageProjection{}
 	for _, line := range lines {
-		switch item := line.Item.(type) {
-		case rollout.ResponseItem:
-			if err := projection.appendResponse(line.Sequence, item); err != nil {
-				return RolloutMessageProjection{}, err
-			}
-		case rollout.EventMsgItem:
-			switch message := item.Msg.(type) {
-			case protocol.PlanUpdateEvent:
-				encoded, err := json.Marshal(message)
-				if err != nil {
-					return RolloutMessageProjection{}, err
-				}
-				projection.append(llm.DeveloperMessage("Current soft execution plan from canonical history:\n"+string(encoded)), line.Sequence)
-			case protocol.TurnAbortedEvent:
-				projection.append(llm.DeveloperMessage("Previous turn was interrupted: "+message.Reason+". Re-plan from the current workspace state."), line.Sequence)
-			case protocol.TurnCompleteEvent:
-				if message.Status == protocol.TurnStatusFailed {
-					projection.append(llm.DeveloperMessage("Previous turn failed: "+message.Error+". Re-plan from the current workspace state."), line.Sequence)
-				}
-			case protocol.ContextUpdateEvent:
-				if strings.TrimSpace(message.Key) != "" {
-					continue
-				}
-			}
-		case rollout.CompactedItem:
-			if err := projection.applyCompaction(item); err != nil {
-				return RolloutMessageProjection{}, fmt.Errorf("apply compaction at sequence %d: %w", line.Sequence, err)
-			}
+		if err := projection.record(line.Sequence, line.Item); err != nil {
+			return RolloutMessageProjection{}, err
 		}
 	}
 	return projection, nil
+}
+
+func (projection *RolloutMessageProjection) record(sequence uint64, item rollout.RolloutItem) error {
+	switch item := item.(type) {
+	case rollout.ResponseItem:
+		if err := projection.appendResponse(sequence, item); err != nil {
+			return fmt.Errorf("project response item at sequence %d: %w", sequence, err)
+		}
+	case rollout.EventMsgItem:
+		switch message := item.Msg.(type) {
+		case protocol.PlanUpdateEvent:
+			encoded, err := json.Marshal(message)
+			if err != nil {
+				return fmt.Errorf("project plan update at sequence %d: %w", sequence, err)
+			}
+			projection.append(llm.DeveloperMessage("Current soft execution plan from canonical history:\n"+string(encoded)), sequence)
+		case protocol.TurnAbortedEvent:
+			projection.append(llm.DeveloperMessage("Previous turn was interrupted: "+message.Reason+". Re-plan from the current workspace state."), sequence)
+		case protocol.TurnCompleteEvent:
+			if message.Status == protocol.TurnStatusFailed {
+				projection.append(llm.DeveloperMessage("Previous turn failed: "+message.Error+". Re-plan from the current workspace state."), sequence)
+			}
+		}
+	case rollout.CompactedItem:
+		if err := projection.applyCompaction(item); err != nil {
+			return fmt.Errorf("apply compaction at sequence %d: %w", sequence, err)
+		}
+	}
+	return nil
+}
+
+func (projection RolloutMessageProjection) Clone() RolloutMessageProjection {
+	return RolloutMessageProjection{
+		Messages:        cloneResponseItems(projection.Messages),
+		SourceSequences: append([]int64(nil), projection.SourceSequences...),
+	}
 }
 
 func (projection *RolloutMessageProjection) appendResponse(sequence uint64, item rollout.ResponseItem) error {

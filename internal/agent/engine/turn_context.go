@@ -21,7 +21,7 @@ type InstructionScope interface {
 	Initialize(context.Context, string) (instruction.ResolveRequest, error)
 }
 
-func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnContext *turn.TurnContext, scope InstructionScope, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.Item) error) error {
+func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnContext *turn.TurnContext, scope InstructionScope, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error) error {
 	if runtime == nil || turnContext == nil || scope == nil || contextUpdate == nil || appendItems == nil {
 		return fmt.Errorf("turn context preparation is incomplete")
 	}
@@ -41,7 +41,7 @@ func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnConte
 	if err != nil {
 		return err
 	}
-	contextItems := make([]rollout.Item, 0, 6)
+	contextItems := make([]rollout.RolloutItem, 0, 6)
 	worldState := agentcontext.NewWorldState()
 	setUpdate := func(key agentcontext.UpdateKey, content string) error {
 		if err := worldState.Set(key, content); err != nil {
@@ -52,7 +52,7 @@ func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnConte
 			if contextUpdate(key) == "" {
 				return nil
 			}
-			item, err := rollout.NewItem(rollout.KindContextUpdate, rollout.ContextUpdate{Key: string(key)})
+			item, err := rollout.NewEventMsgItem(protocol.ContextUpdateEvent{Key: string(key)})
 			if err != nil {
 				return err
 			}
@@ -63,7 +63,7 @@ func (runtime *Services) PrepareTurn(ctx context.Context, goal string, turnConte
 		if contextUpdate(key) == rendered {
 			return nil
 		}
-		item, err := rollout.NewItem(rollout.KindContextUpdate, rollout.ContextUpdate{
+		item, err := rollout.NewEventMsgItem(protocol.ContextUpdateEvent{
 			Key: string(key), Content: rendered, Revision: fragment.Revision(),
 		})
 		if err != nil {

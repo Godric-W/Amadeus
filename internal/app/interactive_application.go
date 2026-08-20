@@ -265,7 +265,7 @@ func (application *InteractiveApplication) Status() StatusSnapshot {
 	result := StatusSnapshot{
 		ThreadID: active.ID(), Title: title, Project: application.project,
 		Provider: application.provider, Model: application.model, Mode: active.Mode(), Phase: phase,
-		Usage: usage.Usage, ContextWindow: application.contextWindow, RolloutItems: len(active.History()),
+		Usage: usage.Usage, ContextWindow: application.contextWindow, RolloutItems: active.RolloutItemCount(),
 	}
 	if capabilities, ok := active.CapabilityView(); ok {
 		result.PermissionGrantCount = capabilities.PermissionGrantCount()
@@ -403,7 +403,11 @@ func (application *InteractiveApplication) Close() {
 }
 
 func (application *InteractiveApplication) snapshot(ctx context.Context, active *threadmanager.AmadeusThread, generation uint64) (ThreadViewSnapshot, error) {
-	projection, err := protocol.ProjectThreadItems(active.History())
+	history, err := active.History(ctx)
+	if err != nil {
+		return ThreadViewSnapshot{}, err
+	}
+	projection, err := ProjectRolloutItems(history)
 	if err != nil {
 		return ThreadViewSnapshot{}, err
 	}

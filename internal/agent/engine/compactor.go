@@ -17,19 +17,19 @@ import (
 )
 
 type CompactRequest struct {
-	Lines        []rollout.Line
+	History      agentcontext.RolloutMessageProjection
 	ModelSession *ModelClientSession
 	Events       protocol.EventSink
 }
 
-func (runtime *Services) Compact(ctx context.Context, request CompactRequest) ([]rollout.Item, error) {
+func (runtime *Services) Compact(ctx context.Context, request CompactRequest) ([]rollout.RolloutItem, error) {
 	if runtime == nil || runtime.client == nil {
 		return nil, errors.New("compactor runtime is unavailable")
 	}
 	if request.ModelSession == nil || request.Events == nil {
 		return nil, errors.New("compactor model session is incomplete")
 	}
-	projection, err := projectCompactionSource(request.Lines)
+	projection, err := projectCompactionSource(request.History)
 	if err != nil {
 		return nil, err
 	}
@@ -66,19 +66,16 @@ func (runtime *Services) Compact(ctx context.Context, request CompactRequest) ([
 		return nil, fmt.Errorf("encode compaction source: %w", err)
 	}
 	digest := sha256.Sum256(encodedSource)
-	compactionItem, err := rollout.NewItem(rollout.KindCompaction, rollout.Compaction{
+	compactionItem := rollout.CompactedItem{
 		Summary: summary, ReplacementHistory: replacement,
 		CoveredThroughSequence: projection.SourceSequences[len(projection.Covered)-1],
 		SourceHash:             hex.EncodeToString(digest[:]), Provider: runtime.providerName, Model: runtime.modelInfo.Name,
-	})
-	if err != nil {
-		return nil, err
 	}
 	usageItem, err := UsageItem(response.Usage)
 	if err != nil {
 		return nil, err
 	}
-	return []rollout.Item{compactionItem, usageItem}, nil
+	return []rollout.RolloutItem{compactionItem, usageItem}, nil
 }
 
 type compactionProjection struct {
@@ -87,11 +84,8 @@ type compactionProjection struct {
 	Covered         []llm.ResponseItem
 }
 
-func projectCompactionSource(lines []rollout.Line) (compactionProjection, error) {
-	projection, err := agentcontext.ProjectRolloutMessages(lines)
-	if err != nil {
-		return compactionProjection{}, err
-	}
+func projectCompactionSource(history agentcontext.RolloutMessageProjection) (compactionProjection, error) {
+	projection := history.Clone()
 	lastUser := -1
 	for index, message := range projection.Messages {
 		if message.Role == llm.RoleUser {

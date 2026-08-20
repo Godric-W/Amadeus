@@ -3,116 +3,103 @@ package rollout
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
-func TestResponseItemRoundTrip(t *testing.T) {
-	tests := []ResponseItem{
-		{Type: ResponseUserMessage, Role: "user", Content: "inspect project"},
-		{Type: ResponseAssistantMessage, Role: "assistant", Content: "I will inspect it.", Reasoning: "Need repository context."},
-		{Type: ResponseToolCall, Role: "assistant", CallID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`)},
-		{
-			Type: ResponseToolResult, Role: "tool", CallID: "call-1", Name: "read", Status: "succeeded",
-			Content: "contents", Partial: true, Duration: int64(time.Second), Metadata: map[string]any{"path": "README.md"},
-			Result: &tool.ToolResult{CallID: "call-1", ToolName: "read", Text: "contents", Partial: true, Metadata: map[string]any{"path": "README.md"}},
-		},
-	}
-	for _, expected := range tests {
-		item, err := NewResponseItem(expected)
-		if err != nil {
-			t.Fatalf("create %s: %v", expected.Type, err)
-		}
-		encoded, err := json.Marshal(item)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var decodedItem Item
-		if err := json.Unmarshal(encoded, &decodedItem); err != nil {
-			t.Fatal(err)
-		}
-		if err := decodedItem.Validate(); err != nil {
-			t.Fatalf("validate %s after round trip: %v", expected.Type, err)
-		}
-		actual, err := DecodeResponseItem(decodedItem)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(actual, expected) {
-			t.Fatalf("%s round trip:\nactual:   %#v\nexpected: %#v", expected.Type, actual, expected)
-		}
-	}
-}
-
-func TestCompactionAndTerminalRoundTrip(t *testing.T) {
-	compaction := Compaction{
-		Summary: "inspection completed",
-		ReplacementHistory: []ReplacementMessage{
-			{Role: "user", Content: "inspect"},
-			{Role: "assistant", Content: "## Compaction Checkpoint\n\ninspection completed"},
-		},
-		CoveredThroughSequence: 12, SourceHash: "source-hash", Provider: "mock", Model: "model",
-	}
-	assertPayloadRoundTrip(t, KindCompaction, compaction)
-	assertPayloadRoundTrip(t, KindTurnCompleted, TurnCompleted{Status: TurnStatusCompleted, Summary: "done"})
-	assertPayloadRoundTrip(t, KindTurnAborted, TurnAborted{Summary: "cancelled", Reason: "interrupt"})
-}
-
-func TestTypedPayloadValidationRejectsInvalidContracts(t *testing.T) {
+func TestRolloutItemVariantsRoundTrip(t *testing.T) {
+	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
+	result := tool.ToolResult{CallID: "call-1", ToolName: "read", Text: "contents", Partial: true, Metadata: map[string]any{"path": "README.md"}}
 	tests := []struct {
-		name    string
-		kind    Kind
-		payload any
+		name string
+		item RolloutItem
 	}{
-		{name: "unknown response type", kind: KindResponseItem, payload: ResponseItem{Type: "future"}},
-		{name: "incomplete tool call", kind: KindResponseItem, payload: ResponseItem{Type: ResponseToolCall, CallID: "call-1", Name: "read"}},
-		{name: "incomplete tool result", kind: KindResponseItem, payload: ResponseItem{Type: ResponseToolResult, CallID: "call-1", Name: "read", Status: "succeeded"}},
-		{name: "incomplete compaction", kind: KindCompaction, payload: Compaction{Summary: "summary"}},
+		{name: "session meta", item: SessionMetaItem{ThreadID: "thread-1", CWD: "/workspace", Title: "Inspect", ModelProvider: "mock", Model: "model", CreatedAt: now}},
+		{name: "response", item: ResponseItem{
+			ThreadID: "thread-1", TurnID: "turn-1", Type: ResponseToolResult, Role: "tool",
+			CallID: "call-1", Name: "read", Status: "succeeded", Content: "contents", Result: &result,
+			Metadata: map[string]any{"path": "README.md"}, Partial: true, Duration: int64(time.Second),
+		}},
+		{name: "compacted", item: CompactedItem{
+			ThreadID: "thread-1", TurnID: "turn-1", Summary: "inspection completed",
+			ReplacementHistory:     []ReplacementMessage{{Role: "user", Content: "inspect"}, {Role: "assistant", Content: "summary"}},
+			CoveredThroughSequence: 12, SourceHash: "source-hash", Provider: "mock", Model: "model",
+		}},
+		{name: "turn context", item: TurnContextItem{
+			ThreadID: "thread-1", TurnID: "turn-1", Provider: "mock", Model: "model", CWD: "/workspace",
+			Shell: "bash", CurrentDate: "2026-08-20", Timezone: "Asia/Shanghai", Mode: "default",
+		}},
+		{name: "event message", item: EventMsgItem{Msg: protocol.TokenCountEvent{
+			ThreadID: "thread-1", TurnID: "turn-1", Usage: llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+		}}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := NewItem(test.kind, test.payload); err == nil {
-				t.Fatal("invalid typed payload was accepted")
+			expected := Line{Version: CurrentVersion, Sequence: 1, Timestamp: now, Item: test.item}
+			encoded, err := json.Marshal(expected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var actual Line
+			if err := json.Unmarshal(encoded, &actual); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(actual, expected) {
+				t.Fatalf("round trip:\nactual:   %#v\nexpected: %#v", actual, expected)
 			}
 		})
 	}
 }
 
-func TestLineRejectsUnknownVersion(t *testing.T) {
-	item, err := NewResponseItem(ResponseItem{Type: ResponseUserMessage, Role: "user", Content: "hello"})
-	if err != nil {
-		t.Fatal(err)
+func TestResponseItemValidationRejectsInvalidContracts(t *testing.T) {
+	tests := []ResponseItem{
+		{ThreadID: "thread-1", TurnID: "turn-1", Type: "future"},
+		{ThreadID: "thread-1", TurnID: "turn-1", Type: ResponseToolCall, CallID: "call-1", Name: "read"},
+		{ThreadID: "thread-1", TurnID: "turn-1", Type: ResponseToolResult, CallID: "call-1", Name: "read", Status: "succeeded"},
 	}
-	line := Line{Version: CurrentVersion + 1, Sequence: 1, Timestamp: time.Now().UTC(), ThreadID: "thread-1", TurnID: "turn-1", Item: item}
-	if err := line.Validate("thread-1", 1); err == nil {
-		t.Fatal("unknown rollout version was accepted")
+	for _, item := range tests {
+		if err := item.Validate(); err == nil {
+			t.Fatalf("invalid response item was accepted: %#v", item)
+		}
 	}
 }
 
-func assertPayloadRoundTrip[T any](t *testing.T, kind Kind, expected T) {
-	t.Helper()
-	item, err := NewItem(kind, expected)
-	if err != nil {
-		t.Fatal(err)
+func TestLineRejectsUnsupportedFormats(t *testing.T) {
+	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC).Format(time.RFC3339Nano)
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "version one", content: `{"version":1,"sequence":1,"timestamp":"` + now + `","type":"session_meta","payload":{}}`, want: "unsupported rollout format version 1"},
+		{name: "unknown type", content: `{"version":2,"sequence":1,"timestamp":"` + now + `","type":"future_item","payload":{}}`, want: `unsupported rollout item type "future_item"`},
+		{name: "legacy nested item", content: `{"version":2,"sequence":1,"timestamp":"` + now + `","item":{"kind":"response_item","payload":{}}}`, want: "unsupported rollout item format"},
 	}
-	encoded, err := json.Marshal(item)
-	if err != nil {
-		t.Fatal(err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var line Line
+			err := json.Unmarshal([]byte(test.content), &line)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want substring %q", err, test.want)
+			}
+		})
 	}
-	var decodedItem Item
-	if err := json.Unmarshal(encoded, &decodedItem); err != nil {
-		t.Fatal(err)
+}
+
+func TestLineValidationRejectsSequenceAndThreadMismatch(t *testing.T) {
+	line := Line{
+		Version: CurrentVersion, Sequence: 2, Timestamp: time.Now().UTC(),
+		Item: ResponseItem{ThreadID: "thread-1", TurnID: "turn-1", Type: ResponseUserMessage, Role: "user", Content: "hello"},
 	}
-	if err := decodedItem.Validate(); err != nil {
-		t.Fatal(err)
+	if err := line.Validate("thread-1", 1); err == nil || !strings.Contains(err.Error(), "expected 1") {
+		t.Fatalf("sequence mismatch error = %v", err)
 	}
-	actual, err := DecodePayload[T](decodedItem)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(actual, expected) {
-		t.Fatalf("round trip:\nactual:   %#v\nexpected: %#v", actual, expected)
+	if err := line.Validate("thread-2", 2); err == nil || !strings.Contains(err.Error(), `expected "thread-2"`) {
+		t.Fatalf("thread mismatch error = %v", err)
 	}
 }

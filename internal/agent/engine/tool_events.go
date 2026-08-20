@@ -15,7 +15,7 @@ import (
 )
 
 type toolEventObserver struct {
-	appendItems   func(context.Context, protocol.TurnID, ...rollout.Item) error
+	appendItems   func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error
 	turnID        protocol.TurnID
 	events        protocol.EventSink
 	mu            sync.Mutex
@@ -38,7 +38,7 @@ func (presentation toolCallPresentation) payload(duration time.Duration, partial
 	}
 }
 
-func NewToolEventObserver(appendItems func(context.Context, protocol.TurnID, ...rollout.Item) error, turnID protocol.TurnID, events protocol.EventSink) tool.LifecycleObserver {
+func NewToolEventObserver(appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error, turnID protocol.TurnID, events protocol.EventSink) tool.LifecycleObserver {
 	return &toolEventObserver{appendItems: appendItems, turnID: turnID, events: events, presentations: map[string]toolCallPresentation{}}
 }
 
@@ -90,7 +90,7 @@ func (observer *toolEventObserver) ToolCallCompleted(ctx context.Context, execut
 	observer.mu.Unlock()
 	itemPayload := presentation.payload(execution.Outcome.Duration, execution.Output.Partial)
 	turnItem := protocol.TurnItem{ID: protocol.ItemID(execution.Call.ID), Kind: toolItemKind(execution.Call.Name, ""), Status: status, CreatedAt: now, CompletedAt: now, Text: toolExecutionSummary(execution), ToolName: execution.Call.Name, CallID: execution.Call.ID, ToolResult: &result, Payload: itemPayload}
-	completedItem, err := protocol.NewCompletedItem(turnItem)
+	completedItem, err := rollout.NewEventMsgItem(protocol.ItemCompletedEvent{Item: turnItem})
 	if err != nil {
 		return err
 	}

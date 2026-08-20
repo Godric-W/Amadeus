@@ -31,6 +31,8 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 		"CodingFactory", "CodingRuntime", "PrepareRequest", "TaskFactory", "TaskBuilder", "ensureRuntime",
 		"TurnHost", "TaskHost", "PromptHost", "ContextHost", "RolloutHost", "ModelSampler", "RunRequest", "RunTurn",
 		"request_user_input", "RequestUserInput", "UserInputRequest", "UserInputResponseOp",
+		"KindTurnItemCompleted", "TurnItemCompleted", "NewCompletedItem", "ProjectThreadItems",
+		"schema_migrations", "func migrate(",
 	}
 	for _, relative := range []string{"cmd", "internal"} {
 		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
@@ -40,7 +42,7 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 			if entry.IsDir() {
 				return nil
 			}
-			if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") || filepath.Base(path) == "migration.go" {
+			if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
 			content, err := os.ReadFile(path)
@@ -174,7 +176,7 @@ func TestCanonicalWritersUseTypedPayloads(t *testing.T) {
 			if walkErr != nil {
 				return walkErr
 			}
-			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") || filepath.Base(path) == "migration.go" {
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
 			content, readErr := os.ReadFile(path)
@@ -182,8 +184,7 @@ func TestCanonicalWritersUseTypedPayloads(t *testing.T) {
 				return readErr
 			}
 			for _, rawWriter := range []string{
-				"NewRawItem(rollout.KindResponseItem", "NewRawItem(rollout.KindCompaction",
-				"NewRawItem(KindResponseItem", "NewRawItem(KindCompaction",
+				"rollout.NewItem(", "rollout.NewRawItem(", "rollout.DecodePayload[", "rollout.DecodeResponseItem(",
 			} {
 				if strings.Contains(string(content), rawWriter) {
 					t.Errorf("canonical writer bypasses typed payload through %q in %s", rawWriter, filepath.ToSlash(path[len(root)+1:]))
@@ -400,7 +401,7 @@ func TestResponseStreamReconnectHasCodexOwnershipBoundaries(t *testing.T) {
 			if walkErr != nil {
 				return walkErr
 			}
-			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") || filepath.Base(path) == "migration.go" {
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
 			content, readErr := os.ReadFile(path)
@@ -521,7 +522,7 @@ func TestModelProviderConfigurationHasCodexOwnershipBoundaries(t *testing.T) {
 			if walkErr != nil {
 				return walkErr
 			}
-			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") || filepath.Base(path) == "migration.go" {
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
 			content, readErr := os.ReadFile(path)

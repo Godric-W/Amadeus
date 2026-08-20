@@ -87,15 +87,16 @@ type compactTestHost struct {
 	events  []protocol.Event
 }
 
-func (host *compactTestHost) AppendItems(_ context.Context, turnID protocol.TurnID, items ...rollout.Item) error {
+func (host *compactTestHost) AppendItems(_ context.Context, turnID protocol.TurnID, items ...rollout.RolloutItem) error {
 	for _, item := range items {
-		host.lines = append(host.lines, rollout.Line{Version: rollout.CurrentVersion, Sequence: uint64(len(host.lines) + 1), Timestamp: time.Now().UTC(), ThreadID: "thread-1", TurnID: turnID, Item: item})
+		scoped := rollout.ScopeItem(item, "thread-1", turnID)
+		host.lines = append(host.lines, rollout.Line{Version: rollout.CurrentVersion, Sequence: uint64(len(host.lines) + 1), Timestamp: time.Now().UTC(), Item: scoped})
 	}
 	return host.context.Rebuild(host.lines)
 }
 
 func (host *compactTestHost) History() []rollout.Line {
-	return append([]rollout.Line(nil), host.lines...)
+	return rollout.CloneLines(host.lines)
 }
 func (host *compactTestHost) Publish(_ context.Context, event protocol.Event) error {
 	host.events = append(host.events, event)
@@ -128,7 +129,17 @@ func TestCompactTaskProducesSemanticReplacementHistory(t *testing.T) {
 	if len(client.request.Prompt.Input) < 3 || !strings.Contains(client.request.Prompt.BaseInstructions.Text, "CONTEXT CHECKPOINT COMPACTION") {
 		t.Fatalf("compaction request was incomplete: %#v", client.request.Prompt)
 	}
-	if len(result.Items) != 2 || result.Items[0].Kind != rollout.KindCompaction || result.Items[1].Kind != rollout.KindTokenUsage {
+	if len(result.Items) != 2 {
+		t.Fatalf("compaction result = %#v", result)
+	}
+	if _, ok := result.Items[0].(rollout.CompactedItem); !ok {
+		t.Fatalf("compaction item = %T", result.Items[0])
+	}
+	usageItem, ok := result.Items[1].(rollout.EventMsgItem)
+	if !ok {
+		t.Fatalf("usage item = %T", result.Items[1])
+	}
+	if _, ok := usageItem.Msg.(protocol.TokenCountEvent); !ok {
 		t.Fatalf("compaction result = %#v", result)
 	}
 	if err := host.AppendItems(context.Background(), "turn-2", result.Items...); err != nil {
@@ -241,7 +252,8 @@ func TestCompactTaskRetriesResponseStreamAndKeepsCanonicalResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(client.requests) != 2 || len(result.Items) != 2 || result.Items[0].Kind != rollout.KindCompaction {
+	_, compacted := result.Items[0].(rollout.CompactedItem)
+	if len(client.requests) != 2 || len(result.Items) != 2 || !compacted {
 		t.Fatalf("retry compaction requests=%d result=%#v", len(client.requests), result)
 	}
 	if retrying, terminal := compactStreamErrorCounts(host.events); retrying != 1 || terminal != 0 {
@@ -271,15 +283,13 @@ func TestCompactTaskRetryExhaustionDoesNotChangeReplacementHistory(t *testing.T)
 }
 
 func TestCompactionSuccessEventOrderRemainsContextWarningTerminal(t *testing.T) {
-	item, err := rollout.NewItem(rollout.KindCompaction, rollout.Compaction{
+	item := rollout.CompactedItem{
+		ThreadID: "thread-1", TurnID: "turn-1",
 		Summary: "summary", ReplacementHistory: []rollout.ReplacementMessage{{Role: "assistant", Content: "summary"}},
 		CoveredThroughSequence: 1, SourceHash: "hash", Provider: "mock", Model: "compact-model",
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 	session := &Session{threadID: "thread-1", ctx: context.Background(), events: make(chan protocol.Event, 3)}
-	session.publishCompactionEvents("submission-1", "turn-1", []rollout.Item{item})
+	session.publishCompactionEvents("submission-1", "turn-1", []rollout.RolloutItem{item})
 	session.publish(protocol.Event{ID: "submission-1", Msg: protocol.TurnCompleteEvent{ThreadID: "thread-1", TurnID: "turn-1"}})
 
 	first := <-session.events

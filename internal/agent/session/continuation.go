@@ -11,7 +11,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/llm"
-	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -28,10 +27,10 @@ func (session *Session) continueTurn(ctx context.Context, runtime *engine.Servic
 	budget := runtime.TurnBudget()
 	for stepNumber := 1; ; stepNumber++ {
 		if err := ctx.Err(); err != nil {
-			return engine.RunResult{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: cancelled", Outcome: rollout.TurnOutcomeAborted, Reason: err.Error()}, err
+			return engine.RunResult{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: cancelled", Outcome: protocol.TurnOutcomeAborted, Reason: err.Error()}, err
 		}
 		if reason := budget.Exhausted(stepNumber-1, toolCallCount, time.Since(startedAt)); reason != "" {
-			return engine.RunResult{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: blocked", Outcome: rollout.TurnOutcomeBlocked, Reason: reason}, nil
+			return engine.RunResult{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: blocked", Outcome: protocol.TurnOutcomeBlocked, Reason: reason}, nil
 		}
 		step, err := runtime.CaptureStep(session.Snapshot, turnContext)
 		if err != nil {
@@ -79,7 +78,7 @@ func (session *Session) continueTurn(ctx context.Context, runtime *engine.Servic
 			if err := engine.PublishModelCompletions(stepCtx, session.AppendItems, turnContext.TurnID, events, sampleID, sample.Response.Message); err != nil {
 				return engine.RunResult{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: failed"}, err
 			}
-			return engine.RunResult{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: completed", Outcome: rollout.TurnOutcomeCompleted}, nil
+			return engine.RunResult{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: completed", Outcome: protocol.TurnOutcomeCompleted}, nil
 		}
 		toolCallCount += len(sample.ToolCalls)
 		if progress != nil {
@@ -135,7 +134,7 @@ func (session *Session) runTurnLoop(ctx context.Context, runtime *engine.Service
 
 func (session *Session) compactCallback(runtime *engine.Services, modelSession *engine.ModelClientSession, turnID protocol.TurnID, events protocol.EventSink) compactFunc {
 	return func(ctx context.Context) (bool, error) {
-		items, err := runtime.Compact(ctx, engine.CompactRequest{Lines: session.History(), ModelSession: modelSession, Events: events})
+		items, err := runtime.Compact(ctx, engine.CompactRequest{History: session.ContextProjection(), ModelSession: modelSession, Events: events})
 		if err != nil {
 			if strings.Contains(err.Error(), "no earlier turn") || strings.Contains(err.Error(), "no safely compactable") || strings.Contains(err.Error(), "no conversation") {
 				return false, nil

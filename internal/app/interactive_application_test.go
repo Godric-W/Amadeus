@@ -148,7 +148,7 @@ func newInteractiveTestWorkspace(t *testing.T, ctx context.Context) (*ThreadWork
 	lastInput := ""
 	constructor := func(kind agentsession.TaskKind) func(context.Context, *agentsession.Session, string, turn.TurnContext) (agentsession.SessionTask, turn.TurnContext, error) {
 		return func(_ context.Context, _ *agentsession.Session, input string, value turn.TurnContext) (agentsession.SessionTask, turn.TurnContext, error) {
-			return agentsession.FuncTask{TaskKind: kind, RunFunc: func(context.Context, *agentsession.Session, *turn.TurnContext, []agentsession.TurnInput) (agentsession.Result, error) {
+			return agentsession.FuncTask{TaskKind: kind, RunFunc: func(_ context.Context, _ *agentsession.Session, turnContext *turn.TurnContext, _ []agentsession.TurnInput) (agentsession.Result, error) {
 				if kind == agentsession.TaskKindCompact {
 					projectionMu.Lock()
 					input := lastInput
@@ -158,17 +158,26 @@ func newInteractiveTestWorkspace(t *testing.T, ctx context.Context) (*ThreadWork
 						return agentsession.Result{}, encodeErr
 					}
 					digest := sha256.Sum256(encoded)
-					item, itemErr := rollout.NewItem(rollout.KindCompaction, rollout.Compaction{
+					item := rollout.CompactedItem{
 						Summary: "token budget", ReplacementHistory: []rollout.ReplacementMessage{{Role: "user", Content: "summary"}},
 						CoveredThroughSequence: 100, SourceHash: hex.EncodeToString(digest[:]),
-					})
-					return agentsession.Result{Items: []rollout.Item{item}, Summary: "compacted"}, itemErr
+					}
+					return agentsession.Result{Items: []rollout.RolloutItem{item}, Summary: "compacted"}, nil
 				}
 				projectionMu.Lock()
 				lastInput = input
 				projectionMu.Unlock()
-				item, itemErr := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "done: " + input})
-				return agentsession.Result{Items: []rollout.Item{item}, Summary: "completed"}, itemErr
+				text := "done: " + input
+				item, itemErr := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: text})
+				if itemErr != nil {
+					return agentsession.Result{}, itemErr
+				}
+				now := time.Now().UTC()
+				completed := rollout.EventMsgItem{Msg: protocol.ItemCompletedEvent{Item: protocol.TurnItem{
+					ID: protocol.ItemID("assistant-" + turnContext.TurnID), Kind: protocol.ItemAssistantMessage,
+					Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now, Text: text,
+				}}}
+				return agentsession.Result{Items: []rollout.RolloutItem{item, completed}, Summary: "completed"}, nil
 			}}, value, nil
 		}
 	}

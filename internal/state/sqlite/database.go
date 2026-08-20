@@ -33,6 +33,11 @@ func Open(ctx context.Context, amadeusHome string) (*Database, error) {
 	if err != nil {
 		return nil, err
 	}
+	_, statErr := os.Stat(path)
+	isNew := errors.Is(statErr, os.ErrNotExist)
+	if statErr != nil && !isNew {
+		return nil, fmt.Errorf("inspect state database: %w", statErr)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
@@ -56,7 +61,7 @@ func Open(ctx context.Context, amadeusHome string) (*Database, error) {
 		_ = database.Close()
 		return nil, fmt.Errorf("ping state database: %w", err)
 	}
-	if err := migrate(ctx, database); err != nil {
+	if err := ensureCurrentSchema(ctx, database, path, isNew); err != nil {
 		_ = database.Close()
 		return nil, err
 	}
@@ -86,51 +91,4 @@ func (database *Database) Close() error {
 		return nil
 	}
 	return database.db.Close()
-}
-
-func migrate(ctx context.Context, database *sql.DB) error {
-	statements := []string{
-		`CREATE TABLE IF NOT EXISTS schema_migrations (
-            version INTEGER PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            applied_at TEXT NOT NULL
-        )`,
-		`CREATE TABLE IF NOT EXISTS threads (
-            id TEXT PRIMARY KEY,
-            rollout_path TEXT NOT NULL UNIQUE,
-            cwd TEXT NOT NULL,
-            title TEXT NOT NULL,
-            preview TEXT NOT NULL DEFAULT '',
-            model_provider TEXT NOT NULL DEFAULT '',
-            model TEXT NOT NULL DEFAULT '',
-            tokens_used INTEGER NOT NULL DEFAULT 0 CHECK (tokens_used >= 0),
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
-            git_sha TEXT NOT NULL DEFAULT '',
-            git_branch TEXT NOT NULL DEFAULT '',
-            git_origin_url TEXT NOT NULL DEFAULT '',
-            CHECK (length(trim(id)) > 0),
-            CHECK (length(trim(rollout_path)) > 0),
-            CHECK (length(trim(cwd)) > 0),
-            CHECK (length(trim(title)) > 0)
-        )`,
-		`CREATE INDEX IF NOT EXISTS threads_cwd_updated_idx ON threads(cwd, archived, updated_at DESC, id)`,
-		`INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
-            VALUES (100, 'thread_metadata_index', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`,
-	}
-	tx, err := database.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin state migration: %w", err)
-	}
-	defer tx.Rollback()
-	for _, statement := range statements {
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("apply state migration: %w", err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit state migration: %w", err)
-	}
-	return nil
 }

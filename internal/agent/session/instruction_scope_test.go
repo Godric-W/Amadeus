@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
@@ -22,15 +23,16 @@ type instructionScopeHost struct {
 	lines   []rollout.Line
 }
 
-func (host *instructionScopeHost) AppendItems(_ context.Context, turnID protocol.TurnID, items ...rollout.Item) error {
+func (host *instructionScopeHost) AppendItems(_ context.Context, turnID protocol.TurnID, items ...rollout.RolloutItem) error {
 	for _, item := range items {
-		host.lines = append(host.lines, rollout.Line{Sequence: uint64(len(host.lines) + 1), TurnID: turnID, Item: item})
+		scoped := rollout.ScopeItem(item, "thread-1", turnID)
+		host.lines = append(host.lines, rollout.Line{Version: rollout.CurrentVersion, Sequence: uint64(len(host.lines) + 1), Timestamp: time.Now().UTC(), Item: scoped})
 	}
 	return host.manager.Rebuild(host.lines)
 }
 
 func (host *instructionScopeHost) History() []rollout.Line {
-	return append([]rollout.Line(nil), host.lines...)
+	return rollout.CloneLines(host.lines)
 }
 
 func (host *instructionScopeHost) Snapshot(model llm.ModelInfo, prompt llm.Prompt) agentcontext.PromptSnapshot {
@@ -92,9 +94,13 @@ func TestTargetInstructionScopePersistsNestedResolutionAndGatesMutation(t *testi
 		t.Fatalf("sampled mutation remained blocked: %v", err)
 	}
 	last := host.lines[len(host.lines)-1]
-	update, err := rollout.DecodePayload[rollout.ContextUpdate](last.Item)
-	if err != nil {
-		t.Fatal(err)
+	eventItem, ok := last.Item.(rollout.EventMsgItem)
+	if !ok {
+		t.Fatalf("instruction update item = %T", last.Item)
+	}
+	update, ok := eventItem.Msg.(protocol.ContextUpdateEvent)
+	if !ok {
+		t.Fatalf("instruction update event = %T", eventItem.Msg)
 	}
 	if update.InstructionResolution == nil || update.InstructionResolution.TargetPath != "nested/file.go" || len(update.InstructionResolution.Documents) != 2 {
 		t.Fatalf("typed instruction resolution = %#v", update.InstructionResolution)
@@ -151,9 +157,13 @@ func TestTargetInstructionScopeGatesCommandCWDInAnotherWorkspaceRoot(t *testing.
 	if !strings.Contains(content, "second root rules") || !strings.Contains(content, "second nested rules") {
 		t.Fatalf("cross-root instructions = %q", content)
 	}
-	update, err := rollout.DecodePayload[rollout.ContextUpdate](host.lines[len(host.lines)-1].Item)
-	if err != nil {
-		t.Fatal(err)
+	eventItem, ok := host.lines[len(host.lines)-1].Item.(rollout.EventMsgItem)
+	if !ok {
+		t.Fatalf("instruction update item = %T", host.lines[len(host.lines)-1].Item)
+	}
+	update, ok := eventItem.Msg.(protocol.ContextUpdateEvent)
+	if !ok {
+		t.Fatalf("instruction update event = %T", eventItem.Msg)
 	}
 	if update.InstructionResolution == nil || update.InstructionResolution.TargetPath != "nested" || update.InstructionResolution.TargetKind != string(instruction.TargetCommandCWD) {
 		t.Fatalf("command CWD resolution = %#v", update.InstructionResolution)

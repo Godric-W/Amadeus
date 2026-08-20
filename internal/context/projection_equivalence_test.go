@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/tool"
@@ -24,8 +25,8 @@ func TestCanonicalProjectionIsEquivalentForLiveAndResume(t *testing.T) {
 			Type: rollout.ResponseToolResult, Role: "tool", CallID: "call-1", Name: "execute_command", Status: "failed", Result: &result,
 			Error: &rollout.ResponseError{Kind: "process_error", Message: "exit status 7"}, Partial: true,
 		}),
-		contextTestLine(t, 4, rollout.KindTokenUsage, rollout.TokenUsage{InputTokens: 20, OutputTokens: 5, TotalTokens: 25}),
-		contextTestLine(t, 5, rollout.KindTokenUsage, rollout.TokenUsage{InputTokens: 4, OutputTokens: 1, TotalTokens: 5}),
+		contextEventLine(t, 4, protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 20, OutputTokens: 5, TotalTokens: 25}}),
+		contextEventLine(t, 5, protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 4, OutputTokens: 1, TotalTokens: 5}}),
 	}
 	model := llm.ModelInfo{ContextWindow: 10_000, ToolOutputTokenLimit: 160, InputModalities: []llm.InputModality{llm.InputModalityText}}
 	live := NewManager(nil)

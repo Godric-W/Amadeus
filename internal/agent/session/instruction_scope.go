@@ -18,7 +18,7 @@ import (
 type targetInstructionScope struct {
 	mu              sync.Mutex
 	contextUpdate   func(agentcontext.UpdateKey) string
-	appendItems     func(context.Context, protocol.TurnID, ...rollout.Item) error
+	appendItems     func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error
 	resolver        *instruction.WorkspaceResolver
 	turnID          protocol.TurnID
 	documents       map[string]instruction.InstructionDocument
@@ -26,7 +26,7 @@ type targetInstructionScope struct {
 	sampledRevision uint64
 }
 
-func newTargetInstructionScope(contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.Item) error, resolver *instruction.WorkspaceResolver, turnID protocol.TurnID) (*targetInstructionScope, error) {
+func newTargetInstructionScope(contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error, resolver *instruction.WorkspaceResolver, turnID protocol.TurnID) (*targetInstructionScope, error) {
 	if contextUpdate == nil || appendItems == nil {
 		return nil, errors.New("instruction scope callbacks are incomplete")
 	}
@@ -85,7 +85,7 @@ func (scope *targetInstructionScope) resolve(ctx context.Context, target string,
 	if changed || scope.revision == 0 {
 		content := renderInstructionDocuments(scope.documents)
 		if scope.contextUpdate(agentcontext.UpdateAgents) != content {
-			item, itemErr := rollout.NewItem(rollout.KindContextUpdate, rollout.ContextUpdate{
+			item, itemErr := rollout.NewEventMsgItem(protocol.ContextUpdateEvent{
 				Key: string(agentcontext.UpdateAgents), Content: content,
 				InstructionResolution: instructionResolutionFact(request, resolution),
 			})
@@ -139,16 +139,16 @@ func renderInstructionDocuments(documents map[string]instruction.InstructionDocu
 	return strings.Join(parts, "\n\n")
 }
 
-func instructionResolutionFact(request instruction.ResolveRequest, resolution instruction.Resolution) *rollout.InstructionScopeResolution {
-	documents := make([]rollout.InstructionDocumentRef, 0, len(resolution.Documents))
+func instructionResolutionFact(request instruction.ResolveRequest, resolution instruction.Resolution) *protocol.InstructionScopeResolution {
+	documents := make([]protocol.InstructionDocumentRef, 0, len(resolution.Documents))
 	for _, document := range resolution.Documents {
 		scope := string(document.Scope.Kind)
 		if document.Scope.Path != "" {
 			scope += ":" + document.Scope.Path
 		}
-		documents = append(documents, rollout.InstructionDocumentRef{Path: document.Path, Scope: scope, SHA256: document.SHA256})
+		documents = append(documents, protocol.InstructionDocumentRef{Path: document.Path, Scope: scope, SHA256: document.SHA256})
 	}
-	return &rollout.InstructionScopeResolution{TargetPath: request.TargetPath, TargetKind: string(request.TargetKind), Documents: documents}
+	return &protocol.InstructionScopeResolution{TargetPath: request.TargetPath, TargetKind: string(request.TargetKind), Documents: documents}
 }
 
 type contextRefreshRequiredError struct {

@@ -37,12 +37,10 @@ func RecoverInterruptedTurn(ctx context.Context, live *LiveThread, history Initi
 		return InitialHistory{}, err
 	}
 	items = append(items, terminal)
-	result, err := live.AppendItems(ctx, turnID, items...)
-	if err != nil {
+	if _, err := live.AppendItems(ctx, turnID, items...); err != nil {
 		return InitialHistory{}, err
 	}
-	history.Lines = append(history.Lines, result.Lines...)
-	return history, nil
+	return live.History(ctx)
 }
 
 type recoveredCall struct {

@@ -101,6 +101,18 @@ func (thread *LiveThread) Flush(ctx context.Context) error {
 	return thread.store.Flush(ctx, thread.id)
 }
 
+func (thread *LiveThread) History(ctx context.Context) (InitialHistory, error) {
+	thread.mu.Lock()
+	defer thread.mu.Unlock()
+	if thread.closed {
+		return InitialHistory{}, errors.New("live thread is closed")
+	}
+	if !thread.materialized {
+		return InitialHistory{Kind: InitialHistoryNew}, nil
+	}
+	return thread.store.LoadHistory(ctx, thread.id)
+}
+
 func (thread *LiveThread) Shutdown(ctx context.Context) error {
 	thread.mu.Lock()
 	defer thread.mu.Unlock()

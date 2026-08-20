@@ -113,15 +113,16 @@ type engineTestHost struct {
 func (host *engineTestHost) History() []rollout.Line {
 	host.mu.Lock()
 	defer host.mu.Unlock()
-	return append([]rollout.Line(nil), host.lines...)
+	return rollout.CloneLines(host.lines)
 }
 
-func (host *engineTestHost) AppendItems(_ context.Context, turnID protocol.TurnID, items ...rollout.Item) error {
+func (host *engineTestHost) AppendItems(_ context.Context, turnID protocol.TurnID, items ...rollout.RolloutItem) error {
 	host.mu.Lock()
 	defer host.mu.Unlock()
 	for _, item := range items {
-		host.lines = append(host.lines, rollout.Line{Version: rollout.CurrentVersion, Sequence: uint64(len(host.lines) + 1), Timestamp: time.Now().UTC(), ThreadID: "thread-1", TurnID: turnID, Item: item})
-		host.order = append(host.order, "append:"+string(item.Kind))
+		scoped := rollout.ScopeItem(item, "thread-1", turnID)
+		host.lines = append(host.lines, rollout.Line{Version: rollout.CurrentVersion, Sequence: uint64(len(host.lines) + 1), Timestamp: time.Now().UTC(), Item: scoped})
+		host.order = append(host.order, "append:"+rolloutItemLabel(scoped))
 	}
 	return host.context.Rebuild(host.lines)
 }
@@ -187,8 +188,8 @@ func TestTurnEngineContinuesAfterToolFailureAndPersistsBeforeCompletion(t *testi
 	host.mu.Lock()
 	order := append([]string(nil), host.order...)
 	host.mu.Unlock()
-	assertBefore(t, order, "append:"+string(rollout.KindResponseItem), "complete:"+string(protocol.ItemToolCall))
-	lastAppend := lastIndex(order, "append:"+string(rollout.KindResponseItem))
+	assertBefore(t, order, "append:response_item", "complete:"+string(protocol.ItemToolCall))
+	lastAppend := lastIndex(order, "append:item_completed")
 	lastComplete := lastIndex(order, "complete:"+string(protocol.ItemAssistantMessage))
 	if lastAppend < 0 || lastComplete < 0 || lastAppend > lastComplete {
 		t.Fatalf("assistant completion preceded canonical append: %v", order)
@@ -269,7 +270,7 @@ func TestTurnEngineWarnsThenReturnsTypedBlockedAtSafetyBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Outcome != rollout.TurnOutcomeBlocked || !strings.Contains(result.Reason, "sample safety limit") {
+	if result.Outcome != protocol.TurnOutcomeBlocked || !strings.Contains(result.Reason, "sample safety limit") {
 		t.Fatalf("budget result = %#v", result)
 	}
 	if len(client.requests) != 2 || !strings.Contains(requestText(client.requests[1]), "approaching its internal safety budget") {
@@ -304,7 +305,7 @@ func TestTurnEngineChecksAutomaticCompactionBeforeSampling(t *testing.T) {
 			return false, nil
 		},
 	})
-	if err != nil || result.Outcome != rollout.TurnOutcomeCompleted || checks != 1 || len(client.requests) != 1 {
+	if err != nil || result.Outcome != protocol.TurnOutcomeCompleted || checks != 1 || len(client.requests) != 1 {
 		t.Fatalf("auto compaction check result=%#v checks=%d requests=%d err=%v", result, checks, len(client.requests), err)
 	}
 }
@@ -365,6 +366,28 @@ func lastIndex(values []string, target string) int {
 		}
 	}
 	return -1
+}
+
+func rolloutItemLabel(item rollout.RolloutItem) string {
+	switch item := item.(type) {
+	case rollout.SessionMetaItem:
+		return "session_meta"
+	case rollout.ResponseItem:
+		return "response_item"
+	case rollout.CompactedItem:
+		return "compacted"
+	case rollout.TurnContextItem:
+		return "turn_context"
+	case rollout.EventMsgItem:
+		switch item.Msg.(type) {
+		case protocol.ItemCompletedEvent:
+			return "item_completed"
+		default:
+			return "event_msg"
+		}
+	default:
+		return "unknown"
+	}
 }
 
 func testModelMessages(t *testing.T) llm.ModelMessages {

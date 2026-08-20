@@ -68,7 +68,7 @@ func (factory testFactory) NewTask(_ context.Context, _ *session.Session, kind s
 			return session.Result{}, ctx.Err()
 		}
 		item, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "done"})
-		return session.Result{Items: []rollout.Item{item}}, err
+		return session.Result{Items: []rollout.RolloutItem{item}}, err
 	}}
 	return sessionTask, value, nil
 }
@@ -106,9 +106,9 @@ func (factory concurrentHistoryFactory) NewTask(_ context.Context, active *sessi
 
 func (concurrentHistoryFactory) Close() error { return nil }
 
-func (store terminalFailStore) AppendItems(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
+func (store terminalFailStore) AppendItems(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.RolloutItem) (thread.AppendResult, error) {
 	for _, item := range items {
-		if item.Kind == rollout.KindTurnCompleted || item.Kind == rollout.KindTurnAborted {
+		if isTerminalRolloutItem(item) {
 			return thread.AppendResult{}, errors.New("terminal persistence failed")
 		}
 	}
@@ -119,10 +119,15 @@ func (store materializeFailStore) Materialize(context.Context, thread.CreateInpu
 	return thread.AppendResult{}, errors.New("materialize failed")
 }
 
-func (store turnStartFailStore) AppendItems(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.Item) (thread.AppendResult, error) {
+func (store turnStartFailStore) AppendItems(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.RolloutItem) (thread.AppendResult, error) {
 	for _, item := range items {
-		if item.Kind == rollout.KindTurnContext || item.Kind == rollout.KindTurnStarted {
+		if _, ok := item.(rollout.TurnContextItem); ok {
 			return thread.AppendResult{}, errors.New("turn start append failed")
+		}
+		if event, ok := item.(rollout.EventMsgItem); ok {
+			if _, started := event.Msg.(protocol.TurnStartedEvent); started {
+				return thread.AppendResult{}, errors.New("turn start append failed")
+			}
 		}
 	}
 	return store.ThreadStore.AppendItems(ctx, id, turnID, items...)
@@ -192,16 +197,16 @@ func TestThreadManagerMaterializesOnFirstInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantKinds := []rollout.Kind{
-		rollout.KindSessionMeta, rollout.KindTurnContext, rollout.KindResponseItem,
-		rollout.KindTurnStarted, rollout.KindResponseItem, rollout.KindTurnCompleted,
+	wantKinds := []string{
+		"session_meta", "turn_context", "response:user_message",
+		"event:turn_started", "response:assistant_message", "event:turn_complete",
 	}
 	if len(history.Lines) != len(wantKinds) {
 		t.Fatalf("history lines = %d, want %d", len(history.Lines), len(wantKinds))
 	}
 	for index, kind := range wantKinds {
-		if history.Lines[index].Item.Kind != kind {
-			t.Fatalf("history kind[%d] = %q, want %q", index, history.Lines[index].Item.Kind, kind)
+		if actual := rolloutItemKind(history.Lines[index].Item); actual != kind {
+			t.Fatalf("history kind[%d] = %q, want %q", index, actual, kind)
 		}
 	}
 }
@@ -227,8 +232,8 @@ func TestThreadManagerInterruptPersistsAbortedBeforeEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if history.Lines[len(history.Lines)-1].Item.Kind != rollout.KindTurnAborted {
-		t.Fatalf("last rollout item = %q", history.Lines[len(history.Lines)-1].Item.Kind)
+	if actual := rolloutItemKind(history.Lines[len(history.Lines)-1].Item); actual != "event:turn_aborted" {
+		t.Fatalf("last rollout item = %q", actual)
 	}
 }
 
@@ -268,14 +273,15 @@ func TestRenameActiveThreadUpdatesCanonicalSessionHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	history := value.History()
-	if len(history) == 0 || history[len(history)-1].Item.Kind != rollout.KindContextUpdate {
+	if len(history) == 0 {
 		t.Fatalf("history after rename = %#v", history)
 	}
-	update, err := rollout.DecodePayload[rollout.ContextUpdate](history[len(history)-1].Item)
-	if err != nil {
-		t.Fatal(err)
+	eventItem, ok := history[len(history)-1].Item.(rollout.EventMsgItem)
+	if !ok {
+		t.Fatalf("rename item = %T", history[len(history)-1].Item)
 	}
-	if update.Title != "Renamed Thread" {
+	update, ok := eventItem.Msg.(protocol.ThreadNameUpdatedEvent)
+	if !ok || update.Name != "Renamed Thread" {
 		t.Fatalf("rename update = %#v", update)
 	}
 }
@@ -384,7 +390,7 @@ func TestSessionPublishesAndPersistsExactlyOneTerminal(t *testing.T) {
 			}
 			terminalLines := 0
 			for _, line := range history.Lines {
-				if line.Item.Kind == rollout.KindTurnCompleted || line.Item.Kind == rollout.KindTurnAborted {
+				if isTerminalRolloutItem(line.Item) {
 					terminalLines++
 				}
 			}
@@ -440,9 +446,12 @@ func TestResumeRecoversIncompleteToolCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	turnContext := testTurnContext(t, "thread-recover", "turn-old")
-	contextItem, _ := rollout.NewItem(rollout.KindTurnContext, turnContext)
+	contextItem := rollout.TurnContextItem{
+		ThreadID: turnContext.ThreadID, TurnID: turnContext.TurnID,
+		Provider: turnContext.Provider, Model: turnContext.Model, CWD: turnContext.CWD, Mode: string(turnContext.Mode),
+	}
 	userItem, _ := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "run"})
-	startedItem, _ := rollout.NewItem(rollout.KindTurnStarted, rollout.TurnStarted{Input: "run"})
+	startedItem := rollout.EventMsgItem{Msg: protocol.TurnStartedEvent{Input: "run", StartedAt: now, Kind: protocol.TaskKindRegular}}
 	toolCall, _ := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-1", Name: "execute_command", Arguments: json.RawMessage(`{}`)})
 	if _, err := live.AppendItems(ctx, "turn-old", contextItem, userItem, startedItem, toolCall); err != nil {
 		t.Fatal(err)
@@ -459,19 +468,56 @@ func TestResumeRecoversIncompleteToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history.Lines) < 2 || history.Lines[len(history.Lines)-1].Item.Kind != rollout.KindTurnAborted {
+	if len(history.Lines) < 2 || rolloutItemKind(history.Lines[len(history.Lines)-1].Item) != "event:turn_aborted" {
 		t.Fatalf("recovered history = %#v", history.Lines)
 	}
-	var recovered struct {
-		Type   string `json:"type"`
-		CallID string `json:"call_id"`
-		Status string `json:"status"`
+	recovered, ok := history.Lines[len(history.Lines)-2].Item.(rollout.ResponseItem)
+	if !ok {
+		t.Fatalf("recovered result item = %T", history.Lines[len(history.Lines)-2].Item)
 	}
-	if err := json.Unmarshal(history.Lines[len(history.Lines)-2].Item.Payload, &recovered); err != nil {
-		t.Fatal(err)
-	}
-	if recovered.Type != "tool_result" || recovered.CallID != "call-1" || recovered.Status != "cancelled" {
+	if recovered.Type != rollout.ResponseToolResult || recovered.CallID != "call-1" || recovered.Status != "cancelled" {
 		t.Fatalf("recovered result = %#v", recovered)
+	}
+}
+
+func isTerminalRolloutItem(item rollout.RolloutItem) bool {
+	event, ok := item.(rollout.EventMsgItem)
+	if !ok {
+		return false
+	}
+	switch event.Msg.(type) {
+	case protocol.TurnCompleteEvent, protocol.TurnAbortedEvent:
+		return true
+	default:
+		return false
+	}
+}
+
+func rolloutItemKind(item rollout.RolloutItem) string {
+	switch item := item.(type) {
+	case rollout.SessionMetaItem:
+		return "session_meta"
+	case rollout.TurnContextItem:
+		return "turn_context"
+	case rollout.ResponseItem:
+		return "response:" + string(item.Type)
+	case rollout.CompactedItem:
+		return "compacted"
+	case rollout.EventMsgItem:
+		switch item.Msg.(type) {
+		case protocol.TurnStartedEvent:
+			return "event:turn_started"
+		case protocol.TurnCompleteEvent:
+			return "event:turn_complete"
+		case protocol.TurnAbortedEvent:
+			return "event:turn_aborted"
+		case protocol.ThreadNameUpdatedEvent:
+			return "event:thread_name_updated"
+		default:
+			return "event"
+		}
+	default:
+		return "unknown"
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
@@ -21,17 +22,17 @@ type TurnInput struct {
 	Content string
 }
 
-type Outcome = rollout.TurnOutcome
+type Outcome = protocol.TurnOutcome
 
 const (
-	OutcomeCompleted = rollout.TurnOutcomeCompleted
-	OutcomeBlocked   = rollout.TurnOutcomeBlocked
-	OutcomeFailed    = rollout.TurnOutcomeFailed
-	OutcomeAborted   = rollout.TurnOutcomeAborted
+	OutcomeCompleted = protocol.TurnOutcomeCompleted
+	OutcomeBlocked   = protocol.TurnOutcomeBlocked
+	OutcomeFailed    = protocol.TurnOutcomeFailed
+	OutcomeAborted   = protocol.TurnOutcomeAborted
 )
 
 type Result struct {
-	Items         []rollout.Item
+	Items         []rollout.RolloutItem
 	Summary       string
 	Outcome       Outcome
 	Reason        string
