@@ -48,7 +48,7 @@ func TestInteractiveApplicationOwnsThreadLifecycleAndReplay(t *testing.T) {
 		t.Fatalf("settings generation = %d", settings.Generation)
 	}
 
-	if err := application.SubmitUser(ctx, "inspect repository"); err != nil {
+	if err := application.SubmitUser(ctx, "inspect repository", protocol.ThreadSettingsOverrides{}); err != nil {
 		t.Fatal(err)
 	}
 	waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
@@ -68,7 +68,7 @@ func TestInteractiveApplicationOwnsThreadLifecycleAndReplay(t *testing.T) {
 	if resumed.Snapshot.Generation != 3 || resumed.Snapshot.ThreadID != firstID {
 		t.Fatalf("resume snapshot = %#v", resumed.Snapshot)
 	}
-	wantKinds := []protocol.ItemKind{protocol.ItemUserMessage, protocol.ItemAssistantMessage}
+	wantKinds := []protocol.ItemKind{protocol.ItemUserMessage, protocol.ItemAssistantMessage, protocol.ItemPlan}
 	if len(resumed.Snapshot.Items) != len(wantKinds) {
 		t.Fatalf("resume items = %#v", resumed.Snapshot.Items)
 	}
@@ -91,7 +91,7 @@ func TestInteractiveApplicationCompactPublishesTypedLifecycle(t *testing.T) {
 	if _, err := application.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := application.SubmitUser(ctx, "seed"); err != nil {
+	if err := application.SubmitUser(ctx, "seed", protocol.ThreadSettingsOverrides{}); err != nil {
 		t.Fatal(err)
 	}
 	waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {

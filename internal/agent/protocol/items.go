@@ -125,23 +125,6 @@ type CommandOutputDeltaEvent struct {
 
 func (CommandOutputDeltaEvent) isEventMsg() {}
 
-type PlanItem struct {
-	Step   string `json:"step"`
-	Status string `json:"status"`
-}
-
-type PlanUpdateEvent struct {
-	ThreadID    ThreadID
-	TurnID      TurnID
-	ItemID      ItemID
-	Explanation string
-	Items       []PlanItem
-	Revision    int64
-	UpdatedAt   time.Time
-}
-
-func (PlanUpdateEvent) isEventMsg() {}
-
 type TokenCountEvent struct {
 	ThreadID             ThreadID
 	TurnID               TurnID
@@ -180,6 +163,9 @@ func ScopeItemEventMsg(message EventMsg, threadID ThreadID, turnID TurnID) Event
 	case PlanUpdateEvent:
 		value.ThreadID, value.TurnID = threadID, turnID
 		return value
+	case PlanDeltaEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
 	case TokenCountEvent:
 		value.ThreadID, value.TurnID = threadID, turnID
 		return value
@@ -205,6 +191,8 @@ func ItemEventThreadID(message EventMsg) ThreadID {
 		return value.ThreadID
 	case PlanUpdateEvent:
 		return value.ThreadID
+	case PlanDeltaEvent:
+		return value.ThreadID
 	case TokenCountEvent:
 		return value.ThreadID
 	case ContextCompactedEvent:
@@ -227,6 +215,8 @@ func ItemEventTurnID(message EventMsg) TurnID {
 	case CommandOutputDeltaEvent:
 		return value.TurnID
 	case PlanUpdateEvent:
+		return value.TurnID
+	case PlanDeltaEvent:
 		return value.TurnID
 	case TokenCountEvent:
 		return value.TurnID

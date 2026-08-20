@@ -57,3 +57,31 @@ func TestToolEventObserverPersistsPresentationOnCompletedItem(t *testing.T) {
 		t.Fatalf("completed presentation payload = %#v", payload)
 	}
 }
+
+func TestToolEventObserverPersistsOnlyResultForUpdatePlan(t *testing.T) {
+	sink := protocol.NewMemorySink()
+	var appended []rollout.RolloutItem
+	observer := NewToolEventObserver(func(_ context.Context, _ protocol.TurnID, items ...rollout.RolloutItem) error {
+		appended = append(appended, items...)
+		return nil
+	}, protocol.TurnID("turn-1"), sink)
+	call := tool.NewCall("call-1", "update_plan", []byte(`{"plan":[]}`))
+	if err := observer.ToolCallStarted(context.Background(), tool.ToolSpec{Name: "update_plan"}, call); err != nil {
+		t.Fatal(err)
+	}
+	if err := observer.ToolCallCompleted(context.Background(), tool.ToolExecution{
+		Call: call, Output: tool.ToolResult{ToolName: "update_plan", Text: "Plan updated"},
+		Outcome: tool.ToolCallOutcome{Status: tool.ToolCallCompleted},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(appended) != 1 {
+		t.Fatalf("appended items = %d, want 1", len(appended))
+	}
+	if item, ok := appended[0].(rollout.ResponseItem); !ok || item.Type != rollout.ResponseToolResult {
+		t.Fatalf("appended item = %#v, want tool result", appended[0])
+	}
+	if events := sink.Snapshot(); len(events) != 0 {
+		t.Fatalf("events = %#v, want none", events)
+	}
+}

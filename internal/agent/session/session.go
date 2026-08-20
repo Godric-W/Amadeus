@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/config"
@@ -33,15 +32,9 @@ type Configuration struct {
 	OutputSchemaStrict bool
 }
 
-type ModeState struct {
-	Mode turn.ModeKind
-}
-
 type SessionState struct {
 	Configuration Configuration
-	Mode          ModeState
 	Context       *agentcontext.Manager
-	Plan          *plan.State
 }
 
 type SessionIo struct {
@@ -61,7 +54,7 @@ type SpawnArgs struct {
 type ActiveTurn struct {
 	SubmissionID protocol.SubmissionID
 	Task         *RunningTask
-	pending      map[protocol.RequestID]chan protocol.Op
+	pending      map[protocol.RequestID]interactiveWaiter
 }
 
 type Session struct {
@@ -71,7 +64,6 @@ type Session struct {
 	active   *ActiveTurn
 	queue    []protocol.Submission
 	appendMu sync.Mutex
-	modeMu   sync.RWMutex
 
 	ctx         context.Context
 	cancel      context.CancelCauseFunc
@@ -85,8 +77,22 @@ type Session struct {
 const compactionWarningMessage = "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted."
 
 type requestDelivery struct {
-	request protocol.ApprovalRequestEvent
-	result  chan protocol.Op
+	kind      interactiveRequestKind
+	requestID protocol.RequestID
+	event     protocol.EventMsg
+	result    chan protocol.Op
+}
+
+type interactiveRequestKind string
+
+const (
+	interactiveApproval  interactiveRequestKind = "approval"
+	interactiveUserInput interactiveRequestKind = "request_user_input"
+)
+
+type interactiveWaiter struct {
+	kind   interactiveRequestKind
+	result chan protocol.Op
 }
 
 var ErrInterrupted = errors.New("turn interrupted by user")
@@ -119,17 +125,6 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 		return nil, SessionIo{}, fmt.Errorf("rebuild context from initial history: %w", err)
 	}
 	value.state.Context = contextManager
-	if value.state.Plan == nil {
-		value.state.Plan = plan.NewState()
-	}
-	if snapshot, ok := latestPlanSnapshot(args.History.Lines); ok {
-		if err := value.state.Plan.Restore(snapshot); err != nil {
-			cancel(err)
-			closeSpawnServices()
-			return nil, SessionIo{}, fmt.Errorf("restore plan from initial history: %w", err)
-		}
-	}
-	value.state.Mode = ModeState{Mode: value.state.Configuration.Mode}
 	if args.Adapters.configured() {
 		capabilities, buildErr := buildSessionServices(ctx, value, value.services, args.Adapters)
 		if buildErr != nil {
@@ -217,6 +212,10 @@ func (session *Session) handleSubmission(submission protocol.Submission) {
 			session.queue = append(session.queue, submission)
 			return
 		}
+		if mode, ok := op.ThreadSettings.CollaborationModeValue(); ok {
+			session.state.Configuration.Mode = turn.ModeKind(mode)
+			session.publish(protocol.Event{ID: submission.ID, Msg: protocol.ThreadSettingsAppliedEvent{ThreadID: protocol.ThreadID(session.threadID), Mode: string(mode)}})
+		}
 		session.startTurn(submission.ID, strings.TrimSpace(op.Content), false)
 	case protocol.CompactOp:
 		if session.active != nil {
@@ -227,19 +226,23 @@ func (session *Session) handleSubmission(submission protocol.Submission) {
 	case protocol.InterruptOp:
 		session.cancelActive(ErrInterrupted)
 	case protocol.ThreadSettingsOp:
-		if op.Mode == string(turn.ModeKindDefault) || op.Mode == string(turn.ModeKindPlan) {
-			session.modeMu.Lock()
-			session.state.Mode.Mode = turn.ModeKind(op.Mode)
-			session.modeMu.Unlock()
-			session.publish(protocol.Event{ID: submission.ID, Msg: protocol.ThreadSettingsAppliedEvent{ThreadID: protocol.ThreadID(session.threadID), Mode: op.Mode}})
+		if session.active != nil {
+			session.queue = append(session.queue, submission)
+			return
+		}
+		if op.Mode.Valid() {
+			session.state.Configuration.Mode = turn.ModeKind(op.Mode)
+			session.publish(protocol.Event{ID: submission.ID, Msg: protocol.ThreadSettingsAppliedEvent{ThreadID: protocol.ThreadID(session.threadID), Mode: string(op.Mode)}})
 		}
 	case protocol.ApprovalDecisionOp:
+		session.resolveRequest(op.RequestID, op)
+	case protocol.UserInputAnswerOp:
 		session.resolveRequest(op.RequestID, op)
 	}
 }
 
 func (session *Session) handleRequest(envelope requestDelivery) {
-	if err := envelope.request.Validate(); err != nil {
+	if err := validateRequestDelivery(envelope); err != nil {
 		envelope.result <- nil
 		return
 	}
@@ -247,24 +250,27 @@ func (session *Session) handleRequest(envelope requestDelivery) {
 		envelope.result <- nil
 		return
 	}
-	if _, exists := session.active.pending[envelope.request.RequestID]; exists {
+	if _, exists := session.active.pending[envelope.requestID]; exists {
 		envelope.result <- nil
 		return
 	}
-	session.active.pending[envelope.request.RequestID] = envelope.result
-	session.publish(protocol.Event{ID: session.active.SubmissionID, Msg: protocol.ScopeEventMsg(envelope.request, protocol.ThreadID(session.threadID), protocol.TurnID(session.active.Task.Context().TurnID))})
+	session.active.pending[envelope.requestID] = interactiveWaiter{kind: envelope.kind, result: envelope.result}
+	if err := session.Publish(session.ctx, protocol.Event{ID: session.active.SubmissionID, Msg: protocol.ScopeEventMsg(envelope.event, protocol.ThreadID(session.threadID), protocol.TurnID(session.active.Task.Context().TurnID))}); err != nil {
+		delete(session.active.pending, envelope.requestID)
+		envelope.result <- nil
+	}
 }
 
 func (session *Session) resolveRequest(requestID protocol.RequestID, op protocol.Op) {
 	if session.active == nil {
 		return
 	}
-	result := session.active.pending[requestID]
-	if result == nil {
+	waiter, ok := session.active.pending[requestID]
+	if !ok || !interactiveResponseMatches(waiter.kind, op) {
 		return
 	}
 	delete(session.active.pending, requestID)
-	result <- op
+	waiter.result <- op
 }
 
 func (session *Session) startTurn(submissionID protocol.SubmissionID, input string, compact bool) {
@@ -326,7 +332,7 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input stri
 		session.completeWithoutTask(submissionID, turnID, err)
 		return
 	}
-	session.active = &ActiveTurn{SubmissionID: submissionID, Task: running, pending: make(map[protocol.RequestID]chan protocol.Op)}
+	session.active = &ActiveTurn{SubmissionID: submissionID, Task: running, pending: make(map[protocol.RequestID]interactiveWaiter)}
 	session.publish(protocol.Event{ID: submissionID, Msg: startedEvent})
 	done := running.Start()
 	go func() {
@@ -345,9 +351,7 @@ func (session *Session) Mode() turn.ModeKind {
 	if session == nil {
 		return turn.ModeKindDefault
 	}
-	session.modeMu.RLock()
-	defer session.modeMu.RUnlock()
-	return session.state.Mode.Mode
+	return session.state.Configuration.Mode
 }
 
 func (session *Session) publishCompactionEvents(submissionID protocol.SubmissionID, turnID protocol.TurnID, items []rollout.RolloutItem) {

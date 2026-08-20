@@ -37,12 +37,6 @@ func (projection *RolloutMessageProjection) record(sequence uint64, item rollout
 		}
 	case rollout.EventMsgItem:
 		switch message := item.Msg.(type) {
-		case protocol.PlanUpdateEvent:
-			encoded, err := json.Marshal(message)
-			if err != nil {
-				return fmt.Errorf("project plan update at sequence %d: %w", sequence, err)
-			}
-			projection.append(llm.DeveloperMessage("Current soft execution plan from canonical history:\n"+string(encoded)), sequence)
 		case protocol.TurnAbortedEvent:
 			projection.append(llm.DeveloperMessage("Previous turn was interrupted: "+message.Reason+". Re-plan from the current workspace state."), sequence)
 		case protocol.TurnCompleteEvent:

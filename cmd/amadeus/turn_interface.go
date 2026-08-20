@@ -52,16 +52,14 @@ func (runner *agentController) runOnce(ctx context.Context, invocation agentInvo
 	if invocation.RunMode == turn.ModeKindPlan {
 		mode = turn.ModeKindPlan
 	}
-	if err := active.Submit(ctx, protocol.ThreadSettingsOp{Mode: string(mode)}); err != nil {
+	if err := active.Submit(ctx, protocol.UserInputOp{Content: objective, ThreadSettings: protocol.ThreadSettingsOverrides{CollaborationMode: &protocol.CollaborationMode{Mode: protocol.ModeKind(mode)}}}); err != nil {
 		return err
 	}
-	if err := active.Submit(ctx, protocol.UserInputOp{Content: objective}); err != nil {
-		return err
-	}
-	return runner.waitTurn(ctx, active, invocation.EventSink, invocation.Approvals)
+	return runner.waitTurn(ctx, active, invocation)
 }
 
-func (runner *agentController) waitTurn(ctx context.Context, active *threadmanager.AmadeusThread, renderer protocol.EventSink, approvals policy.ApprovalPort) error {
+func (runner *agentController) waitTurn(ctx context.Context, active *threadmanager.AmadeusThread, invocation agentInvocation) error {
+	renderer, approvals := invocation.EventSink, invocation.Approvals
 	io := active.Io()
 	var turnID protocol.TurnID
 	interruptSent := false
@@ -103,6 +101,15 @@ func (runner *agentController) waitTurn(ctx context.Context, active *threadmanag
 					return errors.Join(err, renderErr)
 				}
 				if err := active.Submit(ctx, approvalDecisionOp(message.RequestID, decision)); err != nil {
+					return errors.Join(err, renderErr)
+				}
+			case protocol.RequestUserInputEvent:
+				response, err := tui.PromptRequestUserInput(ctx, invocation.Input, invocation.Output, message)
+				if err != nil {
+					_ = active.Submit(context.WithoutCancel(ctx), protocol.InterruptOp{})
+					return errors.Join(err, renderErr)
+				}
+				if err := active.Submit(ctx, protocol.UserInputAnswerOp{RequestID: message.RequestID, Response: response}); err != nil {
 					return errors.Join(err, renderErr)
 				}
 			}

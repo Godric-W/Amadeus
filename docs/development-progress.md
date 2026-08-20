@@ -2,12 +2,12 @@
 
 > 最近更新：2026-08-20
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：M. Codex Architecture Realignment（DONE）
-> 下一任务：待定义后续阶段
+> 当前阶段：N. Runtime Coordination Tools + Plan Mode Codex Lifecycle Alignment（TODO）
+> 下一任务：N-01 Protocol Contract + Tool Boundary
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
-A-L 的条目保留为历史完成记录；其中与 M 或当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。
+A-M 的条目保留为历史完成记录；其中与 N 或当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。
 
 ## 1. 状态与完成标准
 
@@ -38,6 +38,7 @@ A Runtime + Persistence
 → K Response Stream Reconnect Lifecycle Alignment
 → L Model + Provider Configuration Ownership Alignment
 → M Codex Architecture Realignment
+→ N update_plan Codex Lifecycle Alignment
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先更新 `docs/design.md`。
@@ -260,7 +261,7 @@ C-R 只完成了基础统一，作为 C-T 的起点：
 
 - [x] 将 `update_plan` 输入统一为 Codex 风格 `plan` + optional `explanation`，校验至多一个 `in_progress`。
 - [x] `update_plan` 只调用 Session `UpdatePlan` capability、发布 `PlanUpdated` 并返回简短 `Plan updated`；完整计划不塞入通用 ToolResult 文本。
-- [x] 将 `request_user_input` 从当前 Tool Catalog 和 active Interactive Request 主链移出，与 `apply_patch` 一样归为遗留能力；不保留 Permission Approval 复用或协议占位。
+- [x] 将当时复用 Permission/Approval 的旧 `request_user_input` 从 Tool Catalog 和 active Interactive Request 主链完整移除，不保留协议占位；N-06 起按新的独立 Request Event/Answer Op/Session waiter Contract 重新引入，不恢复该遗留实现。
 - [x] C-T 只完成 Tool 层 Contract；Plan State、Resume、Plan Mode 与 continuation loop 的端到端实现由 F-06 完成。
 
 #### C-T-07：Result Projection 与外部 Tool
@@ -382,9 +383,9 @@ Composer
 - `DONE`：统一 `rollout.TurnOutcome`/TaskOutcome 与 `TurnCompleted.outcome/reason`；blocked 不通过 Go error 表达。
 - `DONE`：取消可释放 Provider、Tool 和 Approval wait；Session 先 append/flush terminal facts、清理 ActiveTurn，再发布 terminal Event。
 
-### F-06：Soft Plan、`update_plan` 与 Plan Mode — `DONE`
+### F-06：Soft Plan、`update_plan` 与 Plan Mode — `DONE`，Plan State 结论由 N 取代
 
-- `DONE`：Session-owned Plan State、canonical `plan_update`、revision、Resume 与 TUI HistoryCell 使用同一主链；`update_plan` 返回 concise ToolResult 并携带正确 TurnID Event scope。
+- `DONE`：当时完成 Session-owned Plan State、canonical `plan_update`、revision、Resume 与 TUI HistoryCell 主链；N 按当前 Codex 源码删除该持久状态扩展，保留 concise ToolResult、正确 Turn scope 和 Plan Mode mask。
 - `DONE`：普通模式暴露 `update_plan`，计划只用于进度与沟通，不驱动调度或 DAG。
 - `DONE`：`/plan` 复用 RegularTask、continuation loop、Context 与 Rollout，只通过 mode、Prompt 和 StepContext Tool mask 限制能力。
 - `DONE`：Plan Mode 屏蔽 `update_plan` 与副作用 Tool，最终方案作为普通 Assistant response_item 持久化。
@@ -509,7 +510,7 @@ I 阶段专门完成 Prompt 构造架构、数据模型、命名、职责和 Pro
 ### I-03：WorldState 与 Collaboration Mode — `DONE`
 
 - [x] 建立 Codex 风格 WorldState/ContextualUserFragment owner，覆盖 collaboration mode、permissions、environment、AGENTS.md、skills 和 MCP。
-- [x] 以 `CollaborationModeMessages` 选择 Default/Execute 与 Plan Developer Instructions；Plan 文本从 collaboration mode 资产迁移，不新增独立 Plan Task Prompt。
+- [x] 以 `CollaborationModeMessages` 选择 Default 与 Plan Developer Instructions；Plan 文本从 collaboration mode 资产迁移，不新增独立 Plan Task Prompt。
 - [x] 以 Codex 风格稳定 marker、replace key 和 revision 生成 `ContextualUserFragment`/ContextUpdate，并通过 ContextManager canonical history 投影。
 - [x] 删除 `DeveloperInstructions(mode, toolNames)` 字符串拼接主链，不将动态事实继续写入静态 Base Prompt。
 
@@ -537,7 +538,7 @@ I 阶段专门完成 Prompt 构造架构、数据模型、命名、职责和 Pro
 
 ### I-07：Codex Runtime Tool Guidance — `DONE`
 
-- [x] 按 Codex Plan Tool 迁移 `update_plan` Prompt，保持 concise `Plan updated`、Event/Session Plan owner、软计划和非调度语义。
+- [x] 按 Codex Plan Tool 迁移 `update_plan` Prompt，保持 concise `Plan updated`、软计划和非调度语义；其中 Event/Session Plan owner 结论由 N 按当前 Codex lifecycle 取代。
 - [x] 按 Codex unified exec 迁移 `write_stdin` Prompt，保持 `process_id`、`origin_call_id`、轮询、取消、输出预算和 Approval 复用语义。
 - [x] 按 Codex unified exec 与 Amadeus Contract 收敛 `execute_command` Prompt，不引入 Claude Code Bash 的 Commit/PR 或不适用的 Sandbox 规则。
 - [x] 对照 ToolSpec、ToolExecutionService、ProcessManager 和 TUI Projection，删除提示词与真实 Tool Contract 不一致的旧描述。
@@ -852,15 +853,147 @@ M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/
 - AgentsMdManager/LoadedAgentsMd、SkillCatalog 和 MCPRuntime 分别直接归 SessionServices 所有，不存在 generic Extension/Instruction assembly。
 - Protocol package 只保留 identity/DTO/contracts，TUI reducer、TranscriptState 和 replay projector 位于各自职责 package。
 
-## 16. 当前保留能力
+## 16. N. Runtime Coordination Tools + Plan Mode Codex Lifecycle Alignment — `DONE`
+
+### 目标
+
+按当前 `../codex-main` 的真实实现完成三条相互依赖的收敛主链：先将 `update_plan` 从 Session-owned durable Plan State 收敛为 transient checklist Event；再以全新独立 Contract 引入 Default/Plan 通用的 `request_user_input`，不恢复 C-T-06 删除的 Permission/Approval 复用实现；最后把 `/plan` 重构为 Codex 风格 Collaboration Mode、原子 settings/input lifecycle 和 `<proposed_plan> → PlanDeltaEvent → completed PlanItem` 输出协议。全程保留 Amadeus 现有 `ToolDefinition → ToolExecutionService` 混合调用链，不引入 Handler。
+
+N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPlanMode` Tool 或复杂模式配置。N 只完成 Runtime coordination Tool、Session interactive waiter、Collaboration Mode、Plan Prompt、Proposed Plan Event/TurnItem、Slash/TUI 生命周期和旧链删除。
+
+### N-01：Protocol Contract + Tool Boundary — `DONE`
+
+- 建立 Codex 对齐的 `StepStatus`、`PlanItemArg` 和 `UpdatePlanArgs` typed contract，`PlanUpdateEvent` 只增加 Amadeus 统一的 Thread/Turn scope。
+- 从 Event 删除 `ItemID`、revision、更新时间和 snapshot 语义；字段统一使用 `plan`，不再使用内部 `items` 等第二套名称。
+- 重写现有 `UpdatePlan` ToolDefinition，使其直接发布 transient `PlanUpdateEvent` 并严格返回 `Plan updated`；不新增 Handler、Recorder 或 Session capability。
+- 保留状态/空步骤校验和至多一个 `in_progress`；允许空 `plan` 清空 checklist，删除固定最大条目数等非 Codex 基础限制。
+- 默认注册 `update_plan`，删除 `PlanUpdater != nil` 隐式 feature gate；Plan Mode 继续由 frozen ToolRouter mask 隐藏该 Tool。
+
+### N-02：Session、Rollout 与 Context State Removal — `DONE`
+
+- 删除 `internal/agent/plan`、`PlanUpdater`、`SessionState.Plan`、`Session.UpdatePlan` 及 ToolRuntime/CoreToolOptions 的相关 wiring。
+- 删除 plan snapshot、revision、durable append、latest-plan scan 和 Spawn/Resume restore 主链，不保留 wrapper、alias 或 legacy fallback。
+- `PlanUpdateEvent` 不进入 canonical JSONL Rollout；正常 Tool Call 和 `ResponseToolResult` 继续按 ordered ResponseItem 主链持久化。
+- 删除 ContextManager/Rollout projection 对 PlanUpdate 的 Developer Message 注入，确保模型历史中不再同时出现 Tool Call 参数和“Current soft execution plan”第二事实源。
+- 删除 interactive history 中 `PlanUpdateEvent → ItemPlan` 的 replay projection；保留并重新定义 `ItemPlan` 只用于 N-12 的 Plan Mode Proposed Plan，checklist 不再生产或恢复该 TurnItem。
+
+### N-03：Tool Lifecycle Event Policy — `DONE`
+
+- 调整 `toolEventObserver`，使 `update_plan` 不产生普通 `ItemStartedEvent`、`ItemCompletedEvent` 或 Tool activity TurnItem，但无论成功或失败都保留模型可见 Tool Result。
+- 将 dedicated-event Tool 判断集中在 observer 单一策略边界，不把 UI lifecycle 字段加入模型可见 `ToolSpec`，也不在多个 TUI reducer 中重复按名称隐藏。
+- 保持普通 Tool 的 Started/Completed、ordered append、错误回灌和 Approval lifecycle 不变，避免为 `update_plan` 破坏统一 ToolExecutionService。
+- 增加 observer contract tests，证明 `update_plan` 只有 ResponseToolResult persistence，而普通 Tool 仍同时产生 ResponseToolResult 与 completed TurnItem。
+
+### N-04：Live TUI + Replay Semantics — `DONE`
+
+- TUI 和 Inline 仅消费 live `PlanUpdateEvent` 生成一个 Codex 风格 `Updated Plan` HistoryCell，不显示 `Running update_plan` 或普通 Tool completion。
+- 删除 revision 驱动的 planning/replanning 分支和分散的 ToolName 特判；UI-local progress 只从当前 live Event 计算。
+- Resume/Replay 不恢复旧 checklist、不伪造 Plan TurnItem；Rich/Raw 对 live PlanUpdate 保持一致，对持久化普通 Tool Item 继续保证 Live/Replay 等价。
+- 更新 transcript/application projector tests，明确 transient PlanUpdate 与 durable Tool Result 的边界。
+
+### N-05：Documentation、Guards 与 Acceptance — `DONE`
+
+- 同步 Tool Guidance、设计文档、开发进度、测试 fixture 和 E2E 预期，只描述 transient PlanUpdate + durable Tool Call/Result 主链。
+- 增加 architecture guards，禁止 `internal/agent/plan`、`PlanUpdater`、`SessionState.Plan`、plan revision/restore 和 PlanUpdate Developer Message 回归。
+- 覆盖合法更新、空 plan、多个 `in_progress`、malformed payload、Plan Mode mask、Event publish failure、continuation、Rollout、Context、Live TUI 和 Resume 测试。
+- 运行该子链的针对性测试，并确认 `update_plan` 旧 Plan State 主链已物理删除；N 的最终 DONE 仍需等待 N-06 至 N-14 全部完成。
+
+### N-06：`request_user_input` Protocol + Tool Contract — `DONE`
+
+- 建立 `RequestUserInputOption`、`RequestUserInputQuestion`、`RequestUserInputArgs`、`RequestUserInputAnswer`、`RequestUserInputResponse`、`RequestUserInputEvent` 和 `UserInputAnswerOp` typed contract；问题使用稳定 `snake_case` ID，回答按 ID 映射。
+- 输入限制为 1–3 个问题、每题 2–3 个有意义选项；支持基础 `multi_select`、推荐项说明和 TUI 自动 Other/free-form，不复制 Claude Code Preview、图片、annotations、permission `updatedInput` 或 ExitPlanMode 产品逻辑。
+- 新增 direct core `request_user_input` ToolDefinition，在 Default 与 Plan Mode 使用同一 Schema/ToolResult；Permission 固定 Allow、root agent only、`SupportsParallelToolCalls=false`。
+- `Execute` 仅通过 `ToolUseContext.Interactions` 中的窄 `UserInputRequester` 发起请求并等待回答；不引用 Session/Application/TUI，不引入 Handler、ApprovalRequest 或 PlanState。
+- CLI/headless/SDK 缺少交互 adapter 时立即返回 typed unavailable Tool Result，不永久等待 stdin、不静默选择默认答案。
+
+### N-07：Session Interactive Waiter Lifecycle — `DONE`
+
+- 将 ActiveTurn pending map 从 Approval-only request 扩展为 tagged typed interactive waiter，分别承载 `ApprovalRequestEvent → ApprovalDecisionOp` 与 `RequestUserInputEvent → UserInputAnswerOp`。
+- 两类请求共享 Session-owned RequestID 注册、Event 发布、回答路由、取消和 shutdown cleanup 机制，但 payload、response、UI 和业务语义完全分离；用户答案不得塞入 ApprovalDecision。
+- `request_user_input` Tool Future 在回答、取消、Turn abort 或 Session shutdown 前保持等待，回答后在同一 `run_turn` continuation 中形成普通 ResponseToolResult 并继续下一 Model Step。
+- 未决 RequestUserInputEvent/waiter/UserInputAnswerOp 不进入 canonical Rollout；Tool Call 与最终 Tool Result 继续使用普通 ResponseItem ordered append，Resume 不恢复旧 Overlay 或 Future。
+- 增加重复 RequestID、迟到回答、错误 response type、Turn cancel、Session shutdown、无 active Turn 和 Event publish failure contract tests。
+
+### N-08：Request User Input TUI + Adapter Integration — `DONE`
+
+- 新增独立 Request User Input Overlay/Cell，显示 Header、Question、option description、multi-select、Other/free-form 和 submit/cancel hints；不复用 Approval Dialog 或通用 permission selection。
+- Event reducer 按 RequestID 管理当前问题，TUI 只组装 typed `UserInputAnswerOp`；等待期间 ActiveTurn/Working 保持活动，回答后 Overlay 关闭且 Tool continuation 继续。
+- Thread switch、Turn abort、Session shutdown 和迟到 Event 必须关闭或失效旧 Overlay；live transcript 可以显示回答摘要，但不得伪造可 Replay 的 pending request。
+- 为 InteractiveApplication、AmadeusThread 和非 TUI adapter 接通同一 UserInputRequester contract；不得增加第二条 Request channel 或 Application callback side channel。
+- 覆盖键盘导航、单选、多选、Other、取消、窄终端、Default/Plan 两种模式和 approval/request-user-input 并存测试。
+
+### N-09：Request User Input Prompt + Acceptance — `DONE`
+
+- 在 Tool Prompt 和 Collaboration Mode Prompt 中明确 Default/Plan 使用差异：Default 优先探索与合理假设，只有高风险且无法发现时才询问；Plan 在探索后优先询问会实质改变方案的意图和取舍。
+- Default 与 Plan 的每个 StepContext 都从同一 ToolRouter snapshot 暴露 `request_user_input`，不以 Plan Mode 作为 visibility gate；`update_plan` 仍仅在 Default 可见。
+- 增加 provider-mock E2E：模型调用 `request_user_input`、TUI/adapter 回答、同一 Turn 继续调用 Tool 或返回最终文本；验证 Tool Call/Result persistence 和 Resume context。
+- 增加 architecture guards，禁止 `request_user_input` 复用 Approval payload、Question 文本 key、permission `updatedInput`、Handler、独立 Request channel 或 Plan interview state。
+
+### N-10：Collaboration Mode Domain + Atomic Submission — `DONE`
+
+- 统一 `ModeKindDefault/ModeKindPlan` 术语，删除 TUI `CollaborationExecute/CollaborationPlan` 第二套 enum、Session `ModeState` 和其他模式镜像；SessionConfiguration 是当前 Collaboration Mode 的唯一 owner。
+- 建立最小 `CollaborationMode{Mode ModeKind}` 与 `ThreadSettingsOverrides{CollaborationMode *CollaborationMode}`；暂不复制尚未使用的 per-mode model/reasoning settings 空壳。
+- 扩展 `UserInputOp` 携带 ThreadSettingsOverrides：`/plan <task>` 在单个 Submission 中先应用 Plan mode settings、再冻结 TurnContext、再启动 RegularTask；删除 `pendingModeTask` 和 settings ack 后二次提交路径。
+- `/plan` 与快捷切换继续使用独立 `ThreadSettingsOp`；ActiveTurn 运行期间 settings update 必须拒绝或进入 Session submission queue，不能改变已冻结 TurnContext。
+- `ThreadSettingsAppliedEvent` 返回完整生效模式 snapshot；设置校验失败形成 correlated ErrorEvent，原模式保持不变且不得启动 Turn。
+
+### N-11：Plan Prompt + ToolRouter Policy Alignment — `DONE`
+
+- 将 Plan Prompt 替换为 Codex conversational 三阶段语义：Ground in environment、Intent chat、Implementation chat、decision-complete finalization；模式只能由显式 Runtime settings update 结束。
+- Prompt 明确区分 Plan Mode 与 `update_plan`，优先使用 `request_user_input` 询问不可发现且会改变方案的决策，并要求最终方案使用单一 `<proposed_plan>` block。
+- StepContext.ToolRouter 成为 Plan Mode Tool 可见性的唯一事实源；删除 `prepareDynamicContext` 中对 mutable Registry 的第二次 Plan Tool 过滤和按 toolNames 拼接出来的漂移路径。
+- 基础版继续隐藏 edit/write/write_stdin/update_plan、有副作用 MCP 和 execute_command；后续只有在命令副作用约束可靠后才开放非修改性命令，不为表面看齐放宽安全边界。
+- 不在 ToolDefinition 中重新引入 Plan Handler；如存在非模型直接调用入口，由统一 ToolExecutionPolicy/ToolRouter 拒绝不可用 Tool。
+
+### N-12：Proposed Plan Stream + TurnItem Protocol — `DONE`
+
+- 新增仅在 frozen Plan Mode 启用的 `ProposedPlanStreamParser`，支持 tag prefix 跨 Delta、普通 Assistant 文本与 `<proposed_plan>` block 分流、stream completion flush 和明确 malformed/duplicate/nested block failure。
+- 新增 `PlanDeltaEvent{ThreadID, TurnID, ItemID, Delta}`；首次方案内容产生 `ItemStartedEvent(Plan)`，完成后产生携带完整 Markdown 的 `ItemCompletedEvent(Plan)`。
+- 原始 Assistant ResponseItem 继续作为模型 continuation history ordered append；completed PlanItem 作为 TUI/Replay 业务投影持久化，不建立 Session PlanState、revision、current plan snapshot 或 incremental patch。
+- PlanDeltaEvent transient 不持久化；Resume 可从 completed PlanItem 直接重建 ProposedPlanCell，不恢复 parser、delta buffer 或未闭合 block。
+- 将 `PlanUpdateEvent`/UpdatedPlanCell 与 `PlanItem`/ProposedPlanCell 完全分离，增加协议、stream retry、partial delta、completion authority 和 Live/Replay tests。
+
+### N-13：`/plan` TUI + Implementation Transition — `DONE`
+
+- `/plan` 只提交 Plan settings update，不创建 Turn；`/plan <task>` 使用 N-10 的原子 UserInputOp；模式显示、footer/status 和 resume snapshot 统一使用 Default/Plan 术语。
+- 新增 ProposedPlanCell 的 live stream 与 completed projection；PlanDelta 只更新匹配 ItemID，completed PlanItem 是最终展示权威，丢失 Delta 不截断结果。
+- live Plan Turn 完成、产生 completed PlanItem、无 queued follow-up 且无其他 modal 时显示基础 `Implement this plan?` 选择：`Implement this plan` / `Stay in Plan mode`。
+- Implement 提交 `UserInputOp{"Implement the plan.", CollaborationMode: Default}` 创建后续普通 Turn；Stay 只关闭 Popup。不得在 Plan Turn 内直接执行，不增加 ExitPlanMode Tool。
+- implementation Popup transient，Replay/Resume 不恢复；基础版不实现 clear-context-and-implement，避免扩大 Thread/Context 产品范围。
+
+### N-14：Plan Mode Cleanup、Guards + End-to-End Acceptance — `DONE`
+
+- 删除 `pendingModeTask`、TUI CollaborationExecute enum、Session ModeState、两阶段 `/plan <task>`、普通 AssistantMessage 充当 Proposed Plan、PlanUpdateEvent 复用 ItemPlan 和所有旧测试 fixture。
+- 增加 architecture guards，禁止 PlanTask/Planner/DAG、plan file、Enter/ExitPlanMode Tool、Session PlanState/revision、Handler、重复 Tool mask、mode mirror 和 implementation callback side channel 回归。
+- 覆盖 `/plan` 持续模式、用户要求执行仍只规划、探索后 request_user_input、完整/修订 proposed plan、mode-switch ordering、settings failure、ActiveTurn switch、stream retry、Turn abort、Resume 和 Implement transition。
+- 运行针对性测试、全量测试、race、vet、build、`make check`、architecture grep、`git diff --check`、request-user-input provider-mock E2E 和 Plan Mode provider-mock E2E 后，N 才能标记 DONE。
+
+### N 出口
+
+- `update_plan` 没有 Handler、PlanUpdater、Session PlanState、revision、durable PlanUpdate 或 Resume restore。
+- `PlanUpdateEvent` 是 scoped transient Event；模型历史只通过普通 Tool Call 参数和 Tool Result `Plan updated` 延续。
+- `update_plan` 不生成普通 Tool activity，TUI 只显示一个 live `Updated Plan` cell，Replay 不恢复旧 checklist。
+- `request_user_input` 在 Default/Plan 通用，使用独立 RequestUserInputEvent/UserInputAnswerOp、Session typed waiter 和同 Turn continuation，不复用 Approval 或 Handler。
+- Collaboration Mode 只有 SessionConfiguration 一个 owner；`/plan <task>` 原子应用 mode override，TUI 不保存 pending task 或第二套模式 enum。
+- Plan Mode 继续隐藏 `update_plan`，计划不驱动 Tool 调度、Task、DAG 或 completion 判定；最终方案使用 `<proposed_plan>`、PlanDeltaEvent 和 completed PlanItem。
+- Proposed Plan 与 Updated Plan 是不同协议和 UI；Replay 恢复 completed Proposed Plan，不恢复 checklist、request overlay、parser buffer 或 implementation Popup。
+- Implement transition 通过携带 Default mode override 的后续普通 UserInputOp 完成，不在 Plan Turn 中实施，不存在 Enter/ExitPlanMode Tool。
+- 生产代码、文档和测试不存在被删除 Plan State 主链的兼容 wrapper、fallback 或第二事实源。
+
+### N 验收
+
+- 2026-08-20 完成 `update_plan` transient Event 收敛、`request_user_input` 独立交互链、Collaboration Mode 原子提交、Proposed Plan stream/TurnItem、TUI implementation transition 与 legacy cleanup。
+- `make check`（含 vet、全量测试和 build）、`go test -race ./... -count=1`、architecture guards、`git diff --check` 均通过。
+
+## 17. 当前保留能力
 
 - 默认启动：`amadeus` 或 `amadeus "<task>"`。
 - 当前配置链和 Provider Adapter 已可使用 OpenAI Responses/Chat Completions 及兼容 Provider。
 - JSONL Canonical Rollout + SQLite Metadata Index 已可支持 Session 恢复。
 - TUI 和 Inline 输出以当前代码和 `docs/design.md` 为准。
-- 内置 Tool、Approval、Diff、Web Search 和 Slash Command 已进入基础主链；M 阶段保持这些用户可见能力，同时重构 Protocol、Rollout、Context、SessionServices、ToolRouter、AgentsMd、MCP 和 Skill ownership。
+- 内置 Tool、Approval、Diff、Web Search 和 Slash Command 已进入基础主链；N 收敛 `update_plan`、引入 `request_user_input`，并将现有 `/plan` 重构为 Codex 风格 Collaboration Mode 与 Proposed Plan lifecycle。
 
-## 17. 当前执行规则
+## 18. 当前执行规则
 
 1. 每次只推进一个 `TODO`/`DOING` 主任务。
 2. 先修改 `docs/design.md`，再修改代码；实现发现设计问题时暂停并同步 Contract。
@@ -868,7 +1001,7 @@ M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/
 4. 任务完成必须运行针对性测试和构建；环境限制导致的测试失败要单独记录。
 5. 本文只更新任务状态和出口，不复制架构设计、源码审计或长篇讨论。
 
-## 18. 源码结构清理 — `DONE`
+## 19. 源码结构清理 — `DONE`
 
 ### 已完成
 

@@ -49,6 +49,8 @@ func DecodeEventMsg(encoded EncodedEventMsg) (EventMsg, error) {
 		message = &StreamErrorEvent{}
 	case "approval_request":
 		message = &ApprovalRequestEvent{}
+	case "request_user_input":
+		message = &RequestUserInputEvent{}
 	case "item_started":
 		message = &ItemStartedEvent{}
 	case "item_completed":
@@ -61,6 +63,8 @@ func DecodeEventMsg(encoded EncodedEventMsg) (EventMsg, error) {
 		message = &CommandOutputDeltaEvent{}
 	case "plan_update":
 		message = &PlanUpdateEvent{}
+	case "plan_delta":
+		message = &PlanDeltaEvent{}
 	case "token_count":
 		message = &TokenCountEvent{}
 	case "context_compacted":
@@ -105,6 +109,8 @@ func eventMsgType(message EventMsg) (string, error) {
 		return "stream_error", nil
 	case ApprovalRequestEvent:
 		return "approval_request", nil
+	case RequestUserInputEvent:
+		return "request_user_input", nil
 	case ItemStartedEvent:
 		return "item_started", nil
 	case ItemCompletedEvent:
@@ -117,6 +123,8 @@ func eventMsgType(message EventMsg) (string, error) {
 		return "command_output_delta", nil
 	case PlanUpdateEvent:
 		return "plan_update", nil
+	case PlanDeltaEvent:
+		return "plan_delta", nil
 	case TokenCountEvent:
 		return "token_count", nil
 	case ContextCompactedEvent:
@@ -154,6 +162,8 @@ func eventMsgValue(message EventMsg) EventMsg {
 		return *value
 	case *ApprovalRequestEvent:
 		return *value
+	case *RequestUserInputEvent:
+		return *value
 	case *ItemStartedEvent:
 		return *value
 	case *ItemCompletedEvent:
@@ -165,6 +175,8 @@ func eventMsgValue(message EventMsg) EventMsg {
 	case *CommandOutputDeltaEvent:
 		return *value
 	case *PlanUpdateEvent:
+		return *value
+	case *PlanDeltaEvent:
 		return *value
 	case *TokenCountEvent:
 		return *value

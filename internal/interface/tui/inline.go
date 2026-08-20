@@ -66,20 +66,22 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, event protocol.Even
 		if typed.Item.Kind == protocol.ItemAssistantMessage {
 			return renderer.finishText()
 		}
-		if typed.Item.ToolName == "update_plan" {
-			return nil
+		if typed.Item.Kind == protocol.ItemPlan {
+			if err := renderer.finishText(); err != nil {
+				return err
+			}
+			for _, line := range NewProposedPlanCell(typed.Item.Text).RawLines() {
+				if _, err := fmt.Fprintln(renderer.status, line); err != nil {
+					return err
+				}
+			}
+			return renderer.writeStatusBar()
 		}
 		return renderer.toolBlock(typed.Item, true)
 	case protocol.PlanUpdateEvent:
 		renderer.phase = "planning"
-		if typed.Revision > 1 {
-			renderer.phase = "replanning"
-		}
 		return renderer.planBlock(typed)
 	case protocol.ItemStartedEvent:
-		if typed.Item.ToolName == "update_plan" {
-			return nil
-		}
 		renderer.phase = "working"
 		renderer.toolCalls++
 		return renderer.toolBlock(typed.Item, false)

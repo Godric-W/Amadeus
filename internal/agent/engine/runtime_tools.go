@@ -22,7 +22,6 @@ type ToolRuntimeOptions struct {
 	Project          project.Root
 	Client           llm.Client
 	Events           protocol.EventSink
-	PlanUpdater      builtin.PlanUpdater
 	Audit            audit.Sink
 	Skills           *skill.SkillCatalog
 	MCP              *mcp.MCPRuntime
@@ -47,7 +46,6 @@ func BuildToolRuntime(options ToolRuntimeOptions) (ToolRuntime, error) {
 	coreOptions.ExecuteCommand.Audit = options.Audit
 	coreOptions.ExecuteCommand.ProcessManager = processes
 	coreOptions.ExecuteCommand.SkillCatalog = options.Skills
-	coreOptions.PlanUpdater = options.PlanUpdater
 	registry, err := builtin.NewCoreRegistry(options.Project, coreOptions)
 	if err != nil {
 		processes.Close()

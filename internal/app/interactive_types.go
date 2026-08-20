@@ -95,6 +95,13 @@ type ApprovalRequested struct {
 
 func (ApprovalRequested) isInteractiveEvent() {}
 
+type UserInputRequested struct {
+	Generation uint64
+	Request    protocol.RequestUserInputEvent
+}
+
+func (UserInputRequested) isInteractiveEvent() {}
+
 type ThreadAttached struct{ Snapshot ThreadViewSnapshot }
 
 func (ThreadAttached) isInteractiveEvent() {}

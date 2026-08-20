@@ -5,15 +5,16 @@ import (
 	"errors"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 func (session *Session) clearPendingRequests() {
 	if session == nil || session.active == nil {
 		return
 	}
-	for requestID, result := range session.active.pending {
+	for requestID, waiter := range session.active.pending {
 		delete(session.active.pending, requestID)
-		result <- nil
+		waiter.result <- nil
 	}
 }
 
@@ -63,7 +64,7 @@ func (session *Session) Request(ctx context.Context, request protocol.ApprovalRe
 		return nil, err
 	}
 	result := make(chan protocol.Op, 1)
-	envelope := requestDelivery{request: request, result: result}
+	envelope := requestDelivery{kind: interactiveApproval, requestID: request.RequestID, event: request, result: result}
 	select {
 	case session.requestsIn <- envelope:
 	case <-ctx.Done():
@@ -81,5 +82,76 @@ func (session *Session) Request(ctx context.Context, request protocol.ApprovalRe
 		return nil, ctx.Err()
 	case <-session.terminated:
 		return nil, errors.New("session is terminated")
+	}
+}
+
+func (session *Session) RequestUserInput(ctx context.Context, callID string, args tool.RequestUserInputArgs) (tool.RequestUserInputResponse, error) {
+	if session == nil {
+		return tool.RequestUserInputResponse{}, errors.New("session request publisher is nil")
+	}
+	if ctx == nil {
+		return tool.RequestUserInputResponse{}, errors.New("session request context is nil")
+	}
+	if err := args.Validate(); err != nil {
+		return tool.RequestUserInputResponse{}, err
+	}
+	requestID := protocol.RequestID(session.services.NextID("request"))
+	request := protocol.RequestUserInputEvent{RequestID: requestID, CallID: callID, RequestUserInputArgs: args}
+	result := make(chan protocol.Op, 1)
+	envelope := requestDelivery{kind: interactiveUserInput, requestID: requestID, event: request, result: result}
+	select {
+	case session.requestsIn <- envelope:
+	case <-ctx.Done():
+		return tool.RequestUserInputResponse{}, ctx.Err()
+	case <-session.terminated:
+		return tool.RequestUserInputResponse{}, errors.New("session is terminated")
+	}
+	select {
+	case op := <-result:
+		answer, ok := op.(protocol.UserInputAnswerOp)
+		if !ok {
+			return tool.RequestUserInputResponse{}, errors.New("request_user_input was cancelled before receiving a response")
+		}
+		if err := answer.Response.Validate(args); err != nil {
+			return tool.RequestUserInputResponse{}, err
+		}
+		return answer.Response, nil
+	case <-ctx.Done():
+		return tool.RequestUserInputResponse{}, ctx.Err()
+	case <-session.terminated:
+		return tool.RequestUserInputResponse{}, errors.New("session is terminated")
+	}
+}
+
+func validateRequestDelivery(envelope requestDelivery) error {
+	if envelope.result == nil || envelope.requestID == "" || envelope.event == nil {
+		return errors.New("interactive request is incomplete")
+	}
+	switch event := envelope.event.(type) {
+	case protocol.ApprovalRequestEvent:
+		if envelope.kind != interactiveApproval || event.RequestID != envelope.requestID {
+			return errors.New("approval request envelope is inconsistent")
+		}
+		return event.Validate()
+	case protocol.RequestUserInputEvent:
+		if envelope.kind != interactiveUserInput || event.RequestID != envelope.requestID {
+			return errors.New("request_user_input envelope is inconsistent")
+		}
+		return event.Validate()
+	default:
+		return errors.New("interactive request type is unsupported")
+	}
+}
+
+func interactiveResponseMatches(kind interactiveRequestKind, op protocol.Op) bool {
+	switch kind {
+	case interactiveApproval:
+		_, ok := op.(protocol.ApprovalDecisionOp)
+		return ok
+	case interactiveUserInput:
+		_, ok := op.(protocol.UserInputAnswerOp)
+		return ok
+	default:
+		return false
 	}
 }

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
@@ -95,16 +94,6 @@ func (session *Session) recordAppendResult(result thread.AppendResult, expectedF
 		return fmt.Errorf("record context facts: %w", err)
 	}
 	return nil
-}
-
-func (session *Session) UpdatePlan(ctx context.Context, turnID protocol.TurnID, update plan.Update) (plan.Snapshot, error) {
-	if session == nil || session.state.Plan == nil {
-		return plan.Snapshot{}, errors.New("session plan state is unavailable")
-	}
-	return session.state.Plan.ApplyPersistent(update, session.services.Clock().UTC(), func(snapshot plan.Snapshot) error {
-		item := rollout.EventMsgItem{Msg: planUpdateEvent(snapshot)}
-		return session.appendItemsDurable(ctx, turnID, item)
-	})
 }
 
 func (session *Session) Snapshot(model llm.ModelInfo, prompt llm.Prompt) agentcontext.PromptSnapshot {

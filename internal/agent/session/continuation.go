@@ -57,16 +57,37 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 		}
 		sampleID := fmt.Sprintf("%s/step-%d", turnContext.TurnID, stepNumber)
 		stepCtx := tool.WithInvocationMetadata(ctx, tool.InvocationMetadata{SessionID: string(turnContext.ThreadID), TurnID: string(turnContext.TurnID), Source: tool.ToolCallSourceModel})
+		sampleEvents := events
+		var proposedPlan *engine.ProposedPlanEventSink
+		if turnContext.Mode == turn.ModeKindPlan {
+			proposedPlan, err = engine.NewProposedPlanEventSink(events, protocol.ItemID(sampleID+":plan"))
+			if err != nil {
+				return taskProgress(usage, toolCallCount), err
+			}
+			sampleEvents = proposedPlan
+		}
 		sample, sampleErr := modelSession.Sample(stepCtx, engine.SampleRequest{
 			ID: sampleID, Messages: step.Prompt.Items, BaseInstructions: step.BaseInstructions,
 			Tools: step.ToolRouter.Specs(), OutputSchema: llm.OutputSchema(turnContext.OutputSchema), OutputSchemaStrict: turnContext.OutputSchemaStrict,
-			Events: events,
+			Events: sampleEvents,
 		})
 		usage = addUsage(usage, sample.Response.Usage)
 		if sampleErr != nil {
 			return taskProgress(usage, toolCallCount), sampleErr
 		}
 		if sample.Kind == engine.SampleFinal {
+			if proposedPlan != nil {
+				if err := proposedPlan.Flush(stepCtx); err != nil {
+					return taskProgress(usage, toolCallCount), err
+				}
+				if err := engine.PersistAssistantResponse(stepCtx, session.AppendItems, turnContext.TurnID, sample.Response.Message, nil); err != nil {
+					return taskProgress(usage, toolCallCount), err
+				}
+				if err := engine.PublishPlanModeCompletions(stepCtx, session.AppendItems, turnContext.TurnID, events, sampleID, sample.Response.Message, proposedPlan.AssistantText(), proposedPlan.PlanText()); err != nil {
+					return taskProgress(usage, toolCallCount), err
+				}
+				return TaskOutput{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: completed", Outcome: protocol.TurnOutcomeCompleted}, nil
+			}
 			if err := engine.PersistAssistantResponse(stepCtx, session.AppendItems, turnContext.TurnID, sample.Response.Message, nil); err != nil {
 				return taskProgress(usage, toolCallCount), err
 			}

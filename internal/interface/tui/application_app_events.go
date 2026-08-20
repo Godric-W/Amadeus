@@ -30,6 +30,15 @@ func (model *fullscreenModel) handleAppEvent(event application.InteractiveEvent)
 		}
 		model.status = "awaiting approval"
 		model.input.Blur()
+	case application.UserInputRequested:
+		if event.Generation != model.generation {
+			return nil
+		}
+		request := event.Request
+		model.userInputRequest = &request
+		model.userInputDialog = newRequestUserInputDialog(request)
+		model.status = "awaiting input"
+		model.input.Blur()
 	case application.ThreadAttached:
 		return model.attachSnapshot(event.Snapshot)
 	case application.ThreadAttachFailed:
@@ -143,9 +152,9 @@ func (model *fullscreenModel) attachSnapshot(snapshot application.ThreadViewSnap
 	model.startup.ContextWindow = snapshot.ContextWindow
 	model.model = snapshot.Model
 	model.sessionTitle = snapshot.Title
-	model.collaboration = CollaborationExecute
+	model.collaboration = turn.ModeKindDefault
 	if snapshot.Mode == turn.ModeKindPlan {
-		model.collaboration = CollaborationPlan
+		model.collaboration = turn.ModeKindPlan
 	}
 	model.inputUsage = snapshot.Usage.InputTokens
 	model.outputUsage = snapshot.Usage.OutputTokens
@@ -170,12 +179,13 @@ func (model *fullscreenModel) clearInteractiveState() {
 	model.runStartedAt = time.Time{}
 	model.approval = nil
 	model.approvalDialog = nil
+	model.userInputRequest = nil
+	model.userInputDialog = nil
 	model.selection = nil
 	model.selectionKind = ""
 	model.sessions = nil
 	model.skills = nil
 	model.pendingSkillsView = ""
-	model.pendingModeTask = ""
 	model.viewingDetails = false
 }
 

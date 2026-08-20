@@ -37,7 +37,10 @@ func (submission Submission) Validate() error {
 
 type Op interface{ isOp() }
 
-type UserInputOp struct{ Content string }
+type UserInputOp struct {
+	Content        string
+	ThreadSettings ThreadSettingsOverrides
+}
 
 func (UserInputOp) isOp() {}
 
@@ -64,7 +67,7 @@ type ApprovalDecisionOp struct {
 
 func (ApprovalDecisionOp) isOp() {}
 
-type ThreadSettingsOp struct{ Mode string }
+type ThreadSettingsOp struct{ Mode ModeKind }
 
 func (ThreadSettingsOp) isOp() {}
 
@@ -283,6 +286,9 @@ func ScopeEventMsg(message EventMsg, threadID ThreadID, turnID TurnID) EventMsg 
 	case ApprovalRequestEvent:
 		value.ThreadID, value.TurnID = threadID, turnID
 		return value
+	case RequestUserInputEvent:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
 	case ContextUpdateEvent:
 		value.ThreadID, value.TurnID = threadID, turnID
 		return value
@@ -317,6 +323,8 @@ func ThreadIDOf(message EventMsg) ThreadID {
 		return value.ThreadID
 	case ApprovalRequestEvent:
 		return value.ThreadID
+	case RequestUserInputEvent:
+		return value.ThreadID
 	case ContextUpdateEvent:
 		return value.ThreadID
 	default:
@@ -339,6 +347,8 @@ func TurnIDOf(message EventMsg) TurnID {
 	case StreamErrorEvent:
 		return value.TurnID
 	case ApprovalRequestEvent:
+		return value.TurnID
+	case RequestUserInputEvent:
 		return value.TurnID
 	case ContextUpdateEvent:
 		return value.TurnID

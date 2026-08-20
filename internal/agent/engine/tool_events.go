@@ -43,6 +43,9 @@ func NewToolEventObserver(appendItems func(context.Context, protocol.TurnID, ...
 }
 
 func (observer *toolEventObserver) ToolCallStarted(ctx context.Context, spec tool.ToolSpec, call tool.ToolCall) error {
+	if !eventPolicyForTool(call.Name).emitActivity {
+		return nil
+	}
 	presentation := tool.PresentCall(spec, call)
 	snapshot := toolCallPresentation{actionSummary: presentation.ActionSummary, detail: presentation.Detail, sideEffect: spec.SideEffect}
 	observer.mu.Lock()
@@ -75,6 +78,14 @@ func (observer *toolEventObserver) ToolCallCompleted(ctx context.Context, execut
 	responseItem, err := rollout.NewResponseItem(payload)
 	if err != nil {
 		return err
+	}
+	policy := eventPolicyForTool(execution.Call.Name)
+	if !policy.emitActivity {
+		completionCtx := context.WithoutCancel(ctx)
+		if err := observer.appendItems(completionCtx, observer.turnID, responseItem); err != nil {
+			return fmt.Errorf("persist tool completion: %w", err)
+		}
+		return nil
 	}
 	status := protocol.ItemStatusCompleted
 	switch execution.Outcome.Status {

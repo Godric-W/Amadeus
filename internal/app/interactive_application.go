@@ -85,7 +85,7 @@ func (application *InteractiveApplication) Events() <-chan InteractiveEvent {
 	return application.events
 }
 
-func (application *InteractiveApplication) SubmitUser(ctx context.Context, content string) error {
+func (application *InteractiveApplication) SubmitUser(ctx context.Context, content string, overrides protocol.ThreadSettingsOverrides) error {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return errors.New("interactive task is empty")
@@ -97,7 +97,7 @@ func (application *InteractiveApplication) SubmitUser(ctx context.Context, conte
 	if err != nil {
 		return err
 	}
-	return active.Submit(ctx, protocol.UserInputOp{Content: content})
+	return active.Submit(ctx, protocol.UserInputOp{Content: content, ThreadSettings: overrides})
 }
 
 func (application *InteractiveApplication) SubmitCompact(ctx context.Context) error {
@@ -125,7 +125,7 @@ func (application *InteractiveApplication) SetMode(ctx context.Context, mode tur
 	if err != nil {
 		return err
 	}
-	return active.Submit(ctx, protocol.ThreadSettingsOp{Mode: string(mode)})
+	return active.Submit(ctx, protocol.ThreadSettingsOp{Mode: protocol.ModeKind(mode)})
 }
 
 func (application *InteractiveApplication) Interrupt(ctx context.Context) error {
@@ -145,6 +145,14 @@ func (application *InteractiveApplication) ResolveApproval(ctx context.Context, 
 		RequestID: protocol.RequestID(requestID), OptionID: decision.OptionID, Outcome: string(decision.Outcome),
 		Scope: string(decision.Scope), Source: string(decision.Source), Reason: decision.Reason,
 	})
+}
+
+func (application *InteractiveApplication) ResolveUserInput(ctx context.Context, requestID protocol.RequestID, response protocol.RequestUserInputResponse) error {
+	active, _, err := application.current()
+	if err != nil {
+		return err
+	}
+	return active.Submit(ctx, protocol.UserInputAnswerOp{RequestID: requestID, Response: response})
 }
 
 func (application *InteractiveApplication) LoadSessions(ctx context.Context) {
@@ -493,6 +501,9 @@ func (application *InteractiveApplication) pumpAttachment(ctx context.Context, a
 					continue
 				}
 				application.emit(ApprovalRequested{Generation: generation, RequestID: string(request.RequestID), Request: approval})
+			}
+			if request, ok := event.Msg.(protocol.RequestUserInputEvent); ok {
+				application.emit(UserInputRequested{Generation: generation, Request: request})
 			}
 		case _, ok := <-terminated:
 			if !ok {

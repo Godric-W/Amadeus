@@ -12,8 +12,8 @@ func newTestSession(history []rollout.Line, manager *agentcontext.Manager) *Sess
 	return &Session{
 		threadID: "test-thread",
 		state: SessionState{
-			Context: manager,
-			Mode:    ModeState{Mode: "default"},
+			Context:       manager,
+			Configuration: Configuration{Mode: "default"},
 		},
 		services: SessionServices{
 			Clock:  func() time.Time { return time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC) },

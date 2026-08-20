@@ -31,9 +31,18 @@ func (model fullscreenModel) dispatchCommand(invocation SlashInvocation) (tea.Mo
 		model.insertHistoryCell(NewStatusHistoryCell(model.app.options.Application.Status()))
 		return model, model.flushHistory()
 	case SlashPlan:
-		model.status = "switching to Plan mode"
-		model.pendingModeTask = strings.TrimSpace(arguments)
-		return model, model.setMode(turn.ModeKindPlan)
+		task := strings.TrimSpace(arguments)
+		if task == "" {
+			model.status = "switching to Plan mode"
+			return model, model.setMode(turn.ModeKindPlan)
+		}
+		model.collaboration = turn.ModeKindPlan
+		model.insertHistoryCell(NewUserMessageCell(task))
+		model.running = true
+		model.status = "planning"
+		model.runStartedAt = time.Now()
+		model.motionStartedAt = model.runStartedAt
+		return model, tea.Batch(model.flushHistory(), model.submitTask(TaskSubmission{Content: task, Mode: turn.ModeKindPlan}), model.workingTick())
 	case SlashExit:
 		model.shutdownRequested = true
 		model.status = "shutting down"
@@ -119,7 +128,7 @@ func applicationThreadID(value string) protocol.ThreadID {
 }
 
 func taskPhase(task TaskSubmission) string {
-	if task.Mode == CollaborationPlan {
+	if task.Mode == turn.ModeKindPlan {
 		return "planning"
 	}
 	return "working"
@@ -134,7 +143,11 @@ func (model fullscreenModel) loadSessions() tea.Cmd {
 
 func (model fullscreenModel) submitTask(task TaskSubmission) tea.Cmd {
 	return func() tea.Msg {
-		if err := model.app.options.Application.SubmitUser(model.ctx, task.Content); err != nil {
+		overrides := protocol.ThreadSettingsOverrides{}
+		if task.Mode.Valid() {
+			overrides.CollaborationMode = &protocol.CollaborationMode{Mode: protocol.ModeKind(task.Mode)}
+		}
+		if err := model.app.options.Application.SubmitUser(model.ctx, task.Content, overrides); err != nil {
 			return fullscreenOperationFailedMsg{operation: "submit task", err: err}
 		}
 		return nil

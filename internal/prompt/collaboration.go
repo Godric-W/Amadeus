@@ -16,7 +16,11 @@ func RenderCollaborationInstructions(messages llm.ModelMessages, mode turn.ModeK
 	case turn.ModeKindDefault:
 		content = messages.CollaborationModes.Default
 	case turn.ModeKindPlan:
-		content = messages.CollaborationModes.Plan
+		content = strings.TrimSpace(messages.CollaborationModes.Plan) + `
+
+## Plan Mode
+
+Work conversationally in three phases: ground the plan in the environment, resolve material intent and implementation decisions, then finalize a decision-complete plan. Explore the repository before asking questions. Use request_user_input only for choices that cannot be discovered and would materially change the plan. Do not modify files, execute side-effecting tools, or begin implementation even if the user asks while this turn remains in Plan mode. End with exactly one <proposed_plan>...</proposed_plan> block containing the complete Markdown plan. Collaboration mode changes only through explicit runtime settings.`
 	default:
 		return "", fmt.Errorf("unsupported collaboration mode %q", mode)
 	}

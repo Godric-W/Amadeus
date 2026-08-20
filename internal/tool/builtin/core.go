@@ -19,7 +19,6 @@ type CoreToolOptions struct {
 	Glob             GlobOptions
 	Grep             GrepOptions
 	ExecuteCommand   ExecuteCommandOptions
-	PlanUpdater      PlanUpdater
 }
 
 func DefaultCoreToolOptions() CoreToolOptions {
@@ -36,7 +35,7 @@ func DefaultCoreToolOptions() CoreToolOptions {
 }
 
 func CoreSpecs() []tool.ToolSpec {
-	specs := []tool.ToolSpec{readSpec(), editSpec(), writeSpec(), globSpec(), grepSpec(), executeCommandSpec(), writeStdinSpec(), updatePlanSpec()}
+	specs := []tool.ToolSpec{readSpec(), editSpec(), writeSpec(), globSpec(), grepSpec(), executeCommandSpec(), writeStdinSpec(), updatePlanSpec(), requestUserInputSpec()}
 	for index := range specs {
 		specs[index] = specs[index].Clone()
 	}
@@ -84,18 +83,14 @@ func RegisterCoreTools(registry *tool.Registry, root project.Root, options CoreT
 	if err != nil {
 		return err
 	}
-	for _, definition := range []tool.ToolDefinition{fileTools.ReadTool(), fileTools.EditTool(), fileTools.WriteTool(), glob, grep, executeCommand, writeStdin} {
+	updatePlan, err := NewUpdatePlan(UpdatePlanOptions{Events: options.Events})
+	if err != nil {
+		return err
+	}
+	requestUserInput := NewRequestUserInput()
+	for _, definition := range []tool.ToolDefinition{fileTools.ReadTool(), fileTools.EditTool(), fileTools.WriteTool(), glob, grep, executeCommand, writeStdin, updatePlan, requestUserInput} {
 		if err := registry.RegisterDefinition(definition); err != nil {
 			return fmt.Errorf("register core tool %q: %w", definition.Spec().Name, err)
-		}
-	}
-	if options.PlanUpdater != nil {
-		updatePlan, planErr := NewUpdatePlan(options.PlanUpdater, UpdatePlanOptions{Events: options.Events})
-		if planErr != nil {
-			return planErr
-		}
-		if err := registry.RegisterDefinition(updatePlan); err != nil {
-			return fmt.Errorf("register core tool %q: %w", updatePlan.Spec().Name, err)
 		}
 	}
 	return nil

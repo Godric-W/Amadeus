@@ -43,7 +43,7 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 		model.transcript.HadWorkActivity = false
 		model.transcript.NeedsFinalMessageSeparator = false
 		if model.status != "compacting context" {
-			if model.collaboration == CollaborationPlan {
+			if model.collaboration == turn.ModeKindPlan {
 				model.status = "planning"
 			} else {
 				model.status = "working"
@@ -52,24 +52,14 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 		return model.workingTick()
 	case protocol.ThreadSettingsAppliedEvent:
 		if item.Mode == string(turn.ModeKindPlan) {
-			model.collaboration = CollaborationPlan
+			model.collaboration = turn.ModeKindPlan
 			model.status = "plan mode"
 		} else {
-			model.collaboration = CollaborationExecute
+			model.collaboration = turn.ModeKindDefault
 			model.status = "idle"
 		}
-		task := strings.TrimSpace(model.pendingModeTask)
-		model.pendingModeTask = ""
-		if task == "" {
-			model.insertHistoryCell(NewNoticeHistoryCell("Switched to " + collaborationModeName(model.collaboration) + " mode"))
-			return nil
-		}
-		model.insertHistoryCell(NewUserMessageCell(task))
-		model.running = true
-		model.runStartedAt = time.Now()
-		model.motionStartedAt = model.runStartedAt
-		model.status = taskPhase(TaskSubmission{Content: task, Mode: model.collaboration})
-		return tea.Batch(model.submitTask(TaskSubmission{Content: task, Mode: model.collaboration}), model.workingTick())
+		model.insertHistoryCell(NewNoticeHistoryCell("Switched to " + collaborationModeName(model.collaboration) + " mode"))
+		return nil
 	case protocol.AgentMessageContentDeltaEvent:
 		if item.Reset {
 			model.draft = item.Delta
@@ -101,12 +91,15 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 		model.finishDraft()
 		model.insertHistoryCell(NewPlanUpdateCell(item))
 		model.status = "planning"
+	case protocol.PlanDeltaEvent:
+		model.proposedPlanDraft += item.Delta
+		model.status = "planning"
 	case protocol.ItemStartedEvent:
 		switch item.Item.Kind {
-		case protocol.ItemAssistantMessage, protocol.ItemReasoning, protocol.ItemUserMessage, protocol.ItemPlan, protocol.ItemContextCompaction:
+		case protocol.ItemPlan:
+			model.proposedPlanDraft = ""
 			return nil
-		}
-		if item.Item.ToolName == "update_plan" {
+		case protocol.ItemAssistantMessage, protocol.ItemReasoning, protocol.ItemUserMessage, protocol.ItemContextCompaction:
 			return nil
 		}
 		model.finishDraft()
@@ -141,16 +134,13 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 			return nil
 		case protocol.ItemPlan:
 			model.flushCompletedActivityBeforeBoundary()
-			if update, ok := item.Item.Payload.(protocol.PlanUpdateEvent); ok {
-				model.insertHistoryCell(NewPlanUpdateCell(update))
-			}
+			model.proposedPlanDraft = ""
+			model.completedProposedPlan = true
+			model.insertHistoryCell(NewProposedPlanCell(item.Item.Text))
 			return nil
 		case protocol.ItemContextCompaction:
 			model.flushCompletedActivityBeforeBoundary()
 			model.insertHistoryCell(NewContextCompactedCell())
-			return nil
-		}
-		if item.Item.ToolName == "update_plan" {
 			return nil
 		}
 		model.finishDraft()
@@ -202,6 +192,11 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 		model.finishTurn(model.runElapsed())
 		model.running = false
 		model.status = "completed"
+		if model.collaboration == turn.ModeKindPlan && model.completedProposedPlan && model.approval == nil && model.userInputDialog == nil {
+			model.selection = &selectionOverlay{Title: "Implement this plan?", Items: []selectionItem{{Name: "Implement this plan", Description: "Switch to Default mode and start implementation"}, {Name: "Stay in Plan mode", Description: "Keep planning without starting implementation"}}}
+			model.selectionKind = "implement-plan"
+			model.completedProposedPlan = false
+		}
 	case protocol.TurnAbortedEvent:
 		model.clearRetryStatus()
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
@@ -237,6 +232,8 @@ func (model *fullscreenModel) recoverDeltaStart(event protocol.Event) bool {
 		itemID, kind = message.ItemID, protocol.ItemReasoning
 	case protocol.CommandOutputDeltaEvent:
 		itemID, kind = message.ItemID, protocol.ItemCommandExecution
+	case protocol.PlanDeltaEvent:
+		itemID, kind = message.ItemID, protocol.ItemPlan
 	default:
 		return false
 	}
@@ -267,9 +264,7 @@ func (model *fullscreenModel) restoreCompletedItems(items []protocol.TurnItem) {
 		case protocol.ItemReasoning:
 		case protocol.ItemPlan:
 			model.flushCompletedActivityBeforeBoundary()
-			if update, ok := item.Payload.(protocol.PlanUpdateEvent); ok {
-				model.insertHistoryCell(NewPlanUpdateCell(update))
-			}
+			model.insertHistoryCell(NewProposedPlanCell(item.Text))
 		case protocol.ItemContextCompaction:
 			model.flushCompletedActivityBeforeBoundary()
 			model.insertHistoryCell(NewContextCompactedCell())
@@ -297,11 +292,11 @@ func (model *fullscreenModel) finishTurn(elapsed time.Duration) {
 	model.transcript.NeedsFinalMessageSeparator = false
 }
 
-func collaborationModeName(mode CollaborationMode) string {
-	if mode == CollaborationPlan {
+func collaborationModeName(mode turn.ModeKind) string {
+	if mode == turn.ModeKindPlan {
 		return "Plan"
 	}
-	return "Execute"
+	return "Default"
 }
 
 func (model *fullscreenModel) finishDraft() {

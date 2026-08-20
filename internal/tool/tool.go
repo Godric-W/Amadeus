@@ -15,6 +15,7 @@ type ToolUseContext struct {
 	Invocation    Invocation
 	Permissions   *policy.SessionPermissionContext
 	FileReadState *FileReadStateStore
+	Interactions  UserInputRequester
 	Snapshot      RequestSnapshot
 }
 

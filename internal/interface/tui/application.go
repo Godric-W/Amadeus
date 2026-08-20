@@ -34,11 +34,12 @@ type FullscreenClipboardWriter func(string) error
 
 type FullscreenApplicationPort interface {
 	Events() <-chan application.InteractiveEvent
-	SubmitUser(context.Context, string) error
+	SubmitUser(context.Context, string, protocol.ThreadSettingsOverrides) error
 	SubmitCompact(context.Context) error
 	SetMode(context.Context, turn.ModeKind) error
 	Interrupt(context.Context) error
 	ResolveApproval(context.Context, string, policy.ApprovalDecision) error
+	ResolveUserInput(context.Context, protocol.RequestID, protocol.RequestUserInputResponse) error
 	LoadSessions(context.Context)
 	Resume(context.Context, protocol.ThreadID)
 	Clear(context.Context)
@@ -88,6 +89,8 @@ type fullscreenModel struct {
 	hasEmittedHistoryLines bool
 	historyMode            HistoryRenderMode
 	draft                  string
+	proposedPlanDraft      string
+	completedProposedPlan  bool
 	running                bool
 	status                 string
 	statusDetails          string
@@ -110,15 +113,16 @@ type fullscreenModel struct {
 	viewingDetails         bool
 	approval               *fullscreenApproval
 	approvalDialog         *approvalDialog
+	userInputRequest       *protocol.RequestUserInputEvent
+	userInputDialog        *requestUserInputDialog
 	sessions               []application.SessionOption
 	slashPopup             slashCommandPopup
-	collaboration          CollaborationMode
+	collaboration          turn.ModeKind
 	selection              *selectionOverlay
 	selectionKind          string
 	skills                 []application.SkillOption
 	pendingSkillsView      string
 	generation             uint64
-	pendingModeTask        string
 	mcpRequestID           uint64
 	clearing               bool
 	shutdownRequested      bool
@@ -309,14 +313,14 @@ func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscr
 	}
 	model := fullscreenModel{
 		app: app, ctx: ctx, startup: startup, input: input, renderer: renderer,
-		width: initialWidth, height: 30, status: "idle", model: startup.Model, historyPos: -1, collaboration: CollaborationExecute,
+		width: initialWidth, height: 30, status: "idle", model: startup.Model, historyPos: -1, collaboration: turn.ModeKindDefault,
 		sessionTitle: snapshot.Title,
 		palette:      palette, clock: systemMotionClock{}, motion: motionAnimated, motionStartedAt: time.Now(),
 		details: newTranscriptDetailStore(0, 0), detailViewport: newTranscriptViewport(initialWidth, 30),
 		runtimeTranscript: runtimeprojection.New(protocol.ThreadID(startup.Session)), generation: snapshot.Generation,
 	}
 	if snapshot.Mode == turn.ModeKindPlan {
-		model.collaboration = CollaborationPlan
+		model.collaboration = turn.ModeKindPlan
 	}
 	model.inputUsage = snapshot.Usage.InputTokens
 	model.outputUsage = snapshot.Usage.OutputTokens

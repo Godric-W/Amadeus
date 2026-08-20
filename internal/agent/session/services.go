@@ -177,7 +177,7 @@ func buildSessionServices(ctx context.Context, owner *Session, base SessionServi
 		return SessionServices{}, errors.New("session audit factory returned nil sink")
 	}
 	toolRuntime, err := engine.BuildToolRuntime(engine.ToolRuntimeOptions{
-		Config: configuration.Runtime, Project: root, Client: client, Events: owner, PlanUpdater: owner,
+		Config: configuration.Runtime, Project: root, Client: client, Events: owner,
 		Audit: auditSink, Skills: skills, MCP: mcpRuntime, WebFetcher: adapters.WebFetcher,
 		WebSearch: adapters.WebSearch, FileSystemPolicy: fileSystem,
 	})
@@ -191,6 +191,7 @@ func buildSessionServices(ctx context.Context, owner *Session, base SessionServi
 	toolExecutor, err := tool.NewToolExecutionService(toolRuntime.Registry, tool.NewArgumentValidator(), tool.ToolExecutionServiceOptions{
 		MaxParallel: configuration.Runtime.Agent.MaxParallelTools, Visibility: toolRuntime.Visibility,
 		Approvals: coordinator, Permissions: permissions, TargetObserver: agentsMd,
+		Interactions: owner,
 	})
 	if err != nil {
 		toolRuntime.Processes.Close()

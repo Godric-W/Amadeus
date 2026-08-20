@@ -14,6 +14,7 @@ import (
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/skill"
+	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 func (session *Session) prepareTurn(ctx context.Context, services *SessionServices, goal string, turnContext *turn.TurnContext) error {
@@ -30,10 +31,9 @@ func (services *SessionServices) prepareDynamicContext(ctx context.Context, goal
 	if services == nil || turnContext == nil || contextUpdate == nil || appendItems == nil {
 		return fmt.Errorf("dynamic context preparation is incomplete")
 	}
-	tools := services.AvailableTools()
-	if turnContext.Mode == turn.ModeKindPlan {
-		tools = engine.PlanModeTools(tools)
-	}
+	tools := services.tools.SnapshotRouter(services.visibility, tool.RequestSnapshot{}, func(spec tool.ToolSpec) bool {
+		return turnContext.Mode != turn.ModeKindPlan || engine.PlanModeToolAllowed(spec)
+	}).Specs()
 	toolNames := make([]string, len(tools))
 	for index, spec := range tools {
 		toolNames[index] = spec.Name

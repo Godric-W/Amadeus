@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -180,6 +181,9 @@ func (model fullscreenModel) inputBox() string {
 	if model.approvalDialog != nil && model.approval != nil {
 		return model.renderApprovalDialog(width)
 	}
+	if model.userInputDialog != nil && model.userInputRequest != nil {
+		return model.renderRequestUserInputDialog(width)
+	}
 	if model.selection != nil {
 		return model.renderSelectionOverlay(width)
 	}
@@ -218,7 +222,7 @@ func (model fullscreenModel) statusBar() string {
 	if branch := strings.TrimSpace(model.startup.Branch); branch != "" {
 		parts = append(parts, statusBarPart{text: branch, style: model.palette.statusLineStyle(statusAccentBranch)})
 	}
-	if model.collaboration == CollaborationPlan {
+	if model.collaboration == turn.ModeKindPlan {
 		parts = append(parts, statusBarPart{text: "Plan", style: model.palette.statusLineStyle(statusAccentMode)})
 	}
 	contextWindow := model.contextLimit

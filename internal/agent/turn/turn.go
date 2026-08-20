@@ -8,11 +8,11 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 )
 
-type ModeKind string
+type ModeKind = protocol.ModeKind
 
 const (
-	ModeKindDefault ModeKind = "default"
-	ModeKindPlan    ModeKind = "plan"
+	ModeKindDefault = protocol.ModeKindDefault
+	ModeKindPlan    = protocol.ModeKindPlan
 )
 
 type Personality string

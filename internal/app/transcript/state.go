@@ -72,6 +72,8 @@ func (state *State) Apply(event protocol.Event) error {
 		return state.applyDelta(message.ItemID, message.Delta, message.Reset)
 	case protocol.CommandOutputDeltaEvent:
 		return state.applyDelta(message.ItemID, message.Delta, false)
+	case protocol.PlanDeltaEvent:
+		return state.applyDelta(message.ItemID, message.Delta, false)
 	case protocol.PlanUpdateEvent:
 		copy := message
 		state.Plan = &copy

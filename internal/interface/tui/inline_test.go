@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
@@ -31,7 +32,7 @@ func TestInlineRendererKeepsTextAndStatusBlocksSeparate(t *testing.T) {
 }
 
 func TestDefaultTaskPhaseUsesWorking(t *testing.T) {
-	if got := taskPhase(TaskSubmission{Mode: CollaborationExecute}); got != "working" {
+	if got := taskPhase(TaskSubmission{Mode: turn.ModeKindDefault}); got != "working" {
 		t.Fatalf("default task phase = %q, want working", got)
 	}
 	if got := statusHeader("working"); got != "Working" {
@@ -47,7 +48,7 @@ func TestInlineRendererRendersPlanAndUsage(t *testing.T) {
 	}
 	started := toolStartedMessage("write-1", "write", "write", "Create file", "")
 	for _, event := range []protocol.Event{
-		testProtocolEvent("thread-1", "turn-1", protocol.PlanUpdateEvent{Revision: 1, Items: []protocol.PlanItem{{Step: "Read source", Status: "pending"}}}),
+		testProtocolEvent("thread-1", "turn-1", protocol.PlanUpdateEvent{UpdatePlanArgs: protocol.UpdatePlanArgs{Plan: []protocol.PlanItemArg{{Step: "Read source", Status: protocol.StepPending}}}}),
 		testProtocolEvent("thread-1", "turn-1", started),
 		testProtocolEvent("thread-1", "turn-1", toolCompletedMessage(started, protocol.ItemStatusCompleted, "done", "0s", false)),
 		testProtocolEvent("thread-1", "turn-1", protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 3, OutputTokens: 5}}),

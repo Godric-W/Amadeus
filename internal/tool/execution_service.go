@@ -28,6 +28,7 @@ type ToolExecutionServiceOptions struct {
 	Permissions    *policy.SessionPermissionContext
 	FileReadState  *FileReadStateStore
 	TargetObserver TargetObserver
+	Interactions   UserInputRequester
 }
 
 // ExecutionScope binds request-scoped capabilities to one model step without
@@ -48,6 +49,7 @@ type ToolExecutionService struct {
 	permissions    *PermissionService
 	fileReadState  *FileReadStateStore
 	targetObserver TargetObserver
+	interactions   UserInputRequester
 }
 
 func NewToolExecutionService(registry *Registry, validator *ArgumentValidator, options ToolExecutionServiceOptions) (*ToolExecutionService, error) {
@@ -67,7 +69,7 @@ func NewToolExecutionService(registry *Registry, validator *ArgumentValidator, o
 		registry: registry, validator: validator, observer: options.Observer,
 		maxParallel: options.MaxParallel, visibility: cloneVisibility(options.Visibility),
 		now: time.Now, permissions: NewPermissionService(options.Permissions, options.Approvals),
-		fileReadState: options.FileReadState, targetObserver: options.TargetObserver,
+		fileReadState: options.FileReadState, targetObserver: options.TargetObserver, interactions: options.Interactions,
 	}, nil
 }
 
@@ -276,6 +278,7 @@ func (service *ToolExecutionService) executeCall(ctx context.Context, routed exe
 		Context: ctx, Invocation: invocation,
 		Permissions:   service.permissions.permissions,
 		FileReadState: service.fileReadState,
+		Interactions:  service.interactions,
 	}
 	if snapshot, ok := RequestSnapshotFromContext(ctx); ok {
 		toolContext.Snapshot = snapshot

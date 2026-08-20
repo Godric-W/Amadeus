@@ -27,6 +27,7 @@ func TargetCatalog() []CatalogEntry {
 		{Name: "grep", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectRead},
 		{Name: "execute_command", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectExecute},
 		{Name: "update_plan", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectNone},
+		{Name: "request_user_input", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectNone},
 		{Name: "write_stdin", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectExecute},
 		{Name: "view_image", Exposure: tool.ExposureConditional, Condition: "provider.images", Status: CatalogAvailable, SideEffect: tool.SideEffectRead},
 		{Name: "read_skill", Exposure: tool.ExposureConditional, Condition: "skills.available", Status: CatalogAvailable, SideEffect: tool.SideEffectRead},

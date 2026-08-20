@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/plan"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/audit"
@@ -104,9 +103,6 @@ func (host *compactTestHost) Publish(_ context.Context, event protocol.Event) er
 }
 func (*compactTestHost) Request(context.Context, protocol.ApprovalRequestEvent) (protocol.Op, error) {
 	return nil, errors.New("unexpected interactive request")
-}
-func (*compactTestHost) UpdatePlan(context.Context, protocol.TurnID, plan.Update) (plan.Snapshot, error) {
-	return plan.Snapshot{}, nil
 }
 func (host *compactTestHost) Snapshot(model llm.ModelInfo, prompt llm.Prompt) agentcontext.PromptSnapshot {
 	return host.context.Snapshot(model, prompt)

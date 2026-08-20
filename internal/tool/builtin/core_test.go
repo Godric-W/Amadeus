@@ -23,7 +23,6 @@ func TestCoreRegistryContainsOnlyPublicCoreTools(t *testing.T) {
 	options := DefaultCoreToolOptions()
 	options.FileSystemPolicy = filesystem
 	options.Events = protocol.NewMemorySink()
-	options.PlanUpdater = &testPlanUpdater{}
 	registry, err := NewCoreRegistry(root, options)
 	if err != nil {
 		t.Fatal(err)
@@ -33,11 +32,11 @@ func TestCoreRegistryContainsOnlyPublicCoreTools(t *testing.T) {
 		names = append(names, entry.Spec.Name)
 	}
 	sort.Strings(names)
-	want := []string{"edit", "execute_command", "glob", "grep", "read", "update_plan", "write", "write_stdin"}
+	want := []string{"edit", "execute_command", "glob", "grep", "read", "request_user_input", "update_plan", "write", "write_stdin"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("core tools = %v, want %v", names, want)
 	}
-	for _, retired := range []string{"apply_patch", "request_user_input"} {
+	for _, retired := range []string{"apply_patch"} {
 		if _, exists := registry.Lookup(retired); exists {
 			t.Fatalf("retired tool %q entered the default core registry", retired)
 		}

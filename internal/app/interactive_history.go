@@ -56,23 +56,6 @@ func (projection *RolloutProjection) applyEvent(line rollout.Line, message proto
 			return fmt.Errorf("project completed item at sequence %d: %w", line.Sequence, err)
 		}
 		projection.Items = append(projection.Items, cloneTurnItem(event.Item))
-	case protocol.PlanUpdateEvent:
-		at := event.UpdatedAt
-		if at.IsZero() {
-			at = line.Timestamp
-		}
-		itemID := event.ItemID
-		if itemID == "" {
-			itemID = protocol.ItemID(fmt.Sprintf("plan-%d", line.Sequence))
-		}
-		projected := protocol.TurnItem{
-			ID: itemID, Kind: protocol.ItemPlan, Status: protocol.ItemStatusCompleted,
-			CreatedAt: at, CompletedAt: at, Text: event.Explanation, Payload: event,
-		}
-		if err := projected.Validate(); err != nil {
-			return fmt.Errorf("project plan update at sequence %d: %w", line.Sequence, err)
-		}
-		projection.Items = append(projection.Items, projected)
 	case protocol.TokenCountEvent:
 		projection.Usage = addProjectedUsage(projection.Usage, event.Usage)
 	case protocol.ContextCompactedEvent:

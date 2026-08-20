@@ -55,7 +55,7 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, event protocol.Event
 	case protocol.AgentMessageContentDeltaEvent:
 		return renderer.writeText(typed)
 	case protocol.ItemStartedEvent:
-		if typed.Item.Kind == protocol.ItemAssistantMessage || typed.Item.Kind == protocol.ItemReasoning || typed.Item.ToolName == "update_plan" {
+		if typed.Item.Kind == protocol.ItemAssistantMessage || typed.Item.Kind == protocol.ItemReasoning {
 			return nil
 		}
 		return renderer.writeStatus("tool: %s (%s) started", typed.Item.ToolName, typed.Item.CallID)
@@ -63,7 +63,7 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, event protocol.Event
 		if typed.Item.Kind == protocol.ItemAssistantMessage {
 			return renderer.closeTurn(typed.Item.ID)
 		}
-		if typed.Item.Kind == protocol.ItemReasoning || typed.Item.ToolName == "update_plan" {
+		if typed.Item.Kind == protocol.ItemReasoning {
 			return nil
 		}
 		status := "completed"
@@ -72,7 +72,7 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, event protocol.Event
 		}
 		return renderer.writeStatus("tool: %s (%s) %s: %s", typed.Item.ToolName, typed.Item.CallID, status, typed.Item.Text)
 	case protocol.PlanUpdateEvent:
-		return renderer.writeStatus("plan: updated revision=%d items=%d", typed.Revision, len(typed.Items))
+		return renderer.writeStatus("plan: updated items=%d", len(typed.Plan))
 	case protocol.TokenCountEvent:
 		return renderer.writeStatus("usage: input=%d cached=%d output=%d reasoning=%d total=%d", typed.Usage.InputTokens, typed.Usage.CachedInputTokens, typed.Usage.OutputTokens, typed.Usage.ReasoningTokens, typed.Usage.TotalTokens)
 	case protocol.TurnStartedEvent:

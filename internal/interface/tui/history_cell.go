@@ -129,6 +129,34 @@ func (cell AgentMessageCell) RawLines() []string {
 
 func (AgentMessageCell) IsStreamContinuation() bool { return false }
 
+type ProposedPlanCell struct{ Markdown string }
+
+func NewProposedPlanCell(markdown string) HistoryCell {
+	return ProposedPlanCell{Markdown: strings.TrimSpace(markdown)}
+}
+
+func (cell ProposedPlanCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
+	content := sanitizeFullscreenContent(cell.Markdown)
+	if content == "" {
+		return nil
+	}
+	body := content
+	if ctx.Markdown != nil {
+		if rendered, err := ctx.Markdown.Render(content); err == nil {
+			body = rendered
+		}
+	}
+	return append([]styledLine{{{Text: "• ", Style: styleDim}, {Text: "Proposed Plan", Style: styleBold}}}, styledLinesFromText(prefixRenderedBlock(body, "  "), styleRendered)...)
+}
+
+func (cell ProposedPlanCell) RawLines() []string {
+	if cell.Markdown == "" {
+		return nil
+	}
+	return append([]string{"Proposed Plan"}, strings.Split(cell.Markdown, "\n")...)
+}
+func (ProposedPlanCell) IsStreamContinuation() bool { return false }
+
 type PlainHistoryCell struct {
 	Content string
 	Style   semanticStyle
@@ -241,13 +269,13 @@ func (FinalMessageSeparator) IsStreamContinuation() bool { return false }
 
 type PlanUpdateCell struct {
 	Explanation string
-	Items       []protocol.PlanItem
+	Items       []protocol.PlanItemArg
 }
 
 func NewPlanUpdateCell(update protocol.PlanUpdateEvent) HistoryCell {
 	return PlanUpdateCell{
 		Explanation: strings.TrimSpace(update.Explanation),
-		Items:       append([]protocol.PlanItem(nil), update.Items...),
+		Items:       append([]protocol.PlanItemArg(nil), update.Plan...),
 	}
 }
 
@@ -264,9 +292,9 @@ func (cell PlanUpdateCell) DisplayLines(HistoryRenderContext) []styledLine {
 			marker := "□ "
 			style := styleDim
 			switch item.Status {
-			case "completed":
+			case protocol.StepCompleted:
 				marker = "✔ "
-			case "in_progress":
+			case protocol.StepInProgress:
 				style = styleAccent
 			}
 			body = append(body, styledLine{{Text: marker + item.Step, Style: style}})

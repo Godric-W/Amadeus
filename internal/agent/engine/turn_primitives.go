@@ -83,6 +83,23 @@ func PublishModelCompletions(ctx context.Context, appendItems func(context.Conte
 	return nil
 }
 
+func PublishPlanModeCompletions(ctx context.Context, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error, turnID protocol.TurnID, events protocol.EventSink, sampleID string, message llm.ResponseItem, assistantText, planText string) error {
+	if strings.TrimSpace(assistantText) != "" {
+		if err := persistAndPublishModelCompletion(ctx, appendItems, turnID, events, sampleID+":assistant", protocol.ItemAssistantMessage, assistantText); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(message.Reasoning) != "" {
+		if err := persistAndPublishModelCompletion(ctx, appendItems, turnID, events, sampleID+":reasoning", protocol.ItemReasoning, message.Reasoning); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(planText) == "" {
+		return errors.New("proposed plan block is empty")
+	}
+	return persistAndPublishModelCompletion(ctx, appendItems, turnID, events, sampleID+":plan", protocol.ItemPlan, strings.TrimSpace(planText))
+}
+
 func persistAndPublishModelCompletion(ctx context.Context, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error, turnID protocol.TurnID, events protocol.EventSink, id string, kind protocol.ItemKind, text string) error {
 	now := time.Now().UTC()
 	turnItem := protocol.TurnItem{ID: protocol.ItemID(id), Kind: kind, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now, Text: text}

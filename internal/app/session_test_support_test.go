@@ -40,6 +40,16 @@ func (client *appTestClient) Stream(_ context.Context, request llm.Request) (llm
 		client.lastInput = input
 		client.mu.Unlock()
 		text = "done: " + input
+		planMode := strings.Contains(request.Prompt.BaseInstructions.Text, "<proposed_plan>")
+		for _, item := range request.Prompt.Input {
+			if strings.Contains(item.Content, "<proposed_plan>") {
+				planMode = true
+				break
+			}
+		}
+		if planMode {
+			text += "\n<proposed_plan>\n# Plan\n\n- Inspect the repository\n</proposed_plan>"
+		}
 	}
 	return &appTestStream{chunks: []llm.StreamChunk{{ContentDelta: text}, {FinishReason: llm.FinishReasonStop}}}, nil
 }

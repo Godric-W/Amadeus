@@ -29,7 +29,7 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.handleOperationFailure(message)
 		return model, model.flushHistory()
 	case fullscreenWorkingTickMsg:
-		if (!model.running && !model.retryStatus.active) || model.approval != nil {
+		if (!model.running && !model.retryStatus.active) || model.approval != nil || model.userInputDialog != nil {
 			return model, nil
 		}
 		return model, model.workingTick()
@@ -49,6 +49,9 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if model.approvalDialog != nil {
 			return model.handleApprovalKey(message)
+		}
+		if model.userInputDialog != nil {
+			return model.handleRequestUserInputKey(message)
 		}
 		if model.selection != nil {
 			return model.handleSelectionKey(message)
@@ -72,7 +75,6 @@ func (model *fullscreenModel) handleOperationFailure(message fullscreenOperation
 		model.running = false
 		model.status = "idle"
 	case "set collaboration mode":
-		model.pendingModeTask = ""
 		model.status = "idle"
 	}
 }
@@ -86,10 +88,9 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 			return model, model.flushHistory()
 		}
 		nextMode := turn.ModeKindPlan
-		if model.collaboration == CollaborationPlan {
+		if model.collaboration == turn.ModeKindPlan {
 			nextMode = turn.ModeKindDefault
 		}
-		model.pendingModeTask = ""
 		model.status = "switching mode"
 		return model, model.setMode(nextMode)
 	case "ctrl+c":

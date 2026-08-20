@@ -379,7 +379,7 @@ func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 	if first.Prompt.Input[len(first.Prompt.Input)-1].Content != "Inspect README and finish" {
 		t.Fatalf("unexpected first Agent user message: %q", first.Prompt.Input[len(first.Prompt.Input)-1].Content)
 	}
-	if len(first.Prompt.Tools) != 8 {
+	if len(first.Prompt.Tools) != 9 {
 		t.Fatalf("unexpected first Agent tool count: %d", len(first.Prompt.Tools))
 	}
 	firstPrompt := messageContents(first.Prompt.Input)

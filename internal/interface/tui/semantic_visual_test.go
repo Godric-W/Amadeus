@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
@@ -89,7 +90,7 @@ func TestANSI16StatusBarUsesCodexAccentFamilies(t *testing.T) {
 	model.startup.Branch = "main"
 	model.startup.ContextWindow = 128_000
 	model.contextUsage = 32_000
-	model.collaboration = CollaborationPlan
+	model.collaboration = turn.ModeKindPlan
 	rendered := model.statusBar()
 	for _, sequence := range []string{"\x1b[36m", "\x1b[32m", "\x1b[35m"} {
 		if !strings.Contains(rendered, sequence) {

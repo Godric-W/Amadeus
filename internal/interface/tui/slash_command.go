@@ -3,18 +3,13 @@ package tui
 import (
 	"fmt"
 	"strings"
-)
 
-type CollaborationMode string
-
-const (
-	CollaborationExecute CollaborationMode = "execute"
-	CollaborationPlan    CollaborationMode = "plan"
+	"github.com/Godric-W/Amadeus/internal/agent/turn"
 )
 
 type TaskSubmission struct {
 	Content string
-	Mode    CollaborationMode
+	Mode    turn.ModeKind
 }
 
 type SlashCommand string

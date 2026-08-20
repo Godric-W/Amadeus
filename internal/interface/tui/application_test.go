@@ -25,6 +25,7 @@ type fakeFullscreenApplication struct {
 	modes        []turn.ModeKind
 	interrupts   int
 	approvals    []string
+	userInputs   []protocol.RequestID
 	resumed      []protocol.ThreadID
 	renamed      []string
 	deleted      []uint64
@@ -48,9 +49,13 @@ func newFakeFullscreenApplication() *fakeFullscreenApplication {
 func (fake *fakeFullscreenApplication) Events() <-chan application.InteractiveEvent {
 	return fake.events
 }
-func (fake *fakeFullscreenApplication) SubmitUser(_ context.Context, content string) error {
+func (fake *fakeFullscreenApplication) SubmitUser(_ context.Context, content string, _ protocol.ThreadSettingsOverrides) error {
 	fake.submitted = append(fake.submitted, content)
 	return fake.submitErr
+}
+func (fake *fakeFullscreenApplication) ResolveUserInput(_ context.Context, requestID protocol.RequestID, _ protocol.RequestUserInputResponse) error {
+	fake.userInputs = append(fake.userInputs, requestID)
+	return nil
 }
 func (fake *fakeFullscreenApplication) SubmitCompact(context.Context) error {
 	fake.compactCount++
@@ -207,22 +212,14 @@ func TestFullscreenSubmitsInputDirectlyWhileRunning(t *testing.T) {
 	}
 }
 
-func TestFullscreenPlanTaskWaitsForSettingsAcknowledgement(t *testing.T) {
+func TestFullscreenPlanTaskSubmitsAtomically(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashPlan, Args: "inspect the repository"})
 	model = updated.(fullscreenModel)
 	executeCommand(t, command)
 	fake := fakeApplication(t, model)
-	if len(fake.modes) != 1 || len(fake.submitted) != 0 || model.running {
-		t.Fatalf("before acknowledgement modes=%v submitted=%v running=%v", fake.modes, fake.submitted, model.running)
-	}
-	updated, command = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: testProtocolEvent(
-		"thread-1", "", protocol.ThreadSettingsAppliedEvent{Mode: string(turn.ModeKindPlan)},
-	)}})
-	model = updated.(fullscreenModel)
-	executeCommand(t, command)
-	if model.collaboration != CollaborationPlan || len(fake.submitted) != 1 || fake.submitted[0] != "inspect the repository" {
-		t.Fatalf("after acknowledgement mode=%q submitted=%v", model.collaboration, fake.submitted)
+	if len(fake.modes) != 0 || len(fake.submitted) != 1 || !model.running || model.collaboration != turn.ModeKindPlan {
+		t.Fatalf("atomic plan submission modes=%v submitted=%v running=%v mode=%q", fake.modes, fake.submitted, model.running, model.collaboration)
 	}
 }
 
@@ -234,7 +231,7 @@ func TestFullscreenPlanModeFailureDoesNotChangeProjection(t *testing.T) {
 	message := executeCommand(t, command)
 	updated, _ = updated.(fullscreenModel).Update(message)
 	model = updated.(fullscreenModel)
-	if model.collaboration != CollaborationExecute || !strings.Contains(lastCellContent(model), "session is unavailable") {
+	if model.collaboration != turn.ModeKindDefault || !strings.Contains(lastCellContent(model), "session is unavailable") {
 		t.Fatalf("mode=%q last=%q", model.collaboration, lastCellContent(model))
 	}
 }

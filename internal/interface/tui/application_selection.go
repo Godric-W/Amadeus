@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 
+	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -153,6 +154,16 @@ func (model fullscreenModel) handleSelectionKey(key tea.KeyMsg) (tea.Model, tea.
 					return nil
 				}
 			}
+		case "implement-plan":
+			model.selection = nil
+			model.selectionKind = ""
+			if selected != 0 {
+				return model, model.input.Focus()
+			}
+			model.collaboration = turn.ModeKindDefault
+			model.running = true
+			model.status = "working"
+			return model, tea.Batch(model.submitTask(TaskSubmission{Content: "Implement the plan.", Mode: turn.ModeKindDefault}), model.workingTick())
 		}
 	}
 	return model, nil
