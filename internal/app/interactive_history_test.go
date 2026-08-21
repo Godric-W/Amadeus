@@ -50,6 +50,25 @@ func TestProjectRolloutItemsRejectsInvalidCompletedEvent(t *testing.T) {
 	}
 }
 
+func TestProjectRolloutItemsPrefersCanonicalUserItem(t *testing.T) {
+	now := time.Date(2026, 8, 20, 2, 0, 0, 0, time.UTC)
+	user := protocol.TurnItem{
+		ID: "user-1", Kind: protocol.ItemUserMessage, Status: protocol.ItemStatusCompleted,
+		CreatedAt: now, CompletedAt: now, Text: "inspect", ClientUserMessageID: "client-1",
+	}
+	lines := []rollout.Line{
+		projectorLine(1, rollout.ResponseItem{ThreadID: "thread-1", TurnID: "turn-1", Type: rollout.ResponseUserMessage, Role: "user", Content: "inspect"}),
+		projectorLine(2, rollout.EventMsgItem{Msg: protocol.ItemCompletedEvent{ThreadID: "thread-1", TurnID: "turn-1", Item: user}}),
+	}
+	projection, err := ProjectRolloutItems(lines)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Items) != 1 || projection.Items[0].ID != user.ID || projection.Items[0].ClientUserMessageID != "client-1" {
+		t.Fatalf("projection = %#v", projection.Items)
+	}
+}
+
 func projectorLine(sequence uint64, item rollout.RolloutItem) rollout.Line {
 	return rollout.Line{Version: rollout.CurrentVersion, Sequence: sequence, Timestamp: time.Unix(int64(sequence), 0).UTC(), Item: item}
 }

@@ -32,6 +32,24 @@ func (session *Session) finishTurn(completion Completion) {
 		return
 	}
 	submissionID := session.active.SubmissionID
+	session.active.Output = mergeTaskOutput(session.active.Output, completion.Output)
+	completion.Output = session.active.Output
+	if completion.Cause == nil && completion.Error == nil && session.active.Task.Kind() == TaskKindRegular {
+		if !session.inputQueue.SealIfEmpty(session.active.State) {
+			if err := session.restartActiveTurn(); err == nil {
+				return
+			} else {
+				completion.Error = err
+				if recordErr := session.recordPendingInputBeforeTerminal(completion.TurnID); recordErr != nil {
+					completion.Error = errors.Join(completion.Error, recordErr)
+				}
+			}
+		}
+	} else {
+		if err := session.recordPendingInputBeforeTerminal(completion.TurnID); err != nil && completion.Error == nil {
+			completion.Error = err
+		}
+	}
 	if err := session.persistTaskOutput(submissionID, &completion); err != nil && completion.Error == nil {
 		completion.Error = err
 	}
@@ -40,6 +58,63 @@ func (session *Session) finishTurn(completion Completion) {
 		return
 	}
 	session.finishCompletedTurn(submissionID, completion)
+}
+
+func (session *Session) restartActiveTurn() error {
+	if session.active == nil || session.active.Task == nil {
+		return errors.New("active turn is unavailable for continuation")
+	}
+	previous := session.active.Task
+	running, err := NewRunningTask(session.ctx, session, previous.task, previous.context)
+	if err != nil {
+		return fmt.Errorf("restart active turn continuation: %w", err)
+	}
+	session.active.Task = running
+	session.watchRunningTask(running)
+	return nil
+}
+
+func (session *Session) recordPendingInputBeforeTerminal(turnID protocol.TurnID) error {
+	if session.active == nil || session.active.State == nil {
+		return nil
+	}
+	pending := session.inputQueue.SealAndDrain(session.active.State)
+	if len(pending) == 0 {
+		return nil
+	}
+	regular, _ := session.active.Task.task.(*regularTask)
+	var events protocol.EventSink
+	if regular != nil {
+		events = regular.events
+	}
+	cleanupCtx, cancel := session.cleanupContext()
+	defer cancel()
+	for _, input := range pending {
+		userInput, ok := input.(UserTurnInput)
+		if !ok {
+			return fmt.Errorf("unsupported terminal turn input %T", input)
+		}
+		if err := session.recordUserTurnInput(cleanupCtx, turnID, events, userInput); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func mergeTaskOutput(total, next TaskOutput) TaskOutput {
+	total.Items = append(total.Items, next.Items...)
+	total.Usage = addUsage(total.Usage, next.Usage)
+	total.ToolCallCount += next.ToolCallCount
+	if next.Summary != "" {
+		total.Summary = next.Summary
+	}
+	if next.Outcome != "" {
+		total.Outcome = next.Outcome
+	}
+	if next.Reason != "" {
+		total.Reason = next.Reason
+	}
+	return total
 }
 
 func (session *Session) persistTaskOutput(submissionID protocol.SubmissionID, completion *Completion) error {
@@ -188,6 +263,9 @@ func (session *Session) persistTerminal(turnID protocol.TurnID, events ...protoc
 
 func (session *Session) clearActiveTurn() {
 	session.clearPendingRequests()
+	if session.active != nil {
+		session.inputQueue.SealAndDrain(session.active.State)
+	}
 	session.active = nil
 }
 

@@ -161,9 +161,8 @@ func (model fullscreenModel) handleSelectionKey(key tea.KeyMsg) (tea.Model, tea.
 				return model, model.input.Focus()
 			}
 			model.collaboration = turn.ModeKindDefault
-			model.running = true
-			model.status = "working"
-			return model, tea.Batch(model.submitTask(TaskSubmission{Content: "Implement the plan.", Mode: turn.ModeKindDefault}), model.workingTick())
+			submission := model.prepareTaskSubmission("Implement the plan.", turn.ModeKindDefault, true)
+			return model, tea.Batch(model.flushHistory(), model.submitTask(submission))
 		}
 	}
 	return model, nil

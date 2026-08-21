@@ -34,7 +34,7 @@ type FullscreenClipboardWriter func(string) error
 
 type FullscreenApplicationPort interface {
 	Events() <-chan application.InteractiveEvent
-	SubmitUser(context.Context, string, protocol.ThreadSettingsOverrides) error
+	SubmitUser(context.Context, string, string, protocol.ThreadSettingsOverrides) (protocol.UserMessageAdmission, error)
 	SubmitCompact(context.Context) error
 	SetMode(context.Context, turn.ModeKind) error
 	Interrupt(context.Context) error
@@ -74,58 +74,61 @@ type FullscreenApplication struct {
 }
 
 type fullscreenModel struct {
-	app                    *FullscreenApplication
-	ctx                    context.Context
-	startup                FullscreenStartup
-	input                  textarea.Model
-	renderer               *glamour.TermRenderer
-	lastMouseEvent         time.Time
-	width                  int
-	height                 int
-	transcript             TranscriptState
-	runtimeTranscript      *runtimeprojection.State
-	historyCells           []HistoryCell
-	pendingHistoryCells    []HistoryCell
-	hasEmittedHistoryLines bool
-	historyMode            HistoryRenderMode
-	draft                  string
-	proposedPlanDraft      string
-	completedProposedPlan  bool
-	running                bool
-	status                 string
-	statusDetails          string
-	retryStatus            savedStatus
-	model                  string
-	sessionTitle           string
-	inputUsage             int64
-	outputUsage            int64
-	contextUsage           int64
-	contextLimit           int64
-	history                []string
-	historyPos             int
-	runStartedAt           time.Time
-	palette                terminalPalette
-	clock                  motionClock
-	motion                 motionMode
-	motionStartedAt        time.Time
-	details                *transcriptDetailStore
-	detailViewport         viewport.Model
-	viewingDetails         bool
-	approval               *fullscreenApproval
-	approvalDialog         *approvalDialog
-	userInputRequest       *protocol.RequestUserInputEvent
-	userInputDialog        *requestUserInputDialog
-	sessions               []application.SessionOption
-	slashPopup             slashCommandPopup
-	collaboration          turn.ModeKind
-	selection              *selectionOverlay
-	selectionKind          string
-	skills                 []application.SkillOption
-	pendingSkillsView      string
-	generation             uint64
-	mcpRequestID           uint64
-	clearing               bool
-	shutdownRequested      bool
+	app                     *FullscreenApplication
+	ctx                     context.Context
+	startup                 FullscreenStartup
+	input                   textarea.Model
+	renderer                *glamour.TermRenderer
+	lastMouseEvent          time.Time
+	width                   int
+	height                  int
+	transcript              TranscriptState
+	runtimeTranscript       *runtimeprojection.State
+	historyCells            []HistoryCell
+	pendingHistoryCells     []HistoryCell
+	hasEmittedHistoryLines  bool
+	historyMode             HistoryRenderMode
+	draft                   string
+	proposedPlanDraft       string
+	completedProposedPlan   bool
+	running                 bool
+	status                  string
+	statusDetails           string
+	retryStatus             savedStatus
+	model                   string
+	sessionTitle            string
+	inputUsage              int64
+	outputUsage             int64
+	contextUsage            int64
+	contextLimit            int64
+	history                 []string
+	historyPos              int
+	runStartedAt            time.Time
+	palette                 terminalPalette
+	clock                   motionClock
+	motion                  motionMode
+	motionStartedAt         time.Time
+	details                 *transcriptDetailStore
+	detailViewport          viewport.Model
+	viewingDetails          bool
+	approval                *fullscreenApproval
+	approvalDialog          *approvalDialog
+	userInputRequest        *protocol.RequestUserInputEvent
+	userInputDialog         *requestUserInputDialog
+	sessions                []application.SessionOption
+	slashPopup              slashCommandPopup
+	collaboration           turn.ModeKind
+	selection               *selectionOverlay
+	selectionKind           string
+	skills                  []application.SkillOption
+	pendingSkillsView       string
+	generation              uint64
+	mcpRequestID            uint64
+	clearing                bool
+	shutdownRequested       bool
+	nextClientUserMessage   uint64
+	optimisticUserMessages  map[string]string
+	seenRuntimeUserMessages map[string]struct{}
 }
 
 type savedStatus struct {
@@ -175,6 +178,14 @@ type fullscreenAppEventMsg struct{ event application.InteractiveEvent }
 type fullscreenOperationFailedMsg struct {
 	operation string
 	err       error
+}
+type fullscreenUserMessageAdmittedMsg struct {
+	task      TaskSubmission
+	admission protocol.UserMessageAdmission
+}
+type fullscreenUserMessageRejectedMsg struct {
+	task TaskSubmission
+	err  error
 }
 type fullscreenWorkingTickMsg time.Time
 
@@ -318,6 +329,7 @@ func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscr
 		palette:      palette, clock: systemMotionClock{}, motion: motionAnimated, motionStartedAt: time.Now(),
 		details: newTranscriptDetailStore(0, 0), detailViewport: newTranscriptViewport(initialWidth, 30),
 		runtimeTranscript: runtimeprojection.New(protocol.ThreadID(startup.Session)), generation: snapshot.Generation,
+		optimisticUserMessages: make(map[string]string), seenRuntimeUserMessages: make(map[string]struct{}),
 	}
 	if snapshot.Mode == turn.ModeKindPlan {
 		model.collaboration = turn.ModeKindPlan

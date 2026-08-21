@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
@@ -31,10 +30,7 @@ func TestInlineRendererKeepsTextAndStatusBlocksSeparate(t *testing.T) {
 	}
 }
 
-func TestDefaultTaskPhaseUsesWorking(t *testing.T) {
-	if got := taskPhase(TaskSubmission{Mode: turn.ModeKindDefault}); got != "working" {
-		t.Fatalf("default task phase = %q, want working", got)
-	}
+func TestDefaultStatusHeaderUsesWorking(t *testing.T) {
 	if got := statusHeader("working"); got != "Working" {
 		t.Fatalf("working status header = %q", got)
 	}

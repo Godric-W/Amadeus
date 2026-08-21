@@ -61,6 +61,10 @@ Amadeus 当前处于未发布开发阶段，不承诺自身旧实现的任何兼
 | I. Prompt Construction + Optimization | Codex Prompt 数据模型、ModelMessages、WorldState/Collaboration Mode、Prompt 资产迁移与缓存/Token/Contract 验证 |
 | J. Slash Command + TUI Application Lifecycle Alignment | Active Thread Attachment、canonical replay、typed command lifecycle 与专用 HistoryCell |
 | K. Response Stream Reconnect Lifecycle Alignment | Provider retry 分层、ModelClientSession 重连、typed transient error 与 TUI 状态恢复 |
+| L. Model + Provider Configuration Ownership Alignment | Config v2、Provider transport、ModelInfo、runtime override 与 token policy |
+| M. Codex Architecture Realignment | Protocol identity、typed Rollout、SessionState/Services、SessionTask、StepContext 与 legacy cleanup |
+| N. Runtime Coordination Tools + Plan Mode Alignment | `update_plan`、`request_user_input`、Collaboration Mode 与 Proposed Plan lifecycle |
+| O. Same-Turn User Input + Turn Steer Alignment | UserMessageAdmission、TurnInputQueue、same-Turn continuation、client message identity 与 TUI steer UX |
 
 ## 2. 产品目标
 
@@ -73,6 +77,7 @@ Amadeus 的目标是成为一个真正可用于日常软件开发的通用 Codin
 - 简单任务可以直接执行；复杂任务可以通过 `update_plan` 维护可见计划。
 - `/plan` 进入与 Codex 对齐的显式 Plan Mode，用于分析和规划，不实施文件或命令副作用。
 - Default 与 Plan Mode 都可以通过 `request_user_input` 在当前 Turn 内请求结构化用户输入并继续执行；用户提问是独立交互能力，不属于 Approval。
+- 用户可以在 Regular Turn 运行期间继续提交普通消息；Runtime 将其作为 steer input 接纳到同一 Turn，并在当前 Model Step 后继续，而不是静默排队成下一 Turn。
 - `/compact` 调用正式的上下文压缩服务，而不是仅清空 TUI 文本。
 - 文件修改默认对能力较弱或不稳定的模型保持安全：先生成 Diff，再由用户确认，最后写入。
 - Runtime 不依赖 TUI，未来可以被其他界面复用。
@@ -91,9 +96,10 @@ Amadeus 的目标是成为一个真正可用于日常软件开发的通用 Codin
 | Claude-style 文件 Tool | Claude Code | `read`、`edit`、`write`、`glob`、`grep` 的模型指引和使用边界以 Claude Code 对应 Tool Prompt 为准 |
 | Codex-style Runtime Tool | Codex | `update_plan`、`write_stdin` 和命令续接提示以 Codex 对应 Tool Prompt/Contract 为准 |
 | 用户输入 Tool | Codex 为架构、Claude Code 为 UX 参考 | `request_user_input` 使用独立 Request Event/Answer Op/Session waiter；稳定 Question ID、Default/Plan 通用，并选择性吸收多选与 Other 体验，不复用 Approval `updatedInput` |
+| Turn Steer | Codex | 普通 `UserInputOp` 通过 Started/Steered admission 接纳；ActiveTurn 持有 TurnInputQueue，`run_turn` 在 Model Step 边界 drain 并继续同一 Turn |
 | Command Tool | Codex + Amadeus | `execute_command`、ProcessManager、Approval 复用和宿主执行边界遵循 Amadeus 已有 Contract 与 Codex unified exec 语义 |
 | Approval TUI | Claude Code | 展示操作和结构化 Diff，使用范围明确的动态选项与键盘交互；不直接修改权限状态 |
-| Event Protocol | Codex | Submission、Event、EventMsg、TurnItem 生命周期、Approval/User Input request 与 Delta |
+| Event Protocol | Codex | Submission、UserMessageAdmission request/response、Event、EventMsg、TurnItem 生命周期、Approval/User Input request 与 Delta |
 | TUI 数据模型与视觉 | Codex | EventReducer、HistoryCell、ActiveHistoryCell、Working、Slash Popup、状态栏 |
 | Slash Command | Codex | 命令分为 TUI Local、Application Action 与 Core Op，不拥有业务状态 |
 | MCP、Skill | Codex 为主 | 统一进入 SessionServices、ToolRouter、TurnItem 和 EventMsg |
@@ -451,8 +457,9 @@ type ThreadSettingsOverrides struct {
 }
 
 type UserInputOp struct {
-    Content        string
-    ThreadSettings ThreadSettingsOverrides
+    Content             string
+    ClientUserMessageID string
+    ThreadSettings      ThreadSettingsOverrides
 }
 
 type ThreadSettingsOp struct {
@@ -460,7 +467,27 @@ type ThreadSettingsOp struct {
 }
 ```
 
-`UserInputOp.ThreadSettings` 在创建 TurnContext 前原子应用；因此 `/plan <task>` 不需要 TUI 保存 `pendingModeTask`、等待 settings acknowledgement 后再提交第二个业务请求。独立 `ThreadSettingsOp` 只用于不启动 Turn 的 `/plan` 和快捷模式切换。两种 Op 都进入 Session Submission 串行队列，不能在 ActiveTurn 运行期间原地改变已冻结的 TurnContext。
+`UserInputOp.ThreadSettings` 在接纳用户消息前原子应用；因此 `/plan <task>` 不需要 TUI 保存 `pendingModeTask`、等待 settings acknowledgement 后再提交第二个业务请求。若消息启动新 Turn，更新后的 settings 用于冻结新 TurnContext；若消息 steer 当前 Turn，当前已冻结 TurnContext 保持不变，更新后的 SessionConfiguration 只影响后续 Turn。独立 `ThreadSettingsOp` 只用于不提交用户消息的 `/plan` 和快捷模式切换，不能在 ActiveTurn 运行期间原地改变已冻结的 TurnContext。
+
+普通用户消息只有一个 `UserInputOp`；steer 是该消息被 Runtime 接纳到当前 Turn 的方式，不是第二种用户意图，也不新增 `SteerOp`。Session 必须为用户消息返回 typed admission：
+
+```go
+type UserMessageAdmissionKind string
+
+const (
+    UserMessageAdmissionStarted UserMessageAdmissionKind = "started"
+    UserMessageAdmissionSteered UserMessageAdmissionKind = "steered"
+)
+
+type UserMessageAdmission struct {
+    Kind   UserMessageAdmissionKind
+    TurnID TurnID
+}
+```
+
+`UserMessageAdmission` 是 submission request 的同步接纳结果，不是 `EventMsg`、TurnItem 或 canonical RolloutItem。`Started` 表示消息创建并启动新 Regular Turn；`Steered` 表示消息已进入现有 Regular ActiveTurn 的 pending input。`AmadeusThread.SubmitUserInputAndWaitForAdmission` 对齐 CodexThread 的 admission API：先按 SubmissionID 注册一次性 waiter，再通过既有 SessionIo Submission 边界提交，Session 完成接纳后返回 admission。普通 `Submit` 只保证 Submission 已进入 Runtime channel，不能被 TUI 用来推断 Started/Steered。
+
+对需要基于缓存 ActiveTurn 做严格路由的未来远程/API caller，`AmadeusThread.SteerInput` 接受 required `ExpectedTurnID`；实际 ActiveTurn 不存在、TurnID 不匹配或当前 Task 不可 steer 时必须返回 typed error，不能静默注入另一个 Turn。基础 in-process TUI 优先使用 admission API，避免只依据本地 `running` 状态猜测 Core 状态。
 
 ### 8.6 internal Session
 
@@ -483,6 +510,8 @@ type Session struct {
 - 创建 TurnContext，并记录 TurnStartedEvent、TurnCompleteEvent 或 TurnAbortedEvent canonical RolloutItem。
 - 创建、持有、调度和取消 SessionTask。
 - 路由 Approval Decision、User Input Answer 与 Interrupt。
+- 对 `UserInputOp` 执行 Started/Steered admission，并完成按 SubmissionID 注册的 user message admission waiter。
+- 将 steer input 放入当前 Turn 的 `TurnInputQueue`，而不是 Session deferred submission queue。
 - 决定需要记录的 Runtime 事实，通过 LiveThread 追加 canonical RolloutItem；瞬时 Delta、Working 和未决交互请求不进入 canonical Rollout。
 - 使用 InitialHistory 重建 SessionState 与 ContextManager 投影。
 - 在持久化和 flush 后发布 Turn 终态事件。
@@ -678,7 +707,7 @@ type StepContext struct {
 - ToolRouter 是当前 Step 最终广告和允许执行的工具计划；它冻结 exact ToolDefinition binding、visibility、parallel capability，以及 MCP、Skill、AgentsMd 和 router revision，由 ToolExecutionService 用于拒绝 stale deferred/lazy capability。
 - capture 顺序必须先刷新 AgentsMd、Skill 与 MCP snapshot，再构造 ToolRouter 和 PromptSnapshot；Prompt 在 sampling request 构建阶段从 ContextManager、TurnContext 与 StepContext 统一生成，不能把可变 Prompt、EventSink 或 mutable resolver handle 塞进 StepContext。
 - Plan Mode 通过 TurnContext.CollaborationMode 驱动 Prompt assembly，并在 StepContext.ToolRouter 中应用 request-scoped Tool policy；不创建另一种 SessionTask 或另一条 Engine 主链。
-- ToolRouter snapshot 是模式 Tool 可见性的唯一事实源；Prompt guidance、模型 ToolSpec 与实际 dispatch 必须读取同一 snapshot。`prepareDynamicContext` 不得再次调用 mutable Registry 计算第二份 Plan Tool 列表。
+- ToolRouter snapshot 是模式 Tool 可见性的唯一事实源；Prompt guidance、模型 ToolSpec 与实际 dispatch 必须读取同一 snapshot。一次性的 `prepareStaticTurnContext` 与逐批输入执行的 `prepareInputContext` 都不得再次调用 mutable Registry 计算第二份 Plan Tool 列表。
 
 ### 8.12 ActiveTurn
 
@@ -688,11 +717,16 @@ type StepContext struct {
 type ActiveTurn struct {
     SubmissionID SubmissionID
     Task         *RunningTask
-    pending      map[RequestID]chan Op
+    State        *TurnState
+}
+
+type TurnState struct {
+    pendingRequests map[RequestID]chan Op
+    pendingInput    TurnInputQueue
 }
 ```
 
-ActiveTurn 只保存当前 Submission correlation、RunningTask 和 typed pending interactive waiter。Approval 与 `request_user_input` 使用不同 Request/Response 类型，但都由 Session Loop 按 RequestID 注册、交付和清理；不得把用户问题答案塞入 ApprovalDecision。Usage 与 Tool Call 计数由 `run_turn` 累计并通过最小 `TaskOutput` 返回；SessionPermissionContext 属于 SessionServices。Turn 完成后，Session 清除 pending waiter 与 ActiveTurn，历史 Turn 生命周期继续保存在 canonical Rollout 中。
+ActiveTurn 只保存当前 Submission correlation、RunningTask 和 TurnState。TurnState 是当前 Turn 的可变协调状态：Approval 与 `request_user_input` 使用不同 Request/Response 类型，但都由 Session Loop 按 RequestID 注册、交付和清理；`pendingInput` 保存已接纳但尚未进入模型 history 的同 Turn 输入，两者不得复用 channel、RequestID 或 payload。Usage 与 Tool Call 计数由 `run_turn` 累计并通过最小 `TaskOutput` 返回；SessionPermissionContext 属于 SessionServices。Turn 完成后，Session 清除 pending waiter、TurnInputQueue 与 ActiveTurn，历史 Turn 生命周期继续保存在 canonical Rollout 中。
 
 ### 8.13 RunningTask 与 SessionTask
 
@@ -702,9 +736,16 @@ ActiveTurn 只保存当前 Submission correlation、RunningTask 和 typed pendin
 type SessionTask interface {
     Run(context.Context, *Session, *TurnContext) (TaskOutput, error)
 }
+
+type TaskKind string
+
+const (
+    TaskKindRegular TaskKind = "regular"
+    TaskKindCompact TaskKind = "compact"
+)
 ```
 
-SessionTask 直接使用 Session 提供的 typed 方法。ContextManager 的 mutation 只能由 Session 对已接纳的 canonical facts 执行。`TaskOutput` 只表达任务产生的最小业务输出。TurnCompleteEvent、TurnAbortedEvent、ErrorEvent、Usage、Tool count、canonical append 和 Event 发布由 Session 统一创建。`RunningTask` 是 Session 保存的运行记录，持有具体 Task、TurnContext、cancellation、execution handle 和 completion notification；启动 goroutine、取消、清理 ActiveTurn 与终态收尾属于 Session。
+SessionTask 直接使用 Session 提供的 typed 方法。ContextManager 的 mutation 只能由 Session 对已接纳的 canonical facts 执行。`TaskOutput` 只表达任务产生的最小业务输出。TurnCompleteEvent、TurnAbortedEvent、ErrorEvent、Usage、Tool count、canonical append 和 Event 发布由 Session 统一创建。`RunningTask` 是 Session 保存的运行记录，持有具体 Task、TaskKind、TurnContext、cancellation、execution handle 和 completion notification；启动 goroutine、取消、清理 ActiveTurn 与终态收尾属于 Session。基础版只有 Regular 可 steer，Compact 明确返回 `ActiveTurnNotSteerable`；不得继续使用 `compact bool` 作为 Task identity 或 steerability 判断。
 
 首批 SessionTask：
 
@@ -759,15 +800,68 @@ Capture StepContext
 
 Model Step 只是内部运行和遥测术语，不建表、不进入 canonical 产品协议，也不作为 TUI 强制分隔边界。恢复只依赖 canonical Rollout；不会恢复旧 Model Step、Provider stream 或 Go 调用栈。
 
+### 8.16 Turn Steer、TurnInput 与 InputQueue
+
+Turn steer 表示用户在一个 Regular Turn 运行期间补充信息。补充消息属于当前 Turn，在当前模型步骤结束后进入同一 `run_turn` 的下一次 continuation；它不创建第二个 TurnStartedEvent，不独立产生 Turn terminal，也不复用 `request_user_input` 或 Approval lifecycle。
+
+内部数据模型固定为：
+
+```go
+type TurnInput interface {
+    isTurnInput()
+}
+
+type UserTurnInput struct {
+    Content  string
+    ClientID string
+}
+
+type TurnInputQueue struct {
+    // Turn-local FIFO storage; implementation owns synchronization/sealing.
+}
+
+type InputQueue struct {
+    // Session-scoped coordinator for enqueue/has/drain and future activity notification.
+}
+```
+
+基础版只实现文字 `UserTurnInput`；未来在真实需要 additional context、multi-agent mailbox 或多模态输入时再增加新的 TurnInput variant，不提前复制 Codex 的完整 InputQueue 功能。`TurnInputQueue` 是 Turn-scoped storage，随 ActiveTurn 创建和销毁；`InputQueue` 是 Session-scoped coordinator，本身不得成为第二份 conversation history。
+
+普通用户消息接纳顺序固定为：
+
+```text
+Receive UserInputOp
+→ validate input and atomically apply ThreadSettingsOverrides
+→ try steer current ActiveTurn
+   → active Regular Task: enqueue UserTurnInput, return Steered{TurnID}
+   → no ActiveTurn: create RegularTask, return Started{TurnID}
+   → active Compact Task: return ActiveTurnNotSteerable
+→ complete UserMessageAdmission waiter
+```
+
+显式 steer 的错误模型至少包括：
+
+- `NoActiveTurn`
+- `ExpectedTurnMismatch{Expected, Actual}`
+- `ActiveTurnNotSteerable{TaskKind}`
+- `EmptyInput`
+
+Session 的 deferred submission queue 只保存明确允许延后执行的 Session operation；`UserInputOp` 在 ActiveTurn 期间不得进入该 queue。Core 不静默把 rejected steer 变成下一 Turn；如未来需要“压缩结束后自动发送”，由 Interface/Application 维护用户可见的 rejected-steer queue，并在重新提交时获得新的 admission。
+
+Steer 默认不取消正在进行的普通模型 stream、Tool、Approval wait 或 `request_user_input` wait。特殊等待 Tool 若未来需要被新输入唤醒，必须订阅 typed InputQueue activity，不得让所有 Tool 隐式观察全局输入 channel。
+
+`ClientUserMessageID` 用于 Interface optimistic rendering 与 Runtime UserMessage Item 的确认/去重。初始输入和 steered input 都必须形成同一 canonical/live 生命周期：先追加当前 Turn 的 `ResponseUserMessage` 和需要持久化的 completed UserMessage TurnItem，再发布 Item lifecycle Event；TUI 不得长期依赖“初始消息只由本地插入、steer 消息只由 Runtime 插入”的双来源规则。
+
 ## 9. Canonical Runtime 流程
 
 ### 9.1 Canonical Turn Flow
 
 ```text
 User Input
-→ AmadeusThread.Submit(UserInputOp)
+→ AmadeusThread.SubmitUserInputAndWaitForAdmission(UserInputOp)
 → SessionIo.Submissions
 → internal Session 接纳输入
+→ 无 ActiveTurn 时返回 Started，创建新 Turn
 → 构建 TurnContext
 → 创建 RegularTask
 → LiveThread 物化 SessionMetaItem（仅首次）
@@ -807,6 +901,39 @@ User Input
 
 `SessionIo` 是唯一 canonical 生命周期协议。`run_turn`、Tool 和 Application 只通过 Session-owned typed methods 与 `Submission/Event/EventMsg` 边界进入统一主链。
 
+#### 9.1.1 Same-Turn Steer Flow
+
+Active Regular Turn 期间的补充输入使用同一 Submission 入口，但返回 `Steered` admission：
+
+```text
+User Input while Regular Turn is active
+→ AmadeusThread.SubmitUserInputAndWaitForAdmission(UserInputOp)
+→ Session Loop validates settings and current ActiveTurn
+→ InputQueue appends UserTurnInput to ActiveTurn.TurnState.pendingInput
+→ return UserMessageAdmission{Steered, current TurnID}
+→ current Model Step / Tool continues without ordinary preemption
+→ persist current model/tool completion
+→ run_turn observes pending input and keeps the same Turn alive
+→ FIFO drain pending input
+→ canonical append ResponseUserMessage + completed UserMessage TurnItem
+→ publish UserMessage Item lifecycle
+→ refresh input-dependent Skill/MCP context
+→ capture a new StepContext
+→ sample the next continuation in the same Turn
+→ eventually publish the single Turn terminal
+```
+
+Same-turn steer 的关键不变量：
+
+1. Steered admission 返回的 TurnID 必须等于当前 ActiveTurn TurnID。
+2. 初始用户输入必须先进入第一次模型请求；刚启动 Turn 时到达的 steer 不能越过初始输入。
+3. pending input 在下一次 sampling request 构建前进入 canonical Rollout 和 ContextManager；不得只存在于 TUI 或 `regularTask.goal`。
+4. 一个或多个 steer 不产生额外 TurnStartedEvent、TurnContextItem 或 Turn terminal。
+5. 多个 steer 按接纳顺序 FIFO 记录和采样；不得按 goroutine 完成顺序重排。
+6. Final model response 与 pending input 同时存在时，Final Response 先完成其 canonical Item lifecycle，然后 pending input 触发同 Turn follow-up。
+7. Interrupt 或终态竞态不得静默丢弃已经返回 `Steered` 的输入；无法继续采样时至少应在 terminal 前记录已接纳 UserMessage，或通过原子 sealing 让该提交退化为新 Turn admission。
+8. ApprovalDecisionOp、UserInputAnswerOp 和 steer UserInputOp 使用不同路由；普通用户消息不得满足 interactive waiter。
+
 ### 9.2 Go Runtime Concurrency Model
 
 Amadeus 学习 Codex 和 Claude Code 的架构语义，但 Runtime 必须使用符合 Go 习惯的所有权、取消和并发模型，而不是逐类或逐文件翻译其他语言实现。
@@ -818,6 +945,8 @@ Amadeus 学习 Codex 和 Claude Code 的架构语义，但 Runtime 必须使用�
 ```text
 Session Loop
 ├── 接收 Submission
+├── 完成 UserMessage Started/Steered admission
+├── 向 ActiveTurn TurnInputQueue 接纳 steer input
 ├── 路由 Approval Response
 ├── 接收 RunningTask Result
 ├── 管理 ActiveTurn
@@ -825,7 +954,7 @@ Session Loop
 └── 处理 Shutdown
 ```
 
-Session Loop 是 SessionState、ActiveTurn、InputQueue 和 Turn 接纳顺序的主要单一所有者。优先通过单 goroutine 所有权避免为每个字段增加 Mutex；跨 goroutine 共享的只读 Snapshot、缓存或进程状态才使用短临界区 Mutex/RWMutex。
+Session Loop 是 SessionState、ActiveTurn、InputQueue 和 Turn 接纳顺序的主要单一所有者。优先通过单 goroutine 所有权避免为每个字段增加 Mutex；但 TurnInputQueue 同时由 Session Loop enqueue、RunningTask/run_turn inspect/drain，因此必须通过 TurnState 内部短临界区或等价原子协议保护，不能依赖 Go `select` 在 Submission 与 Completion 同时 ready 时的非确定顺序。
 
 #### RunningTask
 
@@ -834,6 +963,7 @@ Session Loop 是 SessionState、ActiveTurn、InputQueue 和 Turn 接纳顺序的
 - 同一 Session 最多只有一个前台 ActiveTurn/RunningTask。
 - RunningTask 必须有明确 parent Context、CancelCause、Done Result 和 cleanup owner。
 - RunningTask goroutine 无论正常返回、Context 取消还是 panic，都只能发送一次 Completion 并关闭自己的 done channel。
+- RunningTask 返回前必须与 TurnInputQueue 完成原子 completion handshake：有 pending input 时继续 Turn；无 pending input 时 seal 当前 queue 后才允许返回。seal 后到达的普通用户消息不能再得到当前 Turn 的 `Steered` admission。
 - RunningTask 不能直接关闭 SessionIo Channel，也不能在返回后继续修改 SessionState。
 - Bubble Tea `tea.Cmd` 或其他 Interface 后台任务返回只表示界面 goroutine 完成，不构成第二套 Turn 终态。
 
@@ -870,6 +1000,7 @@ type SessionIo struct {
 ```
 
 - Channel 只用于生命周期和所有权边界，不替代普通同步函数调用。
+- UserMessageAdmission 使用按 SubmissionID 注册的一次性 waiter；它是提交 request/response，不增加第二条长期公开 Event channel，也不进入 Rollout。
 - 创建并发送数据的一方负责关闭 Channel；消费者不得关闭接收端。
 - Session 退出时按固定顺序停止接纳 Submission、取消 RunningTask、完成持久化、关闭输出并通知 Terminated。
 - Event Channel 使用有界缓冲；高频 Delta 可以在投影层合并，Turn/Item 终态、Approval request 与 User Input request 不得静默丢失。
@@ -941,6 +1072,7 @@ func runTurn(
 - 发布 ApprovalRequestEvent 并等待 correlated ApprovalDecisionOp；
 - 通过 Session-owned Approval port 等待 ActiveTurn 中 correlated pending decision；
 - 发布 RequestUserInputEvent 并通过 Session-owned interaction port 等待 correlated UserInputAnswerOp；
+- 在 Model Step 边界检查、drain 并 canonical record 当前 ActiveTurn 的 pending TurnInput；
 - 更新 Turn usage/tool-call counters，但不直接完成或清除 ActiveTurn。
 
 Session 是 Task completion、Turn terminal、ActiveTurn cleanup 和 durable terminal flush 的唯一 owner。
@@ -954,11 +1086,13 @@ Capture StepContext
 → Check Context Budget / Maybe Compact
 → Sample Model Stream
 → Persist completed model ResponseItems
-→ If Final Response: return
 → If Tool Calls: Execute with the same StepContext
 → Persist one Tool Result for every Tool Call
-→ Rebuild Context projection
-→ Continue with a newly captured StepContext
+→ Inspect model continuation and pending TurnInput
+→ If neither requires follow-up: seal TurnInputQueue and return
+→ Drain allowed pending TurnInput into canonical history
+→ Refresh input-dependent context and capture a new StepContext
+→ Continue in the same Turn
 ```
 
 关键规则：
@@ -967,7 +1101,34 @@ Capture StepContext
 - 每个 Tool Call 都必须产生 Tool Result，包括 denied、failed、stale、cancelled 和 argument error；普通 Tool 错误作为模型可见结果继续循环，不直接使 Turn failed。
 - 只有 Provider fatal error、Context/persistence invariant 破坏、无法补齐 Tool 协议或 Session 内部错误才以 failed 结束。
 - Final Response 不由独立 Analyze 阶段判定；Provider Adapter 输出的标准化 finish reason 与 ResponseItem 决定 continuation。
+- Final Response 只表示当前 sampling request 不再要求模型自身 continuation；当 ActiveTurn 仍有 pending TurnInput 时，`run_turn` 必须在同一 Turn 内继续。
 - `run_turn` 不保存可恢复执行位置；Resume 从 canonical Rollout 重建 Context，再由新 Turn 重新采样。
+
+#### 10.3.1 Pending Input Drain 与 Compaction 顺序
+
+`run_turn` 使用内部 `canDrainPendingInput` 或等价状态表达当前 continuation 是否允许消费 steer：
+
+- 新 Regular Turn 的第一次 sampling request 前为 false，确保初始 UserInput 先被采样。
+- 普通 sampling request 完成并持久化结果后为 true。
+- Tool Calls 先使用产生这些调用的同一 StepContext 执行并持久化 Tool Result，再允许 pending input 进入后续请求。
+- auto-compaction request 不包含尚未 drain 的 steer input。
+- 若 compaction 后仍需恢复压缩前已有的 model/tool continuation，steer 继续 pending，直到该 continuation 完成。
+- 若模型已经 Final，只有 pending input 要求 follow-up，则 compact 完成后可以直接 drain steer，不发送无业务输入的空恢复请求。
+
+每批 drain 的顺序固定为：
+
+```text
+Take pending TurnInput in FIFO order
+→ run input inspection/hooks
+→ durable append current-Turn ResponseUserMessage
+→ append completed UserMessage TurnItem according to store policy
+→ update ContextManager through the same Session append boundary
+→ publish live UserMessage Item lifecycle
+→ refresh input-dependent explicit Skill context; recapture current MCP binding in StepContext
+→ capture StepContext from the updated canonical history
+```
+
+Steer 接纳时只进入 TurnInputQueue，不立即修改正在采样请求所使用的 PromptSnapshot。ContextManager 仍是唯一模型历史 owner；不得在 InputQueue、TUI 或 ModelClientSession 中维护第二份已消费 steer history。
 
 Tool 调用链采用明确的混合边界，而不是强行复制任一参考项目：
 
@@ -2649,8 +2810,10 @@ SlashCommand::Exit
 - 保留 Amadeus Logo 和 `>_` 启动视觉。
 - 历史内容尽量进入终端原生 scrollback。
 - 鼠标默认保留终端选择文本能力。
-- 输入运行期间仍可编辑；Enter 是否提交由 Runtime 状态决定。
+- 输入运行期间仍可编辑；普通文本 Enter 始终提交 `UserInputOp`，由 Runtime admission 决定 Started、Steered 或 typed rejection，TUI 不依据 `running bool` 自行改写为下一 Turn。
 - Amadeus 只维护这一套 Rich Inline 交互运行时；不提供 `--plain` 第二套输入、状态和事件路径。
+
+运行中提交普通文本并获得 `Steered` 时，TUI 保持当前 Turn 的 elapsed timer、Working/activity state、details store 和 active item，不重新执行新 Turn 初始化，也不插入第二个 Worked boundary。获得 `Started` 时由后续 `TurnStartedEvent` 初始化新 Turn；获得 `ActiveTurnNotSteerable` 等 rejection 时恢复或保留 composer 内容并显示明确错误，不能假装提交成功后静默排队。
 
 ### 19.2 HistoryCell
 
@@ -2687,6 +2850,8 @@ Event/EventMsg
 - WorkedSeparatorCell
 
 `ActiveHistoryCell` 按 `ItemID` 保存进行中状态；Delta 只能更新对应 Item，不能依赖“当前最后一个 Cell”猜测归属。`ItemCompletedEvent` 完成对应 Active Cell 并只提交一次正式 HistoryCell；如果 Resume 只有持久化的 ItemCompletedEvent，则 Reducer 直接合成正式 Cell。
+
+UserMessage 使用 `ClientUserMessageID` 支持 optimistic projection：TUI 可在提交时立即插入 pending UserMessageCell；Runtime canonical record 后发布带同一 client ID 的 completed UserMessage Item，Reducer 将其确认或去重。初始输入与 steered input 使用相同映射；未知 client ID 的 Runtime UserMessage 仍按正常 completed Item 渲染，以支持其他 caller、Resume 和未来远程输入。
 
 实时与恢复使用同一 `TurnItem → HistoryCell` 映射：
 
@@ -3555,7 +3720,7 @@ Amadeus 至少通过以下真实场景：
 12. Skill 以 `SkillCatalog`、`SkillMetadata`、`SkillInjection` 和 Resource Boundary 为唯一生产主链；正文渐进式披露，references 按需读取，scripts 统一经 `execute_command`，不建立独立 Skill Executor。
 13. JSONL typed RolloutItem 是完整 durable history 的唯一事实；SQLite StoredThread 只保存可重建 metadata/index，旧格式数据直接删除重建。
 14. ThreadManager 是 Thread 创建和恢复入口；LiveThread → ThreadStore → LocalThreadStore 是唯一持久化链。
-15. AmadeusThread 是 Interface 唯一 Runtime 句柄；TUI 只提交带 ID 的 Submission、消费 Event/EventMsg，并分别以 ApprovalDecisionOp、UserInputAnswerOp 回答 ApprovalRequestEvent、RequestUserInputEvent。
+15. AmadeusThread 是 Interface 唯一 Runtime 句柄；TUI 通过它提交带 ID 的 Submission、等待 UserMessageAdmission、消费 Event/EventMsg，并分别以 ApprovalDecisionOp、UserInputAnswerOp 回答 ApprovalRequestEvent、RequestUserInputEvent。
 16. TurnItem 是 EventMsg 和 HistoryCell 的稳定业务项；需要恢复的完成态以 EventMsgItem(ItemCompletedEvent) 原样持久化，Delta 只服务实时更新。
 17. Slash Command 分为 TUI Local、Application Action 与 Core Op，不直接拥有 Runtime 或持久化状态。
 18. internal Session 是 SessionTask、ActiveTurn、ContextManager、Event Delivery 和终态收尾的唯一所有者；ContextManager 在运行期增量记录，Resume 时仅重建一次。
@@ -3566,3 +3731,5 @@ Amadeus 至少通过以下真实场景：
 23. StepContext 持有 immutable ToolRouter；同一 snapshot 同时提供模型 specs 与 exact ToolDefinition/MCP dispatch，不在执行时重新查询 mutable registry。
 24. AgentsMdManager/LoadedAgentsMd、SkillCatalog 和 MCPRuntime 分别直接归 SessionServices 所有，不存在 generic Extension/Instruction assembly。
 25. Amadeus 处于开发阶段，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 兼容；架构替换直接删除旧实现与兼容测试。
+26. 普通用户消息只有一个 UserInputOp；无 ActiveTurn 时 admission 为 Started，Active Regular Turn 时为 Steered，显式 strict steer 使用 ExpectedTurnID 防止错误注入。
+27. Steered input 由 ActiveTurn TurnState 中的 TurnInputQueue 按 FIFO 保存，在当前 Model Step、Tool 和必要 compaction continuation 后进入 canonical history 并触发同一 Turn follow-up；它不创建第二个 Turn lifecycle，也不复用 Approval 或 request_user_input。

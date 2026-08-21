@@ -118,6 +118,9 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 	case protocol.ItemCompletedEvent:
 		switch item.Item.Kind {
 		case protocol.ItemUserMessage:
+			if !model.shouldRenderRuntimeUserMessage(item.Item) {
+				return nil
+			}
 			model.flushCompletedActivityBeforeBoundary()
 			model.insertHistoryCell(NewUserMessageCell(item.Item.Text))
 			return nil
@@ -222,6 +225,25 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 	return nil
 }
 
+func (model *fullscreenModel) shouldRenderRuntimeUserMessage(item protocol.TurnItem) bool {
+	clientID := strings.TrimSpace(item.ClientUserMessageID)
+	if clientID == "" {
+		return true
+	}
+	if model.seenRuntimeUserMessages == nil {
+		model.seenRuntimeUserMessages = make(map[string]struct{})
+	}
+	if _, exists := model.seenRuntimeUserMessages[clientID]; exists {
+		return false
+	}
+	model.seenRuntimeUserMessages[clientID] = struct{}{}
+	if _, optimistic := model.optimisticUserMessages[clientID]; optimistic {
+		delete(model.optimisticUserMessages, clientID)
+		return false
+	}
+	return true
+}
+
 func (model *fullscreenModel) recoverDeltaStart(event protocol.Event) bool {
 	var itemID protocol.ItemID
 	var kind protocol.ItemKind
@@ -255,6 +277,9 @@ func (model *fullscreenModel) restoreCompletedItems(items []protocol.TurnItem) {
 	for _, item := range items {
 		switch item.Kind {
 		case protocol.ItemUserMessage:
+			if !model.shouldRenderRuntimeUserMessage(item) {
+				continue
+			}
 			model.flushCompletedActivityBeforeBoundary()
 			model.insertHistoryCell(NewUserMessageCell(item.Text))
 		case protocol.ItemAssistantMessage:

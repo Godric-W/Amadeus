@@ -17,6 +17,11 @@ import (
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
+type preparedContextUpdate struct {
+	key     agentcontext.UpdateKey
+	content string
+}
+
 func (session *Session) prepareTurn(ctx context.Context, services *SessionServices, goal string, turnContext *turn.TurnContext) error {
 	if session == nil || services == nil || turnContext == nil {
 		return fmt.Errorf("turn context preparation is incomplete")
@@ -24,12 +29,15 @@ func (session *Session) prepareTurn(ctx context.Context, services *SessionServic
 	if err := session.refreshAgentsMd(ctx, services, turnContext.TurnID, turnContext.CWD); err != nil {
 		return err
 	}
-	return services.prepareDynamicContext(ctx, goal, turnContext, session.ContextUpdate, session.AppendItems)
+	if err := services.prepareStaticTurnContext(ctx, turnContext, session.ContextUpdate, session.AppendItems); err != nil {
+		return err
+	}
+	return services.prepareInputContext(ctx, goal, turnContext, session.ContextUpdate, session.AppendItems)
 }
 
-func (services *SessionServices) prepareDynamicContext(ctx context.Context, goal string, turnContext *turn.TurnContext, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error) error {
+func (services *SessionServices) prepareStaticTurnContext(ctx context.Context, turnContext *turn.TurnContext, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error) error {
 	if services == nil || turnContext == nil || contextUpdate == nil || appendItems == nil {
-		return fmt.Errorf("dynamic context preparation is incomplete")
+		return fmt.Errorf("static turn context preparation is incomplete")
 	}
 	tools := services.tools.SnapshotRouter(services.visibility, tool.RequestSnapshot{}, func(spec tool.ToolSpec) bool {
 		return turnContext.Mode != turn.ModeKindPlan || engine.PlanModeToolAllowed(spec)
@@ -44,41 +52,6 @@ func (services *SessionServices) prepareDynamicContext(ctx context.Context, goal
 	}
 	developer, err := internalprompt.RenderCollaborationInstructions(modelMessages, turnContext.Mode, toolNames)
 	if err != nil {
-		return err
-	}
-	contextItems := make([]rollout.RolloutItem, 0, 6)
-	worldState := agentcontext.NewWorldState()
-	setUpdate := func(key agentcontext.UpdateKey, content string) error {
-		if err := worldState.Set(key, content); err != nil {
-			return err
-		}
-		fragment := worldState.Fragment(key)
-		if fragment.Render() == "" {
-			if contextUpdate(key) == "" {
-				return nil
-			}
-			item, err := rollout.NewEventMsgItem(protocol.ContextUpdateEvent{Key: string(key)})
-			if err != nil {
-				return err
-			}
-			contextItems = append(contextItems, item)
-			return nil
-		}
-		rendered := fragment.Render()
-		if contextUpdate(key) == rendered {
-			return nil
-		}
-		item, err := rollout.NewEventMsgItem(protocol.ContextUpdateEvent{Key: string(key), Content: rendered, Revision: fragment.Revision()})
-		if err != nil {
-			return err
-		}
-		contextItems = append(contextItems, item)
-		return nil
-	}
-	if err := setUpdate(agentcontext.UpdateCollaborationMode, developer); err != nil {
-		return err
-	}
-	if err := setUpdate(agentcontext.UpdateEnvironment, fmt.Sprintf("<cwd>%s</cwd>", html.EscapeString(turnContext.CWD))); err != nil {
 		return err
 	}
 	effective := services.fileSystem.EffectiveProfile()
@@ -98,14 +71,37 @@ func (services *SessionServices) prepareDynamicContext(ctx context.Context, goal
 	if err != nil {
 		return err
 	}
-	if err := setUpdate(agentcontext.UpdatePermissionMode, "## Permission And Isolation Context\n\nPermission context (enforced by runtime, not by this text): "+string(encodedPermission)); err != nil {
+	mcpContext := ""
+	if services.mcp != nil {
+		mcpContext = "MCP tools are available only through their exposed Tool Specs and current bindings."
+	}
+	return persistPreparedContextUpdates(ctx, turnContext.TurnID, contextUpdate, appendItems,
+		preparedContextUpdate{key: agentcontext.UpdateCollaborationMode, content: developer},
+		preparedContextUpdate{key: agentcontext.UpdateEnvironment, content: fmt.Sprintf("<cwd>%s</cwd>", html.EscapeString(turnContext.CWD))},
+		preparedContextUpdate{key: agentcontext.UpdatePermissionMode, content: "## Permission And Isolation Context\n\nPermission context (enforced by runtime, not by this text): " + string(encodedPermission)},
+		preparedContextUpdate{key: agentcontext.UpdateMCP, content: mcpContext},
+	)
+}
+
+func (services *SessionServices) prepareInputContext(ctx context.Context, input string, turnContext *turn.TurnContext, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error) error {
+	if services == nil || turnContext == nil || contextUpdate == nil || appendItems == nil {
+		return fmt.Errorf("input-dependent context preparation is incomplete")
+	}
+	skillContext, err := services.renderInputSkillContext(input)
+	if err != nil {
 		return err
 	}
+	return persistPreparedContextUpdates(ctx, turnContext.TurnID, contextUpdate, appendItems,
+		preparedContextUpdate{key: agentcontext.UpdateSkills, content: skillContext},
+	)
+}
+
+func (services *SessionServices) renderInputSkillContext(input string) (string, error) {
 	skillParts := make([]string, 0)
 	if services.skills != nil {
-		documents, resolveErr := services.skills.ResolveExplicit(goal)
-		if resolveErr != nil {
-			return resolveErr
+		documents, err := services.skills.ResolveExplicit(input)
+		if err != nil {
+			return "", err
 		}
 		for _, document := range documents {
 			encoded, encodeErr := json.Marshal(struct {
@@ -115,17 +111,10 @@ func (services *SessionServices) prepareDynamicContext(ctx context.Context, goal
 				Revision string `json:"revision"`
 			}{Type: "amadeus.skill_injection.v2", Name: document.Name, Path: document.PathToSkillMD, Revision: document.Revision})
 			if encodeErr != nil {
-				return encodeErr
+				return "", encodeErr
 			}
 			skillParts = append(skillParts, string(encoded)+"\n"+strings.TrimSpace(document.Content))
 		}
-	}
-	if services.mcp != nil {
-		if err := setUpdate(agentcontext.UpdateMCP, "MCP tools are available only through their exposed Tool Specs and current bindings."); err != nil {
-			return err
-		}
-	} else if err := setUpdate(agentcontext.UpdateMCP, ""); err != nil {
-		return err
 	}
 	index := services.SkillIndex()
 	indexParts := make([]string, 0, len(index))
@@ -135,12 +124,12 @@ func (services *SessionServices) prepareDynamicContext(ctx context.Context, goal
 		}
 	}
 	if len(indexParts) > 0 {
-		encoded, encodeErr := json.Marshal(struct {
+		encoded, err := json.Marshal(struct {
 			Type   string                `json:"type"`
 			Skills []skill.SkillMetadata `json:"skills"`
 		}{Type: "amadeus.skill_index.v2", Skills: index})
-		if encodeErr != nil {
-			return encodeErr
+		if err != nil {
+			return "", err
 		}
 		skillParts = append([]string{"## Skills\n\n" + string(encoded)}, skillParts...)
 	} else if len(skillParts) > 0 {
@@ -148,13 +137,37 @@ func (services *SessionServices) prepareDynamicContext(ctx context.Context, goal
 	} else {
 		skillParts = []string{"## Skills\n\nNo Skills are currently available."}
 	}
-	if err := setUpdate(agentcontext.UpdateSkills, strings.Join(skillParts, "\n\n")); err != nil {
-		return err
-	}
-	if len(contextItems) > 0 {
-		if err := appendItems(ctx, turnContext.TurnID, contextItems...); err != nil {
-			return fmt.Errorf("persist dynamic context updates: %w", err)
+	return strings.Join(skillParts, "\n\n"), nil
+}
+
+func persistPreparedContextUpdates(ctx context.Context, turnID protocol.TurnID, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error, updates ...preparedContextUpdate) error {
+	items := make([]rollout.RolloutItem, 0, len(updates))
+	for _, update := range updates {
+		worldState := agentcontext.NewWorldState()
+		if err := worldState.Set(update.key, update.content); err != nil {
+			return err
 		}
+		fragment := worldState.Fragment(update.key)
+		rendered := fragment.Render()
+		if contextUpdate(update.key) == rendered {
+			continue
+		}
+		event := protocol.ContextUpdateEvent{Key: string(update.key)}
+		if rendered != "" {
+			event.Content = rendered
+			event.Revision = fragment.Revision()
+		}
+		item, err := rollout.NewEventMsgItem(event)
+		if err != nil {
+			return err
+		}
+		items = append(items, item)
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	if err := appendItems(ctx, turnID, items...); err != nil {
+		return fmt.Errorf("persist context updates: %w", err)
 	}
 	return nil
 }

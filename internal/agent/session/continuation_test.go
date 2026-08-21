@@ -108,6 +108,39 @@ type continuationNamedTool struct {
 	effect tool.SideEffect
 }
 
+type continuationLargeTool struct {
+	name  string
+	text  string
+	after func()
+}
+
+func (definition *continuationLargeTool) Spec() tool.ToolSpec {
+	name := definition.name
+	if name == "" {
+		name = "large_output"
+	}
+	return tool.ToolSpec{Name: name, Description: "returns a test result", InputSchema: json.RawMessage(`{"type":"object"}`), SideEffect: tool.SideEffectRead, Idempotent: true}
+}
+
+func (*continuationLargeTool) SupportsParallelToolCalls() bool { return true }
+
+func (*continuationLargeTool) ValidateInput(tool.ToolUseContext, tool.Invocation) error { return nil }
+
+func (*continuationLargeTool) Prepare(_ tool.ToolUseContext, invocation tool.Invocation) (tool.PreparedToolUse, error) {
+	return tool.PreparedToolUse{Invocation: invocation, Permission: tool.AllowPermission()}, nil
+}
+
+func (definition *continuationLargeTool) Execute(_ tool.ToolUseContext, prepared tool.PreparedToolUse) (tool.ToolResult, error) {
+	if definition.after != nil {
+		definition.after()
+	}
+	text := definition.text
+	if text == "" {
+		text = strings.Repeat("x", 5000)
+	}
+	return tool.ToolResult{CallID: prepared.Invocation.Call.ID, ToolName: prepared.Invocation.Call.Name, Text: text}, nil
+}
+
 func (definition *continuationNamedTool) Spec() tool.ToolSpec {
 	return tool.ToolSpec{Name: definition.name, Description: "named test tool", InputSchema: json.RawMessage(`{"type":"object"}`), SideEffect: definition.effect, Idempotent: true}
 }
@@ -257,6 +290,113 @@ func TestContinueTurnChecksAutomaticCompactionBeforeSampling(t *testing.T) {
 	}
 }
 
+func TestSteeredInputFollowsCompactionWhenOnlySteerNeedsFollowUp(t *testing.T) {
+	client := &continuationTestClient{streams: []llm.Stream{
+		continuationStream(llm.StreamChunk{ContentDelta: strings.Repeat("a", 5000)}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
+		continuationStream(llm.StreamChunk{ContentDelta: "processed steer"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
+	}}
+	model := continuationModelInfo(llm.ModelMessages{})
+	model.AutoCompactTokenLimit = 200
+	session := newContinuationTestSession(t, client, nil, model, continuationProvider(0), engine.DefaultTurnBudget())
+	appendContinuationUser(t, session, "turn-steer-compact", "first prompt")
+	state := newTurnState()
+	if err := session.inputQueue.Enqueue(state, UserTurnInput{Content: "second prompt", ClientID: "client-2"}); err != nil {
+		t.Fatal(err)
+	}
+	compactChecks := make([]string, 0, 1)
+	compact := func(context.Context) (bool, error) {
+		projection := session.ContextProjection()
+		parts := make([]string, len(projection.Messages))
+		for index, message := range projection.Messages {
+			parts[index] = message.Content
+		}
+		compactChecks = append(compactChecks, strings.Join(parts, "\n"))
+		session.services.modelInfo.AutoCompactTokenLimit = 100_000
+		return true, nil
+	}
+	result, err := runContinuationWithState(session, "turn-steer-compact", state, &continuationEventSink{session: session}, compact, false)
+	if err != nil || result.Outcome != protocol.TurnOutcomeCompleted {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if len(compactChecks) != 1 || strings.Contains(compactChecks[0], "second prompt") {
+		t.Fatalf("compact inputs = %#v", compactChecks)
+	}
+	if len(client.requests) != 2 || strings.Contains(continuationRequestText(client.requests[0]), "second prompt") || !strings.Contains(continuationRequestText(client.requests[1]), "second prompt") {
+		t.Fatalf("requests = %#v", client.requests)
+	}
+}
+
+func TestSteeredInputWaitsForPostCompactToolContinuation(t *testing.T) {
+	client := &continuationTestClient{streams: []llm.Stream{
+		continuationStream(llm.StreamChunk{ToolCalls: []llm.ToolCall{{ID: "call-1", Name: "large_output", Arguments: json.RawMessage(`{}`)}}, FinishReason: llm.FinishReasonToolCalls}),
+		continuationStream(llm.StreamChunk{ContentDelta: "resumed after compact"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
+		continuationStream(llm.StreamChunk{ContentDelta: "processed steer"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
+	}}
+	model := continuationModelInfo(llm.ModelMessages{})
+	model.AutoCompactTokenLimit = 100_000
+	largeTool := &continuationLargeTool{}
+	session := newContinuationTestSession(t, client, []tool.ToolDefinition{largeTool}, model, continuationProvider(0), engine.DefaultTurnBudget())
+	largeTool.after = func() { session.services.modelInfo.AutoCompactTokenLimit = 200 }
+	appendContinuationUser(t, session, "turn-tool-compact", "first prompt")
+	state := newTurnState()
+	if err := session.inputQueue.Enqueue(state, UserTurnInput{Content: "second prompt", ClientID: "client-2"}); err != nil {
+		t.Fatal(err)
+	}
+	compactCalls := 0
+	compact := func(context.Context) (bool, error) {
+		compactCalls++
+		if strings.Contains(contextProjectionText(session.ContextProjection().Messages), "second prompt") {
+			t.Fatal("steered input entered compact request")
+		}
+		session.services.modelInfo.AutoCompactTokenLimit = 100_000
+		return true, nil
+	}
+	result, err := runContinuationWithState(session, "turn-tool-compact", state, &continuationEventSink{session: session}, compact, false)
+	if err != nil || result.Outcome != protocol.TurnOutcomeCompleted {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if compactCalls != 1 || len(client.requests) != 3 {
+		t.Fatalf("compact calls=%d requests=%d", compactCalls, len(client.requests))
+	}
+	if strings.Contains(continuationRequestText(client.requests[1]), "second prompt") || !strings.Contains(continuationRequestText(client.requests[2]), "second prompt") {
+		t.Fatalf("request ordering = %#v", client.requests)
+	}
+}
+
+func TestSteeredInputWaitsForModelContinuationAfterMidTurnCompact(t *testing.T) {
+	client := &continuationTestClient{streams: []llm.Stream{
+		continuationStream(llm.StreamChunk{ToolCalls: []llm.ToolCall{{ID: "call-1", Name: "compact_trigger", Arguments: json.RawMessage(`{}`)}}, FinishReason: llm.FinishReasonToolCalls}),
+		continuationStream(llm.StreamChunk{ContentDelta: "resumed old task"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
+		continuationStream(llm.StreamChunk{ContentDelta: "processed steer"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
+	}}
+	model := continuationModelInfo(llm.ModelMessages{})
+	model.AutoCompactTokenLimit = 100_000
+	trigger := &continuationLargeTool{name: "compact_trigger", text: "ok"}
+	session := newContinuationTestSession(t, client, []tool.ToolDefinition{trigger}, model, continuationProvider(0), engine.DefaultTurnBudget())
+	trigger.after = func() { session.services.modelInfo.AutoCompactTokenLimit = 1 }
+	appendContinuationUser(t, session, "turn-mid-compact", "first prompt")
+	state := newTurnState()
+	if err := session.inputQueue.Enqueue(state, UserTurnInput{Content: "second prompt", ClientID: "client-2"}); err != nil {
+		t.Fatal(err)
+	}
+	compactCalls := 0
+	compact := func(context.Context) (bool, error) {
+		compactCalls++
+		session.services.modelInfo.AutoCompactTokenLimit = 100_000
+		return true, nil
+	}
+	result, err := runContinuationWithState(session, "turn-mid-compact", state, &continuationEventSink{session: session}, compact, false)
+	if err != nil || result.Outcome != protocol.TurnOutcomeCompleted {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if compactCalls != 1 || len(client.requests) != 3 {
+		t.Fatalf("compact calls=%d requests=%d", compactCalls, len(client.requests))
+	}
+	if strings.Contains(continuationRequestText(client.requests[1]), "second prompt") || !strings.Contains(continuationRequestText(client.requests[2]), "second prompt") {
+		t.Fatalf("request ordering = %#v", client.requests)
+	}
+}
+
 func TestContinueTurnRetryPersistsOnlySuccessfulAttempt(t *testing.T) {
 	client := &continuationTestClient{streams: []llm.Stream{
 		&continuationTestStream{results: []continuationStreamResult{
@@ -378,11 +518,23 @@ func appendContinuationUser(t *testing.T, session *Session, turnID protocol.Turn
 }
 
 func runContinuationTestTurn(session *Session, turnID protocol.TurnID, events protocol.EventSink, compact compactFunc) (TaskOutput, error) {
+	return runContinuationWithState(session, turnID, newTurnState(), events, compact, false)
+}
+
+func runContinuationWithState(session *Session, turnID protocol.TurnID, state *TurnState, events protocol.EventSink, compact compactFunc, canDrainPendingInput bool) (TaskOutput, error) {
 	modelSession, err := session.services.NewModelClientSession()
 	if err != nil {
 		return TaskOutput{}, err
 	}
-	return session.continueTurn(context.Background(), &session.services, modelSession, continuationTurnContext(session, turnID, turn.ModeKindDefault), events, compact)
+	return session.continueTurn(context.Background(), &session.services, modelSession, continuationTurnContext(session, turnID, turn.ModeKindDefault), state, events, compact, canDrainPendingInput)
+}
+
+func contextProjectionText(messages []llm.ResponseItem) string {
+	parts := make([]string, len(messages))
+	for index, message := range messages {
+		parts[index] = message.Content
+	}
+	return strings.Join(parts, "\n")
 }
 
 func continuationTurnContext(session *Session, turnID protocol.TurnID, mode turn.ModeKind) turn.TurnContext {

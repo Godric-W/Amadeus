@@ -20,6 +20,7 @@ type Completion struct {
 type RunningTask struct {
 	mu      sync.Mutex
 	task    SessionTask
+	kind    TaskKind
 	context *turn.TurnContext
 	session *Session
 	ctx     context.Context
@@ -37,9 +38,16 @@ func NewRunningTask(parent context.Context, session *Session, sessionTask Sessio
 	}
 	ctx, cancel := context.WithCancelCause(parent)
 	return &RunningTask{
-		task: sessionTask, context: turnContext, session: session,
+		task: sessionTask, kind: sessionTask.Kind(), context: turnContext, session: session,
 		ctx: ctx, cancel: cancel, done: make(chan Completion, 1),
 	}, nil
+}
+
+func (running *RunningTask) Kind() TaskKind {
+	if running == nil {
+		return ""
+	}
+	return running.kind
 }
 
 func (running *RunningTask) Start() <-chan Completion {

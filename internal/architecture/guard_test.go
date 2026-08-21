@@ -36,7 +36,7 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 		"ExtensionAssembly", "WorkspaceResolver", "InstructionScope", "targetInstructionScope",
 		"InteractiveRequest", "AllowedTools", "ToolRevision", "context_refresh_required",
 		"PlanUpdater", "SessionState.Plan", "pendingModeTask", "CollaborationExecute", "CollaborationPlan", "ModeState",
-		"InstructionResolution", "migrateConfigDocument", "TaskKind",
+		"InstructionResolution", "migrateConfigDocument", "SteerOp", "compact bool",
 		"NewApplyPatch", "ApplyPatchOptions", "applyPatchSpec", "type ApplyPatch struct",
 		"schema_migrations", "func migrate(",
 	}
@@ -74,6 +74,66 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 			t.Errorf("removed production package still exists: %s", relative)
 		} else if !os.IsNotExist(err) {
 			t.Fatalf("inspect %s: %v", relative, err)
+		}
+	}
+}
+
+func TestUserInputSubmissionIsNeverDeferred(t *testing.T) {
+	root := repositoryRoot(t)
+	path := filepath.Join(root, "internal", "agent", "session", "session.go")
+	set := token.NewFileSet()
+	parsed, err := parser.ParseFile(set, path, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		clause, ok := node.(*ast.CaseClause)
+		if !ok || len(clause.List) != 1 {
+			return true
+		}
+		selector, ok := clause.List[0].(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "UserInputOp" {
+			return true
+		}
+		found = true
+		ast.Inspect(clause, func(child ast.Node) bool {
+			if field, ok := child.(*ast.SelectorExpr); ok && field.Sel.Name == "deferred" {
+				t.Errorf("UserInputOp case writes Session deferred queue at %s", set.Position(field.Pos()))
+			}
+			return true
+		})
+		return false
+	})
+	if !found {
+		t.Fatal("UserInputOp submission case was not found")
+	}
+}
+
+func TestTurnSteerHasDedicatedCoordinationBoundaries(t *testing.T) {
+	root := repositoryRoot(t)
+	steer := mustReadArchitectureFile(t, root, "internal/agent/session/steer_input.go")
+	for _, forbidden := range []string{"UserInputAnswerOp", "ApprovalDecisionOp", "rollout.", "ContextUpdate("} {
+		if strings.Contains(steer, forbidden) {
+			t.Errorf("steer input owns forbidden boundary %q", forbidden)
+		}
+	}
+	queue := mustReadArchitectureFile(t, root, "internal/agent/session/input_queue.go")
+	for _, forbidden := range []string{"rollout.", "ResponseUserMessage", "AppendItems", "ContextUpdate"} {
+		if strings.Contains(queue, forbidden) {
+			t.Errorf("InputQueue became a second history owner through %q", forbidden)
+		}
+	}
+	update := mustReadArchitectureFile(t, root, "internal/interface/tui/application_update.go")
+	inputStart := strings.Index(update, `case "enter":`)
+	inputEnd := strings.Index(update[inputStart:], "\n\tvar command tea.Cmd")
+	if inputStart < 0 || inputEnd < 0 {
+		t.Fatal("locate fullscreen ordinary input handler")
+	}
+	ordinaryInput := update[inputStart : inputStart+inputEnd]
+	for _, forbidden := range []string{"model.running = true", "model.runStartedAt =", "newTranscriptDetailStore("} {
+		if strings.Contains(ordinaryInput, forbidden) {
+			t.Errorf("ordinary user input resets Turn UI through %q", forbidden)
 		}
 	}
 }
@@ -477,15 +537,17 @@ func TestResponseStreamReconnectHasCodexOwnershipBoundaries(t *testing.T) {
 		t.Fatal("Compactor does not use the Turn-scoped ModelClientSession")
 	}
 
+	regularTask := mustReadArchitectureFile(t, root, "internal/agent/session/regular_task.go")
+	if !strings.Contains(regularTask, "modelSession, err := sessionTask.runtime.NewModelClientSession()") {
+		t.Fatal("RegularTask does not create one Turn-scoped ModelClientSession")
+	}
+	runTurn := mustReadArchitectureFile(t, root, "internal/agent/session/run_turn.go")
+	if !strings.Contains(runTurn, "session.compactCallback(runtime, modelSession") {
+		t.Fatal("run_turn does not share the RegularTask ModelClientSession with automatic compaction")
+	}
 	continuation := mustReadArchitectureFile(t, root, "internal/agent/session/continuation.go")
-	for _, required := range []string{
-		"modelSession, err := runtime.NewModelClientSession()",
-		"session.compactCallback(runtime, modelSession",
-		"ModelSession: modelSession",
-	} {
-		if !strings.Contains(continuation, required) {
-			t.Errorf("automatic compaction does not share ModelClientSession: missing %q", required)
-		}
+	if !strings.Contains(continuation, "ModelSession: modelSession") {
+		t.Fatal("automatic compaction does not receive the Turn-scoped ModelClientSession")
 	}
 
 	workingView := mustReadArchitectureFile(t, root, "internal/interface/tui/application_view.go")

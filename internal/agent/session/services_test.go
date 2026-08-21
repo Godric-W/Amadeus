@@ -83,7 +83,7 @@ func TestSessionServicesAreConstructedOnceAndReusedAcrossTasks(t *testing.T) {
 		SubmissionID: "submission-1", ThreadID: "thread-1", TurnID: "turn-1", Provider: configured.ModelProvider,
 		Model: configured.Model, CWD: root, Mode: turn.ModeKindDefault,
 	}
-	preparedTask, preparedContext, err := session.createTask(context.Background(), "inspect project", requestContext, false)
+	preparedTask, preparedContext, err := session.createTask(context.Background(), "inspect project", requestContext, TaskKindRegular, newTurnState())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestSessionServicesAreConstructedOnceAndReusedAcrossTasks(t *testing.T) {
 	}
 	secondContext := requestContext
 	secondContext.TurnID = "turn-2"
-	secondTask, _, err := session.createTask(context.Background(), "inspect again", secondContext, false)
+	secondTask, _, err := session.createTask(context.Background(), "inspect again", secondContext, TaskKindRegular, newTurnState())
 	if err != nil {
 		t.Fatal(err)
 	}

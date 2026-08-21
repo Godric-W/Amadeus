@@ -85,19 +85,21 @@ func (application *InteractiveApplication) Events() <-chan InteractiveEvent {
 	return application.events
 }
 
-func (application *InteractiveApplication) SubmitUser(ctx context.Context, content string, overrides protocol.ThreadSettingsOverrides) error {
+func (application *InteractiveApplication) SubmitUser(ctx context.Context, content, clientUserMessageID string, overrides protocol.ThreadSettingsOverrides) (protocol.UserMessageAdmission, error) {
 	content = strings.TrimSpace(content)
 	if content == "" {
-		return errors.New("interactive task is empty")
+		return protocol.UserMessageAdmission{}, errors.New("interactive task is empty")
 	}
 	if application.maxTaskBytes > 0 && len(content) > application.maxTaskBytes {
-		return fmt.Errorf("interactive task exceeds %d bytes", application.maxTaskBytes)
+		return protocol.UserMessageAdmission{}, fmt.Errorf("interactive task exceeds %d bytes", application.maxTaskBytes)
 	}
 	active, _, err := application.current()
 	if err != nil {
-		return err
+		return protocol.UserMessageAdmission{}, err
 	}
-	return active.Submit(ctx, protocol.UserInputOp{Content: content, ThreadSettings: overrides})
+	return active.SubmitUserInputAndWaitForAdmission(ctx, protocol.UserInputOp{
+		Content: content, ClientUserMessageID: strings.TrimSpace(clientUserMessageID), ThreadSettings: overrides,
+	})
 }
 
 func (application *InteractiveApplication) SubmitCompact(ctx context.Context) error {

@@ -38,8 +38,9 @@ func (submission Submission) Validate() error {
 type Op interface{ isOp() }
 
 type UserInputOp struct {
-	Content        string
-	ThreadSettings ThreadSettingsOverrides
+	Content             string
+	ClientUserMessageID string
+	ThreadSettings      ThreadSettingsOverrides
 }
 
 func (UserInputOp) isOp() {}

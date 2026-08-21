@@ -181,6 +181,8 @@ func (model *fullscreenModel) clearInteractiveState() {
 	model.approvalDialog = nil
 	model.userInputRequest = nil
 	model.userInputDialog = nil
+	model.optimisticUserMessages = make(map[string]string)
+	model.seenRuntimeUserMessages = make(map[string]struct{})
 	model.selection = nil
 	model.selectionKind = ""
 	model.sessions = nil

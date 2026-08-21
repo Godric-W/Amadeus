@@ -8,8 +8,10 @@ import (
 )
 
 type TaskSubmission struct {
-	Content string
-	Mode    turn.ModeKind
+	Content             string
+	ClientUserMessageID string
+	Mode                turn.ModeKind
+	OverrideMode        bool
 }
 
 type SlashCommand string

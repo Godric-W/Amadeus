@@ -49,16 +49,17 @@ func (status ItemStatus) Valid() bool {
 // TurnItem is the stable replay unit shared by live and resumed sessions.
 // A terminal item must contain all facts needed to render it independently.
 type TurnItem struct {
-	ID          ItemID           `json:"id"`
-	Kind        ItemKind         `json:"kind"`
-	Status      ItemStatus       `json:"status"`
-	CreatedAt   time.Time        `json:"created_at"`
-	CompletedAt time.Time        `json:"completed_at,omitempty"`
-	Text        string           `json:"text,omitempty"`
-	ToolName    string           `json:"tool_name,omitempty"`
-	CallID      string           `json:"call_id,omitempty"`
-	ToolResult  *tool.ToolResult `json:"tool_result,omitempty"`
-	Payload     any              `json:"payload,omitempty"`
+	ID                  ItemID           `json:"id"`
+	Kind                ItemKind         `json:"kind"`
+	Status              ItemStatus       `json:"status"`
+	CreatedAt           time.Time        `json:"created_at"`
+	CompletedAt         time.Time        `json:"completed_at,omitempty"`
+	Text                string           `json:"text,omitempty"`
+	ClientUserMessageID string           `json:"client_user_message_id,omitempty"`
+	ToolName            string           `json:"tool_name,omitempty"`
+	CallID              string           `json:"call_id,omitempty"`
+	ToolResult          *tool.ToolResult `json:"tool_result,omitempty"`
+	Payload             any              `json:"payload,omitempty"`
 }
 
 func (item TurnItem) Validate() error {

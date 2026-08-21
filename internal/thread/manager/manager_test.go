@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -90,6 +91,80 @@ func (stream *managerTestStream) Recv() (llm.StreamChunk, error) {
 
 func (*managerTestStream) Close() error { return nil }
 
+type sameTurnTestClient struct {
+	mu       sync.Mutex
+	requests []llm.Request
+	gate     chan struct{}
+	blocked  chan struct{}
+	once     sync.Once
+}
+
+func (*sameTurnTestClient) Complete(context.Context, llm.Request) (llm.Response, error) {
+	return llm.Response{}, errors.New("unexpected Complete call")
+}
+
+func (client *sameTurnTestClient) Stream(ctx context.Context, request llm.Request) (llm.Stream, error) {
+	client.mu.Lock()
+	client.requests = append(client.requests, request)
+	call := len(client.requests)
+	client.mu.Unlock()
+	if call == 1 {
+		return &sameTurnFirstStream{ctx: ctx, gate: client.gate, blocked: client.blocked, once: &client.once}, nil
+	}
+	return &managerTestStream{chunks: []llm.StreamChunk{{ContentDelta: "follow-up"}, {FinishReason: llm.FinishReasonStop}}}, nil
+}
+
+func (*sameTurnTestClient) Model() llm.ModelInfo {
+	return llm.ModelInfo{Provider: "mock", Name: "model", ContextWindow: 100_000}
+}
+
+func (*sameTurnTestClient) Capabilities() llm.Capabilities {
+	return llm.Capabilities{SupportsStreaming: true}
+}
+
+func (client *sameTurnTestClient) requestTexts() []string {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	texts := make([]string, len(client.requests))
+	for index, request := range client.requests {
+		parts := make([]string, len(request.Prompt.Input))
+		for messageIndex, message := range request.Prompt.Input {
+			parts[messageIndex] = message.Content
+		}
+		texts[index] = strings.Join(parts, "\n")
+	}
+	return texts
+}
+
+type sameTurnFirstStream struct {
+	ctx     context.Context
+	gate    <-chan struct{}
+	blocked chan struct{}
+	once    *sync.Once
+	step    int
+}
+
+func (stream *sameTurnFirstStream) Recv() (llm.StreamChunk, error) {
+	switch stream.step {
+	case 0:
+		stream.step++
+		return llm.StreamChunk{ContentDelta: "first answer"}, nil
+	case 1:
+		stream.step++
+		stream.once.Do(func() { close(stream.blocked) })
+		select {
+		case <-stream.gate:
+			return llm.StreamChunk{FinishReason: llm.FinishReasonStop}, nil
+		case <-stream.ctx.Done():
+			return llm.StreamChunk{}, stream.ctx.Err()
+		}
+	default:
+		return llm.StreamChunk{}, io.EOF
+	}
+}
+
+func (*sameTurnFirstStream) Close() error { return nil }
+
 func (store terminalFailStore) AppendItems(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.RolloutItem) (thread.AppendResult, error) {
 	for _, item := range items {
 		if isTerminalRolloutItem(item) {
@@ -165,6 +240,150 @@ func TestThreadManagerMaterializesOnFirstInput(t *testing.T) {
 	}
 	if next != len(wantKinds) {
 		t.Fatalf("history kinds = %v, missing ordered suffix from %v", actualKinds, wantKinds[next:])
+	}
+}
+
+func TestThreadUserInputAdmissionContinuesSameTurn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &sameTurnTestClient{gate: make(chan struct{}), blocked: make(chan struct{})}
+	manager, store := newTestManagerWithClient(t, ctx, client)
+	defer manager.Close(context.Background())
+	value, err := manager.StartThread(ctx, StartInput{Configuration: testConfiguration(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := value.SubmitUserInputAndWaitForAdmission(ctx, protocol.UserInputOp{Content: "first prompt", ClientUserMessageID: "client-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Kind != protocol.UserMessageAdmissionStarted || started.TurnID == "" {
+		t.Fatalf("started admission = %#v", started)
+	}
+	select {
+	case <-client.blocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first model request did not reach the gate")
+	}
+	steered, err := value.SubmitUserInputAndWaitForAdmission(ctx, protocol.UserInputOp{Content: "second prompt", ClientUserMessageID: "client-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steered.Kind != protocol.UserMessageAdmissionSteered || steered.TurnID != started.TurnID {
+		t.Fatalf("steered admission = %#v, started = %#v", steered, started)
+	}
+	third, err := value.SubmitUserInputAndWaitForAdmission(ctx, protocol.UserInputOp{Content: "third prompt", ClientUserMessageID: "client-3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Kind != protocol.UserMessageAdmissionSteered || third.TurnID != started.TurnID {
+		t.Fatalf("third admission = %#v, started = %#v", third, started)
+	}
+	close(client.gate)
+	startedEvents, terminalEvents := 0, 0
+	userIDs := make([]string, 0, 3)
+	timeout := time.After(5 * time.Second)
+	for terminalEvents == 0 {
+		select {
+		case event := <-value.Io().Events:
+			switch message := event.Msg.(type) {
+			case protocol.TurnStartedEvent:
+				startedEvents++
+			case protocol.ItemCompletedEvent:
+				if message.Item.Kind == protocol.ItemUserMessage {
+					userIDs = append(userIDs, message.Item.ClientUserMessageID)
+				}
+			case protocol.TurnCompleteEvent:
+				terminalEvents++
+			case protocol.TurnAbortedEvent:
+				t.Fatalf("turn aborted: %#v", message)
+			}
+		case <-timeout:
+			t.Fatal("timed out waiting for same-turn completion")
+		}
+	}
+	if startedEvents != 1 || terminalEvents != 1 {
+		t.Fatalf("lifecycle counts = started %d terminal %d", startedEvents, terminalEvents)
+	}
+	if len(userIDs) != 3 || userIDs[0] != "client-1" || userIDs[1] != "client-2" || userIDs[2] != "client-3" {
+		t.Fatalf("live user IDs = %v", userIDs)
+	}
+	requests := client.requestTexts()
+	if len(requests) != 2 {
+		t.Fatalf("request texts = %#v", requests)
+	}
+	secondIndex := strings.Index(requests[1], "second prompt")
+	thirdIndex := strings.Index(requests[1], "third prompt")
+	if strings.Contains(requests[0], "second prompt") || secondIndex < 0 || thirdIndex <= secondIndex {
+		t.Fatalf("request texts = %#v", requests)
+	}
+	history, err := store.LoadHistory(ctx, value.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalIDs := make([]string, 0, 3)
+	for _, line := range history.Lines {
+		eventItem, ok := line.Item.(rollout.EventMsgItem)
+		if !ok {
+			continue
+		}
+		completed, ok := eventItem.Msg.(protocol.ItemCompletedEvent)
+		if ok && completed.Item.Kind == protocol.ItemUserMessage {
+			canonicalIDs = append(canonicalIDs, completed.Item.ClientUserMessageID)
+		}
+	}
+	if len(canonicalIDs) != 3 || canonicalIDs[0] != "client-1" || canonicalIDs[1] != "client-2" || canonicalIDs[2] != "client-3" {
+		t.Fatalf("canonical user IDs = %v", canonicalIDs)
+	}
+}
+
+func TestInterruptedTurnRecordsAcceptedPendingInput(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &sameTurnTestClient{gate: make(chan struct{}), blocked: make(chan struct{})}
+	manager, store := newTestManagerWithClient(t, ctx, client)
+	defer manager.Close(context.Background())
+	value, err := manager.StartThread(ctx, StartInput{Configuration: testConfiguration(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := value.SubmitUserInputAndWaitForAdmission(ctx, protocol.UserInputOp{Content: "wait", ClientUserMessageID: "client-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-client.blocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first model request did not reach the gate")
+	}
+	steered, err := value.SubmitUserInputAndWaitForAdmission(ctx, protocol.UserInputOp{Content: "record before abort", ClientUserMessageID: "client-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steered.Kind != protocol.UserMessageAdmissionSteered || steered.TurnID != started.TurnID {
+		t.Fatalf("steered admission = %#v", steered)
+	}
+	if err := value.Submit(ctx, protocol.InterruptOp{}); err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminal(t, value.Io(), true)
+	history, err := store.LoadHistory(ctx, value.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, line := range history.Lines {
+		eventItem, ok := line.Item.(rollout.EventMsgItem)
+		if !ok {
+			continue
+		}
+		completed, ok := eventItem.Msg.(protocol.ItemCompletedEvent)
+		if ok && completed.Item.Kind == protocol.ItemUserMessage && completed.Item.ClientUserMessageID == "client-2" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("accepted pending input was not persisted before abort")
 	}
 }
 
@@ -513,6 +732,11 @@ func rolloutItemKind(item rollout.RolloutItem) string {
 
 func newTestManager(t *testing.T, ctx context.Context, mode string, calls *atomic.Int32) (*ThreadManager, thread.ThreadStore) {
 	t.Helper()
+	return newTestManagerWithClient(t, ctx, &managerTestClient{mode: mode, calls: calls})
+}
+
+func newTestManagerWithClient(t *testing.T, ctx context.Context, client llm.Client) (*ThreadManager, thread.ThreadStore) {
+	t.Helper()
 	home := t.TempDir()
 	database, err := statesqlite.Open(ctx, home)
 	if err != nil {
@@ -531,7 +755,6 @@ func newTestManager(t *testing.T, ctx context.Context, mode string, calls *atomi
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &managerTestClient{mode: mode, calls: calls}
 	manager, err := New(ctx, localStore, SharedServices{
 		SessionAdapters: session.ServiceAdapters{
 			ModelMessages: modelMessages,

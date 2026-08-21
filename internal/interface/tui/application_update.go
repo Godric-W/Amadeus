@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -27,6 +28,12 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return model, tea.Batch(command, model.flushHistory())
 	case fullscreenOperationFailedMsg:
 		model.handleOperationFailure(message)
+		return model, model.flushHistory()
+	case fullscreenUserMessageAdmittedMsg:
+		model.handleUserMessageAdmission(message)
+		return model, nil
+	case fullscreenUserMessageRejectedMsg:
+		model.handleUserMessageRejection(message)
 		return model, model.flushHistory()
 	case fullscreenWorkingTickMsg:
 		if (!model.running && !model.retryStatus.active) || model.approval != nil || model.userInputDialog != nil {
@@ -202,16 +209,8 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		model.updateInputLayout()
 		model.history = append(model.history, text)
 		model.historyPos = -1
-		model.insertHistoryCell(NewUserMessageCell(text))
-		model.details = newTranscriptDetailStore(0, 0)
-		model.running = true
-		model.runStartedAt = time.Now()
-		model.motionStartedAt = model.runStartedAt
-		model.transcript.HadWorkActivity = false
-		model.transcript.NeedsFinalMessageSeparator = false
-		model.status = taskPhase(TaskSubmission{Content: text, Mode: model.collaboration})
-		model.draft = ""
-		return model, tea.Batch(model.flushHistory(), model.submitTask(TaskSubmission{Content: text, Mode: model.collaboration}), model.workingTick())
+		submission := model.prepareTaskSubmission(text, model.collaboration, false)
+		return model, tea.Batch(model.flushHistory(), model.submitTask(submission))
 	}
 	var command tea.Cmd
 	model.input, command = model.input.Update(key)
@@ -220,6 +219,36 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 	model.slashPopup.sync(model.input.Value(), model.running)
 	model.updateInputLayout()
 	return model, command
+}
+
+func (model *fullscreenModel) prepareTaskSubmission(content string, mode turn.ModeKind, overrideMode bool) TaskSubmission {
+	model.nextClientUserMessage++
+	clientID := fmt.Sprintf("tui-user-%d-%d", model.generation, model.nextClientUserMessage)
+	if model.optimisticUserMessages == nil {
+		model.optimisticUserMessages = make(map[string]string)
+	}
+	model.optimisticUserMessages[clientID] = content
+	model.flushCompletedActivityBeforeBoundary()
+	model.insertHistoryCell(NewUserMessageCell(content))
+	return TaskSubmission{Content: content, ClientUserMessageID: clientID, Mode: mode, OverrideMode: overrideMode}
+}
+
+func (model *fullscreenModel) handleUserMessageAdmission(message fullscreenUserMessageAdmittedMsg) {
+	if err := message.admission.Validate(); err != nil {
+		model.handleUserMessageRejection(fullscreenUserMessageRejectedMsg{task: message.task, err: err})
+	}
+}
+
+func (model *fullscreenModel) handleUserMessageRejection(message fullscreenUserMessageRejectedMsg) {
+	delete(model.optimisticUserMessages, message.task.ClientUserMessageID)
+	if strings.TrimSpace(model.input.Value()) == "" {
+		model.input.SetValue(message.task.Content)
+		model.input.CursorEnd()
+		model.updateInputLayout()
+	}
+	if message.err != nil && !errors.Is(message.err, context.Canceled) {
+		model.insertHistoryCell(NewErrorHistoryCell("submit task: " + message.err.Error()))
+	}
 }
 
 func (model fullscreenModel) interrupt() tea.Cmd {

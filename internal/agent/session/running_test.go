@@ -10,6 +10,8 @@ import (
 
 type panicSessionTask struct{}
 
+func (panicSessionTask) Kind() TaskKind { return TaskKindRegular }
+
 func (panicSessionTask) Run(context.Context, *Session, *turn.TurnContext) (TaskOutput, error) {
 	panic("boom")
 }

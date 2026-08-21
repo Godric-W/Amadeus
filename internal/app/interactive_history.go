@@ -16,10 +16,13 @@ type RolloutProjection struct {
 
 func ProjectRolloutItems(lines []rollout.Line) (RolloutProjection, error) {
 	projection := RolloutProjection{Items: make([]protocol.TurnItem, 0)}
-	for _, line := range lines {
+	for index, line := range lines {
 		switch item := line.Item.(type) {
 		case rollout.ResponseItem:
 			if item.Type == rollout.ResponseUserMessage {
+				if responseHasCanonicalUserItem(lines, index, item) {
+					continue
+				}
 				projected := protocol.TurnItem{
 					ID: protocol.ItemID(fmt.Sprintf("response-%d", line.Sequence)), Kind: protocol.ItemUserMessage,
 					Status: protocol.ItemStatusCompleted, CreatedAt: line.Timestamp, CompletedAt: line.Timestamp,
@@ -47,6 +50,21 @@ func ProjectRolloutItems(lines []rollout.Line) (RolloutProjection, error) {
 		}
 	}
 	return projection, nil
+}
+
+func responseHasCanonicalUserItem(lines []rollout.Line, index int, response rollout.ResponseItem) bool {
+	if index+1 >= len(lines) {
+		return false
+	}
+	eventItem, ok := lines[index+1].Item.(rollout.EventMsgItem)
+	if !ok {
+		return false
+	}
+	completed, ok := eventItem.Msg.(protocol.ItemCompletedEvent)
+	if !ok || completed.Item.Kind != protocol.ItemUserMessage {
+		return false
+	}
+	return completed.TurnID == response.TurnID && strings.TrimSpace(completed.Item.Text) == strings.TrimSpace(response.Content)
 }
 
 func (projection *RolloutProjection) applyEvent(line rollout.Line, message protocol.EventMsg) error {

@@ -19,39 +19,43 @@ import (
 )
 
 type fakeFullscreenApplication struct {
-	events       chan application.InteractiveEvent
-	submitted    []string
-	compactCount int
-	modes        []turn.ModeKind
-	interrupts   int
-	approvals    []string
-	userInputs   []protocol.RequestID
-	resumed      []protocol.ThreadID
-	renamed      []string
-	deleted      []uint64
-	clears       int
-	mcpRequests  []uint64
-	loadSkills   int
-	skillPaths   []string
-	shutdowns    int
-	status       application.StatusSnapshot
-	submitErr    error
-	compactErr   error
-	setModeErr   error
-	interruptErr error
-	approvalErr  error
+	events          chan application.InteractiveEvent
+	submitted       []string
+	compactCount    int
+	modes           []turn.ModeKind
+	interrupts      int
+	approvals       []string
+	userInputs      []protocol.RequestID
+	resumed         []protocol.ThreadID
+	renamed         []string
+	deleted         []uint64
+	clears          int
+	mcpRequests     []uint64
+	loadSkills      int
+	skillPaths      []string
+	shutdowns       int
+	status          application.StatusSnapshot
+	submitErr       error
+	submitAdmission protocol.UserMessageAdmission
+	compactErr      error
+	setModeErr      error
+	interruptErr    error
+	approvalErr     error
 }
 
 func newFakeFullscreenApplication() *fakeFullscreenApplication {
-	return &fakeFullscreenApplication{events: make(chan application.InteractiveEvent, 32)}
+	return &fakeFullscreenApplication{
+		events:          make(chan application.InteractiveEvent, 32),
+		submitAdmission: protocol.UserMessageAdmission{Kind: protocol.UserMessageAdmissionStarted, TurnID: "turn-1"},
+	}
 }
 
 func (fake *fakeFullscreenApplication) Events() <-chan application.InteractiveEvent {
 	return fake.events
 }
-func (fake *fakeFullscreenApplication) SubmitUser(_ context.Context, content string, _ protocol.ThreadSettingsOverrides) error {
+func (fake *fakeFullscreenApplication) SubmitUser(_ context.Context, content, _ string, _ protocol.ThreadSettingsOverrides) (protocol.UserMessageAdmission, error) {
 	fake.submitted = append(fake.submitted, content)
-	return fake.submitErr
+	return fake.submitAdmission, fake.submitErr
 }
 func (fake *fakeFullscreenApplication) ResolveUserInput(_ context.Context, requestID protocol.RequestID, _ protocol.RequestUserInputResponse) error {
 	fake.userInputs = append(fake.userInputs, requestID)
@@ -202,6 +206,9 @@ func TestFullscreenContextStatusUsesRuntimeUsage(t *testing.T) {
 func TestFullscreenSubmitsInputDirectlyWhileRunning(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	model.running = true
+	startedAt := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	model.runStartedAt = startedAt
+	model.status = "thinking"
 	model.input.SetValue("继续检查")
 	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(fullscreenModel)
@@ -209,6 +216,41 @@ func TestFullscreenSubmitsInputDirectlyWhileRunning(t *testing.T) {
 	fake := fakeApplication(t, model)
 	if len(fake.submitted) != 1 || fake.submitted[0] != "继续检查" || lastCellContent(model) != "继续检查" {
 		t.Fatalf("submitted=%v last=%q", fake.submitted, lastCellContent(model))
+	}
+	if !model.running || model.runStartedAt != startedAt || model.status != "thinking" {
+		t.Fatalf("steer reset turn UI: running=%v started=%v status=%q", model.running, model.runStartedAt, model.status)
+	}
+}
+
+func TestFullscreenRuntimeUserMessageConfirmsOptimisticProjection(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	submission := model.prepareTaskSubmission("continue", turn.ModeKindDefault, false)
+	before := len(model.historyCells)
+	event := testProtocolEvent("thread-1", "turn-1", protocol.ItemCompletedEvent{Item: protocol.TurnItem{
+		ID: "user-1", Kind: protocol.ItemUserMessage, Status: protocol.ItemStatusCompleted,
+		CreatedAt: time.Now().UTC(), CompletedAt: time.Now().UTC(), Text: "continue", ClientUserMessageID: submission.ClientUserMessageID,
+	}})
+	model.applyEvent(event)
+	model.applyEvent(event)
+	if len(model.historyCells) != before {
+		t.Fatalf("runtime confirmation duplicated optimistic user message: before=%d after=%d", before, len(model.historyCells))
+	}
+	if _, pending := model.optimisticUserMessages[submission.ClientUserMessageID]; pending {
+		t.Fatal("optimistic user message was not confirmed")
+	}
+}
+
+func TestFullscreenRejectedSteerRestoresComposerWithoutStoppingTurn(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	model.running = true
+	model.status = "working"
+	submission := model.prepareTaskSubmission("retry this", turn.ModeKindDefault, false)
+	model.handleUserMessageRejection(fullscreenUserMessageRejectedMsg{task: submission, err: errors.New("active compact turn is not steerable")})
+	if model.input.Value() != "retry this" || !model.running || model.status != "working" {
+		t.Fatalf("rejection state = input %q running %v status %q", model.input.Value(), model.running, model.status)
+	}
+	if !strings.Contains(lastCellContent(model), "not steerable") {
+		t.Fatalf("rejection error = %q", lastCellContent(model))
 	}
 }
 
@@ -218,7 +260,7 @@ func TestFullscreenPlanTaskSubmitsAtomically(t *testing.T) {
 	model = updated.(fullscreenModel)
 	executeCommand(t, command)
 	fake := fakeApplication(t, model)
-	if len(fake.modes) != 0 || len(fake.submitted) != 1 || !model.running || model.collaboration != turn.ModeKindPlan {
+	if len(fake.modes) != 0 || len(fake.submitted) != 1 || model.running || model.collaboration != turn.ModeKindDefault {
 		t.Fatalf("atomic plan submission modes=%v submitted=%v running=%v mode=%q", fake.modes, fake.submitted, model.running, model.collaboration)
 	}
 }

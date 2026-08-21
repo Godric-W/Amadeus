@@ -48,8 +48,12 @@ func TestInteractiveApplicationOwnsThreadLifecycleAndReplay(t *testing.T) {
 		t.Fatalf("settings generation = %d", settings.Generation)
 	}
 
-	if err := application.SubmitUser(ctx, "inspect repository", protocol.ThreadSettingsOverrides{}); err != nil {
+	admission, err := application.SubmitUser(ctx, "inspect repository", "client-1", protocol.ThreadSettingsOverrides{})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if admission.Kind != protocol.UserMessageAdmissionStarted || admission.TurnID == "" {
+		t.Fatalf("admission = %#v", admission)
 	}
 	waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
 		_, ok := event.Event.Msg.(protocol.TurnCompleteEvent)
@@ -91,7 +95,7 @@ func TestInteractiveApplicationCompactPublishesTypedLifecycle(t *testing.T) {
 	if _, err := application.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := application.SubmitUser(ctx, "seed", protocol.ThreadSettingsOverrides{}); err != nil {
+	if _, err := application.SubmitUser(ctx, "seed", "client-1", protocol.ThreadSettingsOverrides{}); err != nil {
 		t.Fatal(err)
 	}
 	waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {

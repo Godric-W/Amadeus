@@ -16,8 +16,8 @@ import (
 
 type compactFunc func(context.Context) (bool, error)
 
-func (session *Session) continueTurn(ctx context.Context, runtime *SessionServices, modelSession *engine.ModelClientSession, turnContext turn.TurnContext, events protocol.EventSink, compact compactFunc) (TaskOutput, error) {
-	if runtime == nil || modelSession == nil || events == nil {
+func (session *Session) continueTurn(ctx context.Context, runtime *SessionServices, modelSession *engine.ModelClientSession, turnContext turn.TurnContext, state *TurnState, events protocol.EventSink, compact compactFunc, canDrainPendingInput bool) (TaskOutput, error) {
+	if runtime == nil || modelSession == nil || state == nil || events == nil {
 		return TaskOutput{}, errors.New("session continuation is incomplete")
 	}
 	var usage llm.Usage
@@ -25,6 +25,7 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 	startedAt := time.Now()
 	completionReminderSent := false
 	budget := runtime.TurnBudget()
+	modelContinuationPending := false
 	for stepNumber := 1; ; stepNumber++ {
 		if err := ctx.Err(); err != nil {
 			return taskProgress(usage, toolCallCount), err
@@ -42,7 +43,31 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 				return taskProgress(usage, toolCallCount), compactErr
 			}
 			if compacted {
+				if modelContinuationPending {
+					canDrainPendingInput = false
+				}
 				continue
+			}
+		}
+		if canDrainPendingInput {
+			pendingInput := session.inputQueue.Drain(state)
+			if len(pendingInput) > 0 {
+				for _, input := range pendingInput {
+					userInput, ok := input.(UserTurnInput)
+					if !ok {
+						return taskProgress(usage, toolCallCount), fmt.Errorf("unsupported turn input %T", input)
+					}
+					if err := session.recordUserTurnInput(ctx, turnContext.TurnID, events, userInput); err != nil {
+						return taskProgress(usage, toolCallCount), err
+					}
+					if err := runtime.prepareInputContext(ctx, userInput.Content, &turnContext, session.ContextUpdate, session.AppendItems); err != nil {
+						return taskProgress(usage, toolCallCount), err
+					}
+				}
+				step, err = session.captureStep(ctx, runtime, turnContext)
+				if err != nil {
+					return taskProgress(usage, toolCallCount), err
+				}
 			}
 		}
 		if err := events.Publish(ctx, protocol.Event{Msg: protocol.TokenCountEvent{
@@ -86,6 +111,11 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 				if err := engine.PublishPlanModeCompletions(stepCtx, session.AppendItems, turnContext.TurnID, events, sampleID, sample.Response.Message, proposedPlan.AssistantText(), proposedPlan.PlanText()); err != nil {
 					return taskProgress(usage, toolCallCount), err
 				}
+				if session.inputQueue.HasPending(state) {
+					canDrainPendingInput = true
+					modelContinuationPending = false
+					continue
+				}
 				return TaskOutput{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: completed", Outcome: protocol.TurnOutcomeCompleted}, nil
 			}
 			if err := engine.PersistAssistantResponse(stepCtx, session.AppendItems, turnContext.TurnID, sample.Response.Message, nil); err != nil {
@@ -93,6 +123,11 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 			}
 			if err := engine.PublishModelCompletions(stepCtx, session.AppendItems, turnContext.TurnID, events, sampleID, sample.Response.Message); err != nil {
 				return taskProgress(usage, toolCallCount), err
+			}
+			if session.inputQueue.HasPending(state) {
+				canDrainPendingInput = true
+				modelContinuationPending = false
+				continue
 			}
 			return TaskOutput{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: completed", Outcome: protocol.TurnOutcomeCompleted}, nil
 		}
@@ -113,6 +148,8 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 		if !recorded {
 			return taskProgress(usage, toolCallCount), errors.New("tool execution did not record model response")
 		}
+		canDrainPendingInput = true
+		modelContinuationPending = true
 	}
 }
 
@@ -127,15 +164,6 @@ func addUsage(total, next llm.Usage) llm.Usage {
 	total.ReasoningTokens += next.ReasoningTokens
 	total.TotalTokens += next.TotalTokens
 	return total
-}
-
-func (session *Session) runTurnLoop(ctx context.Context, runtime *SessionServices, turnContext turn.TurnContext, events protocol.EventSink) (TaskOutput, error) {
-	modelSession, err := runtime.NewModelClientSession()
-	if err != nil {
-		return TaskOutput{}, err
-	}
-	compact := session.compactCallback(runtime, modelSession, turnContext.TurnID, events)
-	return session.continueTurn(ctx, runtime, modelSession, turnContext, events, compact)
 }
 
 func (session *Session) compactCallback(runtime *SessionServices, modelSession *engine.ModelClientSession, turnID protocol.TurnID, events protocol.EventSink) compactFunc {

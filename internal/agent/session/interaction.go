@@ -8,12 +8,31 @@ import (
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
+type requestDelivery struct {
+	kind      interactiveRequestKind
+	requestID protocol.RequestID
+	event     protocol.EventMsg
+	result    chan protocol.Op
+}
+
+type interactiveRequestKind string
+
+const (
+	interactiveApproval  interactiveRequestKind = "approval"
+	interactiveUserInput interactiveRequestKind = "request_user_input"
+)
+
+type interactiveWaiter struct {
+	kind   interactiveRequestKind
+	result chan protocol.Op
+}
+
 func (session *Session) clearPendingRequests() {
 	if session == nil || session.active == nil {
 		return
 	}
-	for requestID, waiter := range session.active.pending {
-		delete(session.active.pending, requestID)
+	for requestID, waiter := range session.active.State.pendingRequests {
+		delete(session.active.State.pendingRequests, requestID)
 		waiter.result <- nil
 	}
 }

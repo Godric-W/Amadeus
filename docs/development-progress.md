@@ -2,12 +2,12 @@
 
 > 最近更新：2026-08-20
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：N. Runtime Coordination Tools + Plan Mode Codex Lifecycle Alignment（TODO）
-> 下一任务：N-01 Protocol Contract + Tool Boundary
+> 当前阶段：O. Same-Turn User Input + Turn Steer Lifecycle Alignment（DONE）
+> 下一任务：待规划
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
-A-M 的条目保留为历史完成记录；其中与 N 或当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。
+A-O 的条目保留为历史完成记录；其中与当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。
 
 ## 1. 状态与完成标准
 
@@ -39,6 +39,7 @@ A Runtime + Persistence
 → L Model + Provider Configuration Ownership Alignment
 → M Codex Architecture Realignment
 → N update_plan Codex Lifecycle Alignment
+→ O Same-Turn User Input + Turn Steer Lifecycle Alignment
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先更新 `docs/design.md`。
@@ -985,15 +986,95 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 - 2026-08-20 完成 `update_plan` transient Event 收敛、`request_user_input` 独立交互链、Collaboration Mode 原子提交、Proposed Plan stream/TurnItem、TUI implementation transition 与 legacy cleanup。
 - `make check`（含 vet、全量测试和 build）、`go test -race ./... -count=1`、architecture guards、`git diff --check` 均通过。
 
-## 17. 当前保留能力
+## 17. O. Same-Turn User Input + Turn Steer Lifecycle Alignment — `DONE`
+
+### 目标
+
+- 对齐 Codex 的 user message admission、turn steer、TurnInputQueue 与 same-Turn continuation lifecycle。
+- 运行中的普通用户消息进入当前 Regular Turn，不再静默排队为后续新 Turn。
+- 保持基础版范围：文字输入、Regular/Compact TaskKind、typed admission、canonical UserMessage 和 Rich TUI 投影；不复制 mailbox、多模态和复杂远程协议。
+
+### O-01：User Message Admission + Protocol Contract — `DONE`
+
+- 新增 `UserMessageAdmission{Started, Steered}`、`ClientUserMessageID` 与 typed `SteerInputError`；admission 是 submission request/response，不进入 EventMsg 或 Rollout。
+- 为 `AmadeusThread` 增加 `SubmitUserInputAndWaitForAdmission`，按 SubmissionID 注册一次性 waiter，并保留普通 `Submit` 的 fire-and-accept-to-channel 语义。
+- 增加 strict `SteerInput(ExpectedTurnID, input)` Core API，覆盖 NoActiveTurn、ExpectedTurnMismatch、ActiveTurnNotSteerable 和 EmptyInput。
+- 增加协议校验、并发 waiter、取消、Session shutdown 和错误传播测试。
+
+### O-02：TaskKind + TurnState + InputQueue Ownership — `DONE`
+
+- 用 `TaskKindRegular/TaskKindCompact` 取代 `compact bool` 身份判断，RunningTask 持有明确 TaskKind，基础版只有 Regular 可 steer。
+- 将 ActiveTurn 的 interactive waiter 迁入 `TurnState`，新增 Turn-scoped `TurnInputQueue` 和 Session-scoped `InputQueue` coordinator。
+- `TurnInputQueue` 提供 FIFO enqueue/has/drain/seal 原子协议，解决 Session Submission 与 RunningTask Completion 同时 ready 的尾部竞态。
+- 保留 Session deferred operation queue，但禁止 ActiveTurn 期间的 `UserInputOp` 进入该 queue；删除旧忙时用户输入排队语义和对应测试。
+
+### O-03：Session Admission + Steer Routing — `DONE`
+
+- Session Loop 对 `UserInputOp` 先校验并原子应用 ThreadSettingsOverrides，再尝试 steer；成功返回 Steered，无 ActiveTurn 时启动 RegularTask 并返回 Started。
+- 当前 TurnContext 在 steer 时保持冻结；更新后的 SessionConfiguration 只影响后续 Turn，不建立 TUI mode shadow state。
+- CompactTask 明确返回 ActiveTurnNotSteerable，Core 不静默改成下一 Turn；rejected-steer queue 如有需要只属于 Interface/Application。
+- admission completion、Turn start failure、interrupt 和 terminal cleanup 使用唯一 Session owner，所有 pending admission 在 shutdown 时释放。
+
+### O-04：Same-Turn Pending Input Continuation — `DONE`
+
+- 在 `run_turn` 增加 pending input inspection，将 `modelNeedsFollowUp || hasPendingInput` 作为 continuation 条件。
+- 初始 sampling 前禁止 drain，保证原始 UserInput 先进入第一请求；后续按 FIFO drain steered input。
+- drain 时通过 Session canonical append 写入当前 Turn 的 ResponseUserMessage 与 completed UserMessage TurnItem，再 capture 新 StepContext 并继续同一 Turn。
+- Final Response、Tool Calls、Tool failure 和多个连续 steer 均不产生第二个 TurnStartedEvent 或 Turn terminal。
+- RunningTask 返回前执行 queue seal/completion handshake；已返回 Steered 的输入在 interrupt/terminal race 中不得静默丢失。
+
+### O-05：Compaction + Input-dependent Context Refresh — `DONE`
+
+- 引入 `canDrainPendingInput` 或等价状态，确保 steer 不进入正在执行的 compact request，也不抢在既有 model/tool continuation 前面。
+- 覆盖 auto-compaction 后需要恢复原 continuation、只有 steer 需要 follow-up、Tool Result 触发 compact 三种顺序。
+- 将 Turn preparation 拆分为 static Turn context 与 input-dependent context；初始输入和每批 steer 都刷新 explicit Skill/required MCP 相关上下文。
+- StepContext 必须在 pending input canonical record 和输入相关 context refresh 后重新 capture，Prompt/ToolRouter 继续来自同一 snapshot。
+
+### O-06：Canonical UserMessage + Client Identity — `DONE`
+
+- 初始输入和 steered input 统一使用 ResponseUserMessage + completed UserMessage TurnItem 的 canonical/live lifecycle。
+- UserMessage TurnItem 保留 ClientUserMessageID，用于 caller correlation、optimistic projection 确认和去重；未知 client ID 仍可正常 live/replay。
+- ContextManager、LiveThread rollout 和 replay projector 继续作为唯一历史源，不在 InputQueue、TUI 或 ModelClientSession 保存第二份已消费输入历史。
+- 增加同一 Turn 多 UserMessage、live/replay 等价、durability ordering 和 duplicate client ID contract tests。
+
+### O-07：Application + Rich TUI Steer UX — `DONE`
+
+- InteractiveApplication 提交用户消息时等待 Started/Steered admission，不再只依据本地 phase/running 推断 Runtime 接纳结果。
+- Started 继续由 TurnStartedEvent 初始化新 Turn；Steered 保持 elapsed timer、Working/activity state、details store 和 active items，不重置 Turn UI。
+- TUI 使用 ClientUserMessageID optimistic insert/confirm/dedupe；Runtime UserMessage Item 是 live 与 replay 的最终权威。
+- ActiveTurnNotSteerable 等 rejection 恢复或保留 composer 内容并展示 typed error；不得显示已提交后在 Core 静默排队。
+- 覆盖运行中普通 Enter、slash command availability、Approval/request_user_input overlay 隔离和同 Turn Worked separator 行为。
+
+### O-08：Legacy Cleanup、Guards + End-to-End Acceptance — `DONE`
+
+- 删除 ActiveTurn 时 UserInput append 到 Session queue、`compact bool` task identity、TUI 每次 Enter 重置 Turn 状态和 initial/live UserMessage 双来源旧链。
+- 增加 architecture guards，禁止 `SteerOp`、steer 复用 UserInputAnswerOp/ApprovalDecisionOp、InputQueue 第二历史源和 TUI-only active Turn truth。
+- 建立 provider mock E2E：首轮 stream 中 steer、Tool 执行中 steer、Final 边界 steer、连续 steer、compact 顺序、interrupt 和 explicit expected TurnID race。
+- 运行 targeted tests、`make check`、`go test -race ./... -count=1`、`git diff --check` 和架构扫描；仅在代码、文档、测试与旧链删除全部完成后标记 O 为 DONE。
+
+### O 出口
+
+- 普通用户输入在无 ActiveTurn 时返回 Started，在 Active Regular Turn 时返回 Steered，caller 获得准确 TurnID。
+- Steered input 在当前 Turn 的下一次允许 continuation 中进入模型，多个输入 FIFO，且一个逻辑 Turn 只有一组 TurnStarted/terminal lifecycle。
+- Compact、completion、interrupt、Approval、request_user_input 和 compaction 边界不存在输入误路由、静默丢失或第二历史源。
+- Rich TUI 与 replay 对初始/steered UserMessage 生成一致历史，运行中补充输入不重置 Turn timer 或制造第二个 Worked boundary。
+- 生产代码中不存在忙时 UserInput deferred-new-Turn 旧行为、`SteerOp` 或其他与 `docs/design.md` 冲突的兼容路径。
+
+### O 验收
+
+- 2026-08-20 完成 typed user message admission、strict steer、TaskKind/TurnState/InputQueue ownership、same-Turn continuation、三类 compaction ordering、canonical UserMessage/client identity、Rich TUI optimistic confirmation 与 legacy cleanup。
+- provider-mock E2E 覆盖首轮 stream 中连续 steer、首请求隔离、FIFO、单一 Turn lifecycle 与 interrupt residual input；Session tests 覆盖 expected TurnID、Compact rejection、queue seal、admission waiter/cancel/shutdown 和 compaction continuation 顺序。
+- `make check`（含 vet、全量测试和 build）、`go test -race ./... -count=1`、architecture guards 与 `git diff --check` 均通过。
+
+## 18. 当前保留能力
 
 - 默认启动：`amadeus` 或 `amadeus "<task>"`。
 - 当前配置链和 Provider Adapter 已可使用 OpenAI Responses/Chat Completions 及兼容 Provider。
 - JSONL Canonical Rollout + SQLite Metadata Index 已可支持 Session 恢复。
 - TUI 和 Inline 输出以当前代码和 `docs/design.md` 为准。
-- 内置 Tool、Approval、Diff、Web Search 和 Slash Command 已进入基础主链；N 收敛 `update_plan`、引入 `request_user_input`，并将现有 `/plan` 重构为 Codex 风格 Collaboration Mode 与 Proposed Plan lifecycle。
+- 内置 Tool、Approval、Diff、Web Search 和 Slash Command 已进入基础主链；N 收敛 `update_plan`、引入 `request_user_input`，并将现有 `/plan` 重构为 Codex 风格 Collaboration Mode 与 Proposed Plan lifecycle；O 已补齐同 Turn 用户输入与 steer lifecycle。
 
-## 18. 当前执行规则
+## 19. 当前执行规则
 
 1. 每次只推进一个 `TODO`/`DOING` 主任务。
 2. 先修改 `docs/design.md`，再修改代码；实现发现设计问题时暂停并同步 Contract。
@@ -1001,7 +1082,7 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 4. 任务完成必须运行针对性测试和构建；环境限制导致的测试失败要单独记录。
 5. 本文只更新任务状态和出口，不复制架构设计、源码审计或长篇讨论。
 
-## 19. 源码结构清理 — `DONE`
+## 20. 源码结构清理 — `DONE`
 
 ### 已完成
 

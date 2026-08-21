@@ -271,6 +271,27 @@ func (threadRuntime *AmadeusThread) Submit(ctx context.Context, op protocol.Op) 
 	}
 }
 
+func (threadRuntime *AmadeusThread) SubmitUserInputAndWaitForAdmission(ctx context.Context, op protocol.UserInputOp) (protocol.UserMessageAdmission, error) {
+	if threadRuntime == nil || threadRuntime.nextID == nil {
+		return protocol.UserMessageAdmission{}, errors.New("thread user message submission is unavailable")
+	}
+	if op.ClientUserMessageID == "" {
+		op.ClientUserMessageID = threadRuntime.nextID("user-message")
+	}
+	submission := protocol.Submission{ID: protocol.SubmissionID(threadRuntime.nextID("submission")), Op: op}
+	return threadRuntime.io.SubmitUserInputAndWaitForAdmission(ctx, submission)
+}
+
+func (threadRuntime *AmadeusThread) SteerInput(ctx context.Context, expectedTurnID protocol.TurnID, content, clientUserMessageID string) (protocol.TurnID, error) {
+	if threadRuntime == nil {
+		return "", errors.New("thread steer input is unavailable")
+	}
+	if clientUserMessageID == "" && threadRuntime.nextID != nil {
+		clientUserMessageID = threadRuntime.nextID("user-message")
+	}
+	return threadRuntime.io.SteerInput(ctx, expectedTurnID, agentsession.UserTurnInput{Content: content, ClientID: clientUserMessageID})
+}
+
 func (threadRuntime *AmadeusThread) Shutdown(ctx context.Context) error {
 	if threadRuntime == nil {
 		return nil
