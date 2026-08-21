@@ -78,6 +78,56 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 	}
 }
 
+func TestWebFetchArchitectureKeepsSplitSafetyAndProjectionBoundaries(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, relative := range []string{
+		"internal/webfetch/types.go",
+		"internal/webfetch/errors.go",
+		"internal/webfetch/url.go",
+		"internal/webfetch/transport.go",
+		"internal/webfetch/proxy.go",
+		"internal/webfetch/fetch.go",
+		"internal/webfetch/content.go",
+		"internal/webfetch/markdown.go",
+		"internal/tool/builtin/web_fetch.go",
+		"internal/tool/builtin/web_search.go",
+	} {
+		if _, err := os.Stat(filepath.Join(root, relative)); err != nil {
+			t.Errorf("required Web boundary file is missing: %s: %v", relative, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "internal/tool/builtin/web.go")); err == nil {
+		t.Error("legacy combined web Tool file still exists")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("inspect legacy web Tool file: %v", err)
+	}
+
+	fetchSource := mustReadArchitectureFile(t, root, "internal/webfetch/fetch.go")
+	for _, forbidden := range []string{"regexp.", "titleTag", "scriptStyle", "tags.ReplaceAllString", "HTTPClient"} {
+		if strings.Contains(fetchSource, forbidden) {
+			t.Errorf("web fetch orchestration owns removed implementation detail %q", forbidden)
+		}
+	}
+	fetchTool := mustReadArchitectureFile(t, root, "internal/tool/builtin/web_fetch.go")
+	if strings.Contains(fetchTool, "type WebSearch") || strings.Contains(fetchTool, "webSearchSpec") {
+		t.Error("web_fetch Tool file reintroduced web_search ownership")
+	}
+
+	documentFields := architectureStructFields(t, root, "internal/webfetch/types.go", "Document")
+	for _, required := range []string{"URL", "ContentType", "Title", "Markdown", "Partial", "Bytes"} {
+		if _, ok := documentFields[required]; !ok {
+			t.Errorf("webfetch.Document missing field %s", required)
+		}
+	}
+	if _, legacy := documentFields["Text"]; legacy {
+		t.Error("webfetch.Document retains legacy flat Text field")
+	}
+	optionFields := architectureStructFields(t, root, "internal/webfetch/types.go", "Options")
+	if _, legacy := optionFields["HTTPClient"]; legacy {
+		t.Error("webfetch.Options retains HTTPClient bypass around pinned transport")
+	}
+}
+
 func TestUserInputSubmissionIsNeverDeferred(t *testing.T) {
 	root := repositoryRoot(t)
 	path := filepath.Join(root, "internal", "agent", "session", "session.go")

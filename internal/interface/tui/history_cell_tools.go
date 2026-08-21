@@ -18,6 +18,7 @@ type ToolHistoryCell struct {
 type ExecCell struct{ activity *toolActivity }
 type ExploreCell struct{ activities []*toolActivity }
 type WebSearchCell struct{ activity *toolActivity }
+type WebFetchCell struct{ activity *toolActivity }
 
 func (cell ExecCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
 	return renderExecLines(cell.activity, ctx)
@@ -27,6 +28,9 @@ func (cell ExploreCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
 }
 func (cell WebSearchCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
 	return renderWebSearchLines(cell.activity, ctx)
+}
+func (cell WebFetchCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
+	return renderWebFetchLines(cell.activity, ctx)
 }
 
 func (cell ExecCell) RawLines() []string {
@@ -38,10 +42,14 @@ func (cell ExploreCell) RawLines() []string {
 func (cell WebSearchCell) RawLines() []string {
 	return rawStyledLines(renderWebSearchLines(cell.activity, rawToolContext()))
 }
+func (cell WebFetchCell) RawLines() []string {
+	return rawStyledLines(renderWebFetchLines(cell.activity, rawToolContext()))
+}
 
 func (ExecCell) IsStreamContinuation() bool      { return false }
 func (ExploreCell) IsStreamContinuation() bool   { return false }
 func (WebSearchCell) IsStreamContinuation() bool { return false }
+func (WebFetchCell) IsStreamContinuation() bool  { return false }
 
 func newToolHistoryCell() *ToolHistoryCell {
 	return &ToolHistoryCell{byCallID: map[string]*toolActivity{}}
@@ -165,7 +173,14 @@ func (cell *ToolHistoryCell) projections() []HistoryCell {
 		}
 		flushExplored()
 		if spec.Category == ToolDisplayNetwork {
-			projections = append(projections, WebSearchCell{activity: activity})
+			switch activity.ToolName {
+			case "web_search":
+				projections = append(projections, WebSearchCell{activity: activity})
+			case "web_fetch":
+				projections = append(projections, WebFetchCell{activity: activity})
+			default:
+				projections = append(projections, GenericToolCell{activity: activity})
+			}
 			continue
 		}
 		switch spec.Category {
@@ -355,12 +370,20 @@ func commandActivityDetail(activity *toolActivity) string {
 }
 
 func renderWebSearchLines(activity *toolActivity, ctx HistoryRenderContext) []styledLine {
+	return renderWebActivityLines(activity, ctx, "Searching the web", "Searched the web")
+}
+
+func renderWebFetchLines(activity *toolActivity, ctx HistoryRenderContext) []styledLine {
+	return renderWebActivityLines(activity, ctx, "Fetching web content", "Fetched web content")
+}
+
+func renderWebActivityLines(activity *toolActivity, ctx HistoryRenderContext, runningTitle, completedTitle string) []styledLine {
 	complete := activity.Completed
 	success := activity.Success
 	markerStyle := activityMarkerStyle(activity)
-	title := "Searching the web"
+	title := runningTitle
 	if complete {
-		title = "Searched the web"
+		title = completedTitle
 	}
 	lines := []styledLine{{markerSpan(complete, success, ctx, markerStyle), {Text: " "}, {Text: title, Style: styleBold}}}
 	if label := activityStatusLabel(activity); complete && label != "" {

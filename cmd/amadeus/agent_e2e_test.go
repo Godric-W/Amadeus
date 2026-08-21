@@ -455,7 +455,7 @@ func (client *integratedMCPClient) Close() error { client.closed++; return nil }
 type integratedWebFetcher struct{}
 
 func (*integratedWebFetcher) Fetch(context.Context, string) (webfetch.Document, error) {
-	return webfetch.Document{URL: "https://example.com/article", Title: "Article", Text: "web fixture"}, nil
+	return webfetch.Document{URL: "https://example.com/article", ContentType: "text/html", Title: "Article", Markdown: "web fixture"}, nil
 }
 
 func TestCodingWorkflowIntegratesSkillMCPWebAndDiagnosticHook(t *testing.T) {

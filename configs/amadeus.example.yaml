@@ -60,7 +60,8 @@ web:
     enabled: false
     # Supported providers: duckduckgo, tavily, searxng, brave.
     provider: duckduckgo
-    # Prefer environment expansion instead of storing credentials here.
+    # DuckDuckGo is keyless. For Tavily and Brave, prefer environment expansion
+    # instead of storing credentials here.
     api_key: ""
     # Usually empty except for a selected SearXNG instance.
     base_url: ""

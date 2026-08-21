@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,6 +19,10 @@ const (
 	ProviderTavily     = "tavily"
 	ProviderSearXNG    = "searxng"
 	ProviderBrave      = "brave"
+
+	defaultUserAgent       = "Amadeus/1.0"
+	duckDuckGoUserAgent    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	tavilySearchDepthBasic = "basic"
 )
 
 type ProviderOptions struct {
@@ -65,8 +70,8 @@ func newDuckDuckGo(client *http.Client, baseURL string) (*duckDuckGo, error) {
 	htmlEndpoint := "https://html.duckduckgo.com/html/"
 	apiEndpoint := "https://api.duckduckgo.com/"
 	if strings.TrimSpace(baseURL) != "" {
-		parsed, err := url.Parse(baseURL)
-		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		parsed, err := validateEndpoint(baseURL)
+		if err != nil {
 			return nil, &Error{Kind: ErrorInvalidConfig, Provider: ProviderDuckDuckGo, Err: errors.New("invalid base URL")}
 		}
 		htmlEndpoint = parsed.ResolveReference(&url.URL{Path: "/html/"}).String()
@@ -91,10 +96,19 @@ func (provider *duckDuckGo) Search(ctx context.Context, query string, limit int)
 }
 
 func (provider *duckDuckGo) searchHTML(ctx context.Context, query string, limit int) ([]Result, error) {
-	form := url.Values{"q": {query}}
-	request, _ := http.NewRequest(http.MethodPost, provider.htmlEndpoint, strings.NewReader(form.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.Header.Set("User-Agent", "Amadeus/1.0")
+	endpoint, err := url.Parse(provider.htmlEndpoint)
+	if err != nil {
+		return nil, &Error{Kind: ErrorProtocol, Provider: ProviderDuckDuckGo, Err: err}
+	}
+	parameters := endpoint.Query()
+	parameters.Set("q", query)
+	endpoint.RawQuery = parameters.Encode()
+	request, err := newProviderRequest(ctx, ProviderDuckDuckGo, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "text/html,application/xhtml+xml")
+	request.Header.Set("User-Agent", duckDuckGoUserAgent)
 	body, err := execute(ctx, provider.client, ProviderDuckDuckGo, request)
 	if err != nil {
 		return nil, err
@@ -125,14 +139,22 @@ func (provider *duckDuckGo) searchHTML(ctx context.Context, query string, limit 
 }
 
 func (provider *duckDuckGo) searchAPI(ctx context.Context, query string, limit int) ([]Result, error) {
-	endpoint, _ := url.Parse(provider.apiEndpoint)
+	endpoint, err := url.Parse(provider.apiEndpoint)
+	if err != nil {
+		return nil, &Error{Kind: ErrorProtocol, Provider: ProviderDuckDuckGo, Err: err}
+	}
 	parameters := endpoint.Query()
 	parameters.Set("q", query)
 	parameters.Set("format", "json")
 	parameters.Set("no_html", "1")
 	parameters.Set("skip_disambig", "1")
 	endpoint.RawQuery = parameters.Encode()
-	request, _ := http.NewRequest(http.MethodGet, endpoint.String(), nil)
+	request, err := newProviderRequest(ctx, ProviderDuckDuckGo, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", defaultUserAgent)
 	body, err := execute(ctx, provider.client, ProviderDuckDuckGo, request)
 	if err != nil {
 		return nil, err
@@ -189,14 +211,27 @@ func newTavily(client *http.Client, key, endpoint string) (*tavily, error) {
 	if strings.TrimSpace(endpoint) == "" {
 		endpoint = "https://api.tavily.com/search"
 	}
-	if _, err := validateEndpoint(endpoint); err != nil {
+	value, err := validateEndpoint(endpoint)
+	if err != nil {
 		return nil, &Error{Kind: ErrorInvalidConfig, Provider: ProviderTavily, Err: err}
 	}
-	return &tavily{client: client, apiKey: key, endpoint: endpoint}, nil
+	return &tavily{client: client, apiKey: strings.TrimSpace(key), endpoint: value.String()}, nil
 }
 func (provider *tavily) Search(ctx context.Context, query string, limit int) ([]Result, error) {
-	payload, _ := json.Marshal(map[string]any{"api_key": provider.apiKey, "query": query, "max_results": limit, "search_depth": "basic"})
-	request, _ := http.NewRequest(http.MethodPost, provider.endpoint, bytes.NewReader(payload))
+	payload, err := json.Marshal(struct {
+		Query       string `json:"query"`
+		MaxResults  int    `json:"max_results"`
+		SearchDepth string `json:"search_depth"`
+	}{Query: query, MaxResults: limit, SearchDepth: tavilySearchDepthBasic})
+	if err != nil {
+		return nil, &Error{Kind: ErrorProtocol, Provider: ProviderTavily, Err: err}
+	}
+	request, err := newProviderRequest(ctx, ProviderTavily, http.MethodPost, provider.endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Authorization", "Bearer "+provider.apiKey)
 	request.Header.Set("Content-Type", "application/json")
 	body, err := execute(ctx, provider.client, ProviderTavily, request)
 	if err != nil {
@@ -225,15 +260,27 @@ func newSearXNG(client *http.Client, endpoint string) (*searXNG, error) {
 	if err != nil {
 		return nil, &Error{Kind: ErrorInvalidConfig, Provider: ProviderSearXNG, Err: err}
 	}
-	return &searXNG{client: client, endpoint: strings.TrimRight(value.String(), "/") + "/search"}, nil
+	value.Path = strings.TrimRight(value.Path, "/")
+	if !strings.HasSuffix(value.Path, "/search") {
+		value.Path += "/search"
+	}
+	return &searXNG{client: client, endpoint: value.String()}, nil
 }
 func (provider *searXNG) Search(ctx context.Context, query string, limit int) ([]Result, error) {
-	endpoint, _ := url.Parse(provider.endpoint)
+	endpoint, err := url.Parse(provider.endpoint)
+	if err != nil {
+		return nil, &Error{Kind: ErrorProtocol, Provider: ProviderSearXNG, Err: err}
+	}
 	values := endpoint.Query()
 	values.Set("q", query)
 	values.Set("format", "json")
 	endpoint.RawQuery = values.Encode()
-	request, _ := http.NewRequest(http.MethodGet, endpoint.String(), nil)
+	request, err := newProviderRequest(ctx, ProviderSearXNG, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", defaultUserAgent)
 	body, err := execute(ctx, provider.client, ProviderSearXNG, request)
 	if err != nil {
 		return nil, err
@@ -263,19 +310,27 @@ func newBrave(client *http.Client, key, endpoint string) (*brave, error) {
 	if strings.TrimSpace(endpoint) == "" {
 		endpoint = "https://api.search.brave.com/res/v1/web/search"
 	}
-	if _, err := validateEndpoint(endpoint); err != nil {
+	value, err := validateEndpoint(endpoint)
+	if err != nil {
 		return nil, &Error{Kind: ErrorInvalidConfig, Provider: ProviderBrave, Err: err}
 	}
-	return &brave{client: client, apiKey: key, endpoint: endpoint}, nil
+	return &brave{client: client, apiKey: strings.TrimSpace(key), endpoint: value.String()}, nil
 }
 func (provider *brave) Search(ctx context.Context, query string, limit int) ([]Result, error) {
-	endpoint, _ := url.Parse(provider.endpoint)
+	endpoint, err := url.Parse(provider.endpoint)
+	if err != nil {
+		return nil, &Error{Kind: ErrorProtocol, Provider: ProviderBrave, Err: err}
+	}
 	values := endpoint.Query()
 	values.Set("q", query)
 	values.Set("count", fmt.Sprint(limit))
 	endpoint.RawQuery = values.Encode()
-	request, _ := http.NewRequest(http.MethodGet, endpoint.String(), nil)
+	request, err := newProviderRequest(ctx, ProviderBrave, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, err
+	}
 	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", defaultUserAgent)
 	request.Header.Set("X-Subscription-Token", provider.apiKey)
 	body, err := execute(ctx, provider.client, ProviderBrave, request)
 	if err != nil {
@@ -298,10 +353,18 @@ func (provider *brave) Search(ctx context.Context, query string, limit int) ([]R
 
 func validateEndpoint(raw string) (*url.URL, error) {
 	value, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || value.Scheme == "" || value.Host == "" {
+	if err != nil || !value.IsAbs() || value.Host == "" || (value.Scheme != "http" && value.Scheme != "https") || value.User != nil || value.Fragment != "" {
 		return nil, errors.New("invalid base URL")
 	}
 	return value, nil
+}
+
+func newProviderRequest(ctx context.Context, provider, method, endpoint string, body io.Reader) (*http.Request, error) {
+	request, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	if err != nil {
+		return nil, &Error{Kind: ErrorProtocol, Provider: provider, Err: err}
+	}
+	return request, nil
 }
 func hasClass(node *html.Node, class string) bool {
 	for _, value := range strings.Fields(attribute(node, "class")) {

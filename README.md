@@ -127,6 +127,29 @@ amadeus --help
 
 配置文件可使用顶层 `model_reasoning_effort`，环境变量为 `AMADEUS_MODEL_REASONING_EFFORT`。显式配置时 Responses 发送 `reasoning.effort`，Chat Completions 发送 `reasoning_effort`；DeepSeek、Qwen、GLM 的 Chat `none` 会转换为各自的关闭 thinking 字段。`amadeus config show` 输出脱敏后的有效配置，`amadeus config explain` 同时显示各字段来源。
 
+## Web 工具
+
+`web_search` 与 `web_fetch` 使用独立开关。仅启用搜索时，可以使用无需 API Key 的 DuckDuckGo：
+
+```yaml
+web:
+  search:
+    enabled: true
+    provider: duckduckgo
+  fetch:
+    enabled: false
+```
+
+`duckduckgo` 是默认搜索 Provider，因此 `web.search.enabled: true` 且未显式设置 `provider` 时也会使用 DuckDuckGo。还可配置 `tavily`、`searxng` 或 `brave`；Tavily 和 Brave 需要各自的 API Key，SearXNG 通常需要配置实例 `base_url`。完整字段参见 `configs/amadeus.example.yaml`。
+
+- `web_search` 返回搜索引擎整理的标题、链接和摘要，默认不请求 Approval；摘要适合发现来源，但不等同于已核验的网页全文。
+- `web_fetch` 读取一个精确 HTTP(S) URL 的有界正文并转换为可读 Markdown，适用于用户直接提供 URL、搜索摘要不足或需要核对原文的场景。
+- `web_fetch` 对未授权 Hostname 请求 Approval；“不再询问”只授权当前 Session 中的精确 Hostname，不会授权其他域名。
+- 同 Hostname 重定向可在安全校验后按限制跟随；跨 Hostname 重定向会停止，后续 URL 必须通过新的 `web_fetch` 调用单独授权。
+- `web.fetch.max_redirects: 0` 表示拒绝所有重定向；`max_bytes` 超限时返回带 `Partial` 标记的截断结果。
+
+若只需要搜索，打开 `web.search.enabled` 即可；若还需要读取网页正文，再单独打开 `web.fetch.enabled`。两个能力关闭时不会注册对应 Tool，模型也不可见。
+
 ## Slash Command
 
 Slash Command 仅在交互模式中使用。在输入框中输入 `/` 可以查看和筛选可用命令。

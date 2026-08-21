@@ -19,6 +19,23 @@ func TestLoadReturnsFieldDefaultsWhenFileDoesNotExist(t *testing.T) {
 	}
 }
 
+func TestLoadPreservesExplicitZeroWebRedirectLimit(t *testing.T) {
+	loader := newTestLoader(t.TempDir())
+	writeConfig(t, loader, `
+web:
+  fetch:
+    enabled: true
+    max_redirects: 0
+`)
+	configured, err := loader.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !configured.Web.Fetch.Enabled || configured.Web.Fetch.MaxRedirects != 0 {
+		t.Fatalf("explicit redirect disable was not preserved: %#v", configured.Web.Fetch)
+	}
+}
+
 func TestLoadReadsConfigV2AndAppliesProviderDefaults(t *testing.T) {
 	loader := newTestLoader(t.TempDir())
 	writeConfig(t, loader, `

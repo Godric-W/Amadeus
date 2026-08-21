@@ -3306,18 +3306,36 @@ SessionServices 直接拥有 MCPRuntime 与 SkillCatalog；StepContext、Prompt�
 - `duckduckgo` 默认不要求 API Key；`tavily` 与 `brave` 要求 API Key；`searxng` 要求用户提供实例 Base URL。
 - Search Provider 在 Application Bootstrap 时根据配置构造并注入 WebSearch Service；Agent Runtime、Tool Contract、TurnItem 和 TUI 不感知具体搜索引擎。
 - Provider 必须实现统一的 `Search(context.Context, query, limit)` 边界，并返回标准化 `title/url/snippet` Result。
+- Provider 返回的 `snippet` 是已经过搜索引擎排序和清理的 search-summary evidence，不等于目标页面完整正文；Tavily 的 `content` 在统一边界中同样只映射为 `snippet`，不得因为 Provider 面向 Agent 就将其标记为 full-page evidence。
 - Provider 超时、认证、限流、网络和协议错误必须转换为可见 ToolResult，并保留稳定 Provider/Error Kind 供诊断。
 - 单次 Search 调用使用 Turn 派生 Context 和配置超时，保持同步 API；多个独立 `web_search` 调用只由 Tool Executor 做有界并发。
 - 搜索结果进入 Context 前进行 URL 校验、去重、数量限制、文本长度限制和来源标注。
 - `web.search.enabled=false` 时不注册 `web_search`，模型不可见；启用后 `web_search` 默认 Allow。
-- `web_fetch` 对未授权 Hostname 返回 Ask；用户选择 `Yes, and don't ask again for <hostname>` 后写入 Session Domain Rule。
+- `web_fetch` 是精确 URL 的按需全文读取能力：用户直接提供 URL、搜索摘要不足、需要核对原文或验证动态事实时才使用；搜索摘要已经足够时不得为了“更完整”自动抓取页面。
+- 基础版不在 `web_search` 后自动抓取 Top-N 结果，不建立 WeKnora 风格的 pipeline auto-fetch；是否调用 `web_fetch` 由模型根据证据充分性显式决定，抓取失败不应触发等价搜索或无限重试。
+- `web_fetch` 保持基础 `{url}` Schema，抓取后返回有界、结构化且标记为不可信的页面内容，由当前主模型完成理解和回答；基础版不在 Tool 内部再发起 secondary-model summarization。
+- `web_fetch` 输入必须在 Approval 前完成 absolute `http/https` URL、Hostname 和禁止 userinfo 校验；非法 Scheme、相对 URL 或凭据 URL 不得先展示网络 Approval 再在 Execute 阶段失败。
+- `web_fetch` 对未授权 Hostname 返回 Ask；用户选择 `Yes, and don't ask again for <hostname>` 后只写入当前 Session 的精确 Hostname Domain Rule。
+- Approval 只授权当前请求 Hostname，不授权任意重定向目标。同 Hostname 的受限重定向可以在重新执行 URL/SSRF 检查后跟随；跨 Hostname 重定向必须停止并返回 typed redirect result，由模型使用目标 URL 再次调用 `web_fetch`，从而触发目标 Hostname 的独立 Approval。
+- URL 初检、每次重定向和实际 Dial 都必须执行 SSRF 防护；DNS 校验后的连接必须固定使用已验证的 public IP，同时保留原 Hostname 用于 HTTP Host 与 TLS SNI，不能在安全检查后对原 Hostname 进行第二次不受控解析。
+- Fetcher 必须限制总超时、响应字节数和重定向次数；`max_redirects: 0` 明确表示拒绝所有重定向，不得被 Fetcher 重解释为默认值。超过字节限制返回 `Partial=true` 的可用结果，而不是无界读取。
+- HTML 使用 DOM-based readable-content extraction 并投影为 bounded Markdown，至少保留标题、段落、列表、链接和代码块的基本结构；页面标题只出现一次，不使用正则剥标签后压成单行正文。
+- 基础版只内建文本类 Content-Type：`text/html`、`text/plain`、`text/markdown` 和可安全展示的 `application/json`；其他二进制内容返回稳定的 unsupported-content result，不将 PDF、压缩包或任意字节直接按 UTF-8 注入 Context。
+- `web_fetch` 的成功结果必须通过 typed Document/Data contract 提供 final URL、Content-Type、Title、Markdown、Partial 和实际读取字节数；不保留并行的 legacy `Text` 正文字段。失败结果必须区分 invalid URL、approval denial、SSRF rejection、redirect approval required、timeout、empty content、unsupported content 和 upstream HTTP failure。
+- 页面正文与搜索结果始终属于 untrusted external content，不能覆盖 System/Developer Instructions、Permission、Approval、Tool Schema 或当前任务边界。
 - 不构建通用 Network Permission Store；Provider 配置缺失或请求失败时返回可见 ToolResult。
 - Browser 自动化不进入内置核心能力，只通过 MCP 或 Extension Tool 接入。
+- Tavily Extract、自定义 fetch adapter、二进制文件持久化、15 分钟 LRU Cache 和 secondary-model query-focused extraction 均属于后续可选优化，不进入基础 `web_fetch` Contract；Browser/JavaScript rendering 继续只通过 MCP 或 Extension Tool 接入。未来引入其他优化时不得改变 Hostname Approval、跨域重定向和 untrusted-content 边界。
 
 目标配置形态：
 
 ```yaml
 web:
+  fetch:
+    enabled: true
+    timeout: 30s
+    max_bytes: 1048576
+    max_redirects: 3 # 0 means reject all redirects
   search:
     enabled: true
     provider: brave # duckduckgo | tavily | searxng | brave

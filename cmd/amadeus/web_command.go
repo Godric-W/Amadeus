@@ -45,7 +45,7 @@ func newWebCheckCommand(flags *configFlags, runtime commandRuntime) *cobra.Comma
 					if fetchErr != nil {
 						return fmt.Errorf("web fetch check failed: %w", fetchErr)
 					}
-					fmt.Fprintf(command.OutOrStdout(), "web fetch check: ok (%s, %d chars)\n", document.URL, len(document.Text))
+					fmt.Fprintf(command.OutOrStdout(), "web fetch check: ok (%s, %d chars)\n", document.URL, len(document.Markdown))
 				}
 			}
 			if configured.Web.Search.Enabled {

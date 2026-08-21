@@ -36,20 +36,29 @@ func execute(ctx context.Context, client *http.Client, provider string, request 
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
 		return body, nil
 	}
-	kind := ErrorUpstream
-	switch response.StatusCode {
-	case http.StatusUnauthorized, http.StatusForbidden:
-		kind = ErrorAuthentication
-	case http.StatusTooManyRequests:
-		kind = ErrorRateLimit
-	default:
-		if response.StatusCode < 500 {
-			kind = ErrorProtocol
-		}
-	}
+	kind := classifyHTTPStatus(provider, response.StatusCode)
 	detail := strings.TrimSpace(string(body))
 	if len(detail) > 256 {
 		detail = detail[:256]
 	}
 	return nil, &Error{Kind: kind, Provider: provider, StatusCode: response.StatusCode, Err: errors.New(detail)}
+}
+
+func classifyHTTPStatus(provider string, statusCode int) ErrorKind {
+	switch statusCode {
+	case http.StatusUnauthorized:
+		return ErrorAuthentication
+	case http.StatusForbidden:
+		if provider == ProviderSearXNG {
+			return ErrorProtocol
+		}
+		return ErrorAuthentication
+	case http.StatusTooManyRequests:
+		return ErrorRateLimit
+	default:
+		if statusCode < 500 {
+			return ErrorProtocol
+		}
+		return ErrorUpstream
+	}
 }

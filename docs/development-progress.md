@@ -2,12 +2,12 @@
 
 > 最近更新：2026-08-21
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：P. Model Reasoning Effort + Provider Thinking Contract（DONE）
+> 当前阶段：Q. Web Fetch Safety + Readable Content Contract（DONE）
 > 下一任务：待规划
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
-A-P 的条目保留为历史与当前计划记录；其中与当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。
+A-Q 的条目保留为历史与当前计划记录；其中与当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。
 
 ## 1. 状态与完成标准
 
@@ -41,6 +41,7 @@ A Runtime + Persistence
 → N update_plan Codex Lifecycle Alignment
 → O Same-Turn User Input + Turn Steer Lifecycle Alignment
 → P Model Reasoning Effort + Provider Thinking Contract
+→ Q Web Fetch Safety + Readable Content Contract
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先更新 `docs/design.md`。
@@ -1140,7 +1141,60 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 - `config show/explain`、`AMADEUS_MODEL_REASONING_EFFORT`、`--model-reasoning-effort`、example config、README 与 `/status` 已接通；unset 明确显示为 Provider default。
 - config/domain/Turn/Rollout/Compaction/Dialect/Adapter provider-mock 与 Architecture Guard 覆盖完成；`make check`、`go test -race ./... -count=1` 和 `git diff --check` 通过。
 
-## 19. 当前保留能力
+## 19. Q. Web Fetch Safety + Readable Content Contract — `DONE`
+
+### 目标
+
+- 保留独立 `web_fetch`，将其收敛为搜索摘要不足或精确 URL 核验时使用的有界全文读取 Tool；不把 Tavily search snippet 误标为 full-page evidence。
+- 修复 URL 校验、Hostname Approval、跨域重定向和 DNS rebinding 边界，使获准 Hostname 不会隐式扩大到其他网络目标。
+- 将正则剥标签输出替换为 bounded readable Markdown，并建立稳定 Content-Type、Partial、metadata 和 typed failure contract。
+- 保持基础版范围：不增加自动 Top-N fetch、Browser rendering、Tavily Extract adapter、二进制持久化、secondary-model summarization 或持久化 Web Cache。
+
+### Q-01：URL、配置与 Permission Contract — `DONE`
+
+- 在 Approval 前完成 absolute `http/https`、Hostname 和 userinfo 校验，非法输入不进入 Approval/Execute。
+- 修正 `max_redirects: 0` 语义，使其稳定表示拒绝重定向，并保持 Config default、validation、example config 和 Fetcher options 一致。
+- 明确 `{url}` 基础 Schema、Hostname Session Grant、untrusted result 和搜索摘要不足时才抓取的 Tool Guidance。
+
+### Q-02：Pinned Transport + Redirect Approval Boundary — `DONE`
+
+- 将 DNS 安全检查与实际 Dial 收敛为同一 pinned public IP 主链，覆盖 IPv4/IPv6、DNS rebinding、private/link-local/loopback 和重定向目标。
+- 受控跟随同 Hostname 重定向；跨 Hostname 返回 typed redirect result，不发起目标请求，并由下一次 `web_fetch` 触发独立 Approval。
+- 保持 proxy、timeout、cancel、连接错误和 HTTP status 分类可见，不允许 Session Domain Grant 绕过确定性 SSRF 拒绝。
+
+### Q-03：Readable Markdown + Content-Type Contract — `DONE`
+
+- 使用 DOM-based 提取替换正则剥标签，保留标题、段落、列表、链接和代码块的基础 Markdown 结构，并消除标题重复。
+- 只接受设计允许的文本 Content-Type，正确处理 charset；二进制或不支持内容返回 typed unsupported result。
+- 保持最大字节限制和 `Partial` 语义，确保截断、空正文、畸形 HTML 和 JSON/text 输入均生成有界可用结果。
+
+### Q-04：ToolResult、Guidance + Interface Projection — `DONE`
+
+- 统一 success/failure/redirect ToolResult 的 final URL、Content-Type、Title、Markdown、Partial 和稳定 error metadata。
+- 更新 Runtime Tool guidance，使模型优先使用足够的 `web_search` evidence，仅在全文核验必要时调用 `web_fetch`，失败后不进行等价搜索或无限重试。
+- 保持 Rich TUI、Inline、Rollout 和 replay 使用既有 Tool lifecycle；Web Fetch 不新增第二 Event、Context owner 或自动 pipeline。
+
+### Q-05：Tests、Guards + Acceptance — `DONE`
+
+- 覆盖 Approval 前拒绝、Hostname Session Grant、同域/跨域重定向、redirect limit、DNS pinning、SSRF、timeout、cancel、size limit 和 Content-Type matrix。
+- 增加 HTML/Markdown/text/JSON extraction fixtures、标题去重、链接/代码块保留、Partial 和 untrusted-content 测试。
+- 更新 `docs/design.md`、example config、用户可见说明和 architecture guards；运行 targeted tests、`make check`、`go test -race ./... -count=1` 与 `git diff --check` 后才可标记 Q 为 DONE。
+
+### Q 出口
+
+- `web_search` 与 `web_fetch` 证据层级清晰：前者提供 search-summary evidence，后者只在必要时提供 full-page evidence。
+- 任意实际网络目标都经过准确 URL 校验、Hostname Approval、redirect policy、SSRF 校验和 pinned Dial，不存在跨域授权扩大或二次 DNS 解析窗口。
+- 模型获得有界、结构化、可诊断且明确不可信的页面内容；基础主链不依赖 Browser、Tavily Extract、额外模型调用或自动抓取流水线。
+
+### 完成记录
+
+- 2026-08-21 完成 Approval 前 URL/Hostname/userinfo 校验、精确 Hostname Session Grant、`max_redirects: 0` 配置语义与跨 Hostname typed redirect boundary。
+- Fetcher 使用已验证 public IP 的 pinned Dial，保留原 Host/TLS SNI，并覆盖同域重定向重新解析、DNS rebinding、IPv4/IPv6、restricted/mixed DNS answer、HTTP/HTTPS proxy、timeout、cancel 和 HTTP status 分类。
+- 删除正则剥标签与 legacy `Document.Text`/`Options.HTTPClient` bypass，按 URL、transport、proxy、content、Markdown 和 typed error 职责拆分 `internal/webfetch`；HTML、Markdown、text 与 JSON 统一投影为有界 readable Markdown。
+- `web_search` 明确输出 search-summary evidence，`web_fetch` 明确输出 untrusted full-page evidence；Rich TUI 分离 Search/Fetch projection，MCP network Tool 回归 generic projection，README 与 example config 已补齐 DuckDuckGo、Approval、重定向和开关说明。
+- targeted Web/Tool/Config/TUI/Architecture/CLI tests、`make check`、`go test -race ./... -count=1` 与 `git diff --check` 全部通过。
+
+## 20. 当前保留能力
 
 - 默认启动：`amadeus` 或 `amadeus "<task>"`。
 - 当前配置链和 Provider Adapter 已可使用 OpenAI Responses/Chat Completions 及兼容 Provider。
@@ -1148,8 +1202,9 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 - TUI 和 Inline 输出以当前代码和 `docs/design.md` 为准。
 - 内置 Tool、Approval、Diff、Web Search 和 Slash Command 已进入基础主链；N 收敛 `update_plan`、引入 `request_user_input`，并将现有 `/plan` 重构为 Codex 风格 Collaboration Mode 与 Proposed Plan lifecycle；O 已补齐同 Turn 用户输入与 steer lifecycle。
 - P 已完成 Model Reasoning Effort 与 Provider Thinking Contract；当前生产主链可从配置冻结到 Turn，并贯通普通 sampling、Compaction 与 Provider wire request。
+- Q 已完成 `web_fetch` 的 pinned network、重定向 Approval、readable Markdown、typed result 与证据层级收敛；`web_search` 保持 Provider 摘要能力，二者使用独立开关和权限边界。
 
-## 20. 当前执行规则
+## 21. 当前执行规则
 
 1. 每次只推进一个 `TODO`/`DOING` 主任务。
 2. 先修改 `docs/design.md`，再修改代码；实现发现设计问题时暂停并同步 Contract。
@@ -1157,7 +1212,7 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 4. 任务完成必须运行针对性测试和构建；环境限制导致的测试失败要单独记录。
 5. 本文只更新任务状态和出口，不复制架构设计、源码审计或长篇讨论。
 
-## 21. 源码结构清理 — `DONE`
+## 22. 源码结构清理 — `DONE`
 
 ### 已完成
 

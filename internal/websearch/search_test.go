@@ -26,6 +26,9 @@ func TestDuckDuckGoUsesHTMLFirstAndAPIFallback(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		requests++
 		if request.URL.Path == "/html/" {
+			if request.Method != http.MethodGet || request.URL.Query().Get("q") != "query" || !strings.Contains(request.Header.Get("User-Agent"), "Mozilla/") {
+				t.Fatalf("unexpected DuckDuckGo HTML request: %s %s %#v", request.Method, request.URL, request.Header)
+			}
 			return response(request, http.StatusOK, `<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fone.example%2F">One</a><div class="result__snippet">First</div>`), nil
 		}
 		return response(request, http.StatusOK, `{"Heading":"Fallback","AbstractText":"Second","AbstractURL":"https://two.example/"}`), nil
@@ -61,12 +64,12 @@ func TestJSONProvidersSerializeAuthenticationAndNormalizeResults(t *testing.T) {
 		body    string
 	}{
 		{name: ProviderTavily, options: ProviderOptions{Name: ProviderTavily, APIKey: "tavily-key", BaseURL: "https://search.example/tavily"}, body: `{"results":[{"title":"One","url":"https://one.example/#fragment","content":"First"}]}`, assert: func(t *testing.T, request *http.Request, body string) {
-			if request.Method != http.MethodPost || !strings.Contains(body, `"api_key":"tavily-key"`) {
-				t.Fatalf("unexpected Tavily request: %s %s", request.Method, body)
+			if request.Method != http.MethodPost || request.Header.Get("Authorization") != "Bearer tavily-key" || strings.Contains(body, "api_key") || !strings.Contains(body, `"query":"query"`) {
+				t.Fatalf("unexpected Tavily request: %s %#v %s", request.Method, request.Header, body)
 			}
 		}},
-		{name: ProviderSearXNG, options: ProviderOptions{Name: ProviderSearXNG, BaseURL: "https://search.example"}, body: `{"results":[{"title":"One","url":"https://one.example/","content":"First"}]}`, assert: func(t *testing.T, request *http.Request, _ string) {
-			if request.URL.Path != "/search" || request.URL.Query().Get("format") != "json" {
+		{name: ProviderSearXNG, options: ProviderOptions{Name: ProviderSearXNG, BaseURL: "https://search.example/search"}, body: `{"results":[{"title":"One","url":"https://one.example/","content":"First"}]}`, assert: func(t *testing.T, request *http.Request, _ string) {
+			if request.URL.Path != "/search" || request.URL.Query().Get("format") != "json" || request.URL.Query().Has("language") || request.Header.Get("Accept") != "application/json" {
 				t.Fatalf("unexpected SearXNG request: %s", request.URL)
 			}
 		}},
@@ -138,19 +141,22 @@ func TestServiceRetriesTransientClassifiesTimeoutAndDeduplicates(t *testing.T) {
 
 func TestHTTPProvidersClassifyStatusesAndAcceptEmptyResults(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		status int
-		kind   ErrorKind
+		name     string
+		provider string
+		status   int
+		kind     ErrorKind
 	}{
-		{name: "authentication", status: http.StatusUnauthorized, kind: ErrorAuthentication},
-		{name: "rate limit", status: http.StatusTooManyRequests, kind: ErrorRateLimit},
-		{name: "upstream", status: http.StatusServiceUnavailable, kind: ErrorUpstream},
+		{name: "authentication", provider: ProviderBrave, status: http.StatusUnauthorized, kind: ErrorAuthentication},
+		{name: "searxng json disabled", provider: ProviderSearXNG, status: http.StatusForbidden, kind: ErrorProtocol},
+		{name: "rate limit", provider: ProviderBrave, status: http.StatusTooManyRequests, kind: ErrorRateLimit},
+		{name: "upstream", provider: ProviderBrave, status: http.StatusServiceUnavailable, kind: ErrorUpstream},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 				return response(request, test.status, `{"error":"provider failure"}`), nil
 			})}
-			provider, err := NewProvider(ProviderOptions{Name: ProviderBrave, APIKey: "secret", BaseURL: "https://search.example/brave", HTTPClient: client})
+			options := ProviderOptions{Name: test.provider, APIKey: "secret", BaseURL: "https://search.example", HTTPClient: client}
+			provider, err := NewProvider(options)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -183,6 +189,8 @@ func TestProviderRejectsIncompleteConfiguration(t *testing.T) {
 		{Name: ProviderTavily},
 		{Name: ProviderBrave},
 		{Name: ProviderSearXNG},
+		{Name: ProviderSearXNG, BaseURL: "ftp://search.example"},
+		{Name: ProviderDuckDuckGo, BaseURL: "https://user:secret@search.example"},
 		{Name: "unknown"},
 	} {
 		_, err := NewProvider(options)

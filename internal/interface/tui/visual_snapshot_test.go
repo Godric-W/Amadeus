@@ -30,12 +30,17 @@ func TestVisualRuntimeNoColorSnapshots(t *testing.T) {
 	searchStarted := toolStartedMessage("web", "web_search", "network", "Amadeus TUI", "")
 	search.Apply(searchStarted)
 	search.Apply(toolCompletedMessage(searchStarted, protocol.ItemStatusCompleted, "", "0s", false))
+	fetch := newToolHistoryCell()
+	fetchStarted := toolStartedMessage("fetch", "web_fetch", "network", "example.com", "")
+	fetch.Apply(fetchStarted)
+	fetch.Apply(toolCompletedMessage(fetchStarted, protocol.ItemStatusCompleted, "", "0s", false))
 
 	for name, test := range map[string]struct{ got, want string }{
 		"working":   {got: spinnerGlyph(ctx.Now, ctx.MotionStart, ctx.Motion, ctx.Palette) + shimmerText("Working", ctx.Now, ctx.MotionStart, ctx.Motion, ctx.Palette) + " (1m 05s • esc to interrupt)", want: "✻ Working (1m 05s • esc to interrupt)"},
 		"exec":      {got: xansi.Strip(renderHistoryCellForTest(exec, ctx)), want: "• Ran go test ./...\n  └ ok"},
 		"explore":   {got: xansi.Strip(renderHistoryCellForTest(explore, ctx)), want: "• Explored\n  └ Read docs/design.md"},
 		"web":       {got: xansi.Strip(renderHistoryCellForTest(search, ctx)), want: "• Searched the web\n  └ Amadeus TUI"},
+		"web-fetch": {got: xansi.Strip(renderHistoryCellForTest(fetch, ctx)), want: "• Fetched web content\n  └ example.com"},
 		"separator": {got: xansi.Strip(renderHistoryCellForTest(FinalMessageSeparator{Elapsed: 65 * time.Second}, ctx)), want: "─ Worked for 1m 05s ────────────────────────────"},
 	} {
 		t.Run(name, func(t *testing.T) {

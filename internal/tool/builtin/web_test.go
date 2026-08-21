@@ -52,18 +52,40 @@ func (provider builtinSearchProvider) Search(context.Context, string, int) ([]we
 }
 
 func TestWebFetchProducesUntrustedBoundedDocument(t *testing.T) {
-	fetch, err := NewWebFetch(builtinWebFetcher{document: webfetch.Document{URL: "https://example.com", Title: "Example", Text: "body", Partial: true}})
+	fetch, err := NewWebFetch(builtinWebFetcher{document: webfetch.Document{URL: "https://example.com", ContentType: "text/html", Title: "Example", Markdown: "# Body", Partial: true, Bytes: 128}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	result, err := executePreparedTool(t, context.Background(), fetch, json.RawMessage(`{"url":"https://example.com"}`))
-	if err != nil || !result.Partial || !strings.Contains(result.Text, "Untrusted web content") || result.Metadata["title"] != "Example" || fetch.Spec().SideEffect != tool.SideEffectNetwork {
+	if err != nil || !result.Partial || !strings.Contains(result.Text, "Untrusted web content") || !strings.Contains(result.Text, "# Body") || strings.Count(result.Text, "Example") != 1 || result.Metadata["title"] != "Example" || result.Metadata["evidence_type"] != "fetched_page" || fetch.Spec().SideEffect != tool.SideEffectNetwork {
 		t.Fatalf("unexpected web fetch result: %#v err=%v", result, err)
 	}
 }
 
+func TestWebFetchRejectsInvalidURLBeforeApproval(t *testing.T) {
+	approvals := &webApprovalStub{decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "test"}}
+	coordinator, err := policy.NewApprovalCoordinator(approvals)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &countingWebFetcher{}
+	fetch, err := NewWebFetch(fetcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := withTestPermissions(withTestApprovalCoordinator(context.Background(), coordinator), policy.NewSessionPermissionContext())
+	for _, raw := range []string{`{"url":"ftp://example.com/file"}`, `{"url":"https://user:secret@example.com/"}`, `{"url":"/relative"}`} {
+		if _, err := executePreparedTool(t, ctx, fetch, json.RawMessage(raw)); err == nil {
+			t.Fatalf("invalid web_fetch input succeeded: %s", raw)
+		}
+	}
+	if fetcher.count != 0 || len(approvals.requests) != 0 {
+		t.Fatalf("invalid input reached approval or fetcher: fetches=%d approvals=%d", fetcher.count, len(approvals.requests))
+	}
+}
+
 func TestWebFetchApprovalDenialPreventsFetch(t *testing.T) {
-	fetcher := &countingWebFetcher{document: webfetch.Document{URL: "https://example.com", Text: "body"}}
+	fetcher := &countingWebFetcher{document: webfetch.Document{URL: "https://example.com", ContentType: "text/plain", Markdown: "body"}}
 	approvals := &webApprovalStub{decision: policy.ApprovalDecision{Outcome: policy.ApprovalDeny, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "not now"}}
 	fetch, err := NewWebFetch(fetcher)
 	if err != nil {
@@ -83,7 +105,7 @@ func TestWebFetchApprovalDenialPreventsFetch(t *testing.T) {
 }
 
 func TestWebFetchSessionApprovalIsScopedByHostname(t *testing.T) {
-	fetcher := &countingWebFetcher{document: webfetch.Document{URL: "https://example.com", Text: "body"}}
+	fetcher := &countingWebFetcher{document: webfetch.Document{URL: "https://example.com", ContentType: "text/plain", Markdown: "body"}}
 	approvals := &webApprovalStub{decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalSession, Source: policy.ApprovalSourceUser, Reason: "trusted"}}
 	fetch, err := NewWebFetch(fetcher)
 	if err != nil {
@@ -107,13 +129,30 @@ func TestWebFetchSessionApprovalIsScopedByHostname(t *testing.T) {
 	}
 }
 
+func TestWebFetchReturnsTypedCrossHostRedirectGuidance(t *testing.T) {
+	redirectErr := &webfetch.Error{Kind: webfetch.ErrorRedirectApprovalNeeded, URL: "https://example.com/start", RedirectURL: "https://other.example/final", Err: errors.New("redirect approval required")}
+	fetch, err := NewWebFetch(builtinWebFetcher{err: redirectErr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvals := &webApprovalStub{decision: policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "test"}}
+	coordinator, err := policy.NewApprovalCoordinator(approvals)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, executeErr := executePreparedTool(t, withTestApprovalCoordinator(context.Background(), coordinator), fetch, json.RawMessage(`{"url":"https://example.com/start"}`))
+	if executeErr == nil || result.Metadata["error_kind"] != string(webfetch.ErrorRedirectApprovalNeeded) || result.Metadata["redirect_url"] != "https://other.example/final" || !strings.Contains(result.Text, "Call web_fetch again") {
+		t.Fatalf("unexpected redirect result: %#v err=%v", result, executeErr)
+	}
+}
+
 func TestWebSearchFormatsProviderResultsAndErrors(t *testing.T) {
 	search, err := NewWebSearch(builtinSearchProvider{results: []websearch.Result{{Title: "One", URL: "https://one.example", Snippet: "first"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	result, err := executePreparedTool(t, context.Background(), search, json.RawMessage(`{"query":"one","limit":1}`))
-	if err != nil || !strings.Contains(result.Text, "https://one.example") || search.Spec().SideEffect != tool.SideEffectNetwork {
+	if err != nil || !strings.Contains(result.Text, "https://one.example") || !strings.Contains(result.Text, "search-summary evidence") || result.Metadata["page_verified"] != false || search.Spec().SideEffect != tool.SideEffectNetwork {
 		t.Fatalf("unexpected web search result: %#v err=%v", result, err)
 	}
 	failing, err := NewWebSearch(builtinSearchProvider{err: errors.New("offline")})

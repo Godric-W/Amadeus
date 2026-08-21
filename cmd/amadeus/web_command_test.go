@@ -53,7 +53,7 @@ web:
     provider: brave
     api_key: brave-secret-must-not-leak
 `)
-	fetcher := &commandWebFetcher{document: webfetch.Document{URL: "https://example.test/docs", Text: "document"}}
+	fetcher := &commandWebFetcher{document: webfetch.Document{URL: "https://example.test/docs", ContentType: "text/plain", Markdown: "document"}}
 	search := &commandWebSearch{results: []websearch.Result{{Title: "One", URL: "https://example.test", Snippet: "result"}}}
 	var output bytes.Buffer
 	command := newRootCommandWithRuntime(&configFlags{}, commandRuntime{
