@@ -1,6 +1,10 @@
+<p align="center">
+  <img src="docs/Amadeus_logo.webp" alt="Amadeus Logo" width="320">
+</p>
+
 # Amadeus
 
-Amadeus 是一个使用 Go 实现的 codex-like 终端 Coding Agent。它可以在指定项目中读取和搜索代码、编辑文件、执行命令、查看图片、调用 Web、Skill 与 MCP 工具，并通过可恢复的会话持续完成软件开发任务。
+Amadeus 是一个使用 Go 实现的 codex-like 终端 Coding Agent。它可以在指定项目中读取和搜索代码、编辑文件、执行命令、查看图片、调用 Web、Skill 与 MCP 工具，也可以把独立的只读探索任务委派给由 Amadeus 自己驱动的 SubAgent，并通过可恢复的会话持续完成软件开发任务。
 
 Amadeus 支持交互式 TUI 和一次性任务两种使用方式。运行时使用单一 Turn continuation loop：模型可以连续调用工具、读取执行结果并继续工作，直到返回最终回答。会话历史以 canonical rollout 持久化，可用于继续或恢复此前的对话。
 
@@ -131,6 +135,45 @@ amadeus --help
 
 模型图片能力必须显式配置，不能从 Provider 或 OpenAI-compatible Dialect 推断。默认 `model_input_modalities: [text]`；只有真实支持图片的模型才应配置 `[text, image]`。`model_supports_original_image_detail` 默认 `false`，仅对明确支持 original detail 的模型开启。对应环境变量为 `AMADEUS_MODEL_INPUT_MODALITIES` 与 `AMADEUS_MODEL_SUPPORTS_ORIGINAL_IMAGE_DETAIL`。
 
+## 配置目录
+
+Amadeus 使用 `AMADEUS_HOME` 保存用户级配置、Skill 和会话数据。建议显式设置一个用户可写目录：
+
+```bash
+export AMADEUS_HOME="$HOME/.amadeus"
+mkdir -p "$AMADEUS_HOME"
+```
+
+如果未设置 `AMADEUS_HOME`，Amadeus 会使用解析后的可执行文件所在目录。用户级主配置默认位于 `$AMADEUS_HOME/config.yaml`；也可以通过 `--config <path>` 为当前进程指定其他主配置文件。
+
+仓库提供了完整示例：
+
+```bash
+cp configs/amadeus.example.yaml "$AMADEUS_HOME/config.yaml"
+amadeus config check --config "$AMADEUS_HOME/config.yaml"
+amadeus config show
+```
+
+`config show` 会输出脱敏后的有效主配置，`config explain` 会同时显示字段来源。MCP 和 Skill 使用下文所述的独立配置文件与目录，不写入 `config.yaml`。
+
+## Multi-Agent
+
+默认启用基础 Multi-Agent。Root Agent 可以创建由 Amadeus 自己驱动的只读 `explorer` SubAgent；每个 child 都是独立的 Thread/Session，使用同一项目目录，但拥有独立 Context、Tool 执行状态、权限状态和持久化历史。
+
+```yaml
+agent:
+  max_parallel_tools: 4
+  multi_agent:
+    enabled: true
+    max_agents: 4
+    max_depth: 1
+    child_max_samples: 20
+    child_max_tool_calls: 100
+    child_max_duration: 15m
+```
+
+当前基础版仅支持 Root 的直接 child。SubAgent 固定为只读 explorer，只能使用 `read`、`glob`、`grep`，以及条件可见的 `read_skill` 和 `web_search`；不能编辑文件、执行命令、请求用户输入、调用 MCP 或继续创建 SubAgent。Root Agent 通过 `spawn_agent`、`send_input`、`wait_agent` 和 `close_agent` 管理 child。
+
 ## Web 工具
 
 `web_search` 与 `web_fetch` 使用独立开关。仅启用搜索时，可以使用无需 API Key 的 DuckDuckGo：
@@ -164,6 +207,145 @@ model_supports_original_image_detail: false
 ```
 
 默认 detail 为 `high`。只有开启 `model_supports_original_image_detail` 时，Tool Schema 才会向模型暴露 `original`；该模式仍受 6000 单边和 10000 个 32×32 patch 的预算约束，不表示无界原始文件直传。工作目录外的图片沿用 read-directory Approval 与当前 Session Grant。
+
+## MCP 配置
+
+MCP 使用独立的 `mcp.yaml`。Amadeus 会同时读取：
+
+```text
+$AMADEUS_HOME/mcp.yaml
+<project>/.amadeus/mcp.yaml
+```
+
+用户级配置适合所有项目共享的 Server，项目级配置适合仓库专用 Server。两边的 Server 按名称合并；如果名称相同，项目级 Server 会**整体替换**用户级 Server，而不是逐字段合并。
+
+### Stdio Server
+
+```yaml
+servers:
+  local-tools:
+    transport: stdio
+    command: /absolute/path/to/mcp-server
+    args: ["--mode", "stdio"]
+    env:
+      SERVICE_TOKEN: ${SERVICE_TOKEN}
+    timeout: 30s
+    enabled: true
+```
+
+`stdio` Server 必须配置 `command`，可以配置 `args` 和传递给子进程的 `env`，但不能配置 `url` 或 `headers`。
+
+### Streamable HTTP Server
+
+```yaml
+servers:
+  remote-tools:
+    transport: streamable_http
+    url: https://mcp.example.com/mcp
+    headers:
+      Authorization: Bearer ${MCP_AUTH_TOKEN}
+    timeout: 30s
+    enabled: true
+```
+
+`streamable_http` Server 必须配置 `url`，可以配置请求 `headers`，但不能配置 `command`、`args` 或 `env`。
+
+MCP 配置规则：
+
+- Server 名称只能包含字母、数字、`-` 和 `_`。
+- `enabled` 省略时默认为启用；临时停用 Server 时显式设置为 `false`。
+- `${VARIABLE}` 会在加载配置时从环境变量展开；变量未设置会导致 MCP 配置加载失败。
+- YAML 使用严格字段校验，并且一个文件只能包含一个 YAML document。
+- `env` 和 `headers` 中解析后的值会在诊断输出中脱敏，但仍不建议把密钥直接写入文件。
+- Server、Tool Catalog 和 Resource Catalog 按需连接和发现，不会在启动时无条件连接全部 Server。
+
+配置完成后，在交互模式中使用：
+
+```text
+/mcp
+/mcp verbose
+```
+
+模型侧通过 `mcp_list_tools`、`mcp_call`、`mcp_list_resources` 和 `mcp_read_resource` 使用 MCP。标记为 read-only 的 MCP Tool 可以直接执行；其他 MCP Tool 会进入正常的 Approval 流程，并可按当前 Session 的精确 `server/tool` 授权。MCP 返回值按不可信外部数据处理。
+
+完整模板参见 `configs/mcp.example.yaml`。
+
+## Skills 配置
+
+Skill 是一个包含 `SKILL.md` 的目录。Amadeus 会扫描两类 Skill Root：
+
+```text
+$AMADEUS_HOME/skills/<skill-name>/SKILL.md
+<project>/.amadeus/skills/<skill-name>/SKILL.md
+```
+
+用户级 Skill 可以跨项目复用，项目级 Skill 随仓库维护。如果两边包含相同的 frontmatter `name`，项目级 Skill 覆盖用户级 Skill。
+
+最小 Skill 示例：
+
+```markdown
+---
+name: review
+description: Review changed code and report focused correctness risks
+short_description: Review changed code
+allow_implicit_invocation: true
+---
+
+# Review Workflow
+
+1. Inspect the relevant diff and surrounding code.
+2. Prioritize correctness, safety, regressions, and missing tests.
+3. Report findings with concrete file paths and concise evidence.
+```
+
+推荐的目录结构：
+
+```text
+.amadeus/skills/review/
+├── SKILL.md
+├── references/
+│   └── checklist.md
+├── scripts/
+│   └── check.sh
+└── assets/
+    └── template.json
+```
+
+Skill 规则：
+
+- `SKILL.md` 必须是 UTF-8 普通文件，并包含 YAML frontmatter 和非空正文。
+- `name` 必须使用小写字母、数字和 `-`；建议目录名与 `name` 保持一致。
+- `description` 必填；`short_description` 和 `allow_implicit_invocation` 可选。
+- `references/` 中的文件由 `read_skill` 按需、有界读取；调用时路径相对于 `references/`，例如 `checklist.md`。
+- `scripts/` 不会自动执行。项目级脚本只能通过普通 `execute_command` 主链运行，仍受文件系统策略、Approval、Session Grant、取消和 Process 生命周期约束。
+- 当前安全策略下，用户级 `$AMADEUS_HOME/skills` 脚本只作为参考资源，不作为可执行项目脚本。
+- `assets/` 只记录为 Skill 资源，不会自动注入模型上下文；需要通过实际可用的文件或图片 Tool 读取。
+- `allow_implicit_invocation` 默认为 `true`；当前实现主要用它控制 `scripts/` 中命令是否被识别和归属为 Skill Script。设为 `false` 不会禁用该 Skill。
+
+在任务中使用 `$<skill-name>` 可以显式注入 Skill 正文：
+
+```bash
+amadeus '$review 检查当前改动并列出高优先级问题'
+```
+
+即使没有显式 `$review`，模型仍会看到已启用 Skill 的 metadata index，并可以通过 `read_skill` 渐进读取 Skill 正文或 `references/`。完整 Skill 正文、references、scripts 和 assets 不会默认全部塞入系统提示词。
+
+交互模式中可以通过 `/skills` 查看、启用或禁用 Skill。禁用状态分别保存到：
+
+```text
+$AMADEUS_HOME/skills.yaml
+<project>/.amadeus/skills.yaml
+```
+
+对应文件格式为：
+
+```yaml
+disabled:
+  - review
+  - release-check
+```
+
+任务执行期间 `/skills` 仍可查看当前目录，但不能修改启用状态。仓库内示例参见 `configs/skills/review/SKILL.md`。
 
 ## Slash Command
 
