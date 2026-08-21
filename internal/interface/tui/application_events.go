@@ -95,6 +95,25 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 		model.proposedPlanDraft += item.Delta
 		model.status = "planning"
 	case protocol.ItemStartedEvent:
+		if item.Item.Kind == protocol.ItemCollabAgentToolCall {
+			model.finishDraft()
+			if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
+				model.flushActiveHistoryCell()
+			}
+			if _, ok := model.transcript.ActiveCell.(*CollabAgentHistoryCell); !ok {
+				if model.transcript.ActiveCell != nil {
+					model.flushActiveHistoryCell()
+				}
+				model.transcript.ActiveCell = newCollabAgentHistoryCell()
+			}
+			if model.transcript.ActiveCell.Apply(item) {
+				model.transcript.bumpActiveCellRevision()
+			}
+			model.transcript.HadWorkActivity = true
+			model.transcript.NeedsFinalMessageSeparator = true
+			model.status = "working"
+			return nil
+		}
 		switch item.Item.Kind {
 		case protocol.ItemPlan:
 			model.proposedPlanDraft = ""
@@ -116,6 +135,23 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 		model.transcript.NeedsFinalMessageSeparator = true
 		model.status = "working"
 	case protocol.ItemCompletedEvent:
+		if item.Item.Kind == protocol.ItemCollabAgentToolCall {
+			model.finishDraft()
+			if _, ok := model.transcript.ActiveCell.(*CollabAgentHistoryCell); !ok {
+				if model.transcript.ActiveCell != nil {
+					model.flushActiveHistoryCell()
+				}
+				cell := newCollabAgentHistoryCell()
+				cell.Apply(protocol.ItemStartedEvent{Item: protocol.TurnItem{ID: item.Item.ID, Kind: item.Item.Kind, Status: protocol.ItemInProgress, CreatedAt: item.Item.CreatedAt, ToolName: item.Item.ToolName, CallID: item.Item.CallID, Payload: item.Item.Payload}})
+				model.transcript.ActiveCell = cell
+			}
+			if model.transcript.ActiveCell.Apply(item) {
+				model.transcript.bumpActiveCellRevision()
+			}
+			model.transcript.HadWorkActivity = true
+			model.transcript.NeedsFinalMessageSeparator = true
+			return nil
+		}
 		switch item.Item.Kind {
 		case protocol.ItemUserMessage:
 			if !model.shouldRenderRuntimeUserMessage(item.Item) {

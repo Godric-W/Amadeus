@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol/identity"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/state"
@@ -14,6 +15,7 @@ import (
 
 type CreateInput struct {
 	ID            identity.ThreadID
+	Source        protocol.SessionSource
 	CWD           string
 	Title         string
 	ModelProvider string
@@ -33,6 +35,12 @@ func (input CreateInput) Validate() error {
 	}
 	if input.CreatedAt.IsZero() {
 		return errors.New("thread create time is zero")
+	}
+	if input.Source.Kind == "" {
+		input.Source = protocol.RootSessionSource()
+	}
+	if err := input.Source.Validate(); err != nil {
+		return err
 	}
 	return nil
 }

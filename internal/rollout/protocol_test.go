@@ -20,7 +20,7 @@ func TestRolloutItemVariantsRoundTrip(t *testing.T) {
 		name string
 		item RolloutItem
 	}{
-		{name: "session meta", item: SessionMetaItem{ThreadID: "thread-1", CWD: "/workspace", Title: "Inspect", ModelProvider: "mock", Model: "model", CreatedAt: now}},
+		{name: "session meta", item: SessionMetaItem{ThreadID: "thread-1", Source: protocol.RootSessionSource(), CWD: "/workspace", Title: "Inspect", ModelProvider: "mock", Model: "model", CreatedAt: now}},
 		{name: "response", item: ResponseItem{
 			ThreadID: "thread-1", TurnID: "turn-1", Type: ResponseToolResult, Role: "tool",
 			CallID: "call-1", Name: "read", Status: "succeeded", Content: "contents", Result: &result,
@@ -38,6 +38,13 @@ func TestRolloutItemVariantsRoundTrip(t *testing.T) {
 		{name: "event message", item: EventMsgItem{Msg: protocol.TokenCountEvent{
 			ThreadID: "thread-1", TurnID: "turn-1", Usage: llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
 		}}},
+		{name: "collaboration event", item: EventMsgItem{Msg: protocol.ItemCompletedEvent{ThreadID: "thread-1", TurnID: "turn-1", Item: protocol.TurnItem{
+			ID: "call-1", Kind: protocol.ItemCollabAgentToolCall, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now,
+			ToolName: "spawn_agent", CallID: "call-1", CollabAgent: &protocol.CollabAgentToolCallItem{
+				ID: "call-1", Tool: protocol.CollabAgentSpawnAgent, Status: protocol.CollabAgentToolCompleted, SenderThreadID: "thread-1",
+				ReceiverAgents: []protocol.CollabAgentRef{{ThreadID: "child-1", AgentNickname: "atlas", AgentRole: "explorer"}}, CreatedAt: now, CompletedAt: &now,
+			},
+		}}}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

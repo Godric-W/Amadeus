@@ -91,6 +91,7 @@ func (event Event) Validate() error {
 type EventMsg interface{ isEventMsg() }
 
 type SessionConfiguration struct {
+	Source          SessionSource
 	CWD             string
 	Provider        string
 	Model           string
@@ -295,6 +296,9 @@ func ScopeEventMsg(message EventMsg, threadID ThreadID, turnID TurnID) EventMsg 
 	case ContextUpdateEvent:
 		value.ThreadID, value.TurnID = threadID, turnID
 		return value
+	case SubagentNotificationEvent:
+		value.ThreadID = threadID
+		return value
 	default:
 		return ScopeItemEventMsg(message, threadID, turnID)
 	}
@@ -329,6 +333,8 @@ func ThreadIDOf(message EventMsg) ThreadID {
 	case RequestUserInputEvent:
 		return value.ThreadID
 	case ContextUpdateEvent:
+		return value.ThreadID
+	case SubagentNotificationEvent:
 		return value.ThreadID
 	default:
 		return ItemEventThreadID(message)

@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const CurrentSchemaVersion = 1
+const CurrentSchemaVersion = 2
 
 var ErrUnsupportedSchema = errors.New("unsupported state schema")
 
@@ -21,6 +21,11 @@ var currentSchemaStatements = []string{
     )`,
 	`CREATE TABLE threads (
         id TEXT PRIMARY KEY,
+        source_kind TEXT NOT NULL,
+        parent_thread_id TEXT NOT NULL DEFAULT '',
+        agent_depth INTEGER NOT NULL DEFAULT 0 CHECK (agent_depth >= 0),
+        agent_nickname TEXT NOT NULL DEFAULT '',
+        agent_role TEXT NOT NULL DEFAULT '',
         rollout_path TEXT NOT NULL UNIQUE,
         cwd TEXT NOT NULL,
         title TEXT NOT NULL,
@@ -37,9 +42,13 @@ var currentSchemaStatements = []string{
         CHECK (length(trim(id)) > 0),
         CHECK (length(trim(rollout_path)) > 0),
         CHECK (length(trim(cwd)) > 0),
-        CHECK (length(trim(title)) > 0)
+        CHECK (length(trim(title)) > 0),
+        CHECK (
+            (source_kind = 'root' AND parent_thread_id = '' AND agent_depth = 0 AND agent_nickname = '' AND agent_role = '') OR
+            (source_kind = 'subagent' AND length(trim(parent_thread_id)) > 0 AND agent_depth > 0 AND length(trim(agent_nickname)) > 0 AND length(trim(agent_role)) > 0)
+        )
     )`,
-	`CREATE INDEX threads_cwd_updated_idx ON threads(cwd, archived, updated_at DESC, id)`,
+	`CREATE INDEX threads_cwd_source_updated_idx ON threads(cwd, source_kind, archived, updated_at DESC, id)`,
 }
 
 func ensureCurrentSchema(ctx context.Context, database *sql.DB, path string, isNew bool) error {
@@ -111,8 +120,8 @@ func validateCurrentSchema(ctx context.Context, database *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	if !slices.Contains(indexes, "threads_cwd_updated_idx") {
-		return errors.New("threads_cwd_updated_idx is missing")
+	if !slices.Contains(indexes, "threads_cwd_source_updated_idx") {
+		return errors.New("threads_cwd_source_updated_idx is missing")
 	}
 	return nil
 }

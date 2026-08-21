@@ -20,6 +20,7 @@ import (
 
 type Configuration struct {
 	Runtime            config.Config
+	Source             protocol.SessionSource
 	CWD                string
 	WorkspaceRoots     []string
 	AmadeusRoot        string
@@ -91,6 +92,12 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 	if args.Services.Clock == nil {
 		args.Services.Clock = time.Now
 	}
+	if args.State.Configuration.Source.Kind == "" {
+		args.State.Configuration.Source = protocol.RootSessionSource()
+	}
+	if err := args.State.Configuration.Source.Validate(); err != nil {
+		return nil, SessionIo{}, fmt.Errorf("validate session source: %w", err)
+	}
 	if err := args.History.Validate(args.ThreadID); err != nil {
 		return nil, SessionIo{}, fmt.Errorf("validate initial history: %w", err)
 	}
@@ -147,7 +154,7 @@ func (session *Session) loop() {
 	session.publish(protocol.Event{Msg: protocol.SessionConfiguredEvent{
 		ThreadID: protocol.ThreadID(session.threadID),
 		Configuration: protocol.SessionConfiguration{
-			CWD: session.state.Configuration.CWD, Provider: session.state.Configuration.Runtime.ModelProvider,
+			Source: session.state.Configuration.Source.Clone(), CWD: session.state.Configuration.CWD, Provider: session.state.Configuration.Runtime.ModelProvider,
 			Model:           session.state.Configuration.Runtime.Model,
 			ReasoningEffort: llm.CloneReasoningEffort(session.state.Configuration.Runtime.ModelReasoningEffort),
 			Mode:            string(session.state.Configuration.Mode),
@@ -309,7 +316,7 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input, cli
 		OutputSchemaStrict: session.state.Configuration.OutputSchemaStrict,
 	}
 	createInput := thread.CreateInput{
-		ID: session.threadID, CWD: session.state.Configuration.CWD, Title: titleFromInput(input),
+		ID: session.threadID, Source: session.state.Configuration.Source.Clone(), CWD: session.state.Configuration.CWD, Title: titleFromInput(input),
 		ModelProvider: session.state.Configuration.Runtime.ModelProvider, Model: session.state.Configuration.Runtime.Model, CreatedAt: now,
 	}
 	materialized, err := session.materialize(session.ctx, createInput)

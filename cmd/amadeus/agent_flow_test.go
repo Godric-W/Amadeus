@@ -379,8 +379,13 @@ func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 	if first.Prompt.Input[len(first.Prompt.Input)-1].Content != "Inspect README and finish" {
 		t.Fatalf("unexpected first Agent user message: %q", first.Prompt.Input[len(first.Prompt.Input)-1].Content)
 	}
-	if len(first.Prompt.Tools) != 9 {
+	if len(first.Prompt.Tools) != 13 {
 		t.Fatalf("unexpected first Agent tool count: %d", len(first.Prompt.Tools))
+	}
+	for _, name := range []string{"spawn_agent", "send_input", "wait_agent", "close_agent"} {
+		if !promptHasTool(first.Prompt.Tools, name) {
+			t.Fatalf("first Agent request omitted multi-agent tool %q", name)
+		}
 	}
 	firstPrompt := messageContents(first.Prompt.Input)
 	for _, fragment := range []string{"## Execute Mode", "<collaboration_mode>", "<environment_context>", "<permission_context>", "## `read`", "user instruction", "project instruction"} {
@@ -396,6 +401,15 @@ func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 	if len(records) != 0 {
 		t.Fatalf("read-only Tool unexpectedly entered command approval audit: %#v", records)
 	}
+}
+
+func promptHasTool(tools []llm.ToolSpec, name string) bool {
+	for _, candidate := range tools {
+		if candidate.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func messageContents(messages []llm.ResponseItem) string {

@@ -55,7 +55,17 @@ type modelProviderPatch struct {
 }
 
 type agentPatch struct {
-	MaxParallelTools *int `yaml:"max_parallel_tools"`
+	MaxParallelTools *int             `yaml:"max_parallel_tools"`
+	MultiAgent       *multiAgentPatch `yaml:"multi_agent"`
+}
+
+type multiAgentPatch struct {
+	Enabled           *bool          `yaml:"enabled"`
+	MaxAgents         *int           `yaml:"max_agents"`
+	MaxDepth          *int           `yaml:"max_depth"`
+	ChildMaxSamples   *int           `yaml:"child_max_samples"`
+	ChildMaxToolCalls *int           `yaml:"child_max_tool_calls"`
+	ChildMaxDuration  *time.Duration `yaml:"child_max_duration"`
 }
 
 type loggingPatch struct {
@@ -132,6 +142,18 @@ func (patch modelProviderPatch) apply(provider *ModelProviderInfo) {
 
 func (patch agentPatch) apply(agent *AgentConfig) {
 	assign(&agent.MaxParallelTools, patch.MaxParallelTools)
+	if patch.MultiAgent != nil {
+		patch.MultiAgent.apply(&agent.MultiAgent)
+	}
+}
+
+func (patch multiAgentPatch) apply(multiAgent *MultiAgentConfig) {
+	assign(&multiAgent.Enabled, patch.Enabled)
+	assign(&multiAgent.MaxAgents, patch.MaxAgents)
+	assign(&multiAgent.MaxDepth, patch.MaxDepth)
+	assign(&multiAgent.ChildMaxSamples, patch.ChildMaxSamples)
+	assign(&multiAgent.ChildMaxToolCalls, patch.ChildMaxToolCalls)
+	assign(&multiAgent.ChildMaxDuration, patch.ChildMaxDuration)
 }
 
 func (patch loggingPatch) apply(logging *LoggingConfig) {
@@ -139,7 +161,7 @@ func (patch loggingPatch) apply(logging *LoggingConfig) {
 	assign(&logging.TraceLLM, patch.TraceLLM)
 }
 
-func clone(configured Config) Config {
+func Clone(configured Config) Config {
 	cloned := configured
 	cloned.ModelReasoningEffort = llm.CloneReasoningEffort(configured.ModelReasoningEffort)
 	cloned.ModelInputModalities = append([]llm.InputModality(nil), configured.ModelInputModalities...)
@@ -149,6 +171,8 @@ func clone(configured Config) Config {
 	}
 	return cloned
 }
+
+func clone(configured Config) Config { return Clone(configured) }
 
 func assign[T any](target *T, value *T) {
 	if value != nil {

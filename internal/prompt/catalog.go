@@ -33,8 +33,13 @@ func LoadModelMessages() (llm.ModelMessages, error) {
 	if err != nil {
 		return llm.ModelMessages{}, err
 	}
+	subagent, err := builtin.Read(builtin.AgentSubagent)
+	if err != nil {
+		return llm.ModelMessages{}, err
+	}
 	return llm.ModelMessages{
-		InstructionsTemplate: base,
+		InstructionsTemplate:          base,
+		SubagentDeveloperInstructions: strings.TrimSpace(subagent),
 		CollaborationModes: llm.CollaborationModeMessages{
 			Default: defaultInstructions,
 			Plan:    planInstructions,

@@ -27,6 +27,17 @@ func TestValidateAcceptsConfigV2(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidMultiAgentLimits(t *testing.T) {
+	configured := validConfig()
+	configured.Agent.MultiAgent.MaxAgents = 0
+	configured.Agent.MultiAgent.MaxDepth = 2
+	configured.Agent.MultiAgent.ChildMaxDuration = 0
+	err := Validate(configured)
+	if err == nil || !strings.Contains(err.Error(), "agent.multi_agent.max_agents") || !strings.Contains(err.Error(), "agent.multi_agent.max_depth") || !strings.Contains(err.Error(), "agent.multi_agent.child_max_duration") {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
 func TestValidateReportsStableModelAndProviderPaths(t *testing.T) {
 	configured := validConfig()
 	configured.Version = 1

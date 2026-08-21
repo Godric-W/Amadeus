@@ -5,12 +5,21 @@ import (
 	"errors"
 
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/mcp"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/skill"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
+
+func (services *SessionServices) resolveCollabAgentRef(id protocol.ThreadID) protocol.CollabAgentRef {
+	if services == nil || services.AgentControl == nil {
+		return protocol.CollabAgentRef{ThreadID: id}
+	}
+	snapshot := services.AgentControl.Snapshot(id)
+	return protocol.CollabAgentRef{ThreadID: id, AgentNickname: snapshot.Nickname, AgentRole: snapshot.Role}
+}
 
 func (services *SessionServices) NewModelClientSession() (*engine.ModelClientSession, error) {
 	if services == nil || services.modelClient == nil {

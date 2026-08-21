@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -12,13 +13,17 @@ import (
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
+type failingEventSink struct{ err error }
+
+func (sink failingEventSink) Publish(context.Context, protocol.Event) error { return sink.err }
+
 func TestToolEventObserverPersistsPresentationOnCompletedItem(t *testing.T) {
 	sink := protocol.NewMemorySink()
 	var appended []rollout.RolloutItem
 	observer := NewToolEventObserver(func(_ context.Context, _ protocol.TurnID, items ...rollout.RolloutItem) error {
 		appended = append(appended, items...)
 		return nil
-	}, protocol.TurnID("turn-1"), sink)
+	}, "thread-1", protocol.TurnID("turn-1"), sink, nil)
 	call := tool.NewCall("call-1", "grep", []byte(`{"query":"Approval","path":"internal"}`))
 	if err := observer.ToolCallStarted(context.Background(), tool.ToolSpec{Name: "grep", SideEffect: tool.SideEffectRead}, call); err != nil {
 		t.Fatal(err)
@@ -66,7 +71,7 @@ func TestToolEventObserverPersistsImagePayloadExactlyOnce(t *testing.T) {
 	observer := NewToolEventObserver(func(_ context.Context, _ protocol.TurnID, items ...rollout.RolloutItem) error {
 		appended = append(appended, items...)
 		return nil
-	}, protocol.TurnID("turn-1"), sink)
+	}, "thread-1", protocol.TurnID("turn-1"), sink, nil)
 	call := tool.NewCall("image-call", "view_image", []byte(`{"path":"image.png"}`))
 	if err := observer.ToolCallStarted(context.Background(), tool.ToolSpec{Name: "view_image", SideEffect: tool.SideEffectRead}, call); err != nil {
 		t.Fatal(err)
@@ -113,7 +118,7 @@ func TestToolEventObserverPersistsOnlyResultForUpdatePlan(t *testing.T) {
 	observer := NewToolEventObserver(func(_ context.Context, _ protocol.TurnID, items ...rollout.RolloutItem) error {
 		appended = append(appended, items...)
 		return nil
-	}, protocol.TurnID("turn-1"), sink)
+	}, "thread-1", protocol.TurnID("turn-1"), sink, nil)
 	call := tool.NewCall("call-1", "update_plan", []byte(`{"plan":[]}`))
 	if err := observer.ToolCallStarted(context.Background(), tool.ToolSpec{Name: "update_plan"}, call); err != nil {
 		t.Fatal(err)
@@ -132,5 +137,74 @@ func TestToolEventObserverPersistsOnlyResultForUpdatePlan(t *testing.T) {
 	}
 	if events := sink.Snapshot(); len(events) != 0 {
 		t.Fatalf("events = %#v, want none", events)
+	}
+}
+
+func TestToolEventObserverPersistsTypedCollaborationItem(t *testing.T) {
+	sink := protocol.NewMemorySink()
+	var appended []rollout.RolloutItem
+	observer := NewToolEventObserver(func(_ context.Context, _ protocol.TurnID, items ...rollout.RolloutItem) error {
+		appended = append(appended, items...)
+		return nil
+	}, "root-1", "turn-1", sink, nil)
+	call := tool.NewCall("call-agent", "spawn_agent", []byte(`{"message":"inspect session ownership"}`))
+	if err := observer.ToolCallStarted(context.Background(), tool.ToolSpec{Name: "spawn_agent"}, call); err != nil {
+		t.Fatal(err)
+	}
+	if err := observer.ToolCallCompleted(context.Background(), tool.ToolExecution{
+		Call:    call,
+		Output:  tool.ToolResult{ToolName: "spawn_agent", Text: `{"agent_id":"child-1","nickname":"atlas"}`, Data: map[string]any{"agent_id": "child-1", "nickname": "atlas"}},
+		Outcome: tool.ToolCallOutcome{Status: tool.ToolCallCompleted},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(appended) != 2 {
+		t.Fatalf("appended = %#v", appended)
+	}
+	completed := appended[1].(rollout.EventMsgItem).Msg.(protocol.ItemCompletedEvent).Item
+	if completed.Kind != protocol.ItemCollabAgentToolCall || completed.CollabAgent == nil {
+		t.Fatalf("completed collaboration item = %#v", completed)
+	}
+	if completed.CollabAgent.Tool != protocol.CollabAgentSpawnAgent || completed.CollabAgent.SenderThreadID != "root-1" || completed.CollabAgent.Prompt != "inspect session ownership" {
+		t.Fatalf("collaboration payload = %#v", completed.CollabAgent)
+	}
+	if len(completed.CollabAgent.ReceiverAgents) != 1 || completed.CollabAgent.ReceiverAgents[0].AgentNickname != "atlas" {
+		t.Fatalf("collaboration receivers = %#v", completed.CollabAgent.ReceiverAgents)
+	}
+}
+
+func TestToolEventObserverRollsBackCollaborationStartOnPublishFailure(t *testing.T) {
+	observer := NewToolEventObserver(func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error {
+		return nil
+	}, "root-1", "turn-1", failingEventSink{err: errors.New("publish failed")}, nil).(*toolEventObserver)
+	call := tool.NewCall("call-agent", "spawn_agent", []byte(`{"message":"inspect"}`))
+	if err := observer.ToolCallStarted(context.Background(), tool.ToolSpec{Name: "spawn_agent"}, call); err == nil {
+		t.Fatal("expected publish failure")
+	}
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	if len(observer.collaboration) != 0 {
+		t.Fatalf("collaboration presentations leaked: %#v", observer.collaboration)
+	}
+}
+
+func TestCompleteCloseAgentItemPreservesPreviousStatus(t *testing.T) {
+	now := time.Now().UTC()
+	item := protocol.CollabAgentToolCallItem{
+		ID: "call-close", Tool: protocol.CollabAgentCloseAgent, Status: protocol.CollabAgentToolInProgress,
+		SenderThreadID: "root", ReceiverAgents: []protocol.CollabAgentRef{{ThreadID: "child-1", AgentNickname: "atlas"}}, CreatedAt: now,
+	}
+	execution := tool.ToolExecution{
+		Call: tool.NewCall("call-close", "close_agent", []byte(`{"id":"child-1"}`)),
+		Output: tool.ToolResult{Data: map[string]any{
+			"agent_id": "child-1", "nickname": "atlas",
+			"previous_status": protocol.AgentStatus{Kind: protocol.AgentStatusCompleted, Message: "done"},
+		}},
+		Outcome: tool.ToolCallOutcome{Status: tool.ToolCallCompleted},
+	}
+	completed := completeCollabAgentItem(item, execution, now.Add(time.Second), protocol.ItemStatusCompleted)
+	state, exists := completed.AgentsStates["child-1"]
+	if !exists || state.Status.Kind != protocol.AgentStatusCompleted || state.Status.Message != "done" {
+		t.Fatalf("close state = %#v", completed.AgentsStates)
 	}
 }

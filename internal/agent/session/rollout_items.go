@@ -9,7 +9,7 @@ import (
 
 func sessionMetaItem(input thread.CreateInput) rollout.SessionMetaItem {
 	return rollout.SessionMetaItem{
-		ThreadID: input.ID, CWD: input.CWD, Title: input.Title,
+		ThreadID: input.ID, Source: input.Source.Clone(), CWD: input.CWD, Title: input.Title,
 		ModelProvider: input.ModelProvider, Model: input.Model,
 		GitSHA: input.GitSHA, GitBranch: input.GitBranch, GitOriginURL: input.GitOriginURL,
 		CreatedAt: input.CreatedAt.UTC(),

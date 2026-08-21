@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
@@ -28,6 +29,7 @@ func (services *SessionServices) CaptureStep(snapshot func(llm.ModelInfo, llm.Pr
 	if turnContext.Mode == turn.ModeKindPlan {
 		include = engine.PlanModeToolAllowed
 	}
+	include = composeToolFilters(include, services.source)
 	router := services.tools.SnapshotRouter(services.visibility, requestSnapshot, include)
 	tools := router.Specs()
 	definitions := make([]llm.ToolSpec, len(tools))
@@ -54,4 +56,21 @@ func (services *SessionServices) CaptureStep(snapshot func(llm.ModelInfo, llm.Pr
 		ToolRouter: router, ModelMessagesRevision: modelMessages.Revision,
 		WorldStateRevision: promptSnapshot.WorldStateRevision,
 	}, nil
+}
+
+func composeToolFilters(existing tool.ToolRouteFilter, source protocol.SessionSource) tool.ToolRouteFilter {
+	if !source.IsSubAgent() {
+		return existing
+	}
+	return func(spec tool.ToolSpec) bool {
+		if existing != nil && !existing(spec) {
+			return false
+		}
+		switch spec.Name {
+		case "read", "glob", "grep", "read_skill", "web_search":
+			return true
+		default:
+			return false
+		}
+	}
 }

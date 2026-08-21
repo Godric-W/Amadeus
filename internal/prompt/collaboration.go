@@ -38,6 +38,21 @@ Work conversationally in three phases: ground the plan in the environment, resol
 	return content + "\n\n" + guidance, nil
 }
 
+func RenderSubagentDeveloperInstructions(messages llm.ModelMessages, toolNames []string) (string, error) {
+	content := strings.TrimSpace(messages.SubagentDeveloperInstructions)
+	if content == "" {
+		return "", errors.New("sub-agent developer instructions are empty")
+	}
+	guidance, err := toolGuidance(toolNames)
+	if err != nil {
+		return "", err
+	}
+	if guidance == "" {
+		return content, nil
+	}
+	return content + "\n\n" + guidance, nil
+}
+
 func toolGuidance(toolNames []string) (string, error) {
 	visible := make(map[string]struct{}, len(toolNames))
 	for _, name := range toolNames {

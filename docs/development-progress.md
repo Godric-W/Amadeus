@@ -2,12 +2,12 @@
 
 > 最近更新：2026-08-21
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：Q. Web + View Image Tool Contract Closure（DONE）
-> 下一任务：等待后续阶段安排
+> 当前阶段：R. Basic Multi-Agent Architecture Alignment（DONE）
+> 下一任务：下一阶段待规划
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
-A-Q 的条目保留为历史与当前计划记录；其中与当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。
+A-R 的条目保留为历史与当前计划记录；其中与当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。
 
 ## 1. 状态与完成标准
 
@@ -42,6 +42,7 @@ A Runtime + Persistence
 → O Same-Turn User Input + Turn Steer Lifecycle Alignment
 → P Model Reasoning Effort + Provider Thinking Contract
 → Q Web + View Image Tool Contract Closure
+→ R Basic Multi-Agent Architecture Alignment
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先更新 `docs/design.md`。
@@ -1247,7 +1248,111 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 - Canonical `ResponseToolResult.Parts` 保存唯一 Base64 payload，Response Result 与 completed Event/TUI 使用 display-safe ToolResult；Rich TUI 增加 `ViewImageCell`，Resume 从 canonical payload 恢复模型上下文且不重新读取源文件。
 - PNG/JPEG/WebP/static/animated GIF、伪装格式、大小/尺寸/像素、cancellation、external Approval、动态 Schema、Provider defense、image budget、Compaction、single-payload Rollout、Resume、TUI 与 architecture guard 覆盖完成；`make check`、`go test ./... -count=1`、`go test -race ./... -count=1` 和 `git diff --check` 通过。
 
-## 20. 当前保留能力
+## 20. R. Basic Multi-Agent Architecture Alignment — `DONE`
+
+### 目标
+
+按 `docs/design.md` 的 Basic Multi-Agent Contract，实现 Codex V1 风格的最小 Multi-Agent 闭环：SubAgent 是完整 AmadeusThread/Session，同一 Root tree 共享 AgentControl，Root 通过 `spawn_agent`、`send_input`、`wait_agent` 和 `close_agent` 管理 child；child 首版固定为 read-only explorer，并贯通 Prompt、WorldState、completion notification、typed Event/Rollout 和 Codex 风格 TUI projection。
+
+R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code team/worktree/remote/background task、history fork、自定义 agent definition、write-capable worker 或 child interactive Approval。实现期间不得以通用 Task Bus、nested SessionTask、Tool handler 直调 `run_turn` 或字符串 UI wrapper 保留第二套 runtime。
+
+### R-01：Protocol Identity + SessionSource Contract — `DONE`
+
+- [x] 建立 `SessionSource`、`RootSessionSource`、`SubAgentSessionSource`、`AgentMetadata` 和 Codex 语义的 `AgentStatus`；首版 AgentID 直接使用 child ThreadID。
+- [x] 将 parent ThreadID、depth、nickname 和 role 冻结进 child Session/SessionMetaItem；role 固定为 `explorer`，最大 depth 固定为配置值 1。
+- [x] 定义 AgentStatus 从 TurnStarted/TurnComplete/TurnAborted/Error/ShutdownComplete 的唯一 reducer；不得新增公开 Session status channel。
+- [x] 更新当前 schema、fixtures 和 codec；Amadeus 未发布，不保留旧 SessionMeta reader、alias 或 migration。
+
+### R-02：Root-scoped AgentControl + Reservation — `DONE`
+
+- [x] 新增 root-tree scoped `AgentControl`、`AgentRecord`、status snapshot/subscription 和 `AgentHost` 窄接口；ThreadManager 继续是 live Thread 的唯一 registry。
+- [x] 实现 open-agent slot、nickname reservation、commit/rollback 和并发安全；spawn 失败、取消、panic 或 child 创建中断不得泄漏计数和预留状态。
+- [x] 实现默认 `max_agents=4`、`max_depth=1` 与 child budget 配置验证；agent tree 容量不得复用 `max_parallel_tools`。
+- [x] 禁止进程级 singleton、TUI/Application agent map、generic event bus 和 capability facade。
+
+### R-03：ThreadManager Child Spawn + Event Ownership — `DONE`
+
+- [x] ThreadManager 创建 Root Thread 时创建 AgentControl；spawn child 时向 child SessionServices 传递同一个 control，并写入 SubAgentSessionSource。
+- [x] child 必须走正常 LiveThread、Session::Spawn、RegularTask 和 `run_turn` 主链；不得新增 provider-only runner 或父 Session nested task。
+- [x] 为每个 child 建立 owner 明确的 Event consumer，持续 drain SessionIo.Events、派生 AgentStatus、提取最近 completed AssistantMessage，并在 Terminated 时完成清理。
+- [x] Root shutdown 按固定顺序停止 spawn、关闭全部 child、等待 Terminated，再关闭 Root；Root 当前 Turn Interrupt 不自动关闭 child。
+
+### R-04：Child Prompt、Context + Tool Isolation — `DONE`
+
+- [x] 新增版本化 `SubagentDeveloperInstructions` Prompt 资产，通过 ModelMessages/SessionSource 选择，不在 Tool handler 或 TUI 拼接身份文本。
+- [x] child fresh context 只包含 BaseInstructions、SubagentDeveloperInstructions、WorldState 和 delegated UserInput；不复制父 reasoning、Tool history、Plan、pending steer 或 compaction history。
+- [x] 以 StepContext/ToolRouter exact snapshot 实施 child allowlist：`read`、`glob`、`grep`、条件 `read_skill`、条件 `web_search`；隐藏 edit/write/command/process/input/MCP/multi-agent Tool。
+- [x] child 使用独立 SessionPermissionContext/FileReadState/ToolExecutionService，不复制 Root Session grant；任何需要 Approval 的调用必须稳定失败为 ToolResult，不能产生无人处理的 request waiter。
+- [x] child 使用同一 CWD/workspace/filesystem 并可观察并发变化；Prompt 明确只读、单一任务、无父 conversation、证据化且简洁的最终报告。
+
+### R-05：Codex V1 Collaboration Tools — `DONE`
+
+- [x] 注册仅 Root 可见的 `spawn_agent`、`send_input`、`wait_agent`、`close_agent` ToolDefinition；schema、命名、返回字段和错误语义以 design Contract 为准。
+- [x] `spawn_agent` 完成 reservation、child spawn、初始 UserInput admission 后立即返回 agent_id/nickname；允许同一模型响应中的独立 spawn 有界并行。
+- [x] `send_input` 正确处理 Running steer、`interrupt=true` 的 interrupt-and-restart，以及 Completed/Errored/Interrupted child 的新 Turn。
+- [x] `wait_agent` 使用 status change notification 并发等待多个 ID，支持 timeout snapshot 和 Completed FinalMessage，不轮询 map。
+- [x] `close_agent` 返回 previous status，关闭目标及 open descendants、释放 slot/nickname；首版不注册 resume/list/send_message/followup_task/interrupt_agent。
+
+### R-06：WorldState + Completion Notification — `DONE`
+
+- [x] Root Environment WorldState 增加 Codex 风格 `<subagents>`，由 AgentControl snapshot 和 revision 驱动，列出未 close child 的 ID、nickname、role 和 status。
+- [x] child 每个 Turn 进入 Completed/Errored/Shutdown 后，向直接 parent 注入一次 `<subagent_notification>` contextual user fragment；不得投影为普通 UserMessage。
+- [x] notification 通过 parent Session canonical append/context owner 落盘，并对 final/error payload 应用稳定长度限制；wait_agent 不得重复注入同一终态。
+- [x] `spawn_agent` Tool description 写入 Codex 风格 delegation guidance：先识别 critical path、只委派独立 side task、避免重复工作、并行 spawn 独立探索、等待时继续本地工作，并明确首版 child 只读。
+
+### R-07：CollabAgent TurnItem + Rollout Lifecycle — `DONE`
+
+- [x] 新增 `CollabAgentTool`、`CollabAgentToolCallStatus`、`CollabAgentRef`、`CollabAgentState` 和 `CollabAgentToolCallItem` typed protocol。
+- [x] spawn/send/wait/close 统一发布 ItemStarted/ItemCompleted，completed item 进入 EventMsgItem/canonical Rollout；live、Resume 和 Inline 使用同一 projector。
+- [x] Tool Provider 协议继续使用标准 ToolCall/ToolResult；Tool event policy 对 collaboration Tool 抑制 generic ToolHistoryCell，避免双重展示。
+- [x] Root rollout 只记录 collaboration item 和 bounded notification，不复制 child transcript、Tool delta 或 reasoning。
+
+### R-08：Codex-style Multi-Agent TUI — `DONE`
+
+- [x] 新增 `CollabAgentHistoryCell` 与 active wait projection，使用 `Spawned`、`Sent input to`、`Waiting for`、`Finished waiting`、`Closed` 等 Codex 风格标题。
+- [x] nickname/role、prompt preview、AgentStatus、FinalMessage/error preview 使用专用 typed fields 和稳定截断；不得解析 ToolResult 文本恢复状态。
+- [x] wait in-progress 使用 ActiveHistoryCell，completed 后正确结束 spinner；completion notification 不显示为用户气泡，必要时投影为轻量 AgentStatusHistoryCell。
+- [x] Inline 与 Resume snapshot 覆盖同一视觉语义；R 不实现完整 `/agent` picker、Alt+Left/Right navigation 或 child transcript attach。
+
+### R-09：Persistence、Listing + Shutdown Boundary — `DONE`
+
+- [x] JSONL/SQLite metadata 保存 SessionSource 与 parent Thread 信息；默认顶层 session list 和 `/resume` picker 排除 SubAgent Thread。
+- [x] Root Resume 只恢复 canonical collaboration item/notification，不恢复旧 AgentControl tree、不重启 child completion watcher，也不提供 resume_agent。
+- [x] child writer、event consumer、completion watcher、status waiter 和 AgentControl close 都有明确 owner、context 和有限 cleanup timeout。
+- [x] close/shutdown 后立即从 live Thread registry 移除 child，防止 terminated runtime 被错误复用；内部历史仍可供 diagnostics 读取。
+
+### R-10：Tests、Guards + End-to-End Acceptance — `DONE`
+
+- [x] 覆盖 spawn success/failure rollback、并发 slot、nickname 唯一性、depth/limit、child budget、状态 reducer、wait timeout 和 close previous status。
+- [x] 覆盖 child fresh context、Prompt asset、Tool allowlist、Root grant 不继承、Approval 不等待、same-workspace 可见性和禁止 nested spawn。
+- [x] 覆盖 send_input steer/interrupt/new Turn、completion notification 去重/截断、WorldState revision、Root interrupt 与 shutdown cancellation tree。
+- [x] 覆盖 CollabAgentToolCallItem live/Resume/Inline、TUI snapshot、default session listing filter 和 interrupted rollout recovery。
+- [x] 增加 architecture guards，禁止 nested SessionTask、Tool handler 直调 `run_turn`/Provider、第二 Thread registry、generic agent task bus、child write Tool、TUI agent truth 和 fire-and-forget watcher。
+- [x] 运行 targeted tests、`make check`、`go test ./... -count=1`、`go test -race ./... -count=1`、`git diff --check` 和 architecture grep 后才可标记 R 为 DONE。
+
+### R 出口
+
+- Root Agent 可以同时启动多个 read-only explorer SubAgent，并在继续自身 critical path 的同时通过 notification/wait 获取结果。
+- 每个 child 是完整、可取消、可持久化且状态可观察的 Thread/Session；AgentControl 只负责 root-tree control plane，不形成第二 runtime。
+- Prompt、WorldState、Tool、Event/Rollout 和 TUI 使用 Codex 术语与生命周期；child Tool isolation 吸收 Claude Code 的 allowlist 和权限不升级原则。
+- 第一版不依赖 Multi-Agent V2、history fork、worker edit、跨 Thread Approval、team/worktree/remote 或 agent resume。
+
+### R 验收
+
+- 同一模型响应并行调用多个 spawn_agent 时，成功 child 独立运行，失败 reservation 完整回滚，Root Turn 不因 child event channel 无消费者而阻塞。
+- child 只能看到真实 read-only ToolSet，无法编辑、执行命令、请求用户输入或继续 spawn；外部/受限读取不会悬挂 Approval。
+- child completion 只产生一次 bounded notification；wait_agent 返回相同 typed status，Root TUI 显示专用 collaboration cell，Resume 与首次 live 语义一致。
+- Root Turn Interrupt 后 child 可继续完成；Root shutdown 或 close_agent 后 child goroutine、writer、watcher 和 slot 全部释放。
+
+### 完成记录
+
+- 2026-08-21 完成 Codex V1 风格 Basic Multi-Agent 主链：Root tree 共享 `AgentControl`，SubAgent 作为完整 `AmadeusThread/Session` 运行，`ThreadManager` 保持唯一 live Thread registry；slot/nickname reservation、状态 reducer、事件驱动 wait、send/interrupt/restart、close 与 bounded shutdown 均已落地。
+- `SessionSource`、`AgentMetadata`、`AgentStatus`、`CollabAgentToolCallItem`、canonical notification 与 SQLite source index 已贯通；默认列表和直接 Resume 排除 child，Root Resume 不恢复旧 agent tree。
+- Root-only `spawn_agent`、`send_input`、`wait_agent`、`close_agent` 使用统一 Tool pipeline；child 固定为 read-only `explorer`，拥有 fresh context、独立 permission/execution state、exact ToolRouter allowlist 与 deny-only Approval port。
+- `SubagentDeveloperInstructions`、ToolSpec delegation guidance、`<subagents>` WorldState、`<subagent_notification>` contextual fragment 和 Codex 风格 Rich/Inline/Resume TUI projection 已统一到 typed Event/Rollout 协议。
+- spawn rollback/并发容量/depth、send_input、wait timeout、notification 去重、失败 shutdown 保留 slot、Prompt/Tool isolation、Persistence、完整 Root→child→notification E2E、TUI 与 architecture guards 均有覆盖；`make check`、`go test ./... -count=1`、`go test -race ./... -count=1` 和 `git diff --check` 于 2026-08-21 通过。
+
+## 21. 当前保留能力
 
 - 默认启动：`amadeus` 或 `amadeus "<task>"`。
 - 当前配置链和 Provider Adapter 已可使用 OpenAI Responses/Chat Completions 及兼容 Provider。
@@ -1257,7 +1362,7 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 - P 已完成 Model Reasoning Effort 与 Provider Thinking Contract；当前生产主链可从配置冻结到 Turn，并贯通普通 sampling、Compaction 与 Provider wire request。
 - Q 已完成 Web Search/Fetch 与 `view_image` Contract Closure：Web 保持 pinned network、重定向 Approval、readable Markdown 与证据层级；图片主链完成 model-aware visibility、bounded preparation、Provider/Context projection、单份持久化和 `ViewImageCell`。
 
-## 21. 当前执行规则
+## 22. 当前执行规则
 
 1. 每次只推进一个 `TODO`/`DOING` 主任务。
 2. 先修改 `docs/design.md`，再修改代码；实现发现设计问题时暂停并同步 Contract。
@@ -1265,7 +1370,7 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 4. 任务完成必须运行针对性测试和构建；环境限制导致的测试失败要单独记录。
 5. 本文只更新任务状态和出口，不复制架构设计、源码审计或长篇讨论。
 
-## 22. 源码结构清理 — `DONE`
+## 23. 源码结构清理 — `DONE`
 
 ### 已完成
 

@@ -140,6 +140,22 @@ func (renderer *InlineRenderer) toolBlock(item protocol.TurnItem, completed bool
 	if err := renderer.finishText(); err != nil {
 		return err
 	}
+	if item.Kind == protocol.ItemCollabAgentToolCall {
+		cell := newCollabAgentHistoryCell()
+		started := item
+		started.Status = protocol.ItemInProgress
+		started.CompletedAt = time.Time{}
+		cell.Apply(protocol.ItemStartedEvent{Item: started})
+		if completed {
+			cell.Apply(protocol.ItemCompletedEvent{Item: item})
+		}
+		for _, line := range cell.RawLines() {
+			if _, err := fmt.Fprintln(renderer.status, sanitizeInlineEventText(line)); err != nil {
+				return fmt.Errorf("write inline collaboration line: %w", err)
+			}
+		}
+		return renderer.writeStatusBar()
+	}
 	cell := newToolHistoryCell()
 	started := item
 	started.Status = protocol.ItemInProgress

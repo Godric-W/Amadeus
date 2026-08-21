@@ -133,7 +133,7 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 			return TaskOutput{Usage: usage, ToolCallCount: toolCallCount, Summary: "result: completed", Outcome: protocol.TurnOutcomeCompleted}, nil
 		}
 		toolCallCount += len(sample.ToolCalls)
-		observer := engine.NewToolEventObserver(session.AppendItems, turnContext.TurnID, events)
+		observer := engine.NewToolEventObserver(session.AppendItems, turnContext.ThreadID, turnContext.TurnID, events, runtime.resolveCollabAgentRef)
 		recorded := false
 		recorder := func(recordCtx context.Context, normalized []tool.ToolCall) error {
 			recorded = true

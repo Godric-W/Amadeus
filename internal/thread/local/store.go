@@ -49,6 +49,9 @@ func (store *Store) Materialize(ctx context.Context, input thread.CreateInput) (
 	if input.CreatedAt.IsZero() {
 		input.CreatedAt = store.clock().UTC()
 	}
+	if input.Source.Kind == "" {
+		input.Source = protocol.RootSessionSource()
+	}
 	if err := input.Validate(); err != nil {
 		return thread.AppendResult{}, err
 	}
@@ -66,7 +69,7 @@ func (store *Store) Materialize(ctx context.Context, input thread.CreateInput) (
 	store.recorders[input.ID] = recorder
 	store.mu.Unlock()
 	meta := rollout.SessionMetaItem{
-		ThreadID: input.ID, CWD: input.CWD, Title: input.Title, ModelProvider: input.ModelProvider, Model: input.Model,
+		ThreadID: input.ID, Source: input.Source.Clone(), CWD: input.CWD, Title: input.Title, ModelProvider: input.ModelProvider, Model: input.Model,
 		GitSHA: input.GitSHA, GitBranch: input.GitBranch, GitOriginURL: input.GitOriginURL, CreatedAt: input.CreatedAt.UTC(),
 	}
 	if err := meta.Validate(); err != nil {
@@ -317,7 +320,7 @@ func projectMetadata(path string, lines []rollout.Line) (state.StoredThread, err
 		return state.StoredThread{}, errors.New("rollout does not begin with session_meta")
 	}
 	thread := state.StoredThread{
-		ID: meta.ThreadID, RolloutPath: path, CWD: meta.CWD, Title: meta.Title,
+		ID: meta.ThreadID, Source: meta.Source.Clone(), RolloutPath: path, CWD: meta.CWD, Title: meta.Title,
 		ModelProvider: meta.ModelProvider, Model: meta.Model, CreatedAt: meta.CreatedAt.UTC(), UpdatedAt: lines[0].Timestamp.UTC(),
 		GitSHA: meta.GitSHA, GitBranch: meta.GitBranch, GitOriginURL: meta.GitOriginURL, Archived: meta.Archived,
 	}

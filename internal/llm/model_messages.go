@@ -9,13 +9,14 @@ import (
 )
 
 type ModelMessages struct {
-	InstructionsTemplate  string                     `json:"instructions_template,omitempty"`
-	InstructionsVariables ModelInstructionsVariables `json:"instructions_variables,omitempty"`
-	CollaborationModes    CollaborationModeMessages  `json:"collaboration_modes,omitempty"`
-	SummarizationPrompt   string                     `json:"summarization_prompt,omitempty"`
-	SummaryPrefix         string                     `json:"summary_prefix,omitempty"`
-	Revision              string                     `json:"revision,omitempty"`
-	Source                string                     `json:"source,omitempty"`
+	InstructionsTemplate          string                     `json:"instructions_template,omitempty"`
+	InstructionsVariables         ModelInstructionsVariables `json:"instructions_variables,omitempty"`
+	CollaborationModes            CollaborationModeMessages  `json:"collaboration_modes,omitempty"`
+	SubagentDeveloperInstructions string                     `json:"subagent_developer_instructions,omitempty"`
+	SummarizationPrompt           string                     `json:"summarization_prompt,omitempty"`
+	SummaryPrefix                 string                     `json:"summary_prefix,omitempty"`
+	Revision                      string                     `json:"revision,omitempty"`
+	Source                        string                     `json:"source,omitempty"`
 }
 
 type ModelInstructionsVariables struct {

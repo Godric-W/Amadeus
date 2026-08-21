@@ -62,7 +62,17 @@ type WebSearchConfig struct {
 }
 
 type AgentConfig struct {
-	MaxParallelTools int `yaml:"max_parallel_tools"`
+	MaxParallelTools int              `yaml:"max_parallel_tools"`
+	MultiAgent       MultiAgentConfig `yaml:"multi_agent"`
+}
+
+type MultiAgentConfig struct {
+	Enabled           bool          `yaml:"enabled"`
+	MaxAgents         int           `yaml:"max_agents"`
+	MaxDepth          int           `yaml:"max_depth"`
+	ChildMaxSamples   int           `yaml:"child_max_samples"`
+	ChildMaxToolCalls int           `yaml:"child_max_tool_calls"`
+	ChildMaxDuration  time.Duration `yaml:"child_max_duration"`
 }
 
 type LoggingConfig struct {

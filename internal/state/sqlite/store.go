@@ -28,10 +28,16 @@ func (store *Store) UpsertThread(ctx context.Context, thread state.StoredThread)
 		return err
 	}
 	_, err := store.database.db.ExecContext(ctx, `INSERT INTO threads (
-        id, rollout_path, cwd, title, preview, model_provider, model, tokens_used,
+        id, source_kind, parent_thread_id, agent_depth, agent_nickname, agent_role,
+        rollout_path, cwd, title, preview, model_provider, model, tokens_used,
         created_at, updated_at, archived, git_sha, git_branch, git_origin_url
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
+        source_kind = excluded.source_kind,
+        parent_thread_id = excluded.parent_thread_id,
+        agent_depth = excluded.agent_depth,
+        agent_nickname = excluded.agent_nickname,
+        agent_role = excluded.agent_role,
         rollout_path = excluded.rollout_path,
         cwd = excluded.cwd,
         title = excluded.title,
@@ -45,7 +51,8 @@ func (store *Store) UpsertThread(ctx context.Context, thread state.StoredThread)
         git_sha = excluded.git_sha,
         git_branch = excluded.git_branch,
         git_origin_url = excluded.git_origin_url`,
-		thread.ID, thread.RolloutPath, thread.CWD, thread.Title, thread.Preview,
+		thread.ID, string(thread.Source.Kind), sourceParentThreadID(thread.Source), sourceDepth(thread.Source), sourceNickname(thread.Source), sourceRole(thread.Source),
+		thread.RolloutPath, thread.CWD, thread.Title, thread.Preview,
 		thread.ModelProvider, thread.Model, thread.TokensUsed,
 		formatTime(thread.CreatedAt), formatTime(thread.UpdatedAt), thread.Archived,
 		thread.GitSHA, thread.GitBranch, thread.GitOriginURL,
@@ -57,7 +64,8 @@ func (store *Store) UpsertThread(ctx context.Context, thread state.StoredThread)
 }
 
 func (store *Store) GetThread(ctx context.Context, id protocol.ThreadID) (state.StoredThread, error) {
-	row := store.database.db.QueryRowContext(ctx, `SELECT id, rollout_path, cwd, title, preview,
+	row := store.database.db.QueryRowContext(ctx, `SELECT id, source_kind, parent_thread_id, agent_depth, agent_nickname, agent_role,
+        rollout_path, cwd, title, preview,
         model_provider, model, tokens_used, created_at, updated_at, archived,
         git_sha, git_branch, git_origin_url FROM threads WHERE id = ?`, id)
 	thread, err := scanThread(row)
@@ -77,7 +85,11 @@ func (store *Store) ListThreads(ctx context.Context, query state.ListQuery) ([]s
 	if !query.IncludeArchived {
 		clauses = append(clauses, "archived = 0")
 	}
-	statement := `SELECT id, rollout_path, cwd, title, preview,
+	if !query.IncludeSubAgents {
+		clauses = append(clauses, "source_kind = 'root'")
+	}
+	statement := `SELECT id, source_kind, parent_thread_id, agent_depth, agent_nickname, agent_role,
+        rollout_path, cwd, title, preview,
         model_provider, model, tokens_used, created_at, updated_at, archived,
         git_sha, git_branch, git_origin_url FROM threads WHERE ` + strings.Join(clauses, " AND ") + ` ORDER BY updated_at DESC, id`
 	if query.Limit > 0 {
@@ -140,10 +152,12 @@ func (store *Store) ReplaceThreads(ctx context.Context, threads []state.StoredTh
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO threads (
-            id, rollout_path, cwd, title, preview, model_provider, model, tokens_used,
+            id, source_kind, parent_thread_id, agent_depth, agent_nickname, agent_role,
+            rollout_path, cwd, title, preview, model_provider, model, tokens_used,
             created_at, updated_at, archived, git_sha, git_branch, git_origin_url
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			thread.ID, thread.RolloutPath, thread.CWD, thread.Title, thread.Preview,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			thread.ID, string(thread.Source.Kind), sourceParentThreadID(thread.Source), sourceDepth(thread.Source), sourceNickname(thread.Source), sourceRole(thread.Source),
+			thread.RolloutPath, thread.CWD, thread.Title, thread.Preview,
 			thread.ModelProvider, thread.Model, thread.TokensUsed,
 			formatTime(thread.CreatedAt), formatTime(thread.UpdatedAt), thread.Archived,
 			thread.GitSHA, thread.GitBranch, thread.GitOriginURL,
@@ -170,14 +184,29 @@ type rowScanner interface {
 
 func scanThread(scanner rowScanner) (state.StoredThread, error) {
 	var thread state.StoredThread
+	var sourceKind string
+	var parentThreadID protocol.ThreadID
+	var agentDepth int
+	var agentNickname string
+	var agentRole string
 	var createdAt string
 	var updatedAt string
 	if err := scanner.Scan(
-		&thread.ID, &thread.RolloutPath, &thread.CWD, &thread.Title, &thread.Preview,
+		&thread.ID, &sourceKind, &parentThreadID, &agentDepth, &agentNickname, &agentRole,
+		&thread.RolloutPath, &thread.CWD, &thread.Title, &thread.Preview,
 		&thread.ModelProvider, &thread.Model, &thread.TokensUsed, &createdAt, &updatedAt,
 		&thread.Archived, &thread.GitSHA, &thread.GitBranch, &thread.GitOriginURL,
 	); err != nil {
 		return state.StoredThread{}, err
+	}
+	thread.Source = protocol.SessionSource{Kind: protocol.SessionSourceKind(sourceKind)}
+	if thread.Source.Kind == protocol.SessionSourceSubAgent {
+		thread.Source.SubAgent = &protocol.SubAgentSource{
+			ParentThreadID: parentThreadID,
+			Depth:          agentDepth,
+			AgentNickname:  agentNickname,
+			AgentRole:      agentRole,
+		}
 	}
 	var err error
 	if thread.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
@@ -187,6 +216,34 @@ func scanThread(scanner rowScanner) (state.StoredThread, error) {
 		return state.StoredThread{}, fmt.Errorf("parse thread updated_at: %w", err)
 	}
 	return thread, thread.Validate()
+}
+
+func sourceParentThreadID(source protocol.SessionSource) protocol.ThreadID {
+	if source.SubAgent == nil {
+		return ""
+	}
+	return source.SubAgent.ParentThreadID
+}
+
+func sourceDepth(source protocol.SessionSource) int {
+	if source.SubAgent == nil {
+		return 0
+	}
+	return source.SubAgent.Depth
+}
+
+func sourceNickname(source protocol.SessionSource) string {
+	if source.SubAgent == nil {
+		return ""
+	}
+	return source.SubAgent.AgentNickname
+}
+
+func sourceRole(source protocol.SessionSource) string {
+	if source.SubAgent == nil {
+		return ""
+	}
+	return source.SubAgent.AgentRole
 }
 
 func requireAffected(result sql.Result) error {

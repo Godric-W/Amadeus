@@ -16,6 +16,7 @@ const (
 	AgentBase               ID = "templates/agent/base.md"
 	AgentExecution          ID = "templates/agent/execution.md"
 	AgentHandoff            ID = "templates/agent/handoff.md"
+	AgentSubagent           ID = "templates/agent/subagent.md"
 	ModeExecute             ID = "templates/modes/execute.md"
 	ModePlan                ID = "templates/modes/plan.md"
 	ToolUpdatePlan          ID = "templates/tools/update_plan.md"
@@ -36,6 +37,7 @@ var all = []ID{
 	AgentBase,
 	AgentExecution,
 	AgentHandoff,
+	AgentSubagent,
 	ModeExecute,
 	ModePlan,
 	ToolUpdatePlan,

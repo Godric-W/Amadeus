@@ -61,6 +61,21 @@ func PresentCall(spec ToolSpec, call ToolCall) CallPresentation {
 		return CallPresentation{ActionSummary: joinAction("Fetched", safeURLHost(value("url")))}
 	case "view_image":
 		return CallPresentation{ActionSummary: joinAction("View image", path), Detail: path}
+	case "spawn_agent":
+		return CallPresentation{ActionSummary: "Spawning agent", Detail: value("message")}
+	case "send_input":
+		return CallPresentation{ActionSummary: joinAction("Sending input to", value("id")), Detail: value("message")}
+	case "wait_agent":
+		var ids []string
+		_ = json.Unmarshal(call.Payload, &struct {
+			IDs *[]string `json:"ids"`
+		}{IDs: &ids})
+		if len(ids) == 1 {
+			return CallPresentation{ActionSummary: joinAction("Waiting for", ids[0])}
+		}
+		return CallPresentation{ActionSummary: "Waiting for agents"}
+	case "close_agent":
+		return CallPresentation{ActionSummary: joinAction("Closing", value("id"))}
 	case "mcp_list_tools":
 		return CallPresentation{ActionSummary: joinAction("Listed MCP tools", value("server"))}
 	case "mcp_call":

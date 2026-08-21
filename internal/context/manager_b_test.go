@@ -210,6 +210,22 @@ func TestProjectRolloutMessagesCombinesAssistantToolCalls(t *testing.T) {
 	}
 }
 
+func TestProjectRolloutMessagesIncludesSubagentNotificationAsContextualUserInput(t *testing.T) {
+	now := time.Now().UTC()
+	content := "<subagent_notification>\n{\"agent_id\":\"child-1\"}\n</subagent_notification>"
+	lines := []rollout.Line{{
+		Version: rollout.CurrentVersion, Sequence: 1, Timestamp: now,
+		Item: rollout.EventMsgItem{Msg: protocol.SubagentNotificationEvent{ThreadID: "root", AgentID: "child-1", Content: content}},
+	}}
+	projection, err := ProjectRolloutMessages(lines)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Messages) != 1 || projection.Messages[0].Role != llm.RoleUser || projection.Messages[0].Content != content {
+		t.Fatalf("subagent notification projection = %#v", projection.Messages)
+	}
+}
+
 func TestManagerPromptSnapshotDoesNotShareMutableHistory(t *testing.T) {
 	manager := NewManager(nil)
 	if err := manager.Rebuild([]rollout.Line{contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"a"}`)})}); err != nil {

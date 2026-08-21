@@ -19,6 +19,10 @@ func Default() Config {
 		ModelProviders:       make(map[string]ModelProviderInfo),
 		Agent: AgentConfig{
 			MaxParallelTools: 4,
+			MultiAgent: MultiAgentConfig{
+				Enabled: true, MaxAgents: 4, MaxDepth: 1,
+				ChildMaxSamples: 20, ChildMaxToolCalls: 100, ChildMaxDuration: 15 * time.Minute,
+			},
 		},
 		Web: WebConfig{
 			Fetch:  WebFetchConfig{Timeout: 30 * time.Second, MaxBytes: 1 << 20, MaxRedirects: 3},

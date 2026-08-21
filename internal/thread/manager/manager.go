@@ -2,14 +2,17 @@ package manager
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/multiagent"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/state"
 	"github.com/Godric-W/Amadeus/internal/thread"
@@ -36,11 +39,15 @@ type ThreadManager struct {
 }
 
 type AmadeusThread struct {
-	id      protocol.ThreadID
-	live    *thread.LiveThread
-	session *agentsession.Session
-	io      agentsession.SessionIo
-	nextID  func(string) string
+	manager          *ThreadManager
+	id               protocol.ThreadID
+	live             *thread.LiveThread
+	session          *agentsession.Session
+	io               agentsession.SessionIo
+	nextID           func(string) string
+	configuration    agentsession.Configuration
+	agentControl     *multiagent.Control
+	ownsAgentControl bool
 }
 
 func New(ctx context.Context, store thread.ThreadStore, services SharedServices) (*ThreadManager, error) {
@@ -60,11 +67,19 @@ func (manager *ThreadManager) StartThread(ctx context.Context, input StartInput)
 		return nil, errors.New("thread manager is closed")
 	}
 	id := protocol.ThreadID(manager.services.NextID("thread"))
+	control, err := multiagent.NewControl(id, manager, multiagent.Options{
+		MaxAgents: input.Configuration.Runtime.Agent.MultiAgent.MaxAgents,
+		MaxDepth:  input.Configuration.Runtime.Agent.MultiAgent.MaxDepth,
+	})
+	if err != nil {
+		return nil, err
+	}
+	input.Configuration.Source = protocol.RootSessionSource()
 	live, err := thread.NewDraftLiveThread(id, manager.store)
 	if err != nil {
 		return nil, err
 	}
-	return manager.spawn(ctx, id, live, thread.InitialHistory{Kind: thread.InitialHistoryNew}, input)
+	return manager.spawn(ctx, id, live, thread.InitialHistory{Kind: thread.InitialHistoryNew}, input, control, true)
 }
 
 func (manager *ThreadManager) ResumeThread(ctx context.Context, id protocol.ThreadID, input StartInput) (*AmadeusThread, error) {
@@ -90,10 +105,28 @@ func (manager *ThreadManager) ResumeThread(ctx context.Context, id protocol.Thre
 		_ = live.Shutdown(context.Background())
 		return nil, err
 	}
-	return manager.spawn(ctx, id, live, history, input)
+	meta, ok := history.Lines[0].Item.(rollout.SessionMetaItem)
+	if !ok {
+		_ = live.Shutdown(context.Background())
+		return nil, errors.New("resumed thread does not begin with session metadata")
+	}
+	if meta.Source.IsSubAgent() {
+		_ = live.Shutdown(context.Background())
+		return nil, errors.New("sub-agent threads cannot be resumed directly")
+	}
+	control, err := multiagent.NewControl(id, manager, multiagent.Options{
+		MaxAgents: input.Configuration.Runtime.Agent.MultiAgent.MaxAgents,
+		MaxDepth:  input.Configuration.Runtime.Agent.MultiAgent.MaxDepth,
+	})
+	if err != nil {
+		_ = live.Shutdown(context.Background())
+		return nil, err
+	}
+	input.Configuration.Source = protocol.RootSessionSource()
+	return manager.spawn(ctx, id, live, history, input, control, true)
 }
 
-func (manager *ThreadManager) spawn(ctx context.Context, id protocol.ThreadID, live *thread.LiveThread, history thread.InitialHistory, input StartInput) (*AmadeusThread, error) {
+func (manager *ThreadManager) spawn(ctx context.Context, id protocol.ThreadID, live *thread.LiveThread, history thread.InitialHistory, input StartInput, control *multiagent.Control, ownsControl bool) (*AmadeusThread, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -104,14 +137,17 @@ func (manager *ThreadManager) spawn(ctx context.Context, id protocol.ThreadID, l
 	session, io, err := agentsession.Spawn(manager.ctx, agentsession.SpawnArgs{
 		ThreadID: id, History: history,
 		State:    agentsession.SessionState{Configuration: input.Configuration},
-		Services: agentsession.SessionServices{LiveThread: live, Clock: manager.services.Clock, NextID: manager.services.NextID},
+		Services: agentsession.SessionServices{LiveThread: live, Clock: manager.services.Clock, NextID: manager.services.NextID, AgentControl: control},
 		Adapters: manager.services.SessionAdapters,
 	})
 	if err != nil {
 		_ = live.Shutdown(context.Background())
 		return nil, err
 	}
-	value := &AmadeusThread{id: id, live: live, session: session, io: io, nextID: manager.services.NextID}
+	value := &AmadeusThread{
+		manager: manager, id: id, live: live, session: session, io: io, nextID: manager.services.NextID,
+		configuration: input.Configuration, agentControl: control, ownsAgentControl: ownsControl,
+	}
 	manager.mu.Lock()
 	if existing := manager.threads[id]; existing != nil {
 		manager.mu.Unlock()
@@ -122,6 +158,11 @@ func (manager *ThreadManager) spawn(ctx context.Context, id protocol.ThreadID, l
 	manager.mu.Unlock()
 	go func() {
 		<-io.Terminated
+		if value.ownsAgentControl && value.agentControl != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = value.agentControl.Close(cleanupCtx)
+			cancel()
+		}
 		manager.removeThread(id, value)
 	}()
 	return value, nil
@@ -217,6 +258,69 @@ func (manager *ThreadManager) Close(ctx context.Context) error {
 	return errors.Join(result, manager.store.Close())
 }
 
+func (manager *ThreadManager) SpawnChild(ctx context.Context, control *multiagent.Control, request multiagent.SpawnChildRequest) (multiagent.AgentRuntime, error) {
+	manager.lifecycle.RLock()
+	defer manager.lifecycle.RUnlock()
+	if manager.closed {
+		return nil, errors.New("thread manager is closed")
+	}
+	if control == nil || control.RootID() == "" {
+		return nil, errors.New("child agent control is unavailable")
+	}
+	manager.mu.Lock()
+	parent := manager.threads[request.ParentThreadID]
+	manager.mu.Unlock()
+	if parent == nil || parent.agentControl != control {
+		return nil, fmt.Errorf("parent thread %q is unavailable", request.ParentThreadID)
+	}
+	id := protocol.ThreadID(manager.services.NextID("thread"))
+	configuration := cloneSessionConfiguration(parent.configuration)
+	configuration.Source = protocol.NewSubAgentSessionSource(request.ParentThreadID, request.Depth, request.Nickname, request.Role)
+	configuration.Mode = turn.ModeKindDefault
+	live, err := thread.NewDraftLiveThread(id, manager.store)
+	if err != nil {
+		return nil, err
+	}
+	child, err := manager.spawn(ctx, id, live, thread.InitialHistory{Kind: thread.InitialHistoryNew}, StartInput{Configuration: configuration}, control, false)
+	if err != nil {
+		_ = live.Shutdown(context.Background())
+		return nil, err
+	}
+	return child, nil
+}
+
+func (manager *ThreadManager) NotifyParent(ctx context.Context, parentID protocol.ThreadID, notification multiagent.Notification) error {
+	manager.mu.Lock()
+	parent := manager.threads[parentID]
+	manager.mu.Unlock()
+	if parent == nil || parent.session == nil {
+		return fmt.Errorf("parent thread %q is unavailable", parentID)
+	}
+	statusPayload := map[string]string{string(notification.Status.Kind): notification.Status.Message}
+	if notification.Status.Message == "" {
+		statusPayload[string(notification.Status.Kind)] = ""
+	}
+	payload, err := json.Marshal(map[string]any{
+		"agent_id": notification.Metadata.ThreadID,
+		"nickname": notification.Metadata.AgentNickname,
+		"status":   statusPayload,
+	})
+	if err != nil {
+		return err
+	}
+	content := "<subagent_notification>\n" + string(payload) + "\n</subagent_notification>"
+	return parent.session.AppendSubagentNotification(ctx, notification.Metadata.ThreadID, content)
+}
+
+func cloneSessionConfiguration(configuration agentsession.Configuration) agentsession.Configuration {
+	cloned := configuration
+	cloned.Runtime = config.Clone(configuration.Runtime)
+	cloned.WorkspaceRoots = append([]string(nil), configuration.WorkspaceRoots...)
+	cloned.OutputSchema = append([]byte(nil), configuration.OutputSchema...)
+	cloned.Source = configuration.Source.Clone()
+	return cloned
+}
+
 func (threadRuntime *AmadeusThread) ID() protocol.ThreadID {
 	if threadRuntime == nil {
 		return ""
@@ -282,6 +386,25 @@ func (threadRuntime *AmadeusThread) SubmitUserInputAndWaitForAdmission(ctx conte
 	return threadRuntime.io.SubmitUserInputAndWaitForAdmission(ctx, submission)
 }
 
+func (threadRuntime *AmadeusThread) SubmitUserInput(ctx context.Context, op protocol.UserInputOp) error {
+	_, err := threadRuntime.SubmitUserInputAndWaitForAdmission(ctx, op)
+	return err
+}
+
+func (threadRuntime *AmadeusThread) Events() <-chan protocol.Event {
+	if threadRuntime == nil {
+		return nil
+	}
+	return threadRuntime.io.Events
+}
+
+func (threadRuntime *AmadeusThread) Terminated() <-chan struct{} {
+	if threadRuntime == nil {
+		return nil
+	}
+	return threadRuntime.io.Terminated
+}
+
 func (threadRuntime *AmadeusThread) SteerInput(ctx context.Context, expectedTurnID protocol.TurnID, content, clientUserMessageID string) (protocol.TurnID, error) {
 	if threadRuntime == nil {
 		return "", errors.New("thread steer input is unavailable")
@@ -296,19 +419,26 @@ func (threadRuntime *AmadeusThread) Shutdown(ctx context.Context) error {
 	if threadRuntime == nil {
 		return nil
 	}
+	var result error
+	if threadRuntime.ownsAgentControl && threadRuntime.agentControl != nil {
+		result = threadRuntime.agentControl.Close(ctx)
+	}
 	if err := threadRuntime.Submit(ctx, protocol.ShutdownOp{}); err != nil {
 		select {
 		case <-threadRuntime.io.Terminated:
-			return nil
+			return result
 		default:
-			return err
+			return errors.Join(result, err)
 		}
 	}
 	select {
 	case <-threadRuntime.io.Terminated:
-		return nil
+		if threadRuntime.manager != nil {
+			threadRuntime.manager.removeThread(threadRuntime.id, threadRuntime)
+		}
+		return result
 	case <-ctx.Done():
-		return ctx.Err()
+		return errors.Join(result, ctx.Err())
 	}
 }
 

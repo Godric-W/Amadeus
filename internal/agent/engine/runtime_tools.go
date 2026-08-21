@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 
+	"github.com/Godric-W/Amadeus/internal/agent/multiagent"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
@@ -29,6 +30,8 @@ type ToolRuntimeOptions struct {
 	WebFetcher       webfetch.Fetcher
 	WebSearch        websearch.Provider
 	FileSystemPolicy *project.FileSystemPolicy
+	AgentControl     *multiagent.Control
+	SessionSource    protocol.SessionSource
 }
 
 type ToolRuntime struct {
@@ -58,6 +61,19 @@ func BuildToolRuntime(options ToolRuntimeOptions) (ToolRuntime, error) {
 		return ToolRuntime{}, fmt.Errorf("create core tool registry: %w", err)
 	}
 	visibility := make(map[string]bool)
+	if options.Config.Agent.MultiAgent.Enabled && options.SessionSource.Kind == protocol.SessionSourceRoot {
+		definitions, createErr := builtin.NewMultiAgentTools(options.AgentControl)
+		if createErr != nil {
+			processes.Close()
+			return ToolRuntime{}, createErr
+		}
+		for _, definition := range definitions {
+			if err := registry.RegisterDefinition(definition); err != nil {
+				processes.Close()
+				return ToolRuntime{}, err
+			}
+		}
+	}
 	if modelInfo.SupportsInput(llm.InputModalityImage) {
 		viewImage, createErr := builtin.NewViewImage(options.Project, builtin.ViewImageOptions{FileSystemPolicy: options.FileSystemPolicy, ModelInfo: modelInfo})
 		if createErr != nil {

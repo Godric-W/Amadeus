@@ -18,16 +18,17 @@ type RolloutItem interface {
 }
 
 type SessionMetaItem struct {
-	ThreadID      protocol.ThreadID `json:"thread_id"`
-	CWD           string            `json:"cwd"`
-	Title         string            `json:"title"`
-	ModelProvider string            `json:"model_provider,omitempty"`
-	Model         string            `json:"model,omitempty"`
-	GitSHA        string            `json:"git_sha,omitempty"`
-	GitBranch     string            `json:"git_branch,omitempty"`
-	GitOriginURL  string            `json:"git_origin_url,omitempty"`
-	Archived      bool              `json:"archived,omitempty"`
-	CreatedAt     time.Time         `json:"created_at"`
+	ThreadID      protocol.ThreadID      `json:"thread_id"`
+	Source        protocol.SessionSource `json:"source"`
+	CWD           string                 `json:"cwd"`
+	Title         string                 `json:"title"`
+	ModelProvider string                 `json:"model_provider,omitempty"`
+	Model         string                 `json:"model,omitempty"`
+	GitSHA        string                 `json:"git_sha,omitempty"`
+	GitBranch     string                 `json:"git_branch,omitempty"`
+	GitOriginURL  string                 `json:"git_origin_url,omitempty"`
+	Archived      bool                   `json:"archived,omitempty"`
+	CreatedAt     time.Time              `json:"created_at"`
 }
 
 func (SessionMetaItem) isRolloutItem() {}
@@ -38,6 +39,9 @@ func (item SessionMetaItem) Validate() error {
 	}
 	if strings.TrimSpace(item.CWD) == "" || strings.TrimSpace(item.Title) == "" || item.CreatedAt.IsZero() {
 		return errors.New("session meta item is incomplete")
+	}
+	if err := item.Source.Validate(); err != nil {
+		return fmt.Errorf("session meta source: %w", err)
 	}
 	return nil
 }

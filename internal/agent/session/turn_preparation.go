@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
+	"github.com/Godric-W/Amadeus/internal/agent/multiagent"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
@@ -39,9 +40,10 @@ func (services *SessionServices) prepareStaticTurnContext(ctx context.Context, t
 	if services == nil || turnContext == nil || contextUpdate == nil || appendItems == nil {
 		return fmt.Errorf("static turn context preparation is incomplete")
 	}
-	tools := services.tools.SnapshotRouter(services.visibility, tool.RequestSnapshot{}, func(spec tool.ToolSpec) bool {
+	include := func(spec tool.ToolSpec) bool {
 		return turnContext.Mode != turn.ModeKindPlan || engine.PlanModeToolAllowed(spec)
-	}).Specs()
+	}
+	tools := services.tools.SnapshotRouter(services.visibility, tool.RequestSnapshot{}, composeToolFilters(include, services.source)).Specs()
 	toolNames := make([]string, len(tools))
 	for index, spec := range tools {
 		toolNames[index] = spec.Name
@@ -50,7 +52,12 @@ func (services *SessionServices) prepareStaticTurnContext(ctx context.Context, t
 	if err != nil {
 		return err
 	}
-	developer, err := internalprompt.RenderCollaborationInstructions(modelMessages, turnContext.Mode, toolNames)
+	var developer string
+	if services.source.IsSubAgent() {
+		developer, err = internalprompt.RenderSubagentDeveloperInstructions(modelMessages, toolNames)
+	} else {
+		developer, err = internalprompt.RenderCollaborationInstructions(modelMessages, turnContext.Mode, toolNames)
+	}
 	if err != nil {
 		return err
 	}
@@ -75,12 +82,38 @@ func (services *SessionServices) prepareStaticTurnContext(ctx context.Context, t
 	if services.mcp != nil {
 		mcpContext = "MCP tools are available only through their exposed Tool Specs and current bindings."
 	}
+	environmentContext := fmt.Sprintf("<cwd>%s</cwd>", html.EscapeString(turnContext.CWD))
+	if !services.source.IsSubAgent() && services.AgentControl != nil {
+		if subagents := renderSubagents(services.AgentControl.SnapshotAll()); subagents != "" {
+			environmentContext += "\n" + subagents
+		}
+	}
 	return persistPreparedContextUpdates(ctx, turnContext.TurnID, contextUpdate, appendItems,
 		preparedContextUpdate{key: agentcontext.UpdateCollaborationMode, content: developer},
-		preparedContextUpdate{key: agentcontext.UpdateEnvironment, content: fmt.Sprintf("<cwd>%s</cwd>", html.EscapeString(turnContext.CWD))},
+		preparedContextUpdate{key: agentcontext.UpdateEnvironment, content: environmentContext},
 		preparedContextUpdate{key: agentcontext.UpdatePermissionMode, content: "## Permission And Isolation Context\n\nPermission context (enforced by runtime, not by this text): " + string(encodedPermission)},
 		preparedContextUpdate{key: agentcontext.UpdateMCP, content: mcpContext},
 	)
+}
+
+func renderSubagents(records []multiagent.AgentRecord) string {
+	if len(records) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("<subagents>")
+	for _, record := range records {
+		builder.WriteString("\n  - ")
+		builder.WriteString(html.EscapeString(string(record.Metadata.ThreadID)))
+		builder.WriteString(": ")
+		builder.WriteString(html.EscapeString(record.Metadata.AgentNickname))
+		builder.WriteString(" [")
+		builder.WriteString(html.EscapeString(record.Metadata.AgentRole))
+		builder.WriteString("] ")
+		builder.WriteString(html.EscapeString(string(record.Status.Kind)))
+	}
+	builder.WriteString("\n</subagents>")
+	return builder.String()
 }
 
 func (services *SessionServices) prepareInputContext(ctx context.Context, input string, turnContext *turn.TurnContext, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error) error {

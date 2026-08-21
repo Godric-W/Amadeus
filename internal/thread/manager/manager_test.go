@@ -256,6 +256,89 @@ func TestThreadManagerMaterializesOnFirstInput(t *testing.T) {
 	t.Fatal("turn context item was not persisted")
 }
 
+func TestAgentControlSpawnsFullChildSessionAndPersistsNotification(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	manager, store := newTestManager(t, ctx, "", nil)
+	defer manager.Close(context.Background())
+	root, err := manager.StartThread(ctx, StartInput{Configuration: testConfiguration(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Submit(ctx, protocol.UserInputOp{Content: "establish root"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminal(t, root.Io(), false)
+	spawned, err := root.agentControl.Spawn(ctx, root.ID(), "inspect the repository architecture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waited, err := root.agentControl.Wait(ctx, []protocol.ThreadID{spawned.AgentID}, 5*time.Second)
+	statuses := waited.Statuses
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].Status.Kind != protocol.AgentStatusCompleted || statuses[0].Status.Message != "done" {
+		t.Fatalf("child statuses = %#v", statuses)
+	}
+	child, err := store.GetThread(ctx, spawned.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !child.Source.IsSubAgent() || child.Source.SubAgent.ParentThreadID != root.ID() || child.Source.SubAgent.AgentNickname != spawned.Nickname || child.Source.SubAgent.AgentRole != "explorer" {
+		t.Fatalf("child metadata = %#v", child)
+	}
+	topLevel, err := manager.ListThreads(ctx, state.ListQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(topLevel) != 1 || topLevel[0].ID != root.ID() {
+		t.Fatalf("top-level threads = %#v", topLevel)
+	}
+	allThreads, err := manager.ListThreads(ctx, state.ListQuery{IncludeSubAgents: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allThreads) != 2 {
+		t.Fatalf("all threads = %#v", allThreads)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		history, historyErr := root.History(ctx)
+		if historyErr != nil {
+			t.Fatal(historyErr)
+		}
+		notifications := 0
+		for _, line := range history {
+			if event, ok := line.Item.(rollout.EventMsgItem); ok {
+				if _, ok := event.Msg.(protocol.SubagentNotificationEvent); ok {
+					notifications++
+				}
+			}
+		}
+		if notifications == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("root history notification count = %d", notifications)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	previous, err := root.agentControl.CloseAgent(ctx, spawned.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if previous.Kind != protocol.AgentStatusCompleted {
+		t.Fatalf("previous status = %#v", previous)
+	}
+	if _, exists := manager.GetThread(spawned.AgentID); exists {
+		t.Fatal("closed child remained in live ThreadManager registry")
+	}
+	if _, err := manager.ResumeThread(ctx, spawned.AgentID, StartInput{Configuration: testConfiguration(t)}); err == nil || !strings.Contains(err.Error(), "sub-agent threads cannot be resumed directly") {
+		t.Fatalf("direct child resume error = %v", err)
+	}
+}
+
 func TestThreadUserInputAdmissionContinuesSameTurn(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -23,12 +23,25 @@ func TestLoadModelMessagesSeparatesModelModesAndCompaction(t *testing.T) {
 	if !strings.Contains(messages.CollaborationModes.Default, "Execute Mode") || !strings.Contains(messages.CollaborationModes.Plan, "Plan Mode") {
 		t.Fatalf("collaboration mode instructions are incomplete: %#v", messages.CollaborationModes)
 	}
+	if !strings.Contains(messages.SubagentDeveloperInstructions, "sub-agent spawned by another Amadeus agent") || !strings.Contains(messages.SubagentDeveloperInstructions, "Do not modify files") {
+		t.Fatalf("sub-agent developer instructions are incomplete: %q", messages.SubagentDeveloperInstructions)
+	}
 	compaction, prefix, err := CompactionMessages(messages)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(compaction.Text, "CONTEXT CHECKPOINT COMPACTION") || strings.TrimSpace(prefix) == "" {
 		t.Fatalf("compaction assets are incomplete: %q / %q", compaction.Text, prefix)
+	}
+}
+
+func TestSubagentInstructionsOnlyIncludeVisibleReadToolGuidance(t *testing.T) {
+	text, err := RenderSubagentDeveloperInstructions(mustModelMessages(t), []string{"read", "grep"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "## `read`") || !strings.Contains(text, "## `grep`") || strings.Contains(text, "## `edit`") {
+		t.Fatalf("sub-agent tool guidance is incorrect: %q", text)
 	}
 }
 

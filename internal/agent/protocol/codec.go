@@ -71,6 +71,8 @@ func DecodeEventMsg(encoded EncodedEventMsg) (EventMsg, error) {
 		message = &ContextCompactedEvent{}
 	case "context_update":
 		message = &ContextUpdateEvent{}
+	case "subagent_notification":
+		message = &SubagentNotificationEvent{}
 	default:
 		return nil, fmt.Errorf("unsupported event message type %q", encoded.Type)
 	}
@@ -131,6 +133,8 @@ func eventMsgType(message EventMsg) (string, error) {
 		return "context_compacted", nil
 	case ContextUpdateEvent:
 		return "context_update", nil
+	case SubagentNotificationEvent:
+		return "subagent_notification", nil
 	default:
 		return "", fmt.Errorf("unsupported event message %T", message)
 	}
@@ -183,6 +187,8 @@ func eventMsgValue(message EventMsg) EventMsg {
 	case *ContextCompactedEvent:
 		return *value
 	case *ContextUpdateEvent:
+		return *value
+	case *SubagentNotificationEvent:
 		return *value
 	default:
 		return message

@@ -29,7 +29,9 @@ func TestConfigCanBeConstructed(t *testing.T) {
 				StreamIdleTimeout: time.Minute,
 			},
 		},
-		Agent:   AgentConfig{MaxParallelTools: 2},
+		Agent: AgentConfig{MaxParallelTools: 2, MultiAgent: MultiAgentConfig{
+			Enabled: true, MaxAgents: 3, MaxDepth: 1, ChildMaxSamples: 10, ChildMaxToolCalls: 50, ChildMaxDuration: time.Minute,
+		}},
 		Logging: LoggingConfig{Level: LogLevelDebug, TraceLLM: true},
 	}
 
@@ -59,7 +61,7 @@ func TestDefaultContainsFieldDefaultsWithoutBuiltInProvider(t *testing.T) {
 	if configured.ModelReasoningEffort != nil {
 		t.Fatalf("default config must not synthesize reasoning effort: %q", *configured.ModelReasoningEffort)
 	}
-	if configured.Agent.MaxParallelTools != 4 || configured.Logging.Level != LogLevelInfo {
+	if configured.Agent.MaxParallelTools != 4 || configured.Agent.MultiAgent.MaxAgents != 4 || configured.Agent.MultiAgent.MaxDepth != 1 || !configured.Agent.MultiAgent.Enabled || configured.Logging.Level != LogLevelInfo {
 		t.Fatalf("unexpected field defaults: %#v", configured)
 	}
 }

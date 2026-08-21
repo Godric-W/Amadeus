@@ -16,6 +16,10 @@ const (
 	maxContextWindow    = int64(100_000_000)
 	maxToolOutputTokens = int64(1_000_000)
 	maxParallelTools    = 64
+	maxAgents           = 16
+	maxChildSamples     = 200
+	maxChildToolCalls   = 1000
+	maxChildDuration    = 2 * time.Hour
 	maxWebTimeout       = 2 * time.Minute
 	maxWebBytes         = int64(16 << 20)
 	maxWebResults       = 10
@@ -222,6 +226,21 @@ func validateBaseURL(path, value string, addIssue func(string, string)) {
 func validateAgent(agent AgentConfig, addIssue func(string, string)) {
 	if agent.MaxParallelTools <= 0 || agent.MaxParallelTools > maxParallelTools {
 		addIssue("agent.max_parallel_tools", fmt.Sprintf("must be greater than 0 and at most %d", maxParallelTools))
+	}
+	if agent.MultiAgent.MaxAgents <= 0 || agent.MultiAgent.MaxAgents > maxAgents {
+		addIssue("agent.multi_agent.max_agents", fmt.Sprintf("must be greater than 0 and at most %d", maxAgents))
+	}
+	if agent.MultiAgent.MaxDepth != 1 {
+		addIssue("agent.multi_agent.max_depth", "must be 1 in the basic multi-agent implementation")
+	}
+	if agent.MultiAgent.ChildMaxSamples <= 0 || agent.MultiAgent.ChildMaxSamples > maxChildSamples {
+		addIssue("agent.multi_agent.child_max_samples", fmt.Sprintf("must be greater than 0 and at most %d", maxChildSamples))
+	}
+	if agent.MultiAgent.ChildMaxToolCalls <= 0 || agent.MultiAgent.ChildMaxToolCalls > maxChildToolCalls {
+		addIssue("agent.multi_agent.child_max_tool_calls", fmt.Sprintf("must be greater than 0 and at most %d", maxChildToolCalls))
+	}
+	if agent.MultiAgent.ChildMaxDuration <= 0 || agent.MultiAgent.ChildMaxDuration > maxChildDuration {
+		addIssue("agent.multi_agent.child_max_duration", fmt.Sprintf("must be greater than 0 and at most %s", maxChildDuration))
 	}
 }
 

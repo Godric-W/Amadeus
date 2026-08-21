@@ -25,7 +25,7 @@ func TestStoreThreadLifecycle(t *testing.T) {
 	defer store.Close()
 	now := time.Date(2026, 8, 11, 1, 2, 3, 0, time.UTC)
 	thread := state.StoredThread{
-		ID: "thread-1", RolloutPath: filepath.Join(home, "sessions", "rollout.jsonl"), CWD: "/workspace",
+		ID: "thread-1", Source: protocol.RootSessionSource(), RolloutPath: filepath.Join(home, "sessions", "rollout.jsonl"), CWD: "/workspace",
 		Title: "First", Preview: "hello", ModelProvider: "openai", Model: "gpt", TokensUsed: 12,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -84,7 +84,7 @@ func TestReplaceThreadsRebuildsIndex(t *testing.T) {
 	defer store.Close()
 	now := time.Now().UTC()
 	threads := []state.StoredThread{{
-		ID: "thread-2", RolloutPath: "/tmp/rollout-2.jsonl", CWD: "/workspace", Title: "Second",
+		ID: "thread-2", Source: protocol.RootSessionSource(), RolloutPath: "/tmp/rollout-2.jsonl", CWD: "/workspace", Title: "Second",
 		CreatedAt: now, UpdatedAt: now,
 	}}
 	if err := store.ReplaceThreads(ctx, threads); err != nil {
@@ -96,5 +96,42 @@ func TestReplaceThreadsRebuildsIndex(t *testing.T) {
 	}
 	if len(listed) != 1 || listed[0].ID != "thread-2" {
 		t.Fatalf("listed = %#v", listed)
+	}
+}
+
+func TestListThreadsExcludesSubagentsByDefault(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	database, err := Open(ctx, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	root := state.StoredThread{ID: "root", Source: protocol.RootSessionSource(), RolloutPath: filepath.Join(home, "root.jsonl"), CWD: "/workspace", Title: "Root", CreatedAt: now, UpdatedAt: now}
+	child := state.StoredThread{ID: "child", Source: protocol.NewSubAgentSessionSource("root", 1, "atlas", "explorer"), RolloutPath: filepath.Join(home, "child.jsonl"), CWD: "/workspace", Title: "Child", CreatedAt: now, UpdatedAt: now}
+	if err := store.UpsertThread(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertThread(ctx, child); err != nil {
+		t.Fatal(err)
+	}
+	topLevel, err := store.ListThreads(ctx, state.ListQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(topLevel) != 1 || topLevel[0].ID != "root" {
+		t.Fatalf("top-level threads = %#v", topLevel)
+	}
+	all, err := store.ListThreads(ctx, state.ListQuery{IncludeSubAgents: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("all threads = %#v", all)
 	}
 }

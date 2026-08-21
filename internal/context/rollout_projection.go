@@ -43,6 +43,8 @@ func (projection *RolloutMessageProjection) record(sequence uint64, item rollout
 			if message.Status == protocol.TurnStatusFailed {
 				projection.append(llm.DeveloperMessage("Previous turn failed: "+message.Error+". Re-plan from the current workspace state."), sequence)
 			}
+		case protocol.SubagentNotificationEvent:
+			projection.append(llm.UserMessage(message.Content), sequence)
 		}
 	case rollout.CompactedItem:
 		if err := projection.applyCompaction(item); err != nil {

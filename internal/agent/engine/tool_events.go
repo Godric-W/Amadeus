@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -17,9 +18,12 @@ import (
 type toolEventObserver struct {
 	appendItems   func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error
 	turnID        protocol.TurnID
+	threadID      protocol.ThreadID
 	events        protocol.EventSink
 	mu            sync.Mutex
 	presentations map[string]toolCallPresentation
+	collaboration map[string]protocol.CollabAgentToolCallItem
+	resolveAgent  func(protocol.ThreadID) protocol.CollabAgentRef
 }
 
 type toolCallPresentation struct {
@@ -38,8 +42,8 @@ func (presentation toolCallPresentation) payload(duration time.Duration, partial
 	}
 }
 
-func NewToolEventObserver(appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error, turnID protocol.TurnID, events protocol.EventSink) tool.LifecycleObserver {
-	return &toolEventObserver{appendItems: appendItems, turnID: turnID, events: events, presentations: map[string]toolCallPresentation{}}
+func NewToolEventObserver(appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error, threadID protocol.ThreadID, turnID protocol.TurnID, events protocol.EventSink, resolveAgent func(protocol.ThreadID) protocol.CollabAgentRef) tool.LifecycleObserver {
+	return &toolEventObserver{appendItems: appendItems, threadID: threadID, turnID: turnID, events: events, presentations: map[string]toolCallPresentation{}, collaboration: map[string]protocol.CollabAgentToolCallItem{}, resolveAgent: resolveAgent}
 }
 
 func (observer *toolEventObserver) ToolCallStarted(ctx context.Context, spec tool.ToolSpec, call tool.ToolCall) error {
@@ -47,6 +51,20 @@ func (observer *toolEventObserver) ToolCallStarted(ctx context.Context, spec too
 		return nil
 	}
 	presentation := tool.PresentCall(spec, call)
+	if collabTool, ok := collabAgentTool(call.Name); ok {
+		collaboration := collabAgentStarted(observer.threadID, collabTool, call, observer.resolveAgent)
+		observer.mu.Lock()
+		observer.collaboration[call.ID] = collaboration
+		observer.mu.Unlock()
+		item := protocol.TurnItem{ID: protocol.ItemID(call.ID), Kind: protocol.ItemCollabAgentToolCall, Status: protocol.ItemInProgress, CreatedAt: collaboration.CreatedAt, ToolName: call.Name, CallID: call.ID, CollabAgent: &collaboration}
+		if err := observer.events.Publish(ctx, protocol.Event{Msg: protocol.ItemStartedEvent{Item: item}}); err != nil {
+			observer.mu.Lock()
+			delete(observer.collaboration, call.ID)
+			observer.mu.Unlock()
+			return err
+		}
+		return nil
+	}
 	snapshot := toolCallPresentation{actionSummary: presentation.ActionSummary, detail: presentation.Detail, sideEffect: spec.SideEffect}
 	observer.mu.Lock()
 	observer.presentations[call.ID] = snapshot
@@ -99,7 +117,22 @@ func (observer *toolEventObserver) ToolCallCompleted(ctx context.Context, execut
 	observer.mu.Lock()
 	presentation := observer.presentations[execution.Call.ID]
 	delete(observer.presentations, execution.Call.ID)
+	collaboration, hasCollaboration := observer.collaboration[execution.Call.ID]
+	delete(observer.collaboration, execution.Call.ID)
 	observer.mu.Unlock()
+	if hasCollaboration {
+		collaboration = completeCollabAgentItem(collaboration, execution, now, status)
+		turnItem := protocol.TurnItem{ID: protocol.ItemID(execution.Call.ID), Kind: protocol.ItemCollabAgentToolCall, Status: status, CreatedAt: collaboration.CreatedAt, CompletedAt: now, Text: toolExecutionSummary(execution), ToolName: execution.Call.Name, CallID: execution.Call.ID, ToolResult: &displayResult, CollabAgent: &collaboration}
+		completedItem, err := rollout.NewEventMsgItem(protocol.ItemCompletedEvent{Item: turnItem})
+		if err != nil {
+			return err
+		}
+		completionCtx := context.WithoutCancel(ctx)
+		if err := observer.appendItems(completionCtx, observer.turnID, responseItem, completedItem); err != nil {
+			return fmt.Errorf("persist collaboration tool completion: %w", err)
+		}
+		return observer.events.Publish(completionCtx, protocol.Event{Msg: protocol.ItemCompletedEvent{Item: turnItem}})
+	}
 	itemPayload := presentation.payload(execution.Outcome.Duration, execution.Output.Partial)
 	turnItem := protocol.TurnItem{ID: protocol.ItemID(execution.Call.ID), Kind: toolItemKind(execution.Call.Name, ""), Status: status, CreatedAt: now, CompletedAt: now, Text: toolExecutionSummary(execution), ToolName: execution.Call.Name, CallID: execution.Call.ID, ToolResult: &displayResult, Payload: itemPayload}
 	completedItem, err := rollout.NewEventMsgItem(protocol.ItemCompletedEvent{Item: turnItem})
@@ -113,7 +146,112 @@ func (observer *toolEventObserver) ToolCallCompleted(ctx context.Context, execut
 	return observer.events.Publish(completionCtx, protocol.Event{Msg: protocol.ItemCompletedEvent{Item: turnItem}})
 }
 
+func collabAgentTool(name string) (protocol.CollabAgentTool, bool) {
+	tool := protocol.CollabAgentTool(name)
+	return tool, tool.Valid()
+}
+
+func collabAgentStarted(sender protocol.ThreadID, collaborationTool protocol.CollabAgentTool, call tool.ToolCall, resolveAgent func(protocol.ThreadID) protocol.CollabAgentRef) protocol.CollabAgentToolCallItem {
+	item := protocol.CollabAgentToolCallItem{ID: protocol.ItemID(call.ID), Tool: collaborationTool, Status: protocol.CollabAgentToolInProgress, SenderThreadID: sender, CreatedAt: time.Now().UTC()}
+	var arguments struct {
+		ID      string   `json:"id"`
+		IDs     []string `json:"ids"`
+		Message string   `json:"message"`
+	}
+	_ = json.Unmarshal(call.Payload, &arguments)
+	item.Prompt = boundCollaborationText(arguments.Message, 1000)
+	if arguments.ID != "" {
+		item.ReceiverAgents = []protocol.CollabAgentRef{resolveCollabAgentRef(protocol.ThreadID(arguments.ID), resolveAgent)}
+	}
+	for _, id := range arguments.IDs {
+		item.ReceiverAgents = append(item.ReceiverAgents, resolveCollabAgentRef(protocol.ThreadID(id), resolveAgent))
+	}
+	return item
+}
+
+func resolveCollabAgentRef(id protocol.ThreadID, resolveAgent func(protocol.ThreadID) protocol.CollabAgentRef) protocol.CollabAgentRef {
+	if resolveAgent == nil {
+		return protocol.CollabAgentRef{ThreadID: id}
+	}
+	resolved := resolveAgent(id)
+	if resolved.ThreadID == "" {
+		resolved.ThreadID = id
+	}
+	return resolved
+}
+
+func completeCollabAgentItem(item protocol.CollabAgentToolCallItem, execution tool.ToolExecution, completedAt time.Time, status protocol.ItemStatus) protocol.CollabAgentToolCallItem {
+	item.CompletedAt = &completedAt
+	item.Status = protocol.CollabAgentToolCompleted
+	if status == protocol.ItemFailed || status == protocol.ItemDeclined {
+		item.Status = protocol.CollabAgentToolFailed
+	}
+	encoded, _ := json.Marshal(execution.Output.Data)
+	switch item.Tool {
+	case protocol.CollabAgentSpawnAgent:
+		var value struct {
+			AgentID  protocol.ThreadID `json:"agent_id"`
+			Nickname string            `json:"nickname"`
+		}
+		_ = json.Unmarshal(encoded, &value)
+		if value.AgentID != "" {
+			item.ReceiverAgents = []protocol.CollabAgentRef{{ThreadID: value.AgentID, AgentNickname: value.Nickname, AgentRole: "explorer"}}
+		}
+	case protocol.CollabAgentSendInput:
+		var value struct {
+			AgentID  protocol.ThreadID `json:"agent_id"`
+			Nickname string            `json:"nickname"`
+		}
+		_ = json.Unmarshal(encoded, &value)
+		if value.AgentID != "" {
+			item.ReceiverAgents = []protocol.CollabAgentRef{{ThreadID: value.AgentID, AgentNickname: value.Nickname, AgentRole: "explorer"}}
+		}
+	case protocol.CollabAgentCloseAgent:
+		var value struct {
+			AgentID        protocol.ThreadID    `json:"agent_id"`
+			Nickname       string               `json:"nickname"`
+			PreviousStatus protocol.AgentStatus `json:"previous_status"`
+		}
+		_ = json.Unmarshal(encoded, &value)
+		if value.AgentID != "" {
+			item.ReceiverAgents = []protocol.CollabAgentRef{{ThreadID: value.AgentID, AgentNickname: value.Nickname, AgentRole: "explorer"}}
+			item.AgentsStates = map[protocol.ThreadID]protocol.CollabAgentState{
+				value.AgentID: {Status: value.PreviousStatus},
+			}
+		}
+	case protocol.CollabAgentWait:
+		var value struct {
+			Statuses []struct {
+				AgentID  protocol.ThreadID    `json:"agent_id"`
+				Nickname string               `json:"nickname"`
+				Role     string               `json:"role"`
+				Status   protocol.AgentStatus `json:"status"`
+			} `json:"statuses"`
+		}
+		_ = json.Unmarshal(encoded, &value)
+		item.ReceiverAgents = nil
+		item.AgentsStates = make(map[protocol.ThreadID]protocol.CollabAgentState, len(value.Statuses))
+		for _, status := range value.Statuses {
+			item.ReceiverAgents = append(item.ReceiverAgents, protocol.CollabAgentRef{ThreadID: status.AgentID, AgentNickname: status.Nickname, AgentRole: status.Role})
+			item.AgentsStates[status.AgentID] = protocol.CollabAgentState{Status: status.Status}
+		}
+	}
+	return item
+}
+
+func boundCollaborationText(value string, limit int) string {
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) <= limit {
+		return string(runes)
+	}
+	return string(runes[:limit-1]) + "…"
+}
+
 func toolItemKind(name string, effect tool.SideEffect) protocol.ItemKind {
+	switch name {
+	case "spawn_agent", "send_input", "wait_agent", "close_agent":
+		return protocol.ItemCollabAgentToolCall
+	}
 	if name == "execute_command" || name == "write_stdin" {
 		return protocol.ItemCommandExecution
 	}

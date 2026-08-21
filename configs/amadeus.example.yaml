@@ -51,6 +51,15 @@ agent:
   # Parallel-capable tools may overlap up to this limit. Stateful or
   # side-effecting tools still execute serially through their Tool contract.
   max_parallel_tools: 4
+  multi_agent:
+    # Basic Codex-style delegation to read-only explorer subagents.
+    enabled: true
+    max_agents: 4
+    # The first implementation supports direct children only.
+    max_depth: 1
+    child_max_samples: 20
+    child_max_tool_calls: 100
+    child_max_duration: 15m
 
 # Web tools are conditional: disabled capabilities are not registered and are
 # therefore invisible to the model.

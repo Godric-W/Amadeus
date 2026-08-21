@@ -844,6 +844,78 @@ func TestViewImageArchitectureBoundaries(t *testing.T) {
 	}
 }
 
+func TestBasicMultiAgentArchitectureBoundaries(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, relative := range []string{
+		"internal/agent/multiagent/types.go",
+		"internal/agent/multiagent/control.go",
+		"internal/agent/multiagent/reservation.go",
+		"internal/agent/multiagent/status.go",
+		"internal/agent/multiagent/shutdown.go",
+		"internal/agent/protocol/collaboration.go",
+		"internal/tool/builtin/multi_agent.go",
+		"internal/prompt/builtin/templates/agent/subagent.md",
+		"internal/interface/tui/history_cell_multiagent.go",
+	} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); err != nil {
+			t.Errorf("required multi-agent boundary file is missing: %s: %v", relative, err)
+		}
+	}
+	toolSource := mustReadArchitectureFile(t, root, "internal/tool/builtin/multi_agent.go")
+	for _, forbidden := range []string{"internal/agent/session", "internal/llm", "run_turn", "ClientFactory", "ThreadStore"} {
+		if strings.Contains(toolSource, forbidden) {
+			t.Errorf("multi-agent Tool owns forbidden runtime concern %q", forbidden)
+		}
+	}
+	managerSource := mustReadArchitectureFile(t, root, "internal/thread/manager/manager.go")
+	for _, required := range []string{"func (manager *ThreadManager) SpawnChild", "agentsession.Spawn", "NewDraftLiveThread", "SubAgentSessionSource"} {
+		if !strings.Contains(managerSource, required) {
+			t.Errorf("ThreadManager child host is missing %q", required)
+		}
+	}
+	sessionSource := mustReadArchitectureFile(t, root, "internal/agent/session/step_context.go")
+	for _, required := range []string{`case "read", "glob", "grep", "read_skill", "web_search":`, "source.IsSubAgent()"} {
+		if !strings.Contains(sessionSource, required) {
+			t.Errorf("sub-agent exact ToolRouter filter is missing %q", required)
+		}
+	}
+	tuiSource := mustReadArchitectureFile(t, root, "internal/interface/tui/history_cell_multiagent.go")
+	for _, forbidden := range []string{"json.Unmarshal", "item.Text", "ToolResult.Text"} {
+		if strings.Contains(tuiSource, forbidden) {
+			t.Errorf("multi-agent TUI reconstructs typed state from text via %q", forbidden)
+		}
+	}
+	protocolFields := architectureStructFields(t, root, "internal/agent/protocol/collaboration.go", "CollabAgentToolCallItem")
+	for _, required := range []string{"ID", "Tool", "Status", "SenderThreadID", "ReceiverAgents", "Prompt", "AgentsStates", "CreatedAt", "CompletedAt"} {
+		if _, exists := protocolFields[required]; !exists {
+			t.Errorf("CollabAgentToolCallItem is missing field %q", required)
+		}
+	}
+	for _, forbidden := range []string{"AgentTaskBus", "NestedSessionTask", "map[protocol.ThreadID]protocol.AgentStatus"} {
+		for _, relative := range []string{"cmd", "internal/interface/tui"} {
+			err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+				if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+					return nil
+				}
+				content, readErr := os.ReadFile(path)
+				if readErr != nil {
+					return readErr
+				}
+				if strings.Contains(string(content), forbidden) {
+					t.Errorf("UI/application owns forbidden agent truth %q in %s", forbidden, filepath.ToSlash(path[len(root)+1:]))
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("scan %s: %v", relative, err)
+			}
+		}
+	}
+}
+
 func architectureStructFields(t *testing.T, root, relative, typeName string) map[string]struct{} {
 	t.Helper()
 	path := filepath.Join(root, filepath.FromSlash(relative))

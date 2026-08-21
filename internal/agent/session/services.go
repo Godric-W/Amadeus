@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
+	"github.com/Godric-W/Amadeus/internal/agent/multiagent"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agentsmd"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
@@ -46,9 +48,10 @@ func (adapters ServiceAdapters) configured() bool {
 }
 
 type SessionServices struct {
-	LiveThread *thread.LiveThread
-	Clock      func() time.Time
-	NextID     func(string) string
+	LiveThread   *thread.LiveThread
+	Clock        func() time.Time
+	NextID       func(string) string
+	AgentControl *multiagent.Control
 
 	modelClient   llm.Client
 	provider      config.ModelProviderInfo
@@ -67,6 +70,7 @@ type SessionServices struct {
 	compactor     *engine.Compactor
 	fileSystem    *project.FileSystemPolicy
 	visibility    map[string]bool
+	source        protocol.SessionSource
 	skillWarnings []error
 	auditCloser   io.Closer
 	budget        engine.TurnBudget
@@ -164,9 +168,14 @@ func buildSessionServices(ctx context.Context, owner *Session, base SessionServi
 	if err != nil {
 		return SessionServices{}, fmt.Errorf("configure provider model client: %w", err)
 	}
-	approvalPort, err := newSessionApprovalPort(owner)
-	if err != nil {
-		return SessionServices{}, err
+	var approvalPort policy.ApprovalPort
+	if configuration.Source.IsSubAgent() {
+		approvalPort = denySubagentApprovalPort{}
+	} else {
+		approvalPort, err = newSessionApprovalPort(owner)
+		if err != nil {
+			return SessionServices{}, err
+		}
 	}
 	coordinator, err := policy.NewApprovalCoordinator(approvalPort)
 	if err != nil {
@@ -186,6 +195,7 @@ func buildSessionServices(ctx context.Context, owner *Session, base SessionServi
 		Config: configuration.Runtime, Project: root, Client: client, ModelInfo: modelInfo, Events: owner,
 		Audit: auditSink, Skills: skills, MCP: mcpRuntime, WebFetcher: adapters.WebFetcher,
 		WebSearch: adapters.WebSearch, FileSystemPolicy: fileSystem,
+		AgentControl: base.AgentControl, SessionSource: configuration.Source,
 	})
 	if err != nil {
 		if auditCloser != nil {
@@ -223,12 +233,33 @@ func buildSessionServices(ctx context.Context, owner *Session, base SessionServi
 	base.compactor = &engine.Compactor{ProviderName: providerName, ModelInfo: modelInfo, ModelMessages: base.modelMessages}
 	base.fileSystem = fileSystem
 	base.visibility = toolRuntime.Visibility
+	base.source = configuration.Source.Clone()
 	base.skillWarnings = append([]error(nil), skillWarnings...)
 	base.auditCloser = auditCloser
-	base.budget = engine.DefaultTurnBudget()
+	base.budget = configuredTurnBudget(configuration)
 	base.closeState = &sessionServicesCloseState{}
 	cleanupMCP = false
 	return base, nil
+}
+
+func configuredTurnBudget(configuration Configuration) engine.TurnBudget {
+	if !configuration.Source.IsSubAgent() {
+		return engine.DefaultTurnBudget()
+	}
+	multiAgent := configuration.Runtime.Agent.MultiAgent
+	return engine.TurnBudget{
+		MaxSamples: multiAgent.ChildMaxSamples, MaxToolCalls: multiAgent.ChildMaxToolCalls,
+		MaxDuration: multiAgent.ChildMaxDuration, WarnRatio: 0.9,
+	}
+}
+
+type denySubagentApprovalPort struct{}
+
+func (denySubagentApprovalPort) Decide(context.Context, policy.ApprovalRequest) (policy.ApprovalDecision, error) {
+	return policy.ApprovalDecision{
+		Outcome: policy.ApprovalDeny, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourcePolicy,
+		Reason: "sub-agent tools cannot request interactive approval",
+	}, nil
 }
 
 func (services *SessionServices) Close() error {
