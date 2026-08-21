@@ -131,7 +131,7 @@ func responsesToolOutput(message llm.ResponseItem) (responses.ResponseFunctionCa
 			if err != nil {
 				return nil, err
 			}
-			parts = append(parts, responses.ResponseFunctionCallOutputItemUnionParam{OfInputImage: &responses.ResponseInputImageContentParam{ImageURL: openaisdk.String(url), Detail: "auto"}})
+			parts = append(parts, responses.ResponseFunctionCallOutputItemUnionParam{OfInputImage: &responses.ResponseInputImageContentParam{ImageURL: openaisdk.String(url), Detail: responses.ResponseInputImageContentDetail(responsesImageDetail(part.Detail))}})
 		default:
 			return nil, fmt.Errorf("unsupported content part kind %q", part.Kind)
 		}
@@ -148,11 +148,20 @@ func responsesContentPart(part llm.ContentPart) (responses.ResponseInputContentU
 		if err != nil {
 			return responses.ResponseInputContentUnionParam{}, err
 		}
-		value := responses.ResponseInputContentParamOfInputImage("auto")
+		value := responses.ResponseInputContentParamOfInputImage(responses.ResponseInputImageDetail(responsesImageDetail(part.Detail)))
 		value.OfInputImage.ImageURL = openaisdk.String(url)
 		return value, nil
 	default:
 		return responses.ResponseInputContentUnionParam{}, fmt.Errorf("unsupported content part kind %q", part.Kind)
+	}
+}
+
+func responsesImageDetail(detail string) string {
+	switch strings.TrimSpace(detail) {
+	case "high", "original":
+		return strings.TrimSpace(detail)
+	default:
+		return "auto"
 	}
 }
 

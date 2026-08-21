@@ -155,6 +155,7 @@ type ContentPart struct {
 	Text      string      `json:"text,omitempty"`
 	MediaType string      `json:"media_type,omitempty"`
 	Data      string      `json:"data,omitempty"`
+	Detail    string      `json:"detail,omitempty"`
 }
 
 // ToolResult is the model-facing result of one prepared tool execution. Data
@@ -259,6 +260,14 @@ func (result ToolResult) Clone() ToolResult {
 	result.Artifacts = append([]ArtifactRef(nil), result.Artifacts...)
 	if result.Metadata != nil {
 		result.Metadata = cloneMetadata(result.Metadata)
+	}
+	return result
+}
+
+func (result ToolResult) DisplaySafeClone() ToolResult {
+	result = result.Clone()
+	for index := range result.Parts {
+		result.Parts[index].Data = ""
 	}
 	return result
 }

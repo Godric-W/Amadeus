@@ -28,7 +28,7 @@ func TestToolsListShowsTargetExposureAndMigrationMetadata(t *testing.T) {
 	}
 	wantMetadata := map[string][]string{
 		"write":      {"direct", "-", "available", "write"},
-		"view_image": {"conditional", "provider.images", "available", "read"},
+		"view_image": {"conditional", "model.image_input", "available", "read"},
 		"mcp_call":   {"deferred", "mcp.catalog", "available", "network"},
 	}
 	for _, line := range lines[1:] {

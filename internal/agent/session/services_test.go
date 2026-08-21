@@ -43,6 +43,8 @@ func TestSessionServicesAreConstructedOnceAndReusedAcrossTasks(t *testing.T) {
 	configured.Model = "test-model"
 	configured.ModelProvider = "mock"
 	configured.ModelContextWindow = 8_192
+	configured.ModelInputModalities = []llm.InputModality{llm.InputModalityText, llm.InputModalityImage}
+	configured.ModelSupportsOriginalImageDetail = true
 	configured.ModelProviders = map[string]config.ModelProviderInfo{
 		"mock": {
 			WireAPI: config.WireAPIResponses, Dialect: config.DialectStandard,
@@ -76,8 +78,11 @@ func TestSessionServicesAreConstructedOnceAndReusedAcrossTasks(t *testing.T) {
 	session.services = services
 
 	modelInfo := session.services.ModelInfo()
-	if modelInfo.Provider != "mock" || modelInfo.Name != "test-model" || modelInfo.ContextWindow != 8_192 || modelInfo.AutoCompactTokenLimit != 7_372 || modelInfo.ToolOutputTokenLimit != 10_000 {
+	if modelInfo.Provider != "mock" || modelInfo.Name != "test-model" || modelInfo.ContextWindow != 8_192 || modelInfo.AutoCompactTokenLimit != 7_372 || modelInfo.ToolOutputTokenLimit != 10_000 || !modelInfo.SupportsInput(llm.InputModalityImage) || !modelInfo.SupportsOriginalImageDetail {
 		t.Fatalf("ModelInfo did not resolve SessionState configuration: %#v", modelInfo)
+	}
+	if _, ok := session.services.tools.LookupVisible("view_image", session.services.visibility); !ok {
+		t.Fatal("image-capable Session did not expose view_image")
 	}
 	requestContext := turn.TurnContext{
 		SubmissionID: "submission-1", ThreadID: "thread-1", TurnID: "turn-1", Provider: configured.ModelProvider,

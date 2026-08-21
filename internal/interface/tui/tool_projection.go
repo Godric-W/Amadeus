@@ -89,6 +89,8 @@ func toolUserFacingName(toolName string) string {
 		return "Web search"
 	case "web_fetch":
 		return "Web fetch"
+	case "view_image":
+		return "View image"
 	case "mcp_list_tools":
 		return "List MCP tools"
 	case "mcp_call":

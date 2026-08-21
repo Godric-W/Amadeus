@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -55,6 +57,53 @@ func TestToolEventObserverPersistsPresentationOnCompletedItem(t *testing.T) {
 	}
 	if payload["action_summary"] != "Search Approval in internal" || payload["side_effect"] != "read" || payload["duration"] != "15ms" {
 		t.Fatalf("completed presentation payload = %#v", payload)
+	}
+}
+
+func TestToolEventObserverPersistsImagePayloadExactlyOnce(t *testing.T) {
+	sink := protocol.NewMemorySink()
+	var appended []rollout.RolloutItem
+	observer := NewToolEventObserver(func(_ context.Context, _ protocol.TurnID, items ...rollout.RolloutItem) error {
+		appended = append(appended, items...)
+		return nil
+	}, protocol.TurnID("turn-1"), sink)
+	call := tool.NewCall("image-call", "view_image", []byte(`{"path":"image.png"}`))
+	if err := observer.ToolCallStarted(context.Background(), tool.ToolSpec{Name: "view_image", SideEffect: tool.SideEffectRead}, call); err != nil {
+		t.Fatal(err)
+	}
+	if err := observer.ToolCallCompleted(context.Background(), tool.ToolExecution{
+		Call: call,
+		Output: tool.ToolResult{
+			ToolName: "view_image", Text: "Viewed image.png.",
+			Parts:    []tool.ContentPart{{Kind: tool.ContentImage, MediaType: "image/png", Data: "dW5pcXVlLWltYWdlLXBheWxvYWQ=", Detail: "high"}},
+			Metadata: map[string]any{"path": "image.png", "prepared_width": 32, "prepared_height": 32},
+		},
+		Outcome: tool.ToolCallOutcome{Status: tool.ToolCallCompleted},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(appended) != 2 {
+		t.Fatalf("appended items = %d, want 2", len(appended))
+	}
+	response := appended[0].(rollout.ResponseItem)
+	if len(response.Parts) != 1 || response.Parts[0].Data == "" || response.Result == nil || response.Result.Parts[0].Data != "" {
+		t.Fatalf("canonical response did not isolate image payload: %#v", response)
+	}
+	completed := appended[1].(rollout.EventMsgItem).Msg.(protocol.ItemCompletedEvent)
+	if completed.Item.ToolResult == nil || completed.Item.ToolResult.Parts[0].Data != "" {
+		t.Fatalf("completed rollout retained image payload: %#v", completed.Item.ToolResult)
+	}
+	encoded, err := json.Marshal(appended)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := bytes.Count(encoded, []byte("dW5pcXVlLWltYWdlLXBheWxvYWQ=")); count != 1 {
+		t.Fatalf("image payload persisted %d times: %s", count, encoded)
+	}
+	events := sink.Snapshot()
+	liveCompleted := events[len(events)-1].Msg.(protocol.ItemCompletedEvent)
+	if liveCompleted.Item.ToolResult == nil || liveCompleted.Item.ToolResult.Parts[0].Data != "" {
+		t.Fatalf("live completion retained image payload: %#v", liveCompleted.Item.ToolResult)
 	}
 }
 

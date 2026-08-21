@@ -59,6 +59,8 @@ func PresentCall(spec ToolSpec, call ToolCall) CallPresentation {
 		return CallPresentation{ActionSummary: "Searched web", Detail: value("query")}
 	case "web_fetch":
 		return CallPresentation{ActionSummary: joinAction("Fetched", safeURLHost(value("url")))}
+	case "view_image":
+		return CallPresentation{ActionSummary: joinAction("View image", path), Detail: path}
 	case "mcp_list_tools":
 		return CallPresentation{ActionSummary: joinAction("Listed MCP tools", value("server"))}
 	case "mcp_call":

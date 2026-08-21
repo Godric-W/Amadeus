@@ -10,11 +10,13 @@ import (
 
 func TestConfigCanBeConstructed(t *testing.T) {
 	configured := Config{
-		Version:              CurrentVersion,
-		Model:                "test-model",
-		ModelProvider:        "compatible",
-		ModelContextWindow:   128_000,
-		ToolOutputTokenLimit: DefaultToolOutputTokenLimit,
+		Version:                          CurrentVersion,
+		Model:                            "test-model",
+		ModelProvider:                    "compatible",
+		ModelContextWindow:               128_000,
+		ModelInputModalities:             []llm.InputModality{llm.InputModalityText, llm.InputModalityImage},
+		ModelSupportsOriginalImageDetail: true,
+		ToolOutputTokenLimit:             DefaultToolOutputTokenLimit,
 		ModelProviders: map[string]ModelProviderInfo{
 			"compatible": {
 				WireAPI:           WireAPIChatCompletions,
@@ -51,6 +53,9 @@ func TestDefaultContainsFieldDefaultsWithoutBuiltInProvider(t *testing.T) {
 	if configured.ToolOutputTokenLimit != 10_000 {
 		t.Fatalf("unexpected tool output token limit: %d", configured.ToolOutputTokenLimit)
 	}
+	if !reflect.DeepEqual(configured.ModelInputModalities, []llm.InputModality{llm.InputModalityText}) || configured.ModelSupportsOriginalImageDetail {
+		t.Fatalf("unexpected default model capabilities: %#v", configured)
+	}
 	if configured.ModelReasoningEffort != nil {
 		t.Fatalf("default config must not synthesize reasoning effort: %q", *configured.ModelReasoningEffort)
 	}
@@ -67,6 +72,15 @@ func TestConfigCloneCopiesReasoningEffort(t *testing.T) {
 	*cloned.ModelReasoningEffort = llm.ReasoningEffortLow
 	if *configured.ModelReasoningEffort != llm.ReasoningEffortHigh {
 		t.Fatalf("clone changed original effort: %q", *configured.ModelReasoningEffort)
+	}
+}
+
+func TestConfigCloneCopiesInputModalities(t *testing.T) {
+	configured := Default()
+	cloned := clone(configured)
+	cloned.ModelInputModalities[0] = llm.InputModalityImage
+	if configured.ModelInputModalities[0] != llm.InputModalityText {
+		t.Fatalf("clone changed original modalities: %#v", configured.ModelInputModalities)
 	}
 }
 

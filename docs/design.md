@@ -1822,11 +1822,12 @@ model_providers:
 
 所有权固定如下：
 
-- `model`、`model_context_window`、`model_reasoning_effort`、`model_auto_compact_token_limit` 和 `tool_output_token_limit` 属于当前 Model/Runtime 配置，不进入 `ModelProviderInfo`。
+- `model`、`model_context_window`、`model_reasoning_effort`、`model_input_modalities`、`model_supports_original_image_detail`、`model_auto_compact_token_limit` 和 `tool_output_token_limit` 属于当前 Model/Runtime 配置，不进入 `ModelProviderInfo`。
 - `model_provider` 选择 `model_providers` 中的用户定义 Provider；Provider 只保存 transport、auth、wire API、Dialect、timeout、retry 和 capability。
 - `model_context_window` 在 Amadeus 尚无可信 Model Catalog 时必须显式为正数；不得为任意未知模型伪造统一的 128K Context Window 默认值。
 - `model_auto_compact_token_limit` 可省略，省略时取 Context Window 的 90%；显式值必须大于 0 且不超过该派生上限。
 - `tool_output_token_limit` 是顶层可配置项，默认 `10000`，覆盖 ModelInfo 的 Tool Output truncation policy；不得放回单个 Provider。
+- `model_input_modalities` 默认仅为 `[text]`，只接受 `text`/`image` 且必须包含 `text`；`model_supports_original_image_detail` 默认 `false`，为 `true` 时必须同时声明 `image`。两者由 Session 冻结进 ModelInfo，不能从 Provider/Dialect 推断。
 - Codex 的 `model_auto_compact_token_limit_scope` 依赖 carried-prefix/body-after-prefix 计数模型。Amadeus 在实现对应 Context Window 生命周期前不暴露未接线的 scope 配置，当前固定采用 total active context 语义。
 - `temperature` 和 `max_output_tokens` 从稳定配置、ProviderConfig、ModelInfo、SampleRequest 与普通 LLM Request 中删除；普通 sampling 和 Compaction 使用模型厂商默认参数。
 
@@ -2104,7 +2105,7 @@ Amadeus 不按单一项目整套复制 Tool，而是按 Tool 的真实职责选�
 | `edit` | Claude Code `FileEditTool` | old/new string 校验、唯一匹配、`replace_all`、Read-before-write、Prepare Diff、Approval 后 stale check、原子写入、structured patch/result | React 展示组件、VS Code 集成、产品遥测 |
 | `write` | Claude Code `FileWriteTool` | create/update 区分、已有文件完整 Read、覆盖 Diff、Approval 后重新校验、typed create/update result | 文件历史服务、IDE 刷新、持久化权限来源 |
 | `glob/grep` | Claude Code `GlobTool` / `GrepTool` | read-only、concurrency safe、稳定排序、数量/字节/Token 上限、`truncated` 与截断原因 | Claude Code 特有搜索服务和 UI 组件 |
-| `view_image` | Claude Code 只读 Tool 约束 | MIME/尺寸/路径校验、工作目录内默认 Allow、typed media result | IDE 图片预览与外部产品通知 |
+| `view_image` | Codex `view_image`/image preparation + Claude Code 只读权限边界 | model-aware visibility、canonical path、目录 Approval、bounded decode/resize、typed image part、单份持久化 | Remote/Multi Environment、Analytics、图片生成、终端图像协议 |
 | `execute_command` | Claude Code Permission UX + Codex Process Lifecycle | 默认 Ask、exact command grant、进程 ID、输出/退出码/截断、取消和 lifecycle event | Codex OS Sandbox、Guardian、Remote Environment、网络审批 |
 | `write_stdin` | Codex unified exec `write_stdin` | 续接已有进程、不重复 Approval/PreToolUse、绑定 OriginCallID、同进程串行、不同进程可并行、typed process result | Codex Remote Shell 与 sandbox orchestration |
 | `update_plan` | Codex `plan` tool/spec | `UpdatePlanArgs`/`PlanItemArg`/`StepStatus` 术语、至多一个 `in_progress`、发布 transient `PlanUpdateEvent`、持久化普通 Tool Call/Result、Tool 返回 `Plan updated` | Session 持久状态、revision 与 Resume checklist restore |
@@ -2123,6 +2124,49 @@ Execution Result
 ```
 
 `ToolDisplayResult` 不能反向成为执行事实，模型侧文本也不能作为 TUI 重新解析结构化结果的来源。只读 Tool 必须显式返回截断状态；文件 Tool 必须返回 `FileChangeResult`；进程 Tool 必须返回 `ProcessResult`；Runtime Tool 必须通过 Session capability 修改状态并发布对应 Event。
+
+#### `view_image` 模型、图片准备与持久化 Contract
+
+`view_image` 保留为独立只读 Tool，不重新并入 `read` 的文本结果，也不增加 Codex 的 Remote/Multi Environment 参数。基础 Schema 使用 `{path, detail?}`：`path` 必填；`detail` 默认 `high`，只有当前 ModelInfo 明确支持 original image detail 时才向模型暴露 `original` 枚举。Amadeus 当前只有单一 Project/Working Directories 文件环境，因此不增加 `environment_id`。
+
+Tool 可见性必须由当前模型的冻结 `ModelInfo.InputModalities` 决定，不能继续从 OpenAI-compatible Dialect 或 Provider 类别推断所有模型都支持图片：
+
+- 当前模型不支持 image input 时，不向该 Turn 的 Tool Snapshot 暴露 `view_image`。
+- Execute 与 Provider Adapter 仍执行防御性 modality check，避免配置、Resume 或模型切换造成不可诊断的上游失败。
+- `SupportsImages` 只能表达 transport/adapter 能否编码图片内容；具体模型是否支持图片由 ModelInfo 决定，二者不得合并为同一布尔事实源。
+
+路径与 Permission 继续采用 Amadeus 现有约束：工作目录内默认 Allow，工作目录外使用 canonical read-directory Ask/Session Grant，Denied/ReadOnly/符号链接等客观文件系统规则不能被 Grant 绕过。Approval 后 Execute 必须在真实打开文件前重新执行路径和文件类型检查；不允许只信任 Prepare 阶段保存的字符串路径。
+
+图片读取与模型输入准备拆成两个职责：
+
+```text
+view_image Tool
+→ canonical path / Permission / bounded file read
+→ internal image preparation service
+→ PreparedImage
+→ ToolResult image part + metadata
+→ Provider Adapter
+```
+
+`view_image` 文件只负责 Tool Schema、Validate/Prepare/Permission/Execute orchestration；解码、格式判断、尺寸预算、缩放、重编码和可选缓存进入独立 image preparation package，不继续堆入 Tool 文件。`PreparedImage` 至少包含 source/prepared MIME、source/prepared width/height、source/prepared bytes、effective detail 和 Base64 payload。
+
+输入安全限制与模型预算分开处理：
+
+- source file 默认仍限制为 20 MiB、单边 16384、6400 万像素；这些是拒绝异常输入的安全上限，不是最终发送尺寸。
+- `high` 是默认准备模式，保持纵横比并限制单边不超过 2048，同时使用至多 2500 个 32×32 patch 的等价像素预算。
+- `original` 只在模型明确支持时可用，并仍受单边 6000、至多 10000 个 32×32 patch 的等价预算约束；“original”不表示无界原始字节直传。
+- PNG、JPEG、WebP 与静态 GIF 为允许格式；格式由内容检测而不是扩展名决定。静态 GIF 规范化为 PNG，动态 GIF 保持明确拒绝，不静默只取第一帧。
+- 需要缩放或格式规范化时重新编码；能够安全保留的 ICC/EXIF 元数据可以保留，但不得为了元数据兼容牺牲 bounded output。基础版不增加视频、SVG、PDF、远程图片 URL 或 Browser rendering。
+
+ToolResult 必须只包含一个 prepared image Part；Text 只提供简短、可诊断的路径与准备结果，不嵌入 Base64。Typed Data/Metadata 至少包含 source path、effective detail、source/prepared dimensions、prepared media type 和字节数。Responses Adapter 将 image Part 编码为 FunctionCallOutput input image；Chat Completions 的 synthetic user image 仍属于 Adapter 兼容细节，不得改变 canonical ToolResult 或伪造成用户主动上传图片。
+
+图片上下文不能视为零成本：Context Manager 使用 prepared dimensions/detail 估算图片预算，Compaction 与模型切换必须能够将不再受支持或超出预算的图片替换为稳定 omission marker。基础版不要求复刻 Codex Analytics，但不得只对文本 Tool output 应用 Token limit 而让图片完全绕过上下文预算。
+
+Canonical Rollout 中图片 Base64 只保存一次：模型续接使用的 `ResponseToolResult.Parts` 保存 prepared image；`ItemCompletedEvent.ToolResult` 与 TUI projection 只能保留 display-safe metadata，不得再次序列化 `ContentPart.Data`。Resume 从 canonical ResponseToolResult 恢复模型上下文，从完成事件恢复界面摘要，二者不得互相解析。
+
+TUI 继续复用统一 Tool lifecycle，不新增 Codex `ImageView` 第二 Event 或独立 Context owner。Rich TUI 增加轻量 `ViewImageCell`，显示 `Viewing/Viewed image`、路径、source→prepared dimensions、MIME 与失败状态；Inline 与 replay 使用同一 display metadata。图片像素预览、Kitty/iTerm 图像协议、IDE Preview 和系统通知不进入基础范围。
+
+图片处理缓存属于后续性能优化。若真实 profiling 证明重复解码成为瓶颈，可以按内容 digest + preparation mode 增加有界内存缓存；Q 基础实施不得先引入跨 Session 持久化缓存、文件监听或图片资产数据库。
 
 ### 14.6 遗留 `apply_patch` 与 sandbox 隔离
 

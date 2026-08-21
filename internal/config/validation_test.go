@@ -63,6 +63,30 @@ func TestValidateReportsStableModelAndProviderPaths(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidModelImageCapabilities(t *testing.T) {
+	tests := []struct {
+		name       string
+		modalities []llm.InputModality
+		original   bool
+		path       string
+	}{
+		{name: "missing text", modalities: []llm.InputModality{llm.InputModalityImage}, path: "model_input_modalities"},
+		{name: "duplicate", modalities: []llm.InputModality{llm.InputModalityText, llm.InputModalityText}, path: "model_input_modalities[1]"},
+		{name: "unknown", modalities: []llm.InputModality{llm.InputModalityText, "audio"}, path: "model_input_modalities[1]"},
+		{name: "original without image", modalities: []llm.InputModality{llm.InputModalityText}, original: true, path: "model_supports_original_image_detail"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			configured := validConfig()
+			configured.ModelInputModalities = test.modalities
+			configured.ModelSupportsOriginalImageDetail = test.original
+			if err := Validate(configured); err == nil || !strings.Contains(err.Error(), test.path) {
+				t.Fatalf("expected %s validation error: %v", test.path, err)
+			}
+		})
+	}
+}
+
 func TestValidateAutoCompactLimitUsesNinetyPercentCeiling(t *testing.T) {
 	configured := validConfig()
 	configured.ModelContextWindow = 100_000

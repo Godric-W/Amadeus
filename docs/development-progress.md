@@ -2,8 +2,8 @@
 
 > 最近更新：2026-08-21
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：Q. Web Fetch Safety + Readable Content Contract（DONE）
-> 下一任务：待规划
+> 当前阶段：Q. Web + View Image Tool Contract Closure（DONE）
+> 下一任务：等待后续阶段安排
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
@@ -41,7 +41,7 @@ A Runtime + Persistence
 → N update_plan Codex Lifecycle Alignment
 → O Same-Turn User Input + Turn Steer Lifecycle Alignment
 → P Model Reasoning Effort + Provider Thinking Contract
-→ Q Web Fetch Safety + Readable Content Contract
+→ Q Web + View Image Tool Contract Closure
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先更新 `docs/design.md`。
@@ -1141,7 +1141,7 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 - `config show/explain`、`AMADEUS_MODEL_REASONING_EFFORT`、`--model-reasoning-effort`、example config、README 与 `/status` 已接通；unset 明确显示为 Provider default。
 - config/domain/Turn/Rollout/Compaction/Dialect/Adapter provider-mock 与 Architecture Guard 覆盖完成；`make check`、`go test -race ./... -count=1` 和 `git diff --check` 通过。
 
-## 19. Q. Web Fetch Safety + Readable Content Contract — `DONE`
+## 19. Q. Web + View Image Tool Contract Closure — `DONE`
 
 ### 目标
 
@@ -1149,6 +1149,8 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 - 修复 URL 校验、Hostname Approval、跨域重定向和 DNS rebinding 边界，使获准 Hostname 不会隐式扩大到其他网络目标。
 - 将正则剥标签输出替换为 bounded readable Markdown，并建立稳定 Content-Type、Partial、metadata 和 typed failure contract。
 - 保持基础版范围：不增加自动 Top-N fetch、Browser rendering、Tavily Extract adapter、二进制持久化、secondary-model summarization 或持久化 Web Cache。
+- 将 `view_image` 从 Provider/Dialect 粗粒度图片开关收敛为 model-aware Tool，并建立独立 image preparation、上下文预算、单份 Rollout 持久化和专用 TUI projection。
+- 保留现有 canonical read-directory Approval、source size/dimension 安全上限和动态 GIF 拒绝；不复制 Codex Remote/Multi Environment、Analytics、图片生成或终端像素预览。
 
 ### Q-01：URL、配置与 Permission Contract — `DONE`
 
@@ -1180,19 +1182,70 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 - 增加 HTML/Markdown/text/JSON extraction fixtures、标题去重、链接/代码块保留、Partial 和 untrusted-content 测试。
 - 更新 `docs/design.md`、example config、用户可见说明和 architecture guards；运行 targeted tests、`make check`、`go test -race ./... -count=1` 与 `git diff --check` 后才可标记 Q 为 DONE。
 
-### Q 出口
+### Web 子阶段出口（Q-01～Q-05 已完成）
 
 - `web_search` 与 `web_fetch` 证据层级清晰：前者提供 search-summary evidence，后者只在必要时提供 full-page evidence。
 - 任意实际网络目标都经过准确 URL 校验、Hostname Approval、redirect policy、SSRF 校验和 pinned Dial，不存在跨域授权扩大或二次 DNS 解析窗口。
 - 模型获得有界、结构化、可诊断且明确不可信的页面内容；基础主链不依赖 Browser、Tavily Extract、额外模型调用或自动抓取流水线。
 
-### 完成记录
+### Web 子阶段完成记录
 
 - 2026-08-21 完成 Approval 前 URL/Hostname/userinfo 校验、精确 Hostname Session Grant、`max_redirects: 0` 配置语义与跨 Hostname typed redirect boundary。
 - Fetcher 使用已验证 public IP 的 pinned Dial，保留原 Host/TLS SNI，并覆盖同域重定向重新解析、DNS rebinding、IPv4/IPv6、restricted/mixed DNS answer、HTTP/HTTPS proxy、timeout、cancel 和 HTTP status 分类。
 - 删除正则剥标签与 legacy `Document.Text`/`Options.HTTPClient` bypass，按 URL、transport、proxy、content、Markdown 和 typed error 职责拆分 `internal/webfetch`；HTML、Markdown、text 与 JSON 统一投影为有界 readable Markdown。
 - `web_search` 明确输出 search-summary evidence，`web_fetch` 明确输出 untrusted full-page evidence；Rich TUI 分离 Search/Fetch projection，MCP network Tool 回归 generic projection，README 与 example config 已补齐 DuckDuckGo、Approval、重定向和开关说明。
 - targeted Web/Tool/Config/TUI/Architecture/CLI tests、`make check`、`go test -race ./... -count=1` 与 `git diff --check` 全部通过。
+
+### View Image 延伸目标
+
+- 保留独立 `view_image` 与统一 ToolExecutionService，不重新并入文本 `read`，不新增第二套 Image Event/Context owner。
+- 默认向模型发送有界 prepared image，而不是将最大 20 MiB 原始文件直接 Base64；图片成本进入 Context/Compaction 预算。
+- Canonical ResponseToolResult 只保存一份图片 payload，完成事件和 TUI 只保存 display-safe metadata。
+
+### Q-06：Model Capability + Tool Schema Contract — `DONE`
+
+- 以冻结 `ModelInfo.InputModalities` 作为 `view_image` 可见性事实源，拆分 transport SupportsImages 与具体模型 image-input capability，并在 Execute/Adapter 保留防御性检查。
+- 将 Schema 收敛为 `{path, detail?}`；默认 `high`，仅在模型明确支持 original image detail 时暴露 `original`，当前不增加 `environment_id`。
+- 保持工作目录内 Allow、外部 canonical read-directory Ask/Session Grant，并在真实打开前重新验证路径、文件类型和客观文件系统规则。
+
+### Q-07：Image Preparation Boundary — `DONE`
+
+- 新建职责独立的 image preparation package，Tool 文件只负责 Validate/Prepare/Permission/Execute orchestration；删除原始字节直接 Base64 的生产主链。
+- 保留 20 MiB、16384 单边和 6400 万像素 source safety limit；`high` 使用 2048/2500 patch 等价预算，`original` 使用 6000/10000 patch 等价预算并保持纵横比。
+- 支持内容检测的 PNG/JPEG/WebP/静态 GIF；静态 GIF 规范化为 PNG，动态 GIF 继续拒绝，缩放/规范化后返回 typed PreparedImage metadata。
+
+### Q-08：Provider + Context Image Budget Contract — `DONE`
+
+- ToolResult 只返回一个 prepared image Part 和简短文本，metadata 包含 source/prepared dimensions、MIME、bytes 与 effective detail；Base64 不进入 Text/Data 摘要。
+- Responses 使用 FunctionCallOutput image content；Chat 的 synthetic user image 仅作为 Adapter 兼容投影，并保持原 Tool Call 关联和 canonical result 不变。
+- Context Manager、模型切换与 Compaction 对图片执行 modality/budget projection，超限或不支持时使用稳定 omission marker，不再把图片视为零成本。
+
+### Q-09：Single-Payload Rollout + ViewImageCell — `DONE`
+
+- Canonical `ResponseToolResult.Parts` 保存唯一 prepared image payload；`ItemCompletedEvent.ToolResult`、Event projection 和 TUI snapshot 必须移除 `ContentPart.Data`，只保留展示 metadata。
+- Rich TUI 增加基于现有 Tool lifecycle 的 `ViewImageCell`，显示 Viewing/Viewed、路径、source→prepared dimensions、MIME、失败与 Approval 状态；Inline/Resume 使用同一 metadata。
+- 不新增 Codex `ImageView` 专用 Event、Remote Environment、图片像素渲染、IDE Preview、Analytics 或跨 Session 图片缓存。
+
+### Q-10：Tests、Guards + Acceptance — `DONE`
+
+- 覆盖 text-only/image-capable model visibility、Execute defense、external read Approval、PNG/JPEG/WebP/static/animated GIF、伪装格式、大小/尺寸/像素限制与 cancellation。
+- 增加 high/original resize、prepared request、Responses/Chat projection、image budget/omission、Compaction、单份 Rollout payload、Resume 与 ViewImageCell snapshot 测试。
+- 增加 architecture guards，禁止 Dialect blanket image capability 成为模型事实源、原始字节直传、完成事件重复 Base64 和图片处理重新堆回 Tool 文件；运行 targeted tests、`make check`、`go test -race ./... -count=1` 与 `git diff --check` 后才可标记 Q 为 DONE。
+
+### Q 总出口
+
+- Web Search/Fetch 子阶段成果保持不回退；`view_image` 的可见性、图片准备、Provider projection、Context budget、Rollout 和 TUI 形成单一可验证主链。
+- 任意图片只在 canonical model result 中保存一份有界 prepared payload；展示事件不携带 Base64，Resume 与 Compaction 不依赖重新读取可能变化的源文件。
+- Amadeus 保留基础 Agent 范围，不依赖 Remote Environment、图片生成、终端图像协议、Analytics 或持久化图片资产服务。
+
+### 完成记录
+
+- 2026-08-21 完成顶层 `model_input_modalities` / `model_supports_original_image_detail` 配置、CLI/Environment/provenance/validation/example/README 主链；Session 将能力冻结进 ModelInfo，`view_image` 使用 `model.image_input` 条件可见性，不再从 Dialect `SupportsImages` 推断具体模型能力。
+- `view_image` Schema 已收敛为 `{path, detail?}`，默认 `high`；仅 original-capable ModelInfo 暴露 `original`。工作目录外继续使用 canonical read-directory Approval/Session Grant，Execute 在打开前重新解析并验证真实文件目标。
+- 新增独立 `internal/imageprep`，实现 20 MiB/16384/6400 万 source safety limit、high 2048/2500 patch、original 6000/10000 patch、内容格式检测、PNG/JPEG/WebP、静态 GIF→PNG、动态 GIF拒绝与有界缩放/重编码。
+- ToolResult、Responses FunctionCallOutput、Chat synthetic user projection、Context image budget、模型切换和 Compaction 已贯通 effective detail 与 prepared metadata；不支持或超预算图片使用稳定 omission marker。
+- Canonical `ResponseToolResult.Parts` 保存唯一 Base64 payload，Response Result 与 completed Event/TUI 使用 display-safe ToolResult；Rich TUI 增加 `ViewImageCell`，Resume 从 canonical payload 恢复模型上下文且不重新读取源文件。
+- PNG/JPEG/WebP/static/animated GIF、伪装格式、大小/尺寸/像素、cancellation、external Approval、动态 Schema、Provider defense、image budget、Compaction、single-payload Rollout、Resume、TUI 与 architecture guard 覆盖完成；`make check`、`go test ./... -count=1`、`go test -race ./... -count=1` 和 `git diff --check` 通过。
 
 ## 20. 当前保留能力
 
@@ -1202,7 +1255,7 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 - TUI 和 Inline 输出以当前代码和 `docs/design.md` 为准。
 - 内置 Tool、Approval、Diff、Web Search 和 Slash Command 已进入基础主链；N 收敛 `update_plan`、引入 `request_user_input`，并将现有 `/plan` 重构为 Codex 风格 Collaboration Mode 与 Proposed Plan lifecycle；O 已补齐同 Turn 用户输入与 steer lifecycle。
 - P 已完成 Model Reasoning Effort 与 Provider Thinking Contract；当前生产主链可从配置冻结到 Turn，并贯通普通 sampling、Compaction 与 Provider wire request。
-- Q 已完成 `web_fetch` 的 pinned network、重定向 Approval、readable Markdown、typed result 与证据层级收敛；`web_search` 保持 Provider 摘要能力，二者使用独立开关和权限边界。
+- Q 已完成 Web Search/Fetch 与 `view_image` Contract Closure：Web 保持 pinned network、重定向 Approval、readable Markdown 与证据层级；图片主链完成 model-aware visibility、bounded preparation、Provider/Context projection、单份持久化和 `ViewImageCell`。
 
 ## 21. 当前执行规则
 

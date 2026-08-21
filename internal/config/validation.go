@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
 const (
@@ -63,6 +65,24 @@ func Validate(configured Config) error {
 	}
 	if configured.ModelReasoningEffort != nil && !configured.ModelReasoningEffort.Valid() {
 		addIssue("model_reasoning_effort", "must be one of none, minimal, low, medium, high, xhigh, or max")
+	}
+	seenModalities := make(map[llm.InputModality]struct{}, len(configured.ModelInputModalities))
+	for index, modality := range configured.ModelInputModalities {
+		if modality != llm.InputModalityText && modality != llm.InputModalityImage {
+			addIssue(fmt.Sprintf("model_input_modalities[%d]", index), "must be text or image")
+		}
+		if _, exists := seenModalities[modality]; exists {
+			addIssue(fmt.Sprintf("model_input_modalities[%d]", index), "must not contain duplicates")
+		}
+		seenModalities[modality] = struct{}{}
+	}
+	if _, exists := seenModalities[llm.InputModalityText]; !exists {
+		addIssue("model_input_modalities", "must include text")
+	}
+	if configured.ModelSupportsOriginalImageDetail {
+		if _, exists := seenModalities[llm.InputModalityImage]; !exists {
+			addIssue("model_supports_original_image_detail", "requires image in model_input_modalities")
+		}
 	}
 	derivedCompactLimit := configured.ModelContextWindow * 9 / 10
 	if configured.ModelAutoCompactTokenLimit < 0 || configured.ModelAutoCompactTokenLimit > derivedCompactLimit {

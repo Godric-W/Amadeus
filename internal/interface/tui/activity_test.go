@@ -6,12 +6,39 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/tool"
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
 func noColorRenderContext() HistoryRenderContext {
 	now := time.Unix(100, 0)
 	return HistoryRenderContext{Width: 80, Palette: terminalPalette{Level: colorLevelNone, NoColor: true, Dark: true}, Now: now, MotionStart: now, Motion: motionReduced}
+}
+
+func TestViewImageCellUsesDisplaySafeMetadata(t *testing.T) {
+	cell := newToolHistoryCell()
+	started := toolStartedMessage("image", "view_image", "read", "View image assets/logo.png", "assets/logo.png")
+	cell.Apply(started)
+	active := xansi.Strip(renderHistoryCellForTest(cell, noColorRenderContext()))
+	if !strings.Contains(active, "Viewing image") || !strings.Contains(active, "assets/logo.png") {
+		t.Fatalf("active image projection: %q", active)
+	}
+	completed := toolCompletedMessage(started, protocol.ItemStatusCompleted, "Viewed assets/logo.png.", "0s", false)
+	completed.Item.ToolResult = &tool.ToolResult{
+		ToolName: "view_image", Text: completed.Item.Text,
+		Parts: []tool.ContentPart{{Kind: tool.ContentImage, MediaType: "image/png", Detail: "high"}},
+		Metadata: map[string]any{
+			"path": "assets/logo.png", "source_width": 3000, "source_height": 1000,
+			"prepared_width": 2016, "prepared_height": 672, "prepared_media_type": "image/png", "detail": "high",
+		},
+	}
+	cell.Apply(completed)
+	rendered := xansi.Strip(renderHistoryCellForTest(cell, noColorRenderContext()))
+	for _, expected := range []string{"Viewed image", "assets/logo.png", "3000x1000 → 2016x672", "image/png", "detail=high"} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("image projection omitted %q: %q", expected, rendered)
+		}
+	}
 }
 
 func renderHistoryCellForTest(cell HistoryCell, ctx HistoryRenderContext) string {

@@ -157,7 +157,13 @@ func buildSessionServices(ctx context.Context, owner *Session, base SessionServi
 	modelInfo.ContextWindow = configuration.Runtime.ModelContextWindow
 	modelInfo.AutoCompactTokenLimit = configuration.Runtime.ModelAutoCompactTokenLimit
 	modelInfo.ToolOutputTokenLimit = configuration.Runtime.ToolOutputTokenLimit
+	modelInfo.InputModalities = append([]llm.InputModality(nil), configuration.Runtime.ModelInputModalities...)
+	modelInfo.SupportsOriginalImageDetail = configuration.Runtime.ModelSupportsOriginalImageDetail
 	modelInfo = modelInfo.Normalized()
+	client, err = llm.WithModelInfo(client, modelInfo)
+	if err != nil {
+		return SessionServices{}, fmt.Errorf("configure provider model client: %w", err)
+	}
 	approvalPort, err := newSessionApprovalPort(owner)
 	if err != nil {
 		return SessionServices{}, err
@@ -177,7 +183,7 @@ func buildSessionServices(ctx context.Context, owner *Session, base SessionServi
 		return SessionServices{}, errors.New("session audit factory returned nil sink")
 	}
 	toolRuntime, err := engine.BuildToolRuntime(engine.ToolRuntimeOptions{
-		Config: configuration.Runtime, Project: root, Client: client, Events: owner,
+		Config: configuration.Runtime, Project: root, Client: client, ModelInfo: modelInfo, Events: owner,
 		Audit: auditSink, Skills: skills, MCP: mcpRuntime, WebFetcher: adapters.WebFetcher,
 		WebSearch: adapters.WebSearch, FileSystemPolicy: fileSystem,
 	})

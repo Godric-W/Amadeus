@@ -138,12 +138,21 @@ func chatContentParts(message llm.ResponseItem) ([]openaisdk.ChatCompletionConte
 			if err != nil {
 				return nil, err
 			}
-			parts = append(parts, openaisdk.ImageContentPart(openaisdk.ChatCompletionContentPartImageImageURLParam{URL: url, Detail: "auto"}))
+			parts = append(parts, openaisdk.ImageContentPart(openaisdk.ChatCompletionContentPartImageImageURLParam{URL: url, Detail: chatImageDetail(part.Detail)}))
 		default:
 			return nil, fmt.Errorf("unsupported content part kind %q", part.Kind)
 		}
 	}
 	return parts, nil
+}
+
+func chatImageDetail(detail string) string {
+	switch strings.TrimSpace(detail) {
+	case "high", "original":
+		return "high"
+	default:
+		return "auto"
+	}
 }
 
 func chatCompletionTools(definitions []llm.ToolSpec, supportsStrict bool) ([]openaisdk.ChatCompletionToolUnionParam, error) {

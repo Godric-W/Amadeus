@@ -164,7 +164,7 @@ func TestResponsesRequestSerializesUserAndToolImagesAsContentParts(t *testing.T)
 		Model: "test-model",
 		Prompt: llm.Prompt{Input: []llm.ResponseItem{
 			{Role: llm.RoleUser, Content: "inspect", Parts: []llm.ContentPart{llm.ImagePart("image/png", "YQ==")}},
-			llm.ToolResultMessageWithParts("call_image", "tool image", llm.ImagePart("image/jpeg", "Yg==")),
+			llm.ToolResultMessageWithParts("call_image", "tool image", llm.ImagePartWithDetail("image/jpeg", "Yg==", "original")),
 		}},
 	}
 	params, err := newResponsesRequest(request)
@@ -182,6 +182,9 @@ func TestResponsesRequestSerializesUserAndToolImagesAsContentParts(t *testing.T)
 	output := input[1].(map[string]any)["output"].([]any)
 	if len(output) != 2 || output[0].(map[string]any)["type"] != "input_text" || output[1].(map[string]any)["type"] != "input_image" || output[1].(map[string]any)["image_url"] != "data:image/jpeg;base64,Yg==" {
 		t.Fatalf("unexpected Responses tool image output: %#v", output)
+	}
+	if output[1].(map[string]any)["detail"] != "original" {
+		t.Fatalf("unexpected Responses tool image detail: %#v", output[1])
 	}
 }
 

@@ -29,7 +29,7 @@ func TargetCatalog() []CatalogEntry {
 		{Name: "update_plan", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectNone},
 		{Name: "request_user_input", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectNone},
 		{Name: "write_stdin", Exposure: tool.ExposureDirect, Status: CatalogAvailable, SideEffect: tool.SideEffectExecute},
-		{Name: "view_image", Exposure: tool.ExposureConditional, Condition: "provider.images", Status: CatalogAvailable, SideEffect: tool.SideEffectRead},
+		{Name: "view_image", Exposure: tool.ExposureConditional, Condition: "model.image_input", Status: CatalogAvailable, SideEffect: tool.SideEffectRead},
 		{Name: "read_skill", Exposure: tool.ExposureConditional, Condition: "skills.available", Status: CatalogAvailable, SideEffect: tool.SideEffectRead},
 		{Name: "web_search", Exposure: tool.ExposureConditional, Condition: "web.search.configured", Status: CatalogAvailable, SideEffect: tool.SideEffectNetwork},
 		{Name: "web_fetch", Exposure: tool.ExposureConditional, Condition: "web.fetch.configured", Status: CatalogAvailable, SideEffect: tool.SideEffectNetwork},

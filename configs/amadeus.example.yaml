@@ -12,6 +12,11 @@ version: 2
 model: your-model
 model_provider: openai
 model_context_window: 128000
+# Model capabilities are explicit and independent of the Provider transport.
+# Add image only when the selected model actually accepts image input.
+model_input_modalities: [text]
+# Enable only for models that explicitly support original image detail.
+model_supports_original_image_detail: false
 # Omit to use the Provider/model default. Supported configured values:
 # none, minimal, low, medium, high, xhigh, max.
 # model_reasoning_effort: high

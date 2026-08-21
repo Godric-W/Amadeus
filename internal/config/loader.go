@@ -61,7 +61,7 @@ func (loader Loader) Load() (Config, error) {
 	path := loader.ConfigPath()
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) && !loader.required {
-		return applyEnvironmentOverrides(Default(), lookupEnv), nil
+		return applyEnvironmentOverrides(Default(), lookupEnv)
 	}
 	if err != nil {
 		return Config{}, fmt.Errorf("open config %q: %w", path, err)
@@ -73,7 +73,7 @@ func (loader Loader) Load() (Config, error) {
 		return Config{}, fmt.Errorf("decode config %q: %w", path, err)
 	}
 
-	return applyEnvironmentOverrides(configured, lookupEnv), nil
+	return applyEnvironmentOverrides(configured, lookupEnv)
 }
 
 func decodeAndApply(base Config, reader io.Reader, lookupEnv EnvLookup) (Config, error) {

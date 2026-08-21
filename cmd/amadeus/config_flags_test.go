@@ -21,6 +21,8 @@ func TestConfigFlagsOverrideEnvironmentConfiguration(t *testing.T) {
 		"--base-url", "https://cli.example.invalid/v1",
 		"--model", "cli-model",
 		"--model-reasoning-effort", string(llm.ReasoningEffortHigh),
+		"--model-input-modalities", "text,image",
+		"--model-supports-original-image-detail",
 	})
 
 	if err := command.Execute(); err != nil {
@@ -61,6 +63,9 @@ func TestConfigFlagsOverrideEnvironmentConfiguration(t *testing.T) {
 	}
 	if configured.ModelReasoningEffort == nil || *configured.ModelReasoningEffort != llm.ReasoningEffortHigh {
 		t.Fatalf("CLI reasoning effort did not win: %#v", configured.ModelReasoningEffort)
+	}
+	if len(configured.ModelInputModalities) != 2 || configured.ModelInputModalities[1] != llm.InputModalityImage || !configured.ModelSupportsOriginalImageDetail {
+		t.Fatalf("CLI model image capabilities did not win: %#v", configured)
 	}
 }
 

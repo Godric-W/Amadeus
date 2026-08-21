@@ -43,6 +43,8 @@ version: 2
 model: compatible-model
 model_provider: compatible
 model_context_window: 128000
+model_input_modalities: [text, image]
+model_supports_original_image_detail: true
 model_providers:
   compatible:
     wire_api: chat_completions
@@ -59,7 +61,7 @@ agent:
 		t.Fatalf("load config v2: %v", err)
 	}
 	provider := configured.ModelProviders["compatible"]
-	if configured.Model != "compatible-model" || configured.ModelProvider != "compatible" || configured.ModelContextWindow != 128_000 {
+	if configured.Model != "compatible-model" || configured.ModelProvider != "compatible" || configured.ModelContextWindow != 128_000 || len(configured.ModelInputModalities) != 2 || !configured.ModelSupportsOriginalImageDetail {
 		t.Fatalf("unexpected model config: %#v", configured)
 	}
 	if provider.WireAPI != WireAPIChatCompletions || provider.Dialect != DialectStandard || provider.Timeout != 45*time.Second {
@@ -150,13 +152,15 @@ model_providers:
 
 func TestLoadAppliesDirectEnvironmentOverrides(t *testing.T) {
 	loader := NewLoader(t.TempDir()).WithEnvLookup(mapEnvLookup(map[string]string{
-		EnvModelProvider:        "runtime",
-		EnvModel:                "runtime-model",
-		EnvModelReasoningEffort: "high",
-		EnvWireAPI:              string(WireAPIChatCompletions),
-		EnvDialect:              string(DialectDeepSeek),
-		EnvAPIKey:               "runtime-secret",
-		EnvBaseURL:              "https://runtime.example/v1",
+		EnvModelProvider:                    "runtime",
+		EnvModel:                            "runtime-model",
+		EnvModelReasoningEffort:             "high",
+		EnvModelInputModalities:             "text,image",
+		EnvModelSupportsOriginalImageDetail: "true",
+		EnvWireAPI:                          string(WireAPIChatCompletions),
+		EnvDialect:                          string(DialectDeepSeek),
+		EnvAPIKey:                           "runtime-secret",
+		EnvBaseURL:                          "https://runtime.example/v1",
 	}))
 	writeConfig(t, loader, `
 model: file-model
@@ -177,11 +181,24 @@ model_providers:
 	if configured.ModelReasoningEffort == nil || *configured.ModelReasoningEffort != "high" {
 		t.Fatalf("reasoning effort override did not win: %#v", configured.ModelReasoningEffort)
 	}
+	if len(configured.ModelInputModalities) != 2 || configured.ModelInputModalities[1] != "image" || !configured.ModelSupportsOriginalImageDetail {
+		t.Fatalf("model image capability overrides did not win: %#v", configured)
+	}
 	if provider.WireAPI != WireAPIChatCompletions || provider.Dialect != DialectDeepSeek || provider.APIKey != "runtime-secret" || provider.BaseURL != "https://runtime.example/v1" {
 		t.Fatalf("provider overrides did not win: %#v", provider)
 	}
 	if configured.ModelProviders["file"].BaseURL != "https://file.example/v1" {
 		t.Fatalf("unselected provider was modified: %#v", configured.ModelProviders["file"])
+	}
+}
+
+func TestLoadRejectsInvalidOriginalImageDetailEnvironmentOverride(t *testing.T) {
+	loader := NewLoader(t.TempDir()).WithEnvLookup(mapEnvLookup(map[string]string{
+		EnvModelSupportsOriginalImageDetail: "sometimes",
+	}))
+	_, err := loader.Load()
+	if err == nil || !strings.Contains(err.Error(), EnvModelSupportsOriginalImageDetail) {
+		t.Fatalf("expected boolean environment override error: %v", err)
 	}
 }
 

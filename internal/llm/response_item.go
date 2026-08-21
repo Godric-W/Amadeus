@@ -36,12 +36,19 @@ type ContentPart struct {
 	Text      string      `json:"text,omitempty"`
 	MediaType string      `json:"media_type,omitempty"`
 	Data      string      `json:"data,omitempty"`
+	Detail    string      `json:"detail,omitempty"`
 }
 
 func TextPart(text string) ContentPart { return ContentPart{Kind: ContentText, Text: text} }
 
 func ImagePart(mediaType, base64Data string) ContentPart {
 	return ContentPart{Kind: ContentImage, MediaType: strings.TrimSpace(mediaType), Data: strings.TrimSpace(base64Data)}
+}
+
+func ImagePartWithDetail(mediaType, base64Data, detail string) ContentPart {
+	part := ImagePart(mediaType, base64Data)
+	part.Detail = strings.TrimSpace(detail)
+	return part
 }
 
 type ToolCall struct {

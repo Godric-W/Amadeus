@@ -21,6 +21,9 @@ func TestNewAdapterExposesStableModelAndCapabilities(t *testing.T) {
 	if adapter.Model().Provider != "openai" || adapter.Model().Name != "test-model" {
 		t.Fatalf("unexpected model info: %#v", adapter.Model())
 	}
+	if adapter.Model().SupportsInput(llm.InputModalityImage) {
+		t.Fatalf("adapter transport capability leaked into model modalities: %#v", adapter.Model())
+	}
 	capabilities := adapter.Capabilities()
 	if !capabilities.SupportsStreaming || !capabilities.SupportsDeveloperRole || !capabilities.SupportsReasoning || !capabilities.SupportsStreamUsage {
 		t.Fatalf("unexpected Responses capabilities: %#v", capabilities)
@@ -137,11 +140,27 @@ func TestAdapterRejectsImagesBeforeCallingUnsupportedProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = adapter.Stream(context.Background(), llm.Request{
-		Model: "test-model", Prompt: llm.Prompt{Input: []llm.ResponseItem{{Role: llm.RoleUser, Parts: []llm.ContentPart{llm.ImagePart("image/png", "YQ==")}}}},
+		Model: "test-model", InputModalities: []llm.InputModality{llm.InputModalityText, llm.InputModalityImage}, Prompt: llm.Prompt{Input: []llm.ResponseItem{{Role: llm.RoleUser, Parts: []llm.ContentPart{llm.ImagePart("image/png", "YQ==")}}}},
 	})
 	var providerError *llm.ProviderError
-	if !errors.As(err, &providerError) || providerError.Kind != llm.ProviderErrorInvalidRequest || !strings.Contains(providerError.Message, "does not support image") {
+	if !errors.As(err, &providerError) || providerError.Kind != llm.ProviderErrorInvalidRequest || !strings.Contains(providerError.Message, "transport does not support image") {
 		t.Fatalf("unexpected image capability error: %v", err)
+	}
+}
+
+func TestAdapterRejectsImageWhenConfiguredModelIsTextOnly(t *testing.T) {
+	provider := validAdapterProvider()
+	adapter, err := NewAdapter("openai", "test-model", provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Stream(context.Background(), llm.Request{
+		Model: "test-model", InputModalities: []llm.InputModality{llm.InputModalityText},
+		Prompt: llm.Prompt{Input: []llm.ResponseItem{{Role: llm.RoleUser, Parts: []llm.ContentPart{llm.ImagePart("image/png", "YQ==")}}}},
+	})
+	var providerError *llm.ProviderError
+	if !errors.As(err, &providerError) || !strings.Contains(providerError.Message, "configured model does not support image") {
+		t.Fatalf("unexpected model image capability error: %v", err)
 	}
 }
 

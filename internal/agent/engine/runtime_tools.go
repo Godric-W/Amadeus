@@ -21,6 +21,7 @@ type ToolRuntimeOptions struct {
 	Config           config.Config
 	Project          project.Root
 	Client           llm.Client
+	ModelInfo        llm.ModelInfo
 	Events           protocol.EventSink
 	Audit            audit.Sink
 	Skills           *skill.SkillCatalog
@@ -39,6 +40,11 @@ type ToolRuntime struct {
 }
 
 func BuildToolRuntime(options ToolRuntimeOptions) (ToolRuntime, error) {
+	modelInfo := options.ModelInfo
+	if len(modelInfo.InputModalities) == 0 && options.Client != nil {
+		modelInfo = options.Client.Model()
+	}
+	modelInfo = modelInfo.Normalized()
 	processes := processdomain.NewManager()
 	coreOptions := builtin.DefaultCoreToolOptions()
 	coreOptions.FileSystemPolicy = options.FileSystemPolicy
@@ -52,17 +58,17 @@ func BuildToolRuntime(options ToolRuntimeOptions) (ToolRuntime, error) {
 		return ToolRuntime{}, fmt.Errorf("create core tool registry: %w", err)
 	}
 	visibility := make(map[string]bool)
-	if options.Client.Capabilities().SupportsImages {
-		viewImage, createErr := builtin.NewViewImage(options.Project, builtin.ViewImageOptions{FileSystemPolicy: options.FileSystemPolicy})
+	if modelInfo.SupportsInput(llm.InputModalityImage) {
+		viewImage, createErr := builtin.NewViewImage(options.Project, builtin.ViewImageOptions{FileSystemPolicy: options.FileSystemPolicy, ModelInfo: modelInfo})
 		if createErr != nil {
 			processes.Close()
 			return ToolRuntime{}, fmt.Errorf("create view_image tool: %w", createErr)
 		}
-		if err := registry.RegisterDefinitionWithRegistration(viewImage, tool.Registration{Exposure: tool.ExposureConditional, Condition: "provider.images"}); err != nil {
+		if err := registry.RegisterDefinitionWithRegistration(viewImage, tool.Registration{Exposure: tool.ExposureConditional, Condition: "model.image_input"}); err != nil {
 			processes.Close()
 			return ToolRuntime{}, err
 		}
-		visibility["provider.images"] = true
+		visibility["model.image_input"] = true
 	}
 	if options.Config.Web.Fetch.Enabled {
 		if options.WebFetcher == nil {

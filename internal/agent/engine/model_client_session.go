@@ -92,12 +92,13 @@ func (session *ModelClientSession) Sample(ctx context.Context, request SampleReq
 	for index, spec := range request.Tools {
 		definitions[index] = llm.ToolSpec{Name: spec.Name, Description: spec.Description, InputSchema: append([]byte(nil), spec.InputSchema...)}
 	}
+	modelInfo := session.client.Model()
 	modelRequest := llm.Request{
-		Model: session.client.Model().Name,
+		Model: modelInfo.Name, InputModalities: append([]llm.InputModality(nil), modelInfo.InputModalities...),
 		Prompt: llm.Prompt{
 			BaseInstructions: request.BaseInstructions,
 			Input:            request.Messages, Tools: definitions,
-			ParallelToolCalls:  session.client.Model().SupportsParallelToolCalls,
+			ParallelToolCalls:  modelInfo.SupportsParallelToolCalls,
 			OutputSchema:       append(llm.OutputSchema(nil), request.OutputSchema...),
 			OutputSchemaStrict: request.OutputSchemaStrict,
 		},
@@ -134,6 +135,9 @@ func (session *ModelClientSession) Complete(ctx context.Context, request Complet
 	}
 	if strings.TrimSpace(request.Request.Model) == "" {
 		request.Request.Model = session.client.Model().Name
+	}
+	if len(request.Request.InputModalities) == 0 {
+		request.Request.InputModalities = append([]llm.InputModality(nil), session.client.Model().InputModalities...)
 	}
 	if strings.TrimSpace(request.Request.Model) == "" || strings.TrimSpace(request.Request.Prompt.BaseInstructions.Text) == "" || len(request.Request.Prompt.Input) == 0 {
 		return llm.Response{}, errors.New("model completion request is incomplete")

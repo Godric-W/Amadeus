@@ -64,8 +64,13 @@ func (adapter *Adapter) Complete(ctx context.Context, request llm.Request) (llm.
 }
 
 func (adapter *Adapter) Stream(ctx context.Context, request llm.Request) (llm.Stream, error) {
-	if requestHasImages(request) && !adapter.Capabilities().SupportsImages {
-		return nil, &llm.ProviderError{Kind: llm.ProviderErrorInvalidRequest, Message: "provider does not support image content parts"}
+	if requestHasImages(request) {
+		if !request.SupportsInput(llm.InputModalityImage) {
+			return nil, &llm.ProviderError{Kind: llm.ProviderErrorInvalidRequest, Message: "configured model does not support image input"}
+		}
+		if !adapter.Capabilities().SupportsImages {
+			return nil, &llm.ProviderError{Kind: llm.ProviderErrorInvalidRequest, Message: "provider transport does not support image content parts"}
+		}
 	}
 	switch adapter.provider.WireAPI {
 	case config.WireAPIResponses:
@@ -92,15 +97,11 @@ func requestHasImages(request llm.Request) bool {
 }
 
 func (adapter *Adapter) Model() llm.ModelInfo {
-	modalities := []llm.InputModality{llm.InputModalityText}
-	if adapter.Capabilities().SupportsImages {
-		modalities = append(modalities, llm.InputModalityImage)
-	}
 	return llm.ModelInfo{
 		Provider:                  adapter.providerName,
 		Name:                      adapter.model,
 		SupportsParallelToolCalls: adapter.dialect.Capabilities(adapter.provider.WireAPI).SupportsParallelToolCalls,
-		InputModalities:           modalities,
+		InputModalities:           []llm.InputModality{llm.InputModalityText},
 	}
 }
 

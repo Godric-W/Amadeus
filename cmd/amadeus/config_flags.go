@@ -8,23 +8,27 @@ import (
 )
 
 const (
-	flagConfig               = "config"
-	flagModelProvider        = "model-provider"
-	flagWireAPI              = "wire-api"
-	flagDialect              = "dialect"
-	flagBaseURL              = "base-url"
-	flagModel                = "model"
-	flagModelReasoningEffort = "model-reasoning-effort"
+	flagConfig                           = "config"
+	flagModelProvider                    = "model-provider"
+	flagWireAPI                          = "wire-api"
+	flagDialect                          = "dialect"
+	flagBaseURL                          = "base-url"
+	flagModel                            = "model"
+	flagModelReasoningEffort             = "model-reasoning-effort"
+	flagModelInputModalities             = "model-input-modalities"
+	flagModelSupportsOriginalImageDetail = "model-supports-original-image-detail"
 )
 
 type configFlags struct {
-	configPath           string
-	modelProvider        string
-	wireAPI              string
-	dialect              string
-	baseURL              string
-	model                string
-	modelReasoningEffort string
+	configPath                       string
+	modelProvider                    string
+	wireAPI                          string
+	dialect                          string
+	baseURL                          string
+	model                            string
+	modelReasoningEffort             string
+	modelInputModalities             []string
+	modelSupportsOriginalImageDetail bool
 }
 
 func (flags *configFlags) bind(command *cobra.Command) {
@@ -36,6 +40,8 @@ func (flags *configFlags) bind(command *cobra.Command) {
 	persistent.StringVar(&flags.baseURL, flagBaseURL, "", "override the provider base URL for this process")
 	persistent.StringVar(&flags.model, flagModel, "", "override the model for this process")
 	persistent.StringVar(&flags.modelReasoningEffort, flagModelReasoningEffort, "", "override model reasoning effort for this process")
+	persistent.StringSliceVar(&flags.modelInputModalities, flagModelInputModalities, nil, "override model input modalities (text,image)")
+	persistent.BoolVar(&flags.modelSupportsOriginalImageDetail, flagModelSupportsOriginalImageDetail, false, "allow original image detail for this model")
 }
 
 func (flags *configFlags) configFile(command *cobra.Command) (string, bool) {
@@ -53,6 +59,16 @@ func (flags *configFlags) apply(command *cobra.Command, configured config.Config
 	if flagSet.Changed(flagModelReasoningEffort) {
 		effort := llm.ReasoningEffort(flags.modelReasoningEffort)
 		overrides.ModelReasoningEffort = &effort
+	}
+	if flagSet.Changed(flagModelInputModalities) {
+		modalities := make([]llm.InputModality, 0, len(flags.modelInputModalities))
+		for _, value := range flags.modelInputModalities {
+			modalities = append(modalities, llm.InputModality(value))
+		}
+		overrides.ModelInputModalities = &modalities
+	}
+	if flagSet.Changed(flagModelSupportsOriginalImageDetail) {
+		overrides.ModelSupportsOriginalImageDetail = &flags.modelSupportsOriginalImageDetail
 	}
 	if flagSet.Changed(flagWireAPI) {
 		wireAPI := config.WireAPI(flags.wireAPI)
@@ -79,6 +95,12 @@ func (flags *configFlags) sources(command *cobra.Command, configured config.Conf
 	}
 	if flagSet.Changed(flagModelReasoningEffort) {
 		sources["model_reasoning_effort"] = config.Source{Kind: config.SourceCLI, Detail: "--" + flagModelReasoningEffort}
+	}
+	if flagSet.Changed(flagModelInputModalities) {
+		sources["model_input_modalities"] = config.Source{Kind: config.SourceCLI, Detail: "--" + flagModelInputModalities}
+	}
+	if flagSet.Changed(flagModelSupportsOriginalImageDetail) {
+		sources["model_supports_original_image_detail"] = config.Source{Kind: config.SourceCLI, Detail: "--" + flagModelSupportsOriginalImageDetail}
 	}
 	for name, field := range map[string]string{
 		flagWireAPI: "wire_api",

@@ -1,28 +1,38 @@
 package config
 
-import "github.com/Godric-W/Amadeus/internal/llm"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/Godric-W/Amadeus/internal/llm"
+)
 
 const (
-	EnvModelProvider        = "AMADEUS_MODEL_PROVIDER"
-	EnvWireAPI              = "AMADEUS_WIRE_API"
-	EnvDialect              = "AMADEUS_DIALECT"
-	EnvAPIKey               = "AMADEUS_API_KEY"
-	EnvBaseURL              = "AMADEUS_BASE_URL"
-	EnvModel                = "AMADEUS_MODEL"
-	EnvModelReasoningEffort = "AMADEUS_MODEL_REASONING_EFFORT"
+	EnvModelProvider                    = "AMADEUS_MODEL_PROVIDER"
+	EnvWireAPI                          = "AMADEUS_WIRE_API"
+	EnvDialect                          = "AMADEUS_DIALECT"
+	EnvAPIKey                           = "AMADEUS_API_KEY"
+	EnvBaseURL                          = "AMADEUS_BASE_URL"
+	EnvModel                            = "AMADEUS_MODEL"
+	EnvModelReasoningEffort             = "AMADEUS_MODEL_REASONING_EFFORT"
+	EnvModelInputModalities             = "AMADEUS_MODEL_INPUT_MODALITIES"
+	EnvModelSupportsOriginalImageDetail = "AMADEUS_MODEL_SUPPORTS_ORIGINAL_IMAGE_DETAIL"
 )
 
 type Overrides struct {
-	ModelProvider        *string
-	WireAPI              *WireAPI
-	Dialect              *ProviderDialect
-	APIKey               *string
-	BaseURL              *string
-	Model                *string
-	ModelReasoningEffort *llm.ReasoningEffort
+	ModelProvider                    *string
+	WireAPI                          *WireAPI
+	Dialect                          *ProviderDialect
+	APIKey                           *string
+	BaseURL                          *string
+	Model                            *string
+	ModelReasoningEffort             *llm.ReasoningEffort
+	ModelInputModalities             *[]llm.InputModality
+	ModelSupportsOriginalImageDetail *bool
 }
 
-func applyEnvironmentOverrides(configured Config, lookup EnvLookup) Config {
+func applyEnvironmentOverrides(configured Config, lookup EnvLookup) (Config, error) {
 	var overrides Overrides
 	if value, ok := lookup(EnvModelProvider); ok {
 		overrides.ModelProvider = &value
@@ -48,8 +58,19 @@ func applyEnvironmentOverrides(configured Config, lookup EnvLookup) Config {
 		effort := llm.ReasoningEffort(value)
 		overrides.ModelReasoningEffort = &effort
 	}
+	if value, ok := lookup(EnvModelInputModalities); ok {
+		modalities := parseInputModalities(value)
+		overrides.ModelInputModalities = &modalities
+	}
+	if value, ok := lookup(EnvModelSupportsOriginalImageDetail); ok {
+		supported, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return Config{}, fmt.Errorf("%s must be a boolean: %w", EnvModelSupportsOriginalImageDetail, err)
+		}
+		overrides.ModelSupportsOriginalImageDetail = &supported
+	}
 
-	return ApplyOverrides(configured, overrides)
+	return ApplyOverrides(configured, overrides), nil
 }
 
 func ApplyOverrides(configured Config, overrides Overrides) Config {
@@ -59,6 +80,10 @@ func ApplyOverrides(configured Config, overrides Overrides) Config {
 	if overrides.ModelReasoningEffort != nil {
 		overridden.ModelReasoningEffort = llm.CloneReasoningEffort(overrides.ModelReasoningEffort)
 	}
+	if overrides.ModelInputModalities != nil {
+		overridden.ModelInputModalities = append([]llm.InputModality(nil), (*overrides.ModelInputModalities)...)
+	}
+	assign(&overridden.ModelSupportsOriginalImageDetail, overrides.ModelSupportsOriginalImageDetail)
 
 	providerName := overridden.ModelProvider
 	provider, exists := overridden.ModelProviders[providerName]
@@ -87,4 +112,15 @@ func ApplyOverrides(configured Config, overrides Overrides) Config {
 	}
 
 	return overridden
+}
+
+func parseInputModalities(value string) []llm.InputModality {
+	fields := strings.Split(value, ",")
+	modalities := make([]llm.InputModality, 0, len(fields))
+	for _, field := range fields {
+		if modality := llm.InputModality(strings.TrimSpace(field)); modality != "" {
+			modalities = append(modalities, modality)
+		}
+	}
+	return modalities
 }

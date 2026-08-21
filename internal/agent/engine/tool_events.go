@@ -66,9 +66,10 @@ func (observer *toolEventObserver) ToolCallCompleted(ctx context.Context, execut
 		return errors.New("tool event observer is incomplete")
 	}
 	result := execution.Output.Clone()
+	displayResult := result.DisplaySafeClone()
 	payload := rollout.ResponseItem{
 		Type: rollout.ResponseToolResult, Role: string(llm.RoleTool), CallID: execution.Call.ID, Name: execution.Call.Name,
-		Status: string(execution.Outcome.Status), Content: result.Text, Result: &result,
+		Status: string(execution.Outcome.Status), Content: result.Text, Result: &displayResult,
 		Metadata: execution.Outcome.Metadata, Partial: result.Partial, Duration: int64(execution.Outcome.Duration),
 		Parts: append([]tool.ContentPart(nil), result.Parts...),
 	}
@@ -100,7 +101,7 @@ func (observer *toolEventObserver) ToolCallCompleted(ctx context.Context, execut
 	delete(observer.presentations, execution.Call.ID)
 	observer.mu.Unlock()
 	itemPayload := presentation.payload(execution.Outcome.Duration, execution.Output.Partial)
-	turnItem := protocol.TurnItem{ID: protocol.ItemID(execution.Call.ID), Kind: toolItemKind(execution.Call.Name, ""), Status: status, CreatedAt: now, CompletedAt: now, Text: toolExecutionSummary(execution), ToolName: execution.Call.Name, CallID: execution.Call.ID, ToolResult: &result, Payload: itemPayload}
+	turnItem := protocol.TurnItem{ID: protocol.ItemID(execution.Call.ID), Kind: toolItemKind(execution.Call.Name, ""), Status: status, CreatedAt: now, CompletedAt: now, Text: toolExecutionSummary(execution), ToolName: execution.Call.Name, CallID: execution.Call.ID, ToolResult: &displayResult, Payload: itemPayload}
 	completedItem, err := rollout.NewEventMsgItem(protocol.ItemCompletedEvent{Item: turnItem})
 	if err != nil {
 		return err

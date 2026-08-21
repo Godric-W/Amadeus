@@ -19,6 +19,7 @@ type ExecCell struct{ activity *toolActivity }
 type ExploreCell struct{ activities []*toolActivity }
 type WebSearchCell struct{ activity *toolActivity }
 type WebFetchCell struct{ activity *toolActivity }
+type ViewImageCell struct{ activity *toolActivity }
 
 func (cell ExecCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
 	return renderExecLines(cell.activity, ctx)
@@ -31,6 +32,9 @@ func (cell WebSearchCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
 }
 func (cell WebFetchCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
 	return renderWebFetchLines(cell.activity, ctx)
+}
+func (cell ViewImageCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
+	return renderViewImageLines(cell.activity, ctx)
 }
 
 func (cell ExecCell) RawLines() []string {
@@ -45,11 +49,15 @@ func (cell WebSearchCell) RawLines() []string {
 func (cell WebFetchCell) RawLines() []string {
 	return rawStyledLines(renderWebFetchLines(cell.activity, rawToolContext()))
 }
+func (cell ViewImageCell) RawLines() []string {
+	return rawStyledLines(renderViewImageLines(cell.activity, rawToolContext()))
+}
 
 func (ExecCell) IsStreamContinuation() bool      { return false }
 func (ExploreCell) IsStreamContinuation() bool   { return false }
 func (WebSearchCell) IsStreamContinuation() bool { return false }
 func (WebFetchCell) IsStreamContinuation() bool  { return false }
+func (ViewImageCell) IsStreamContinuation() bool { return false }
 
 func newToolHistoryCell() *ToolHistoryCell {
 	return &ToolHistoryCell{byCallID: map[string]*toolActivity{}}
@@ -166,6 +174,11 @@ func (cell *ToolHistoryCell) projections() []HistoryCell {
 		explored = nil
 	}
 	for _, activity := range activities {
+		if activity.ToolName == "view_image" {
+			flushExplored()
+			projections = append(projections, ViewImageCell{activity: activity})
+			continue
+		}
 		spec := toolDisplaySpecFor(activity)
 		if spec.Category == ToolDisplayExplore {
 			explored = append(explored, activity)

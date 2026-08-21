@@ -116,17 +116,17 @@ func TestRegistryReplaceGroupIsAtomicAndLeavesOtherTools(t *testing.T) {
 
 func TestRegistryStoresExposureMetadata(t *testing.T) {
 	registry := NewRegistry()
-	if err := registry.RegisterDefinitionWithRegistration(newFakeTool("view_image", true), Registration{Exposure: ExposureConditional, Condition: "provider.images"}); err != nil {
+	if err := registry.RegisterDefinitionWithRegistration(newFakeTool("view_image", true), Registration{Exposure: ExposureConditional, Condition: "model.image_input"}); err != nil {
 		t.Fatal(err)
 	}
 	entries := registry.Snapshot()
-	if len(entries) != 1 || entries[0].Exposure != ExposureConditional || entries[0].Condition != "provider.images" {
+	if len(entries) != 1 || entries[0].Exposure != ExposureConditional || entries[0].Condition != "model.image_input" {
 		t.Fatalf("unexpected registry metadata: %#v", entries)
 	}
 	if _, ok := registry.LookupVisible("view_image", nil); ok {
 		t.Fatal("conditional Tool was visible without its condition")
 	}
-	if toolImpl, ok := registry.LookupVisible("view_image", map[string]bool{"provider.images": true}); !ok || toolImpl.Spec().Name != "view_image" {
+	if toolImpl, ok := registry.LookupVisible("view_image", map[string]bool{"model.image_input": true}); !ok || toolImpl.Spec().Name != "view_image" {
 		t.Fatalf("conditional Tool was not visible: %#v, %v", toolImpl, ok)
 	}
 }

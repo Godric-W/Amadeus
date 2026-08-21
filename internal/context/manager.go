@@ -315,7 +315,7 @@ func normalizeHistory(items []llm.ResponseItem, model llm.ModelInfo, estimator E
 			}
 			projected := cloneResponseItems([]llm.ResponseItem{item})[0]
 			projected.Content = projectToolOutput(name, projected.Content, model.ToolOutputTokenLimit, estimator)
-			projected.Parts = projectToolContentParts(name, projected.Content, projected.Parts, model.ToolOutputTokenLimit, estimator)
+			projected.Content, projected.Parts = projectToolContentParts(name, projected.Content, projected.Parts, model.ToolOutputTokenLimit, estimator)
 			result = append(result, projected)
 			delete(pending, callID)
 			continue
@@ -326,27 +326,45 @@ func normalizeHistory(items []llm.ResponseItem, model llm.ModelInfo, estimator E
 	return result
 }
 
-func projectToolContentParts(toolName, content string, parts []llm.ContentPart, maximumTokens int64, estimator Estimator) []llm.ContentPart {
+func projectToolContentParts(toolName, content string, parts []llm.ContentPart, maximumTokens int64, estimator Estimator) (string, []llm.ContentPart) {
 	if len(parts) == 0 || maximumTokens <= 0 {
-		return parts
+		return content, parts
 	}
 	remaining := maximumTokens - estimator.EstimateText(content)
-	textParts := 0
+	projected := make([]llm.ContentPart, 0, len(parts))
+	omittedImage := false
 	for _, part := range parts {
+		if part.Kind != llm.ContentImage {
+			projected = append(projected, part)
+			continue
+		}
+		imageTokens, imageTokensKnown := toolContentPartTokenEstimate(content, part)
+		if !imageTokensKnown || imageTokens > remaining {
+			omittedImage = true
+			continue
+		}
+		remaining -= imageTokens
+		projected = append(projected, part)
+	}
+	if omittedImage {
+		content = markToolResultImageOmitted(content, "image_budget", "[Image content omitted because it exceeds the current tool output image budget.]")
+	}
+	textParts := 0
+	for _, part := range projected {
 		if part.Kind == llm.ContentText && part.Text != "" {
 			textParts++
 		}
 	}
 	if textParts == 0 {
-		return parts
+		return content, projected
 	}
 	perPart := remaining / int64(textParts)
-	for index := range parts {
-		if parts[index].Kind == llm.ContentText && parts[index].Text != "" {
-			parts[index].Text = truncateToolText(toolName, parts[index].Text, perPart, estimator)
+	for index := range projected {
+		if projected[index].Kind == llm.ContentText && projected[index].Text != "" {
+			projected[index].Text = truncateToolText(toolName, projected[index].Text, perPart, estimator)
 		}
 	}
-	return parts
+	return content, projected
 }
 
 func filterResponseItemModalities(item llm.ResponseItem, model llm.ModelInfo) llm.ResponseItem {

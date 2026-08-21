@@ -28,16 +28,21 @@ type ToolSpec struct {
 }
 
 type Request struct {
-	Model     string
-	Prompt    Prompt
-	Reasoning *ReasoningConfig
+	Model           string
+	InputModalities []InputModality
+	Prompt          Prompt
+	Reasoning       *ReasoningConfig
 }
 
 func NewRequest(model string, messages []ResponseItem) Request {
 	return Request{
-		Model:  model,
+		Model: model, InputModalities: []InputModality{InputModalityText},
 		Prompt: Prompt{Input: cloneResponseItems(messages)},
 	}
+}
+
+func (request Request) SupportsInput(modality InputModality) bool {
+	return ModelInfo{InputModalities: request.InputModalities}.SupportsInput(modality)
 }
 
 func (request Request) InputMessages() []ResponseItem {

@@ -194,7 +194,7 @@ func TestChatCompletionsRequestSerializesUserAndSyntheticToolImages(t *testing.T
 		Model: "test-model",
 		Prompt: llm.Prompt{Input: []llm.ResponseItem{
 			{Role: llm.RoleUser, Content: "inspect", Parts: []llm.ContentPart{llm.ImagePart("image/png", "YQ==")}},
-			llm.ToolResultMessageWithParts("call_image", "tool image", llm.ImagePart("image/jpeg", "Yg==")),
+			llm.ToolResultMessageWithParts("call_image", "tool image", llm.ImagePartWithDetail("image/jpeg", "Yg==", "original")),
 		}},
 	}
 	params, err := newChatCompletionsRequest(domainRequest)
@@ -220,6 +220,9 @@ func TestChatCompletionsRequestSerializesUserAndSyntheticToolImages(t *testing.T
 	syntheticContent := synthetic["content"].([]any)
 	if synthetic["role"] != "user" || len(syntheticContent) != 2 || syntheticContent[1].(map[string]any)["image_url"].(map[string]any)["url"] != "data:image/jpeg;base64,Yg==" {
 		t.Fatalf("unexpected synthetic Chat image message: %#v", synthetic)
+	}
+	if syntheticContent[1].(map[string]any)["image_url"].(map[string]any)["detail"] != "high" {
+		t.Fatalf("unexpected synthetic Chat image detail: %#v", syntheticContent[1])
 	}
 }
 

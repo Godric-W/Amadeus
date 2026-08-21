@@ -149,6 +149,8 @@ func writeConfigExplanation(writer io.Writer, path string, configured config.Con
 	writeExplainedValue(writer, "model_provider", configured.ModelProvider, sources)
 	writeExplainedValue(writer, "model_context_window", configured.ModelContextWindow, sources)
 	writeExplainedValue(writer, "model_reasoning_effort", displayReasoningEffort(configured.ModelReasoningEffort), sources)
+	writeExplainedValue(writer, "model_input_modalities", configured.ModelInputModalities, sources)
+	writeExplainedValue(writer, "model_supports_original_image_detail", configured.ModelSupportsOriginalImageDetail, sources)
 	writeExplainedValue(writer, "model_auto_compact_token_limit", configured.ModelAutoCompactTokenLimit, sources)
 	writeExplainedValue(writer, "tool_output_token_limit", configured.ToolOutputTokenLimit, sources)
 

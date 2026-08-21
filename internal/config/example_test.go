@@ -37,6 +37,9 @@ func TestExampleConfigLoadsAndValidatesWithoutEnvironment(t *testing.T) {
 	if configured.Agent.MaxParallelTools != 4 {
 		t.Fatalf("unexpected example Agent config: %#v", configured.Agent)
 	}
+	if len(configured.ModelInputModalities) != 1 || configured.ModelInputModalities[0] != "text" || configured.ModelSupportsOriginalImageDetail {
+		t.Fatalf("unexpected example model capabilities: %#v", configured)
+	}
 	for name, provider := range configured.ModelProviders {
 		if provider.APIKey != "" {
 			t.Fatalf("example provider %q contains an API key", name)

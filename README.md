@@ -103,6 +103,8 @@ amadeus [task] [flags]
 | `--model-provider <name>` | 为当前进程覆盖模型 Provider |
 | `--model <name>` | 为当前进程覆盖模型名称 |
 | `--model-reasoning-effort <effort>` | 覆盖推理强度：`none`、`minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；省略时使用厂商默认值 |
+| `--model-input-modalities <values>` | 覆盖模型输入模态，逗号分隔；基础版支持 `text`、`image` |
+| `--model-supports-original-image-detail` | 声明当前模型支持 `view_image.detail=original` |
 | `--wire-api <api>` | 覆盖 Provider Wire API，可用值为 `responses` 或 `chat_completions` |
 | `--dialect <dialect>` | 覆盖 Provider 方言，可用值为 `standard`、`openai`、`deepseek`、`qwen` 或 `glm` |
 | `--base-url <url>` | 为当前进程覆盖 Provider Base URL |
@@ -127,6 +129,8 @@ amadeus --help
 
 配置文件可使用顶层 `model_reasoning_effort`，环境变量为 `AMADEUS_MODEL_REASONING_EFFORT`。显式配置时 Responses 发送 `reasoning.effort`，Chat Completions 发送 `reasoning_effort`；DeepSeek、Qwen、GLM 的 Chat `none` 会转换为各自的关闭 thinking 字段。`amadeus config show` 输出脱敏后的有效配置，`amadeus config explain` 同时显示各字段来源。
 
+模型图片能力必须显式配置，不能从 Provider 或 OpenAI-compatible Dialect 推断。默认 `model_input_modalities: [text]`；只有真实支持图片的模型才应配置 `[text, image]`。`model_supports_original_image_detail` 默认 `false`，仅对明确支持 original detail 的模型开启。对应环境变量为 `AMADEUS_MODEL_INPUT_MODALITIES` 与 `AMADEUS_MODEL_SUPPORTS_ORIGINAL_IMAGE_DETAIL`。
+
 ## Web 工具
 
 `web_search` 与 `web_fetch` 使用独立开关。仅启用搜索时，可以使用无需 API Key 的 DuckDuckGo：
@@ -149,6 +153,17 @@ web:
 - `web.fetch.max_redirects: 0` 表示拒绝所有重定向；`max_bytes` 超限时返回带 `Partial` 标记的截断结果。
 
 若只需要搜索，打开 `web.search.enabled` 即可；若还需要读取网页正文，再单独打开 `web.fetch.enabled`。两个能力关闭时不会注册对应 Tool，模型也不可见。
+
+## 图片工具
+
+`view_image` 只对显式声明 `image` 输入能力的模型可见。它读取本地 PNG、JPEG、WebP 或静态 GIF，经过尺寸和 patch 预算约束后再作为图片 ToolResult 发送给模型；动态 GIF 会被拒绝，静态 GIF 会规范化为 PNG。
+
+```yaml
+model_input_modalities: [text, image]
+model_supports_original_image_detail: false
+```
+
+默认 detail 为 `high`。只有开启 `model_supports_original_image_detail` 时，Tool Schema 才会向模型暴露 `original`；该模式仍受 6000 单边和 10000 个 32×32 patch 的预算约束，不表示无界原始文件直传。工作目录外的图片沿用 read-directory Approval 与当前 Session Grant。
 
 ## Slash Command
 

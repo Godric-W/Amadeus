@@ -651,6 +651,7 @@ func TestModelProviderConfigurationHasCodexOwnershipBoundaries(t *testing.T) {
 	for _, field := range []string{
 		"Model", "Temperature", "MaxOutputTokens", "ContextWindow",
 		"AutoCompactTokenLimit", "ToolOutputMaxTokens", "ToolOutputTokenLimit", "ModelReasoningEffort", "ReasoningEffort",
+		"InputModalities", "SupportsOriginalImageDetail",
 	} {
 		if _, ok := providerFields[field]; ok {
 			t.Errorf("ModelProviderInfo owns Model runtime field %q", field)
@@ -659,7 +660,7 @@ func TestModelProviderConfigurationHasCodexOwnershipBoundaries(t *testing.T) {
 
 	configFields := architectureStructFields(t, root, "internal/config/config.go", "Config")
 	for _, field := range []string{
-		"Model", "ModelProvider", "ModelContextWindow", "ModelReasoningEffort", "ModelAutoCompactTokenLimit",
+		"Model", "ModelProvider", "ModelContextWindow", "ModelReasoningEffort", "ModelInputModalities", "ModelSupportsOriginalImageDetail", "ModelAutoCompactTokenLimit",
 		"ToolOutputTokenLimit", "ModelProviders",
 	} {
 		if _, ok := configFields[field]; !ok {
@@ -780,6 +781,66 @@ func TestReasoningEffortHasTurnScopedProviderBoundaries(t *testing.T) {
 	qwenStart := strings.Index(dialect, "case config.DialectQwen:")
 	if qwenStart < 0 || !strings.Contains(dialect[qwenStart:], "supportedWireAPIs: bothAPIs") {
 		t.Fatal("Qwen dialect does not declare Responses support")
+	}
+}
+
+func TestViewImageArchitectureBoundaries(t *testing.T) {
+	root := repositoryRoot(t)
+	viewImage := mustReadArchitectureFile(t, root, "internal/tool/builtin/view_image.go")
+	if !strings.Contains(viewImage, "internal/imageprep") {
+		t.Fatal("view_image does not delegate image preparation")
+	}
+	for _, forbidden := range []string{"encoding/base64", `"image/gif"`, `"image/png"`, "image.Decode", "gif.Decode", "base64.StdEncoding"} {
+		if strings.Contains(viewImage, forbidden) {
+			t.Errorf("view_image retains image processing concern %q", forbidden)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "internal", "imageprep", "prepare.go")); err != nil {
+		t.Fatalf("image preparation package is missing: %v", err)
+	}
+
+	runtimeTools := mustReadArchitectureFile(t, root, "internal/agent/engine/runtime_tools.go")
+	if strings.Contains(runtimeTools, "provider.images") || strings.Contains(runtimeTools, "Capabilities().SupportsImages") {
+		t.Fatal("view_image visibility still derives from Provider/Dialect capability")
+	}
+	if !strings.Contains(runtimeTools, "model.image_input") || !strings.Contains(runtimeTools, "SupportsInput(llm.InputModalityImage)") {
+		t.Fatal("view_image visibility does not derive from ModelInfo image input")
+	}
+
+	adapter := mustReadArchitectureFile(t, root, "internal/llm/openai/adapter.go")
+	modelStart := strings.Index(adapter, "func (adapter *Adapter) Model() llm.ModelInfo")
+	capabilitiesStart := strings.Index(adapter, "func (adapter *Adapter) Capabilities()")
+	if modelStart < 0 || capabilitiesStart < modelStart {
+		t.Fatal("locate Adapter.Model boundary")
+	}
+	if strings.Contains(adapter[modelStart:capabilitiesStart], "SupportsImages") {
+		t.Fatal("Adapter.Model derives model modalities from transport image support")
+	}
+
+	toolEvents := mustReadArchitectureFile(t, root, "internal/agent/engine/tool_events.go")
+	if !strings.Contains(toolEvents, "DisplaySafeClone") || strings.Contains(toolEvents, "ToolResult: &result") {
+		t.Fatal("completed Tool events can retain canonical image payload")
+	}
+	for _, relative := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			if strings.Contains(string(content), "provider.images") {
+				t.Errorf("legacy provider.images condition remains in %s", filepath.ToSlash(path[len(root)+1:]))
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan %s: %v", relative, err)
+		}
 	}
 }
 

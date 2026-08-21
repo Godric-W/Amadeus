@@ -89,6 +89,9 @@ func (projection *RolloutMessageProjection) appendResponse(sequence uint64, item
 		result := tool.ToolResult{CallID: item.CallID, ToolName: item.Name, Text: item.Content, Parts: append([]tool.ContentPart(nil), item.Parts...)}
 		if item.Result != nil {
 			result = item.Result.Clone()
+			if len(item.Parts) > 0 {
+				result.Parts = append([]tool.ContentPart(nil), item.Parts...)
+			}
 		}
 		var projectedError *ToolResultError
 		if item.Error != nil {

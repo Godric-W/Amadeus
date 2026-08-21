@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Godric-W/Amadeus/internal/imageprep"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -30,6 +31,7 @@ type ToolResultPart struct {
 	Kind      tool.ContentKind `json:"kind"`
 	Text      string           `json:"text,omitempty"`
 	MediaType string           `json:"media_type,omitempty"`
+	Detail    string           `json:"detail,omitempty"`
 }
 
 type ToolResultProjection struct {
@@ -69,6 +71,69 @@ func filterToolResultModalities(content string, model llm.ModelInfo) string {
 	return string(encoded)
 }
 
+func toolContentPartTokenEstimate(content string, part llm.ContentPart) (int64, bool) {
+	var payload ToolResultPayload
+	if json.Unmarshal([]byte(content), &payload) == nil {
+		width, widthOK := metadataInteger(payload.Metadata, "prepared_width")
+		height, heightOK := metadataInteger(payload.Metadata, "prepared_height")
+		if widthOK && heightOK && width > 0 && height > 0 {
+			return int64(imageprep.PatchCount(width, height)), true
+		}
+	}
+	if strings.TrimSpace(part.Data) == "" {
+		return 0, false
+	}
+	decodedBytes := int64(len(part.Data)) * 3 / 4
+	return max(int64(85), (decodedBytes+1023)/1024), true
+}
+
+func markToolResultImageOmitted(content, reason, marker string) string {
+	var payload ToolResultPayload
+	if json.Unmarshal([]byte(content), &payload) != nil {
+		return content
+	}
+	parts := payload.Parts[:0]
+	for _, part := range payload.Parts {
+		if part.Kind != tool.ContentImage {
+			parts = append(parts, part)
+		}
+	}
+	payload.Parts = parts
+	payload.Omitted = appendUniqueString(payload.Omitted, reason)
+	if !strings.Contains(payload.Text, marker) {
+		if strings.TrimSpace(payload.Text) == "" {
+			payload.Text = marker
+		} else {
+			payload.Text = strings.TrimSpace(payload.Text) + "\n\n" + marker
+		}
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return content
+	}
+	return string(encoded)
+}
+
+func metadataInteger(metadata map[string]any, key string) (int, bool) {
+	value, exists := metadata[key]
+	if !exists {
+		return 0, false
+	}
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), typed == float64(int(typed))
+	case json.Number:
+		parsed, err := typed.Int64()
+		return int(parsed), err == nil
+	default:
+		return 0, false
+	}
+}
+
 func appendUniqueString(values []string, value string) []string {
 	for _, current := range values {
 		if current == value {
@@ -102,7 +167,7 @@ func ProjectToolResult(input ToolResultProjection) (llm.ResponseItem, error) {
 		case tool.ContentText:
 			parts = append(parts, llm.TextPart(part.Text))
 		case tool.ContentImage:
-			parts = append(parts, llm.ImagePart(part.MediaType, part.Data))
+			parts = append(parts, llm.ImagePartWithDetail(part.MediaType, part.Data, part.Detail))
 		}
 	}
 	return llm.ToolResultMessageWithParts(callID, string(encoded), parts...), nil
@@ -111,7 +176,7 @@ func ProjectToolResult(input ToolResultProjection) (llm.ResponseItem, error) {
 func projectToolResultParts(parts []tool.ContentPart) []ToolResultPart {
 	result := make([]ToolResultPart, 0, len(parts))
 	for _, part := range parts {
-		result = append(result, ToolResultPart{Kind: part.Kind, Text: part.Text, MediaType: part.MediaType})
+		result = append(result, ToolResultPart{Kind: part.Kind, Text: part.Text, MediaType: part.MediaType, Detail: part.Detail})
 	}
 	return result
 }
@@ -199,6 +264,9 @@ var modelMetadataKeys = map[string]struct{}{
 	"query": {}, "references": {}, "results": {}, "revision": {}, "source": {},
 	"status": {}, "timed_out": {}, "title": {}, "total_matches": {}, "total_operations": {},
 	"truncation_reason": {}, "url": {}, "width": {},
+	"detail": {}, "source_media_type": {}, "prepared_media_type": {},
+	"source_width": {}, "source_height": {}, "prepared_width": {}, "prepared_height": {},
+	"source_bytes": {}, "prepared_bytes": {},
 }
 
 func projectToolMetadata(values ...map[string]any) map[string]any {

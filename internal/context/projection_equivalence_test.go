@@ -148,7 +148,10 @@ func mustContextResponseItem(t *testing.T, item rollout.ResponseItem) rollout.Re
 func TestImageCapableModelPreservesToolImageParts(t *testing.T) {
 	message, err := ProjectToolResult(ToolResultProjection{
 		CallID: "call-image", Status: "succeeded",
-		Result: tool.ToolResult{Parts: []tool.ContentPart{{Kind: tool.ContentImage, MediaType: "image/png", Data: "aW1hZ2U="}}},
+		Result: tool.ToolResult{
+			Parts:    []tool.ContentPart{{Kind: tool.ContentImage, MediaType: "image/png", Data: "aW1hZ2U="}},
+			Metadata: map[string]any{"prepared_width": 32, "prepared_height": 32},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -159,5 +162,80 @@ func TestImageCapableModelPreservesToolImageParts(t *testing.T) {
 	}, llm.ModelInfo{InputModalities: []llm.InputModality{llm.InputModalityText, llm.InputModalityImage}}, nil)
 	if len(items) != 2 || len(items[1].Parts) != 1 || items[1].Parts[0].Kind != llm.ContentImage {
 		t.Fatalf("image-capable projection = %#v", items)
+	}
+}
+
+func TestImageCapableModelBudgetsImageWithoutPreparedMetadata(t *testing.T) {
+	message, err := ProjectToolResult(ToolResultProjection{
+		CallID: "call-image", Status: "succeeded",
+		Result: tool.ToolResult{Parts: []tool.ContentPart{{Kind: tool.ContentImage, MediaType: "image/png", Data: "aW1hZ2U="}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := NormalizeResponseItems([]llm.ResponseItem{
+		llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call-image", Name: "mcp_read_resource", Arguments: json.RawMessage(`{"server":"demo","uri":"fixture://image"}`)}),
+		message,
+	}, llm.ModelInfo{ToolOutputTokenLimit: 1000, InputModalities: []llm.InputModality{llm.InputModalityText, llm.InputModalityImage}}, nil)
+	if len(items) != 2 || len(items[1].Parts) != 1 {
+		t.Fatalf("fallback image budget dropped bounded MCP image: %#v", items)
+	}
+}
+
+func TestToolImageBudgetUsesPreparedDimensions(t *testing.T) {
+	message, err := ProjectToolResult(ToolResultProjection{
+		CallID: "call-image", Status: "succeeded",
+		Result: tool.ToolResult{
+			Text:     "Viewed image.png.",
+			Parts:    []tool.ContentPart{{Kind: tool.ContentImage, MediaType: "image/png", Data: "aW1hZ2U=", Detail: "high"}},
+			Metadata: map[string]any{"prepared_width": 256, "prepared_height": 256, "detail": "high"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []llm.ResponseItem{
+		llm.AssistantToolCallMessage("", llm.ToolCall{ID: "call-image", Name: "view_image", Arguments: json.RawMessage(`{"path":"image.png"}`)}),
+		message,
+	}
+	model := llm.ModelInfo{ToolOutputTokenLimit: 32, InputModalities: []llm.InputModality{llm.InputModalityText, llm.InputModalityImage}}
+	items := NormalizeResponseItems(input, model, nil)
+	if len(items) != 2 || len(items[1].Parts) != 0 || !strings.Contains(items[1].Content, "image_budget") || !strings.Contains(items[1].Content, "exceeds the current tool output image budget") {
+		t.Fatalf("over-budget image projection = %#v", items)
+	}
+	model.ToolOutputTokenLimit = 256
+	items = NormalizeResponseItems(input, model, nil)
+	if len(items[1].Parts) != 1 || items[1].Parts[0].Detail != "high" {
+		t.Fatalf("within-budget image projection = %#v", items)
+	}
+}
+
+func TestResumeRestoresCanonicalImagePayloadAndProjectsModelSwitch(t *testing.T) {
+	displayResult := tool.ToolResult{
+		CallID: "call-image", ToolName: "view_image", Text: "Viewed image.png.",
+		Parts:    []tool.ContentPart{{Kind: tool.ContentImage, MediaType: "image/png", Detail: "high"}},
+		Metadata: map[string]any{"path": "image.png", "prepared_width": 32, "prepared_height": 32, "detail": "high"},
+	}
+	lines := []rollout.Line{
+		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "inspect image"}),
+		contextResponseLine(t, 2, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-image", Name: "view_image", Arguments: json.RawMessage(`{"path":"image.png"}`)}),
+		contextResponseLine(t, 3, rollout.ResponseItem{
+			Type: rollout.ResponseToolResult, Role: "tool", CallID: "call-image", Name: "view_image", Status: "completed",
+			Result: &displayResult,
+			Parts:  []tool.ContentPart{{Kind: tool.ContentImage, MediaType: "image/png", Data: "Y2Fub25pY2FsLWltYWdl", Detail: "high"}},
+		}),
+	}
+	manager, err := NewManagerFromRollout(lines, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageModel := llm.ModelInfo{ToolOutputTokenLimit: 100, InputModalities: []llm.InputModality{llm.InputModalityText, llm.InputModalityImage}}
+	imageSnapshot := manager.Snapshot(imageModel, llm.Prompt{})
+	if len(imageSnapshot.Items) != 3 || len(imageSnapshot.Items[2].Parts) != 1 || imageSnapshot.Items[2].Parts[0].Data != "Y2Fub25pY2FsLWltYWdl" {
+		t.Fatalf("resume did not restore canonical image payload: %#v", imageSnapshot.Items)
+	}
+	textSnapshot := manager.Snapshot(llm.ModelInfo{ToolOutputTokenLimit: 100, InputModalities: []llm.InputModality{llm.InputModalityText}}, llm.Prompt{})
+	if len(textSnapshot.Items[2].Parts) != 0 || !strings.Contains(textSnapshot.Items[2].Content, `"omitted_modalities":["image"]`) {
+		t.Fatalf("model switch did not omit resumed image: %#v", textSnapshot.Items[2])
 	}
 }

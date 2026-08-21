@@ -1,6 +1,10 @@
 package config
 
-import "time"
+import (
+	"time"
+
+	"github.com/Godric-W/Amadeus/internal/llm"
+)
 
 const (
 	CurrentVersion              = 2
@@ -10,6 +14,7 @@ const (
 func Default() Config {
 	return Config{
 		Version:              CurrentVersion,
+		ModelInputModalities: []llm.InputModality{llm.InputModalityText},
 		ToolOutputTokenLimit: DefaultToolOutputTokenLimit,
 		ModelProviders:       make(map[string]ModelProviderInfo),
 		Agent: AgentConfig{

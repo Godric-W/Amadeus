@@ -7,17 +7,19 @@ import (
 )
 
 type configPatch struct {
-	Version                    *int                          `yaml:"version"`
-	Model                      *string                       `yaml:"model"`
-	ModelProvider              *string                       `yaml:"model_provider"`
-	ModelContextWindow         *int64                        `yaml:"model_context_window"`
-	ModelReasoningEffort       *llm.ReasoningEffort          `yaml:"model_reasoning_effort"`
-	ModelAutoCompactTokenLimit *int64                        `yaml:"model_auto_compact_token_limit"`
-	ToolOutputTokenLimit       *int64                        `yaml:"tool_output_token_limit"`
-	ModelProviders             map[string]modelProviderPatch `yaml:"model_providers"`
-	Agent                      *agentPatch                   `yaml:"agent"`
-	Web                        *webPatch                     `yaml:"web"`
-	Logging                    *loggingPatch                 `yaml:"logging"`
+	Version                          *int                          `yaml:"version"`
+	Model                            *string                       `yaml:"model"`
+	ModelProvider                    *string                       `yaml:"model_provider"`
+	ModelContextWindow               *int64                        `yaml:"model_context_window"`
+	ModelReasoningEffort             *llm.ReasoningEffort          `yaml:"model_reasoning_effort"`
+	ModelInputModalities             *[]llm.InputModality          `yaml:"model_input_modalities"`
+	ModelSupportsOriginalImageDetail *bool                         `yaml:"model_supports_original_image_detail"`
+	ModelAutoCompactTokenLimit       *int64                        `yaml:"model_auto_compact_token_limit"`
+	ToolOutputTokenLimit             *int64                        `yaml:"tool_output_token_limit"`
+	ModelProviders                   map[string]modelProviderPatch `yaml:"model_providers"`
+	Agent                            *agentPatch                   `yaml:"agent"`
+	Web                              *webPatch                     `yaml:"web"`
+	Logging                          *loggingPatch                 `yaml:"logging"`
 }
 
 type webPatch struct {
@@ -71,6 +73,10 @@ func (patch configPatch) apply(base Config) Config {
 	if patch.ModelReasoningEffort != nil {
 		configured.ModelReasoningEffort = llm.CloneReasoningEffort(patch.ModelReasoningEffort)
 	}
+	if patch.ModelInputModalities != nil {
+		configured.ModelInputModalities = append([]llm.InputModality(nil), (*patch.ModelInputModalities)...)
+	}
+	assign(&configured.ModelSupportsOriginalImageDetail, patch.ModelSupportsOriginalImageDetail)
 	assign(&configured.ModelAutoCompactTokenLimit, patch.ModelAutoCompactTokenLimit)
 	assign(&configured.ToolOutputTokenLimit, patch.ToolOutputTokenLimit)
 
@@ -136,6 +142,7 @@ func (patch loggingPatch) apply(logging *LoggingConfig) {
 func clone(configured Config) Config {
 	cloned := configured
 	cloned.ModelReasoningEffort = llm.CloneReasoningEffort(configured.ModelReasoningEffort)
+	cloned.ModelInputModalities = append([]llm.InputModality(nil), configured.ModelInputModalities...)
 	cloned.ModelProviders = make(map[string]ModelProviderInfo, len(configured.ModelProviders))
 	for name, provider := range configured.ModelProviders {
 		cloned.ModelProviders[name] = provider

@@ -56,7 +56,7 @@ func (compactor *Compactor) Compact(ctx context.Context, request CompactRequest)
 	input = append(input, llm.UserMessage("Create the handoff summary now. Return only the summary and do not call tools."))
 	response, err := request.ModelSession.Complete(ctx, CompleteRequest{
 		Request: llm.Request{
-			Model: compactor.ModelInfo.Name, Prompt: llm.Prompt{BaseInstructions: compactionInstructions, Input: input},
+			Model: compactor.ModelInfo.Name, InputModalities: append([]llm.InputModality(nil), compactor.ModelInfo.InputModalities...), Prompt: llm.Prompt{BaseInstructions: compactionInstructions, Input: input},
 			Reasoning: request.Reasoning.Clone(),
 		},
 		Events: request.Events,

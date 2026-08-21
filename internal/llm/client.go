@@ -10,14 +10,15 @@ type Client interface {
 }
 
 type ModelInfo struct {
-	Provider                  string
-	Name                      string
-	ContextWindow             int64
-	AutoCompactTokenLimit     int64
-	SupportsParallelToolCalls bool
-	ToolOutputTokenLimit      int64
-	InputModalities           []InputModality
-	ModelMessages             ModelMessages
+	Provider                    string
+	Name                        string
+	ContextWindow               int64
+	AutoCompactTokenLimit       int64
+	SupportsParallelToolCalls   bool
+	SupportsOriginalImageDetail bool
+	ToolOutputTokenLimit        int64
+	InputModalities             []InputModality
+	ModelMessages               ModelMessages
 }
 
 type InputModality string
