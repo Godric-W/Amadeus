@@ -1,13 +1,13 @@
 # Amadeus 开发进度
 
-> 最近更新：2026-08-20
+> 最近更新：2026-08-21
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：O. Same-Turn User Input + Turn Steer Lifecycle Alignment（DONE）
+> 当前阶段：P. Model Reasoning Effort + Provider Thinking Contract（DONE）
 > 下一任务：待规划
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
-A-O 的条目保留为历史完成记录；其中与当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。
+A-P 的条目保留为历史与当前计划记录；其中与当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。
 
 ## 1. 状态与完成标准
 
@@ -40,6 +40,7 @@ A Runtime + Persistence
 → M Codex Architecture Realignment
 → N update_plan Codex Lifecycle Alignment
 → O Same-Turn User Input + Turn Steer Lifecycle Alignment
+→ P Model Reasoning Effort + Provider Thinking Contract
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先更新 `docs/design.md`。
@@ -1066,15 +1067,89 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 - provider-mock E2E 覆盖首轮 stream 中连续 steer、首请求隔离、FIFO、单一 Turn lifecycle 与 interrupt residual input；Session tests 覆盖 expected TurnID、Compact rejection、queue seal、admission waiter/cancel/shutdown 和 compaction continuation 顺序。
 - `make check`（含 vet、全量测试和 build）、`go test -race ./... -count=1`、architecture guards 与 `git diff --check` 均通过。
 
-## 18. 当前保留能力
+## 18. P. Model Reasoning Effort + Provider Thinking Contract — `DONE`
+
+### 目标
+
+- 增加 Codex 风格顶层 `model_reasoning_effort`，并确保它真实进入普通 sampling 与 Compaction wire request。
+- 删除通用 reasoning enabled/preserve 假抽象；省略 effort 使用 Provider 默认，`none` 承担显式关闭语义。
+- 将 `standard` 定义为 OpenAI-compatible opt-in passthrough，将 OpenAI 与 DeepSeek 的官方 effort contract 纳入 Dialect 契约测试。
+- 保持基础版范围：不增加 `/effort`、Plan-specific effort、Model Catalog、数字 effort、Codex `ultra` 或任意 custom effort。
+
+### P-01：Reasoning Domain + Config Contract — `DONE`
+
+- 定义稳定 `ReasoningEffort`：`none/minimal/low/medium/high/xhigh/max`，并将通用 `ReasoningConfig` 收敛为仅持有 `Effort`。
+- 增加顶层 `model_reasoning_effort`、patch/merge、validation、clone 与 Config v2 schema；省略值保持 unset，不注入客户端默认 effort。
+- 删除生产 Domain 中通用 `Enabled/Preserve` 及其冲突语义；reasoning history 和 thinking cleanup 改由 Dialect 自动维护。
+- 增加 config load/default/invalid value 测试，并更新 Architecture Guard 的 Model runtime field ownership。
+
+### P-02：Turn Freeze + Rollout + Request Propagation — `DONE`
+
+- 将 effective effort 从 Session Configuration 冻结到 TurnContext，并投影到 TurnContextItem；未配置时不记录伪造的 Provider 默认值。
+- 普通 continuation 的每次 SampleRequest 复用冻结值，不从可变 Config 重新读取。
+- 手动与自动 Compaction 使用相同 effort，ModelClientSession 将其统一映射到 `llm.Request.Reasoning.Effort`。
+- 覆盖 same-Turn continuation、Rollout codec/replay、Resume diagnostic 和 sampling/compaction 一致性测试。
+
+### P-03：Standard + OpenAI Wire Mapping — `DONE`
+
+- 对 `standard` 与 `openai`，Responses 请求在显式配置时序列化 `reasoning.effort`，Chat Completions 序列化 `reasoning_effort`；未配置时两个字段均省略。该规则是 OpenAI-compatible 主线，不绕过其他已知 Dialect 的官方契约。
+- `standard` 采用用户显式 opt-in passthrough，不用布尔 capability 将 unknown 错判为 unsupported；上游 Provider 4xx 保留原始分类与脱敏诊断。
+- `openai` 使用 SDK typed field，并覆盖 `none/minimal/low/medium/high/xhigh/max` 的精确 JSON fixture。
+- 不根据 Base URL 或模型名猜测 effort 支持，不在 Adapter 内补写默认等级。
+
+### P-04：DeepSeek Current Contract Alignment — `DONE`
+
+- 更新 DeepSeek Dialect 的 Chat Completions `reasoning_effort` 映射和 `none → thinking.type=disabled` 语义；省略时依赖官方默认 thinking/effort。
+- 在官方 Responses contract 通过 fixture 后将 DeepSeek 从 Chat-only 扩展为 Chat + Responses，并复用 `reasoning.effort` 主链。
+- 保持 `reasoning_content` tool-call continuation history，禁止同时发送多套 `thinking`/`enable_thinking`/`chat_template_kwargs` 猜测字段。
+- 增加 DeepSeek low/high/max、兼容等级、unset、none、history replay、tool call 和 usage contract tests。
+
+### P-05：Qwen + GLM Current Effort Contracts — `DONE`
+
+- 未配置 effort 时不发送 enable/disable 字段，使用 Provider 默认 thinking 行为。
+- Qwen Dialect 从 Chat-only 扩展为 Responses + Chat Completions：Responses 发送 `reasoning.effort`；Chat 的非 `none` 等级发送 `reasoning_effort`，`none` 映射为 `enable_thinking=false`。
+- GLM Chat Completions 的非 `none` 等级发送 `reasoning_effort`，`none` 映射为 `thinking.type=disabled`；不把非 `none` 等级降级为简单 `thinking.type=enabled`。
+- 不根据模型名维护客户端 support matrix；具体模型不支持某等级时保留上游 4xx，不静默忽略、改写或降级。
+- reasoning history、旧 thinking toggle 与 GLM clear-thinking 行为保持 Dialect-owned，不重新引入用户可配置 `Preserve`。
+
+### P-06：User-facing Config Surfaces — `DONE`
+
+- 更新 provenance、`config check`、`config show/explain`、example config、README 和错误文案，明确 unset、`none` 与 Provider default 的区别。
+- 增加 `AMADEUS_MODEL_REASONING_EFFORT` 与 `--model-reasoning-effort` 进程级 override，遵循 file < environment < CLI 的既有优先级。
+- `/status` 只展示当前 Session/Turn 已冻结的 effective configured effort，不把未知 Provider 默认值显示为 `high` 或 `medium`。
+- 不实现 `/effort` slash command、TUI picker 或 per-mode mutation。
+
+### P-07：Guards + End-to-End Acceptance — `DONE`
+
+- 增加 provider-mock E2E，分别验证 Responses、Chat、standard passthrough、OpenAI typed mapping、DeepSeek mapping、unsupported Dialect 和 Compaction。
+- 增加 architecture guards，禁止 ProviderInfo 持有 effort、通用 `ReasoningConfig.Enabled/Preserve` 回流、普通请求伪造默认 effort、Qwen 未声明 Responses 支持，以及 Qwen/GLM 非 `none` effort 被拒绝或降级为简单 thinking enable。
+- 运行 targeted tests、`make check`、`go test -race ./... -count=1`、`git diff --check` 和架构扫描；仅在代码、测试、文档和旧抽象删除全部完成后标记 P 为 DONE。
+
+### P 出口
+
+- `model_reasoning_effort` 从 Config、TurnContext、Rollout、sampling 与 Compaction 到 wire request 具有单一可验证主链；Wire API 选择候选字段形状，Dialect 再确认、覆写或拒绝。
+- unset、`none` 和显式等级语义稳定；不存在通用 enabled/preserve 冲突配置或客户端伪造模型默认值。
+- Standard/OpenAI/DeepSeek/Qwen/GLM 使用各自官方 Responses/Chat effort 字段；DeepSeek/Qwen/GLM 的 Chat `none` 使用厂商关闭字段，Qwen Dialect 明确支持 Responses；客户端不猜测模型级 supported levels，上游兼容性错误保持可见。
+- 当前 Turn 的 effort 可诊断、可回放、不可被 same-Turn 配置变化污染，Provider 错误保持准确分类。
+
+### 完成记录
+
+- 2026-08-21 完成 `ReasoningEffort` 领域枚举、顶层 Config/Environment/CLI/provenance/validation/clone 主链，并删除生产 `ReasoningConfig.Enabled/Preserve`。
+- Turn 启动冻结 effort 到 `TurnContext`/`TurnContextItem`，普通 continuation、手动 Compaction、自动 Compaction 与 retry 均复用同一 `llm.Request.Reasoning.Effort`。
+- Responses 使用 typed `reasoning.effort`，Chat 使用 typed `reasoning_effort`；DeepSeek/Qwen 声明 Responses 支持，DeepSeek/Qwen/GLM 的 Chat `none` 使用各自官方关闭字段。
+- `config show/explain`、`AMADEUS_MODEL_REASONING_EFFORT`、`--model-reasoning-effort`、example config、README 与 `/status` 已接通；unset 明确显示为 Provider default。
+- config/domain/Turn/Rollout/Compaction/Dialect/Adapter provider-mock 与 Architecture Guard 覆盖完成；`make check`、`go test -race ./... -count=1` 和 `git diff --check` 通过。
+
+## 19. 当前保留能力
 
 - 默认启动：`amadeus` 或 `amadeus "<task>"`。
 - 当前配置链和 Provider Adapter 已可使用 OpenAI Responses/Chat Completions 及兼容 Provider。
 - JSONL Canonical Rollout + SQLite Metadata Index 已可支持 Session 恢复。
 - TUI 和 Inline 输出以当前代码和 `docs/design.md` 为准。
 - 内置 Tool、Approval、Diff、Web Search 和 Slash Command 已进入基础主链；N 收敛 `update_plan`、引入 `request_user_input`，并将现有 `/plan` 重构为 Codex 风格 Collaboration Mode 与 Proposed Plan lifecycle；O 已补齐同 Turn 用户输入与 steer lifecycle。
+- P 已完成 Model Reasoning Effort 与 Provider Thinking Contract；当前生产主链可从配置冻结到 Turn，并贯通普通 sampling、Compaction 与 Provider wire request。
 
-## 19. 当前执行规则
+## 20. 当前执行规则
 
 1. 每次只推进一个 `TODO`/`DOING` 主任务。
 2. 先修改 `docs/design.md`，再修改代码；实现发现设计问题时暂停并同步 Contract。
@@ -1082,7 +1157,7 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 4. 任务完成必须运行针对性测试和构建；环境限制导致的测试失败要单独记录。
 5. 本文只更新任务状态和出口，不复制架构设计、源码审计或长篇讨论。
 
-## 20. 源码结构清理 — `DONE`
+## 21. 源码结构清理 — `DONE`
 
 ### 已完成
 

@@ -9,93 +9,75 @@ import (
 	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
-func TestQwenChatDialectSerializesThinkingWithoutReasoningHistory(t *testing.T) {
-	enabled := true
-	request := dialectChatRequest()
-	request.Reasoning = &llm.ReasoningConfig{Enabled: &enabled}
-	request.Prompt.Input[0].Reasoning = "do not replay this"
-
-	body := marshalDialectChatRequest(t, config.DialectQwen, request)
-	if body["enable_thinking"] != true {
-		t.Fatalf("Qwen request did not enable thinking: %#v", body)
+func TestChatDialectReasoningEffortMapping(t *testing.T) {
+	tests := []struct {
+		name       string
+		dialect    config.ProviderDialect
+		effort     *llm.ReasoningEffort
+		wantEffort string
+		wantField  string
+		wantValue  any
+	}{
+		{name: "standard high", dialect: config.DialectStandard, effort: effortPointer(llm.ReasoningEffortHigh), wantEffort: "high"},
+		{name: "OpenAI max", dialect: config.DialectOpenAI, effort: effortPointer(llm.ReasoningEffortMax), wantEffort: "max"},
+		{name: "DeepSeek low", dialect: config.DialectDeepSeek, effort: effortPointer(llm.ReasoningEffortLow), wantEffort: "low"},
+		{name: "DeepSeek none", dialect: config.DialectDeepSeek, effort: effortPointer(llm.ReasoningEffortNone), wantField: "thinking", wantValue: map[string]any{"type": "disabled"}},
+		{name: "Qwen xhigh", dialect: config.DialectQwen, effort: effortPointer(llm.ReasoningEffortXHigh), wantEffort: "xhigh"},
+		{name: "Qwen none", dialect: config.DialectQwen, effort: effortPointer(llm.ReasoningEffortNone), wantField: "enable_thinking", wantValue: false},
+		{name: "GLM medium", dialect: config.DialectGLM, effort: effortPointer(llm.ReasoningEffortMedium), wantEffort: "medium"},
+		{name: "GLM none", dialect: config.DialectGLM, effort: effortPointer(llm.ReasoningEffortNone), wantField: "thinking", wantValue: map[string]any{"type": "disabled"}},
+		{name: "unset", dialect: config.DialectQwen},
 	}
-	assertCompatibleTokenAndToolFields(t, body)
-	assistant := body["messages"].([]any)[0].(map[string]any)
-	if _, ok := assistant["reasoning_content"]; ok {
-		t.Fatalf("Qwen request replayed reasoning history: %#v", assistant)
-	}
-}
-
-func TestQwenChatDialectRejectsUnsupportedPreserveOption(t *testing.T) {
-	preserve := true
-	request := dialectChatRequest()
-	request.Reasoning = &llm.ReasoningConfig{Preserve: &preserve}
-	dialect := mustResolveDialect(t, config.DialectQwen)
-
-	_, err := newChatCompletionsRequestForDialect(request, dialect)
-	if err == nil || !strings.Contains(err.Error(), "preserve") {
-		t.Fatalf("unexpected Qwen preserve error: %v", err)
-	}
-}
-
-func TestGLMChatDialectSerializesPreservedThinking(t *testing.T) {
-	enabled := true
-	preserve := true
-	request := dialectChatRequest()
-	request.Reasoning = &llm.ReasoningConfig{Enabled: &enabled, Preserve: &preserve}
-	request.Prompt.Input[0].Reasoning = "preserved reasoning"
-
-	body := marshalDialectChatRequest(t, config.DialectGLM, request)
-	thinking := body["thinking"].(map[string]any)
-	if thinking["type"] != "enabled" || thinking["clear_thinking"] != false {
-		t.Fatalf("unexpected GLM thinking options: %#v", thinking)
-	}
-	assertCompatibleTokenAndToolFields(t, body)
-	assistant := body["messages"].([]any)[0].(map[string]any)
-	if assistant["reasoning_content"] != "preserved reasoning" {
-		t.Fatalf("GLM request did not preserve reasoning history: %#v", assistant)
-	}
-}
-
-func TestGLMChatDialectRejectsPreserveWhenDisabled(t *testing.T) {
-	enabled := false
-	preserve := true
-	request := dialectChatRequest()
-	request.Reasoning = &llm.ReasoningConfig{Enabled: &enabled, Preserve: &preserve}
-	dialect := mustResolveDialect(t, config.DialectGLM)
-
-	_, err := newChatCompletionsRequestForDialect(request, dialect)
-	if err == nil || !strings.Contains(err.Error(), "disabled") {
-		t.Fatalf("unexpected GLM reasoning error: %v", err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := dialectChatRequest()
+			request.Reasoning = llm.ReasoningConfigForEffort(test.effort)
+			body := marshalDialectChatRequest(t, test.dialect, request)
+			if got, ok := body["reasoning_effort"]; test.wantEffort == "" {
+				if ok {
+					t.Fatalf("unexpected reasoning_effort: %#v", got)
+				}
+			} else if !ok || got != test.wantEffort {
+				t.Fatalf("reasoning_effort = %#v, want %q", got, test.wantEffort)
+			}
+			for _, field := range []string{"thinking", "enable_thinking"} {
+				got, ok := body[field]
+				if field == test.wantField {
+					if !ok || !jsonValuesEqual(got, test.wantValue) {
+						t.Fatalf("%s = %#v, want %#v", field, got, test.wantValue)
+					}
+				} else if ok {
+					t.Fatalf("unexpected %s field: %#v", field, got)
+				}
+			}
+			if test.dialect != config.DialectStandard && test.dialect != config.DialectOpenAI {
+				assertCompatibleTokenAndToolFields(t, body)
+			}
+		})
 	}
 }
 
-func TestDeepSeekChatDialectPreservesThinkingHistory(t *testing.T) {
-	request := dialectChatRequest()
-	request.Prompt.Input[0].Reasoning = "preserved DeepSeek reasoning"
-
-	body := marshalDialectChatRequest(t, config.DialectDeepSeek, request)
-	assertCompatibleTokenAndToolFields(t, body)
-	assistant := body["messages"].([]any)[0].(map[string]any)
-	if assistant["reasoning_content"] != "preserved DeepSeek reasoning" {
-		t.Fatalf("DeepSeek request did not preserve reasoning history: %#v", assistant)
-	}
-	if _, ok := body["enable_thinking"]; ok {
-		t.Fatalf("DeepSeek request used Qwen field: %#v", body)
-	}
-	if _, ok := body["thinking"]; ok {
-		t.Fatalf("DeepSeek request used GLM field: %#v", body)
+func TestReasoningChatDialectsReplayAssistantReasoningHistory(t *testing.T) {
+	for _, dialect := range []config.ProviderDialect{config.DialectStandard, config.DialectDeepSeek, config.DialectQwen, config.DialectGLM} {
+		t.Run(string(dialect), func(t *testing.T) {
+			request := dialectChatRequest()
+			request.Prompt.Input[0].Reasoning = "preserved reasoning"
+			body := marshalDialectChatRequest(t, dialect, request)
+			assistant := body["messages"].([]any)[0].(map[string]any)
+			if assistant["reasoning_content"] != "preserved reasoning" {
+				t.Fatalf("reasoning history was not preserved: %#v", assistant)
+			}
+		})
 	}
 }
 
-func TestStandardChatDialectPreservesThinkingHistory(t *testing.T) {
+func TestChatDialectRejectsInvalidReasoningEffort(t *testing.T) {
+	invalid := llm.ReasoningEffort("maximum")
 	request := dialectChatRequest()
-	request.Prompt.Input[0].Reasoning = "preserved custom-provider reasoning"
-
-	body := marshalDialectChatRequest(t, config.DialectStandard, request)
-	assistant := body["messages"].([]any)[0].(map[string]any)
-	if assistant["reasoning_content"] != "preserved custom-provider reasoning" {
-		t.Fatalf("standard request did not preserve reasoning history: %#v", assistant)
+	request.Reasoning = &llm.ReasoningConfig{Effort: &invalid}
+	_, err := newChatCompletionsRequestForDialect(request, mustResolveDialect(t, config.DialectStandard))
+	if err == nil || !strings.Contains(err.Error(), "invalid") {
+		t.Fatalf("unexpected invalid effort error: %v", err)
 	}
 }
 
@@ -144,17 +126,22 @@ func mustResolveDialect(t *testing.T, name config.ProviderDialect) Dialect {
 func assertCompatibleTokenAndToolFields(t *testing.T, body map[string]any) {
 	t.Helper()
 	if _, ok := body["max_tokens"]; ok {
-		t.Fatalf("compatible dialect emitted max_tokens: %#v", body)
+		t.Fatalf("request forced max_tokens: %#v", body)
 	}
 	if _, ok := body["max_completion_tokens"]; ok {
-		t.Fatalf("compatible dialect emitted max_completion_tokens: %#v", body)
+		t.Fatalf("request forced max_completion_tokens: %#v", body)
 	}
-	tool := body["tools"].([]any)[0].(map[string]any)
-	function := tool["function"].(map[string]any)
-	if tool["type"] != "function" || function["name"] != "read" {
-		t.Fatalf("unexpected compatible tool definition: %#v", tool)
-	}
+	tools := body["tools"].([]any)
+	function := tools[0].(map[string]any)["function"].(map[string]any)
 	if _, ok := function["strict"]; ok {
-		t.Fatalf("compatible dialect emitted unsupported strict field: %#v", function)
+		t.Fatalf("compatible dialect emitted strict tool schema: %#v", function)
 	}
+}
+
+func effortPointer(value llm.ReasoningEffort) *llm.ReasoningEffort { return &value }
+
+func jsonValuesEqual(left, right any) bool {
+	leftJSON, _ := json.Marshal(left)
+	rightJSON, _ := json.Marshal(right)
+	return string(leftJSON) == string(rightJSON)
 }

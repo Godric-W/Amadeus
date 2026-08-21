@@ -1,6 +1,10 @@
 package config
 
-import "time"
+import (
+	"time"
+
+	"github.com/Godric-W/Amadeus/internal/llm"
+)
 
 type LogLevel string
 
@@ -25,6 +29,7 @@ type Config struct {
 	Model                      string                       `yaml:"model"`
 	ModelProvider              string                       `yaml:"model_provider"`
 	ModelContextWindow         int64                        `yaml:"model_context_window"`
+	ModelReasoningEffort       *llm.ReasoningEffort         `yaml:"model_reasoning_effort,omitempty"`
 	ModelAutoCompactTokenLimit int64                        `yaml:"model_auto_compact_token_limit"`
 	ToolOutputTokenLimit       int64                        `yaml:"tool_output_token_limit"`
 	ModelProviders             map[string]ModelProviderInfo `yaml:"model_providers"`

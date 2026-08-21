@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/audit"
@@ -141,6 +142,34 @@ func TestCompactTaskProducesSemanticReplacementHistory(t *testing.T) {
 	if err != nil || len(projection.Messages) != 2 || projection.Messages[0].Role != llm.RoleUser || !strings.Contains(projection.Messages[1].Content, "Another language model started to solve this problem") || !strings.Contains(projection.Messages[1].Content, "Inspection completed") {
 		t.Fatalf("replacement history was not authoritative: projection=%#v err=%v", projection, err)
 	}
+}
+
+func TestCompactTaskUsesFrozenReasoningEffort(t *testing.T) {
+	session, host, client := newCompactionTestRuntime(t)
+	effort := llm.ReasoningEffortXHigh
+	turnContext := compactTurnContext()
+	turnContext.ReasoningEffort = &effort
+	if _, err := (&compactTask{runtime: &session.services, events: host}).Run(context.Background(), session, turnContext); err != nil {
+		t.Fatal(err)
+	}
+	assertRequestReasoningEffort(t, client.request, effort)
+}
+
+func TestCompactorUsesProvidedReasoningEffort(t *testing.T) {
+	session, host, client := newCompactionTestRuntime(t)
+	modelSession, err := session.services.NewModelClientSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	effort := llm.ReasoningEffortHigh
+	items, err := session.services.Compact(context.Background(), engine.CompactRequest{
+		History: session.ContextProjection(), ModelSession: modelSession,
+		Reasoning: llm.ReasoningConfigForEffort(&effort), Events: host,
+	})
+	if err != nil || len(items) == 0 {
+		t.Fatalf("compaction items=%d err=%v", len(items), err)
+	}
+	assertRequestReasoningEffort(t, client.request, effort)
 }
 
 func TestCompactTaskUsesEffectiveToolOutputTokenLimit(t *testing.T) {
@@ -278,6 +307,13 @@ func TestCompactionSuccessEventOrderRemainsContextWarningTerminal(t *testing.T) 
 
 func compactTurnContext() *turn.TurnContext {
 	return &turn.TurnContext{ThreadID: "thread-1", TurnID: "turn-2"}
+}
+
+func assertRequestReasoningEffort(t *testing.T, request llm.Request, want llm.ReasoningEffort) {
+	t.Helper()
+	if request.Reasoning == nil || request.Reasoning.Effort == nil || *request.Reasoning.Effort != want {
+		t.Fatalf("request reasoning = %#v, want %q", request.Reasoning, want)
+	}
 }
 
 func newCompactionTestRuntime(t *testing.T) (*Session, *compactTestHost, *interactiveCompactionClient) {

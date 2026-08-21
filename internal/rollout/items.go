@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -153,12 +154,13 @@ func (item CompactedItem) Validate() error {
 }
 
 type TurnContextItem struct {
-	ThreadID protocol.ThreadID `json:"thread_id"`
-	TurnID   protocol.TurnID   `json:"turn_id"`
-	Provider string            `json:"provider"`
-	Model    string            `json:"model"`
-	CWD      string            `json:"cwd"`
-	Shell    string            `json:"shell,omitempty"`
+	ThreadID        protocol.ThreadID    `json:"thread_id"`
+	TurnID          protocol.TurnID      `json:"turn_id"`
+	Provider        string               `json:"provider"`
+	Model           string               `json:"model"`
+	ReasoningEffort *llm.ReasoningEffort `json:"reasoning_effort,omitempty"`
+	CWD             string               `json:"cwd"`
+	Shell           string               `json:"shell,omitempty"`
 
 	CurrentDate string `json:"current_date,omitempty"`
 	Timezone    string `json:"timezone,omitempty"`
@@ -180,6 +182,9 @@ func (item TurnContextItem) Validate() error {
 	}
 	if strings.TrimSpace(item.Provider) == "" || strings.TrimSpace(item.Model) == "" || strings.TrimSpace(item.CWD) == "" || strings.TrimSpace(item.Mode) == "" {
 		return errors.New("turn context item is incomplete")
+	}
+	if item.ReasoningEffort != nil && !item.ReasoningEffort.Valid() {
+		return errors.New("turn context reasoning effort is invalid")
 	}
 	if len(item.OutputSchema) != 0 && !json.Valid(item.OutputSchema) {
 		return errors.New("turn context output schema is invalid")

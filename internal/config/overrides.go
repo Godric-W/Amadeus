@@ -1,21 +1,25 @@
 package config
 
+import "github.com/Godric-W/Amadeus/internal/llm"
+
 const (
-	EnvModelProvider = "AMADEUS_MODEL_PROVIDER"
-	EnvWireAPI       = "AMADEUS_WIRE_API"
-	EnvDialect       = "AMADEUS_DIALECT"
-	EnvAPIKey        = "AMADEUS_API_KEY"
-	EnvBaseURL       = "AMADEUS_BASE_URL"
-	EnvModel         = "AMADEUS_MODEL"
+	EnvModelProvider        = "AMADEUS_MODEL_PROVIDER"
+	EnvWireAPI              = "AMADEUS_WIRE_API"
+	EnvDialect              = "AMADEUS_DIALECT"
+	EnvAPIKey               = "AMADEUS_API_KEY"
+	EnvBaseURL              = "AMADEUS_BASE_URL"
+	EnvModel                = "AMADEUS_MODEL"
+	EnvModelReasoningEffort = "AMADEUS_MODEL_REASONING_EFFORT"
 )
 
 type Overrides struct {
-	ModelProvider *string
-	WireAPI       *WireAPI
-	Dialect       *ProviderDialect
-	APIKey        *string
-	BaseURL       *string
-	Model         *string
+	ModelProvider        *string
+	WireAPI              *WireAPI
+	Dialect              *ProviderDialect
+	APIKey               *string
+	BaseURL              *string
+	Model                *string
+	ModelReasoningEffort *llm.ReasoningEffort
 }
 
 func applyEnvironmentOverrides(configured Config, lookup EnvLookup) Config {
@@ -40,6 +44,10 @@ func applyEnvironmentOverrides(configured Config, lookup EnvLookup) Config {
 	if value, ok := lookup(EnvModel); ok {
 		overrides.Model = &value
 	}
+	if value, ok := lookup(EnvModelReasoningEffort); ok {
+		effort := llm.ReasoningEffort(value)
+		overrides.ModelReasoningEffort = &effort
+	}
 
 	return ApplyOverrides(configured, overrides)
 }
@@ -48,6 +56,9 @@ func ApplyOverrides(configured Config, overrides Overrides) Config {
 	overridden := clone(configured)
 	assign(&overridden.ModelProvider, overrides.ModelProvider)
 	assign(&overridden.Model, overrides.Model)
+	if overrides.ModelReasoningEffort != nil {
+		overridden.ModelReasoningEffort = llm.CloneReasoningEffort(overrides.ModelReasoningEffort)
+	}
 
 	providerName := overridden.ModelProvider
 	provider, exists := overridden.ModelProviders[providerName]

@@ -94,7 +94,8 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 		sample, sampleErr := modelSession.Sample(stepCtx, engine.SampleRequest{
 			ID: sampleID, Messages: step.Prompt.Items, BaseInstructions: step.BaseInstructions,
 			Tools: step.ToolRouter.Specs(), OutputSchema: llm.OutputSchema(turnContext.OutputSchema), OutputSchemaStrict: turnContext.OutputSchemaStrict,
-			Events: sampleEvents,
+			Reasoning: llm.ReasoningConfigForEffort(turnContext.ReasoningEffort),
+			Events:    sampleEvents,
 		})
 		usage = addUsage(usage, sample.Response.Usage)
 		if sampleErr != nil {
@@ -166,9 +167,12 @@ func addUsage(total, next llm.Usage) llm.Usage {
 	return total
 }
 
-func (session *Session) compactCallback(runtime *SessionServices, modelSession *engine.ModelClientSession, turnID protocol.TurnID, events protocol.EventSink) compactFunc {
+func (session *Session) compactCallback(runtime *SessionServices, modelSession *engine.ModelClientSession, turnContext turn.TurnContext, events protocol.EventSink) compactFunc {
 	return func(ctx context.Context) (bool, error) {
-		items, err := runtime.Compact(ctx, engine.CompactRequest{History: session.ContextProjection(), ModelSession: modelSession, Events: events})
+		items, err := runtime.Compact(ctx, engine.CompactRequest{
+			History: session.ContextProjection(), ModelSession: modelSession,
+			Reasoning: llm.ReasoningConfigForEffort(turnContext.ReasoningEffort), Events: events,
+		})
 		if err != nil {
 			if strings.Contains(err.Error(), "no earlier turn") || strings.Contains(err.Error(), "no safely compactable") || strings.Contains(err.Error(), "no conversation") {
 				return false, nil
@@ -178,7 +182,7 @@ func (session *Session) compactCallback(runtime *SessionServices, modelSession *
 		if len(items) == 0 {
 			return false, nil
 		}
-		if err := session.AppendItems(ctx, turnID, items...); err != nil {
+		if err := session.AppendItems(ctx, turnContext.TurnID, items...); err != nil {
 			return false, err
 		}
 		return true, nil

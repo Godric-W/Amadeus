@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
 func validConfig() Config {
@@ -71,6 +73,15 @@ func TestValidateAutoCompactLimitUsesNinetyPercentCeiling(t *testing.T) {
 	configured.ModelAutoCompactTokenLimit = 90_001
 	if err := Validate(configured); err == nil || !strings.Contains(err.Error(), "model_auto_compact_token_limit") {
 		t.Fatalf("expected compact limit error: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidReasoningEffort(t *testing.T) {
+	configured := validConfig()
+	effort := llm.ReasoningEffort("maximum")
+	configured.ModelReasoningEffort = &effort
+	if err := Validate(configured); err == nil || !strings.Contains(err.Error(), "model_reasoning_effort") {
+		t.Fatalf("expected reasoning effort error: %v", err)
 	}
 }
 

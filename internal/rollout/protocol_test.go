@@ -14,6 +14,7 @@ import (
 
 func TestRolloutItemVariantsRoundTrip(t *testing.T) {
 	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
+	effort := llm.ReasoningEffortHigh
 	result := tool.ToolResult{CallID: "call-1", ToolName: "read", Text: "contents", Partial: true, Metadata: map[string]any{"path": "README.md"}}
 	tests := []struct {
 		name string
@@ -32,7 +33,7 @@ func TestRolloutItemVariantsRoundTrip(t *testing.T) {
 		}},
 		{name: "turn context", item: TurnContextItem{
 			ThreadID: "thread-1", TurnID: "turn-1", Provider: "mock", Model: "model", CWD: "/workspace",
-			Shell: "bash", CurrentDate: "2026-08-20", Timezone: "Asia/Shanghai", Mode: "default",
+			ReasoningEffort: &effort, Shell: "bash", CurrentDate: "2026-08-20", Timezone: "Asia/Shanghai", Mode: "default",
 		}},
 		{name: "event message", item: EventMsgItem{Msg: protocol.TokenCountEvent{
 			ThreadID: "thread-1", TurnID: "turn-1", Usage: llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},

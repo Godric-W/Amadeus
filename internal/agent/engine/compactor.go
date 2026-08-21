@@ -19,6 +19,7 @@ import (
 type CompactRequest struct {
 	History      agentcontext.RolloutMessageProjection
 	ModelSession *ModelClientSession
+	Reasoning    *llm.ReasoningConfig
 	Events       protocol.EventSink
 }
 
@@ -56,6 +57,7 @@ func (compactor *Compactor) Compact(ctx context.Context, request CompactRequest)
 	response, err := request.ModelSession.Complete(ctx, CompleteRequest{
 		Request: llm.Request{
 			Model: compactor.ModelInfo.Name, Prompt: llm.Prompt{BaseInstructions: compactionInstructions, Input: input},
+			Reasoning: request.Reasoning.Clone(),
 		},
 		Events: request.Events,
 	})

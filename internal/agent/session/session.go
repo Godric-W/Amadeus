@@ -148,7 +148,9 @@ func (session *Session) loop() {
 		ThreadID: protocol.ThreadID(session.threadID),
 		Configuration: protocol.SessionConfiguration{
 			CWD: session.state.Configuration.CWD, Provider: session.state.Configuration.Runtime.ModelProvider,
-			Model: session.state.Configuration.Runtime.Model, Mode: string(session.state.Configuration.Mode),
+			Model:           session.state.Configuration.Runtime.Model,
+			ReasoningEffort: llm.CloneReasoningEffort(session.state.Configuration.Runtime.ModelReasoningEffort),
+			Mode:            string(session.state.Configuration.Mode),
 		},
 	}})
 	sessionDone := session.ctx.Done()
@@ -298,7 +300,9 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input, cli
 	baseContext := turn.TurnContext{
 		SubmissionID: submissionID,
 		ThreadID:     session.threadID, TurnID: turnID, Provider: session.state.Configuration.Runtime.ModelProvider,
-		Model: session.state.Configuration.Runtime.Model, CWD: session.state.Configuration.CWD, Shell: session.state.Configuration.Shell,
+		Model:           session.state.Configuration.Runtime.Model,
+		ReasoningEffort: llm.CloneReasoningEffort(session.state.Configuration.Runtime.ModelReasoningEffort),
+		CWD:             session.state.Configuration.CWD, Shell: session.state.Configuration.Shell,
 		CurrentDate: session.state.Configuration.CurrentDate, Timezone: session.state.Configuration.Timezone,
 		Mode: session.Mode(), Personality: session.state.Configuration.Personality,
 		OutputSchema:       append(json.RawMessage(nil), session.state.Configuration.OutputSchema...),

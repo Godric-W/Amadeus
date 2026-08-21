@@ -27,11 +27,6 @@ type ToolSpec struct {
 	Strict      bool
 }
 
-type ReasoningConfig struct {
-	Enabled  *bool
-	Preserve *bool
-}
-
 type Request struct {
 	Model     string
 	Prompt    Prompt

@@ -8,6 +8,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol/identity"
 	"github.com/Godric-W/Amadeus/internal/filechange"
+	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
 type ThreadID = identity.ThreadID
@@ -90,10 +91,11 @@ func (event Event) Validate() error {
 type EventMsg interface{ isEventMsg() }
 
 type SessionConfiguration struct {
-	CWD      string
-	Provider string
-	Model    string
-	Mode     string
+	CWD             string
+	Provider        string
+	Model           string
+	ReasoningEffort *llm.ReasoningEffort `json:"reasoning_effort,omitempty"`
+	Mode            string
 }
 
 type SessionConfiguredEvent struct {

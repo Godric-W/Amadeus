@@ -8,7 +8,9 @@ import (
 	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/config"
+	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/spf13/cobra"
+	"go.yaml.in/yaml/v3"
 )
 
 func newConfigCommand(flags *configFlags, runtime commandRuntime) *cobra.Command {
@@ -18,9 +20,31 @@ func newConfigCommand(flags *configFlags, runtime commandRuntime) *cobra.Command
 		Args:  cobra.NoArgs,
 	}
 	command.AddCommand(newConfigCheckCommand(flags, runtime))
+	command.AddCommand(newConfigShowCommand(flags, runtime))
 	command.AddCommand(newConfigExplainCommand(flags, runtime))
 
 	return command
+}
+
+func newConfigShowCommand(flags *configFlags, runtime commandRuntime) *cobra.Command {
+	return &cobra.Command{
+		Use:   "show",
+		Short: "Print the effective redacted configuration",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			configured, _, err := loadEffectiveConfig(command, flags, runtime)
+			if err != nil {
+				return err
+			}
+			if err := config.Validate(configured); err != nil {
+				return err
+			}
+			encoder := yaml.NewEncoder(command.OutOrStdout())
+			encoder.SetIndent(2)
+			defer encoder.Close()
+			return encoder.Encode(config.Redact(configured))
+		},
+	}
 }
 
 func newConfigExplainCommand(flags *configFlags, runtime commandRuntime) *cobra.Command {
@@ -124,6 +148,7 @@ func writeConfigExplanation(writer io.Writer, path string, configured config.Con
 	writeExplainedValue(writer, "model", configured.Model, sources)
 	writeExplainedValue(writer, "model_provider", configured.ModelProvider, sources)
 	writeExplainedValue(writer, "model_context_window", configured.ModelContextWindow, sources)
+	writeExplainedValue(writer, "model_reasoning_effort", displayReasoningEffort(configured.ModelReasoningEffort), sources)
 	writeExplainedValue(writer, "model_auto_compact_token_limit", configured.ModelAutoCompactTokenLimit, sources)
 	writeExplainedValue(writer, "tool_output_token_limit", configured.ToolOutputTokenLimit, sources)
 
@@ -158,6 +183,13 @@ func writeConfigExplanation(writer io.Writer, path string, configured config.Con
 	writeExplainedValue(writer, "web.search.max_results", configured.Web.Search.MaxResults, sources)
 	writeExplainedValue(writer, "logging.level", configured.Logging.Level, sources)
 	writeExplainedValue(writer, "logging.trace_llm", configured.Logging.TraceLLM, sources)
+}
+
+func displayReasoningEffort(effort *llm.ReasoningEffort) string {
+	if effort == nil {
+		return "provider default (unset)"
+	}
+	return string(*effort)
 }
 
 func writeExplainedValue(writer io.Writer, path string, value any, sources config.Sources) {

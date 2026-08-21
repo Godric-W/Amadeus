@@ -101,7 +101,7 @@ func (session *ModelClientSession) Sample(ctx context.Context, request SampleReq
 			OutputSchema:       append(llm.OutputSchema(nil), request.OutputSchema...),
 			OutputSchemaStrict: request.OutputSchemaStrict,
 		},
-		Reasoning: request.Reasoning,
+		Reasoning: request.Reasoning.Clone(),
 	}
 	projection := sampleStreamProjection{
 		assistantID: request.ID + ":assistant",

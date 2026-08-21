@@ -12,6 +12,9 @@ version: 2
 model: your-model
 model_provider: openai
 model_context_window: 128000
+# Omit to use the Provider/model default. Supported configured values:
+# none, minimal, low, medium, high, xhigh, max.
+# model_reasoning_effort: high
 # Omit to derive 90% of model_context_window. An explicit value may only
 # tighten that threshold.
 # model_auto_compact_token_limit: 115200

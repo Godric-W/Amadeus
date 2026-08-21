@@ -1,12 +1,17 @@
 package config
 
-import "time"
+import (
+	"time"
+
+	"github.com/Godric-W/Amadeus/internal/llm"
+)
 
 type configPatch struct {
 	Version                    *int                          `yaml:"version"`
 	Model                      *string                       `yaml:"model"`
 	ModelProvider              *string                       `yaml:"model_provider"`
 	ModelContextWindow         *int64                        `yaml:"model_context_window"`
+	ModelReasoningEffort       *llm.ReasoningEffort          `yaml:"model_reasoning_effort"`
 	ModelAutoCompactTokenLimit *int64                        `yaml:"model_auto_compact_token_limit"`
 	ToolOutputTokenLimit       *int64                        `yaml:"tool_output_token_limit"`
 	ModelProviders             map[string]modelProviderPatch `yaml:"model_providers"`
@@ -63,6 +68,9 @@ func (patch configPatch) apply(base Config) Config {
 	assign(&configured.Model, patch.Model)
 	assign(&configured.ModelProvider, patch.ModelProvider)
 	assign(&configured.ModelContextWindow, patch.ModelContextWindow)
+	if patch.ModelReasoningEffort != nil {
+		configured.ModelReasoningEffort = llm.CloneReasoningEffort(patch.ModelReasoningEffort)
+	}
 	assign(&configured.ModelAutoCompactTokenLimit, patch.ModelAutoCompactTokenLimit)
 	assign(&configured.ToolOutputTokenLimit, patch.ToolOutputTokenLimit)
 
@@ -127,6 +135,7 @@ func (patch loggingPatch) apply(logging *LoggingConfig) {
 
 func clone(configured Config) Config {
 	cloned := configured
+	cloned.ModelReasoningEffort = llm.CloneReasoningEffort(configured.ModelReasoningEffort)
 	cloned.ModelProviders = make(map[string]ModelProviderInfo, len(configured.ModelProviders))
 	for name, provider := range configured.ModelProviders {
 		cloned.ModelProviders[name] = provider

@@ -95,63 +95,26 @@ func resolveDialect(name config.ProviderDialect) (Dialect, error) {
 
 	switch name {
 	case config.DialectStandard:
-		return dialect{name: name, supportedWireAPIs: bothAPIs, capabilities: standardCapabilities, prepareChatMessage: prepareReasoningChatMessage, supportsStrictToolSchema: true}, nil
+		return dialect{name: name, supportedWireAPIs: bothAPIs, capabilities: standardCapabilities, prepareChatRequest: prepareStandardChatReasoning, prepareChatMessage: prepareReasoningChatMessage, supportsStrictToolSchema: true}, nil
 	case config.DialectOpenAI:
-		return dialect{name: name, supportedWireAPIs: bothAPIs, capabilities: openAICapabilities, supportsStrictToolSchema: true}, nil
+		return dialect{name: name, supportedWireAPIs: bothAPIs, capabilities: openAICapabilities, prepareChatRequest: prepareStandardChatReasoning, supportsStrictToolSchema: true}, nil
 	case config.DialectDeepSeek:
-		return dialect{name: name, supportedWireAPIs: chatOnly, capabilities: reasoningChatCapabilities, prepareChatMessage: prepareReasoningChatMessage}, nil
+		return dialect{name: name, supportedWireAPIs: bothAPIs, capabilities: reasoningCapabilities, prepareChatRequest: prepareDeepSeekChatReasoning, prepareChatMessage: prepareReasoningChatMessage}, nil
 	case config.DialectQwen:
-		return dialect{name: name, supportedWireAPIs: chatOnly, capabilities: reasoningChatCapabilities, prepareChatRequest: prepareQwenChatRequest}, nil
+		return dialect{name: name, supportedWireAPIs: bothAPIs, capabilities: reasoningCapabilities, prepareChatRequest: prepareQwenChatReasoning, prepareChatMessage: prepareReasoningChatMessage}, nil
 	case config.DialectGLM:
-		return dialect{name: name, supportedWireAPIs: chatOnly, capabilities: reasoningChatCapabilities, prepareChatRequest: prepareGLMChatRequest, prepareChatMessage: prepareReasoningChatMessage}, nil
+		return dialect{name: name, supportedWireAPIs: chatOnly, capabilities: reasoningCapabilities, prepareChatRequest: prepareGLMChatReasoning, prepareChatMessage: prepareReasoningChatMessage}, nil
 	default:
 		return nil, &DialectError{Dialect: name}
 	}
 }
 
-func reasoningChatCapabilities(config.WireAPI) llm.Capabilities {
+func reasoningCapabilities(config.WireAPI) llm.Capabilities {
 	return llm.Capabilities{
 		SupportsStreaming:   true,
 		SupportsReasoning:   true,
 		SupportsStreamUsage: true,
 	}
-}
-
-func prepareQwenChatRequest(request llm.Request, params *openaisdk.ChatCompletionNewParams) error {
-	if request.Reasoning == nil {
-		return nil
-	}
-	if request.Reasoning.Preserve != nil {
-		return errorsForUnsupportedReasoningOption(config.DialectQwen, "preserve")
-	}
-	if request.Reasoning.Enabled != nil {
-		params.SetExtraFields(map[string]any{"enable_thinking": *request.Reasoning.Enabled})
-	}
-	return nil
-}
-
-func prepareGLMChatRequest(request llm.Request, params *openaisdk.ChatCompletionNewParams) error {
-	if request.Reasoning == nil {
-		return nil
-	}
-	thinking := make(map[string]any)
-	if request.Reasoning.Enabled != nil {
-		if *request.Reasoning.Enabled {
-			thinking["type"] = "enabled"
-		} else {
-			thinking["type"] = "disabled"
-		}
-	}
-	if request.Reasoning.Preserve != nil {
-		if request.Reasoning.Enabled != nil && !*request.Reasoning.Enabled && *request.Reasoning.Preserve {
-			return fmt.Errorf("provider dialect %q cannot preserve reasoning while thinking is disabled", config.DialectGLM)
-		}
-		thinking["clear_thinking"] = !*request.Reasoning.Preserve
-	}
-	if len(thinking) != 0 {
-		params.SetExtraFields(map[string]any{"thinking": thinking})
-	}
-	return nil
 }
 
 func prepareReasoningChatMessage(message llm.ResponseItem, converted *openaisdk.ChatCompletionMessageParamUnion) error {
@@ -163,10 +126,6 @@ func prepareReasoningChatMessage(message llm.ResponseItem, converted *openaisdk.
 	}
 	converted.OfAssistant.SetExtraFields(map[string]any{"reasoning_content": message.Reasoning})
 	return nil
-}
-
-func errorsForUnsupportedReasoningOption(dialect config.ProviderDialect, option string) error {
-	return fmt.Errorf("provider dialect %q does not support reasoning option %q", dialect, option)
 }
 
 func openAICapabilities(wireAPI config.WireAPI) llm.Capabilities {

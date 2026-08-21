@@ -211,6 +211,31 @@ func TestContinueTurnPersistsAndContinuesAfterToolFailure(t *testing.T) {
 	}
 }
 
+func TestContinueTurnKeepsFrozenReasoningEffortAcrossContinuations(t *testing.T) {
+	client := &continuationTestClient{streams: []llm.Stream{
+		continuationStream(llm.StreamChunk{ToolCalls: []llm.ToolCall{{ID: "call-1", Name: "change_config", Arguments: json.RawMessage(`{}`)}}, FinishReason: llm.FinishReasonToolCalls}),
+		continuationStream(llm.StreamChunk{ContentDelta: "done"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
+	}}
+	high := llm.ReasoningEffortHigh
+	low := llm.ReasoningEffortLow
+	changingTool := &continuationLargeTool{name: "change_config", text: "changed"}
+	session := newContinuationTestSession(t, client, []tool.ToolDefinition{changingTool}, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), engine.DefaultTurnBudget())
+	session.state.Configuration.Runtime.ModelReasoningEffort = &high
+	changingTool.after = func() { session.state.Configuration.Runtime.ModelReasoningEffort = &low }
+	appendContinuationUser(t, session, "turn-effort", "do work")
+	if _, err := runContinuationTestTurn(session, "turn-effort", &continuationEventSink{session: session}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(client.requests))
+	}
+	for index, request := range client.requests {
+		if request.Reasoning == nil || request.Reasoning.Effort == nil || *request.Reasoning.Effort != llm.ReasoningEffortHigh {
+			t.Fatalf("request %d effort = %#v, want high", index, request.Reasoning)
+		}
+	}
+}
+
 func TestCaptureStepUsesOneFrozenRouterForModeAndRegistryRevision(t *testing.T) {
 	client := &continuationTestClient{}
 	definitions := []tool.ToolDefinition{
@@ -538,7 +563,12 @@ func contextProjectionText(messages []llm.ResponseItem) string {
 }
 
 func continuationTurnContext(session *Session, turnID protocol.TurnID, mode turn.ModeKind) turn.TurnContext {
-	return turn.TurnContext{ThreadID: session.threadID, TurnID: turnID, Provider: session.services.modelInfo.Provider, Model: session.services.modelInfo.Name, CWD: "/workspace", Mode: mode}
+	return turn.TurnContext{
+		ThreadID: session.threadID, TurnID: turnID,
+		Provider: session.services.modelInfo.Provider, Model: session.services.modelInfo.Name,
+		ReasoningEffort: llm.CloneReasoningEffort(session.state.Configuration.Runtime.ModelReasoningEffort),
+		CWD:             "/workspace", Mode: mode,
+	}
 }
 
 func continuationProvider(streamRetries int) config.ModelProviderInfo {

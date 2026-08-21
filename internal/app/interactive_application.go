@@ -13,6 +13,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/mcp"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/state"
@@ -274,7 +275,7 @@ func (application *InteractiveApplication) Delete(ctx context.Context, generatio
 func (application *InteractiveApplication) Status() StatusSnapshot {
 	active, generation, err := application.current()
 	if err != nil {
-		return StatusSnapshot{Project: application.project, Provider: application.provider, Model: application.model, Phase: "unavailable", ContextWindow: application.contextWindow}
+		return StatusSnapshot{Project: application.project, Provider: application.provider, Model: application.model, ReasoningEffort: llm.CloneReasoningEffort(application.configuration.Runtime.ModelReasoningEffort), Phase: "unavailable", ContextWindow: application.contextWindow}
 	}
 	application.mu.RLock()
 	title := application.title
@@ -283,7 +284,9 @@ func (application *InteractiveApplication) Status() StatusSnapshot {
 	application.mu.RUnlock()
 	result := StatusSnapshot{
 		ThreadID: active.ID(), Title: title, Project: application.project,
-		Provider: application.provider, Model: application.model, Mode: active.Mode(), Phase: phase,
+		Provider: application.provider, Model: application.model,
+		ReasoningEffort: llm.CloneReasoningEffort(application.configuration.Runtime.ModelReasoningEffort),
+		Mode:            active.Mode(), Phase: phase,
 		Usage: usage.Usage, ContextWindow: application.contextWindow, RolloutItems: active.RolloutItemCount(),
 	}
 	result.PermissionGrantCount = active.PermissionGrantCount()

@@ -68,6 +68,7 @@ type StatusSnapshot struct {
 	Project              string
 	Provider             string
 	Model                string
+	ReasoningEffort      *llm.ReasoningEffort
 	Mode                 turn.ModeKind
 	Phase                string
 	Usage                llm.Usage

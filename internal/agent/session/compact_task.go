@@ -7,6 +7,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
 func (sessionTask *compactTask) Run(ctx context.Context, session *Session, turnContext *turn.TurnContext) (TaskOutput, error) {
@@ -17,7 +18,10 @@ func (sessionTask *compactTask) Run(ctx context.Context, session *Session, turnC
 	if err != nil {
 		return TaskOutput{}, err
 	}
-	items, err := sessionTask.runtime.Compact(ctx, engine.CompactRequest{History: session.ContextProjection(), ModelSession: modelSession, Events: sessionTask.events})
+	items, err := sessionTask.runtime.Compact(ctx, engine.CompactRequest{
+		History: session.ContextProjection(), ModelSession: modelSession,
+		Reasoning: llm.ReasoningConfigForEffort(turnContext.ReasoningEffort), Events: sessionTask.events,
+	})
 	if err != nil {
 		return TaskOutput{}, err
 	}

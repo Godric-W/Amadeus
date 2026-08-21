@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
 type ModeKind = protocol.ModeKind
@@ -18,13 +19,14 @@ const (
 type Personality string
 
 type TurnContext struct {
-	SubmissionID protocol.SubmissionID `json:"-"`
-	ThreadID     protocol.ThreadID     `json:"thread_id"`
-	TurnID       protocol.TurnID       `json:"turn_id"`
-	Provider     string                `json:"provider"`
-	Model        string                `json:"model"`
-	CWD          string                `json:"cwd"`
-	Shell        string                `json:"shell,omitempty"`
+	SubmissionID    protocol.SubmissionID `json:"-"`
+	ThreadID        protocol.ThreadID     `json:"thread_id"`
+	TurnID          protocol.TurnID       `json:"turn_id"`
+	Provider        string                `json:"provider"`
+	Model           string                `json:"model"`
+	ReasoningEffort *llm.ReasoningEffort  `json:"reasoning_effort,omitempty"`
+	CWD             string                `json:"cwd"`
+	Shell           string                `json:"shell,omitempty"`
 
 	CurrentDate string `json:"current_date,omitempty"`
 	Timezone    string `json:"timezone,omitempty"`
@@ -41,6 +43,9 @@ func (value TurnContext) Validate() error {
 	}
 	if value.Mode != ModeKindDefault && value.Mode != ModeKindPlan {
 		return errors.New("turn mode is invalid")
+	}
+	if value.ReasoningEffort != nil && !value.ReasoningEffort.Valid() {
+		return errors.New("turn reasoning effort is invalid")
 	}
 	if len(value.OutputSchema) > 0 && !json.Valid(value.OutputSchema) {
 		return errors.New("turn output schema is invalid")

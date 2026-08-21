@@ -35,13 +35,21 @@ func newResponsesRequest(request llm.Request) (responses.ResponseNewParams, erro
 		return responses.ResponseNewParams{}, err
 	}
 
-	return responses.ResponseNewParams{
+	params := responses.ResponseNewParams{
 		Model: shared.ResponsesModel(request.Model),
 		Input: responses.ResponseNewParamsInputUnion{
 			OfInputItemList: input,
 		},
 		Tools: tools,
-	}, nil
+	}
+	effort, configured, err := reasoningEffort(request)
+	if err != nil {
+		return responses.ResponseNewParams{}, err
+	}
+	if configured {
+		params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffort(effort)}
+	}
+	return params, nil
 }
 
 func responsesInputItems(message llm.ResponseItem) ([]responses.ResponseInputItemUnionParam, error) {

@@ -41,7 +41,7 @@ func SourcesFor(configured Config) Sources {
 	}
 
 	set("version")
-	for _, path := range []string{"model", "model_provider", "model_context_window", "model_auto_compact_token_limit", "tool_output_token_limit"} {
+	for _, path := range []string{"model", "model_provider", "model_context_window", "model_reasoning_effort", "model_auto_compact_token_limit", "tool_output_token_limit"} {
 		set(path)
 	}
 	providerNames := make([]string, 0, len(configured.ModelProviders))
@@ -118,6 +118,9 @@ func EnvironmentOverrideSources(configured Config, lookup EnvLookup) Sources {
 	}
 	if _, ok := lookup(EnvModel); ok {
 		sources["model"] = Source{Kind: SourceEnvironment, Detail: EnvModel}
+	}
+	if _, ok := lookup(EnvModelReasoningEffort); ok {
+		sources["model_reasoning_effort"] = Source{Kind: SourceEnvironment, Detail: EnvModelReasoningEffort}
 	}
 
 	for variable, field := range map[string]string{

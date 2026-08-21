@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
 func TestConfigCanBeConstructed(t *testing.T) {
@@ -49,8 +51,22 @@ func TestDefaultContainsFieldDefaultsWithoutBuiltInProvider(t *testing.T) {
 	if configured.ToolOutputTokenLimit != 10_000 {
 		t.Fatalf("unexpected tool output token limit: %d", configured.ToolOutputTokenLimit)
 	}
+	if configured.ModelReasoningEffort != nil {
+		t.Fatalf("default config must not synthesize reasoning effort: %q", *configured.ModelReasoningEffort)
+	}
 	if configured.Agent.MaxParallelTools != 4 || configured.Logging.Level != LogLevelInfo {
 		t.Fatalf("unexpected field defaults: %#v", configured)
+	}
+}
+
+func TestConfigCloneCopiesReasoningEffort(t *testing.T) {
+	effort := llm.ReasoningEffortHigh
+	configured := Default()
+	configured.ModelReasoningEffort = &effort
+	cloned := clone(configured)
+	*cloned.ModelReasoningEffort = llm.ReasoningEffortLow
+	if *configured.ModelReasoningEffort != llm.ReasoningEffortHigh {
+		t.Fatalf("clone changed original effort: %q", *configured.ModelReasoningEffort)
 	}
 }
 

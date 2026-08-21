@@ -133,12 +133,13 @@ model_providers:
 
 func TestLoadAppliesDirectEnvironmentOverrides(t *testing.T) {
 	loader := NewLoader(t.TempDir()).WithEnvLookup(mapEnvLookup(map[string]string{
-		EnvModelProvider: "runtime",
-		EnvModel:         "runtime-model",
-		EnvWireAPI:       string(WireAPIChatCompletions),
-		EnvDialect:       string(DialectDeepSeek),
-		EnvAPIKey:        "runtime-secret",
-		EnvBaseURL:       "https://runtime.example/v1",
+		EnvModelProvider:        "runtime",
+		EnvModel:                "runtime-model",
+		EnvModelReasoningEffort: "high",
+		EnvWireAPI:              string(WireAPIChatCompletions),
+		EnvDialect:              string(DialectDeepSeek),
+		EnvAPIKey:               "runtime-secret",
+		EnvBaseURL:              "https://runtime.example/v1",
 	}))
 	writeConfig(t, loader, `
 model: file-model
@@ -156,11 +157,53 @@ model_providers:
 	if configured.ModelProvider != "runtime" || configured.Model != "runtime-model" {
 		t.Fatalf("model overrides did not win: %#v", configured)
 	}
+	if configured.ModelReasoningEffort == nil || *configured.ModelReasoningEffort != "high" {
+		t.Fatalf("reasoning effort override did not win: %#v", configured.ModelReasoningEffort)
+	}
 	if provider.WireAPI != WireAPIChatCompletions || provider.Dialect != DialectDeepSeek || provider.APIKey != "runtime-secret" || provider.BaseURL != "https://runtime.example/v1" {
 		t.Fatalf("provider overrides did not win: %#v", provider)
 	}
 	if configured.ModelProviders["file"].BaseURL != "https://file.example/v1" {
 		t.Fatalf("unselected provider was modified: %#v", configured.ModelProviders["file"])
+	}
+}
+
+func TestLoadModelReasoningEffortRemainsUnsetWhenOmitted(t *testing.T) {
+	loader := newTestLoader(t.TempDir())
+	writeConfig(t, loader, `
+model: test-model
+model_provider: compatible
+model_context_window: 128000
+model_providers:
+  compatible:
+    base_url: https://example.invalid/v1
+`)
+	configured, err := loader.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if configured.ModelReasoningEffort != nil {
+		t.Fatalf("omitted reasoning effort was synthesized: %q", *configured.ModelReasoningEffort)
+	}
+}
+
+func TestLoadModelReasoningEffortFromYAML(t *testing.T) {
+	loader := newTestLoader(t.TempDir())
+	writeConfig(t, loader, `
+model: test-model
+model_provider: compatible
+model_context_window: 128000
+model_reasoning_effort: xhigh
+model_providers:
+  compatible:
+    base_url: https://example.invalid/v1
+`)
+	configured, err := loader.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if configured.ModelReasoningEffort == nil || *configured.ModelReasoningEffort != "xhigh" {
+		t.Fatalf("unexpected reasoning effort: %#v", configured.ModelReasoningEffort)
 	}
 }
 

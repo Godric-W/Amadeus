@@ -217,3 +217,54 @@ func validResponsesDomainRequest() llm.Request {
 		Prompt: llm.Prompt{Input: []llm.ResponseItem{llm.UserMessage("hello")}},
 	}
 }
+
+func TestResponsesRequestReasoningEffortMapping(t *testing.T) {
+	for _, effort := range []llm.ReasoningEffort{
+		llm.ReasoningEffortNone,
+		llm.ReasoningEffortMinimal,
+		llm.ReasoningEffortLow,
+		llm.ReasoningEffortMedium,
+		llm.ReasoningEffortHigh,
+		llm.ReasoningEffortXHigh,
+		llm.ReasoningEffortMax,
+	} {
+		t.Run(string(effort), func(t *testing.T) {
+			request := validResponsesDomainRequest()
+			request.Reasoning = llm.ReasoningConfigForEffort(&effort)
+			params, err := newResponsesRequest(request)
+			if err != nil {
+				t.Fatalf("convert request: %v", err)
+			}
+			encoded, err := json.Marshal(params)
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(encoded, &body); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			reasoning := body["reasoning"].(map[string]any)
+			if reasoning["effort"] != string(effort) {
+				t.Fatalf("reasoning effort = %#v, want %q", reasoning["effort"], effort)
+			}
+		})
+	}
+}
+
+func TestResponsesRequestOmitsUnsetReasoningEffort(t *testing.T) {
+	params, err := newResponsesRequest(validResponsesDomainRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["reasoning"]; ok {
+		t.Fatalf("unset reasoning was serialized: %s", encoded)
+	}
+}

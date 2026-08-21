@@ -1,7 +1,7 @@
 # Amadeus 架构设计
 
 > 状态：Target Architecture v2
-> 最近修订：2026-08-20
+> 最近修订：2026-08-21
 > 目标语言：Go
 > 产品形态：面向真实软件工程任务的本地 Coding Agent CLI
 > 架构骨架：`../codex-main`
@@ -548,7 +548,7 @@ type CollaborationMode struct {
 }
 ```
 
-基础版只要求 `ModeKind`；当 Amadeus 真正支持按模式覆盖模型、reasoning effort 或 developer instructions 时，再按 Codex 扩展 `CollaborationMode.Settings`，不得提前建立空壳配置层。TUI 不定义 `Execute/Plan` 第二套模式 enum；UI、Protocol、Session、TurnContext 和 Rollout 统一使用 `Default/Plan`。
+基础版只要求 `ModeKind`；顶层 `model_reasoning_effort` 是全局 Model/Runtime override，不属于按模式设置。当 Amadeus 真正支持按模式覆盖模型、reasoning effort 或 developer instructions 时，再按 Codex 扩展 `CollaborationMode.Settings`，不得提前建立空壳配置层。TUI 不定义 `Execute/Plan` 第二套模式 enum；UI、Protocol、Session、TurnContext 和 Rollout 统一使用 `Default/Plan`。
 
 Session 从 `InitialHistory` 恢复 ContextManager、PreviousTurnSettings 和当前 SessionConfiguration；canonical Rollout 由 LiveThread/ThreadStore 持有，SessionState 不再并列保存第二份 `[]RolloutLine`。`update_plan` checklist 不是 SessionState，也不从 Rollout 恢复；它只作为当前运行期间的 transient `PlanUpdateEvent` 交给 Interface 展示。Proposed Plan 也不是 SessionState：模型原始 ResponseItem 与 completed Plan TurnItem 进入 canonical history，未决 parser、stream buffer 和实施 Popup 不恢复。StoredThread 只用于定位 Rollout 和展示索引元数据。SessionPermissionContext 是 SessionServices 中的瞬时服务，Session spawn 时重新初始化，Resume 不恢复历史 grant。
 
@@ -655,8 +655,9 @@ type TurnContextItem struct {
     ThreadID ThreadID `json:"thread_id"`
     TurnID   TurnID   `json:"turn_id"`
 
-    Provider string `json:"provider"`
-    Model    string `json:"model"`
+    Provider        string           `json:"provider"`
+    Model           string           `json:"model"`
+    ReasoningEffort *ReasoningEffort `json:"reasoning_effort,omitempty"`
 
     CWD   string `json:"cwd"`
     Shell string `json:"shell,omitempty"`
@@ -673,7 +674,7 @@ type TurnContextItem struct {
 
 `TurnContext` 创建后不再修改，但可以持有运行所需的 typed 引用和取消关系；`TurnContextItem` 只保存恢复和诊断所需的稳定纯数据。二者必须通过显式 projector 转换，durable DTO 不引用 Client、API Key、Mutex、Cancellation、Telemetry 或其他进程对象。
 
-TurnContext 必须在本 Turn 的 Provider、ModelInfo、Collaboration Mode、Approval Policy、Permission Profile、OutputSchema 和稳定环境事实解析完成后创建。`Default/Plan` 属于 `ModeKind`/CollaborationMode，不得再命名为 PermissionMode；Approval Policy 与文件/网络 Permission Profile 是彼此独立的安全概念。CurrentDate、Timezone、Personality 和 OutputSchema 要么记录真实生效值，要么明确为空，不能为了贴合结构而填充未接线占位值。Resume 恢复的 `PreviousTurnSettings` 必须存在明确消费点，否则不得作为已完成 capability 保留。
+TurnContext 必须在本 Turn 的 Provider、ModelInfo、ModelReasoningEffort、Collaboration Mode、Approval Policy、Permission Profile、OutputSchema 和稳定环境事实解析完成后创建。`Default/Plan` 属于 `ModeKind`/CollaborationMode，不得再命名为 PermissionMode；Approval Policy 与文件/网络 Permission Profile 是彼此独立的安全概念。CurrentDate、Timezone、Personality、ReasoningEffort 和 OutputSchema 要么记录真实生效值，要么明确为空，不能为了贴合结构而填充未接线占位值。Resume 恢复的 `PreviousTurnSettings` 必须存在明确消费点，否则不得作为已完成 capability 保留。
 
 `ToolNames` 不属于最终 TurnContext 或 TurnContextItem。Tool Catalog、MCP binding、Skill revision、AGENTS.md 和执行环境可能在同一 Turn 的两次模型采样之间变化；这些请求级事实由 StepContext 冻结。旧 Rollout 中的 `ToolNames` 不读取、不迁移，也不作为生产请求的工具事实源。
 
@@ -1719,6 +1720,28 @@ Domain Request 统一表达：
 - model selection 与 Provider 支持的显式请求控制。
 - reasoning 与 usage。
 
+通用 reasoning request control 只表达模型推理强度，不抽象厂商特有的 thinking 开关或历史清理策略：
+
+```go
+type ReasoningEffort string
+
+const (
+    ReasoningEffortNone    ReasoningEffort = "none"
+    ReasoningEffortMinimal ReasoningEffort = "minimal"
+    ReasoningEffortLow     ReasoningEffort = "low"
+    ReasoningEffortMedium  ReasoningEffort = "medium"
+    ReasoningEffortHigh    ReasoningEffort = "high"
+    ReasoningEffortXHigh   ReasoningEffort = "xhigh"
+    ReasoningEffortMax     ReasoningEffort = "max"
+)
+
+type ReasoningConfig struct {
+    Effort *ReasoningEffort
+}
+```
+
+`ReasoningConfig` 不保留通用 `Enabled` 或 `Preserve`。省略 `Effort` 表示不发送 reasoning control 并使用模型/Provider 默认值；`none` 是显式关闭 reasoning 的唯一通用语义。Reasoning history 是否回传、Provider 是否需要 `reasoning_content`、`thinking`、`enable_thinking` 或其他字段，属于 Dialect 的协议正确性，不是用户可配置的通用模型开关。
+
 普通 Domain Request 不保存稳定的 `temperature` 或 `max_output_tokens` 字段。Amadeus 不用内部默认值伪装模型厂商默认值；Responses 与 Chat Completions Adapter 都必须在普通 sampling 和 Compaction 中省略对应 wire 参数。未来确有 Provider 必需扩展时，只能由经过契约测试的 Dialect/request extension 显式提供，不能重新变成所有 Provider 共用的用户配置。
 
 ### 13.2 OpenAI Adapter
@@ -1764,9 +1787,11 @@ Dialect 只处理经过验证的协议差异，不根据域名猜测：
 - `deepseek`
 - `glm`
 - `qwen`
-- `generic_openai`
+- `standard`
 
-具体差异必须由契约测试覆盖，包括 role 支持、reasoning 字段、tool call delta 和 usage。
+`standard` 表示未知的 OpenAI-compatible Provider，而不是明确缺少某项能力。用户显式配置标准 wire 参数时，Adapter 按所选 Wire API 透传，由上游 endpoint/model 判断是否支持；未配置时不得主动发送实验字段。`openai`、`deepseek`、`glm` 和 `qwen` 只处理已经由官方协议或契约 fixture 验证的差异，不通过模型名或域名猜测。
+
+具体差异必须由契约测试覆盖，包括 role 支持、reasoning/effort 字段、thinking history、tool call delta 和 usage。单一 `SupportsReasoningEffort bool` 无法表达 `standard` 的 unknown 状态；基础版不增加该布尔 capability。未来 UI 或 Model Catalog 必须展示 effort capability 时，使用 supported/unsupported/unknown 三态或模型声明的 supported levels。
 
 ### 13.5 Model 与 Provider 配置所有权
 
@@ -1778,6 +1803,7 @@ version: 2
 model: provider-model
 model_provider: compatible
 model_context_window: 128000
+model_reasoning_effort: high
 # 省略时从 model_context_window 推导 90%
 # model_auto_compact_token_limit: 115200
 tool_output_token_limit: 10000
@@ -1796,13 +1822,51 @@ model_providers:
 
 所有权固定如下：
 
-- `model`、`model_context_window`、`model_auto_compact_token_limit` 和 `tool_output_token_limit` 属于当前 Model/Runtime 配置，不进入 `ModelProviderInfo`。
+- `model`、`model_context_window`、`model_reasoning_effort`、`model_auto_compact_token_limit` 和 `tool_output_token_limit` 属于当前 Model/Runtime 配置，不进入 `ModelProviderInfo`。
 - `model_provider` 选择 `model_providers` 中的用户定义 Provider；Provider 只保存 transport、auth、wire API、Dialect、timeout、retry 和 capability。
 - `model_context_window` 在 Amadeus 尚无可信 Model Catalog 时必须显式为正数；不得为任意未知模型伪造统一的 128K Context Window 默认值。
 - `model_auto_compact_token_limit` 可省略，省略时取 Context Window 的 90%；显式值必须大于 0 且不超过该派生上限。
 - `tool_output_token_limit` 是顶层可配置项，默认 `10000`，覆盖 ModelInfo 的 Tool Output truncation policy；不得放回单个 Provider。
 - Codex 的 `model_auto_compact_token_limit_scope` 依赖 carried-prefix/body-after-prefix 计数模型。Amadeus 在实现对应 Context Window 生命周期前不暴露未接线的 scope 配置，当前固定采用 total active context 语义。
 - `temperature` 和 `max_output_tokens` 从稳定配置、ProviderConfig、ModelInfo、SampleRequest 与普通 LLM Request 中删除；普通 sampling 和 Compaction 使用模型厂商默认参数。
+
+#### 13.5.1 Model Reasoning Effort
+
+`model_reasoning_effort` 对齐 Codex 的模型级 request control，但 Amadeus 在没有可信 Model Catalog 的基础版中不伪造模型默认值：
+
+- 可配置值为 `none`、`minimal`、`low`、`medium`、`high`、`xhigh` 和 `max`；基础版不增加 Codex 内部的 `ultra` 或任意 custom effort。
+- 省略字段表示使用模型/Provider 默认值，普通 sampling、手动 Compaction 和自动 Compaction 均不得补写 `medium`、`high` 或其他客户端默认值。
+- `none` 表示显式关闭 reasoning；不增加 `model_reasoning_enabled`，也不允许 `enabled=false` 与非 `none` effort 形成冲突配置。
+- Config 的 effective effort 在 Turn 启动时冻结到 `TurnContext`，再进入每次 `SampleRequest`、`llm.Request.Reasoning.Effort` 和 Compaction request；同一 Turn 的 continuation 不从可变全局配置重新读取。
+- `TurnContextItem` 持久化该 Turn 的 effective effort，用于诊断、Replay 和恢复语义；未配置时省略，不把 Provider 默认值伪装成已知事实。
+- 当前字段是全局 Model/Runtime override，不是 per-mode override；因此不提前扩展 `CollaborationMode.Settings`。未来增加 `/effort`、Plan-specific effort 或动态模型设置时，再按 Codex 将 model/effort 纳入 CollaborationMode，并保持 TurnContext 冻结边界。
+
+Effort 的 OpenAI-compatible 主线 wire shape 固定为：Responses 使用嵌套的 `reasoning.effort`，Chat Completions 使用顶层 `reasoning_effort`。这只是按 Wire API 选择的默认序列化形状，不代表任意 Provider 只要选择该 API 就必然支持对应字段；request builder 必须先按 Wire API 形成候选字段，再由 Dialect 按官方契约确认、覆写或拒绝。`standard` 允许显式 opt-in passthrough，`openai` 使用 typed field，其他已知 Dialect 不得绕过自身契约直接发送。
+
+具体映射固定如下：
+
+| Dialect / Wire API | 未配置 | 显式 effort |
+|---|---|---|
+| `standard` / Responses | 省略 | 透传 `reasoning.effort` |
+| `standard` / Chat Completions | 省略 | 透传 `reasoning_effort` |
+| `openai` / Responses | 省略 | 发送 `reasoning.effort` |
+| `openai` / Chat Completions | 省略 | 发送 `reasoning_effort` |
+| `deepseek` / Responses | 使用 Provider 默认 | 发送 Responses-compatible `reasoning.effort` |
+| `deepseek` / Chat Completions | 使用 Provider 默认 | 发送 `reasoning_effort`；`none` 按官方 thinking toggle 映射为 disabled |
+| `qwen` / Responses | 使用 Provider 默认 | 发送 `reasoning.effort` |
+| `qwen` / Chat Completions | 使用 Provider 默认 | 非 `none` 发送 `reasoning_effort`；`none` 映射为 `enable_thinking=false` |
+| `glm` / Chat Completions | 使用 Provider 默认 | 非 `none` 发送 `reasoning_effort`；`none` 映射为 `thinking.type=disabled` |
+
+DeepSeek Dialect 不再固定为 Chat-only；在官方 Responses API 与 effort contract 已进入契约测试后支持 Responses。不得照搬 Claude Code 为未知自托管 endpoint 同时发送 `thinking`、`enable_thinking` 和 `chat_template_kwargs` 的广域兼容策略；Amadeus 已有 Dialect，必须只发送当前 Dialect 的官方字段。
+
+Qwen 与 GLM 的当前官方 API 已定义 `reasoning_effort`；因此非 `none` 显式等级必须原样进入对应 wire field，不能再拒绝为 unsupported，也不能退化为只发送 `enable_thinking=true` 或 `thinking.type=enabled`。`none` 是通用领域中的显式关闭语义；Chat Completions 下，DeepSeek/GLM 将其映射为各自的 `thinking.type=disabled`，Qwen 映射为 `enable_thinking=false`，其余无需特殊关闭映射的 Dialect 仍发送 `reasoning_effort=none`；Responses 下统一发送 `reasoning.effort=none`。具体模型支持哪些非 `none` 等级属于 endpoint/model contract：Amadeus 基础版不维护按模型名分支的 support matrix，显式配置时发送官方字段，并保留上游对不支持模型或取值返回的 4xx。Reasoning history 与 `clear_thinking` 仍是独立的 Dialect 协议行为。
+
+错误边界如下：
+
+- 配置层只校验 effort 非空且属于稳定枚举，不根据模型名猜测 supported levels。
+- `standard` 对显式 effort 采用 opt-in passthrough；上游不支持时保留 Provider 4xx 诊断，不在客户端静默忽略。
+- 已知 Dialect/Wire API 只有在官方协议没有任何 effort 表达方式时才返回明确 unsupported error；只要协议定义了 effort 字段，就原样发送并由上游 endpoint/model 校验 supported levels，不能由客户端静默忽略或退化为“仅开启 thinking”。
+- Reasoning history 的 `reasoning_content` 回传、GLM clear-thinking 等行为由 Dialect 自动维护，不暴露通用 `Preserve` 配置。
 
 配置版本升级为 `2`。迁移规则只自动处理无歧义转换：`default_provider → model_provider`、`providers → model_providers`、Provider 内 `api → wire_api` 和旧 `max_retries → request_max_retries`。旧 Provider-local `model`、`context_window`、`auto_compact_token_limit`、`tool_output_max_tokens` 需要提升到顶层；存在多个 Provider 值或新旧字段同时存在时必须返回带准确路径的迁移错误，不能猜测、覆盖或静默丢弃。旧 `temperature` 与 `max_output_tokens` 返回明确 removed-field 诊断，提示其已改为模型厂商默认行为。
 
@@ -3293,6 +3357,7 @@ Built-in Field Defaults 只表示 retry、timeout、Tool Output truncation 等�
 ### 24.3 核心配置域
 
 - model selection/runtime overrides
+- model reasoning effort
 - model provider transport
 - agent runtime limits
 - context window/compaction
@@ -3661,6 +3726,10 @@ Provider/stream error 还必须区分：
 - Developer role 降级。
 - DeepSeek、GLM、Qwen 方言 fixture。
 - 顶层 `model`/`model_provider` 与 `model_providers.*.wire_api` 使用 Codex 对齐的命名和所有权；Provider 中不存在 model、temperature、max output、context window 或 Tool Output limit。
+- `model_reasoning_effort` 省略时普通 sampling 与 Compaction 都不发送客户端默认值；显式值冻结到 TurnContext/TurnContextItem，并在同一 Turn 的所有 continuation 中保持一致。
+- OpenAI-compatible effort 主线由 Wire API 选择候选形状：Responses 使用 `reasoning.effort`，Chat Completions 使用 `reasoning_effort`；随后由 Dialect 按官方契约确认、覆写或拒绝。`standard` 覆盖 opt-in passthrough，OpenAI/DeepSeek/Qwen/GLM 覆盖各自已验证的官方字段，未知 endpoint 或不支持模型的 Provider 4xx 不被静默吞掉。
+- DeepSeek/Qwen/GLM 覆盖默认 thinking、effort levels、Chat/Responses wire fixture、Chat `none` 的厂商关闭映射和 reasoning history；非 `none` effort 原样进入官方 effort 字段，不降级为简单 thinking enable，也不由客户端根据模型名预判 supported levels。
+- Domain 不保留通用 `ReasoningConfig.Enabled/Preserve`；reasoning history 与 clear-thinking 属于 Dialect 自动协议行为。
 - `model_context_window` 必须显式有效，`model_auto_compact_token_limit` 省略时派生为 90%，`tool_output_token_limit` 默认 `10000` 并只约束模型可见 Tool/Function Output。
 - 普通 Responses、Chat Completions 和 Compaction Request 不发送 `temperature`、`max_output_tokens`、`max_tokens` 等用户稳定配置参数，使用模型厂商默认值。
 - 所有用户定义 Provider 在省略连接恢复字段时统一得到 `request_max_retries=4`、`stream_max_retries=5` 和 `stream_idle_timeout=5m`；显式 `0` 必须保留为禁用 retry，不能被默认值覆盖。

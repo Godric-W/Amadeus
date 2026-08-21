@@ -61,6 +61,9 @@ func Validate(configured Config) error {
 	if configured.ModelContextWindow <= 0 || configured.ModelContextWindow > maxContextWindow {
 		addIssue("model_context_window", fmt.Sprintf("must be greater than 0 and at most %d", maxContextWindow))
 	}
+	if configured.ModelReasoningEffort != nil && !configured.ModelReasoningEffort.Valid() {
+		addIssue("model_reasoning_effort", "must be one of none, minimal, low, medium, high, xhigh, or max")
+	}
 	derivedCompactLimit := configured.ModelContextWindow * 9 / 10
 	if configured.ModelAutoCompactTokenLimit < 0 || configured.ModelAutoCompactTokenLimit > derivedCompactLimit {
 		addIssue("model_auto_compact_token_limit", "must be zero (derived) or no greater than 90% of model_context_window")

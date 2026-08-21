@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/config"
+	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
 func TestConfigFlagsOverrideEnvironmentConfiguration(t *testing.T) {
@@ -19,6 +20,7 @@ func TestConfigFlagsOverrideEnvironmentConfiguration(t *testing.T) {
 		"--dialect", string(config.DialectGLM),
 		"--base-url", "https://cli.example.invalid/v1",
 		"--model", "cli-model",
+		"--model-reasoning-effort", string(llm.ReasoningEffortHigh),
 	})
 
 	if err := command.Execute(); err != nil {
@@ -30,12 +32,14 @@ func TestConfigFlagsOverrideEnvironmentConfiguration(t *testing.T) {
 	environmentDialect := config.DialectOpenAI
 	environmentBaseURL := "https://environment.example.invalid/v1"
 	environmentModel := "environment-model"
+	environmentReasoningEffort := llm.ReasoningEffortLow
 	configured := config.ApplyOverrides(config.Default(), config.Overrides{
-		ModelProvider: &environmentProvider,
-		WireAPI:       &environmentWireAPI,
-		Dialect:       &environmentDialect,
-		BaseURL:       &environmentBaseURL,
-		Model:         &environmentModel,
+		ModelProvider:        &environmentProvider,
+		WireAPI:              &environmentWireAPI,
+		Dialect:              &environmentDialect,
+		BaseURL:              &environmentBaseURL,
+		Model:                &environmentModel,
+		ModelReasoningEffort: &environmentReasoningEffort,
 	})
 
 	configured = flags.apply(command, configured)
@@ -54,6 +58,9 @@ func TestConfigFlagsOverrideEnvironmentConfiguration(t *testing.T) {
 	}
 	if configured.Model != "cli-model" {
 		t.Fatalf("CLI model did not win: got %q", configured.Model)
+	}
+	if configured.ModelReasoningEffort == nil || *configured.ModelReasoningEffort != llm.ReasoningEffortHigh {
+		t.Fatalf("CLI reasoning effort did not win: %#v", configured.ModelReasoningEffort)
 	}
 }
 

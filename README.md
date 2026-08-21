@@ -102,6 +102,7 @@ amadeus [task] [flags]
 | `--config <path>` | 使用显式指定的配置文件 |
 | `--model-provider <name>` | 为当前进程覆盖模型 Provider |
 | `--model <name>` | 为当前进程覆盖模型名称 |
+| `--model-reasoning-effort <effort>` | 覆盖推理强度：`none`、`minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；省略时使用厂商默认值 |
 | `--wire-api <api>` | 覆盖 Provider Wire API，可用值为 `responses` 或 `chat_completions` |
 | `--dialect <dialect>` | 覆盖 Provider 方言，可用值为 `standard`、`openai`、`deepseek`、`qwen` 或 `glm` |
 | `--base-url <url>` | 为当前进程覆盖 Provider Base URL |
@@ -124,6 +125,8 @@ amadeus \
 amadeus --help
 ```
 
+配置文件可使用顶层 `model_reasoning_effort`，环境变量为 `AMADEUS_MODEL_REASONING_EFFORT`。显式配置时 Responses 发送 `reasoning.effort`，Chat Completions 发送 `reasoning_effort`；DeepSeek、Qwen、GLM 的 Chat `none` 会转换为各自的关闭 thinking 字段。`amadeus config show` 输出脱敏后的有效配置，`amadeus config explain` 同时显示各字段来源。
+
 ## Slash Command
 
 Slash Command 仅在交互模式中使用。在输入框中输入 `/` 可以查看和筛选可用命令。
@@ -137,7 +140,7 @@ Slash Command 仅在交互模式中使用。在输入框中输入 `/` 可以查�
 | `/compact` | 压缩当前会话上下文，降低上下文占用 |
 | `/plan [task]` | 切换到 Plan Mode；提供任务时会在切换后立即提交该任务 |
 | `/copy` | 将最近一次 Agent Markdown 回答复制到剪贴板 |
-| `/status` | 显示当前会话、模型、权限和 Token 使用状态 |
+| `/status` | 显示当前会话、模型、已配置 reasoning effort、权限和 Token 使用状态 |
 | `/mcp` | 显示已配置的 MCP Server、Tool 和 Resource 摘要 |
 | `/mcp verbose` | 显示更详细的 MCP 清单 |
 | `/clear` | 清空当前界面并创建一个新会话 |

@@ -403,10 +403,15 @@ func TestFullscreenEmptyMCPInventoryIsVisibleAndStaleResultIgnored(t *testing.T)
 func TestFullscreenStatusUsesStructuredCell(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	fake := fakeApplication(t, model)
-	fake.status = application.StatusSnapshot{ThreadID: "thread-1", Title: "demo", Provider: "openai", Model: "gpt", Phase: "idle"}
+	effort := llm.ReasoningEffortHigh
+	fake.status = application.StatusSnapshot{ThreadID: "thread-1", Title: "demo", Provider: "openai", Model: "gpt", ReasoningEffort: &effort, Phase: "idle"}
 	updated, _ := model.dispatchCommand(SlashInvocation{Command: SlashStatus})
-	if _, ok := updated.(fullscreenModel).historyCells[0].(StatusHistoryCell); !ok {
+	cell, ok := updated.(fullscreenModel).historyCells[0].(StatusHistoryCell)
+	if !ok {
 		t.Fatalf("status cell = %T", updated.(fullscreenModel).historyCells[0])
+	}
+	if lines := strings.Join(cell.RawLines(), "\n"); !strings.Contains(lines, "Reasoning effort: high") {
+		t.Fatalf("status cell omitted effort:\n%s", lines)
 	}
 }
 

@@ -50,7 +50,9 @@ func TestNewAdapterSelectsDialectExplicitly(t *testing.T) {
 		{name: "standard responses", dialect: config.DialectStandard, api: config.WireAPIResponses},
 		{name: "OpenAI responses", dialect: config.DialectOpenAI, api: config.WireAPIResponses, reasoning: true},
 		{name: "DeepSeek chat", dialect: config.DialectDeepSeek, api: config.WireAPIChatCompletions, reasoning: true},
+		{name: "DeepSeek responses", dialect: config.DialectDeepSeek, api: config.WireAPIResponses, reasoning: true},
 		{name: "Qwen chat", dialect: config.DialectQwen, api: config.WireAPIChatCompletions, reasoning: true},
+		{name: "Qwen responses", dialect: config.DialectQwen, api: config.WireAPIResponses, reasoning: true},
 		{name: "GLM chat", dialect: config.DialectGLM, api: config.WireAPIChatCompletions, reasoning: true},
 	}
 	for _, test := range tests {
@@ -80,8 +82,6 @@ func TestNewAdapterRejectsUnsupportedDialectAndAPICombination(t *testing.T) {
 		api     config.WireAPI
 	}{
 		{name: "unknown dialect", dialect: "vendor-specific", api: config.WireAPIChatCompletions},
-		{name: "DeepSeek Responses", dialect: config.DialectDeepSeek, api: config.WireAPIResponses},
-		{name: "Qwen Responses", dialect: config.DialectQwen, api: config.WireAPIResponses},
 		{name: "GLM Responses", dialect: config.DialectGLM, api: config.WireAPIResponses},
 	}
 	for _, test := range tests {

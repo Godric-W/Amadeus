@@ -600,7 +600,7 @@ func TestModelProviderConfigurationHasCodexOwnershipBoundaries(t *testing.T) {
 	}
 	for _, field := range []string{
 		"Model", "Temperature", "MaxOutputTokens", "ContextWindow",
-		"AutoCompactTokenLimit", "ToolOutputMaxTokens", "ToolOutputTokenLimit",
+		"AutoCompactTokenLimit", "ToolOutputMaxTokens", "ToolOutputTokenLimit", "ModelReasoningEffort", "ReasoningEffort",
 	} {
 		if _, ok := providerFields[field]; ok {
 			t.Errorf("ModelProviderInfo owns Model runtime field %q", field)
@@ -609,7 +609,7 @@ func TestModelProviderConfigurationHasCodexOwnershipBoundaries(t *testing.T) {
 
 	configFields := architectureStructFields(t, root, "internal/config/config.go", "Config")
 	for _, field := range []string{
-		"Model", "ModelProvider", "ModelContextWindow", "ModelAutoCompactTokenLimit",
+		"Model", "ModelProvider", "ModelContextWindow", "ModelReasoningEffort", "ModelAutoCompactTokenLimit",
 		"ToolOutputTokenLimit", "ModelProviders",
 	} {
 		if _, ok := configFields[field]; !ok {
@@ -676,6 +676,60 @@ func TestModelProviderConfigurationHasCodexOwnershipBoundaries(t *testing.T) {
 	}
 	if strings.Contains(compactor, ".modelClient.Model()") || strings.Contains(compactor, ".client.Model()") {
 		t.Fatal("Compactor bypasses the effective ModelInfo with Adapter metadata")
+	}
+}
+
+func TestReasoningEffortHasTurnScopedProviderBoundaries(t *testing.T) {
+	root := repositoryRoot(t)
+	reasoningFields := architectureStructFields(t, root, "internal/llm/reasoning.go", "ReasoningConfig")
+	if len(reasoningFields) != 1 {
+		t.Fatalf("ReasoningConfig fields = %v, want only Effort", reasoningFields)
+	}
+	if _, ok := reasoningFields["Effort"]; !ok {
+		t.Fatal("ReasoningConfig is missing Effort")
+	}
+	for _, forbidden := range []string{"Enabled", "Preserve"} {
+		if _, ok := reasoningFields[forbidden]; ok {
+			t.Errorf("ReasoningConfig retains legacy field %q", forbidden)
+		}
+	}
+
+	turnFields := architectureStructFields(t, root, "internal/agent/turn/turn.go", "TurnContext")
+	if _, ok := turnFields["ReasoningEffort"]; !ok {
+		t.Fatal("TurnContext does not freeze ReasoningEffort")
+	}
+	rolloutFields := architectureStructFields(t, root, "internal/rollout/items.go", "TurnContextItem")
+	if _, ok := rolloutFields["ReasoningEffort"]; !ok {
+		t.Fatal("TurnContextItem does not persist ReasoningEffort")
+	}
+
+	continuation := mustReadArchitectureFile(t, root, "internal/agent/session/continuation.go")
+	if strings.Count(continuation, "ReasoningConfigForEffort(turnContext.ReasoningEffort)") < 2 {
+		t.Fatal("regular sampling and automatic compaction do not share frozen Turn effort")
+	}
+	compactTask := mustReadArchitectureFile(t, root, "internal/agent/session/compact_task.go")
+	if !strings.Contains(compactTask, "ReasoningConfigForEffort(turnContext.ReasoningEffort)") {
+		t.Fatal("manual compaction does not use frozen Turn effort")
+	}
+	compactor := mustReadArchitectureFile(t, root, "internal/agent/engine/compactor.go")
+	if !strings.Contains(compactor, "Reasoning: request.Reasoning.Clone()") {
+		t.Fatal("Compactor does not propagate reasoning into the wire request")
+	}
+
+	responses := mustReadArchitectureFile(t, root, "internal/llm/openai/responses_request.go")
+	if !strings.Contains(responses, "shared.ReasoningParam{Effort:") {
+		t.Fatal("Responses request does not serialize reasoning.effort")
+	}
+	chat := mustReadArchitectureFile(t, root, "internal/llm/openai/reasoning_request.go")
+	for _, required := range []string{"params.ReasoningEffort", `"enable_thinking": false`, `"type": "disabled"`} {
+		if !strings.Contains(chat, required) {
+			t.Errorf("Chat effort mapping is missing %q", required)
+		}
+	}
+	dialect := mustReadArchitectureFile(t, root, "internal/llm/openai/dialect.go")
+	qwenStart := strings.Index(dialect, "case config.DialectQwen:")
+	if qwenStart < 0 || !strings.Contains(dialect[qwenStart:], "supportedWireAPIs: bothAPIs") {
+		t.Fatal("Qwen dialect does not declare Responses support")
 	}
 }
 

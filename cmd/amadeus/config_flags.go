@@ -2,26 +2,29 @@ package main
 
 import (
 	"github.com/Godric-W/Amadeus/internal/config"
+	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
 const (
-	flagConfig        = "config"
-	flagModelProvider = "model-provider"
-	flagWireAPI       = "wire-api"
-	flagDialect       = "dialect"
-	flagBaseURL       = "base-url"
-	flagModel         = "model"
+	flagConfig               = "config"
+	flagModelProvider        = "model-provider"
+	flagWireAPI              = "wire-api"
+	flagDialect              = "dialect"
+	flagBaseURL              = "base-url"
+	flagModel                = "model"
+	flagModelReasoningEffort = "model-reasoning-effort"
 )
 
 type configFlags struct {
-	configPath    string
-	modelProvider string
-	wireAPI       string
-	dialect       string
-	baseURL       string
-	model         string
+	configPath           string
+	modelProvider        string
+	wireAPI              string
+	dialect              string
+	baseURL              string
+	model                string
+	modelReasoningEffort string
 }
 
 func (flags *configFlags) bind(command *cobra.Command) {
@@ -32,6 +35,7 @@ func (flags *configFlags) bind(command *cobra.Command) {
 	persistent.StringVar(&flags.dialect, flagDialect, "", "override the provider dialect for this process")
 	persistent.StringVar(&flags.baseURL, flagBaseURL, "", "override the provider base URL for this process")
 	persistent.StringVar(&flags.model, flagModel, "", "override the model for this process")
+	persistent.StringVar(&flags.modelReasoningEffort, flagModelReasoningEffort, "", "override model reasoning effort for this process")
 }
 
 func (flags *configFlags) configFile(command *cobra.Command) (string, bool) {
@@ -45,6 +49,10 @@ func (flags *configFlags) apply(command *cobra.Command, configured config.Config
 		ModelProvider: optionalString(flagSet, flagModelProvider, flags.modelProvider),
 		BaseURL:       optionalString(flagSet, flagBaseURL, flags.baseURL),
 		Model:         optionalString(flagSet, flagModel, flags.model),
+	}
+	if flagSet.Changed(flagModelReasoningEffort) {
+		effort := llm.ReasoningEffort(flags.modelReasoningEffort)
+		overrides.ModelReasoningEffort = &effort
 	}
 	if flagSet.Changed(flagWireAPI) {
 		wireAPI := config.WireAPI(flags.wireAPI)
@@ -68,6 +76,9 @@ func (flags *configFlags) sources(command *cobra.Command, configured config.Conf
 	}
 	if flagSet.Changed(flagModel) {
 		sources["model"] = config.Source{Kind: config.SourceCLI, Detail: "--" + flagModel}
+	}
+	if flagSet.Changed(flagModelReasoningEffort) {
+		sources["model_reasoning_effort"] = config.Source{Kind: config.SourceCLI, Detail: "--" + flagModelReasoningEffort}
 	}
 	for name, field := range map[string]string{
 		flagWireAPI: "wire_api",

@@ -165,6 +165,7 @@ model_providers:
 		"config", "explain",
 		"--dialect", string(config.DialectQwen),
 		"--base-url", "https://cli.example.invalid/v1",
+		"--model-reasoning-effort", "xhigh",
 	})
 
 	if err := command.Execute(); err != nil {
@@ -175,6 +176,7 @@ model_providers:
 	expected := []string{
 		"model_provider: compatible [source: file: " + path + "]",
 		"model: environment-model [source: environment: " + config.EnvModel + "]",
+		"model_reasoning_effort: xhigh [source: cli: --model-reasoning-effort]",
 		"model_providers.compatible.dialect: qwen [source: cli: --dialect]",
 		"model_providers.compatible.api_key: " + config.RedactedSecret + " [source: environment: FILE_API_KEY via " + path + "]",
 		"model_providers.compatible.base_url: https://cli.example.invalid/v1 [source: cli: --base-url]",
@@ -191,6 +193,35 @@ model_providers:
 	}
 	if strings.Contains(explanation, secret) {
 		t.Fatalf("config explanation leaked API key: %s", explanation)
+	}
+}
+
+func TestConfigShowPrintsRedactedEffectiveConfiguration(t *testing.T) {
+	amadeusRoot := t.TempDir()
+	writeCommandConfig(t, filepath.Join(amadeusRoot, "config.yaml"), `
+version: 2
+model: test-model
+model_provider: openai
+model_context_window: 8192
+model_reasoning_effort: high
+model_providers:
+  openai:
+    wire_api: responses
+    dialect: openai
+    api_key: secret-value
+    base_url: https://example.invalid/v1
+`)
+	command, output := newTestRootCommand(amadeusRoot)
+	command.SetArgs([]string{"config", "show"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("show config: %v", err)
+	}
+	shown := output.String()
+	if !strings.Contains(shown, "model_reasoning_effort: high") || !strings.Contains(shown, config.RedactedSecret) {
+		t.Fatalf("unexpected shown config:\n%s", shown)
+	}
+	if strings.Contains(shown, "secret-value") {
+		t.Fatalf("config show leaked API key: %s", shown)
 	}
 }
 

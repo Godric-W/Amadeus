@@ -198,6 +198,8 @@ func TestThreadManagerMaterializesOnFirstInput(t *testing.T) {
 	manager, store := newTestManager(t, ctx, "completed", nil)
 	defer manager.Close(context.Background())
 	configuration := testConfiguration(t)
+	effort := llm.ReasoningEffortHigh
+	configuration.Runtime.ModelReasoningEffort = &effort
 	value, err := manager.StartThread(ctx, StartInput{Configuration: configuration})
 	if err != nil {
 		t.Fatal(err)
@@ -241,6 +243,17 @@ func TestThreadManagerMaterializesOnFirstInput(t *testing.T) {
 	if next != len(wantKinds) {
 		t.Fatalf("history kinds = %v, missing ordered suffix from %v", actualKinds, wantKinds[next:])
 	}
+	for _, line := range history.Lines {
+		contextItem, ok := line.Item.(rollout.TurnContextItem)
+		if !ok {
+			continue
+		}
+		if contextItem.ReasoningEffort == nil || *contextItem.ReasoningEffort != llm.ReasoningEffortHigh {
+			t.Fatalf("turn context effort = %#v, want high", contextItem.ReasoningEffort)
+		}
+		return
+	}
+	t.Fatal("turn context item was not persisted")
 }
 
 func TestThreadUserInputAdmissionContinuesSameTurn(t *testing.T) {
