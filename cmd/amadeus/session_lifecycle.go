@@ -75,15 +75,15 @@ func (runner *agentController) prepareSession(ctx context.Context, invocation ag
 		}
 		title := ""
 		for _, candidate := range metadata {
-			if candidate.ID == invocation.SessionID {
+			if candidate.ID == invocation.ResumeThreadID {
 				title = candidate.Title
 				break
 			}
 		}
-		if _, err := workspace.Resume(ctx, invocation.SessionID, runner.sessionConfiguration(configured, invocation)); err != nil {
+		if _, err := workspace.Resume(ctx, invocation.ResumeThreadID, runner.sessionConfiguration(configured, invocation)); err != nil {
 			return err
 		}
-		fmt.Fprintf(invocation.ErrorOutput, "session: resumed %s (%s)\n", invocation.SessionID, title)
+		fmt.Fprintf(invocation.ErrorOutput, "session: resumed %s (%s)\n", invocation.ResumeThreadID, title)
 		return nil
 	case sessionStartSelect:
 		if reader == nil {
@@ -121,11 +121,11 @@ func (runner *agentController) renameCurrent(ctx context.Context, title string) 
 func (runner *agentController) deleteCurrent(ctx context.Context) (protocol.ThreadID, error) {
 	workspace := runner.currentWorkspace()
 	if workspace == nil {
-		return "", nil
+		return protocol.ThreadID{}, nil
 	}
 	deleted, err := workspace.DeleteCurrent(ctx)
 	if errors.Is(err, app.ErrNoActiveThread) {
-		return "", nil
+		return protocol.ThreadID{}, nil
 	}
 	return deleted, err
 }
@@ -170,12 +170,14 @@ func (runner *agentController) selectSession(ctx context.Context, invocation age
 		fmt.Fprintln(invocation.ErrorOutput, "session: selection cancelled")
 		return nil
 	}
-	selected := protocol.ThreadID(value)
+	selected, threadParseErr := protocol.ParseThreadID(value)
 	if index, parseErr := strconv.Atoi(value); parseErr == nil {
 		if index < 1 || index > len(threads) {
 			return fmt.Errorf("session selection %d is out of range", index)
 		}
 		selected = threads[index-1].ID
+	} else if threadParseErr != nil {
+		return fmt.Errorf("invalid session thread ID: %w", threadParseErr)
 	}
 	active, err := workspace.Resume(ctx, selected, runner.sessionConfiguration(configured, invocation))
 	if err != nil {

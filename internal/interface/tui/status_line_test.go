@@ -6,6 +6,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
@@ -13,11 +14,11 @@ func TestSessionConfiguredReplacesCompleteStatusLineConfiguration(t *testing.T) 
 	_, model := newTestFullscreen(t, nil)
 	effort := llm.ReasoningEffortHigh
 	configuration := protocol.SessionConfiguration{
-		CWD: "/workspace/next", Provider: "openai", Model: "gpt-next",
+		Source: protocol.RootSessionSource(), CWD: "/workspace/next", Provider: "openai", Model: "gpt-next",
 		ReasoningEffort: &effort, Mode: protocol.ModeKindPlan,
 	}
 
-	command := model.applyEvent(testProtocolEvent("thread-1", "", protocol.SessionConfiguredEvent{Configuration: configuration}))
+	command := model.applyEvent(testProtocolEvent(testThreadID(1), "", protocol.SessionConfiguredEvent{SessionID: testutil.SessionID(1), ThreadID: testThreadID(1), Configuration: configuration}))
 	if command == nil {
 		t.Fatal("CWD change did not schedule branch refresh")
 	}

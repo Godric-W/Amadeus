@@ -6,6 +6,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
 func TestTurnInputQueueDrainsFIFO(t *testing.T) {
@@ -78,7 +79,7 @@ func TestSteerInputRequiresMatchingRegularActiveTurn(t *testing.T) {
 }
 
 func testActiveTurn(kind TaskKind, turnID protocol.TurnID) *ActiveTurn {
-	context := &turn.TurnContext{ThreadID: "thread-1", TurnID: turnID, Provider: "mock", Model: "model", CWD: "/workspace", Mode: turn.ModeKindDefault}
+	context := &turn.TurnContext{SessionID: testutil.SessionID(1), ThreadID: testutil.ThreadID(1), TurnID: turnID, Provider: "mock", Model: "model", CWD: "/workspace", Mode: turn.ModeKindDefault}
 	var task SessionTask
 	if kind == TaskKindCompact {
 		task = &compactTask{}

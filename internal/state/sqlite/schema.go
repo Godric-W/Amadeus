@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const CurrentSchemaVersion = 2
+const CurrentSchemaVersion = 3
 
 var ErrUnsupportedSchema = errors.New("unsupported state schema")
 
@@ -147,6 +147,6 @@ func schemaObjects(ctx context.Context, database *sql.DB, objectType string) ([]
 }
 
 func unsupportedSchema(path string, cause error) error {
-	reason := strings.TrimSpace(cause.Error())
-	return fmt.Errorf("%w: %s; delete %q and restart to rebuild development data", ErrUnsupportedSchema, reason, path)
+	_ = path
+	return fmt.Errorf("%w: %s", ErrUnsupportedSchema, strings.TrimSpace(cause.Error()))
 }

@@ -63,7 +63,7 @@ func (definition multiAgentTool) Execute(toolContext tool.ToolUseContext, prepar
 		if !ok {
 			return tool.ToolResult{}, errors.New("spawn_agent preparation state is invalid")
 		}
-		result, err := definition.owner.control.Spawn(toolContext.Context, protocol.ThreadID(prepared.Invocation.SessionID), arguments.Message)
+		result, err := definition.owner.control.Spawn(toolContext.Context, prepared.Invocation.ThreadID, arguments.Message)
 		if err != nil {
 			return tool.ToolResult{}, err
 		}
@@ -73,20 +73,17 @@ func (definition multiAgentTool) Execute(toolContext tool.ToolUseContext, prepar
 		if !ok {
 			return tool.ToolResult{}, errors.New("send_input preparation state is invalid")
 		}
-		if err := definition.owner.control.SendInput(toolContext.Context, protocol.ThreadID(arguments.ID), arguments.Message, arguments.Interrupt); err != nil {
+		if err := definition.owner.control.SendInput(toolContext.Context, arguments.ID, arguments.Message, arguments.Interrupt); err != nil {
 			return tool.ToolResult{}, err
 		}
-		snapshot := definition.owner.control.Snapshot(protocol.ThreadID(arguments.ID))
+		snapshot := definition.owner.control.Snapshot(arguments.ID)
 		value = map[string]any{"agent_id": arguments.ID, "nickname": snapshot.Nickname, "accepted": true}
 	case "wait_agent":
 		arguments, ok := prepared.State.(waitAgentArguments)
 		if !ok {
 			return tool.ToolResult{}, errors.New("wait_agent preparation state is invalid")
 		}
-		ids := make([]protocol.ThreadID, len(arguments.IDs))
-		for index, id := range arguments.IDs {
-			ids[index] = protocol.ThreadID(id)
-		}
+		ids := arguments.IDs
 		timeout := 30 * time.Second
 		if arguments.TimeoutMS != nil {
 			timeout = time.Duration(*arguments.TimeoutMS) * time.Millisecond
@@ -101,8 +98,8 @@ func (definition multiAgentTool) Execute(toolContext tool.ToolUseContext, prepar
 		if !ok {
 			return tool.ToolResult{}, errors.New("close_agent preparation state is invalid")
 		}
-		snapshot := definition.owner.control.Snapshot(protocol.ThreadID(arguments.ID))
-		previous, err := definition.owner.control.CloseAgent(toolContext.Context, protocol.ThreadID(arguments.ID))
+		snapshot := definition.owner.control.Snapshot(arguments.ID)
+		previous, err := definition.owner.control.CloseAgent(toolContext.Context, arguments.ID)
 		if err != nil {
 			return tool.ToolResult{}, err
 		}
@@ -121,16 +118,16 @@ type spawnAgentArguments struct {
 	Message string `json:"message"`
 }
 type sendInputArguments struct {
-	ID        string `json:"id"`
-	Message   string `json:"message"`
-	Interrupt bool   `json:"interrupt"`
+	ID        protocol.ThreadID `json:"id"`
+	Message   string            `json:"message"`
+	Interrupt bool              `json:"interrupt"`
 }
 type waitAgentArguments struct {
-	IDs       []string `json:"ids"`
-	TimeoutMS *int     `json:"timeout_ms"`
+	IDs       []protocol.ThreadID `json:"ids"`
+	TimeoutMS *int                `json:"timeout_ms"`
 }
 type closeAgentArguments struct {
-	ID string `json:"id"`
+	ID protocol.ThreadID `json:"id"`
 }
 
 func (definition multiAgentTool) decode(invocation tool.Invocation) (any, error) {
@@ -149,7 +146,7 @@ func (definition multiAgentTool) decode(invocation tool.Invocation) (any, error)
 		if err := decodeArguments(invocation.Call.Payload, &value); err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(value.ID) == "" || strings.TrimSpace(value.Message) == "" {
+		if value.ID.IsZero() || strings.TrimSpace(value.Message) == "" {
 			return nil, errors.New("send_input arguments are incomplete")
 		}
 		return value, nil
@@ -162,7 +159,7 @@ func (definition multiAgentTool) decode(invocation tool.Invocation) (any, error)
 			return nil, errors.New("wait_agent IDs are empty")
 		}
 		for _, id := range value.IDs {
-			if strings.TrimSpace(id) == "" {
+			if id.IsZero() {
 				return nil, errors.New("wait_agent contains an empty ID")
 			}
 		}
@@ -175,7 +172,7 @@ func (definition multiAgentTool) decode(invocation tool.Invocation) (any, error)
 		if err := decodeArguments(invocation.Call.Payload, &value); err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(value.ID) == "" {
+		if value.ID.IsZero() {
 			return nil, errors.New("close_agent ID is empty")
 		}
 		return value, nil

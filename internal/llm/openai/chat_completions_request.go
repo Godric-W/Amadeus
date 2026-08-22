@@ -53,6 +53,7 @@ func newChatCompletionsRequestForDialect(request llm.Request, dialect Dialect) (
 		Model:    shared.ChatModel(request.Model),
 		Messages: messages,
 		Tools:    tools,
+		Metadata: shared.Metadata(request.Metadata.Values()),
 	}
 	if err := dialect.PrepareChatRequest(request, &params); err != nil {
 		return openaisdk.ChatCompletionNewParams{}, err

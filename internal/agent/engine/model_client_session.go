@@ -21,6 +21,7 @@ const (
 
 type SampleRequest struct {
 	ID                 string
+	Metadata           llm.RequestMetadata
 	Messages           []llm.ResponseItem
 	BaseInstructions   llm.BaseInstructions
 	Tools              []tool.ToolSpec
@@ -88,6 +89,9 @@ func (session *ModelClientSession) Sample(ctx context.Context, request SampleReq
 	if request.Events == nil {
 		return SampleResult{}, errors.New("model sample event sink is nil")
 	}
+	if err := request.Metadata.Validate(); err != nil {
+		return SampleResult{}, err
+	}
 	definitions := make([]llm.ToolSpec, len(request.Tools))
 	for index, spec := range request.Tools {
 		definitions[index] = llm.ToolSpec{Name: spec.Name, Description: spec.Description, InputSchema: append([]byte(nil), spec.InputSchema...)}
@@ -103,6 +107,7 @@ func (session *ModelClientSession) Sample(ctx context.Context, request SampleReq
 			OutputSchemaStrict: request.OutputSchemaStrict,
 		},
 		Reasoning: request.Reasoning.Clone(),
+		Metadata:  request.Metadata,
 	}
 	projection := sampleStreamProjection{
 		assistantID: request.ID + ":assistant",

@@ -65,7 +65,7 @@ func NewScopedSink(parent EventSink, eventID SubmissionID, threadID ThreadID, tu
 	if parent == nil {
 		return nil, errors.New("scoped event sink parent is nil")
 	}
-	if eventID == "" || threadID == "" {
+	if eventID == "" || threadID.IsZero() {
 		return nil, errors.New("scoped event sink identity is incomplete")
 	}
 	return &ScopedSink{parent: parent, eventID: eventID, threadID: threadID, turnID: turnID}, nil
@@ -84,7 +84,7 @@ func (sink *ScopedSink) Publish(ctx context.Context, event Event) error {
 
 func (sink *ScopedSink) ThreadID() ThreadID {
 	if sink == nil {
-		return ""
+		return ThreadID{}
 	}
 	return sink.threadID
 }

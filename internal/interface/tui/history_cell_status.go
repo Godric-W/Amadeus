@@ -33,7 +33,8 @@ func (StatusHistoryCell) IsStreamContinuation() bool { return false }
 func (cell StatusHistoryCell) values() []string {
 	snapshot := cell.Snapshot
 	values := []string{
-		fmt.Sprintf("Thread: %s", displayValue(string(snapshot.ThreadID))),
+		fmt.Sprintf("Session: %s", displayValue(snapshot.SessionID.String())),
+		fmt.Sprintf("Thread: %s", displayValue(snapshot.ThreadID.String())),
 		fmt.Sprintf("Title: %s", displayValue(snapshot.Title)),
 		fmt.Sprintf("Current directory: %s", displayValue(snapshot.CurrentDir)),
 		fmt.Sprintf("Model: %s / %s", displayValue(snapshot.Provider), displayValue(snapshot.Model)),

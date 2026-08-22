@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/policy"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
 type executionServiceTestTool struct {
@@ -17,6 +18,12 @@ type executionServiceTestTool struct {
 	target   *ContextTarget
 	handle   func(context.Context, Invocation) (ToolResult, error)
 	check    func(context.Context, Invocation) (PermissionEvaluation, error)
+}
+
+func executionServiceContext() context.Context {
+	return WithInvocationMetadata(context.Background(), InvocationMetadata{
+		SessionID: testutil.SessionID(1), ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Source: ToolCallSourceModel,
+	})
 }
 
 func (toolImpl *executionServiceTestTool) Spec() ToolSpec {
@@ -140,7 +147,7 @@ func TestToolExecutionServiceRepairsValidatesAndExecutesOnce(t *testing.T) {
 		return ToolResult{Text: "done", Metadata: map[string]any{"path": "README.md"}}, nil
 	}}
 	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{}, toolImpl)
-	execution, err := service.Execute(context.Background(), NewCall("call-1", toolImpl.name, json.RawMessage(`{"value":"ok",`)))
+	execution, err := service.Execute(executionServiceContext(), NewCall("call-1", toolImpl.name, json.RawMessage(`{"value":"ok",`)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +166,7 @@ func TestToolExecutionServiceScopedBindingsDoNotLeak(t *testing.T) {
 	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{Observer: baseObserver}, toolImpl)
 	deniedObserver := &recordingLifecycleObserver{}
 	deniedRouter := service.registry.SnapshotRouter(service.visibility, RequestSnapshot{}, func(ToolSpec) bool { return false })
-	executions, err := service.ExecuteBatchScoped(context.Background(), []ToolCall{
+	executions, err := service.ExecuteBatchScoped(executionServiceContext(), []ToolCall{
 		NewCall("call-denied", toolImpl.name, json.RawMessage(`{"value":"ok"}`)),
 	}, nil, ExecutionScope{Observer: deniedObserver, Router: &deniedRouter})
 	if err != nil {
@@ -168,7 +175,7 @@ func TestToolExecutionServiceScopedBindingsDoNotLeak(t *testing.T) {
 	if len(executions) != 1 || executions[0].Outcome.Error == nil || executions[0].Outcome.Error.Kind != "tool_not_available" {
 		t.Fatalf("disallowed scoped call = %#v", executions)
 	}
-	allowed, err := service.Execute(context.Background(), NewCall("call-allowed", toolImpl.name, json.RawMessage(`{"value":"ok"}`)))
+	allowed, err := service.Execute(executionServiceContext(), NewCall("call-allowed", toolImpl.name, json.RawMessage(`{"value":"ok"}`)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +188,7 @@ func TestToolExecutionServiceScopedBindingsDoNotLeak(t *testing.T) {
 }
 
 func TestToolExecutionServiceCompletesUnstartedCallsAfterCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(executionServiceContext())
 	observer := &recordingLifecycleObserver{}
 	toolImpl := &executionServiceTestTool{name: "read_test", parallel: false, handle: func(_ context.Context, invocation Invocation) (ToolResult, error) {
 		if invocation.Call.ID == "call-1" {
@@ -221,7 +228,7 @@ func TestToolExecutionServiceScopedCompletionPreservesCallOrder(t *testing.T) {
 	router := service.registry.SnapshotRouter(service.visibility, RequestSnapshot{}, nil)
 	done := make(chan error, 1)
 	go func() {
-		_, err := service.ExecuteBatchScoped(context.Background(), []ToolCall{
+		_, err := service.ExecuteBatchScoped(executionServiceContext(), []ToolCall{
 			NewCall("call-1", toolImpl.name, json.RawMessage(`{"value":"one"}`)),
 			NewCall("call-2", toolImpl.name, json.RawMessage(`{"value":"two"}`)),
 		}, nil, ExecutionScope{Observer: observer, Router: &router})
@@ -250,7 +257,7 @@ func TestToolExecutionServiceReturnsModelVisibleLookupAndArgumentFailures(t *tes
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			execution, err := service.Execute(context.Background(), test.call)
+			execution, err := service.Execute(executionServiceContext(), test.call)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -274,15 +281,15 @@ func TestToolExecutionServiceClassifiesDeniedPartialAndInterruptedCalls(t *testi
 		}},
 	}
 	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{}, tools...)
-	denied, _ := service.Execute(context.Background(), executionServiceCall("denied-1", "denied"))
+	denied, _ := service.Execute(executionServiceContext(), executionServiceCall("denied-1", "denied"))
 	if denied.Outcome.Status != ToolCallDenied || denied.Outcome.Blocking || denied.Outcome.Error.Kind != "permission_required" {
 		t.Fatalf("unexpected denied execution: %#v", denied)
 	}
-	partial, _ := service.Execute(context.Background(), executionServiceCall("partial-1", "partial"))
+	partial, _ := service.Execute(executionServiceContext(), executionServiceCall("partial-1", "partial"))
 	if partial.Outcome.Status != ToolCallFailed || !partial.Output.Partial || partial.Output.Text != "first operation applied" {
 		t.Fatalf("unexpected partial execution: %#v", partial)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(executionServiceContext())
 	cancel()
 	interrupted, _ := service.Execute(ctx, executionServiceCall("cancelled-1", "cancelled"))
 	if interrupted.Outcome.Status != ToolCallInterrupted || interrupted.Outcome.Error == nil {
@@ -298,7 +305,7 @@ func TestToolExecutionServiceRecordsNormalizedCallsBeforeAnySideEffect(t *testin
 	}}
 	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{}, toolImpl)
 	want := errors.New("rollout unavailable")
-	_, err := service.ExecuteBatch(context.Background(), []ToolCall{
+	_, err := service.ExecuteBatch(executionServiceContext(), []ToolCall{
 		NewCall("call-1", toolImpl.name, json.RawMessage(`{"value":"ok",`)),
 	}, func(_ context.Context, calls []ToolCall) error {
 		if len(calls) != 1 || string(calls[0].Payload) != `{"value":"ok"}` {
@@ -320,7 +327,7 @@ func TestToolExecutionServiceChecksTargetScopeBeforePermissionAndExecution(t *te
 	}}
 	scope := &executionServiceScope{err: executionServiceStaleAgentsMdError{}}
 	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{TargetObserver: scope}, toolImpl)
-	execution, err := service.Execute(context.Background(), executionServiceCall("call-1", toolImpl.name))
+	execution, err := service.Execute(executionServiceContext(), executionServiceCall("call-1", toolImpl.name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +347,7 @@ func TestToolExecutionServiceInvalidCallDoesNotCancelValidSibling(t *testing.T) 
 	}}
 	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{MaxParallel: 2}, toolImpl)
 	var recorded []ToolCall
-	executions, err := service.ExecuteBatch(context.Background(), []ToolCall{
+	executions, err := service.ExecuteBatch(executionServiceContext(), []ToolCall{
 		NewCall("bad", toolImpl.name, json.RawMessage(`{"value":`)),
 		executionServiceCall("good", toolImpl.name),
 	}, func(_ context.Context, calls []ToolCall) error {
@@ -383,7 +390,7 @@ func TestToolExecutionServiceAppliesPermissionDecisionsAndSessionGrant(t *testin
 	}}
 	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{Approvals: coordinator, Permissions: permissions}, toolImpl)
 	for _, id := range []string{"first", "second"} {
-		execution, executeErr := service.Execute(context.Background(), executionServiceCall(id, toolImpl.name))
+		execution, executeErr := service.Execute(executionServiceContext(), executionServiceCall(id, toolImpl.name))
 		if executeErr != nil || execution.Outcome.Status != ToolCallCompleted {
 			t.Fatalf("approved execution failed: %#v err=%v", execution, executeErr)
 		}
@@ -400,7 +407,7 @@ func TestToolExecutionServiceAppliesPermissionDecisionsAndSessionGrant(t *testin
 		return ToolResult{}, nil
 	}}
 	deniedService := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{}, denied)
-	execution, err := deniedService.Execute(context.Background(), executionServiceCall("denied", denied.name))
+	execution, err := deniedService.Execute(executionServiceContext(), executionServiceCall("denied", denied.name))
 	if err != nil || execution.Outcome.Status != ToolCallDenied || deniedCalls.Load() != 0 {
 		t.Fatalf("permission deny reached Tool.Call: %#v calls=%d err=%v", execution, deniedCalls.Load(), err)
 	}
@@ -428,7 +435,7 @@ func TestToolExecutionServiceCancellationReleasesApprovalWait(t *testing.T) {
 		return ToolResult{}, nil
 	}}
 	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{Approvals: coordinator}, toolImpl)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(executionServiceContext())
 	done := make(chan ToolExecution, 1)
 	go func() {
 		execution, _ := service.Execute(ctx, executionServiceCall("approval-call", toolImpl.name))
@@ -446,7 +453,7 @@ func TestToolExecutionServicePublishesLifecycleAroundNormalizedExecution(t *test
 	observer := &recordingLifecycleObserver{}
 	toolImpl := &executionServiceTestTool{name: "read_test", parallel: true}
 	service := newToolExecutionServiceForTest(t, ToolExecutionServiceOptions{Observer: observer}, toolImpl)
-	execution, err := service.Execute(context.Background(), NewCall("call-1", toolImpl.name, json.RawMessage(`{"value":"ok",`)))
+	execution, err := service.Execute(executionServiceContext(), NewCall("call-1", toolImpl.name, json.RawMessage(`{"value":"ok",`)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +476,7 @@ func TestToolExecutionServiceRejectsInvisibleHandlerAndPopulatesInvocationMetada
 	if err != nil {
 		t.Fatal(err)
 	}
-	execution, err := hidden.Execute(context.Background(), executionServiceCall("hidden", toolImpl.name))
+	execution, err := hidden.Execute(executionServiceContext(), executionServiceCall("hidden", toolImpl.name))
 	if err != nil || execution.Outcome.Error == nil || execution.Outcome.Error.Kind != "not_registered" {
 		t.Fatalf("invisible Tool executed: %#v err=%v", execution, err)
 	}
@@ -477,12 +484,12 @@ func TestToolExecutionServiceRejectsInvisibleHandlerAndPopulatesInvocationMetada
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := WithInvocationMetadata(context.Background(), InvocationMetadata{SessionID: "session-1", TurnID: "run-1", Source: ToolCallSourceUser})
+	ctx := WithInvocationMetadata(context.Background(), InvocationMetadata{SessionID: testutil.SessionID(1), ThreadID: testutil.ThreadID(1), TurnID: "run-1", Source: ToolCallSourceUser})
 	execution, err = visible.Execute(ctx, executionServiceCall("visible", toolImpl.name))
 	if err != nil || execution.Outcome.Status != ToolCallCompleted {
 		t.Fatalf("visible Tool failed: %#v err=%v", execution, err)
 	}
-	if received.SessionID != "session-1" || received.TurnID != "run-1" || received.Source != ToolCallSourceUser {
+	if received.SessionID != testutil.SessionID(1) || received.ThreadID != testutil.ThreadID(1) || received.TurnID != "run-1" || received.Source != ToolCallSourceUser {
 		t.Fatalf("Invocation metadata was not populated: %#v", received)
 	}
 }

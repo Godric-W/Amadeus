@@ -69,8 +69,12 @@ func (store *Store) Materialize(ctx context.Context, input thread.CreateInput) (
 	store.recorders[input.ID] = recorder
 	store.mu.Unlock()
 	meta := rollout.SessionMetaItem{
-		ThreadID: input.ID, Source: input.Source.Clone(), CWD: input.CWD, Title: input.Title, ModelProvider: input.ModelProvider, Model: input.Model,
+		SessionID: input.SessionID, ID: input.ID, Source: input.Source.Clone(), CWD: input.CWD, Title: input.Title, ModelProvider: input.ModelProvider, Model: input.Model,
 		GitSHA: input.GitSHA, GitBranch: input.GitBranch, GitOriginURL: input.GitOriginURL, CreatedAt: input.CreatedAt.UTC(),
+	}
+	if input.Source.IsSubAgent() {
+		parent := input.Source.SubAgent.ParentThreadID
+		meta.ParentThreadID = &parent
 	}
 	if err := meta.Validate(); err != nil {
 		_ = store.CloseWriter(context.Background(), input.ID)
@@ -96,6 +100,9 @@ func (store *Store) Materialize(ctx context.Context, input thread.CreateInput) (
 func (store *Store) OpenWriter(ctx context.Context, id protocol.ThreadID) (thread.InitialHistory, error) {
 	metadata, err := store.state.GetThread(ctx, id)
 	if err != nil {
+		return thread.InitialHistory{}, err
+	}
+	if err := validateRolloutPathIdentity(metadata.RolloutPath, id); err != nil {
 		return thread.InitialHistory{}, err
 	}
 	store.mu.Lock()
@@ -216,6 +223,10 @@ func (store *Store) ListThreads(ctx context.Context, query state.ListQuery) ([]s
 	return store.state.ListThreads(ctx, query)
 }
 
+func (store *Store) ListChildren(ctx context.Context, parentID protocol.ThreadID) ([]state.StoredThread, error) {
+	return store.state.ListChildren(ctx, parentID)
+}
+
 func (store *Store) RenameThread(ctx context.Context, id protocol.ThreadID, title string, at time.Time) error {
 	if at.IsZero() {
 		return errors.New("thread rename time is zero")
@@ -247,7 +258,7 @@ func (store *Store) RebuildIndex(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		lines, err := rollout.Read(path, "")
+		lines, err := rollout.Read(path, protocol.ThreadID{})
 		if err != nil {
 			return err
 		}
@@ -308,7 +319,7 @@ func (store *Store) appendWithTemporaryWriter(ctx context.Context, id protocol.T
 
 func (store *Store) rolloutPath(id protocol.ThreadID, at time.Time) string {
 	stamp := at.UTC().Format("2006-01-02T15-04-05.000000000Z")
-	return filepath.Join(store.home, "sessions", at.UTC().Format("2006"), at.UTC().Format("01"), at.UTC().Format("02"), fmt.Sprintf("rollout-%s-%s.jsonl", stamp, id))
+	return filepath.Join(store.home, "sessions", at.UTC().Format("2006"), at.UTC().Format("01"), at.UTC().Format("02"), fmt.Sprintf("rollout-%s-%s.jsonl", stamp, id.String()))
 }
 
 func projectMetadata(path string, lines []rollout.Line) (state.StoredThread, error) {
@@ -319,8 +330,11 @@ func projectMetadata(path string, lines []rollout.Line) (state.StoredThread, err
 	if !ok {
 		return state.StoredThread{}, errors.New("rollout does not begin with session_meta")
 	}
+	if err := validateRolloutPathIdentity(path, meta.ID); err != nil {
+		return state.StoredThread{}, err
+	}
 	thread := state.StoredThread{
-		ID: meta.ThreadID, Source: meta.Source.Clone(), RolloutPath: path, CWD: meta.CWD, Title: meta.Title,
+		ID: meta.ID, Source: meta.Source.Clone(), RolloutPath: path, CWD: meta.CWD, Title: meta.Title,
 		ModelProvider: meta.ModelProvider, Model: meta.Model, CreatedAt: meta.CreatedAt.UTC(), UpdatedAt: lines[0].Timestamp.UTC(),
 		GitSHA: meta.GitSHA, GitBranch: meta.GitBranch, GitOriginURL: meta.GitOriginURL, Archived: meta.Archived,
 	}
@@ -345,6 +359,17 @@ func projectMetadata(path string, lines []rollout.Line) (state.StoredThread, err
 		}
 	}
 	return thread, thread.Validate()
+}
+
+func validateRolloutPathIdentity(path string, id protocol.ThreadID) error {
+	if id.IsZero() {
+		return errors.New("rollout path thread ID is empty")
+	}
+	expectedSuffix := "-" + id.String() + ".jsonl"
+	if !strings.HasSuffix(filepath.Base(path), expectedSuffix) {
+		return fmt.Errorf("rollout filename does not match thread ID %q", id)
+	}
+	return nil
 }
 
 func responsePreview(item rollout.ResponseItem) string {

@@ -2,6 +2,8 @@ package protocol
 
 import (
 	"testing"
+
+	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
 func TestEventValidate(t *testing.T) {
@@ -16,7 +18,7 @@ func TestEventValidate(t *testing.T) {
 func TestApprovalRequestEventValidateTypedPayload(t *testing.T) {
 	request := ApprovalRequestEvent{
 		RequestID: "request-1",
-		ThreadID:  "thread-1",
+		ThreadID:  testutil.ThreadID(1),
 		TurnID:    "turn-1",
 		Approval:  ApprovalRequest{ID: "request-1", ToolName: "edit"},
 	}

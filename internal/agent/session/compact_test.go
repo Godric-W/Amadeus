@@ -19,6 +19,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/project"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -89,7 +90,7 @@ type compactTestHost struct {
 
 func (host *compactTestHost) AppendItems(_ context.Context, turnID protocol.TurnID, items ...rollout.RolloutItem) error {
 	for _, item := range items {
-		scoped := rollout.ScopeItem(item, "thread-1", turnID)
+		scoped := rollout.ScopeItem(item, testutil.ThreadID(1), turnID)
 		host.lines = append(host.lines, rollout.Line{Version: rollout.CurrentVersion, Sequence: uint64(len(host.lines) + 1), Timestamp: time.Now().UTC(), Item: scoped})
 	}
 	return host.context.Rebuild(host.lines)
@@ -164,7 +165,7 @@ func TestCompactorUsesProvidedReasoningEffort(t *testing.T) {
 	effort := llm.ReasoningEffortHigh
 	items, err := session.services.Compact(context.Background(), engine.CompactRequest{
 		History: session.ContextProjection(), ModelSession: modelSession,
-		Reasoning: llm.ReasoningConfigForEffort(&effort), Events: host,
+		Reasoning: llm.ReasoningConfigForEffort(&effort), Metadata: requestMetadata(*compactTurnContext()), Events: host,
 	})
 	if err != nil || len(items) == 0 {
 		t.Fatalf("compaction items=%d err=%v", len(items), err)
@@ -283,13 +284,13 @@ func TestCompactTaskRetryExhaustionDoesNotChangeReplacementHistory(t *testing.T)
 
 func TestCompactionSuccessEventOrderRemainsContextWarningTerminal(t *testing.T) {
 	item := rollout.CompactedItem{
-		ThreadID: "thread-1", TurnID: "turn-1",
+		ThreadID: testutil.ThreadID(1), TurnID: "turn-1",
 		Summary: "summary", ReplacementHistory: []rollout.ReplacementMessage{{Role: "assistant", Content: "summary"}},
 		CoveredThroughSequence: 1, SourceHash: "hash", Provider: "mock", Model: "compact-model",
 	}
-	session := &Session{threadID: "thread-1", ctx: context.Background(), events: make(chan protocol.Event, 3)}
+	session := &Session{sessionID: testutil.SessionID(1), threadID: testutil.ThreadID(1), ctx: context.Background(), events: make(chan protocol.Event, 3)}
 	session.publishCompactionEvents("submission-1", "turn-1", []rollout.RolloutItem{item})
-	session.publish(protocol.Event{ID: "submission-1", Msg: protocol.TurnCompleteEvent{ThreadID: "thread-1", TurnID: "turn-1"}})
+	session.publish(protocol.Event{ID: "submission-1", Msg: protocol.TurnCompleteEvent{ThreadID: testutil.ThreadID(1), TurnID: "turn-1"}})
 
 	first := <-session.events
 	second := <-session.events
@@ -306,7 +307,7 @@ func TestCompactionSuccessEventOrderRemainsContextWarningTerminal(t *testing.T) 
 }
 
 func compactTurnContext() *turn.TurnContext {
-	return &turn.TurnContext{ThreadID: "thread-1", TurnID: "turn-2"}
+	return &turn.TurnContext{SessionID: testutil.SessionID(1), ThreadID: testutil.ThreadID(1), TurnID: "turn-2"}
 }
 
 func assertRequestReasoningEffort(t *testing.T, request llm.Request, want llm.ReasoningEffort) {

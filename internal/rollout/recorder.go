@@ -27,8 +27,8 @@ type Recorder struct {
 }
 
 func Create(path string, threadID identity.ThreadID, clock Clock) (*Recorder, error) {
-	if err := validateID("thread", string(threadID)); err != nil {
-		return nil, err
+	if threadID.IsZero() {
+		return nil, errors.New("thread ID is empty")
 	}
 	if clock == nil {
 		clock = time.Now
@@ -44,8 +44,8 @@ func Create(path string, threadID identity.ThreadID, clock Clock) (*Recorder, er
 }
 
 func Open(path string, threadID identity.ThreadID, clock Clock) (*Recorder, []Line, error) {
-	if err := validateID("thread", string(threadID)); err != nil {
-		return nil, nil, err
+	if threadID.IsZero() {
+		return nil, nil, errors.New("thread ID is empty")
 	}
 	if clock == nil {
 		clock = time.Now

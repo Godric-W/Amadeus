@@ -9,6 +9,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	application "github.com/Godric-W/Amadeus/internal/app"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
@@ -57,7 +58,7 @@ func TestFullscreenRunKeepsMainScreenAndNativeMouse(t *testing.T) {
 		Input: bytes.NewBufferString("/exit\r"), Output: &output, Width: 80, NoColor: true, DisableAnimations: true,
 		Application: newFakeFullscreenApplication(),
 		Snapshot: application.ThreadViewSnapshot{
-			Generation: 1, ThreadID: "thread-1",
+			Generation: 1, SessionID: testutil.SessionID(1), ThreadID: testThreadID(1),
 			Configuration: protocol.SessionConfiguration{Model: "test", Mode: protocol.ModeKindDefault},
 		},
 	})
@@ -68,7 +69,7 @@ func TestFullscreenRunKeepsMainScreenAndNativeMouse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if exitInfo.ExitReason != ExitReasonUserRequested || exitInfo.ThreadID != "thread-1" || exitInfo.ResumeHint != "amadeus --resume thread-1" {
+	if exitInfo.ExitReason != ExitReasonUserRequested || exitInfo.ThreadID != testThreadID(1) || exitInfo.ResumeHint != "amadeus --resume "+testThreadID(1).String() {
 		t.Fatalf("exit info = %#v", exitInfo)
 	}
 	rendered := output.String()

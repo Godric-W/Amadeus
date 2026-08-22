@@ -34,7 +34,7 @@ func (state *State) Apply(event protocol.Event) error {
 	if err := event.Validate(); err != nil {
 		return err
 	}
-	if state.ThreadID == "" {
+	if state.ThreadID.IsZero() {
 		state.ThreadID = protocol.ThreadIDOf(event.Msg)
 	}
 	threadID := protocol.ThreadIDOf(event.Msg)

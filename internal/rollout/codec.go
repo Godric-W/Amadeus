@@ -9,7 +9,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 )
 
-const CurrentVersion = 2
+const CurrentVersion = 3
 
 const (
 	itemTypeSessionMeta = "session_meta"
@@ -35,7 +35,7 @@ type lineWire struct {
 }
 
 func (line Line) MarshalJSON() ([]byte, error) {
-	if err := line.Validate("", line.Sequence); err != nil {
+	if err := line.Validate(protocol.ThreadID{}, line.Sequence); err != nil {
 		return nil, err
 	}
 	kind, payload, err := encodeItem(line.Item)
@@ -84,7 +84,7 @@ func (line Line) Validate(expectedThreadID protocol.ThreadID, expectedSequence u
 		return err
 	}
 	threadID := ThreadIDOf(line.Item)
-	if expectedThreadID != "" && threadID != expectedThreadID {
+	if !expectedThreadID.IsZero() && threadID != expectedThreadID {
 		return fmt.Errorf("rollout thread is %q, expected %q", threadID, expectedThreadID)
 	}
 	return nil

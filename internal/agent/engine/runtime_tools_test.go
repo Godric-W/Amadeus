@@ -9,12 +9,17 @@ import (
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/mcp"
 	"github.com/Godric-W/Amadeus/internal/project"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
 type runtimeToolsAgentHost struct{}
 
 func (runtimeToolsAgentHost) SpawnChild(context.Context, *multiagent.Control, multiagent.SpawnChildRequest) (multiagent.AgentRuntime, error) {
 	panic("unexpected child spawn")
+}
+
+func (runtimeToolsAgentHost) ResumeChild(context.Context, *multiagent.Control, protocol.ThreadID) (multiagent.AgentRuntime, error) {
+	panic("unexpected child resume")
 }
 
 func (runtimeToolsAgentHost) NotifyParent(context.Context, protocol.ThreadID, multiagent.Notification) error {
@@ -37,7 +42,7 @@ func TestBuildToolRuntimeScopesMultiAgentToolsToEnabledRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	configured := config.Default()
-	control, err := multiagent.NewControl("root", runtimeToolsAgentHost{}, multiagent.Options{
+	control, err := multiagent.NewControl(testutil.SessionID(1), testutil.ThreadID(1), runtimeToolsAgentHost{}, multiagent.Options{
 		MaxAgents: configured.Agent.MultiAgent.MaxAgents,
 		MaxDepth:  configured.Agent.MultiAgent.MaxDepth,
 	})
@@ -54,7 +59,7 @@ func TestBuildToolRuntimeScopesMultiAgentToolsToEnabledRoot(t *testing.T) {
 		wantPresent bool
 	}{
 		{name: "enabled root", enabled: true, source: protocol.RootSessionSource(), control: control, wantPresent: true},
-		{name: "enabled subagent", enabled: true, source: protocol.NewSubAgentSessionSource("root", 1, "atlas", "explorer"), control: control},
+		{name: "enabled subagent", enabled: true, source: protocol.NewSubAgentSessionSource(testutil.ThreadID(1), 1, "atlas", "explorer"), control: control},
 		{name: "disabled root", enabled: false, source: protocol.RootSessionSource()},
 	}
 	for _, test := range tests {

@@ -33,7 +33,7 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 	message := event.Msg
 	switch item := message.(type) {
 	case protocol.SessionConfiguredEvent:
-		return model.applySessionConfiguration(item.Configuration)
+		return model.applySessionConfigured(item)
 	case protocol.TurnStartedEvent:
 		model.clearRetryStatus()
 		model.running = true

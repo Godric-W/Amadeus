@@ -70,7 +70,6 @@ func (sink *JSONLSink) Write(ctx context.Context, record Record) error {
 }
 
 func redactRecord(record Record) Record {
-	record.SessionID = redactAuditText(record.SessionID)
 	record.RequestID = redactAuditText(record.RequestID)
 	record.ToolName = redactAuditText(record.ToolName)
 	record.Risk = redactAuditText(record.Risk)

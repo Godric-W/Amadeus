@@ -96,7 +96,7 @@ func (model *fullscreenModel) requestExit(mode ExitMode, reason ExitReason, exit
 			threadID:   model.session.ThreadID,
 			threadName: strings.TrimSpace(model.session.Title),
 			tokenUsage: model.session.Usage,
-			resumable:  model.session.ThreadID != "",
+			resumable:  !model.session.ThreadID.IsZero(),
 		},
 	}
 	if mode == ExitModeImmediate {
@@ -217,7 +217,7 @@ func (model fullscreenModel) appExitInfo() AppExitInfo {
 			threadID:   model.session.ThreadID,
 			threadName: strings.TrimSpace(model.session.Title),
 			tokenUsage: model.session.Usage,
-			resumable:  model.session.ThreadID != "",
+			resumable:  !model.session.ThreadID.IsZero(),
 		}
 	}
 	info := AppExitInfo{
@@ -227,7 +227,7 @@ func (model fullscreenModel) appExitInfo() AppExitInfo {
 		ExitReason: model.exit.reason,
 		Error:      model.exit.err,
 	}
-	if target.resumable && info.ThreadID != "" {
+	if target.resumable && !info.ThreadID.IsZero() {
 		info.ResumeHint = fmt.Sprintf("amadeus --resume %s", info.ThreadID)
 	}
 	if !model.exit.active() {

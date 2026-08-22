@@ -271,7 +271,7 @@ func (service *ToolExecutionService) executeCall(ctx context.Context, routed exe
 		metadata.Source = ToolCallSourceModel
 	}
 	invocation := Invocation{
-		SessionID: metadata.SessionID, TurnID: metadata.TurnID,
+		SessionID: metadata.SessionID, ThreadID: metadata.ThreadID, TurnID: metadata.TurnID,
 		Call: routed.call, Source: metadata.Source,
 	}
 	toolContext := ToolUseContext{

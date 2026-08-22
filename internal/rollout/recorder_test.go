@@ -13,12 +13,14 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
 func TestRecorderConcurrentAppendAndReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
 	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
-	recorder, err := Create(path, "thread-1", func() time.Time { return now })
+	threadID := testutil.ThreadID(1)
+	recorder, err := Create(path, threadID, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +30,7 @@ func TestRecorderConcurrentAppendAndReopen(t *testing.T) {
 		wait.Add(1)
 		go func(index int) {
 			defer wait.Done()
-			item := ResponseItem{ThreadID: "thread-1", TurnID: protocol.TurnID(fmt.Sprintf("turn-%d", index)), Type: ResponseAssistantMessage, Role: "assistant", Content: "ok"}
+			item := ResponseItem{ThreadID: threadID, TurnID: protocol.TurnID(fmt.Sprintf("turn-%d", index)), Type: ResponseAssistantMessage, Role: "assistant", Content: "ok"}
 			_, appendErr := recorder.Append(context.Background(), item)
 			errorsChannel <- appendErr
 		}(index)
@@ -43,7 +45,7 @@ func TestRecorderConcurrentAppendAndReopen(t *testing.T) {
 	if err := recorder.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	reopened, lines, err := Open(path, "thread-1", nil)
+	reopened, lines, err := Open(path, threadID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +62,7 @@ func TestRecorderConcurrentAppendAndReopen(t *testing.T) {
 
 func TestRecorderIgnoresAndTruncatesIncompleteTail(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
-	recorder := createRecorderWithEvent(t, path, protocol.ThreadNameUpdatedEvent{ThreadID: "thread-1", Name: "updated"})
+	recorder := createRecorderWithEvent(t, path, protocol.ThreadNameUpdatedEvent{ThreadID: testutil.ThreadID(1), Name: "updated"})
 	if err := recorder.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -68,13 +70,13 @@ func TestRecorderIgnoresAndTruncatesIncompleteTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := file.WriteString(`{"version":2,"sequence":2`); err != nil {
+	if _, err := file.WriteString(`{"version":3,"sequence":2`); err != nil {
 		t.Fatal(err)
 	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, lines, err := Open(path, "thread-1", nil)
+	reopened, lines, err := Open(path, testutil.ThreadID(1), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +97,7 @@ func TestRecorderIgnoresAndTruncatesIncompleteTail(t *testing.T) {
 
 func TestRecorderRepairsCompleteFinalLineWithoutNewline(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
-	recorder := createRecorderWithEvent(t, path, protocol.ThreadNameUpdatedEvent{ThreadID: "thread-1", Name: "first"})
+	recorder := createRecorderWithEvent(t, path, protocol.ThreadNameUpdatedEvent{ThreadID: testutil.ThreadID(1), Name: "first"})
 	if err := recorder.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -106,20 +108,20 @@ func TestRecorderRepairsCompleteFinalLineWithoutNewline(t *testing.T) {
 	if err := os.WriteFile(path, bytes.TrimSuffix(content, []byte{'\n'}), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	reopened, lines, err := Open(path, "thread-1", nil)
+	reopened, lines, err := Open(path, testutil.ThreadID(1), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(lines) != 1 {
 		t.Fatalf("lines = %d, want 1", len(lines))
 	}
-	if _, err := reopened.Append(context.Background(), EventMsgItem{Msg: protocol.ThreadNameUpdatedEvent{ThreadID: "thread-1", Name: "second"}}); err != nil {
+	if _, err := reopened.Append(context.Background(), EventMsgItem{Msg: protocol.ThreadNameUpdatedEvent{ThreadID: testutil.ThreadID(1), Name: "second"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := reopened.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	lines, err = Read(path, "thread-1")
+	lines, err = Read(path, testutil.ThreadID(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +132,7 @@ func TestRecorderRepairsCompleteFinalLineWithoutNewline(t *testing.T) {
 
 func TestRecorderCloseReleasesFileAfterCancellation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
-	recorder, err := Create(path, "thread-1", nil)
+	recorder, err := Create(path, testutil.ThreadID(1), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +141,7 @@ func TestRecorderCloseReleasesFileAfterCancellation(t *testing.T) {
 	if err := recorder.Close(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("close error = %v, want context canceled", err)
 	}
-	item := EventMsgItem{Msg: protocol.ThreadNameUpdatedEvent{ThreadID: "thread-1", Name: "updated"}}
+	item := EventMsgItem{Msg: protocol.ThreadNameUpdatedEvent{ThreadID: testutil.ThreadID(1), Name: "updated"}}
 	if _, err := recorder.Append(context.Background(), item); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("append after cancelled close = %v", err)
 	}
@@ -147,14 +149,14 @@ func TestRecorderCloseReleasesFileAfterCancellation(t *testing.T) {
 
 func TestRecorderHonorsCancelledContext(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
-	recorder, err := Create(path, "thread-1", nil)
+	recorder, err := Create(path, testutil.ThreadID(1), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer recorder.Close(context.Background())
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	item := EventMsgItem{Msg: protocol.ThreadNameUpdatedEvent{ThreadID: "thread-1", Name: "updated"}}
+	item := EventMsgItem{Msg: protocol.ThreadNameUpdatedEvent{ThreadID: testutil.ThreadID(1), Name: "updated"}}
 	if _, err := recorder.Append(ctx, item); err == nil {
 		t.Fatal("cancelled append succeeded")
 	}
@@ -172,30 +174,30 @@ func TestRecorderRejectsUnsupportedAndCorruptLines(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not-json\n{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := Open(path, "thread-1", nil); err == nil {
+	if _, _, err := Open(path, testutil.ThreadID(1), nil); err == nil {
 		t.Fatal("corrupt non-tail line was accepted")
 	}
 
 	unsupported := filepath.Join(t.TempDir(), "unsupported.jsonl")
-	content := `{"version":2,"sequence":1,"timestamp":"2026-08-20T01:02:03Z","type":"future_item","payload":{}}` + "\n"
+	content := `{"version":3,"sequence":1,"timestamp":"2026-08-20T01:02:03Z","type":"future_item","payload":{}}` + "\n"
 	if err := os.WriteFile(unsupported, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Read(unsupported, "thread-1"); err == nil || !strings.Contains(err.Error(), "unsupported rollout item type") {
+	if _, err := Read(unsupported, testutil.ThreadID(1)); err == nil || !strings.Contains(err.Error(), "unsupported rollout item type") {
 		t.Fatalf("unsupported item error = %v", err)
 	}
 }
 
-func TestRecorderRejectsUnsafeThreadID(t *testing.T) {
+func TestRecorderRejectsZeroThreadID(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
-	if _, err := Create(path, "../outside", nil); err == nil {
-		t.Fatal("unsafe thread ID was accepted")
+	if _, err := Create(path, protocol.ThreadID{}, nil); err == nil {
+		t.Fatal("zero thread ID was accepted")
 	}
 }
 
 func createRecorderWithEvent(t *testing.T, path string, event protocol.EventMsg) *Recorder {
 	t.Helper()
-	recorder, err := Create(path, "thread-1", nil)
+	recorder, err := Create(path, testutil.ThreadID(1), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

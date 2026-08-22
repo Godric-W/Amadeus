@@ -6,10 +6,11 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
 func TestStateLiveItemLifecycle(t *testing.T) {
-	state := New("thread-1")
+	state := New(testutil.ThreadID(1))
 	created := time.Date(2026, time.August, 13, 0, 0, 0, 0, time.UTC)
 	started := protocol.TurnItem{ID: "assistant-1", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemInProgress, CreatedAt: created}
 	apply(t, state, protocol.TurnStartedEvent{})
@@ -29,7 +30,7 @@ func TestStateLiveItemLifecycle(t *testing.T) {
 }
 
 func TestStateReplayAndRepeatedCompletionAreIdempotent(t *testing.T) {
-	state := New("thread-1")
+	state := New(testutil.ThreadID(1))
 	when := time.Date(2026, time.August, 13, 0, 0, 0, 0, time.UTC)
 	item := protocol.TurnItem{ID: "tool-1", Kind: protocol.ItemToolCall, Status: protocol.ItemStatusCompleted, CreatedAt: when, CompletedAt: when.Add(time.Second), Text: "first"}
 	apply(t, state, protocol.ItemCompletedEvent{Item: item})
@@ -41,7 +42,7 @@ func TestStateReplayAndRepeatedCompletionAreIdempotent(t *testing.T) {
 }
 
 func TestStateLateAndUnknownDeltaBehavior(t *testing.T) {
-	state := New("thread-1")
+	state := New(testutil.ThreadID(1))
 	when := time.Date(2026, time.August, 13, 0, 0, 0, 0, time.UTC)
 	item := protocol.TurnItem{ID: "assistant-1", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemStatusCompleted, CreatedAt: when, CompletedAt: when.Add(time.Second), Text: "final"}
 	apply(t, state, protocol.ItemCompletedEvent{Item: item})
@@ -56,7 +57,7 @@ func TestStateLateAndUnknownDeltaBehavior(t *testing.T) {
 }
 
 func TestStateRetryAndStreamErrorProjection(t *testing.T) {
-	state := New("thread-1")
+	state := New(testutil.ThreadID(1))
 	created := time.Date(2026, time.August, 19, 10, 0, 0, 0, time.UTC)
 	for _, message := range []protocol.EventMsg{
 		protocol.ItemStartedEvent{Item: protocol.TurnItem{ID: "assistant-1", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemInProgress, CreatedAt: created}},
@@ -77,7 +78,7 @@ func TestStateRetryAndStreamErrorProjection(t *testing.T) {
 }
 
 func TestStateProjectsContextCompaction(t *testing.T) {
-	state := New("thread-1")
+	state := New(testutil.ThreadID(1))
 	apply(t, state, protocol.ContextCompactedEvent{ItemID: "compact-1"})
 	if len(state.Items) != 1 || state.Items[0].Kind != protocol.ItemContextCompaction {
 		t.Fatalf("compaction projection = %#v", state.Items)
@@ -92,5 +93,5 @@ func apply(t *testing.T, state *State, message protocol.EventMsg) {
 }
 
 func scoped(message protocol.EventMsg) protocol.Event {
-	return protocol.Event{ID: "submission-1", Msg: protocol.ScopeEventMsg(message, "thread-1", "turn-1")}
+	return protocol.Event{ID: "submission-1", Msg: protocol.ScopeEventMsg(message, testutil.ThreadID(1), "turn-1")}
 }

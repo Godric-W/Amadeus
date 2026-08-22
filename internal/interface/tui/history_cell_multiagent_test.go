@@ -14,9 +14,9 @@ func TestCollabAgentHistoryCellUsesTypedPayload(t *testing.T) {
 		ID: "call-1", Kind: protocol.ItemCollabAgentToolCall, Status: protocol.ItemStatusCompleted,
 		CreatedAt: now, CompletedAt: now, ToolName: "wait_agent", Text: "not-json",
 		CollabAgent: &protocol.CollabAgentToolCallItem{
-			ID: "call-1", Tool: protocol.CollabAgentWait, Status: protocol.CollabAgentToolCompleted, SenderThreadID: "root",
-			ReceiverAgents: []protocol.CollabAgentRef{{ThreadID: "child", AgentNickname: "atlas", AgentRole: "explorer"}},
-			AgentsStates:   map[protocol.ThreadID]protocol.CollabAgentState{"child": {Status: protocol.AgentStatus{Kind: protocol.AgentStatusCompleted, Message: "found ownership"}}},
+			ID: "call-1", Tool: protocol.CollabAgentWait, Status: protocol.CollabAgentToolCompleted, SenderThreadID: testThreadID(1),
+			ReceiverAgents: []protocol.CollabAgentRef{{ThreadID: testThreadID(2), AgentNickname: "atlas", AgentRole: "explorer"}},
+			AgentsStates:   map[protocol.ThreadID]protocol.CollabAgentState{testThreadID(2): {Status: protocol.AgentStatus{Kind: protocol.AgentStatusCompleted, Message: "found ownership"}}},
 			CreatedAt:      now, CompletedAt: &now,
 		},
 	}

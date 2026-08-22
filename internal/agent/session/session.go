@@ -42,16 +42,19 @@ type SessionIo struct {
 	Submissions   chan<- protocol.Submission
 	Events        <-chan protocol.Event
 	Terminated    <-chan struct{}
+	Configured    <-chan error
 	admissions    *pendingUserMessageAdmissions
 	steerRequests chan<- steerInputRequest
 }
 
 type SpawnArgs struct {
-	ThreadID protocol.ThreadID
-	History  thread.InitialHistory
-	State    SessionState
-	Services SessionServices
-	Adapters ServiceAdapters
+	SessionID      protocol.SessionID
+	ThreadID       protocol.ThreadID
+	ParentThreadID *protocol.ThreadID
+	History        thread.InitialHistory
+	State          SessionState
+	Services       SessionServices
+	Adapters       ServiceAdapters
 }
 
 type ActiveTurn struct {
@@ -62,21 +65,24 @@ type ActiveTurn struct {
 }
 
 type Session struct {
-	threadID   protocol.ThreadID
-	state      SessionState
-	configMu   sync.RWMutex
-	services   SessionServices
-	active     *ActiveTurn
-	deferred   []protocol.Submission
-	inputQueue InputQueue
-	appendMu   sync.Mutex
-	admissions *pendingUserMessageAdmissions
+	sessionID      protocol.SessionID
+	threadID       protocol.ThreadID
+	parentThreadID *protocol.ThreadID
+	state          SessionState
+	configMu       sync.RWMutex
+	services       SessionServices
+	active         *ActiveTurn
+	deferred       []protocol.Submission
+	inputQueue     InputQueue
+	appendMu       sync.Mutex
+	admissions     *pendingUserMessageAdmissions
 
 	ctx           context.Context
 	cancel        context.CancelCauseFunc
 	submissions   chan protocol.Submission
 	events        chan protocol.Event
 	terminated    chan struct{}
+	configured    chan error
 	completed     chan Completion
 	requestsIn    chan requestDelivery
 	steerRequests chan steerInputRequest
@@ -87,7 +93,7 @@ const compactionWarningMessage = "Heads up: Long threads and multiple compaction
 var ErrInterrupted = errors.New("turn interrupted by user")
 
 func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) {
-	if parent == nil || args.ThreadID == "" || args.Services.LiveThread == nil || args.Services.NextID == nil || !args.Adapters.configured() {
+	if parent == nil || args.Services.LiveThread == nil || args.Services.NextID == nil || !args.Adapters.configured() {
 		return nil, SessionIo{}, errors.New("session spawn arguments are incomplete")
 	}
 	if args.Services.Clock == nil {
@@ -102,6 +108,9 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 	if err := args.History.Validate(args.ThreadID); err != nil {
 		return nil, SessionIo{}, fmt.Errorf("validate initial history: %w", err)
 	}
+	if err := validateSpawnIdentity(args); err != nil {
+		return nil, SessionIo{}, err
+	}
 	ctx, cancel := context.WithCancelCause(parent)
 	args.State.Configuration = cloneConfiguration(args.State.Configuration)
 	closeSpawnServices := func() {
@@ -109,9 +118,10 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 		_ = args.Services.LiveThread.Shutdown(context.Background())
 	}
 	value := &Session{
-		threadID: args.ThreadID, state: args.State, services: args.Services, ctx: ctx, cancel: cancel,
+		sessionID: args.SessionID, threadID: args.ThreadID, parentThreadID: cloneOptionalThreadID(args.ParentThreadID),
+		state: args.State, services: args.Services, ctx: ctx, cancel: cancel,
 		submissions: make(chan protocol.Submission, 32), events: make(chan protocol.Event, 128),
-		terminated: make(chan struct{}), completed: make(chan Completion, 1),
+		terminated: make(chan struct{}), configured: make(chan error, 1), completed: make(chan Completion, 1),
 		requestsIn: make(chan requestDelivery, 8), steerRequests: make(chan steerInputRequest, 8),
 		admissions: newPendingUserMessageAdmissions(),
 	}
@@ -132,7 +142,7 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 		value.services = capabilities
 	}
 	io := SessionIo{
-		Submissions: value.submissions, Events: value.events, Terminated: value.terminated,
+		Submissions: value.submissions, Events: value.events, Terminated: value.terminated, Configured: value.configured,
 		admissions: value.admissions, steerRequests: value.steerRequests,
 	}
 	go value.loop()
@@ -142,7 +152,7 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 func (session *Session) loop() {
 	defer session.admissions.failAll(errors.New("session terminated before user message admission"))
 	defer close(session.events)
-	defer session.publish(protocol.Event{Msg: protocol.ShutdownCompleteEvent{ThreadID: protocol.ThreadID(session.threadID)}})
+	defer session.publish(protocol.Event{Msg: protocol.ShutdownCompleteEvent{ThreadID: session.threadID}})
 	defer close(session.terminated)
 	defer func() {
 		session.clearPendingRequests()
@@ -153,9 +163,15 @@ func (session *Session) loop() {
 		_ = session.services.LiveThread.Shutdown(cleanupCtx)
 	}()
 	defer func() { _ = session.services.Close() }()
-	session.publish(protocol.Event{Msg: protocol.SessionConfiguredEvent{
-		ThreadID: session.threadID, Configuration: session.ProtocolConfiguration(),
+	configuredErr := session.Publish(session.ctx, protocol.Event{Msg: protocol.SessionConfiguredEvent{
+		SessionID: session.sessionID, ThreadID: session.threadID, ParentThreadID: cloneOptionalThreadID(session.parentThreadID),
+		Configuration: session.ProtocolConfiguration(),
 	}})
+	session.configured <- configuredErr
+	close(session.configured)
+	if configuredErr != nil {
+		return
+	}
 	sessionDone := session.ctx.Done()
 	for {
 		if session.active == nil && len(session.deferred) > 0 {
@@ -203,7 +219,7 @@ func (session *Session) handleSubmission(submission protocol.Submission) {
 	if err := submission.Validate(); err != nil {
 		session.admissions.complete(submission.ID, userMessageAdmissionResult{err: err})
 		if _, userInput := submission.Op.(protocol.UserInputOp); !userInput {
-			session.publish(protocol.Event{ID: submission.ID, Msg: protocol.ErrorEvent{ThreadID: protocol.ThreadID(session.threadID), Code: "invalid_submission", Message: err.Error(), At: session.services.Clock().UTC()}})
+			session.publish(protocol.Event{ID: submission.ID, Msg: protocol.ErrorEvent{ThreadID: session.threadID, Code: "invalid_submission", Message: err.Error(), At: session.services.Clock().UTC()}})
 		}
 		return
 	}
@@ -280,7 +296,7 @@ func (session *Session) handleRequest(envelope requestDelivery) {
 		return
 	}
 	session.active.State.pendingRequests[envelope.requestID] = interactiveWaiter{kind: envelope.kind, result: envelope.result}
-	if err := session.Publish(session.ctx, protocol.Event{ID: session.active.SubmissionID, Msg: protocol.ScopeEventMsg(envelope.event, protocol.ThreadID(session.threadID), protocol.TurnID(session.active.Task.Context().TurnID))}); err != nil {
+	if err := session.Publish(session.ctx, protocol.Event{ID: session.active.SubmissionID, Msg: protocol.ScopeEventMsg(envelope.event, session.threadID, session.active.Task.Context().TurnID)}); err != nil {
 		delete(session.active.State.pendingRequests, envelope.requestID)
 		envelope.result <- nil
 	}
@@ -307,7 +323,8 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input, cli
 	configuration := session.Configuration()
 	baseContext := turn.TurnContext{
 		SubmissionID: submissionID,
-		ThreadID:     session.threadID, TurnID: turnID, Provider: configuration.Runtime.ModelProvider,
+		SessionID:    session.sessionID, ThreadID: session.threadID, ParentThreadID: cloneOptionalThreadID(session.parentThreadID),
+		TurnID: turnID, Provider: configuration.Runtime.ModelProvider,
 		Model:           configuration.Runtime.Model,
 		ReasoningEffort: llm.CloneReasoningEffort(configuration.Runtime.ModelReasoningEffort),
 		CWD:             configuration.CWD, Shell: configuration.Shell,
@@ -317,7 +334,7 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input, cli
 		OutputSchemaStrict: configuration.OutputSchemaStrict,
 	}
 	createInput := thread.CreateInput{
-		ID: session.threadID, Source: configuration.Source.Clone(), CWD: configuration.CWD, Title: titleFromInput(input),
+		SessionID: session.sessionID, ID: session.threadID, Source: configuration.Source.Clone(), CWD: configuration.CWD, Title: titleFromInput(input),
 		ModelProvider: configuration.Runtime.ModelProvider, Model: configuration.Runtime.Model, CreatedAt: now,
 	}
 	materialized, err := session.materialize(session.ctx, createInput)
@@ -326,7 +343,7 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input, cli
 		return turnID, err
 	}
 	if materialized.MetadataWarning != nil {
-		session.publish(protocol.Event{ID: submissionID, Msg: protocol.WarningEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID), Message: materialized.MetadataWarning.Error()}})
+		session.publish(protocol.Event{ID: submissionID, Msg: protocol.WarningEvent{ThreadID: session.threadID, TurnID: turnID, Message: materialized.MetadataWarning.Error()}})
 	}
 	turnState := newTurnState()
 	taskValue, turnValue, err := session.createTask(session.ctx, input, baseContext, kind, turnState)
@@ -398,13 +415,13 @@ func (session *Session) publishCompactionEvents(submissionID protocol.Submission
 		session.publish(protocol.Event{
 			ID: submissionID,
 			Msg: protocol.ContextCompactedEvent{
-				ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID),
+				ThreadID: session.threadID, TurnID: turnID,
 				ItemID: protocol.ItemID(fmt.Sprintf("compaction-%s", turnID)),
 			},
 		})
 		session.publish(protocol.Event{
 			ID:  submissionID,
-			Msg: protocol.WarningEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID), Message: compactionWarningMessage},
+			Msg: protocol.WarningEvent{ThreadID: session.threadID, TurnID: turnID, Message: compactionWarningMessage},
 		})
 	}
 }

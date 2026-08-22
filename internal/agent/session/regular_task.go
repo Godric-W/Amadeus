@@ -12,7 +12,7 @@ func (session *Session) prepareRegular(_ context.Context, snapshot turn.TurnCont
 	if session == nil || session.services.modelClient == nil {
 		return nil, turn.TurnContext{}, errors.New("session services are unavailable")
 	}
-	events, err := protocol.NewScopedSink(session, snapshot.SubmissionID, protocol.ThreadID(snapshot.ThreadID), protocol.TurnID(snapshot.TurnID))
+	events, err := protocol.NewScopedSink(session, snapshot.SubmissionID, snapshot.ThreadID, snapshot.TurnID)
 	if err != nil {
 		return nil, turn.TurnContext{}, err
 	}

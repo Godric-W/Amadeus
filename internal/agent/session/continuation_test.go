@@ -19,6 +19,7 @@ import (
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	statesqlite "github.com/Godric-W/Amadeus/internal/state/sqlite"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 	"github.com/Godric-W/Amadeus/internal/thread"
 	"github.com/Godric-W/Amadeus/internal/thread/local"
 	"github.com/Godric-W/Amadeus/internal/tool"
@@ -487,11 +488,11 @@ func newContinuationTestSession(t *testing.T, client llm.Client, definitions []t
 	if err != nil {
 		t.Fatal(err)
 	}
-	live, err := thread.NewDraftLiveThread("thread-1", threadStore)
+	live, err := thread.NewDraftLiveThread(testutil.ThreadID(1), threadStore)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := live.Materialize(ctx, thread.CreateInput{CWD: t.TempDir(), Title: "continuation test", ModelProvider: model.Provider, Model: model.Name, CreatedAt: now}); err != nil {
+	if _, err := live.Materialize(ctx, thread.CreateInput{SessionID: testutil.SessionID(1), CWD: t.TempDir(), Title: "continuation test", ModelProvider: model.Provider, Model: model.Name, CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	history, err := live.History(ctx)
@@ -514,7 +515,8 @@ func newContinuationTestSession(t *testing.T, client llm.Client, definitions []t
 	}
 	parent, cancel := context.WithCancelCause(context.Background())
 	session := newTestSession(history.Lines, manager)
-	session.threadID = "thread-1"
+	session.sessionID = testutil.SessionID(1)
+	session.threadID = testutil.ThreadID(1)
 	session.ctx = parent
 	session.cancel = cancel
 	session.services = SessionServices{
@@ -564,7 +566,7 @@ func contextProjectionText(messages []llm.ResponseItem) string {
 
 func continuationTurnContext(session *Session, turnID protocol.TurnID, mode turn.ModeKind) turn.TurnContext {
 	return turn.TurnContext{
-		ThreadID: session.threadID, TurnID: turnID,
+		SessionID: session.sessionID, ThreadID: session.threadID, TurnID: turnID,
 		Provider: session.services.modelInfo.Provider, Model: session.services.modelInfo.Name,
 		ReasoningEffort: llm.CloneReasoningEffort(session.state.Configuration.Runtime.ModelReasoningEffort),
 		CWD:             "/workspace", Mode: mode,

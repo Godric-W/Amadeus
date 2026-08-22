@@ -7,6 +7,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
 func TestProjectRolloutItemsPreservesCanonicalSequenceWithoutResponseFallback(t *testing.T) {
@@ -14,14 +15,14 @@ func TestProjectRolloutItemsPreservesCanonicalSequenceWithoutResponseFallback(t 
 	assistant := protocol.TurnItem{ID: "assistant-1", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now, Text: "done"}
 	toolItem := protocol.TurnItem{ID: "call-1", Kind: protocol.ItemToolCall, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now, Text: "match", ToolName: "grep", CallID: "call-1"}
 	lines := []rollout.Line{
-		projectorLine(1, rollout.ResponseItem{ThreadID: "thread-1", TurnID: "turn-1", Type: rollout.ResponseUserMessage, Role: "user", Content: "inspect"}),
-		projectorLine(2, rollout.ResponseItem{ThreadID: "thread-1", TurnID: "turn-1", Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "done"}),
-		projectorLine(3, rollout.EventMsgItem{Msg: protocol.ItemCompletedEvent{ThreadID: "thread-1", TurnID: "turn-1", Item: assistant}}),
-		projectorLine(4, rollout.ResponseItem{ThreadID: "thread-1", TurnID: "turn-1", Type: rollout.ResponseToolResult, Role: "tool", CallID: "call-1", Name: "grep", Status: "succeeded", Result: nil}),
-		projectorLine(5, rollout.EventMsgItem{Msg: protocol.ItemCompletedEvent{ThreadID: "thread-1", TurnID: "turn-1", Item: toolItem}}),
-		projectorLine(7, rollout.EventMsgItem{Msg: protocol.TokenCountEvent{ThreadID: "thread-1", TurnID: "turn-1", Usage: llm.Usage{InputTokens: 10, TotalTokens: 10}}}),
-		projectorLine(8, rollout.EventMsgItem{Msg: protocol.TokenCountEvent{ThreadID: "thread-1", TurnID: "turn-2", Usage: llm.Usage{OutputTokens: 5, TotalTokens: 5}}}),
-		projectorLine(9, rollout.CompactedItem{ThreadID: "thread-1", TurnID: "turn-2", Summary: "summary", ReplacementHistory: []rollout.ReplacementMessage{{Role: "assistant", Content: "summary"}}, CoveredThroughSequence: 3, SourceHash: "hash"}),
+		projectorLine(1, rollout.ResponseItem{ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Type: rollout.ResponseUserMessage, Role: "user", Content: "inspect"}),
+		projectorLine(2, rollout.ResponseItem{ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "done"}),
+		projectorLine(3, rollout.EventMsgItem{Msg: protocol.ItemCompletedEvent{ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Item: assistant}}),
+		projectorLine(4, rollout.ResponseItem{ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Type: rollout.ResponseToolResult, Role: "tool", CallID: "call-1", Name: "grep", Status: "succeeded", Result: nil}),
+		projectorLine(5, rollout.EventMsgItem{Msg: protocol.ItemCompletedEvent{ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Item: toolItem}}),
+		projectorLine(7, rollout.EventMsgItem{Msg: protocol.TokenCountEvent{ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Usage: llm.Usage{InputTokens: 10, TotalTokens: 10}}}),
+		projectorLine(8, rollout.EventMsgItem{Msg: protocol.TokenCountEvent{ThreadID: testutil.ThreadID(1), TurnID: "turn-2", Usage: llm.Usage{OutputTokens: 5, TotalTokens: 5}}}),
+		projectorLine(9, rollout.CompactedItem{ThreadID: testutil.ThreadID(1), TurnID: "turn-2", Summary: "summary", ReplacementHistory: []rollout.ReplacementMessage{{Role: "assistant", Content: "summary"}}, CoveredThroughSequence: 3, SourceHash: "hash"}),
 	}
 	projection, err := ProjectRolloutItems(lines)
 	if err != nil {
@@ -43,7 +44,7 @@ func TestProjectRolloutItemsPreservesCanonicalSequenceWithoutResponseFallback(t 
 
 func TestProjectRolloutItemsRejectsInvalidCompletedEvent(t *testing.T) {
 	line := projectorLine(1, rollout.EventMsgItem{Msg: protocol.ItemCompletedEvent{
-		ThreadID: "thread-1", TurnID: "turn-1", Item: protocol.TurnItem{Kind: protocol.ItemAssistantMessage},
+		ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Item: protocol.TurnItem{Kind: protocol.ItemAssistantMessage},
 	}})
 	if _, err := ProjectRolloutItems([]rollout.Line{line}); err == nil {
 		t.Fatal("invalid completed event was accepted")
@@ -57,8 +58,8 @@ func TestProjectRolloutItemsPrefersCanonicalUserItem(t *testing.T) {
 		CreatedAt: now, CompletedAt: now, Text: "inspect", ClientUserMessageID: "client-1",
 	}
 	lines := []rollout.Line{
-		projectorLine(1, rollout.ResponseItem{ThreadID: "thread-1", TurnID: "turn-1", Type: rollout.ResponseUserMessage, Role: "user", Content: "inspect"}),
-		projectorLine(2, rollout.EventMsgItem{Msg: protocol.ItemCompletedEvent{ThreadID: "thread-1", TurnID: "turn-1", Item: user}}),
+		projectorLine(1, rollout.ResponseItem{ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Type: rollout.ResponseUserMessage, Role: "user", Content: "inspect"}),
+		projectorLine(2, rollout.EventMsgItem{Msg: protocol.ItemCompletedEvent{ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Item: user}}),
 	}
 	projection, err := ProjectRolloutItems(lines)
 	if err != nil {

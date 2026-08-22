@@ -91,12 +91,12 @@ func TestTranscriptStateFlushesActiveHistoryCellOnce(t *testing.T) {
 
 func TestTranscriptStateBumpsActiveCellRevision(t *testing.T) {
 	model := fullscreenModel{transcript: TranscriptState{ActiveCell: newToolHistoryCell()}}
-	model.applyEvent(testProtocolEvent("thread-1", "turn-1", toolStarted("call")))
+	model.applyEvent(testProtocolEvent(testThreadID(1), "turn-1", toolStarted("call")))
 	if model.transcript.ActiveCellRevision == 0 {
 		t.Fatal("active cell revision did not change after mutation")
 	}
 	before := model.transcript.ActiveCellRevision
-	model.applyEvent(testProtocolEvent("thread-1", "turn-1", toolCompleted("call")))
+	model.applyEvent(testProtocolEvent(testThreadID(1), "turn-1", toolCompleted("call")))
 	if model.transcript.ActiveCellRevision <= before {
 		t.Fatalf("revision = %d, want > %d", model.transcript.ActiveCellRevision, before)
 	}

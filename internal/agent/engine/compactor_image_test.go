@@ -11,6 +11,7 @@ import (
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
 func TestCompactorProjectsToolImagesForEffectiveModel(t *testing.T) {
@@ -37,7 +38,7 @@ func TestCompactorProjectsToolImagesForEffectiveModel(t *testing.T) {
 		},
 		SourceSequences: []int64{1, 2, 3, 4, 5},
 	}
-	if _, err := compactor.Compact(context.Background(), CompactRequest{History: history, ModelSession: modelSession, Events: protocol.NewMemorySink()}); err != nil {
+	if _, err := compactor.Compact(context.Background(), CompactRequest{History: history, ModelSession: modelSession, Metadata: llm.RequestMetadata{SessionID: testutil.SessionID(1), ThreadID: testutil.ThreadID(1), TurnID: "turn-1"}, Events: protocol.NewMemorySink()}); err != nil {
 		t.Fatal(err)
 	}
 	if len(client.requests) != 1 {

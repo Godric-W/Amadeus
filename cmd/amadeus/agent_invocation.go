@@ -31,7 +31,7 @@ type agentInvocation struct {
 	Task           string
 	RunMode        turn.ModeKind
 	SessionMode    sessionStartMode
-	SessionID      protocol.ThreadID
+	ResumeThreadID protocol.ThreadID
 	Interactive    bool
 	EventSink      protocol.EventSink
 	Approvals      policy.ApprovalPort
@@ -70,7 +70,7 @@ func runRootAgent(command *cobra.Command, arguments []string, configFlags *confi
 	if err != nil {
 		return err
 	}
-	invocation.SessionMode, invocation.SessionID, err = sessionFlags.resolve(command)
+	invocation.SessionMode, invocation.ResumeThreadID, err = sessionFlags.resolve(command)
 	if err != nil {
 		return err
 	}

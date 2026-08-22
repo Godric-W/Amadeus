@@ -32,6 +32,7 @@ type Request struct {
 	InputModalities []InputModality
 	Prompt          Prompt
 	Reasoning       *ReasoningConfig
+	Metadata        RequestMetadata
 }
 
 func NewRequest(model string, messages []ResponseItem) Request {

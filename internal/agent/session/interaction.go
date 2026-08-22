@@ -55,7 +55,7 @@ func (session *Session) Publish(ctx context.Context, event protocol.Event) error
 	if event.ID == "" {
 		event.ID = protocol.SubmissionID(session.services.NextID("event"))
 	}
-	event.Msg = protocol.ScopeEventMsg(event.Msg, protocol.ThreadID(session.threadID), protocol.TurnIDOf(event.Msg))
+	event.Msg = protocol.ScopeEventMsg(event.Msg, session.threadID, protocol.TurnIDOf(event.Msg))
 	if err := event.Validate(); err != nil {
 		return err
 	}

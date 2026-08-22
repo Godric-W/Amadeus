@@ -46,7 +46,7 @@ func TestFullscreenExitUsesShutdownThenFrameDrain(t *testing.T) {
 		t.Fatalf("frame drain did not reach quit: phase=%d view=%q", model.exit.phase, model.View())
 	}
 	info := model.appExitInfo()
-	if info.ExitReason != ExitReasonUserRequested || info.TokenUsage.TotalTokens != 10 || info.ResumeHint != "amadeus --resume thread-1" {
+	if info.ExitReason != ExitReasonUserRequested || info.TokenUsage.TotalTokens != 10 || info.ResumeHint != "amadeus --resume "+testThreadID(1).String() {
 		t.Fatalf("exit info = %#v", info)
 	}
 }
@@ -118,7 +118,7 @@ func TestFullscreenFatalShutdownPreservesThreadDiagnostic(t *testing.T) {
 		t.Fatal("fatal shutdown did not start frame drain")
 	}
 	info := model.appExitInfo()
-	if info.ExitReason != ExitReasonFatal || !errors.Is(info.Error, shutdownErr) || info.ThreadID != "thread-1" {
+	if info.ExitReason != ExitReasonFatal || !errors.Is(info.Error, shutdownErr) || info.ThreadID != testThreadID(1) {
 		t.Fatalf("fatal exit info = %#v", info)
 	}
 }
@@ -136,7 +136,7 @@ func TestFullscreenShutdownJoinWithTimeoutAndFailureIsFatal(t *testing.T) {
 
 func TestFullscreenDeletedThreadUsesImmediateDrainWithoutResumeHint(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
-	updated, drain := model.Update(fullscreenAppEventMsg{event: application.ThreadDeleted{ThreadID: "thread-1"}})
+	updated, drain := model.Update(fullscreenAppEventMsg{event: application.ThreadDeleted{ThreadID: testThreadID(1)}})
 	model = updated.(fullscreenModel)
 	if drain == nil || !model.exit.drainingFrame() || model.appExitInfo().ResumeHint != "" {
 		t.Fatalf("deleted exit phase=%d info=%#v", model.exit.phase, model.appExitInfo())

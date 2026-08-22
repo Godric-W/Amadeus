@@ -52,7 +52,7 @@ func (source SessionSource) Validate() error {
 		if source.SubAgent == nil {
 			return errors.New("sub-agent session source metadata is missing")
 		}
-		if strings.TrimSpace(string(source.SubAgent.ParentThreadID)) == "" {
+		if source.SubAgent.ParentThreadID.IsZero() {
 			return errors.New("sub-agent parent thread ID is empty")
 		}
 		if source.SubAgent.Depth <= 0 {
@@ -133,7 +133,7 @@ type AgentMetadata struct {
 }
 
 func (metadata AgentMetadata) Validate() error {
-	if strings.TrimSpace(string(metadata.ThreadID)) == "" || strings.TrimSpace(string(metadata.ParentThreadID)) == "" {
+	if metadata.ThreadID.IsZero() || metadata.ParentThreadID.IsZero() {
 		return errors.New("agent thread identity is incomplete")
 	}
 	if metadata.ThreadID == metadata.ParentThreadID {

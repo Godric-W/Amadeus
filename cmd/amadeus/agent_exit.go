@@ -42,7 +42,7 @@ func presentFullscreenExit(info tui.AppExitInfo, output, errorOutput io.Writer, 
 		if _, err := fmt.Fprintf(output, "To continue this session, run %s\n", resumeCommand); err != nil {
 			presentationErr = errors.Join(presentationErr, err)
 		}
-	} else if info.ExitReason == tui.ExitReasonFatal && info.ThreadID != "" {
+	} else if info.ExitReason == tui.ExitReasonFatal && !info.ThreadID.IsZero() {
 		if _, err := fmt.Fprintf(output, "Session ID: %s\n", info.ThreadID); err != nil {
 			presentationErr = errors.Join(presentationErr, err)
 		}

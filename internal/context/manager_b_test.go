@@ -11,6 +11,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -215,7 +216,7 @@ func TestProjectRolloutMessagesIncludesSubagentNotificationAsContextualUserInput
 	content := "<subagent_notification>\n{\"agent_id\":\"child-1\"}\n</subagent_notification>"
 	lines := []rollout.Line{{
 		Version: rollout.CurrentVersion, Sequence: 1, Timestamp: now,
-		Item: rollout.EventMsgItem{Msg: protocol.SubagentNotificationEvent{ThreadID: "root", AgentID: "child-1", Content: content}},
+		Item: rollout.EventMsgItem{Msg: protocol.SubagentNotificationEvent{ThreadID: testutil.ThreadID(1), AgentID: testutil.ThreadID(2), Content: content}},
 	}}
 	projection, err := ProjectRolloutMessages(lines)
 	if err != nil {
@@ -266,9 +267,9 @@ func TestManagerCompactionThresholdAccountsForFullPrompt(t *testing.T) {
 
 func contextItemLine(t *testing.T, sequence uint64, item rollout.RolloutItem) rollout.Line {
 	t.Helper()
-	item = rollout.ScopeItem(item, "thread-1", "turn-1")
+	item = rollout.ScopeItem(item, testutil.ThreadID(1), "turn-1")
 	line := rollout.Line{Version: rollout.CurrentVersion, Sequence: sequence, Timestamp: time.Unix(int64(sequence), 0).UTC(), Item: item}
-	if err := line.Validate("thread-1", sequence); err != nil {
+	if err := line.Validate(testutil.ThreadID(1), sequence); err != nil {
 		t.Fatal(err)
 	}
 	return line

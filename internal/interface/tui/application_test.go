@@ -110,7 +110,7 @@ func newTestFullscreen(t *testing.T, configure func(*FullscreenOptions)) (*Fulls
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{}, Width: 100, DisableAnimations: true,
 		Application: fake,
 		Snapshot: application.ThreadViewSnapshot{
-			Generation: 1, ThreadID: "thread-1", ContextWindow: 128000,
+			Generation: 1, SessionID: protocol.SessionIDFromThreadID(testThreadID(1)), ThreadID: testThreadID(1), ContextWindow: 128000,
 			Configuration: protocol.SessionConfiguration{CWD: "/workspace/amadeus", Model: "test-model", Mode: protocol.ModeKindDefault},
 		},
 	}
@@ -233,7 +233,7 @@ func TestFullscreenShiftTabShowsPlanModeAtBottomRight(t *testing.T) {
 	configuration.Mode = protocol.ModeKindPlan
 	updated, command = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{
 		Generation: model.session.Generation,
-		Event:      testProtocolEvent("thread-1", "turn-1", protocol.ThreadSettingsAppliedEvent{Configuration: configuration}),
+		Event:      testProtocolEvent(testThreadID(1), "turn-1", protocol.ThreadSettingsAppliedEvent{Configuration: configuration}),
 	}})
 	model = updated.(fullscreenModel)
 	if command == nil {
@@ -290,7 +290,7 @@ func TestFullscreenRepeatedModeChangesEmitOnlyCodexInfoRows(t *testing.T) {
 		configuration.Mode = mode
 		updated, command := model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{
 			Generation: model.session.Generation,
-			Event:      testProtocolEvent("thread-1", "turn-1", protocol.ThreadSettingsAppliedEvent{Configuration: configuration}),
+			Event:      testProtocolEvent(testThreadID(1), "turn-1", protocol.ThreadSettingsAppliedEvent{Configuration: configuration}),
 		}})
 		model = updated.(fullscreenModel)
 		if command == nil {
@@ -315,12 +315,12 @@ func TestFullscreenRepeatedModeChangesEmitOnlyCodexInfoRows(t *testing.T) {
 func TestFullscreenFinalReplyPrecedesWorkedForSeparator(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	startedAt := time.Now().Add(-2 * time.Minute)
-	model.applyEvent(testProtocolEvent("thread-1", "turn-1", protocol.TurnStartedEvent{StartedAt: startedAt}))
+	model.applyEvent(testProtocolEvent(testThreadID(1), "turn-1", protocol.TurnStartedEvent{StartedAt: startedAt}))
 	started := toolStartedMessage("read-1", "read", "read", "Read docs/design.md", "")
-	model.applyEvent(testProtocolEvent("thread-1", "turn-1", started))
-	model.applyEvent(testProtocolEvent("thread-1", "turn-1", toolCompletedMessage(started, protocol.ItemStatusCompleted, "done", "1s", false)))
-	model.applyEvent(testProtocolEvent("thread-1", "turn-1", protocol.AgentMessageContentDeltaEvent{ItemID: "assistant-1", Delta: "最终回复", Reset: true}))
-	model.applyEvent(testProtocolEvent("thread-1", "turn-1", protocol.TurnCompleteEvent{Status: protocol.TurnStatusCompleted, FinishedAt: time.Now()}))
+	model.applyEvent(testProtocolEvent(testThreadID(1), "turn-1", started))
+	model.applyEvent(testProtocolEvent(testThreadID(1), "turn-1", toolCompletedMessage(started, protocol.ItemStatusCompleted, "done", "1s", false)))
+	model.applyEvent(testProtocolEvent(testThreadID(1), "turn-1", protocol.AgentMessageContentDeltaEvent{ItemID: "assistant-1", Delta: "最终回复", Reset: true}))
+	model.applyEvent(testProtocolEvent(testThreadID(1), "turn-1", protocol.TurnCompleteEvent{Status: protocol.TurnStatusCompleted, FinishedAt: time.Now()}))
 
 	if len(model.historyCells) != 4 {
 		t.Fatalf("history cell count = %d, want 4", len(model.historyCells))
@@ -361,7 +361,7 @@ func TestFullscreenBannerUsesRestrainedMetadata(t *testing.T) {
 
 func TestFullscreenContextStatusUsesRuntimeUsage(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
-	model.applyEvent(testProtocolEvent("thread-1", "turn-1", protocol.TokenCountEvent{
+	model.applyEvent(testProtocolEvent(testThreadID(1), "turn-1", protocol.TokenCountEvent{
 		Usage: llm.Usage{InputTokens: 13000, OutputTokens: 800}, EstimatedInputTokens: 12000, ContextWindow: 128000,
 	}))
 	if model.session.ContextUsed != 13000 || model.session.Usage.InputTokens != 13000 || model.session.Usage.OutputTokens != 800 {
@@ -392,7 +392,7 @@ func TestFullscreenRuntimeUserMessageConfirmsOptimisticProjection(t *testing.T) 
 	_, model := newTestFullscreen(t, nil)
 	submission := model.prepareTaskSubmission("continue", turn.ModeKindDefault, false)
 	before := len(model.historyCells)
-	event := testProtocolEvent("thread-1", "turn-1", protocol.ItemCompletedEvent{Item: protocol.TurnItem{
+	event := testProtocolEvent(testThreadID(1), "turn-1", protocol.ItemCompletedEvent{Item: protocol.TurnItem{
 		ID: "user-1", Kind: protocol.ItemUserMessage, Status: protocol.ItemStatusCompleted,
 		CreatedAt: time.Now().UTC(), CompletedAt: time.Now().UTC(), Text: "continue", ClientUserMessageID: submission.ClientUserMessageID,
 	}})
@@ -448,16 +448,16 @@ func TestFullscreenResumeReplaysSnapshotAndRejectsStaleEvents(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	model.insertHistoryCell(NewNoticeHistoryCell("old transcript"))
 	now := time.Now().UTC()
-	snapshot := application.ThreadViewSnapshot{Generation: 2, ThreadID: "thread-2", Configuration: protocol.SessionConfiguration{CWD: "/workspace/next", Model: "next", Mode: protocol.ModeKindPlan}, ContextWindow: 64000, Items: []protocol.TurnItem{
+	snapshot := application.ThreadViewSnapshot{Generation: 2, SessionID: protocol.SessionIDFromThreadID(testThreadID(2)), ThreadID: testThreadID(2), Configuration: protocol.SessionConfiguration{CWD: "/workspace/next", Model: "next", Mode: protocol.ModeKindPlan}, ContextWindow: 64000, Items: []protocol.TurnItem{
 		{ID: "user", Kind: protocol.ItemUserMessage, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now, Text: "hello"},
 		{ID: "assistant", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now, Text: "world"},
 	}}
 	updated, _ := model.Update(fullscreenAppEventMsg{event: application.ThreadAttached{Snapshot: snapshot}})
 	model = updated.(fullscreenModel)
-	if model.session.Generation != 2 || model.session.ThreadID != "thread-2" || len(model.historyCells) != 2 || cellContent(model.historyCells[0]) != "hello" || cellContent(model.historyCells[1]) != "world" {
+	if model.session.Generation != 2 || model.session.ThreadID != testThreadID(2) || len(model.historyCells) != 2 || cellContent(model.historyCells[0]) != "hello" || cellContent(model.historyCells[1]) != "world" {
 		t.Fatalf("snapshot not restored: generation=%d session=%s cells=%v", model.session.Generation, model.session.ThreadID, model.historyCells)
 	}
-	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: testProtocolEvent("thread-1", "", protocol.WarningEvent{Message: "stale"})}})
+	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: testProtocolEvent(testThreadID(1), "", protocol.WarningEvent{Message: "stale"})}})
 	model = updated.(fullscreenModel)
 	if strings.Contains(lastCellContent(model), "stale") {
 		t.Fatal("stale event changed active transcript")
@@ -471,7 +471,7 @@ func TestFullscreenResumeRestoresComposerFocus(t *testing.T) {
 		t.Fatal("test setup left composer focused")
 	}
 	updated, _ := model.Update(fullscreenAppEventMsg{event: application.ThreadAttached{Snapshot: application.ThreadViewSnapshot{
-		Generation: 2, ThreadID: "thread-2", Title: "resumed", Configuration: protocol.SessionConfiguration{Mode: protocol.ModeKindDefault},
+		Generation: 2, SessionID: protocol.SessionIDFromThreadID(testThreadID(2)), ThreadID: testThreadID(2), Title: "resumed", Configuration: protocol.SessionConfiguration{Mode: protocol.ModeKindDefault},
 	}}})
 	model = updated.(fullscreenModel)
 	if !model.input.Focused() {
@@ -493,7 +493,7 @@ func TestFullscreenResumeFlushesCompletedToolBeforeFinalAssistant(t *testing.T) 
 		CreatedAt: now, CompletedAt: now, Text: "final answer",
 	}
 	updated, _ := model.Update(fullscreenAppEventMsg{event: application.ThreadAttached{Snapshot: application.ThreadViewSnapshot{
-		Generation: 2, ThreadID: "thread-2", Title: "resumed", Configuration: protocol.SessionConfiguration{Mode: protocol.ModeKindDefault},
+		Generation: 2, SessionID: protocol.SessionIDFromThreadID(testThreadID(2)), ThreadID: testThreadID(2), Title: "resumed", Configuration: protocol.SessionConfiguration{Mode: protocol.ModeKindDefault},
 		Items: []protocol.TurnItem{toolItem, assistant},
 	}}})
 	model = updated.(fullscreenModel)
@@ -528,12 +528,12 @@ func TestFullscreenCompactHasPendingAndCompletedStates(t *testing.T) {
 		t.Fatalf("pending compact state running=%v status=%q", model.running, model.status)
 	}
 	executeCommand(t, command)
-	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: testProtocolEvent("thread-1", "turn-1", protocol.ContextCompactedEvent{ItemID: "compact-1"})}})
+	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: testProtocolEvent(testThreadID(1), "turn-1", protocol.ContextCompactedEvent{ItemID: "compact-1"})}})
 	model = updated.(fullscreenModel)
 	if lastCellContent(model) != "Context compacted" {
 		t.Fatalf("compact result = %q", lastCellContent(model))
 	}
-	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: testProtocolEvent("thread-1", "turn-1", protocol.WarningEvent{Message: "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted."})}})
+	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: testProtocolEvent(testThreadID(1), "turn-1", protocol.WarningEvent{Message: "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted."})}})
 	model = updated.(fullscreenModel)
 	if lastCellContent(model) != "⚠ Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted." {
 		t.Fatalf("compact transcript = %q", renderHistoryCells(model.historyCells, HistoryRenderRaw, noColorRenderContext()))
@@ -554,13 +554,13 @@ func TestFullscreenEmptyMCPInventoryIsVisibleAndStaleResultIgnored(t *testing.T)
 		t.Fatalf("first MCP cell = %T", model.historyCells[0])
 	}
 	executeCommand(t, command)
-	updated, _ = model.Update(fullscreenAppEventMsg{event: application.MCPInventoryLoaded{RequestID: 1, Generation: 1, ThreadID: "thread-1"}})
+	updated, _ = model.Update(fullscreenAppEventMsg{event: application.MCPInventoryLoaded{RequestID: 1, Generation: 1, ThreadID: testThreadID(1)}})
 	model = updated.(fullscreenModel)
 	if got, want := renderHistoryCells(model.historyCells, HistoryRenderRaw, noColorRenderContext()), "/mcp\n\n🔌  MCP Tools\n\n  • No MCP servers configured."; got != want {
 		t.Fatalf("MCP output\n got: %q\nwant: %q", got, want)
 	}
 	before := len(model.historyCells)
-	updated, _ = model.Update(fullscreenAppEventMsg{event: application.MCPInventoryLoaded{RequestID: 0, Generation: 1, ThreadID: "thread-1", Error: errors.New("stale")}})
+	updated, _ = model.Update(fullscreenAppEventMsg{event: application.MCPInventoryLoaded{RequestID: 0, Generation: 1, ThreadID: testThreadID(1), Error: errors.New("stale")}})
 	if len(updated.(fullscreenModel).historyCells) != before {
 		t.Fatal("stale MCP result changed history")
 	}
@@ -570,7 +570,7 @@ func TestFullscreenStatusUsesStructuredCell(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	fake := fakeApplication(t, model)
 	effort := llm.ReasoningEffortHigh
-	fake.status = application.StatusSnapshot{ThreadID: "thread-1", Title: "demo", Provider: "openai", Model: "gpt", ReasoningEffort: &effort, Phase: "idle"}
+	fake.status = application.StatusSnapshot{SessionID: protocol.SessionIDFromThreadID(testThreadID(1)), ThreadID: testThreadID(1), Title: "demo", Provider: "openai", Model: "gpt", ReasoningEffort: &effort, Phase: "idle"}
 	updated, _ := model.dispatchCommand(SlashInvocation{Command: SlashStatus})
 	cell, ok := updated.(fullscreenModel).historyCells[0].(StatusHistoryCell)
 	if !ok {
@@ -618,7 +618,7 @@ func TestFullscreenSkillsToggleUsesStablePath(t *testing.T) {
 func TestFullscreenStaleRenameAndDeleteFailureStayUsable(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	model.session.Title = "current"
-	updated, _ := model.Update(fullscreenAppEventMsg{event: application.ThreadNameUpdated{Generation: 0, ThreadID: "old", Name: "stale"}})
+	updated, _ := model.Update(fullscreenAppEventMsg{event: application.ThreadNameUpdated{Generation: 0, ThreadID: testThreadID(99), Name: "stale"}})
 	model = updated.(fullscreenModel)
 	if model.session.Title != "current" {
 		t.Fatalf("stale rename changed title to %q", model.session.Title)
@@ -660,6 +660,19 @@ func TestFullscreenInvalidSlashInputDoesNotEnterHistory(t *testing.T) {
 	model = updated.(fullscreenModel)
 	if len(model.history) != 0 || !strings.Contains(lastCellContent(model), "unknown command") {
 		t.Fatalf("history=%v last=%q", model.history, lastCellContent(model))
+	}
+}
+
+func TestFullscreenResumeRejectsInvalidThreadIDWithoutChangingAttachment(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	original := model.session.ThreadID
+	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashResume, Args: "not-a-uuid"})
+	model = updated.(fullscreenModel)
+	if model.session.ThreadID != original || len(fakeApplication(t, model).resumed) != 0 {
+		t.Fatalf("invalid resume changed attachment: session=%q resumed=%#v", model.session.ThreadID, fakeApplication(t, model).resumed)
+	}
+	if command == nil || !strings.Contains(lastCellContent(model), "Invalid session ID") {
+		t.Fatalf("invalid resume feedback = command:%v history:%q", command != nil, lastCellContent(model))
 	}
 }
 

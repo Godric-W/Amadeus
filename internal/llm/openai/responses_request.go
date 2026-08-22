@@ -40,7 +40,8 @@ func newResponsesRequest(request llm.Request) (responses.ResponseNewParams, erro
 		Input: responses.ResponseNewParamsInputUnion{
 			OfInputItemList: input,
 		},
-		Tools: tools,
+		Tools:    tools,
+		Metadata: shared.Metadata(request.Metadata.Values()),
 	}
 	effort, configured, err := reasoningEffort(request)
 	if err != nil {

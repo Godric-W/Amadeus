@@ -14,6 +14,7 @@ import (
 )
 
 type CreateInput struct {
+	SessionID     identity.SessionID
 	ID            identity.ThreadID
 	Source        protocol.SessionSource
 	CWD           string
@@ -27,7 +28,7 @@ type CreateInput struct {
 }
 
 func (input CreateInput) Validate() error {
-	if strings.TrimSpace(string(input.ID)) == "" || strings.TrimSpace(input.Title) == "" {
+	if input.SessionID.IsZero() || input.ID.IsZero() || strings.TrimSpace(input.Title) == "" {
 		return errors.New("thread create input is incomplete")
 	}
 	if !filepath.IsAbs(input.CWD) || filepath.Clean(input.CWD) != input.CWD {
@@ -41,6 +42,13 @@ func (input CreateInput) Validate() error {
 	}
 	if err := input.Source.Validate(); err != nil {
 		return err
+	}
+	if input.Source.IsSubAgent() {
+		if input.Source.SubAgent.ParentThreadID == input.ID {
+			return errors.New("child thread cannot be its own parent")
+		}
+	} else if input.SessionID != protocol.SessionIDFromThreadID(input.ID) {
+		return errors.New("root session ID does not match root thread ID")
 	}
 	return nil
 }
@@ -58,7 +66,7 @@ type InitialHistory struct {
 }
 
 func (history InitialHistory) Validate(id identity.ThreadID) error {
-	if id == "" {
+	if id.IsZero() {
 		return errors.New("initial history thread ID is empty")
 	}
 	switch history.Kind {
@@ -99,6 +107,7 @@ type ThreadStore interface {
 	LoadHistory(context.Context, identity.ThreadID) (InitialHistory, error)
 	GetThread(context.Context, identity.ThreadID) (state.StoredThread, error)
 	ListThreads(context.Context, state.ListQuery) ([]state.StoredThread, error)
+	ListChildren(context.Context, identity.ThreadID) ([]state.StoredThread, error)
 	RenameThread(context.Context, identity.ThreadID, string, time.Time) error
 	DeleteThread(context.Context, identity.ThreadID, time.Time) error
 	RebuildIndex(context.Context) error

@@ -20,7 +20,7 @@ func (sessionTask *compactTask) Run(ctx context.Context, session *Session, turnC
 	}
 	items, err := sessionTask.runtime.Compact(ctx, engine.CompactRequest{
 		History: session.ContextProjection(), ModelSession: modelSession,
-		Reasoning: llm.ReasoningConfigForEffort(turnContext.ReasoningEffort), Events: sessionTask.events,
+		Reasoning: llm.ReasoningConfigForEffort(turnContext.ReasoningEffort), Metadata: requestMetadata(*turnContext), Events: sessionTask.events,
 	})
 	if err != nil {
 		return TaskOutput{}, err

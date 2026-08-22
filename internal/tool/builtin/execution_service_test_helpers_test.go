@@ -9,6 +9,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/policy"
 	processdomain "github.com/Godric-W/Amadeus/internal/process"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -66,6 +67,16 @@ func executePreparedTool(t testing.TB, ctx context.Context, candidate tool.ToolD
 		t.Fatalf("create test tool service: %v", err)
 	}
 	metadata := tool.InvocationMetadataFromContext(ctx)
+	metadataWasEmpty := metadata.SessionID.IsZero() && metadata.ThreadID.IsZero() && metadata.TurnID == ""
+	if metadata.SessionID.IsZero() {
+		metadata.SessionID = testutil.SessionID(1)
+	}
+	if metadata.ThreadID.IsZero() {
+		metadata.ThreadID = testutil.ThreadID(1)
+	}
+	if metadataWasEmpty {
+		metadata.TurnID = "turn-1"
+	}
 	metadata.Source = tool.ToolCallSourceModel
 	ctx = tool.WithInvocationMetadata(ctx, metadata)
 	execution, err := service.Execute(ctx, tool.NewCall("test-call", spec.Name, arguments))

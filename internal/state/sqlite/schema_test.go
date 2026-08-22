@@ -2,11 +2,9 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -52,29 +50,6 @@ func TestOpenRejectsExistingEmptyDatabase(t *testing.T) {
 	assertUnsupportedSchema(t, err)
 }
 
-func TestOpenRejectsLegacyTables(t *testing.T) {
-	home := t.TempDir()
-	path, err := DatabasePath(home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := raw.Exec(`CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY)`); err != nil {
-		t.Fatal(err)
-	}
-	if err := raw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	_, err = Open(context.Background(), home)
-	assertUnsupportedSchema(t, err)
-}
-
 func TestOpenRejectsWrongSchemaVersion(t *testing.T) {
 	home := t.TempDir()
 	database, err := Open(context.Background(), home)
@@ -93,7 +68,7 @@ func TestOpenRejectsWrongSchemaVersion(t *testing.T) {
 
 func assertUnsupportedSchema(t *testing.T, err error) {
 	t.Helper()
-	if !errors.Is(err, ErrUnsupportedSchema) || !strings.Contains(err.Error(), "delete") || !strings.Contains(err.Error(), "rebuild development data") {
+	if !errors.Is(err, ErrUnsupportedSchema) {
 		t.Fatalf("unsupported schema error = %v", err)
 	}
 }

@@ -35,11 +35,11 @@ func TestToolRouterFreezesDefinitionAndParallelCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := NewCall("call-1", "dynamic_tool", json.RawMessage(`{"value":"ok"}`))
-	firstResult, err := service.ExecuteBatchScoped(context.Background(), []ToolCall{call}, nil, ExecutionScope{Router: &firstRouter})
+	firstResult, err := service.ExecuteBatchScoped(executionServiceContext(), []ToolCall{call}, nil, ExecutionScope{Router: &firstRouter})
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondResult, err := service.ExecuteBatchScoped(context.Background(), []ToolCall{call}, nil, ExecutionScope{Router: &secondRouter})
+	secondResult, err := service.ExecuteBatchScoped(executionServiceContext(), []ToolCall{call}, nil, ExecutionScope{Router: &secondRouter})
 	if err != nil {
 		t.Fatal(err)
 	}

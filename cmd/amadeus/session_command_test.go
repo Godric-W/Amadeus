@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 	"github.com/Godric-W/Amadeus/internal/thread"
 )
 
@@ -25,13 +27,14 @@ func TestSessionsListShowsOnlyCurrentProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if _, err := store.Materialize(context.Background(), thread.CreateInput{ID: "thread-one", CWD: projectOne, Title: "one", CreatedAt: now}); err != nil {
+	firstID, secondID := testutil.ThreadID(1), testutil.ThreadID(2)
+	if _, err := store.Materialize(context.Background(), thread.CreateInput{SessionID: protocol.SessionIDFromThreadID(firstID), ID: firstID, CWD: projectOne, Title: "one", CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CloseWriter(context.Background(), "thread-one"); err != nil {
+	if err := store.CloseWriter(context.Background(), firstID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Materialize(context.Background(), thread.CreateInput{ID: "thread-two", CWD: projectTwo, Title: "two", CreatedAt: now}); err != nil {
+	if _, err := store.Materialize(context.Background(), thread.CreateInput{SessionID: protocol.SessionIDFromThreadID(secondID), ID: secondID, CWD: projectTwo, Title: "two", CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -46,7 +49,7 @@ func TestSessionsListShowsOnlyCurrentProject(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "thread-one") || strings.Contains(output.String(), "thread-two") {
+	if !strings.Contains(output.String(), firstID.String()) || strings.Contains(output.String(), secondID.String()) {
 		t.Fatalf("unexpected sessions list: %s", output.String())
 	}
 }

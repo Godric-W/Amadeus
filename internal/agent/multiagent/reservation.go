@@ -1,6 +1,7 @@
 package multiagent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -85,17 +86,79 @@ func (control *Control) commitReservation(id string, metadata protocol.AgentMeta
 	return nil
 }
 
-func (control *Control) runtimeForInput(id protocol.ThreadID) (AgentRuntime, protocol.AgentStatus, error) {
+func (control *Control) RegisterPersisted(metadata protocol.AgentMetadata, status protocol.AgentStatus) error {
+	if control == nil {
+		return errors.New("agent control is nil")
+	}
+	if err := metadata.Validate(); err != nil {
+		return err
+	}
+	if err := status.Validate(); err != nil {
+		return err
+	}
+	if status.IsRunning() {
+		return errors.New("persisted agent cannot have running status")
+	}
 	control.mu.Lock()
 	defer control.mu.Unlock()
+	if control.closed {
+		return errors.New("agent control is closed")
+	}
+	if len(control.agents)+len(control.reservations) >= control.maxAgents {
+		return fmt.Errorf("agent limit %d reached while restoring persisted agents", control.maxAgents)
+	}
+	if _, exists := control.agents[metadata.ThreadID]; exists {
+		return fmt.Errorf("agent %q already exists", metadata.ThreadID)
+	}
+	if _, used := control.nicknames[metadata.AgentNickname]; used {
+		return fmt.Errorf("agent nickname %q is already in use", metadata.AgentNickname)
+	}
+	control.nicknames[metadata.AgentNickname] = struct{}{}
+	control.agents[metadata.ThreadID] = &record{metadata: metadata, status: status}
+	control.signalLocked()
+	return nil
+}
+
+func (control *Control) runtimeForInput(ctx context.Context, id protocol.ThreadID) (AgentRuntime, protocol.AgentStatus, error) {
+	control.resumeMu.Lock()
+	defer control.resumeMu.Unlock()
+	control.mu.Lock()
 	agent := control.agents[id]
 	if agent == nil || agent.closing {
+		control.mu.Unlock()
 		return nil, protocol.AgentStatus{Kind: protocol.AgentStatusNotFound}, fmt.Errorf("agent %q is not available", id)
 	}
 	switch agent.status.Kind {
 	case protocol.AgentStatusShutdown, protocol.AgentStatusNotFound:
+		control.mu.Unlock()
 		return nil, agent.status, fmt.Errorf("agent %q is not available", id)
-	default:
-		return agent.runtime, agent.status, nil
 	}
+	if agent.runtime != nil {
+		runtime, status := agent.runtime, agent.status
+		control.mu.Unlock()
+		return runtime, status, nil
+	}
+	control.mu.Unlock()
+	runtime, err := control.host.ResumeChild(ctx, control, id)
+	if err != nil {
+		return nil, protocol.AgentStatus{}, fmt.Errorf("resume agent %q: %w", id, err)
+	}
+	if runtime == nil || runtime.ID() != id {
+		if runtime != nil {
+			_ = shutdownRuntime(ctx, runtime)
+		}
+		return nil, protocol.AgentStatus{}, fmt.Errorf("resume agent %q returned inconsistent runtime", id)
+	}
+	control.mu.Lock()
+	agent = control.agents[id]
+	if agent == nil || agent.closing || agent.runtime != nil {
+		control.mu.Unlock()
+		_ = shutdownRuntime(ctx, runtime)
+		return nil, protocol.AgentStatus{}, fmt.Errorf("agent %q changed while resuming", id)
+	}
+	agent.runtime = runtime
+	status := agent.status
+	control.mu.Unlock()
+	go control.consume(id, runtime)
+	return runtime, status, nil
 }

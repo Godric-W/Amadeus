@@ -81,7 +81,9 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 			completionReminderSent = true
 		}
 		sampleID := fmt.Sprintf("%s/step-%d", turnContext.TurnID, stepNumber)
-		stepCtx := tool.WithInvocationMetadata(ctx, tool.InvocationMetadata{SessionID: string(turnContext.ThreadID), TurnID: string(turnContext.TurnID), Source: tool.ToolCallSourceModel})
+		stepCtx := tool.WithInvocationMetadata(ctx, tool.InvocationMetadata{
+			SessionID: turnContext.SessionID, ThreadID: turnContext.ThreadID, TurnID: turnContext.TurnID, Source: tool.ToolCallSourceModel,
+		})
 		sampleEvents := events
 		var proposedPlan *engine.ProposedPlanEventSink
 		if turnContext.Mode == turn.ModeKindPlan {
@@ -92,7 +94,7 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 			sampleEvents = proposedPlan
 		}
 		sample, sampleErr := modelSession.Sample(stepCtx, engine.SampleRequest{
-			ID: sampleID, Messages: step.Prompt.Items, BaseInstructions: step.BaseInstructions,
+			ID: sampleID, Metadata: requestMetadata(turnContext), Messages: step.Prompt.Items, BaseInstructions: step.BaseInstructions,
 			Tools: step.ToolRouter.Specs(), OutputSchema: llm.OutputSchema(turnContext.OutputSchema), OutputSchemaStrict: turnContext.OutputSchemaStrict,
 			Reasoning: llm.ReasoningConfigForEffort(turnContext.ReasoningEffort),
 			Events:    sampleEvents,
@@ -171,7 +173,7 @@ func (session *Session) compactCallback(runtime *SessionServices, modelSession *
 	return func(ctx context.Context) (bool, error) {
 		items, err := runtime.Compact(ctx, engine.CompactRequest{
 			History: session.ContextProjection(), ModelSession: modelSession,
-			Reasoning: llm.ReasoningConfigForEffort(turnContext.ReasoningEffort), Events: events,
+			Reasoning: llm.ReasoningConfigForEffort(turnContext.ReasoningEffort), Metadata: requestMetadata(turnContext), Events: events,
 		})
 		if err != nil {
 			if strings.Contains(err.Error(), "no earlier turn") || strings.Contains(err.Error(), "no safely compactable") || strings.Contains(err.Error(), "no conversation") {

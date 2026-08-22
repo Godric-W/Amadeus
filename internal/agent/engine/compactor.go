@@ -20,6 +20,7 @@ type CompactRequest struct {
 	History      agentcontext.RolloutMessageProjection
 	ModelSession *ModelClientSession
 	Reasoning    *llm.ReasoningConfig
+	Metadata     llm.RequestMetadata
 	Events       protocol.EventSink
 }
 
@@ -35,6 +36,9 @@ func (compactor *Compactor) Compact(ctx context.Context, request CompactRequest)
 	}
 	if request.ModelSession == nil || request.Events == nil {
 		return nil, errors.New("compactor model session is incomplete")
+	}
+	if err := request.Metadata.Validate(); err != nil {
+		return nil, err
 	}
 	projection, err := projectCompactionSource(request.History)
 	if err != nil {
@@ -58,6 +62,7 @@ func (compactor *Compactor) Compact(ctx context.Context, request CompactRequest)
 		Request: llm.Request{
 			Model: compactor.ModelInfo.Name, InputModalities: append([]llm.InputModality(nil), compactor.ModelInfo.InputModalities...), Prompt: llm.Prompt{BaseInstructions: compactionInstructions, Input: input},
 			Reasoning: request.Reasoning.Clone(),
+			Metadata:  request.Metadata,
 		},
 		Events: request.Events,
 	})

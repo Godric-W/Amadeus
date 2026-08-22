@@ -104,7 +104,7 @@ func renderSubagents(records []multiagent.AgentRecord) string {
 	builder.WriteString("<subagents>")
 	for _, record := range records {
 		builder.WriteString("\n  - ")
-		builder.WriteString(html.EscapeString(string(record.Metadata.ThreadID)))
+		builder.WriteString(html.EscapeString(record.Metadata.ThreadID.String()))
 		builder.WriteString(": ")
 		builder.WriteString(html.EscapeString(record.Metadata.AgentNickname))
 		builder.WriteString(" [")

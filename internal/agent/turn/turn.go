@@ -20,7 +20,9 @@ type Personality string
 
 type TurnContext struct {
 	SubmissionID    protocol.SubmissionID `json:"-"`
+	SessionID       protocol.SessionID    `json:"session_id"`
 	ThreadID        protocol.ThreadID     `json:"thread_id"`
+	ParentThreadID  *protocol.ThreadID    `json:"-"`
 	TurnID          protocol.TurnID       `json:"turn_id"`
 	Provider        string                `json:"provider"`
 	Model           string                `json:"model"`
@@ -38,8 +40,11 @@ type TurnContext struct {
 }
 
 func (value TurnContext) Validate() error {
-	if value.ThreadID == "" || value.TurnID == "" || strings.TrimSpace(value.Provider) == "" || strings.TrimSpace(value.Model) == "" || strings.TrimSpace(value.CWD) == "" {
+	if value.SessionID.IsZero() || value.ThreadID.IsZero() || value.TurnID == "" || strings.TrimSpace(value.Provider) == "" || strings.TrimSpace(value.Model) == "" || strings.TrimSpace(value.CWD) == "" {
 		return errors.New("turn context is incomplete")
+	}
+	if value.ParentThreadID != nil && (value.ParentThreadID.IsZero() || *value.ParentThreadID == value.ThreadID) {
+		return errors.New("turn parent thread identity is invalid")
 	}
 	if value.Mode != ModeKindDefault && value.Mode != ModeKindPlan {
 		return errors.New("turn mode is invalid")

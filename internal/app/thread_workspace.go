@@ -205,20 +205,20 @@ func (workspace *ThreadWorkspace) RenameCurrent(ctx context.Context, title strin
 func (workspace *ThreadWorkspace) DeleteCurrent(ctx context.Context) (protocol.ThreadID, error) {
 	manager := workspace.managerSnapshot()
 	if manager == nil {
-		return "", errors.New("thread workspace is closed")
+		return protocol.ThreadID{}, errors.New("thread workspace is closed")
 	}
 	workspace.mu.Lock()
 	current := workspace.current
 	workspace.current = nil
 	workspace.mu.Unlock()
 	if current == nil {
-		return "", ErrNoActiveThread
+		return protocol.ThreadID{}, ErrNoActiveThread
 	}
 	if err := manager.DeleteThread(ctx, current.ID()); err != nil {
 		workspace.mu.Lock()
 		workspace.current = current
 		workspace.mu.Unlock()
-		return "", err
+		return protocol.ThreadID{}, err
 	}
 	return current.ID(), nil
 }

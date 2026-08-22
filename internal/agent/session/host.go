@@ -53,7 +53,7 @@ func (session *Session) appendItems(ctx context.Context, turnID protocol.TurnID,
 		return err
 	}
 	if result.MetadataWarning != nil {
-		session.publish(protocol.Event{Msg: protocol.WarningEvent{ThreadID: protocol.ThreadID(session.threadID), TurnID: protocol.TurnID(turnID), Message: result.MetadataWarning.Error()}})
+		session.publish(protocol.Event{Msg: protocol.WarningEvent{ThreadID: session.threadID, TurnID: turnID, Message: result.MetadataWarning.Error()}})
 	}
 	return nil
 }

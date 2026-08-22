@@ -154,17 +154,17 @@ func collabAgentTool(name string) (protocol.CollabAgentTool, bool) {
 func collabAgentStarted(sender protocol.ThreadID, collaborationTool protocol.CollabAgentTool, call tool.ToolCall, resolveAgent func(protocol.ThreadID) protocol.CollabAgentRef) protocol.CollabAgentToolCallItem {
 	item := protocol.CollabAgentToolCallItem{ID: protocol.ItemID(call.ID), Tool: collaborationTool, Status: protocol.CollabAgentToolInProgress, SenderThreadID: sender, CreatedAt: time.Now().UTC()}
 	var arguments struct {
-		ID      string   `json:"id"`
-		IDs     []string `json:"ids"`
-		Message string   `json:"message"`
+		ID      protocol.ThreadID   `json:"id"`
+		IDs     []protocol.ThreadID `json:"ids"`
+		Message string              `json:"message"`
 	}
 	_ = json.Unmarshal(call.Payload, &arguments)
 	item.Prompt = boundCollaborationText(arguments.Message, 1000)
-	if arguments.ID != "" {
-		item.ReceiverAgents = []protocol.CollabAgentRef{resolveCollabAgentRef(protocol.ThreadID(arguments.ID), resolveAgent)}
+	if !arguments.ID.IsZero() {
+		item.ReceiverAgents = []protocol.CollabAgentRef{resolveCollabAgentRef(arguments.ID, resolveAgent)}
 	}
 	for _, id := range arguments.IDs {
-		item.ReceiverAgents = append(item.ReceiverAgents, resolveCollabAgentRef(protocol.ThreadID(id), resolveAgent))
+		item.ReceiverAgents = append(item.ReceiverAgents, resolveCollabAgentRef(id, resolveAgent))
 	}
 	return item
 }
@@ -174,7 +174,7 @@ func resolveCollabAgentRef(id protocol.ThreadID, resolveAgent func(protocol.Thre
 		return protocol.CollabAgentRef{ThreadID: id}
 	}
 	resolved := resolveAgent(id)
-	if resolved.ThreadID == "" {
+	if resolved.ThreadID.IsZero() {
 		resolved.ThreadID = id
 	}
 	return resolved
@@ -194,7 +194,7 @@ func completeCollabAgentItem(item protocol.CollabAgentToolCallItem, execution to
 			Nickname string            `json:"nickname"`
 		}
 		_ = json.Unmarshal(encoded, &value)
-		if value.AgentID != "" {
+		if !value.AgentID.IsZero() {
 			item.ReceiverAgents = []protocol.CollabAgentRef{{ThreadID: value.AgentID, AgentNickname: value.Nickname, AgentRole: "explorer"}}
 		}
 	case protocol.CollabAgentSendInput:
@@ -203,7 +203,7 @@ func completeCollabAgentItem(item protocol.CollabAgentToolCallItem, execution to
 			Nickname string            `json:"nickname"`
 		}
 		_ = json.Unmarshal(encoded, &value)
-		if value.AgentID != "" {
+		if !value.AgentID.IsZero() {
 			item.ReceiverAgents = []protocol.CollabAgentRef{{ThreadID: value.AgentID, AgentNickname: value.Nickname, AgentRole: "explorer"}}
 		}
 	case protocol.CollabAgentCloseAgent:
@@ -213,7 +213,7 @@ func completeCollabAgentItem(item protocol.CollabAgentToolCallItem, execution to
 			PreviousStatus protocol.AgentStatus `json:"previous_status"`
 		}
 		_ = json.Unmarshal(encoded, &value)
-		if value.AgentID != "" {
+		if !value.AgentID.IsZero() {
 			item.ReceiverAgents = []protocol.CollabAgentRef{{ThreadID: value.AgentID, AgentNickname: value.Nickname, AgentRole: "explorer"}}
 			item.AgentsStates = map[protocol.ThreadID]protocol.CollabAgentState{
 				value.AgentID: {Status: value.PreviousStatus},

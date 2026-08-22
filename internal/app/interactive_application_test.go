@@ -32,7 +32,7 @@ func TestInteractiveApplicationOwnsThreadLifecycleAndReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if initial.Generation != 1 || initial.ThreadID == "" {
+	if initial.Generation != 1 || initial.ThreadID.IsZero() || initial.SessionID != protocol.SessionIDFromThreadID(initial.ThreadID) {
 		t.Fatalf("initial snapshot = %#v", initial)
 	}
 	firstID := initial.ThreadID
@@ -61,7 +61,7 @@ func TestInteractiveApplicationOwnsThreadLifecycleAndReplay(t *testing.T) {
 	}
 	waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
 		_, ok := event.Event.Msg.(protocol.TurnCompleteEvent)
-		return ok && protocol.ThreadIDOf(event.Event.Msg) == protocol.ThreadID(firstID)
+		return ok && protocol.ThreadIDOf(event.Event.Msg) == firstID
 	})
 
 	application.Clear(ctx)

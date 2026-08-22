@@ -54,6 +54,7 @@ type AgentRuntime interface {
 
 type AgentHost interface {
 	SpawnChild(context.Context, *Control, SpawnChildRequest) (AgentRuntime, error)
+	ResumeChild(context.Context, *Control, protocol.ThreadID) (AgentRuntime, error)
 	NotifyParent(context.Context, protocol.ThreadID, Notification) error
 }
 
@@ -100,11 +101,13 @@ type reservation struct {
 
 type Control struct {
 	host      AgentHost
+	sessionID protocol.SessionID
 	rootID    protocol.ThreadID
 	maxAgents int
 	maxDepth  int
 
 	mu           sync.Mutex
+	resumeMu     sync.Mutex
 	agents       map[protocol.ThreadID]*record
 	reservations map[string]reservation
 	nicknames    map[string]struct{}

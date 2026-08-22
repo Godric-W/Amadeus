@@ -12,6 +12,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -74,7 +75,7 @@ func TestIncrementalRecordMatchesResumeAcrossTerminalAndCompactionFacts(t *testi
 		rollout.EventMsgItem{Msg: protocol.TurnAbortedEvent{Reason: "interrupted", FinishedAt: time.Unix(7, 0).UTC()}},
 	}
 	for index := range items {
-		items[index] = rollout.ScopeItem(items[index], "thread-1", "turn-1")
+		items[index] = rollout.ScopeItem(items[index], testutil.ThreadID(1), "turn-1")
 	}
 
 	live := NewManager(nil)
@@ -98,8 +99,8 @@ func TestIncrementalRecordMatchesResumeAcrossTerminalAndCompactionFacts(t *testi
 		},
 		CoveredThroughSequence: 7,
 		SourceHash:             hex.EncodeToString(digest[:]),
-	}, "thread-1", "turn-2")
-	trailing := rollout.ScopeItem(rollout.EventMsgItem{Msg: protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 2, OutputTokens: 1, TotalTokens: 3}}}, "thread-1", "turn-2")
+	}, testutil.ThreadID(1), "turn-2")
+	trailing := rollout.ScopeItem(rollout.EventMsgItem{Msg: protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 2, OutputTokens: 1, TotalTokens: 3}}}, testutil.ThreadID(1), "turn-2")
 	if err := live.Record(8, compacted, trailing); err != nil {
 		t.Fatal(err)
 	}

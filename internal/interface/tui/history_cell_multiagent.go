@@ -158,8 +158,8 @@ func collabAgentName(agent protocol.CollabAgentRef) string {
 	if strings.TrimSpace(agent.AgentNickname) != "" {
 		return agent.AgentNickname
 	}
-	if strings.TrimSpace(string(agent.ThreadID)) != "" {
-		return string(agent.ThreadID)
+	if !agent.ThreadID.IsZero() {
+		return agent.ThreadID.String()
 	}
 	return "agent"
 }

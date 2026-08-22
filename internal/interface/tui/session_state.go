@@ -12,6 +12,7 @@ import (
 
 type fullscreenSessionState struct {
 	Generation    uint64
+	SessionID     protocol.SessionID
 	ThreadID      protocol.ThreadID
 	Title         string
 	Configuration protocol.SessionConfiguration
@@ -28,11 +29,17 @@ func (state *fullscreenSessionState) applyConfiguration(configuration protocol.S
 
 func (model *fullscreenModel) applyThreadViewSnapshot(snapshot application.ThreadViewSnapshot) tea.Cmd {
 	model.session = fullscreenSessionState{
-		Generation: snapshot.Generation, ThreadID: snapshot.ThreadID, Title: snapshot.Title,
+		Generation: snapshot.Generation, SessionID: snapshot.SessionID, ThreadID: snapshot.ThreadID, Title: snapshot.Title,
 		Usage: snapshot.Usage, ContextUsed: snapshot.Usage.TotalTokens, ContextWindow: snapshot.ContextWindow,
 	}
 	model.workspace = statusLineWorkspaceState{}
 	return model.applySessionConfiguration(snapshot.Configuration)
+}
+
+func (model *fullscreenModel) applySessionConfigured(event protocol.SessionConfiguredEvent) tea.Cmd {
+	model.session.SessionID = event.SessionID
+	model.session.ThreadID = event.ThreadID
+	return model.applySessionConfiguration(event.Configuration)
 }
 
 func (state *fullscreenSessionState) applyTokenCount(event protocol.TokenCountEvent) {

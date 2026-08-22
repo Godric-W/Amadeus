@@ -25,6 +25,10 @@ func (control *Control) closeOne(ctx context.Context, id protocol.ThreadID) erro
 		return nil
 	}
 	if agent.closing {
+		if agent.runtime == nil {
+			control.mu.Unlock()
+			return nil
+		}
 		terminated := agent.runtime.Terminated()
 		control.mu.Unlock()
 		select {
@@ -37,6 +41,13 @@ func (control *Control) closeOne(ctx context.Context, id protocol.ThreadID) erro
 	agent.closing = true
 	runtime := agent.runtime
 	status := agent.status
+	if runtime == nil {
+		delete(control.agents, id)
+		delete(control.nicknames, agent.metadata.AgentNickname)
+		control.signalLocked()
+		control.mu.Unlock()
+		return nil
+	}
 	control.mu.Unlock()
 	if status.Kind == protocol.AgentStatusRunning {
 		_ = runtime.Submit(ctx, protocol.InterruptOp{})

@@ -56,7 +56,7 @@ type CollabAgentToolCallItem struct {
 }
 
 func (item CollabAgentToolCallItem) Validate() error {
-	if strings.TrimSpace(string(item.ID)) == "" || !item.Tool.Valid() || strings.TrimSpace(string(item.SenderThreadID)) == "" || item.CreatedAt.IsZero() {
+	if strings.TrimSpace(string(item.ID)) == "" || !item.Tool.Valid() || item.SenderThreadID.IsZero() || item.CreatedAt.IsZero() {
 		return errors.New("collaboration agent tool call item is incomplete")
 	}
 	switch item.Status {
@@ -72,12 +72,12 @@ func (item CollabAgentToolCallItem) Validate() error {
 		return fmt.Errorf("collaboration agent tool status %q is invalid", item.Status)
 	}
 	for _, agent := range item.ReceiverAgents {
-		if strings.TrimSpace(string(agent.ThreadID)) == "" {
+		if agent.ThreadID.IsZero() {
 			return errors.New("collaboration receiver agent ID is empty")
 		}
 	}
 	for id, state := range item.AgentsStates {
-		if strings.TrimSpace(string(id)) == "" {
+		if id.IsZero() {
 			return errors.New("collaboration agent state ID is empty")
 		}
 		if err := state.Status.Validate(); err != nil {

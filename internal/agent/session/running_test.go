@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
 type panicSessionTask struct{}
@@ -18,7 +19,7 @@ func (panicSessionTask) Run(context.Context, *Session, *turn.TurnContext) (TaskO
 
 func TestRunningTaskReportsPanicAsCompletion(t *testing.T) {
 	turnContext := &turn.TurnContext{
-		ThreadID: "thread-1", TurnID: "turn-1", Provider: "openai", Model: "gpt-test", CWD: "/workspace",
+		SessionID: testutil.SessionID(1), ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Provider: "openai", Model: "gpt-test", CWD: "/workspace",
 		Mode: turn.ModeKindDefault,
 	}
 	running, err := NewRunningTask(context.Background(), &Session{}, panicSessionTask{}, turnContext)

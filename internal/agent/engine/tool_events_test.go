@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -23,7 +25,7 @@ func TestToolEventObserverPersistsPresentationOnCompletedItem(t *testing.T) {
 	observer := NewToolEventObserver(func(_ context.Context, _ protocol.TurnID, items ...rollout.RolloutItem) error {
 		appended = append(appended, items...)
 		return nil
-	}, "thread-1", protocol.TurnID("turn-1"), sink, nil)
+	}, testutil.ThreadID(1), protocol.TurnID("turn-1"), sink, nil)
 	call := tool.NewCall("call-1", "grep", []byte(`{"query":"Approval","path":"internal"}`))
 	if err := observer.ToolCallStarted(context.Background(), tool.ToolSpec{Name: "grep", SideEffect: tool.SideEffectRead}, call); err != nil {
 		t.Fatal(err)
@@ -71,7 +73,7 @@ func TestToolEventObserverPersistsImagePayloadExactlyOnce(t *testing.T) {
 	observer := NewToolEventObserver(func(_ context.Context, _ protocol.TurnID, items ...rollout.RolloutItem) error {
 		appended = append(appended, items...)
 		return nil
-	}, "thread-1", protocol.TurnID("turn-1"), sink, nil)
+	}, testutil.ThreadID(1), protocol.TurnID("turn-1"), sink, nil)
 	call := tool.NewCall("image-call", "view_image", []byte(`{"path":"image.png"}`))
 	if err := observer.ToolCallStarted(context.Background(), tool.ToolSpec{Name: "view_image", SideEffect: tool.SideEffectRead}, call); err != nil {
 		t.Fatal(err)
@@ -118,7 +120,7 @@ func TestToolEventObserverPersistsOnlyResultForUpdatePlan(t *testing.T) {
 	observer := NewToolEventObserver(func(_ context.Context, _ protocol.TurnID, items ...rollout.RolloutItem) error {
 		appended = append(appended, items...)
 		return nil
-	}, "thread-1", protocol.TurnID("turn-1"), sink, nil)
+	}, testutil.ThreadID(1), protocol.TurnID("turn-1"), sink, nil)
 	call := tool.NewCall("call-1", "update_plan", []byte(`{"plan":[]}`))
 	if err := observer.ToolCallStarted(context.Background(), tool.ToolSpec{Name: "update_plan"}, call); err != nil {
 		t.Fatal(err)
@@ -146,14 +148,14 @@ func TestToolEventObserverPersistsTypedCollaborationItem(t *testing.T) {
 	observer := NewToolEventObserver(func(_ context.Context, _ protocol.TurnID, items ...rollout.RolloutItem) error {
 		appended = append(appended, items...)
 		return nil
-	}, "root-1", "turn-1", sink, nil)
+	}, testutil.ThreadID(1), "turn-1", sink, nil)
 	call := tool.NewCall("call-agent", "spawn_agent", []byte(`{"message":"inspect session ownership"}`))
 	if err := observer.ToolCallStarted(context.Background(), tool.ToolSpec{Name: "spawn_agent"}, call); err != nil {
 		t.Fatal(err)
 	}
 	if err := observer.ToolCallCompleted(context.Background(), tool.ToolExecution{
 		Call:    call,
-		Output:  tool.ToolResult{ToolName: "spawn_agent", Text: `{"agent_id":"child-1","nickname":"atlas"}`, Data: map[string]any{"agent_id": "child-1", "nickname": "atlas"}},
+		Output:  tool.ToolResult{ToolName: "spawn_agent", Text: fmt.Sprintf(`{"agent_id":%q,"nickname":"atlas"}`, testutil.ThreadID(2).String()), Data: map[string]any{"agent_id": testutil.ThreadID(2), "nickname": "atlas"}},
 		Outcome: tool.ToolCallOutcome{Status: tool.ToolCallCompleted},
 	}); err != nil {
 		t.Fatal(err)
@@ -165,7 +167,7 @@ func TestToolEventObserverPersistsTypedCollaborationItem(t *testing.T) {
 	if completed.Kind != protocol.ItemCollabAgentToolCall || completed.CollabAgent == nil {
 		t.Fatalf("completed collaboration item = %#v", completed)
 	}
-	if completed.CollabAgent.Tool != protocol.CollabAgentSpawnAgent || completed.CollabAgent.SenderThreadID != "root-1" || completed.CollabAgent.Prompt != "inspect session ownership" {
+	if completed.CollabAgent.Tool != protocol.CollabAgentSpawnAgent || completed.CollabAgent.SenderThreadID != testutil.ThreadID(1) || completed.CollabAgent.Prompt != "inspect session ownership" {
 		t.Fatalf("collaboration payload = %#v", completed.CollabAgent)
 	}
 	if len(completed.CollabAgent.ReceiverAgents) != 1 || completed.CollabAgent.ReceiverAgents[0].AgentNickname != "atlas" {
@@ -176,7 +178,7 @@ func TestToolEventObserverPersistsTypedCollaborationItem(t *testing.T) {
 func TestToolEventObserverRollsBackCollaborationStartOnPublishFailure(t *testing.T) {
 	observer := NewToolEventObserver(func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error {
 		return nil
-	}, "root-1", "turn-1", failingEventSink{err: errors.New("publish failed")}, nil).(*toolEventObserver)
+	}, testutil.ThreadID(1), "turn-1", failingEventSink{err: errors.New("publish failed")}, nil).(*toolEventObserver)
 	call := tool.NewCall("call-agent", "spawn_agent", []byte(`{"message":"inspect"}`))
 	if err := observer.ToolCallStarted(context.Background(), tool.ToolSpec{Name: "spawn_agent"}, call); err == nil {
 		t.Fatal("expected publish failure")
@@ -192,18 +194,18 @@ func TestCompleteCloseAgentItemPreservesPreviousStatus(t *testing.T) {
 	now := time.Now().UTC()
 	item := protocol.CollabAgentToolCallItem{
 		ID: "call-close", Tool: protocol.CollabAgentCloseAgent, Status: protocol.CollabAgentToolInProgress,
-		SenderThreadID: "root", ReceiverAgents: []protocol.CollabAgentRef{{ThreadID: "child-1", AgentNickname: "atlas"}}, CreatedAt: now,
+		SenderThreadID: testutil.ThreadID(1), ReceiverAgents: []protocol.CollabAgentRef{{ThreadID: testutil.ThreadID(2), AgentNickname: "atlas"}}, CreatedAt: now,
 	}
 	execution := tool.ToolExecution{
-		Call: tool.NewCall("call-close", "close_agent", []byte(`{"id":"child-1"}`)),
+		Call: tool.NewCall("call-close", "close_agent", []byte(fmt.Sprintf(`{"id":%q}`, testutil.ThreadID(2).String()))),
 		Output: tool.ToolResult{Data: map[string]any{
-			"agent_id": "child-1", "nickname": "atlas",
+			"agent_id": testutil.ThreadID(2), "nickname": "atlas",
 			"previous_status": protocol.AgentStatus{Kind: protocol.AgentStatusCompleted, Message: "done"},
 		}},
 		Outcome: tool.ToolCallOutcome{Status: tool.ToolCallCompleted},
 	}
 	completed := completeCollabAgentItem(item, execution, now.Add(time.Second), protocol.ItemStatusCompleted)
-	state, exists := completed.AgentsStates["child-1"]
+	state, exists := completed.AgentsStates[testutil.ThreadID(2)]
 	if !exists || state.Status.Kind != protocol.AgentStatusCompleted || state.Status.Message != "done" {
 		t.Fatalf("close state = %#v", completed.AgentsStates)
 	}

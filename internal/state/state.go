@@ -32,7 +32,7 @@ type StoredThread struct {
 }
 
 func (thread StoredThread) Validate() error {
-	if strings.TrimSpace(string(thread.ID)) == "" || strings.TrimSpace(thread.RolloutPath) == "" || strings.TrimSpace(thread.CWD) == "" || strings.TrimSpace(thread.Title) == "" {
+	if thread.ID.IsZero() || strings.TrimSpace(thread.RolloutPath) == "" || strings.TrimSpace(thread.CWD) == "" || strings.TrimSpace(thread.Title) == "" {
 		return errors.New("stored thread is incomplete")
 	}
 	if !filepath.IsAbs(thread.RolloutPath) || filepath.Clean(thread.RolloutPath) != thread.RolloutPath {
@@ -64,6 +64,7 @@ type DB interface {
 	UpsertThread(context.Context, StoredThread) error
 	GetThread(context.Context, protocol.ThreadID) (StoredThread, error)
 	ListThreads(context.Context, ListQuery) ([]StoredThread, error)
+	ListChildren(context.Context, protocol.ThreadID) ([]StoredThread, error)
 	RenameThread(context.Context, protocol.ThreadID, string, time.Time) error
 	ArchiveThread(context.Context, protocol.ThreadID, time.Time) error
 	ReplaceThreads(context.Context, []StoredThread) error

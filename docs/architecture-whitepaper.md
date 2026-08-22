@@ -225,7 +225,8 @@ sequenceDiagram
 
 | 模型 | 所属 package | 职责 |
 |---|---|---|
-| `ThreadID` | `agent/protocol/identity` | 一条会话及其持久化历史的稳定身份；SubAgent ID 直接复用 child ThreadID。 |
+| `SessionID` | `agent/protocol/identity` | Root 与全部 child Thread 共享的 agent-tree/session-level UUID identity。 |
+| `ThreadID` | `agent/protocol/identity` | 一个具体 Thread、Rollout、Event scope 和 Resume target 的 UUID identity；Amadeus 新建值为 UUIDv7。 |
 | `TurnID` | `agent/protocol/identity` | Session 内一次 regular/compact Turn 的身份。 |
 | `SubmissionID` | `agent/protocol/identity` | 将输入操作与输出 Event 关联起来。 |
 | `RequestID` | `agent/protocol/identity` | Approval 或 `request_user_input` waiter 的身份。 |
@@ -409,6 +410,7 @@ flowchart LR
 
 - JSONL 保存完整、顺序化、可恢复的 canonical Rollout。
 - SQLite 保存 Thread metadata index，用于 list、resume picker、rename、archive 和快速查询。
+- SessionID 只由各 Thread Rollout 的 SessionMeta 保存；SQLite 不复制 SessionID，也不以 SessionID 路由 Thread。
 - SQLite 可以从 Rollout 重建，因此它不能成为对话历史或 Turn 状态的第二事实源。
 - `LiveThread` 串行化 writer 操作，确保 materialize、append、flush 和 close 顺序。
 
@@ -416,16 +418,16 @@ flowchart LR
 
 | 模型 | 职责 |
 |---|---|
-| `ThreadManager` | 创建、恢复、查询和关闭 live Thread；也是 AgentHost 实现。 |
-| `AmadeusThread` | 对外 Thread handle，聚合 Session、SessionIo、LiveThread 和可选 AgentControl。 |
+| `ThreadManager` | 生成 UUIDv7 ThreadID，创建、恢复、查询和关闭 live Thread；也是 child spawn/internal resume 的 AgentHost 实现。 |
+| `AmadeusThread` | 对外 Thread handle，持有 SessionID、ThreadID、可选 ParentThreadID，并聚合 Session、SessionIo、LiveThread 和 AgentControl。 |
 | `LiveThread` | 一个 Thread writer 的并发安全 façade；控制是否 materialized、buffered append 和 shutdown。 |
-| `ThreadStore` | Thread persistence port；定义 materialize、append、load、list、rename、archive、delete、writer close。 |
-| `CreateInput` | 首次 materialize Thread 时的 metadata 输入。 |
+| `ThreadStore` | Thread persistence port；定义 materialize、append、load、list、parent traversal、rename、archive、delete、writer close。 |
+| `CreateInput` | 首次 materialize Thread 时的 SessionID、ThreadID、source 与 metadata 输入。 |
 | `InitialHistory` | New 或 Resumed Thread 的初始 Rollout lines。 |
 | `AppendResult` | 追加后的 sequence、metadata/index 同步结果。 |
 | `rollout.Line` | JSONL 单行 envelope：schema version、sequence、timestamp 和 item。 |
 | `RolloutItem` | canonical item interface。 |
-| `SessionMetaItem` | Thread 创建事实：source、CWD、title、model、git metadata、created time。 |
+| `SessionMetaItem` | Thread 创建事实：SessionID、ID、可选 ParentThreadID、source、CWD、title、model、git metadata、created time。 |
 | `ResponseItem` | 用户、Assistant、ToolCall、ToolResult 的 provider-neutral canonical item。 |
 | `CompactedItem` | Compaction summary、replacement history、覆盖 sequence 和 source hash。 |
 | `TurnContextItem` | TurnContext 的 durable DTO。 |
@@ -544,7 +546,7 @@ Session loop 只处理以下协调工作：
 |---|---|
 | `SessionState` | Session 的可恢复状态，目前由冻结 `Configuration` 和 `context.Manager` 组成。 |
 | `SessionIo` | Thread/Application 使用的输入输出端口：Submissions、Events、Terminated、admission/steer helper。 |
-| `SpawnArgs` | 创建 Session 所需 Thread identity、InitialHistory、State、Services 和 Adapters。 |
+| `SpawnArgs` | 创建 Session 所需 SessionID、ThreadID、可选 ParentThreadID、InitialHistory、State、Services 和 Adapters。 |
 | `Session` | 单线程 select loop 的 owner；管理 active Turn、deferred submissions、waiters 和 lifecycle channels。 |
 | `ActiveTurn` | 当前 Turn 的协调状态：SubmissionID、RunningTask、TurnState、TaskOutput。 |
 | `TurnState` | Turn-scoped pending interactive requests 和 pending same-turn input。 |
@@ -763,7 +765,7 @@ flowchart TD
 | `Exposure` | direct/conditional/deferred/hidden 注册可见性。 |
 | `Registration` | Exposure 与 condition key。 |
 | `ToolCall` | Engine/Tool domain 的模型调用 DTO。 |
-| `Invocation` | 增加 SessionID、TurnID 和来源的执行 envelope。 |
+| `Invocation` | 同时携带 typed SessionID、ThreadID、TurnID 和来源的执行 envelope。 |
 | `RequestSnapshot` | MCP、Skill、AGENTS.md、ToolRouter revisions。 |
 | `ToolDefinition` | `Spec + ValidateInput + Prepare + Execute` contract。 |
 | `ToolUseContext` | Tool 执行时的 context、invocation 和 request snapshot。 |
@@ -1261,6 +1263,9 @@ flowchart TD
 10. SubAgent 是完整 Thread/Session，AgentControl 不直接调用 Provider。
 11. terminal Event 在发布给 UI 前必须先持久化。
 12. Resume 从 canonical Rollout 重建 Context 和 UI，不重新执行历史 Tool。
+13. Root/child 共享 SessionID 但使用不同 ThreadID；registry、Event、Resume 和 Agent target 始终按 ThreadID 路由。
+14. Tool Invocation、Audit 和 Provider request metadata 同时携带 SessionID、ThreadID 与 TurnID。
+15. SessionMeta 是 SessionID 的 durable source；SQLite StoredThread 不保存 SessionID。
 
 `internal/architecture/guard_test.go` 通过源码结构检查保护这些边界，例如禁止已移除的旧 Runtime/Planner 抽象重新出现，并验证 Web、Tool、Multi-Agent 等关键 package 分层。
 

@@ -8,12 +8,17 @@ import (
 )
 
 func sessionMetaItem(input thread.CreateInput) rollout.SessionMetaItem {
-	return rollout.SessionMetaItem{
-		ThreadID: input.ID, Source: input.Source.Clone(), CWD: input.CWD, Title: input.Title,
+	item := rollout.SessionMetaItem{
+		SessionID: input.SessionID, ID: input.ID, Source: input.Source.Clone(), CWD: input.CWD, Title: input.Title,
 		ModelProvider: input.ModelProvider, Model: input.Model,
 		GitSHA: input.GitSHA, GitBranch: input.GitBranch, GitOriginURL: input.GitOriginURL,
 		CreatedAt: input.CreatedAt.UTC(),
 	}
+	if input.Source.IsSubAgent() {
+		parent := input.Source.SubAgent.ParentThreadID
+		item.ParentThreadID = &parent
+	}
+	return item
 }
 
 func turnContextItem(value turn.TurnContext) rollout.TurnContextItem {

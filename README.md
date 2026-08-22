@@ -86,6 +86,8 @@ amadeus --resume <session-id> "继续完成剩余测试"
 amadeus --resume=<session-id> "继续完成剩余测试"
 ```
 
+用户界面继续使用“session”术语，但 `<session-id>` 实际是该对话 Thread 的 canonical UUID。Amadeus 新建 Thread 使用 UUIDv7；CLI 和 `/resume` 会在边界校验 UUID，不接受展示用前缀或任意字符串 ID。
+
 `--continue` 和 `--resume` 不能同时使用。不带会话 ID 的 `--resume` 只适用于交互终端。
 
 ## 启动参数

@@ -51,7 +51,7 @@ func (updatePlan *UpdatePlan) Execute(toolContext tool.ToolUseContext, prepared 
 		return tool.ToolResult{}, errors.New("update_plan preparation state is invalid")
 	}
 	invocation := prepared.Invocation
-	turnID := protocol.TurnID(strings.TrimSpace(invocation.TurnID))
+	turnID := protocol.TurnID(strings.TrimSpace(string(invocation.TurnID)))
 	if turnID == "" {
 		return tool.ToolResult{}, errors.New("update_plan turn ID is empty")
 	}

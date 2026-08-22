@@ -10,6 +10,7 @@ import (
 
 type ThreadViewSnapshot struct {
 	Generation    uint64
+	SessionID     protocol.SessionID
 	ThreadID      protocol.ThreadID
 	Title         string
 	Configuration protocol.SessionConfiguration
@@ -61,6 +62,7 @@ type MCPInventory struct {
 }
 
 type StatusSnapshot struct {
+	SessionID            protocol.SessionID
 	ThreadID             protocol.ThreadID
 	Title                string
 	CurrentDir           string

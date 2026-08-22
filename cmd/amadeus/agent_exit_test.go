@@ -6,24 +6,25 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/interface/tui"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
 func TestPresentFullscreenExitPrintsUsageAndResumeHint(t *testing.T) {
 	var output bytes.Buffer
 	var errorOutput bytes.Buffer
+	threadID := testutil.ThreadID(1)
 	err := presentFullscreenExit(tui.AppExitInfo{
 		TokenUsage: llm.Usage{InputTokens: 8, OutputTokens: 5, TotalTokens: 13},
-		ThreadID:   protocol.ThreadID("thread-1"),
-		ResumeHint: "amadeus --resume thread-1",
+		ThreadID:   threadID,
+		ResumeHint: "amadeus --resume " + threadID.String(),
 		ExitReason: tui.ExitReasonUserRequested,
 	}, &output, &errorOutput, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "Token usage: total=13 input=8 output=5\nTo continue this session, run amadeus --resume thread-1\n"
+	want := "Token usage: total=13 input=8 output=5\nTo continue this session, run amadeus --resume " + threadID.String() + "\n"
 	if output.String() != want || errorOutput.Len() != 0 {
 		t.Fatalf("output=%q errorOutput=%q", output.String(), errorOutput.String())
 	}
@@ -56,13 +57,14 @@ func TestPresentFullscreenExitReportsFatalAndSessionID(t *testing.T) {
 	var output bytes.Buffer
 	var errorOutput bytes.Buffer
 	fatalErr := errors.New("renderer failed")
+	threadID := testutil.ThreadID(1)
 	err := presentFullscreenExit(tui.AppExitInfo{
-		ThreadID: protocol.ThreadID("thread-1"), ExitReason: tui.ExitReasonFatal, Error: fatalErr,
+		ThreadID: threadID, ExitReason: tui.ExitReasonFatal, Error: fatalErr,
 	}, &output, &errorOutput, false)
 	if !errors.Is(err, fatalErr) || !errorAlreadyReported(err) || exitCode(err) != exitCodeFailure {
 		t.Fatalf("error = %v", err)
 	}
-	if output.String() != "Session ID: thread-1\n" || !strings.Contains(errorOutput.String(), "ERROR: renderer failed") {
+	if output.String() != "Session ID: "+threadID.String()+"\n" || !strings.Contains(errorOutput.String(), "ERROR: renderer failed") {
 		t.Fatalf("output=%q errorOutput=%q", output.String(), errorOutput.String())
 	}
 }
@@ -70,14 +72,15 @@ func TestPresentFullscreenExitReportsFatalAndSessionID(t *testing.T) {
 func TestPresentFullscreenExitHighlightsOnlyResumeCommand(t *testing.T) {
 	var output bytes.Buffer
 	var errorOutput bytes.Buffer
+	threadID := testutil.ThreadID(1)
 	err := presentFullscreenExit(tui.AppExitInfo{
-		ResumeHint: "amadeus --resume thread-1",
+		ResumeHint: "amadeus --resume " + threadID.String(),
 		ExitReason: tui.ExitReasonUserRequested,
 	}, &output, &errorOutput, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "To continue this session, run \x1b[36mamadeus --resume thread-1\x1b[39m\n"
+	want := "To continue this session, run \x1b[36mamadeus --resume " + threadID.String() + "\x1b[39m\n"
 	if output.String() != want || errorOutput.Len() != 0 {
 		t.Fatalf("output=%q errorOutput=%q", output.String(), errorOutput.String())
 	}

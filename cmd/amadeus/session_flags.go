@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
@@ -36,21 +37,25 @@ func (flags *sessionFlags) bind(command *cobra.Command) {
 
 func (flags *sessionFlags) resolve(command *cobra.Command) (sessionStartMode, protocol.ThreadID, error) {
 	if command == nil {
-		return "", "", errors.New("session flags command is nil")
+		return "", protocol.ThreadID{}, errors.New("session flags command is nil")
 	}
 	resumeChanged := command.Flags().Changed(flagResume)
 	if flags.continueLatest && resumeChanged {
-		return "", "", errors.New("--continue and --resume cannot be used together")
+		return "", protocol.ThreadID{}, errors.New("--continue and --resume cannot be used together")
 	}
 	if flags.continueLatest {
-		return sessionStartContinue, "", nil
+		return sessionStartContinue, protocol.ThreadID{}, nil
 	}
 	if !resumeChanged {
-		return sessionStartDraft, "", nil
+		return sessionStartDraft, protocol.ThreadID{}, nil
 	}
 	value := strings.TrimSpace(flags.resume)
 	if value == resumeSelectorFlag || value == "" {
-		return sessionStartSelect, "", nil
+		return sessionStartSelect, protocol.ThreadID{}, nil
 	}
-	return sessionStartResume, protocol.ThreadID(value), nil
+	threadID, err := protocol.ParseThreadID(value)
+	if err != nil {
+		return "", protocol.ThreadID{}, fmt.Errorf("invalid --resume thread ID: %w", err)
+	}
+	return sessionStartResume, threadID, nil
 }

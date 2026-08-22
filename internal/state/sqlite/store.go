@@ -51,7 +51,7 @@ func (store *Store) UpsertThread(ctx context.Context, thread state.StoredThread)
         git_sha = excluded.git_sha,
         git_branch = excluded.git_branch,
         git_origin_url = excluded.git_origin_url`,
-		thread.ID, string(thread.Source.Kind), sourceParentThreadID(thread.Source), sourceDepth(thread.Source), sourceNickname(thread.Source), sourceRole(thread.Source),
+		thread.ID.String(), string(thread.Source.Kind), sourceParentThreadID(thread.Source).String(), sourceDepth(thread.Source), sourceNickname(thread.Source), sourceRole(thread.Source),
 		thread.RolloutPath, thread.CWD, thread.Title, thread.Preview,
 		thread.ModelProvider, thread.Model, thread.TokensUsed,
 		formatTime(thread.CreatedAt), formatTime(thread.UpdatedAt), thread.Archived,
@@ -67,7 +67,7 @@ func (store *Store) GetThread(ctx context.Context, id protocol.ThreadID) (state.
 	row := store.database.db.QueryRowContext(ctx, `SELECT id, source_kind, parent_thread_id, agent_depth, agent_nickname, agent_role,
         rollout_path, cwd, title, preview,
         model_provider, model, tokens_used, created_at, updated_at, archived,
-        git_sha, git_branch, git_origin_url FROM threads WHERE id = ?`, id)
+	        git_sha, git_branch, git_origin_url FROM threads WHERE id = ?`, id.String())
 	thread, err := scanThread(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return state.StoredThread{}, state.ErrNotFound
@@ -115,12 +115,39 @@ func (store *Store) ListThreads(ctx context.Context, query state.ListQuery) ([]s
 	return threads, nil
 }
 
+func (store *Store) ListChildren(ctx context.Context, parentID protocol.ThreadID) ([]state.StoredThread, error) {
+	if parentID.IsZero() {
+		return nil, errors.New("parent thread ID is empty")
+	}
+	rows, err := store.database.db.QueryContext(ctx, `SELECT id, source_kind, parent_thread_id, agent_depth, agent_nickname, agent_role,
+		rollout_path, cwd, title, preview,
+		model_provider, model, tokens_used, created_at, updated_at, archived,
+		git_sha, git_branch, git_origin_url
+		FROM threads WHERE source_kind = 'subagent' AND parent_thread_id = ? ORDER BY created_at, id`, parentID.String())
+	if err != nil {
+		return nil, fmt.Errorf("list child thread metadata: %w", err)
+	}
+	defer rows.Close()
+	children := make([]state.StoredThread, 0)
+	for rows.Next() {
+		child, scanErr := scanThread(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		children = append(children, child)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate child thread metadata: %w", err)
+	}
+	return children, nil
+}
+
 func (store *Store) RenameThread(ctx context.Context, id protocol.ThreadID, title string, updatedAt time.Time) error {
 	title = strings.TrimSpace(title)
 	if title == "" || updatedAt.IsZero() {
 		return errors.New("thread rename is incomplete")
 	}
-	result, err := store.database.db.ExecContext(ctx, `UPDATE threads SET title = ?, updated_at = ? WHERE id = ?`, title, formatTime(updatedAt), id)
+	result, err := store.database.db.ExecContext(ctx, `UPDATE threads SET title = ?, updated_at = ? WHERE id = ?`, title, formatTime(updatedAt), id.String())
 	if err != nil {
 		return fmt.Errorf("rename thread metadata: %w", err)
 	}
@@ -131,7 +158,7 @@ func (store *Store) ArchiveThread(ctx context.Context, id protocol.ThreadID, upd
 	if updatedAt.IsZero() {
 		return errors.New("thread archive time is zero")
 	}
-	result, err := store.database.db.ExecContext(ctx, `UPDATE threads SET archived = 1, updated_at = ? WHERE id = ?`, formatTime(updatedAt), id)
+	result, err := store.database.db.ExecContext(ctx, `UPDATE threads SET archived = 1, updated_at = ? WHERE id = ?`, formatTime(updatedAt), id.String())
 	if err != nil {
 		return fmt.Errorf("archive thread metadata: %w", err)
 	}
@@ -156,7 +183,7 @@ func (store *Store) ReplaceThreads(ctx context.Context, threads []state.StoredTh
             rollout_path, cwd, title, preview, model_provider, model, tokens_used,
             created_at, updated_at, archived, git_sha, git_branch, git_origin_url
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			thread.ID, string(thread.Source.Kind), sourceParentThreadID(thread.Source), sourceDepth(thread.Source), sourceNickname(thread.Source), sourceRole(thread.Source),
+			thread.ID.String(), string(thread.Source.Kind), sourceParentThreadID(thread.Source).String(), sourceDepth(thread.Source), sourceNickname(thread.Source), sourceRole(thread.Source),
 			thread.RolloutPath, thread.CWD, thread.Title, thread.Preview,
 			thread.ModelProvider, thread.Model, thread.TokensUsed,
 			formatTime(thread.CreatedAt), formatTime(thread.UpdatedAt), thread.Archived,
@@ -184,23 +211,33 @@ type rowScanner interface {
 
 func scanThread(scanner rowScanner) (state.StoredThread, error) {
 	var thread state.StoredThread
+	var threadID string
 	var sourceKind string
-	var parentThreadID protocol.ThreadID
+	var parentThreadIDValue string
 	var agentDepth int
 	var agentNickname string
 	var agentRole string
 	var createdAt string
 	var updatedAt string
 	if err := scanner.Scan(
-		&thread.ID, &sourceKind, &parentThreadID, &agentDepth, &agentNickname, &agentRole,
+		&threadID, &sourceKind, &parentThreadIDValue, &agentDepth, &agentNickname, &agentRole,
 		&thread.RolloutPath, &thread.CWD, &thread.Title, &thread.Preview,
 		&thread.ModelProvider, &thread.Model, &thread.TokensUsed, &createdAt, &updatedAt,
 		&thread.Archived, &thread.GitSHA, &thread.GitBranch, &thread.GitOriginURL,
 	); err != nil {
 		return state.StoredThread{}, err
 	}
+	parsedThreadID, err := protocol.ParseThreadID(threadID)
+	if err != nil {
+		return state.StoredThread{}, fmt.Errorf("parse stored thread ID: %w", err)
+	}
+	thread.ID = parsedThreadID
 	thread.Source = protocol.SessionSource{Kind: protocol.SessionSourceKind(sourceKind)}
 	if thread.Source.Kind == protocol.SessionSourceSubAgent {
+		parentThreadID, parseErr := protocol.ParseThreadID(parentThreadIDValue)
+		if parseErr != nil {
+			return state.StoredThread{}, fmt.Errorf("parse stored parent thread ID: %w", parseErr)
+		}
 		thread.Source.SubAgent = &protocol.SubAgentSource{
 			ParentThreadID: parentThreadID,
 			Depth:          agentDepth,
@@ -208,7 +245,7 @@ func scanThread(scanner rowScanner) (state.StoredThread, error) {
 			AgentRole:      agentRole,
 		}
 	}
-	var err error
+	err = nil
 	if thread.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
 		return state.StoredThread{}, fmt.Errorf("parse thread created_at: %w", err)
 	}
@@ -220,7 +257,7 @@ func scanThread(scanner rowScanner) (state.StoredThread, error) {
 
 func sourceParentThreadID(source protocol.SessionSource) protocol.ThreadID {
 	if source.SubAgent == nil {
-		return ""
+		return protocol.ThreadID{}
 	}
 	return source.SubAgent.ParentThreadID
 }

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
 func TestJSONLSinkWritesQueryableRedactedRecords(t *testing.T) {
@@ -151,7 +153,7 @@ func TestMemorySinkSnapshotsAndPropagatesErrors(t *testing.T) {
 
 func validAuditRecord() Record {
 	return Record{
-		Timestamp: time.Unix(1_700_000_000, 0).UTC(), SessionID: "session-1", RequestID: "request-1",
+		Timestamp: time.Unix(1_700_000_000, 0).UTC(), SessionID: testutil.SessionID(1), ThreadID: testutil.ThreadID(1), TurnID: "turn-1", RequestID: "request-1",
 		ToolName: "write_file", ArgumentsSHA256: strings.Repeat("a", 64), Risk: "high",
 		Outcome: OutcomeAllow, Scope: "once", Source: "user", Reason: "approved", DurationMS: 42,
 	}

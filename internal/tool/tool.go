@@ -62,6 +62,9 @@ func (toolContext ToolUseContext) Validate() error {
 	if toolContext.Invocation.Call.Name == "" {
 		return errors.New("tool use context has no tool name")
 	}
+	if toolContext.Invocation.SessionID.IsZero() || toolContext.Invocation.ThreadID.IsZero() || toolContext.Invocation.TurnID == "" {
+		return errors.New("tool use context identity is incomplete")
+	}
 	return nil
 }
 

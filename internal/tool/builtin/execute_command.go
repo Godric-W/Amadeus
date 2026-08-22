@@ -179,7 +179,7 @@ func (executeCommand *ExecuteCommand) Prepare(toolContext tool.ToolUseContext, i
 		return tool.PreparedToolUse{}, errors.New("execute_command approval key is invalid")
 	}
 	auditDecision := func(_ context.Context, decision policy.ApprovalDecision) error {
-		return executeCommand.writeCommandAudit(toolContext.Context, invocation.Call, assessment.Risk, decision.Outcome, decision.Source, decision.Reason)
+		return executeCommand.writeCommandAudit(toolContext.Context, invocation, assessment.Risk, decision.Outcome, decision.Source, decision.Reason)
 	}
 	if assessment.Disposition == policy.CommandDeny {
 		target := tool.ContextTarget{Path: cwd, Kind: tool.ContextTargetCommandCWD, SideEffect: tool.SideEffectExecute}
@@ -239,7 +239,7 @@ func (executeCommand *ExecuteCommand) prepareExecRequest(ctx context.Context, in
 		maxTokens = executeCommand.options.MaxOutputTokens
 	}
 	maxBytes := min(int(executeCommand.options.MaxOutputBytes), maxTokens*4)
-	owner := strings.TrimSpace(invocation.TurnID)
+	owner := strings.TrimSpace(string(invocation.TurnID))
 	if owner == "" {
 		owner = "standalone"
 	}
@@ -254,13 +254,14 @@ func (executeCommand *ExecuteCommand) prepareExecRequest(ctx context.Context, in
 	}, nil
 }
 
-func (executeCommand *ExecuteCommand) writeCommandAudit(ctx context.Context, call tool.ToolCall, risk policy.CommandRisk, outcome policy.ApprovalOutcome, source policy.ApprovalSource, reason string) error {
+func (executeCommand *ExecuteCommand) writeCommandAudit(ctx context.Context, invocation tool.Invocation, risk policy.CommandRisk, outcome policy.ApprovalOutcome, source policy.ApprovalSource, reason string) error {
 	if executeCommand.options.Audit == nil {
 		return nil
 	}
-	digest := sha256.Sum256(call.Payload)
+	digest := sha256.Sum256(invocation.Call.Payload)
 	record := audit.Record{
-		Timestamp: time.Now(), RequestID: call.ID, ToolName: call.Name,
+		Timestamp: time.Now(), SessionID: invocation.SessionID, ThreadID: invocation.ThreadID, TurnID: invocation.TurnID,
+		RequestID: invocation.Call.ID, ToolName: invocation.Call.Name,
 		ArgumentsSHA256: hex.EncodeToString(digest[:]), Risk: string(risk),
 		Outcome: audit.Outcome(outcome), Source: string(source), Reason: strings.TrimSpace(reason),
 	}

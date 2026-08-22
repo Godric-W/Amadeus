@@ -18,30 +18,47 @@ type RolloutItem interface {
 }
 
 type SessionMetaItem struct {
-	ThreadID      protocol.ThreadID      `json:"thread_id"`
-	Source        protocol.SessionSource `json:"source"`
-	CWD           string                 `json:"cwd"`
-	Title         string                 `json:"title"`
-	ModelProvider string                 `json:"model_provider,omitempty"`
-	Model         string                 `json:"model,omitempty"`
-	GitSHA        string                 `json:"git_sha,omitempty"`
-	GitBranch     string                 `json:"git_branch,omitempty"`
-	GitOriginURL  string                 `json:"git_origin_url,omitempty"`
-	Archived      bool                   `json:"archived,omitempty"`
-	CreatedAt     time.Time              `json:"created_at"`
+	SessionID      protocol.SessionID     `json:"session_id"`
+	ID             protocol.ThreadID      `json:"id"`
+	ParentThreadID *protocol.ThreadID     `json:"parent_thread_id,omitempty"`
+	Source         protocol.SessionSource `json:"source"`
+	CWD            string                 `json:"cwd"`
+	Title          string                 `json:"title"`
+	ModelProvider  string                 `json:"model_provider,omitempty"`
+	Model          string                 `json:"model,omitempty"`
+	GitSHA         string                 `json:"git_sha,omitempty"`
+	GitBranch      string                 `json:"git_branch,omitempty"`
+	GitOriginURL   string                 `json:"git_origin_url,omitempty"`
+	Archived       bool                   `json:"archived,omitempty"`
+	CreatedAt      time.Time              `json:"created_at"`
 }
 
 func (SessionMetaItem) isRolloutItem() {}
 
 func (item SessionMetaItem) Validate() error {
-	if err := validateID("thread", string(item.ThreadID)); err != nil {
-		return err
+	if item.SessionID.IsZero() || item.ID.IsZero() {
+		return errors.New("session meta identity is incomplete")
 	}
 	if strings.TrimSpace(item.CWD) == "" || strings.TrimSpace(item.Title) == "" || item.CreatedAt.IsZero() {
 		return errors.New("session meta item is incomplete")
 	}
 	if err := item.Source.Validate(); err != nil {
 		return fmt.Errorf("session meta source: %w", err)
+	}
+	if item.Source.IsSubAgent() {
+		if item.ParentThreadID == nil || item.ParentThreadID.IsZero() || *item.ParentThreadID != item.Source.SubAgent.ParentThreadID {
+			return errors.New("sub-agent session meta parent identity is inconsistent")
+		}
+		if item.ID == *item.ParentThreadID {
+			return errors.New("sub-agent session meta cannot be its own parent")
+		}
+	} else {
+		if item.ParentThreadID != nil {
+			return errors.New("root session meta has parent thread ID")
+		}
+		if item.SessionID != protocol.SessionIDFromThreadID(item.ID) {
+			return errors.New("root session meta session ID does not match thread ID")
+		}
 	}
 	return nil
 }
@@ -93,8 +110,8 @@ func (item ResponseItem) Validate() error { return validateResponseItem(item, tr
 
 func validateResponseItem(item ResponseItem, requireScope bool) error {
 	if requireScope {
-		if err := validateID("thread", string(item.ThreadID)); err != nil {
-			return err
+		if item.ThreadID.IsZero() {
+			return errors.New("response item thread ID is empty")
 		}
 		if err := validateID("turn", string(item.TurnID)); err != nil {
 			return err
@@ -145,8 +162,8 @@ type CompactedItem struct {
 func (CompactedItem) isRolloutItem() {}
 
 func (item CompactedItem) Validate() error {
-	if err := validateID("thread", string(item.ThreadID)); err != nil {
-		return err
+	if item.ThreadID.IsZero() {
+		return errors.New("compacted item thread ID is empty")
 	}
 	if err := validateID("turn", string(item.TurnID)); err != nil {
 		return err
@@ -178,8 +195,8 @@ type TurnContextItem struct {
 func (TurnContextItem) isRolloutItem() {}
 
 func (item TurnContextItem) Validate() error {
-	if err := validateID("thread", string(item.ThreadID)); err != nil {
-		return err
+	if item.ThreadID.IsZero() {
+		return errors.New("turn context item thread ID is empty")
 	}
 	if err := validateID("turn", string(item.TurnID)); err != nil {
 		return err
@@ -219,8 +236,8 @@ func (item EventMsgItem) Validate() error {
 	if _, err := protocol.EncodeEventMsg(item.Msg); err != nil {
 		return err
 	}
-	if err := validateID("thread", string(protocol.ThreadIDOf(item.Msg))); err != nil {
-		return err
+	if protocol.ThreadIDOf(item.Msg).IsZero() {
+		return errors.New("event message item thread ID is empty")
 	}
 	return nil
 }
@@ -228,7 +245,7 @@ func (item EventMsgItem) Validate() error {
 func ScopeItem(item RolloutItem, threadID protocol.ThreadID, turnID protocol.TurnID) RolloutItem {
 	switch value := item.(type) {
 	case SessionMetaItem:
-		value.ThreadID = threadID
+		value.ID = threadID
 		return value
 	case ResponseItem:
 		value.ThreadID, value.TurnID = threadID, turnID
@@ -250,7 +267,7 @@ func ScopeItem(item RolloutItem, threadID protocol.ThreadID, turnID protocol.Tur
 func ThreadIDOf(item RolloutItem) protocol.ThreadID {
 	switch value := item.(type) {
 	case SessionMetaItem:
-		return value.ThreadID
+		return value.ID
 	case ResponseItem:
 		return value.ThreadID
 	case CompactedItem:
@@ -260,7 +277,7 @@ func ThreadIDOf(item RolloutItem) protocol.ThreadID {
 	case EventMsgItem:
 		return protocol.ThreadIDOf(value.Msg)
 	default:
-		return ""
+		return protocol.ThreadID{}
 	}
 }
 

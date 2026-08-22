@@ -13,6 +13,7 @@ import (
 	agentcontext "github.com/Godric-W/Amadeus/internal/context"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
 type servicesTestClient struct{ model llm.ModelInfo }
@@ -85,7 +86,7 @@ func TestSessionServicesAreConstructedOnceAndReusedAcrossTasks(t *testing.T) {
 		t.Fatal("image-capable Session did not expose view_image")
 	}
 	requestContext := turn.TurnContext{
-		SubmissionID: "submission-1", ThreadID: "thread-1", TurnID: "turn-1", Provider: configured.ModelProvider,
+		SubmissionID: "submission-1", SessionID: testutil.SessionID(1), ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Provider: configured.ModelProvider,
 		Model: configured.Model, CWD: root, Mode: turn.ModeKindDefault,
 	}
 	preparedTask, preparedContext, err := session.createTask(context.Background(), "inspect project", requestContext, TaskKindRegular, newTurnState())

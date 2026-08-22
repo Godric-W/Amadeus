@@ -22,6 +22,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/state"
 	statesqlite "github.com/Godric-W/Amadeus/internal/state/sqlite"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 	"github.com/Godric-W/Amadeus/internal/thread"
 	"github.com/Godric-W/Amadeus/internal/thread/local"
 )
@@ -41,6 +42,36 @@ type turnStartFailStore struct {
 type managerTestClient struct {
 	mode  string
 	calls *atomic.Int32
+}
+
+type identityCaptureClient struct {
+	mu       sync.Mutex
+	requests []llm.Request
+}
+
+func (*identityCaptureClient) Complete(context.Context, llm.Request) (llm.Response, error) {
+	return llm.Response{}, errors.New("unexpected Complete call")
+}
+
+func (client *identityCaptureClient) Stream(_ context.Context, request llm.Request) (llm.Stream, error) {
+	client.mu.Lock()
+	client.requests = append(client.requests, request)
+	client.mu.Unlock()
+	return &managerTestStream{chunks: []llm.StreamChunk{{ContentDelta: "done"}, {FinishReason: llm.FinishReasonStop}}}, nil
+}
+
+func (*identityCaptureClient) Model() llm.ModelInfo {
+	return llm.ModelInfo{Provider: "mock", Name: "model", ContextWindow: 100_000}
+}
+
+func (*identityCaptureClient) Capabilities() llm.Capabilities {
+	return llm.Capabilities{SupportsStreaming: true}
+}
+
+func (client *identityCaptureClient) snapshot() []llm.Request {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	return append([]llm.Request(nil), client.requests...)
 }
 
 func (*managerTestClient) Complete(context.Context, llm.Request) (llm.Response, error) {
@@ -336,6 +367,108 @@ func TestAgentControlSpawnsFullChildSessionAndPersistsNotification(t *testing.T)
 	}
 	if _, err := manager.ResumeThread(ctx, spawned.AgentID, StartInput{Configuration: testConfiguration(t)}); err == nil || !strings.Contains(err.Error(), "sub-agent threads cannot be resumed directly") {
 		t.Fatalf("direct child resume error = %v", err)
+	}
+}
+
+func TestRootResumeRestoresPersistedChildAndLazilyResumesRuntime(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	manager, store := newTestManager(t, ctx, "", nil)
+	defer manager.Close(context.Background())
+
+	root, err := manager.StartThread(ctx, StartInput{Configuration: testConfiguration(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Submit(ctx, protocol.UserInputOp{Content: "materialize root"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminal(t, root.Io(), false)
+	spawned, err := root.agentControl.Spawn(ctx, root.ID(), "inspect persisted child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.agentControl.Wait(ctx, []protocol.ThreadID{spawned.AgentID}, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	rootID, sessionID := root.ID(), root.SessionID()
+	if err := manager.ShutdownThread(ctx, rootID); err != nil {
+		t.Fatal(err)
+	}
+	if _, loaded := manager.GetThread(spawned.AgentID); loaded {
+		t.Fatal("child runtime remained loaded after root shutdown")
+	}
+
+	resumed, err := manager.ResumeThread(ctx, rootID, StartInput{Configuration: testConfiguration(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.SessionID() != sessionID || resumed.ID() != rootID {
+		t.Fatalf("resumed root identity = session %q thread %q", resumed.SessionID(), resumed.ID())
+	}
+	record, ok := resumed.agentControl.Record(spawned.AgentID)
+	if !ok || record.Metadata.ParentThreadID != rootID || record.Metadata.ThreadID != spawned.AgentID {
+		t.Fatalf("persisted child record = %#v, present=%v", record, ok)
+	}
+	if _, loaded := manager.GetThread(spawned.AgentID); loaded {
+		t.Fatal("persisted child was eagerly loaded during root resume")
+	}
+	if err := resumed.agentControl.SendInput(ctx, spawned.AgentID, "continue after resume", false); err != nil {
+		t.Fatal(err)
+	}
+	child, loaded := manager.GetThread(spawned.AgentID)
+	if !loaded || child.SessionID() != sessionID || child.ParentThreadID() == nil || *child.ParentThreadID() != rootID {
+		t.Fatalf("lazily resumed child = %#v, loaded=%v", child, loaded)
+	}
+	if _, err := resumed.agentControl.Wait(ctx, []protocol.ThreadID{spawned.AgentID}, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.LoadHistory(ctx, spawned.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := history.Lines[0].Item.(rollout.SessionMetaItem)
+	if meta.SessionID != sessionID || meta.ID != spawned.AgentID || meta.ParentThreadID == nil || *meta.ParentThreadID != rootID {
+		t.Fatalf("child session metadata = %#v", meta)
+	}
+}
+
+func TestRootAndChildProviderRequestsShareSessionIdentity(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := &identityCaptureClient{}
+	manager, _ := newTestManagerWithClient(t, ctx, client)
+	defer manager.Close(context.Background())
+	root, err := manager.StartThread(ctx, StartInput{Configuration: testConfiguration(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Submit(ctx, protocol.UserInputOp{Content: "root request"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminal(t, root.Io(), false)
+	spawned, err := root.agentControl.Spawn(ctx, root.ID(), "child request")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.agentControl.Wait(ctx, []protocol.ThreadID{spawned.AgentID}, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	requests := client.snapshot()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests = %d, want root and child", len(requests))
+	}
+	byThread := make(map[protocol.ThreadID]llm.RequestMetadata, len(requests))
+	for _, request := range requests {
+		byThread[request.Metadata.ThreadID] = request.Metadata
+	}
+	rootMetadata, rootOK := byThread[root.ID()]
+	childMetadata, childOK := byThread[spawned.AgentID]
+	if !rootOK || !childOK || rootMetadata.SessionID != root.SessionID() || childMetadata.SessionID != root.SessionID() {
+		t.Fatalf("provider identity metadata = root %#v child %#v", rootMetadata, childMetadata)
+	}
+	if rootMetadata.ParentThreadID != nil || childMetadata.ParentThreadID == nil || *childMetadata.ParentThreadID != root.ID() || rootMetadata.TurnID == "" || childMetadata.TurnID == "" {
+		t.Fatalf("provider parent/turn metadata = root %#v child %#v", rootMetadata, childMetadata)
 	}
 }
 
@@ -741,14 +874,15 @@ func TestResumeRecoversIncompleteToolCall(t *testing.T) {
 	ctx := context.Background()
 	manager, store := newTestManager(t, ctx, "completed", nil)
 	now := time.Now().UTC()
-	live, err := thread.NewDraftLiveThread("thread-recover", store)
+	threadID := testutil.ThreadID(77)
+	live, err := thread.NewDraftLiveThread(threadID, store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := live.Materialize(ctx, thread.CreateInput{CWD: testConfiguration(t).CWD, Title: "recover", CreatedAt: now}); err != nil {
+	if _, err := live.Materialize(ctx, thread.CreateInput{SessionID: protocol.SessionIDFromThreadID(threadID), CWD: testConfiguration(t).CWD, Title: "recover", CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	turnContext := testTurnContext(t, "thread-recover", "turn-old")
+	turnContext := testTurnContext(t, threadID, "turn-old")
 	contextItem := rollout.TurnContextItem{
 		ThreadID: turnContext.ThreadID, TurnID: turnContext.TurnID,
 		Provider: turnContext.Provider, Model: turnContext.Model, CWD: turnContext.CWD, Mode: string(turnContext.Mode),
@@ -762,12 +896,12 @@ func TestResumeRecoversIncompleteToolCall(t *testing.T) {
 	if err := live.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
-	resumed, err := manager.ResumeThread(ctx, "thread-recover", StartInput{Configuration: testConfiguration(t)})
+	resumed, err := manager.ResumeThread(ctx, threadID, StartInput{Configuration: testConfiguration(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resumed.Shutdown(context.Background())
-	history, err := store.LoadHistory(ctx, "thread-recover")
+	history, err := store.LoadHistory(ctx, threadID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -885,7 +1019,7 @@ func testTurnContext(t *testing.T, threadID protocol.ThreadID, turnID protocol.T
 	t.Helper()
 	configuration := testConfiguration(t)
 	return turn.TurnContext{
-		ThreadID: threadID, TurnID: turnID, Provider: configuration.Runtime.ModelProvider, Model: configuration.Runtime.Model,
+		SessionID: protocol.SessionIDFromThreadID(threadID), ThreadID: threadID, TurnID: turnID, Provider: configuration.Runtime.ModelProvider, Model: configuration.Runtime.Model,
 		CWD: configuration.CWD, Mode: turn.ModeKindDefault,
 	}
 }

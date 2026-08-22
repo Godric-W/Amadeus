@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/policy"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -34,6 +35,9 @@ func testApprovalCoordinator(ctx context.Context) *policy.ApprovalCoordinator {
 
 func executePreparedTool(t testing.TB, ctx context.Context, candidate tool.ToolDefinition, arguments json.RawMessage) (tool.ToolResult, error) {
 	t.Helper()
+	ctx = tool.WithInvocationMetadata(ctx, tool.InvocationMetadata{
+		SessionID: testutil.SessionID(1), ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Source: tool.ToolCallSourceModel,
+	})
 	coordinator := testApprovalCoordinator(ctx)
 	registry := tool.NewRegistry()
 	if err := registry.RegisterDefinition(candidate); err != nil {

@@ -11,23 +11,30 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 )
 
-func NewControl(rootID protocol.ThreadID, host AgentHost, options Options) (*Control, error) {
-	if strings.TrimSpace(string(rootID)) == "" || host == nil {
+func NewControl(sessionID protocol.SessionID, rootID protocol.ThreadID, host AgentHost, options Options) (*Control, error) {
+	if sessionID.IsZero() || rootID.IsZero() || host == nil {
 		return nil, errors.New("agent control is incomplete")
 	}
 	if err := options.Validate(); err != nil {
 		return nil, err
 	}
 	return &Control{
-		host: host, rootID: rootID, maxAgents: options.MaxAgents, maxDepth: options.MaxDepth,
+		host: host, sessionID: sessionID, rootID: rootID, maxAgents: options.MaxAgents, maxDepth: options.MaxDepth,
 		agents: make(map[protocol.ThreadID]*record), reservations: make(map[string]reservation),
 		nicknames: make(map[string]struct{}), changed: make(chan struct{}), done: make(chan struct{}),
 	}, nil
 }
 
-func (control *Control) RootID() protocol.ThreadID {
+func (control *Control) SessionID() protocol.SessionID {
 	if control == nil {
-		return ""
+		return protocol.SessionID{}
+	}
+	return control.sessionID
+}
+
+func (control *Control) RootThreadID() protocol.ThreadID {
+	if control == nil {
+		return protocol.ThreadID{}
 	}
 	return control.rootID
 }
@@ -64,7 +71,7 @@ func (control *Control) Spawn(ctx context.Context, parentID protocol.ThreadID, m
 	if err != nil {
 		return SpawnResult{}, err
 	}
-	if runtime == nil || strings.TrimSpace(string(runtime.ID())) == "" {
+	if runtime == nil || runtime.ID().IsZero() {
 		if runtime != nil {
 			_ = shutdownRuntime(ctx, runtime)
 		}
@@ -98,7 +105,7 @@ func (control *Control) SendInput(ctx context.Context, id protocol.ThreadID, mes
 	if message == "" {
 		return errors.New("send input message is empty")
 	}
-	runtime, status, err := control.runtimeForInput(id)
+	runtime, status, err := control.runtimeForInput(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -192,6 +199,19 @@ func (control *Control) Snapshot(id protocol.ThreadID) StatusSnapshot {
 	return control.snapshotLocked(id)
 }
 
+func (control *Control) Record(id protocol.ThreadID) (AgentRecord, bool) {
+	if control == nil {
+		return AgentRecord{}, false
+	}
+	control.mu.Lock()
+	defer control.mu.Unlock()
+	agent := control.agents[id]
+	if agent == nil {
+		return AgentRecord{}, false
+	}
+	return AgentRecord{Metadata: agent.metadata, Status: agent.status}, true
+}
+
 func (control *Control) SnapshotAll() []AgentRecord {
 	if control == nil {
 		return nil
@@ -203,7 +223,7 @@ func (control *Control) SnapshotAll() []AgentRecord {
 		values = append(values, AgentRecord{Metadata: agent.metadata, Status: agent.status})
 	}
 	sort.Slice(values, func(left, right int) bool {
-		return values[left].Metadata.ThreadID < values[right].Metadata.ThreadID
+		return values[left].Metadata.ThreadID.String() < values[right].Metadata.ThreadID.String()
 	})
 	return values
 }

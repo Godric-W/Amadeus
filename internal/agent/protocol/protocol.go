@@ -85,6 +85,9 @@ func (event Event) Validate() error {
 	if event.Msg == nil {
 		return errors.New("event message is nil")
 	}
+	if configured, ok := event.Msg.(SessionConfiguredEvent); ok {
+		return configured.Validate()
+	}
 	return nil
 }
 
@@ -106,11 +109,38 @@ func (configuration SessionConfiguration) Clone() SessionConfiguration {
 }
 
 type SessionConfiguredEvent struct {
-	ThreadID      ThreadID
-	Configuration SessionConfiguration
+	SessionID      SessionID
+	ThreadID       ThreadID
+	ParentThreadID *ThreadID
+	Configuration  SessionConfiguration
 }
 
 func (SessionConfiguredEvent) isEventMsg() {}
+
+func (event SessionConfiguredEvent) Validate() error {
+	if event.SessionID.IsZero() || event.ThreadID.IsZero() {
+		return errors.New("session configured identity is incomplete")
+	}
+	if err := event.Configuration.Source.Validate(); err != nil {
+		return err
+	}
+	if event.Configuration.Source.IsSubAgent() {
+		if event.ParentThreadID == nil || event.ParentThreadID.IsZero() || *event.ParentThreadID != event.Configuration.Source.SubAgent.ParentThreadID {
+			return errors.New("sub-agent configured parent identity is inconsistent")
+		}
+		if event.ThreadID == *event.ParentThreadID {
+			return errors.New("sub-agent configured thread cannot be its own parent")
+		}
+		return nil
+	}
+	if event.ParentThreadID != nil {
+		return errors.New("root configured event has parent thread ID")
+	}
+	if event.SessionID != SessionIDFromThreadID(event.ThreadID) {
+		return errors.New("root configured session ID does not match thread ID")
+	}
+	return nil
+}
 
 type ThreadSettingsAppliedEvent struct {
 	ThreadID      ThreadID

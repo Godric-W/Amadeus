@@ -73,7 +73,7 @@ func (writeStdin *WriteStdin) Prepare(toolContext tool.ToolUseContext, invocatio
 	if arguments.Enter {
 		chars += "\n"
 	}
-	owner := strings.TrimSpace(invocation.TurnID)
+	owner := strings.TrimSpace(string(invocation.TurnID))
 	if owner == "" {
 		owner = "standalone"
 	}

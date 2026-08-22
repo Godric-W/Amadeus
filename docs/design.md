@@ -4015,7 +4015,7 @@ SQLite 位于 `$AMADEUS_HOME/data/amadeus.db`，核心表保持最小：
 
 不建立 `projects`、`turns`、`messages`、`summaries` 或 SQLite `rollout_items` 表。Turn、消息、Tool 和 Compaction 历史只存在于 canonical Rollout。
 
-Amadeus 不提供旧 SQLite schema migration。启动时只接受当前 `schema_info.version`；版本不匹配时返回明确的 development-data-reset 诊断。SQLite 是可重建 index，可以删除后从当前格式 Rollout 重建；旧 schema、旧表和旧 Rollout 不自动读取、导出或升级。
+Amadeus 只定义并校验当前 `schema_info.version`，不提供 schema migration、历史格式分类或专门的数据重置提示。SQLite 是可重建 index，可以直接删除并从当前格式 Rollout 重建；非当前 schema、表结构或 Rollout 不进入生产读取路径。
 
 ### 22.3 Metadata Sync 与 Rebuild
 

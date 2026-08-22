@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
 type testHost struct {
@@ -25,12 +26,21 @@ func (host *testHost) SpawnChild(_ context.Context, _ *Control, _ SpawnChildRequ
 		return nil, errors.New("spawn failed")
 	}
 	host.next++
-	id := protocol.ThreadID("child-" + string(rune('0'+host.next)))
+	id := testutil.ThreadID(uint64(100 + host.next))
 	runtime := &testRuntime{id: id, events: make(chan protocol.Event, 8), terminated: make(chan struct{})}
 	if host.runtimes == nil {
 		host.runtimes = make(map[protocol.ThreadID]*testRuntime)
 	}
 	host.runtimes[id] = runtime
+	return runtime, nil
+}
+func (host *testHost) ResumeChild(_ context.Context, _ *Control, id protocol.ThreadID) (AgentRuntime, error) {
+	host.mu.Lock()
+	defer host.mu.Unlock()
+	runtime := host.runtimes[id]
+	if runtime == nil {
+		return nil, errors.New("resume failed")
+	}
 	return runtime, nil
 }
 func (host *testHost) NotifyParent(_ context.Context, _ protocol.ThreadID, notification Notification) error {
@@ -84,11 +94,11 @@ func (runtime *testRuntime) Terminated() <-chan struct{}   { return runtime.term
 
 func TestControlSpawnStatusWaitAndClose(t *testing.T) {
 	host := &testHost{}
-	control, err := NewControl("root", host, Options{MaxAgents: 2, MaxDepth: 1})
+	control, err := NewControl(testutil.SessionID(1), testutil.ThreadID(1), host, Options{MaxAgents: 2, MaxDepth: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	spawned, err := control.Spawn(context.Background(), "root", "inspect architecture")
+	spawned, err := control.Spawn(context.Background(), testutil.ThreadID(1), "inspect architecture")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,15 +127,15 @@ func TestControlSpawnStatusWaitAndClose(t *testing.T) {
 
 func TestControlRollsBackFailedReservation(t *testing.T) {
 	host := &testHost{fail: true}
-	control, err := NewControl("root", host, Options{MaxAgents: 1, MaxDepth: 1})
+	control, err := NewControl(testutil.SessionID(1), testutil.ThreadID(1), host, Options{MaxAgents: 1, MaxDepth: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Spawn(context.Background(), "root", "first"); err == nil {
+	if _, err := control.Spawn(context.Background(), testutil.ThreadID(1), "first"); err == nil {
 		t.Fatal("expected spawn failure")
 	}
 	host.fail = false
-	spawned, err := control.Spawn(context.Background(), "root", "second")
+	spawned, err := control.Spawn(context.Background(), testutil.ThreadID(1), "second")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +166,7 @@ func TestStatusFromEventMatchesCodexLifecycle(t *testing.T) {
 
 func TestControlEnforcesConcurrentSlotsAndUniqueNicknames(t *testing.T) {
 	host := &testHost{}
-	control, err := NewControl("root", host, Options{MaxAgents: 2, MaxDepth: 1})
+	control, err := NewControl(testutil.SessionID(1), testutil.ThreadID(1), host, Options{MaxAgents: 2, MaxDepth: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +180,7 @@ func TestControlEnforcesConcurrentSlotsAndUniqueNicknames(t *testing.T) {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			result, spawnErr := control.Spawn(context.Background(), "root", "inspect one independent area")
+			result, spawnErr := control.Spawn(context.Background(), testutil.ThreadID(1), "inspect one independent area")
 			outcomes <- outcome{result: result, err: spawnErr}
 		}()
 	}
@@ -198,11 +208,11 @@ func TestControlEnforcesConcurrentSlotsAndUniqueNicknames(t *testing.T) {
 
 func TestControlWaitTimeoutReturnsPendingSnapshot(t *testing.T) {
 	host := &testHost{}
-	control, err := NewControl("root", host, Options{MaxAgents: 1, MaxDepth: 1})
+	control, err := NewControl(testutil.SessionID(1), testutil.ThreadID(1), host, Options{MaxAgents: 1, MaxDepth: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	spawned, err := control.Spawn(context.Background(), "root", "inspect")
+	spawned, err := control.Spawn(context.Background(), testutil.ThreadID(1), "inspect")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,11 +232,11 @@ func TestControlWaitTimeoutReturnsPendingSnapshot(t *testing.T) {
 
 func TestControlDeduplicatesErroredTurnNotification(t *testing.T) {
 	host := &testHost{}
-	control, err := NewControl("root", host, Options{MaxAgents: 1, MaxDepth: 1})
+	control, err := NewControl(testutil.SessionID(1), testutil.ThreadID(1), host, Options{MaxAgents: 1, MaxDepth: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	spawned, err := control.Spawn(context.Background(), "root", "inspect")
+	spawned, err := control.Spawn(context.Background(), testutil.ThreadID(1), "inspect")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,11 +262,11 @@ func TestControlDeduplicatesErroredTurnNotification(t *testing.T) {
 
 func TestControlRetainsSlotUntilFailedShutdownIsRetried(t *testing.T) {
 	host := &testHost{}
-	control, err := NewControl("root", host, Options{MaxAgents: 1, MaxDepth: 1})
+	control, err := NewControl(testutil.SessionID(1), testutil.ThreadID(1), host, Options{MaxAgents: 1, MaxDepth: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	spawned, err := control.Spawn(context.Background(), "root", "inspect")
+	spawned, err := control.Spawn(context.Background(), testutil.ThreadID(1), "inspect")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +280,7 @@ func TestControlRetainsSlotUntilFailedShutdownIsRetried(t *testing.T) {
 	if snapshot := control.Snapshot(spawned.AgentID); snapshot.Status.Kind == protocol.AgentStatusNotFound {
 		t.Fatal("failed shutdown released the agent record")
 	}
-	if _, err := control.Spawn(context.Background(), "root", "second"); err == nil {
+	if _, err := control.Spawn(context.Background(), testutil.ThreadID(1), "second"); err == nil {
 		t.Fatal("failed shutdown released the agent slot")
 	}
 	runtime.mu.Lock()
@@ -279,7 +289,7 @@ func TestControlRetainsSlotUntilFailedShutdownIsRetried(t *testing.T) {
 	if _, err := control.CloseAgent(context.Background(), spawned.AgentID); err != nil {
 		t.Fatal(err)
 	}
-	respawned, err := control.Spawn(context.Background(), "root", "second")
+	respawned, err := control.Spawn(context.Background(), testutil.ThreadID(1), "second")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,12 +301,12 @@ func TestControlRetainsSlotUntilFailedShutdownIsRetried(t *testing.T) {
 
 func TestControlSendInputInterruptsRunningAgentBeforeNewTurn(t *testing.T) {
 	host := &testHost{}
-	control, err := NewControl("root", host, Options{MaxAgents: 1, MaxDepth: 1})
+	control, err := NewControl(testutil.SessionID(1), testutil.ThreadID(1), host, Options{MaxAgents: 1, MaxDepth: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer control.Close(context.Background())
-	spawned, err := control.Spawn(context.Background(), "root", "initial")
+	spawned, err := control.Spawn(context.Background(), testutil.ThreadID(1), "initial")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,12 +341,12 @@ func TestControlSendInputInterruptsRunningAgentBeforeNewTurn(t *testing.T) {
 
 func TestControlSendInputStartsNewTurnAfterCompletion(t *testing.T) {
 	host := &testHost{}
-	control, err := NewControl("root", host, Options{MaxAgents: 1, MaxDepth: 1})
+	control, err := NewControl(testutil.SessionID(1), testutil.ThreadID(1), host, Options{MaxAgents: 1, MaxDepth: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer control.Close(context.Background())
-	spawned, err := control.Spawn(context.Background(), "root", "initial")
+	spawned, err := control.Spawn(context.Background(), testutil.ThreadID(1), "initial")
 	if err != nil {
 		t.Fatal(err)
 	}

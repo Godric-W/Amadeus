@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
+
+	"github.com/Godric-W/Amadeus/internal/agent/protocol/identity"
 )
 
 type SideEffect string
@@ -83,15 +85,17 @@ const (
 )
 
 type Invocation struct {
-	SessionID string
-	TurnID    string
+	SessionID identity.SessionID
+	ThreadID  identity.ThreadID
+	TurnID    identity.TurnID
 	Call      ToolCall
 	Source    ToolCallSource
 }
 
 type InvocationMetadata struct {
-	SessionID string
-	TurnID    string
+	SessionID identity.SessionID
+	ThreadID  identity.ThreadID
+	TurnID    identity.TurnID
 	Source    ToolCallSource
 }
 

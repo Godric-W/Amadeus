@@ -234,7 +234,7 @@ func ItemEventThreadID(message EventMsg) ThreadID {
 	case ContextCompactedEvent:
 		return value.ThreadID
 	default:
-		return ""
+		return ThreadID{}
 	}
 }
 

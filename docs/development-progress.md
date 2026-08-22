@@ -2,8 +2,8 @@
 
 > 最近更新：2026-08-22
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：T. Thread + Session UUID Identity Alignment（TODO）
-> 下一任务：T-01 Protocol UUID Identity + Naming Contract
+> 当前阶段：T. Thread + Session UUID Identity Alignment（DONE）
+> 下一任务：下一阶段待规划
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
@@ -1442,67 +1442,67 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - `FullscreenApplication.Run` 现返回最终 `AppExitInfo`；CLI 在 Bubble Tea renderer 停止、终端恢复且 InteractiveApplication 关闭后输出非零 token usage、可用 resume hint、timeout warning 或 fatal diagnostics，并复用 `commandExitError.reported` 避免主入口重复报错。Color terminal 对齐 Codex，仅将 resume command 使用 ANSI cyan 高亮并以 foreground reset 收尾；No Color 保持纯文本。
 - `make check` 与 `go test -race ./... -count=1` 于 2026-08-22 全量通过，`git diff --check` 通过。
 
-## 22. T. Thread + Session UUID Identity Alignment — `TODO`
+## 22. T. Thread + Session UUID Identity Alignment — `DONE`
 
 ### 目标
 
 在不兼容旧本地开发数据的前提下，将 Thread identity 从 `thread-<unixnano>-<sequence>` 字符串体系替换为 Codex 风格 UUID value object：Amadeus-generated ThreadID 使用 UUIDv7，Resume、Rollout、SQLite、Event 和 Agent routing 使用同一个 canonical ThreadID；同时建立真实 SessionID，明确 Root/child 的 agent-tree ownership，并一次性贯通 Session、AgentControl、persisted child restore、Tool/Audit、Provider metadata、Application/TUI 与 Persistence。SQLite StoredThread 只保存 Thread metadata/parent relation，canonical SessionID 只来自 Rollout SessionMeta。
 
-### T-01：Protocol UUID Identity + Naming Contract — `TODO`
+### T-01：Protocol UUID Identity + Naming Contract — `DONE`
 
 - 在 Protocol/Identity domain 建立可比较的 `ThreadID` 与 `SessionID` UUID value object，提供 UUIDv7 constructor、parse、canonical string、zero-state 和 JSON/Text codec；将 `github.com/google/uuid` 提升为直接依赖。
 - Amadeus-generated ID 固定为 UUIDv7，parser 接受合法 UUID；删除 ThreadID 的 arbitrary safe-string contract、直接 string conversion 和 `thread-` prefix 语义。
 - 将实际承载 Resume target 的 `SessionID` 字段、参数和 helper 改为 `ThreadID`/`ResumeThreadID`，不以用户界面的 Session 文案污染内部 identity naming。
 
-### T-02：Thread Creation + Resume Lifecycle — `TODO`
+### T-02：Thread Creation + Resume Lifecycle — `DONE`
 
 - Root 与 child New Thread 统一从 Protocol/Identity 生成 UUIDv7；从 ThreadManager 和 Composition Root 删除 `NextID("thread")`、thread prefix factory 分支及对应注入点。
 - New Root 由 ThreadID 派生 SessionID；Resumed Root 从 Rollout SessionMeta 恢复 SessionID，并校验 requested ThreadID、StoredThread.ID、Rollout path identity、SessionMeta.ID 与 Root `SessionIDFromThreadID(ID)` 全部一致。
 - Session configured 成功后再注册 live Thread；生成失败、重复 ID、history mismatch 或 spawn 失败必须完整关闭 writer/runtime，不得留下半注册 Thread。
 
-### T-03：Session + AgentControl Dual Identity — `TODO`
+### T-03：Session + AgentControl Dual Identity — `DONE`
 
 - SessionSpawnArgs、Session、AmadeusThread 与 root-scoped AgentControl 同时持有 typed SessionID/ThreadID；Control 暴露 `SessionID()` 与 `RootThreadID()`，不保留误名 string mirror。
 - 所有 child 从 AgentControl 继承同一个 SessionID 并生成独立 ThreadID；child SessionID 不能从 child ThreadID 派生。
 - ThreadManager registry、AgentID、parent/child relation、send/wait/close routing 继续使用 ThreadID；共享 SessionID 只表达 session-level ownership，不能替代 Thread key。
 
-### T-04：Persisted SubAgent Restore + Internal Resume — `TODO`
+### T-04：Persisted SubAgent Restore + Internal Resume — `DONE`
 
 - Root Resume 后按 SQLite parent/source relation 查找 persisted descendants，读取每个 child Rollout SessionMeta，并校验 child ID、ParentThreadID 与 `SessionID == AgentControl.SessionID()`；不通过 SQLite SessionID 查询 tree。
 - AgentControl record 支持 persisted/unloaded child metadata；ThreadManager/AgentHost 提供内部 child resume，`send_input` 等操作按 child ThreadID 加载并恢复 runtime，AgentControl 不直接打开 Rollout 或构造 Session。
 - 公开 `/resume`、`--resume`、picker 和 sessions list 仍只选择 Root Thread；不增加公开 `resume_agent` Tool、child attach UI 或 arbitrary detached child recovery。
 
-### T-05：Protocol + Tool + Audit Identity Contract — `TODO`
+### T-05：Protocol + Tool + Audit Identity Contract — `DONE`
 
 - `SessionConfiguredEvent`、ThreadViewSnapshot 与 StatusSnapshot 同时携带 SessionID/ThreadID，SessionConfiguredEvent 另带可选 ParentThreadID；其他 Event、attachment matching 与 `ThreadIDOf` 继续按具体 ThreadID 路由。
 - Tool Invocation/InvocationMetadata 同时携带 typed SessionID、ThreadID、TurnID；`spawn_agent` 使用 Invocation.ThreadID 作为 parent，Multi-Agent target 参数在 Tool boundary 通过 ParseThreadID 解析。
 - Audit record 增加 SessionID、ThreadID 与 TurnID，所有 Tool 从 Invocation metadata 取得 identity；ApprovalRequestEvent 继续按 ThreadID + TurnID 路由，Root/child SessionPermissionContext 不因共享 SessionID 自动合并。
 - 保持 `execute_command`/`write_stdin` 模型 schema 中进程 `session_id` 的外部术语，但内部明确使用 process ID，禁止与 Agent SessionID 类型转换或复用。
 
-### T-06：Provider Request Identity Metadata — `TODO`
+### T-06：Provider Request Identity Metadata — `DONE`
 
 - Runtime TurnContext 持有 typed SessionID/ThreadID/TurnID，TurnContextItem 继续只持久化 ThreadID/TurnID；Resume 后从 canonical SessionMeta 重新注入 SessionID。
 - 普通 sampling 与 Compaction 使用同一 request metadata projector，向实际 Provider Adapter 贯通 `session_id`、`thread_id`、`turn_id` 和可选 `parent_thread_id`；Root/child 共享 SessionID 但 ThreadID 不同。
 - Adapter 不从 UI、CWD、Tool metadata 或当前 active Thread 猜测 identity，不增加未接线的空 metadata 扩展点。
 
-### T-07：Rollout + SQLite Persistence Reset — `TODO`
+### T-07：Rollout + SQLite Persistence Reset — `DONE`
 
 - 将 SessionMetaItem 收敛为 `session_id + id + optional parent_thread_id`，删除旧 `thread_id` metadata 字段；Event、TurnContextItem、ResponseItem 和 collaboration payload 继续按具体作用域使用 `thread_id`。
 - SQLite `threads.id` 保持 ThreadID 主键并保存 parent/source/agent metadata；StoredThread 不增加 SessionID。Rebuild 校验 SessionMeta identity contract，但不把 SessionID 复制进 SQLite。
 - Rollout 文件名、SessionMeta.ID、StoredThread.ID 与 Resume target 使用同一 canonical UUID；删除旧 SQLite、Rollout、fixture 和 decoder，不增加 migration、legacy reader 或双格式兼容。
 
-### T-08：CLI、Application + TUI Identity Boundary — `TODO`
+### T-08：CLI、Application + TUI Identity Boundary — `DONE`
 
 - `--resume`、`/resume`、session picker、exit resume hint 和 sessions command 在输入边界调用 `ParseThreadID`，输出统一调用 `ThreadID.String()`；非法 UUID 返回 typed/user-visible error。
 - 将 CLI invocation 中实际承载 resume target 的字段统一命名为 ResumeThreadID；SessionOption.ID、AppExitInfo.ThreadID 和 resume hint 始终使用 ThreadID。
 - TUI/Application attachment、迟到 Event、MCP inventory、Git branch lookup 和 overlay matching 继续使用 generation + ThreadID；不以 SessionID 替代 Thread routing，也不执行强制类型转换、prefix trimming 或维护 display-only ID。
 - 保持用户可见的 session/list/resume 产品术语；状态诊断可以持有 SessionID，但用户可恢复 ID 与 Codex 风格 status item 显示当前 ThreadID。
 
-### T-09：Legacy Cleanup、Guards + Acceptance — `TODO`
+### T-09：Legacy Cleanup、Guards + Acceptance — `DONE`
 
-- 将测试 fixture 中的 `thread-*` identity 替换为稳定合法 UUID，增加 UUIDv7 generation/parse/codec、Root/child SessionID、Root resume child restore、internal child resume、Provider/Audit metadata、SQLite rebuild 与 CLI/TUI invalid input 覆盖。
+- 将测试 fixture 全部替换为稳定合法 UUID，增加 UUIDv7 generation/parse/codec、Root/child SessionID、Root resume child restore、internal child resume、Provider/Audit metadata、SQLite rebuild 与 CLI/TUI invalid input 覆盖。
 - Architecture guards 禁止 `NextID("thread")`、`protocol.ThreadID(value)`、`strings.TrimPrefix(..., "thread-")`、旧 SessionMeta `thread_id`、SQLite/StoredThread SessionID、将共享 SessionID 用作 Thread registry key，以及从 Tool Invocation.SessionID 路由 SubAgent。
-- 删除旧 SQLite、Rollout、fixture 和本地开发数据；运行 identity/thread/session/multi-agent/tool/audit/provider/persistence/app/TUI/CLI targeted tests、`make check`、`go test -race ./... -count=1` 与 `git diff --check`，全部通过后才能将 T 标记为 DONE。
+- 删除非当前 SQLite、Rollout、fixture 和本地开发数据路径；运行 identity/thread/session/multi-agent/tool/audit/provider/persistence/app/TUI/CLI targeted tests、`make check`、`go test -race ./... -count=1` 与 `git diff --check`，全部通过后才能将 T 标记为 DONE。
 
 ### T 出口
 
@@ -1518,8 +1518,19 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - 连续创建多个 Root/child Thread 时 UUIDv7 唯一且可 canonical round-trip；Root SessionID 与 Root ThreadID 使用同一个 UUID value，child SessionID 继承 Root SessionID 且 child ThreadID 独立。
 - 通过 CLI、TUI picker 和 direct `/resume <uuid>` 恢复时均定位同一 StoredThread；非法 UUID、metadata mismatch 和不存在 Thread 返回明确错误且不改变 active attachment。
 - Root Resume 后 persisted child 以同一 SessionID 进入 Control metadata；对 unloaded child 执行 send_input 时按 child ThreadID 内部恢复，错误 SessionID/parent relation 被拒绝且不污染 registry。
-- 清空 SQLite 后可从当前 UUID Rollout 重建相同 ThreadID、parent relation 和 metadata index，并从每个 Rollout SessionMeta 恢复/校验 SessionID；旧 `thread-*` Rollout 或 schema 不被识别、迁移或静默接受。
+- 清空 SQLite 后可从当前 UUID Rollout 重建相同 ThreadID、parent relation 和 metadata index，并从每个 Rollout SessionMeta 恢复/校验 SessionID；生产代码只保留当前 schema 与 codec。
 - Root/child Provider request 与 Audit record 显示相同 SessionID、不同 ThreadID 和正确 TurnID；`spawn_agent` 不读取 Invocation.SessionID 作为 parent target。
+
+### T 完成记录
+
+- Protocol/Identity 已使用封装 `uuid.UUID` 的可比较 `ThreadID`/`SessionID` value object；新 Thread 统一生成 UUIDv7，CLI、Tool、JSON/Text、SQLite 和 filename boundary 使用显式 parse/format。
+- Root/child Runtime 已贯通 typed SessionID/ThreadID/ParentThreadID；ThreadManager 在 SessionConfigured 成功后注册 live Thread，Root Resume 校验 StoredThread、Rollout filename 和 SessionMeta identity。
+- AgentControl 保存 shared SessionID 与 RootThreadID，支持 persisted/unloaded child record；Root Resume 从 parent relation 恢复 child metadata，`send_input` 按 child ThreadID 触发完整 AmadeusThread/Session lazy resume。
+- SessionConfiguredEvent、ThreadViewSnapshot、StatusSnapshot、Tool Invocation、Audit Record、TurnContext 与 Provider RequestMetadata 已统一 identity contract；Responses 与 Chat Completions 都实际发送 session/thread/turn/parent metadata。
+- Rollout 升级为当前 v3 `session_id + id + parent_thread_id` SessionMeta，SQLite 升级为当前 v3 且只保存 Thread metadata/parent relation；SQLite rebuild 可从 Root+child Rollout 恢复 index。
+- CLI `ResumeThreadID`、`--resume`、TUI `/resume`、picker、status、exit hint 与 Multi-Agent Tool boundary 均使用 typed ThreadID；非法 UUID 在边界拒绝且不改变 attachment。
+- 新增 identity architecture guard，禁止通用 thread ID factory、直接 ThreadID conversion、旧 SessionMeta field 和 SQLite SessionID 回归；本地开发数据库已直接清理。
+- `make check`、`go test -race ./... -count=1` 与 `git diff --check` 于 2026-08-22 全量通过；Provider root/child identity、persisted child lazy resume、Audit identity 和 SQLite child rebuild targeted tests 通过。
 
 ## 23. 当前保留能力
 

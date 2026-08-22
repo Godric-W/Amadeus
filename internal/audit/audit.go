@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Godric-W/Amadeus/internal/agent/protocol/identity"
 )
 
 type Outcome string
@@ -18,22 +20,27 @@ const (
 )
 
 type Record struct {
-	Timestamp       time.Time `json:"timestamp"`
-	SessionID       string    `json:"session_id,omitempty"`
-	RequestID       string    `json:"request_id"`
-	ToolName        string    `json:"tool_name"`
-	ArgumentsSHA256 string    `json:"arguments_sha256,omitempty"`
-	Risk            string    `json:"risk,omitempty"`
-	Outcome         Outcome   `json:"outcome"`
-	Scope           string    `json:"scope,omitempty"`
-	Source          string    `json:"source"`
-	Reason          string    `json:"reason"`
-	DurationMS      int64     `json:"duration_ms"`
+	Timestamp       time.Time          `json:"timestamp"`
+	SessionID       identity.SessionID `json:"session_id"`
+	ThreadID        identity.ThreadID  `json:"thread_id"`
+	TurnID          identity.TurnID    `json:"turn_id"`
+	RequestID       string             `json:"request_id"`
+	ToolName        string             `json:"tool_name"`
+	ArgumentsSHA256 string             `json:"arguments_sha256,omitempty"`
+	Risk            string             `json:"risk,omitempty"`
+	Outcome         Outcome            `json:"outcome"`
+	Scope           string             `json:"scope,omitempty"`
+	Source          string             `json:"source"`
+	Reason          string             `json:"reason"`
+	DurationMS      int64              `json:"duration_ms"`
 }
 
 func (record Record) Validate() error {
 	if record.Timestamp.IsZero() {
 		return errors.New("audit timestamp is zero")
+	}
+	if record.SessionID.IsZero() || record.ThreadID.IsZero() || record.TurnID == "" {
+		return errors.New("audit runtime identity is incomplete")
 	}
 	if strings.TrimSpace(record.RequestID) == "" {
 		return errors.New("audit request ID is empty")

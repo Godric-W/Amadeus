@@ -12,6 +12,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/app/transcript"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
 type scriptedModelClient struct {
@@ -77,7 +78,7 @@ func TestModelClientSessionRetriesDroppedStreamAndReplacesAttemptDraft(t *testin
 		}},
 	}}
 	rootEvents := protocol.NewMemorySink()
-	sink, err := protocol.NewScopedSink(rootEvents, "submission-1", "memory-thread", "turn-1")
+	sink, err := protocol.NewScopedSink(rootEvents, "submission-1", testutil.ThreadID(1), "turn-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +100,7 @@ func TestModelClientSessionRetriesDroppedStreamAndReplacesAttemptDraft(t *testin
 	var assistantResetEvents int
 	var reasoningResetEvents int
 	var terminalErrors int
-	state := transcript.New("memory-thread")
+	state := transcript.New(testutil.ThreadID(1))
 	for _, event := range events {
 		if streamError, ok := event.Msg.(protocol.StreamErrorEvent); ok {
 			if streamError.WillRetry {
@@ -318,7 +319,7 @@ func newTestModelClientSession(t *testing.T, client llm.Client, maxRetries int, 
 
 func sampleRequest(events protocol.EventSink) SampleRequest {
 	return SampleRequest{
-		ID: "sample-1", Messages: []llm.ResponseItem{llm.UserMessage("hello")},
+		ID: "sample-1", Metadata: llm.RequestMetadata{SessionID: testutil.SessionID(1), ThreadID: testutil.ThreadID(1), TurnID: "turn-1"}, Messages: []llm.ResponseItem{llm.UserMessage("hello")},
 		BaseInstructions: llm.BaseInstructions{Text: "help"}, Events: events,
 	}
 }

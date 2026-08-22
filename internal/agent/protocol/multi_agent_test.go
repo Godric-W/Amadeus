@@ -3,6 +3,8 @@ package protocol
 import (
 	"testing"
 	"time"
+
+	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
 func TestSessionSourceValidation(t *testing.T) {
@@ -10,7 +12,7 @@ func TestSessionSourceValidation(t *testing.T) {
 	if err := root.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	subAgent := NewSubAgentSessionSource("parent", 1, "atlas", "explorer")
+	subAgent := NewSubAgentSessionSource(testutil.ThreadID(1), 1, "atlas", "explorer")
 	if err := subAgent.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -43,9 +45,9 @@ func TestAgentStatusValidation(t *testing.T) {
 func TestCollabAgentToolCallItemValidation(t *testing.T) {
 	now := time.Now().UTC()
 	item := CollabAgentToolCallItem{
-		ID: "call-1", Tool: CollabAgentWait, Status: CollabAgentToolCompleted, SenderThreadID: "root",
-		ReceiverAgents: []CollabAgentRef{{ThreadID: "child", AgentNickname: "atlas", AgentRole: "explorer"}},
-		AgentsStates:   map[ThreadID]CollabAgentState{"child": {Status: AgentStatus{Kind: AgentStatusCompleted, Message: "done"}}},
+		ID: "call-1", Tool: CollabAgentWait, Status: CollabAgentToolCompleted, SenderThreadID: testutil.ThreadID(1),
+		ReceiverAgents: []CollabAgentRef{{ThreadID: testutil.ThreadID(2), AgentNickname: "atlas", AgentRole: "explorer"}},
+		AgentsStates:   map[ThreadID]CollabAgentState{testutil.ThreadID(2): {Status: AgentStatus{Kind: AgentStatusCompleted, Message: "done"}}},
 		CreatedAt:      now, CompletedAt: &now,
 	}
 	if err := item.Validate(); err != nil {
@@ -61,7 +63,7 @@ func TestTurnItemRejectsInconsistentCollaborationPayload(t *testing.T) {
 		CreatedAt: now, CompletedAt: completed, ToolName: "wait_agent",
 		CollabAgent: &CollabAgentToolCallItem{
 			ID: "call-1", Tool: CollabAgentWait, Status: CollabAgentToolCompleted,
-			SenderThreadID: "root", CreatedAt: now, CompletedAt: &completed,
+			SenderThreadID: testutil.ThreadID(1), CreatedAt: now, CompletedAt: &completed,
 		},
 	}
 	if err := base.Validate(); err != nil {

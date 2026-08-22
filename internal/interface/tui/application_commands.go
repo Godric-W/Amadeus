@@ -56,9 +56,14 @@ func (model fullscreenModel) dispatchCommand(invocation SlashInvocation) (tea.Mo
 		return model, model.flushHistory()
 	case SlashResume:
 		if arguments != "" {
+			threadID, err := protocol.ParseThreadID(arguments)
+			if err != nil {
+				model.insertHistoryCell(NewErrorHistoryCell("Invalid session ID: " + err.Error()))
+				return model, model.flushHistory()
+			}
 			model.status = "resuming session"
 			return model, func() tea.Msg {
-				model.app.options.Application.Resume(model.ctx, applicationThreadID(arguments))
+				model.app.options.Application.Resume(model.ctx, threadID)
 				return nil
 			}
 		}
@@ -117,10 +122,6 @@ func (model fullscreenModel) dispatchCommand(invocation SlashInvocation) (tea.Mo
 		model.insertHistoryCell(NewErrorHistoryCell(fmt.Sprintf("Command /%s is unavailable", slashCommand)))
 		return model, model.flushHistory()
 	}
-}
-
-func applicationThreadID(value string) protocol.ThreadID {
-	return protocol.ThreadID(strings.TrimSpace(value))
 }
 
 func (model fullscreenModel) loadSessions() tea.Cmd {

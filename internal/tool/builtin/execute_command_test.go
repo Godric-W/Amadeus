@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/skill"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -64,6 +66,28 @@ func TestExecuteCommandUsesFixedProjectCWDAndCombinedOutput(t *testing.T) {
 	}
 	if !strings.HasPrefix(result.Text, "out\nerr\n") || !strings.Contains(result.Text, filepath.Join(rootPath, "sub")) || result.Metadata["exit_code"] != 0 {
 		t.Fatalf("unexpected command result: %#v", result)
+	}
+}
+
+func TestExecuteCommandAuditCarriesInvocationIdentity(t *testing.T) {
+	root, err := project.NewRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := audit.NewMemorySink()
+	executeCommand, err := NewExecuteCommand(root, ExecuteCommandOptions{DefaultTimeout: time.Second, MaxTimeout: time.Second, MaxOutputBytes: 1024, MaxOutputLines: 100, Audit: sink})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := tool.WithInvocationMetadata(context.Background(), tool.InvocationMetadata{
+		SessionID: testutil.SessionID(1), ThreadID: testutil.ThreadID(2), TurnID: "turn-audit", Source: tool.ToolCallSourceModel,
+	})
+	if _, err := executePreparedTool(t, ctx, executeCommand, json.RawMessage(`{"command":"printf ok"}`)); err != nil {
+		t.Fatal(err)
+	}
+	records := sink.Snapshot()
+	if len(records) != 1 || records[0].SessionID != testutil.SessionID(1) || records[0].ThreadID != testutil.ThreadID(2) || records[0].TurnID != "turn-audit" {
+		t.Fatalf("command audit identity = %#v", records)
 	}
 }
 

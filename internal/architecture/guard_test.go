@@ -1098,6 +1098,69 @@ func TestBasicMultiAgentArchitectureBoundaries(t *testing.T) {
 	}
 }
 
+func TestThreadSessionUUIDIdentityArchitectureBoundaries(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, relative := range []string{
+		"internal/agent/protocol/identity/thread.go",
+		"internal/agent/protocol/identity/session.go",
+		"internal/thread/manager/child_resume.go",
+		"internal/llm/request_metadata.go",
+	} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); err != nil {
+			t.Errorf("required identity boundary file is missing: %s: %v", relative, err)
+		}
+	}
+
+	identityFields := architectureStructFields(t, root, "internal/agent/protocol/identity/thread.go", "ThreadID")
+	if _, exists := identityFields["value"]; !exists || len(identityFields) != 1 {
+		t.Fatalf("ThreadID must be a single-field UUID value object: %#v", identityFields)
+	}
+	metaFields := architectureStructFields(t, root, "internal/rollout/items.go", "SessionMetaItem")
+	for _, required := range []string{"SessionID", "ID", "ParentThreadID", "Source"} {
+		if _, exists := metaFields[required]; !exists {
+			t.Errorf("SessionMetaItem is missing field %q", required)
+		}
+	}
+	if _, exists := metaFields["ThreadID"]; exists {
+		t.Error("SessionMetaItem retains legacy ThreadID field")
+	}
+	storedFields := architectureStructFields(t, root, "internal/state/state.go", "StoredThread")
+	if _, exists := storedFields["SessionID"]; exists {
+		t.Error("SQLite StoredThread must not duplicate SessionID")
+	}
+	invocationFields := architectureStructFields(t, root, "internal/tool/types.go", "Invocation")
+	for _, required := range []string{"SessionID", "ThreadID", "TurnID"} {
+		if _, exists := invocationFields[required]; !exists {
+			t.Errorf("Tool Invocation is missing field %q", required)
+		}
+	}
+
+	for _, relative := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") || strings.Contains(filepath.ToSlash(path), "/internal/testutil/") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			source := string(content)
+			for _, forbidden := range []string{`NextID("thread")`, "protocol.ThreadID(", "identity.ThreadID("} {
+				if strings.Contains(source, forbidden) {
+					t.Errorf("legacy identity construction %q remains in %s", forbidden, filepath.ToSlash(path[len(root)+1:]))
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan %s identity boundaries: %v", relative, err)
+		}
+	}
+}
+
 func architectureStructFields(t *testing.T, root, relative, typeName string) map[string]struct{} {
 	t.Helper()
 	path := filepath.Join(root, filepath.FromSlash(relative))

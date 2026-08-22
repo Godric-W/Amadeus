@@ -11,10 +11,11 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
 func sessionMessage(message protocol.EventMsg) protocol.Event {
-	return protocol.Event{ID: "submission-1", Msg: protocol.ScopeEventMsg(message, "thread-1", "turn-1")}
+	return protocol.Event{ID: "submission-1", Msg: protocol.ScopeEventMsg(message, testutil.ThreadID(1), "turn-1")}
 }
 
 func toolItem(id, name string, status protocol.ItemStatus, text string) protocol.TurnItem {

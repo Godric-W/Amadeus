@@ -18,14 +18,14 @@ type LiveThread struct {
 }
 
 func NewDraftLiveThread(id identity.ThreadID, store ThreadStore) (*LiveThread, error) {
-	if id == "" || store == nil {
+	if id.IsZero() || store == nil {
 		return nil, errors.New("draft live thread is incomplete")
 	}
 	return &LiveThread{id: id, store: store}, nil
 }
 
 func NewResumedLiveThread(ctx context.Context, id identity.ThreadID, store ThreadStore) (*LiveThread, InitialHistory, error) {
-	if id == "" || store == nil {
+	if id.IsZero() || store == nil {
 		return nil, InitialHistory{}, errors.New("resumed live thread is incomplete")
 	}
 	history, err := store.OpenWriter(ctx, id)
@@ -37,7 +37,7 @@ func NewResumedLiveThread(ctx context.Context, id identity.ThreadID, store Threa
 
 func (thread *LiveThread) ID() identity.ThreadID {
 	if thread == nil {
-		return ""
+		return identity.ThreadID{}
 	}
 	return thread.id
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/state"
 	statesqlite "github.com/Godric-W/Amadeus/internal/state/sqlite"
+	"github.com/Godric-W/Amadeus/internal/testutil"
 	"github.com/Godric-W/Amadeus/internal/thread"
 )
 
@@ -31,7 +32,7 @@ func TestStoreDurableHistoryAndRebuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := store.Materialize(ctx, thread.CreateInput{
-		ID: "thread-1", CWD: "/workspace", Title: "Thread", CreatedAt: now,
+		SessionID: testutil.SessionID(1), ID: testutil.ThreadID(1), CWD: "/workspace", Title: "Thread", CreatedAt: now,
 		GitSHA: "abc123", GitBranch: "main", GitOriginURL: "git@example.com:amadeus.git",
 	})
 	if err != nil {
@@ -45,14 +46,14 @@ func TestStoreDurableHistoryAndRebuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	usage := rollout.EventMsgItem{Msg: protocol.TokenCountEvent{Usage: llm.Usage{TotalTokens: 42}}}
-	result, err = store.AppendItems(ctx, "thread-1", "turn-1", response, usage)
+	result, err = store.AppendItems(ctx, testutil.ThreadID(1), "turn-1", response, usage)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.MetadataWarning != nil {
 		t.Fatal(result.MetadataWarning)
 	}
-	metadata, err := store.GetThread(ctx, "thread-1")
+	metadata, err := store.GetThread(ctx, testutil.ThreadID(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,28 +65,28 @@ func TestStoreDurableHistoryAndRebuild(t *testing.T) {
 	}
 	rename := rollout.EventMsgItem{Msg: protocol.ThreadNameUpdatedEvent{Name: "Recovered Index"}}
 	moreUsage := rollout.EventMsgItem{Msg: protocol.TokenCountEvent{Usage: llm.Usage{TotalTokens: 8}}}
-	result, err = store.AppendItems(ctx, "thread-1", "", rename)
+	result, err = store.AppendItems(ctx, testutil.ThreadID(1), "", rename)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err = store.AppendItems(ctx, "thread-1", "turn-2", moreUsage)
+	result, err = store.AppendItems(ctx, testutil.ThreadID(1), "turn-2", moreUsage)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.MetadataWarning != nil {
 		t.Fatal(result.MetadataWarning)
 	}
-	metadata, err = store.GetThread(ctx, "thread-1")
+	metadata, err = store.GetThread(ctx, testutil.ThreadID(1))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if metadata.Title != "Recovered Index" || metadata.Preview != "inspect files" || metadata.TokensUsed != 50 {
 		t.Fatalf("metadata after live backfill = %#v", metadata)
 	}
-	if err := store.CloseWriter(ctx, "thread-1"); err != nil {
+	if err := store.CloseWriter(ctx, testutil.ThreadID(1)); err != nil {
 		t.Fatal(err)
 	}
-	history, err := store.LoadHistory(ctx, "thread-1")
+	history, err := store.LoadHistory(ctx, testutil.ThreadID(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +103,7 @@ func TestStoreDurableHistoryAndRebuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) != 1 || listed[0].ID != "thread-1" || listed[0].GitSHA != "abc123" || listed[0].GitBranch != "main" || listed[0].GitOriginURL != "git@example.com:amadeus.git" {
+	if len(listed) != 1 || listed[0].ID != testutil.ThreadID(1) || listed[0].GitSHA != "abc123" || listed[0].GitBranch != "main" || listed[0].GitOriginURL != "git@example.com:amadeus.git" {
 		t.Fatalf("rebuilt = %#v", listed)
 	}
 	if err := store.Close(); err != nil {
@@ -126,11 +127,62 @@ func TestStoreRejectsSecondActiveWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.Materialize(ctx, thread.CreateInput{ID: "thread-1", CWD: "/workspace", Title: "Thread", CreatedAt: time.Now().UTC()}); err != nil {
+	if _, err := store.Materialize(ctx, thread.CreateInput{SessionID: testutil.SessionID(1), ID: testutil.ThreadID(1), CWD: "/workspace", Title: "Thread", CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.OpenWriter(ctx, "thread-1"); err == nil {
+	if _, err := store.OpenWriter(ctx, testutil.ThreadID(1)); err == nil {
 		t.Fatal("second active writer was accepted")
+	}
+}
+
+func TestRebuildIndexRestoresChildParentRelationWithoutSessionColumn(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	database, err := statesqlite.Open(ctx, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateStore, err := statesqlite.NewStore(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(home, stateStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	rootID, childID := testutil.ThreadID(10), testutil.ThreadID(11)
+	sessionID := protocol.SessionIDFromThreadID(rootID)
+	if _, err := store.Materialize(ctx, thread.CreateInput{SessionID: sessionID, ID: rootID, Source: protocol.RootSessionSource(), CWD: "/workspace", Title: "Root", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Materialize(ctx, thread.CreateInput{SessionID: sessionID, ID: childID, Source: protocol.NewSubAgentSessionSource(rootID, 1, "atlas", "explorer"), CWD: "/workspace", Title: "Child", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CloseWriter(ctx, rootID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CloseWriter(ctx, childID); err != nil {
+		t.Fatal(err)
+	}
+	if err := stateStore.ReplaceThreads(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RebuildIndex(ctx); err != nil {
+		t.Fatal(err)
+	}
+	children, err := store.ListChildren(ctx, rootID)
+	if err != nil || len(children) != 1 || children[0].ID != childID || children[0].Source.SubAgent.ParentThreadID != rootID {
+		t.Fatalf("rebuilt children = %#v, err=%v", children, err)
+	}
+	history, err := store.LoadHistory(ctx, childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := history.Lines[0].Item.(rollout.SessionMetaItem)
+	if meta.SessionID != sessionID || meta.ID != childID || meta.ParentThreadID == nil || *meta.ParentThreadID != rootID {
+		t.Fatalf("rebuilt child session metadata = %#v", meta)
 	}
 }
 
@@ -150,7 +202,7 @@ func TestBufferedAppendDoesNotAdvanceSQLiteBeforeDurableAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.Materialize(ctx, thread.CreateInput{ID: "thread-buffered", CWD: "/workspace", Title: "Thread", CreatedAt: time.Now().UTC()}); err != nil {
+	if _, err := store.Materialize(ctx, thread.CreateInput{SessionID: testutil.SessionID(2), ID: testutil.ThreadID(2), CWD: "/workspace", Title: "Thread", CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	response, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "buffered preview"})
@@ -158,10 +210,10 @@ func TestBufferedAppendDoesNotAdvanceSQLiteBeforeDurableAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	usage := rollout.EventMsgItem{Msg: protocol.TokenCountEvent{Usage: llm.Usage{TotalTokens: 17}}}
-	if _, err := store.AppendItemsBuffered(ctx, "thread-buffered", "turn-1", response, usage); err != nil {
+	if _, err := store.AppendItemsBuffered(ctx, testutil.ThreadID(2), "turn-1", response, usage); err != nil {
 		t.Fatal(err)
 	}
-	metadata, err := store.GetThread(ctx, "thread-buffered")
+	metadata, err := store.GetThread(ctx, testutil.ThreadID(2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,10 +221,10 @@ func TestBufferedAppendDoesNotAdvanceSQLiteBeforeDurableAppend(t *testing.T) {
 		t.Fatalf("buffered metadata advanced before flush: %#v", metadata)
 	}
 	terminal := rollout.EventMsgItem{Msg: protocol.TurnCompleteEvent{Status: protocol.TurnStatusCompleted, Outcome: protocol.TurnOutcomeCompleted, FinishedAt: time.Now().UTC()}}
-	if _, err := store.AppendItems(ctx, "thread-buffered", "turn-1", terminal); err != nil {
+	if _, err := store.AppendItems(ctx, testutil.ThreadID(2), "turn-1", terminal); err != nil {
 		t.Fatal(err)
 	}
-	metadata, err = store.GetThread(ctx, "thread-buffered")
+	metadata, err = store.GetThread(ctx, testutil.ThreadID(2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,19 +286,19 @@ func TestDurableAppendOrdersAppendFlushAndMetadataSync(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.Materialize(ctx, thread.CreateInput{ID: "thread-order", CWD: "/workspace", Title: "Thread", CreatedAt: time.Now().UTC()}); err != nil {
+	if _, err := store.Materialize(ctx, thread.CreateInput{SessionID: testutil.SessionID(3), ID: testutil.ThreadID(3), CWD: "/workspace", Title: "Thread", CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	response, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "durable preview"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	original := store.recorders["thread-order"]
+	original := store.recorders[testutil.ThreadID(3)]
 
 	calls := []string{}
-	store.recorders["thread-order"] = orderedRecorder{durableRecorder: original, calls: &calls, appendError: errors.New("append failed")}
+	store.recorders[testutil.ThreadID(3)] = orderedRecorder{durableRecorder: original, calls: &calls, appendError: errors.New("append failed")}
 	store.state = orderedStateDB{DB: stateStore, calls: &calls}
-	if _, err := store.AppendItems(ctx, "thread-order", "turn-1", response); err == nil {
+	if _, err := store.AppendItems(ctx, testutil.ThreadID(3), "turn-1", response); err == nil {
 		t.Fatal("append failure was ignored")
 	}
 	if len(calls) != 1 || calls[0] != "append" {
@@ -254,15 +306,15 @@ func TestDurableAppendOrdersAppendFlushAndMetadataSync(t *testing.T) {
 	}
 
 	calls = nil
-	store.recorders["thread-order"] = orderedRecorder{durableRecorder: original, calls: &calls, flushError: errors.New("flush failed")}
+	store.recorders[testutil.ThreadID(3)] = orderedRecorder{durableRecorder: original, calls: &calls, flushError: errors.New("flush failed")}
 	store.state = orderedStateDB{DB: stateStore, calls: &calls}
-	if _, err := store.AppendItems(ctx, "thread-order", "turn-1", response); err == nil {
+	if _, err := store.AppendItems(ctx, testutil.ThreadID(3), "turn-1", response); err == nil {
 		t.Fatal("flush failure was ignored")
 	}
 	if len(calls) != 2 || calls[0] != "append" || calls[1] != "flush" {
 		t.Fatalf("flush failure ordering = %v", calls)
 	}
-	metadata, err := stateStore.GetThread(ctx, "thread-order")
+	metadata, err := stateStore.GetThread(ctx, testutil.ThreadID(3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,10 +323,10 @@ func TestDurableAppendOrdersAppendFlushAndMetadataSync(t *testing.T) {
 	}
 
 	calls = nil
-	store.recorders["thread-order"] = orderedRecorder{durableRecorder: original, calls: &calls}
+	store.recorders[testutil.ThreadID(3)] = orderedRecorder{durableRecorder: original, calls: &calls}
 	store.state = orderedStateDB{DB: stateStore, calls: &calls, upsertError: errors.New("upsert failed")}
 	terminal := rollout.EventMsgItem{Msg: protocol.TurnCompleteEvent{Status: protocol.TurnStatusCompleted, Outcome: protocol.TurnOutcomeCompleted, FinishedAt: time.Now().UTC()}}
-	result, err := store.AppendItems(ctx, "thread-order", "turn-1", terminal)
+	result, err := store.AppendItems(ctx, testutil.ThreadID(3), "turn-1", terminal)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +336,7 @@ func TestDurableAppendOrdersAppendFlushAndMetadataSync(t *testing.T) {
 	if len(calls) != 3 || calls[0] != "append" || calls[1] != "flush" || calls[2] != "upsert" {
 		t.Fatalf("durable ordering = %v", calls)
 	}
-	metadata, err = stateStore.GetThread(ctx, "thread-order")
+	metadata, err = stateStore.GetThread(ctx, testutil.ThreadID(3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,10 +346,10 @@ func TestDurableAppendOrdersAppendFlushAndMetadataSync(t *testing.T) {
 
 	store.state = stateStore
 	usage := rollout.EventMsgItem{Msg: protocol.TokenCountEvent{Usage: llm.Usage{TotalTokens: 3}}}
-	if _, err := store.AppendItems(ctx, "thread-order", "turn-2", usage); err != nil {
+	if _, err := store.AppendItems(ctx, testutil.ThreadID(3), "turn-2", usage); err != nil {
 		t.Fatal(err)
 	}
-	metadata, err = stateStore.GetThread(ctx, "thread-order")
+	metadata, err = stateStore.GetThread(ctx, testutil.ThreadID(3))
 	if err != nil {
 		t.Fatal(err)
 	}

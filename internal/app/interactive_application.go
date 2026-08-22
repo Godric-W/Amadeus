@@ -162,7 +162,7 @@ func (application *InteractiveApplication) LoadSessions(ctx context.Context) {
 func (application *InteractiveApplication) Resume(ctx context.Context, id protocol.ThreadID) {
 	application.operationMu.Lock()
 	defer application.operationMu.Unlock()
-	prepared, err := application.workspace.PrepareResume(ctx, protocol.ThreadID(id), application.configuration)
+	prepared, err := application.workspace.PrepareResume(ctx, id, application.configuration)
 	if err != nil {
 		application.emit(ThreadAttachFailed{Error: err})
 		return
@@ -279,7 +279,7 @@ func (application *InteractiveApplication) Status() StatusSnapshot {
 	application.mu.RUnlock()
 	configuration := active.Configuration()
 	result := StatusSnapshot{
-		ThreadID: active.ID(), Title: title, CurrentDir: configuration.CWD,
+		SessionID: active.SessionID(), ThreadID: active.ID(), Title: title, CurrentDir: configuration.CWD,
 		Provider: configuration.Provider, Model: configuration.Model,
 		ReasoningEffort: llm.CloneReasoningEffort(configuration.ReasoningEffort),
 		Mode:            turn.ModeKind(configuration.Mode), Phase: phase,
@@ -403,7 +403,7 @@ func (application *InteractiveApplication) snapshot(ctx context.Context, active 
 		return ThreadViewSnapshot{}, metadataErr
 	}
 	return ThreadViewSnapshot{
-		Generation: generation, ThreadID: active.ID(), Title: title, Configuration: configuration,
+		Generation: generation, SessionID: active.SessionID(), ThreadID: active.ID(), Title: title, Configuration: configuration,
 		Items: projection.Items, Usage: projection.Usage, ContextWindow: active.ContextWindow(),
 	}, nil
 }
@@ -448,7 +448,7 @@ func (application *InteractiveApplication) currentSnapshot(active *threadmanager
 	application.mu.RLock()
 	defer application.mu.RUnlock()
 	return ThreadViewSnapshot{
-		Generation: generation, ThreadID: active.ID(), Title: application.title, Configuration: active.Configuration(),
+		Generation: generation, SessionID: active.SessionID(), ThreadID: active.ID(), Title: application.title, Configuration: active.Configuration(),
 		Usage: application.usage.Usage, ContextWindow: active.ContextWindow(),
 	}
 }
@@ -509,7 +509,7 @@ func (application *InteractiveApplication) pumpAttachment(ctx context.Context, a
 func (application *InteractiveApplication) observeSessionEvent(generation uint64, event protocol.Event) {
 	application.mu.Lock()
 	defer application.mu.Unlock()
-	if application.generation != generation || application.active == nil || protocol.ThreadID(application.active.ID()) != protocol.ThreadIDOf(event.Msg) {
+	if application.generation != generation || application.active == nil || application.active.ID() != protocol.ThreadIDOf(event.Msg) {
 		return
 	}
 	switch message := event.Msg.(type) {
