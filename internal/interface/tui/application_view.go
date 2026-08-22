@@ -191,7 +191,7 @@ func (model fullscreenModel) inputBox() string {
 	if model.selection != nil {
 		return model.renderSelectionOverlay(width)
 	}
-	return fullscreenInputFillStyle.Width(width).Render(strings.TrimRight(model.input.View(), "\n"))
+	return fullscreenInputFillStyle.Width(width).Render(renderTextareaWindow(model.input))
 }
 
 func (model fullscreenModel) composerView() string {
@@ -222,7 +222,13 @@ func (model fullscreenModel) slashPopupView() string {
 			Selected: start+index == model.slashPopup.selected,
 		})
 	}
-	return model.renderListVisual(listVisual{Items: items, HideSelectionMarker: true}, maxInt(40, model.width))
+	rendered := model.renderListVisual(listVisual{Items: items, HideSelectionMarker: true}, maxInt(40, model.width))
+	missingRows := model.slashPopup.rows - len(visible)
+	if missingRows <= 0 {
+		return rendered
+	}
+	padding := strings.Repeat(" \n", missingRows)
+	return rendered + "\n" + strings.TrimSuffix(padding, "\n")
 }
 
 func (model fullscreenModel) workingLine() string {
@@ -287,7 +293,7 @@ func minInt64(left, right int64) int64 {
 
 func (model *fullscreenModel) updateInputLayout() {
 	width := maxInt(40, model.width)
-	model.input.SetWidth(width - 2)
+	model.input.SetWidth(width)
 	rows, _, _ := textareaVisualMetrics(model.input)
 	rows = minInt(fullscreenMaxInputRows, maxInt(1, rows))
 	model.input.SetHeight(rows)
@@ -310,11 +316,24 @@ func textareaVisualMetrics(input textarea.Model) (rows, cursorRow, cursorColumn 
 		rows += height
 	}
 	cursorRow = rowsBefore + info.RowOffset
-	visibleRows := minInt(fullscreenMaxInputRows, maxInt(1, rows))
-	cursorRow -= maxInt(0, rows-visibleRows)
-	cursorRow = minInt(maxInt(0, cursorRow), visibleRows-1)
 	cursorColumn = lipgloss.Width(fullscreenInputPrompt) + info.CharOffset
 	return rows, cursorRow, cursorColumn
+}
+
+func renderTextareaWindow(input textarea.Model) string {
+	rows, cursorRow, _ := textareaVisualMetrics(input)
+	rows = maxInt(1, rows)
+	visibleRows := minInt(fullscreenMaxInputRows, rows)
+	renderInput := input
+	renderInput.MaxHeight = 0
+	renderInput.SetHeight(rows)
+	lines := strings.Split(strings.TrimRight(renderInput.View(), "\n"), "\n")
+	if len(lines) <= visibleRows {
+		return strings.Join(lines, "\n")
+	}
+	maximumStart := len(lines) - visibleRows
+	start := minInt(maxInt(0, cursorRow-visibleRows+1), maximumStart)
+	return strings.Join(lines[start:start+visibleRows], "\n")
 }
 
 func (model fullscreenModel) transcriptContent() string {

@@ -184,7 +184,7 @@ func (model *fullscreenModel) openSessions(sessions []application.SessionOption)
 		}
 		items = append(items, selectionItem{Name: session.ID.String(), Description: description})
 	}
-	model.selection = &selectionOverlay{Title: "Resume Session", Subtitle: "Select a saved chat", Items: items, Selected: selected, Search: true, Hint: "Type to search · Esc cancel"}
+	model.selection = &selectionOverlay{Title: "Resume Session", Subtitle: "Select a saved chat", Items: items, Selected: selected, Search: true}
 	model.selectionKind = "resume"
 	model.input.Blur()
 }

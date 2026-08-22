@@ -25,9 +25,11 @@
 
 - Composer prompt 使用 `›`，输入可用时为默认前景 + bold，真正禁用输入时为 dim；Placeholder 使用 dim，输入正文使用默认前景。Run 执行期间仍允许编辑与排队，因此 prompt 保持可用态。
 - Slash Popup、Resume、Approval、Skills 等列表共用同一 Selection Renderer。Modal picker 的选中行保留 cursor，Slash Command Popup 对齐 Codex CommandPopup，不显示 `›` cursor glyph；两者的选中名称与说明仍统一使用 selection，未选中名称使用默认前景，说明使用 dim，禁用项整体 dim。
+- Selection overlay 的 footer hint 是调用方显式可选内容，公共 renderer 不生成默认按键说明；所有非空 subtitle 后统一空一行。`/skills` 顶层菜单和 `/resume` picker 不显示 footer hint，Rename 与 Skills 管理等界面可保留各自显式 Hint。
 - Slash Command 列表不整体染成青色，也不使用黄色 selected row；搜索命中字符可额外 bold，但不能破坏 selected row 的统一样式。
 - Footer/Statusline 对齐 Codex StatusLineAccent 的 theme-first 规则：TrueColor/ANSI256 根据终端明暗背景选择 Catppuccin Mocha/Latte，并从对应语义 token 解析 model/type、path/string、branch/function、usage/number、mode/keyword 与 thread/heading 色，再应用 Codex 85% saturation softening；ANSI16 使用 Codex cyan/green/magenta fallback，No Color 整行 dim。分隔符使用 dim；context 达到警告/失败阈值后覆盖为 yellow/red。Plan mode 不混入左侧状态段，而是在预留的独立右列使用 mode accent 右对齐；宽度允许时显示 `Plan mode (shift+tab to cycle)`，与左侧 statusline 不能共存时收缩为 `Plan mode`，Default mode 不显示模式标签。左侧内容必须在右列起点前完成裁剪，不得与 context 重叠。
 - Fullscreen inline View 使用真实内容高度，不通过顶部补空行模拟 Codex/Ratatui 的全屏 surface。Footer 是活动 frame 的最后一行，Plan mode 在该行独立右对齐；Bubble Tea renderer 独占永久输出和 frame redraw，Amadeus 不在 output writer 外层追加 cursor up/down 定位协议。
+- Composer 的 `› ` 只显示在第一条视觉行，软换行与显式换行保留等宽空白 gutter。最多显示五条视觉行，但输入内容不截断；超过五行后窗口始终包含 cursor 所在行，并随 Home/End/方向键滚动。当前 Bubble Tea renderer 只提供 textarea 软件光标，基础版不承诺输入法候选窗口的硬件光标锚点。
 - Shift+Tab 的 settings acknowledgement 刷新右侧 collaboration mode indicator，并插入 `• Mode changed to <Mode>.` Info HistoryCell。History row 只包含该消息，重复切换不得把 Composer、placeholder、Slash Popup 或 Footer 固化到 terminal scrollback。
 - Slash command popup 使用 command name 的 exact/prefix 匹配；`/e` 只显示 `/exit`。Popup 激活时替换普通 Footer 区域，不与 statusline 或 mode indicator 同屏，filter 变化时 selection 重置到首个候选。
 - `/exit` 与空 Composer 的退出快捷键进入唯一 shutdown-first lifecycle。等待期间活动 frame 只显示一份 `Shutting down…`，不写入 History；shutdown 完成或 bounded timeout 后先渲染空 active frame，再退出 Bubble Tea。终端 scrollback 不得残留 Composer placeholder、Popup 或 Footer；token usage 与 resume hint 只在终端恢复后由 CLI 输出。Color terminal 只将 resume command 染为 ANSI cyan，周围说明文字保持默认前景；No Color 不输出 ANSI。

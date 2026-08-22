@@ -3149,7 +3149,7 @@ Replay Mode 不播放 Working、Shimmer 或流式动画，但必须产生与实�
 - Working shimmer 使用终端主题感知的 foreground/dim，而不是固定彩虹色。
 - Tool 工作与最终 Assistant 回复之间显示不带耗时的 dim rule；完成后在最终回复下方显示 `─ Worked for 7m 18s ─────`。
 - User、Working、Assistant、Separator 和 Composer 的空行由结构化布局决定。
-- Composer 按终端显示宽度软换行，并由 TUI 框架自身管理活动 frame 与输入光标；不得在 Bubble Tea 输出 writer 外层增加自定义 cursor reposition 协议，因为永久 history 输出与 frame redraw 必须共享框架原生清屏/重绘语义。
+- Composer 按终端显示宽度软换行；`› ` 只属于第一条视觉行，后续软换行与显式换行使用等宽空白 gutter。五行上限是可见 viewport 高度而不是输入长度限制；超过上限后，展示投影截取包含当前 cursor 的五条视觉行，Home/End/方向移动必须同步滚动可见窗口。输入使用 Bubble Tea textarea 的软件光标；当前 Bubble Tea renderer 不暴露 model hardware-cursor position，基础版不通过 output writer 或手写 cursor reposition 强行实现 IME 候选窗口锚定。
 - Footer 左侧显示 Model、CurrentDir、GitBranch、ThreadTitle 与 Context 等固定会话元数据；Plan collaboration indicator 使用 magenta 独立右对齐，空闲时附带 `shift+tab to cycle`，Default mode 不显示模式标签。
 - Tool Start/Delta/Complete 原位更新，不重复打印多个树枝。
 - Ran/Explored/Search 等标签使用 TerminalPalette 的强调色。
@@ -3236,6 +3236,7 @@ type footerProps struct {
 - `renderFooter(footerProps)` 是纯布局/渲染函数，不查询 Application、不访问文件系统、不启动 branch lookup、不修改 model state。`View()` 只组合已有 view state，不承担 SessionConfiguration 投影。
 - Footer 使用 Codex 风格左右独立列：先为右侧 collaboration indicator 和固定 padding 保留空间，再在剩余宽度内裁剪或省略左侧 statusline segment，禁止通过字符串追加让 context 与 mode 竞争同一列。完整 `Plan mode (shift+tab to cycle)` 无法与左侧内容共存时收缩为 `Plan mode`；左列按 ThreadTitle、ContextWindow、ContextUsed、ModelWithReasoning、CurrentDir、GitBranch 的顺序逐步省略，使 GitBranch 成为最后删除的 workspace identity，并继续保证 indicator 右对齐。Default mode 不渲染模式标签。
 - Slash/File/Skill 等 Composer popup 激活时占用 Codex 的 popup/footer 区域并替换普通 Footer；不得在 popup 下方继续渲染 statusline 或 mode indicator。Popup 关闭后 Footer 才恢复。Slash Command Popup 的 selection 只通过 command name/description style 表达，不显示 Modal picker 使用的 `›` cursor glyph。
+- Selection overlay 对齐 Codex `SelectionViewParams`：footer hint 默认为空，不由公共 renderer 合成按键说明；确有必要时由调用方显式提供。非空 subtitle 与列表/搜索输入之间统一保留一行，不允许按命令增加视觉特例开关。`/skills` 顶层菜单与 `/resume` picker 不显示 footer hint。
 - Collaboration indicator 的“右对齐”只表示 Footer 当前布局行内的独立右列，不要求 Amadeus 复制 Codex/Ratatui 的全屏 surface 或把 Bubble Tea inline frame 人工扩展到 terminal height。`View()` 返回活动 frame 的真实内容高度，不能通过顶部补空行、额外 output writer 或 cursor up/down 转义序列模拟另一个 terminal layout engine。永久 transcript row 由 `tea.Println` 提交，Composer、Popup 与 Footer 只存在于随后重绘的活动 frame。
 
 Session 配置部分使用单一应用路径：

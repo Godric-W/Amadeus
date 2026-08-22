@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
@@ -70,6 +71,48 @@ func TestSlashPopupShowsResumeForTypedPrefixDuringTask(t *testing.T) {
 	}
 	if rendered := xansi.Strip(model.View()); !strings.Contains(rendered, "/resume") {
 		t.Fatalf("/resu popup omitted /resume: %q", rendered)
+	}
+}
+
+func TestSlashPopupShowsResumeForBatchedRuneInput(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/resu")})
+	model = updated.(fullscreenModel)
+	selected, ok := model.slashPopup.selectedItem()
+	if model.input.Value() != "/resu" || !ok || selected != SlashResume {
+		t.Fatalf("input=%q popup=%#v selected=%q ok=%v", model.input.Value(), model.slashPopup, selected, ok)
+	}
+	if rendered := xansi.Strip(model.View()); !strings.Contains(rendered, "/resume") {
+		t.Fatalf("batched /resu popup omitted /resume: %q", rendered)
+	}
+}
+
+func TestSlashPopupKeepsStableRowsWhilePrefixNarrows(t *testing.T) {
+	for _, test := range []struct {
+		prefix string
+		next   rune
+		want   string
+	}{
+		{prefix: "/re", next: 's', want: "/resume"},
+		{prefix: "/s", next: 'k', want: "/skills"},
+	} {
+		t.Run(test.prefix+string(test.next), func(t *testing.T) {
+			_, model := newTestFullscreen(t, nil)
+			for _, value := range test.prefix {
+				updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{value}})
+				model = updated.(fullscreenModel)
+			}
+			before := lipgloss.Height(model.composerView())
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{test.next}})
+			model = updated.(fullscreenModel)
+			after := lipgloss.Height(model.composerView())
+			if before != after {
+				t.Fatalf("composer height changed while popup narrowed: before=%d after=%d", before, after)
+			}
+			if rendered := xansi.Strip(model.composerView()); !strings.Contains(rendered, test.want) {
+				t.Fatalf("narrowed popup omitted %q: %q", test.want, rendered)
+			}
+		})
 	}
 }
 

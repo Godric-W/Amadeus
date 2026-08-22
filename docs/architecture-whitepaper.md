@@ -1142,6 +1142,7 @@ flowchart LR
 - Resume 只使用 canonical completed items，不恢复过去 spinner。
 - UI 使用 `ToolDisplayResult`、`TurnItem.CollabAgent` 等 typed fields，不解析 ToolResult 文本反推状态。
 - Approval、UserInput request 和 Diff 是 overlay/application state，不写入普通聊天气泡。
+- Composer 使用首行 prompt 与 continuation gutter；编辑状态由 Bubble Tea textarea 管理，展示层按全局视觉 cursor 行投影最多五行的可见窗口。
 
 ### 20.2 主要展示模型
 

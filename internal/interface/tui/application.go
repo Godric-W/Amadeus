@@ -294,7 +294,12 @@ func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscr
 	palette := detectTerminalPalette(app.options.NoColor)
 	input := textarea.New()
 	input.Placeholder = fullscreenInputPlaceholder
-	input.Prompt = fullscreenInputPrompt
+	input.SetPromptFunc(lipgloss.Width(fullscreenInputPrompt), func(line int) string {
+		if line == 0 {
+			return fullscreenInputPrompt
+		}
+		return ""
+	})
 	input.ShowLineNumbers = false
 	input.EndOfBufferCharacter = ' '
 	input.CharLimit = fullscreenInputCharLimit

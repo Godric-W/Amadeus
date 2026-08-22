@@ -40,6 +40,7 @@ func (model fullscreenModel) renderListVisual(visual listVisual, width int) stri
 	}
 	if subtitle := strings.TrimSpace(visual.Subtitle); subtitle != "" {
 		lines = append(lines, model.palette.dim().Render(truncateFullscreen(subtitle, width)))
+		lines = append(lines, "")
 	}
 	for _, detail := range visual.Details {
 		if detail = strings.TrimSpace(detail); detail != "" {

@@ -7,12 +7,14 @@ type slashCommandPopup struct {
 	selected  int
 	dismissed string
 	filter    string
+	rows      int
 }
 
 func (popup *slashCommandPopup) sync(input string, running bool) {
 	if popup.dismissed == input {
 		popup.items = nil
 		popup.selected = 0
+		popup.rows = 0
 		return
 	}
 	filter := slashCommandFilter(input)
@@ -21,6 +23,11 @@ func (popup *slashCommandPopup) sync(input string, running bool) {
 		popup.filter = filter
 	}
 	popup.items = FilterSlashCommands(input, running)
+	if len(popup.items) == 0 {
+		popup.rows = 0
+	} else if visible := minInt(len(popup.items), slashPopupMaxVisible); visible > popup.rows {
+		popup.rows = visible
+	}
 	if popup.selected >= len(popup.items) {
 		popup.selected = 0
 	}
@@ -60,6 +67,7 @@ func (popup *slashCommandPopup) dismiss(input string) {
 	popup.dismissed = input
 	popup.items = nil
 	popup.selected = 0
+	popup.rows = 0
 }
 
 func (popup *slashCommandPopup) resetDismissal(input string) {

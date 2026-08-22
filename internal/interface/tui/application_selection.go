@@ -172,11 +172,7 @@ func (model fullscreenModel) renderSelectionOverlay(width int) string {
 	if overlay == nil {
 		return ""
 	}
-	hint := overlay.Hint
-	if hint == "" {
-		hint = "↑/↓ select · Enter confirm · Esc cancel"
-	}
-	visual := listVisual{Title: overlay.Title, Subtitle: overlay.Subtitle, Hint: hint}
+	visual := listVisual{Title: overlay.Title, Subtitle: overlay.Subtitle, Hint: overlay.Hint}
 	if overlay.Input || overlay.Search {
 		visual.InputLabel = "› "
 		if overlay.Search {

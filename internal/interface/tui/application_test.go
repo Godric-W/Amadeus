@@ -194,6 +194,59 @@ func TestFullscreenTextareaSoftWrapsChineseInput(t *testing.T) {
 	}
 }
 
+func TestFullscreenTextareaShowsPromptOnlyOnFirstVisualLine(t *testing.T) {
+	_, model := newTestFullscreen(t, func(options *FullscreenOptions) { options.Width = 40 })
+	model.input.SetValue(strings.Repeat("中文", 10))
+	model.updateInputLayout()
+	lines := strings.Split(xansi.Strip(model.inputBox()), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("test input did not wrap: %q", strings.Join(lines, "\n"))
+	}
+	if count := strings.Count(strings.Join(lines, "\n"), "›"); count != 1 {
+		t.Fatalf("wrapped composer prompt count = %d: %q", count, strings.Join(lines, "\n"))
+	}
+	if !strings.HasPrefix(lines[0], fullscreenInputPrompt) {
+		t.Fatalf("first visual line omitted prompt: %q", lines[0])
+	}
+	for index, line := range lines[1:] {
+		if strings.Contains(line, "›") || !strings.HasPrefix(line, strings.Repeat(" ", lipgloss.Width(fullscreenInputPrompt))) {
+			t.Fatalf("continuation line %d has wrong gutter: %q", index+1, line)
+		}
+	}
+}
+
+func TestFullscreenTextareaUsesFullTerminalWidthForWrapping(t *testing.T) {
+	_, model := newTestFullscreen(t, func(options *FullscreenOptions) { options.Width = 40 })
+	model.input.SetValue(strings.Repeat("x", 37))
+	model.updateInputLayout()
+	if model.input.Height() != 1 {
+		t.Fatalf("37 content columns wrapped before prompt and cursor reached 40 columns: height=%d", model.input.Height())
+	}
+	model.input.SetValue(strings.Repeat("x", 38))
+	model.updateInputLayout()
+	if model.input.Height() != 2 {
+		t.Fatalf("38 content columns did not wrap after prompt and cursor exceeded 40 columns: height=%d", model.input.Height())
+	}
+}
+
+func TestFullscreenTextareaKeepsTailVisibleAfterMaxRows(t *testing.T) {
+	_, model := newTestFullscreen(t, func(options *FullscreenOptions) { options.Width = 40 })
+	prefix := "HEAD" + strings.Repeat("x", 38*6)
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(prefix + "TAIL")})
+	model = updated.(fullscreenModel)
+	if model.input.Height() != fullscreenMaxInputRows {
+		t.Fatalf("input height = %d, want max %d", model.input.Height(), fullscreenMaxInputRows)
+	}
+	if rendered := xansi.Strip(model.inputBox()); !strings.Contains(rendered, "TAIL") {
+		t.Fatalf("max-height textarea hid cursor tail: %q", rendered)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyHome})
+	model = updated.(fullscreenModel)
+	if rendered := xansi.Strip(model.inputBox()); !strings.Contains(rendered, "HEAD") || strings.Contains(rendered, "TAIL") {
+		t.Fatalf("max-height textarea did not follow cursor to head: %q", rendered)
+	}
+}
+
 func TestFullscreenViewUsesIntrinsicFrameHeight(t *testing.T) {
 	_, model := newTestFullscreen(t, func(options *FullscreenOptions) {
 		options.Width = 40
