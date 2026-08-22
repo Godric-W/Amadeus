@@ -325,7 +325,7 @@ flowchart TD
 | `InteractiveOptions` | 构造 InteractiveApplication 所需的 Workspace、Session Configuration 和 UI 限制。 |
 | `InteractiveApplication` | 交互生命周期、active Thread attachment、event pump、pending interaction 和 shutdown owner。 |
 | `ThreadWorkspace` | ThreadManager 上层的当前 Thread 选择与事务化切换边界。 |
-| `ThreadViewSnapshot` | attach 时提供给 UI 的完整可渲染快照：generation、Thread、Mode、Items、Usage、Model。 |
+| `ThreadViewSnapshot` | attach 时提供给 UI 的完整可渲染快照：generation、Thread、完整 SessionConfiguration、Items、Usage 与 ContextWindow。 |
 | `SessionOption` | `/resume` 列表中的稳定候选项。 |
 | `SkillOption` | `/skills` 展示和启停操作所需 read model。 |
 | `MCPServerStatus` | 单个 MCP Server 的启用、认证、Tool、Resource 和错误摘要。 |
@@ -339,7 +339,8 @@ flowchart TD
 | `SessionsLoaded` | Resume picker 异步加载结果。 |
 | `SkillsLoaded` / `SkillEnabledSet` | Skill 浏览和启停结果。 |
 | `MCPInventoryLoaded` | MCP inventory 异步查询结果。 |
-| `ShutdownStarted` / `ShutdownFinished` | 交互应用关闭生命周期。 |
+| `fullscreenExitState` | Fullscreen TUI 的 shutdown-first、bounded timeout、空 active-frame drain 与最终 quit 状态机；不进入 Application Event 或 History。 |
+| `AppExitInfo` | renderer 停止且终端恢复后返回 CLI 的 token usage、Thread identity、resume hint 与退出原因。 |
 | `HistoryCell` | TUI 中一个可重放、可渲染的历史单元接口。 |
 | `ActiveHistoryCell` | 尚未完成的流式或工具活动投影。 |
 | `AgentMessageCell` | 最终/流式 Assistant Markdown 投影。 |
@@ -475,7 +476,7 @@ flowchart LR
 | 模型 | 职责 |
 |---|---|
 | `SessionConfiguredEvent` | Session 启动后公布冻结配置摘要。 |
-| `ThreadSettingsAppliedEvent` | Mode 切换完成事实。 |
+| `ThreadSettingsAppliedEvent` | Thread settings 已应用完成，并携带实际生效的完整 SessionConfiguration。 |
 | `TurnStartedEvent` | Turn 生命周期开始。 |
 | `TurnCompleteEvent` | completed/blocked/failed 的 terminal fact。 |
 | `TurnAbortedEvent` | 用户中断或取消导致的 terminal fact。 |

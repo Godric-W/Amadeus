@@ -6,6 +6,7 @@ type slashCommandPopup struct {
 	items     []SlashCommand
 	selected  int
 	dismissed string
+	filter    string
 }
 
 func (popup *slashCommandPopup) sync(input string, running bool) {
@@ -13,6 +14,11 @@ func (popup *slashCommandPopup) sync(input string, running bool) {
 		popup.items = nil
 		popup.selected = 0
 		return
+	}
+	filter := slashCommandFilter(input)
+	if filter != popup.filter {
+		popup.selected = 0
+		popup.filter = filter
 	}
 	popup.items = FilterSlashCommands(input, running)
 	if popup.selected >= len(popup.items) {

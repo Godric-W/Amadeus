@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
@@ -53,8 +53,8 @@ func TestComposerPromptAndStatusUseSemanticHierarchy(t *testing.T) {
 	}
 
 	normal := statusContextStyle(model.palette, 20).Render("context")
-	if !strings.Contains(normal, "\x1b[38;2;18;192;18m") {
-		t.Fatalf("normal context status is not green: %q", normal)
+	if !strings.Contains(normal, "\x1b[38;2;242;181;144m") {
+		t.Fatalf("normal context status does not use the Codex usage theme color: %q", normal)
 	}
 	if strings.Contains(normal, "\x1b[2") {
 		t.Fatalf("normal context status is unexpectedly dim: %q", normal)
@@ -85,35 +85,120 @@ func TestANSI16StatusBarUsesCodexAccentFamilies(t *testing.T) {
 
 	_, model := newTestFullscreen(t, nil)
 	model.palette = terminalPalette{Level: colorLevelANSI16, Dark: true}
-	model.model = "gpt-top"
-	model.startup.Project = "/workspace/amadeus"
-	model.startup.Branch = "main"
-	model.startup.ContextWindow = 128_000
-	model.contextUsage = 32_000
-	model.collaboration = turn.ModeKindPlan
-	rendered := model.statusBar()
+	model.session.Configuration.Model = "gpt-top"
+	model.session.Configuration.CWD = "/workspace/amadeus"
+	model.session.Configuration.Mode = protocol.ModeKindPlan
+	model.session.ContextWindow = 128_000
+	model.session.ContextUsed = 32_000
+	model.workspace = statusLineWorkspaceState{Generation: model.session.Generation, CurrentDir: "/workspace/amadeus", Branch: "main"}
+	model.refreshStatusLine()
+	rendered := model.footerView()
 	for _, sequence := range []string{"\x1b[36m", "\x1b[32m", "\x1b[35m"} {
 		if !strings.Contains(rendered, sequence) {
 			t.Fatalf("status bar omitted Codex color family %q: %q", sequence, rendered)
 		}
 	}
 	plain := xansi.Strip(rendered)
-	for _, expected := range []string{"gpt-top", "/workspace/amadeus", "main", "Plan", "Context 25% used", "128K window"} {
+	for _, expected := range []string{"gpt-top", "amadeus", "main", "Plan mode", "Context 25% used", "128K window"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("status bar omitted %q: %q", expected, plain)
+		}
+	}
+	if !strings.HasSuffix(plain, "Plan mode (shift+tab to cycle)  ") || lipgloss.Width(plain) != model.width {
+		t.Fatalf("Plan mode is not right-aligned with Codex padding: %q", plain)
+	}
+}
+
+func TestNarrowStatusLineRetainsGitBranchWithPlanIndicator(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	model.width = 40
+	model.session.Configuration.Model = "gpt-top"
+	model.session.Configuration.CWD = "/workspace/team/amadeus"
+	model.session.Configuration.Mode = protocol.ModeKindPlan
+	model.session.Title = "long session title"
+	model.session.ContextWindow = 128_000
+	model.session.ContextUsed = 32_000
+	model.workspace = statusLineWorkspaceState{Generation: model.session.Generation, CurrentDir: "/workspace/team/amadeus", Branch: "feature/status-line"}
+	model.refreshStatusLine()
+
+	plain := xansi.Strip(model.footerView())
+	if !strings.Contains(plain, "feature/status-line") {
+		t.Fatalf("narrow status line lost git branch: %q", plain)
+	}
+	if !strings.HasSuffix(plain, "Plan mode  ") || lipgloss.Width(plain) != model.width {
+		t.Fatalf("narrow status line did not retain right-aligned mode: %q", plain)
+	}
+	if lipgloss.Width(plain) > model.width {
+		t.Fatalf("narrow status bar width = %d, want <= %d: %q", lipgloss.Width(plain), model.width, plain)
+	}
+}
+
+func TestFooterReservesIndependentRightModeColumn(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	model.session.Configuration.Model = "gpt-top"
+	model.session.Configuration.CWD = "/workspace/team/amadeus-with-a-long-directory-name"
+	model.session.Configuration.Mode = protocol.ModeKindPlan
+	model.session.Title = "a long thread title that competes for footer width"
+	model.session.ContextWindow = 128_000
+	model.session.ContextUsed = 96_000
+	model.workspace = statusLineWorkspaceState{
+		Generation: model.session.Generation,
+		CurrentDir: model.session.Configuration.CWD,
+		Branch:     "feature/long-footer-layout",
+	}
+	model.refreshStatusLine()
+
+	for _, width := range []int{40, 60, 80, 100, 120} {
+		model.width = width
+		plain := xansi.Strip(model.footerView())
+		if got := lipgloss.Width(plain); got > width {
+			t.Fatalf("footer width at %d columns = %d: %q", width, got, plain)
+		}
+		if !strings.HasSuffix(plain, "  ") {
+			t.Fatalf("footer at %d columns lost right padding: %q", width, plain)
+		}
+		label := "Plan mode"
+		if strings.Contains(plain, "Plan mode (shift+tab to cycle)") {
+			label = "Plan mode (shift+tab to cycle)"
+		}
+		if start := strings.LastIndex(plain, label); start < 0 || lipgloss.Width(plain[:start])+lipgloss.Width(label)+fullscreenFooterRightPadding != width {
+			t.Fatalf("mode label is not independently right-aligned at %d columns: %q", width, plain)
 		}
 	}
 }
 
 func TestStatusLineAccentsMatchCodexFallbackAndSoftening(t *testing.T) {
-	if ansi, _ := statusLineFallback(statusAccentMode); ansi != "6" {
-		t.Fatalf("mode accent = %q, want cyan", ansi)
+	if ansi, _ := statusLineFallback(statusAccentMode); ansi != "5" {
+		t.Fatalf("mode accent = %q, want magenta", ansi)
 	}
 	if ansi, _ := statusLineFallback(statusAccentUsage); ansi != "2" {
 		t.Fatalf("usage accent = %q, want green", ansi)
 	}
 	if ansi, _ := statusLineFallback(statusAccentBranch); ansi != "5" {
 		t.Fatalf("branch accent = %q, want magenta", ansi)
+	}
+	for _, test := range []struct {
+		name   string
+		accent statusLineAccent
+		dark   bool
+		want   terminalRGB
+	}{
+		{name: "dark model", accent: statusAccentModel, dark: true, want: terminalRGB{249, 226, 175}},
+		{name: "dark path", accent: statusAccentPath, dark: true, want: terminalRGB{166, 227, 161}},
+		{name: "dark branch", accent: statusAccentBranch, dark: true, want: terminalRGB{137, 180, 250}},
+		{name: "dark usage", accent: statusAccentUsage, dark: true, want: terminalRGB{250, 179, 135}},
+		{name: "dark mode", accent: statusAccentMode, dark: true, want: terminalRGB{203, 166, 247}},
+		{name: "light model", accent: statusAccentModel, dark: false, want: terminalRGB{223, 142, 29}},
+		{name: "light path", accent: statusAccentPath, dark: false, want: terminalRGB{64, 160, 43}},
+		{name: "light branch", accent: statusAccentBranch, dark: false, want: terminalRGB{30, 102, 245}},
+		{name: "light usage", accent: statusAccentUsage, dark: false, want: terminalRGB{254, 100, 11}},
+		{name: "light mode", accent: statusAccentMode, dark: false, want: terminalRGB{136, 57, 239}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got, ok := statusLineThemeRGB(test.accent, test.dark); !ok || got != test.want {
+				t.Fatalf("theme color = %#v available=%v, want %#v", got, ok, test.want)
+			}
+		})
 	}
 	if got := softenStatusLineRGB(terminalRGB{0, 205, 205}); got != (terminalRGB{21, 196, 196}) {
 		t.Fatalf("softened cyan = %#v", got)
@@ -123,6 +208,27 @@ func TestStatusLineAccentsMatchCodexFallbackAndSoftening(t *testing.T) {
 	}
 	if got := softenStatusLineRGB(terminalRGB{205, 0, 205}); got != (terminalRGB{187, 13, 187}) {
 		t.Fatalf("softened magenta = %#v", got)
+	}
+}
+
+func TestTrueColorStatusLineUsesAdaptiveCodexThemeColors(t *testing.T) {
+	original := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(original) })
+
+	_, model := newTestFullscreen(t, nil)
+	model.palette = terminalPalette{Level: colorLevelTrueColor, Dark: true}
+	model.session.Configuration.Model = "gpt-top"
+	model.session.Configuration.CWD = "/workspace/amadeus"
+	model.workspace = statusLineWorkspaceState{Generation: model.session.Generation, CurrentDir: "/workspace/amadeus", Branch: "main"}
+	model.session.ContextWindow = 128_000
+	model.refreshStatusLine()
+
+	rendered := model.footerView()
+	for _, sequence := range []string{"38;2;246;226;183", "38;2;171;223;167", "38;2;143;179;239", "38;2;242;181;144"} {
+		if !strings.Contains(rendered, sequence) {
+			t.Fatalf("statusline omitted softened Codex theme color %q: %q", sequence, rendered)
+		}
 	}
 }
 

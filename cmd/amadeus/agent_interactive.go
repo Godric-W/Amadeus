@@ -39,8 +39,7 @@ func (runner *agentController) runFullscreenInteractive(ctx context.Context, inv
 	}
 	interactive, err := application.NewInteractiveApplication(ctx, application.InteractiveOptions{
 		Workspace: workspace, Configuration: runner.sessionConfiguration(configured, invocation),
-		Project: invocation.Project.Path(), Provider: configured.ModelProvider, Model: configured.Model,
-		ContextWindow: configured.ModelContextWindow, MaxTaskBytes: maxRootTaskBytes,
+		MaxTaskBytes: maxRootTaskBytes,
 	})
 	if err != nil {
 		return err
@@ -55,14 +54,13 @@ func (runner *agentController) runFullscreenInteractive(ctx context.Context, inv
 		OpenSessions: invocation.SessionMode == sessionStartSelect,
 		NoColor:      !capabilities.Color, Width: capabilities.Width,
 		Snapshot: snapshot, Application: interactive,
-		Startup: tui.FullscreenStartup{
-			Version: buildinfo.Current().Version, Provider: snapshot.Provider, Model: snapshot.Model,
-			Project: invocation.Project.Path(), Branch: tui.ResolveWorkspaceBranch(ctx, invocation.Project.Path()),
-			Session: string(snapshot.ThreadID), ContextWindow: snapshot.ContextWindow,
-		},
+		Startup: tui.FullscreenStartup{Version: buildinfo.Current().Version},
 	})
 	if err != nil {
 		return err
 	}
-	return fullscreen.Run(ctx)
+	exitInfo, runErr := fullscreen.Run(ctx)
+	interactive.Close()
+	exitErr := presentFullscreenExit(exitInfo, invocation.Output, invocation.ErrorOutput, capabilities.Color)
+	return errors.Join(runErr, exitErr)
 }

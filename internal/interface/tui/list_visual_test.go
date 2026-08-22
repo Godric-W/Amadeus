@@ -22,7 +22,7 @@ func TestSlashAndSelectionUseSharedListVisual(t *testing.T) {
 	}
 	slashModel.input.SetValue("/")
 	slashModel.slashPopup.sync("/", false)
-	slash := slashModel.inputBox()
+	slash := slashModel.slashPopupView()
 
 	_, selectionModel := newTestFullscreen(t, nil)
 	selectionModel.palette = slashModel.palette
@@ -38,10 +38,8 @@ func TestSlashAndSelectionUseSharedListVisual(t *testing.T) {
 			t.Fatalf("%s list omitted shared accent style: %q", name, rendered)
 		}
 		plain := xansi.Strip(rendered)
-		for _, expected := range []string{"› ", "  "} {
-			if !strings.Contains(plain, expected) {
-				t.Fatalf("%s list omitted shared visual %q: %q", name, expected, plain)
-			}
+		if !strings.Contains(plain, "  ") {
+			t.Fatalf("%s list omitted shared column spacing: %q", name, plain)
 		}
 		for _, forbidden := range []string{"╭", "╮", "╰", "╯"} {
 			if strings.Contains(plain, forbidden) {
@@ -50,6 +48,12 @@ func TestSlashAndSelectionUseSharedListVisual(t *testing.T) {
 		}
 	}
 	slashPlain := xansi.Strip(slash)
+	if strings.Contains(slashPlain, "›") {
+		t.Fatalf("slash popup retained modal selection cursor: %q", slashPlain)
+	}
+	if !strings.Contains(xansi.Strip(selection), "› session-1") {
+		t.Fatalf("modal selection cursor missing: %q", xansi.Strip(selection))
+	}
 	for _, forbidden := range []string{"Commands", "↑/↓", "Enter insert", "Esc dismiss"} {
 		if strings.Contains(slashPlain, forbidden) {
 			t.Fatalf("slash popup unexpectedly contains %q: %q", forbidden, slashPlain)
@@ -57,6 +61,55 @@ func TestSlashAndSelectionUseSharedListVisual(t *testing.T) {
 	}
 	if !strings.Contains(xansi.Strip(selection), "Resume Session") {
 		t.Fatalf("selection list title missing: %q", xansi.Strip(selection))
+	}
+}
+
+func TestSlashPopupStylesSelectionWithoutCursorGlyph(t *testing.T) {
+	original := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(original) })
+
+	_, model := newTestFullscreen(t, nil)
+	model.palette = terminalPalette{
+		Level: colorLevelTrueColor, Dark: true,
+		Foreground: terminalRGB{225, 225, 225}, Background: terminalRGB{18, 18, 18},
+	}
+	model.input.SetValue("/e")
+	model.slashPopup.sync("/e", false)
+	rendered := model.slashPopupView()
+	if strings.Contains(xansi.Strip(rendered), "›") {
+		t.Fatalf("slash popup selection uses a cursor glyph: %q", xansi.Strip(rendered))
+	}
+	accentPrefix := strings.Split(model.palette.selection().Render("X"), "X")[0]
+	if count := strings.Count(rendered, accentPrefix); count < 2 {
+		t.Fatalf("selected command name/description are not styled together: count=%d output=%q", count, rendered)
+	}
+}
+
+func TestSlashPopupReplacesFooterAndShowsOnlyPrefixMatches(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	model.session.ContextWindow = 128_000
+	model.refreshStatusLine()
+	model.input.SetValue("/e")
+	model.slashPopup.sync("/e", false)
+
+	input := xansi.Strip(model.inputBox())
+	if strings.Contains(input, "/exit") {
+		t.Fatalf("slash popup leaked into input surface: %q", input)
+	}
+	composer := xansi.Strip(model.composerView())
+	if !strings.Contains(composer, "/exit") || strings.Contains(composer, "/skills") {
+		t.Fatalf("/e popup = %q", composer)
+	}
+	if count := strings.Count(composer, "/exit"); count != 1 {
+		t.Fatalf("/exit rendered %d times in composer: %q", count, composer)
+	}
+	if footer := model.composerFooterView(); footer != "" {
+		t.Fatalf("slash popup retained footer: %q", xansi.Strip(footer))
+	}
+	view := xansi.Strip(model.View())
+	if strings.Contains(view, "128K window") {
+		t.Fatalf("slash popup view retained statusline: %q", view)
 	}
 }
 

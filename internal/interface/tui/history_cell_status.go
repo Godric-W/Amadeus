@@ -35,7 +35,7 @@ func (cell StatusHistoryCell) values() []string {
 	values := []string{
 		fmt.Sprintf("Thread: %s", displayValue(string(snapshot.ThreadID))),
 		fmt.Sprintf("Title: %s", displayValue(snapshot.Title)),
-		fmt.Sprintf("Project: %s", displayValue(snapshot.Project)),
+		fmt.Sprintf("Current directory: %s", displayValue(snapshot.CurrentDir)),
 		fmt.Sprintf("Model: %s / %s", displayValue(snapshot.Provider), displayValue(snapshot.Model)),
 		fmt.Sprintf("Reasoning effort: %s", displayReasoningEffort(snapshot.ReasoningEffort)),
 		fmt.Sprintf("Mode: %s · Phase: %s", displayValue(string(snapshot.Mode)), displayValue(snapshot.Phase)),

@@ -62,7 +62,7 @@ func TestFullscreenRetryTerminalAndAttachClearTransientState(t *testing.T) {
 	}
 
 	applyFullscreenSessionEvent(t, &model, protocol.StreamErrorEvent{Message: "Reconnecting... 1/5", WillRetry: true})
-	updated, _ := model.Update(fullscreenAppEventMsg{event: application.ThreadAttached{Snapshot: application.ThreadViewSnapshot{Generation: 2, ThreadID: "thread-2", Model: "test-model"}}})
+	updated, _ := model.Update(fullscreenAppEventMsg{event: application.ThreadAttached{Snapshot: application.ThreadViewSnapshot{Generation: 2, ThreadID: "thread-2", Configuration: protocol.SessionConfiguration{Model: "test-model", Mode: protocol.ModeKindDefault}}}})
 	model = updated.(fullscreenModel)
 	if model.retryStatus.active || model.statusDetails != "" || model.status != "idle" || !model.input.Focused() {
 		t.Fatalf("attach retained retry state: status=%q details=%q saved=%#v focused=%v", model.status, model.statusDetails, model.retryStatus, model.input.Focused())
@@ -93,8 +93,8 @@ func TestFullscreenRetryWorkingLineHandlesHiddenNoColorAndNarrowLayout(t *testin
 func applyFullscreenSessionEvent(t *testing.T, model *fullscreenModel, message protocol.EventMsg) {
 	t.Helper()
 	updated, _ := model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{
-		Generation: model.generation,
-		Event:      testProtocolEvent(string(applicationThreadID(model.startup.Session)), "turn-1", message),
+		Generation: model.session.Generation,
+		Event:      testProtocolEvent(string(model.session.ThreadID), "turn-1", message),
 	}})
 	*model = updated.(fullscreenModel)
 }

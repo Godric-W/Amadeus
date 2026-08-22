@@ -78,6 +78,188 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 	}
 }
 
+func TestStatusLineArchitectureUsesTypedSessionStateAndPureFooter(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, relative := range []string{
+		"internal/interface/tui/session_state.go",
+		"internal/interface/tui/status_line.go",
+		"internal/interface/tui/status_line_workspace.go",
+		"internal/interface/tui/footer.go",
+		"internal/agent/session/configuration.go",
+	} {
+		if _, err := os.Stat(filepath.Join(root, relative)); err != nil {
+			t.Errorf("required statusline boundary file is missing: %s: %v", relative, err)
+		}
+	}
+
+	snapshotFields := architectureStructFields(t, root, "internal/app/interactive_types.go", "ThreadViewSnapshot")
+	for _, required := range []string{"Generation", "ThreadID", "Title", "Configuration", "Items", "Usage", "ContextWindow"} {
+		if _, ok := snapshotFields[required]; !ok {
+			t.Errorf("ThreadViewSnapshot is missing field %q", required)
+		}
+	}
+	for _, forbidden := range []string{"Mode", "Provider", "Model", "CWD"} {
+		if _, ok := snapshotFields[forbidden]; ok {
+			t.Errorf("ThreadViewSnapshot retains duplicate configuration field %q", forbidden)
+		}
+	}
+
+	startupFields := architectureStructFields(t, root, "internal/interface/tui/application.go", "FullscreenStartup")
+	if len(startupFields) != 1 {
+		t.Fatalf("FullscreenStartup fields = %#v, want Version only", startupFields)
+	}
+	if _, ok := startupFields["Version"]; !ok {
+		t.Fatal("FullscreenStartup is missing Version")
+	}
+
+	settingsFields := architectureStructFields(t, root, "internal/agent/protocol/protocol.go", "ThreadSettingsAppliedEvent")
+	if _, ok := settingsFields["Configuration"]; !ok {
+		t.Fatal("ThreadSettingsAppliedEvent does not carry SessionConfiguration")
+	}
+	if _, ok := settingsFields["Mode"]; ok {
+		t.Fatal("ThreadSettingsAppliedEvent retains the mode-only payload")
+	}
+
+	viewSource := mustReadArchitectureFile(t, root, "internal/interface/tui/application_view.go")
+	for _, forbidden := range []string{
+		"Application.Status()", "ResolveWorkspaceBranch(", "exec.Command", "os.Stat", "statusBar(",
+		"bottomAnchorFullscreenView", "cursorAnchoredWriter", "terminalCursor", "CursorUp(", "CursorDown(",
+	} {
+		if strings.Contains(viewSource, forbidden) {
+			t.Errorf("View/render path owns forbidden statusline concern %q", forbidden)
+		}
+	}
+	applicationSource := mustReadArchitectureFile(t, root, "internal/interface/tui/application.go")
+	if !strings.Contains(applicationSource, "tea.WithOutput(app.options.Output)") {
+		t.Error("Bubble Tea output is not wired directly to the configured writer")
+	}
+	for _, forbidden := range []string{"cursorAnchoredWriter", "terminalCursor", "CursorUp(", "CursorDown("} {
+		if strings.Contains(applicationSource, forbidden) {
+			t.Errorf("Fullscreen application reintroduced terminal cursor protocol %q", forbidden)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "internal/interface/tui/terminal_cursor.go")); err == nil {
+		t.Error("legacy terminal cursor adapter still exists")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("inspect legacy terminal cursor adapter: %v", err)
+	}
+	footerSource := mustReadArchitectureFile(t, root, "internal/interface/tui/footer.go")
+	for _, required := range []string{"type footerState struct", "type footerProps struct", "func renderFooter("} {
+		if !strings.Contains(footerSource, required) {
+			t.Errorf("Footer boundary is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"Application.Status()", "ResolveWorkspaceBranch(", "exec.Command", "os.Stat"} {
+		if strings.Contains(footerSource, forbidden) {
+			t.Errorf("pure Footer renderer owns forbidden concern %q", forbidden)
+		}
+	}
+
+	for _, relative := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, forbidden := range []string{"type statusBarPart", "func (model fullscreenModel) statusBar(", "startup.Project", "startup.Branch", "startup.Session", "startup.ContextWindow"} {
+				if strings.Contains(string(content), forbidden) {
+					t.Errorf("legacy statusline concept %q remains in %s", forbidden, filepath.ToSlash(path[len(root)+1:]))
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan %s: %v", relative, err)
+		}
+	}
+}
+
+func TestFullscreenExitArchitectureUsesTypedLifecycleAndFrameDrain(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, relative := range []string{
+		"internal/interface/tui/application_exit.go",
+		"internal/app/interactive_shutdown.go",
+		"cmd/amadeus/agent_exit.go",
+	} {
+		if _, err := os.Stat(filepath.Join(root, relative)); err != nil {
+			t.Errorf("required exit lifecycle boundary file is missing: %s: %v", relative, err)
+		}
+	}
+
+	exitFields := architectureStructFields(t, root, "internal/interface/tui/application_exit.go", "AppExitInfo")
+	for _, required := range []string{"TokenUsage", "ThreadID", "ThreadName", "ResumeHint", "ExitReason", "Error"} {
+		if _, ok := exitFields[required]; !ok {
+			t.Errorf("AppExitInfo is missing field %q", required)
+		}
+	}
+
+	exitSource := mustReadArchitectureFile(t, root, "internal/interface/tui/application_exit.go")
+	for _, required := range []string{
+		"type ExitMode uint8", "ExitModeShutdownFirst", "ExitModeImmediate",
+		"type ExitReason uint8", "ExitReasonUserRequested", "ExitReasonFatal",
+		"fullscreenExitPhaseDrainingFrame", "fullscreenExitFrameDrainedMsg", "func (model fullscreenModel) appExitInfo() AppExitInfo",
+	} {
+		if !strings.Contains(exitSource, required) {
+			t.Errorf("exit lifecycle boundary is missing %q", required)
+		}
+	}
+	if strings.Count(exitSource, "return tea.Quit") != 1 {
+		t.Errorf("exit lifecycle owns %d final tea.Quit paths, want 1", strings.Count(exitSource, "return tea.Quit"))
+	}
+
+	applicationSource := mustReadArchitectureFile(t, root, "internal/interface/tui/application.go")
+	if !strings.Contains(applicationSource, "Run(ctx context.Context) (AppExitInfo, error)") {
+		t.Fatal("FullscreenApplication.Run does not return AppExitInfo")
+	}
+	appEventsSource := mustReadArchitectureFile(t, root, "internal/interface/tui/application_app_events.go")
+	for _, forbidden := range []string{"tea.Quit", "ShutdownStarted", "ShutdownFinished", "Shutting down…"} {
+		if strings.Contains(appEventsSource, forbidden) {
+			t.Errorf("Application event projection retains legacy exit concern %q", forbidden)
+		}
+	}
+	interactiveTypes := mustReadArchitectureFile(t, root, "internal/app/interactive_types.go")
+	for _, forbidden := range []string{"type ShutdownStarted", "type ShutdownFinished"} {
+		if strings.Contains(interactiveTypes, forbidden) {
+			t.Errorf("InteractiveEvent retains TUI exit lifecycle event %q", forbidden)
+		}
+	}
+
+	for _, relative := range []string{"internal/interface/tui", "internal/app", "cmd/amadeus"} {
+		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			source := string(content)
+			relativePath := filepath.ToSlash(path[len(root)+1:])
+			if relativePath != "internal/interface/tui/application_exit.go" && strings.Contains(source, "tea.Quit") {
+				t.Errorf("direct tea.Quit remains outside exit lifecycle in %s", relativePath)
+			}
+			for _, forbidden := range []string{"shutdownRequested", "NewNoticeHistoryCell(\"Shutting down", "cursorAnchoredWriter", "terminal-height padding", "CursorUp(", "CursorDown("} {
+				if strings.Contains(source, forbidden) {
+					t.Errorf("legacy exit implementation %q remains in %s", forbidden, relativePath)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan exit lifecycle in %s: %v", relative, err)
+		}
+	}
+}
+
 func TestWebFetchArchitectureKeepsSplitSafetyAndProjectionBoundaries(t *testing.T) {
 	root := repositoryRoot(t)
 	for _, relative := range []string{

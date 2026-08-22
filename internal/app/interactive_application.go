@@ -23,20 +23,12 @@ import (
 type InteractiveOptions struct {
 	Workspace     *ThreadWorkspace
 	Configuration agentsession.Configuration
-	Project       string
-	Provider      string
-	Model         string
-	ContextWindow int64
 	MaxTaskBytes  int
 }
 
 type InteractiveApplication struct {
 	workspace     *ThreadWorkspace
 	configuration agentsession.Configuration
-	project       string
-	provider      string
-	model         string
-	contextWindow int64
 	maxTaskBytes  int
 	operationMu   sync.Mutex
 
@@ -60,9 +52,8 @@ func NewInteractiveApplication(parent context.Context, options InteractiveOption
 	ctx, cancel := context.WithCancel(parent)
 	return &InteractiveApplication{
 		workspace: options.Workspace, configuration: options.Configuration,
-		project: options.Project, provider: options.Provider, model: options.Model,
-		contextWindow: options.ContextWindow, maxTaskBytes: options.MaxTaskBytes,
-		ctx: ctx, cancel: cancel, events: make(chan InteractiveEvent, 256), phase: "idle",
+		maxTaskBytes: options.MaxTaskBytes,
+		ctx:          ctx, cancel: cancel, events: make(chan InteractiveEvent, 256), phase: "idle",
 	}, nil
 }
 
@@ -159,7 +150,7 @@ func (application *InteractiveApplication) ResolveUserInput(ctx context.Context,
 }
 
 func (application *InteractiveApplication) LoadSessions(ctx context.Context) {
-	values, err := application.workspace.List(ctx, state.ListQuery{CWD: application.project})
+	values, err := application.workspace.List(ctx, state.ListQuery{CWD: application.currentCWD()})
 	current, _ := application.workspace.Current()
 	options := make([]SessionOption, 0, len(values))
 	for _, value := range values {
@@ -275,19 +266,24 @@ func (application *InteractiveApplication) Delete(ctx context.Context, generatio
 func (application *InteractiveApplication) Status() StatusSnapshot {
 	active, generation, err := application.current()
 	if err != nil {
-		return StatusSnapshot{Project: application.project, Provider: application.provider, Model: application.model, ReasoningEffort: llm.CloneReasoningEffort(application.configuration.Runtime.ModelReasoningEffort), Phase: "unavailable", ContextWindow: application.contextWindow}
+		return StatusSnapshot{
+			CurrentDir: application.configuration.CWD, Provider: application.configuration.Runtime.ModelProvider,
+			Model: application.configuration.Runtime.Model, ReasoningEffort: llm.CloneReasoningEffort(application.configuration.Runtime.ModelReasoningEffort),
+			Mode: application.configuration.Mode, Phase: "unavailable", ContextWindow: application.configuration.Runtime.ModelContextWindow,
+		}
 	}
 	application.mu.RLock()
 	title := application.title
 	phase := application.phase
 	usage := application.usage
 	application.mu.RUnlock()
+	configuration := active.Configuration()
 	result := StatusSnapshot{
-		ThreadID: active.ID(), Title: title, Project: application.project,
-		Provider: application.provider, Model: application.model,
-		ReasoningEffort: llm.CloneReasoningEffort(application.configuration.Runtime.ModelReasoningEffort),
-		Mode:            active.Mode(), Phase: phase,
-		Usage: usage.Usage, ContextWindow: application.contextWindow, RolloutItems: active.RolloutItemCount(),
+		ThreadID: active.ID(), Title: title, CurrentDir: configuration.CWD,
+		Provider: configuration.Provider, Model: configuration.Model,
+		ReasoningEffort: llm.CloneReasoningEffort(configuration.ReasoningEffort),
+		Mode:            turn.ModeKind(configuration.Mode), Phase: phase,
+		Usage: usage.Usage, ContextWindow: active.ContextWindow(), RolloutItems: active.RolloutItemCount(),
 	}
 	result.PermissionGrantCount = active.PermissionGrantCount()
 	result.SkillRevision = shortRevision(active.SkillRevision())
@@ -389,23 +385,6 @@ func (application *InteractiveApplication) SetSkillEnabled(path string, enabled 
 	application.emit(SkillEnabledSet{Generation: generation, Path: path, Enabled: enabled, Error: err})
 }
 
-func (application *InteractiveApplication) Shutdown(ctx context.Context) {
-	application.operationMu.Lock()
-	defer application.operationMu.Unlock()
-	application.emit(ShutdownStarted{})
-	err := application.workspace.Close(ctx)
-	application.stopAttachment()
-	application.emit(ShutdownFinished{Error: err})
-}
-
-func (application *InteractiveApplication) Close() {
-	if application == nil {
-		return
-	}
-	application.stopAttachment()
-	application.cancel()
-}
-
 func (application *InteractiveApplication) snapshot(ctx context.Context, active *threadmanager.AmadeusThread, generation uint64) (ThreadViewSnapshot, error) {
 	history, err := active.History(ctx)
 	if err != nil {
@@ -416,21 +395,21 @@ func (application *InteractiveApplication) snapshot(ctx context.Context, active 
 		return ThreadViewSnapshot{}, err
 	}
 	title := "draft"
-	metadata, metadataErr := application.metadata(ctx, active.ID())
+	configuration := active.Configuration()
+	metadata, metadataErr := application.metadata(ctx, active.ID(), configuration.CWD)
 	if metadataErr == nil {
 		title = metadata.Title
 	} else if !errors.Is(metadataErr, state.ErrNotFound) {
 		return ThreadViewSnapshot{}, metadataErr
 	}
 	return ThreadViewSnapshot{
-		Generation: generation, ThreadID: active.ID(), Title: title, Mode: active.Mode(),
-		Items: projection.Items, Usage: projection.Usage, ContextWindow: application.contextWindow,
-		Provider: application.provider, Model: application.model,
+		Generation: generation, ThreadID: active.ID(), Title: title, Configuration: configuration,
+		Items: projection.Items, Usage: projection.Usage, ContextWindow: active.ContextWindow(),
 	}, nil
 }
 
-func (application *InteractiveApplication) metadata(ctx context.Context, id protocol.ThreadID) (state.StoredThread, error) {
-	values, err := application.workspace.List(ctx, state.ListQuery{CWD: application.project, IncludeArchived: true})
+func (application *InteractiveApplication) metadata(ctx context.Context, id protocol.ThreadID, currentDir string) (state.StoredThread, error) {
+	values, err := application.workspace.List(ctx, state.ListQuery{CWD: currentDir, IncludeArchived: true})
 	if err != nil {
 		return state.StoredThread{}, err
 	}
@@ -469,10 +448,19 @@ func (application *InteractiveApplication) currentSnapshot(active *threadmanager
 	application.mu.RLock()
 	defer application.mu.RUnlock()
 	return ThreadViewSnapshot{
-		Generation: generation, ThreadID: active.ID(), Title: application.title, Mode: active.Mode(),
-		Usage: application.usage.Usage, ContextWindow: application.contextWindow,
-		Provider: application.provider, Model: application.model,
+		Generation: generation, ThreadID: active.ID(), Title: application.title, Configuration: active.Configuration(),
+		Usage: application.usage.Usage, ContextWindow: active.ContextWindow(),
 	}
+}
+
+func (application *InteractiveApplication) currentCWD() string {
+	active, _, err := application.current()
+	if err == nil {
+		if currentDir := strings.TrimSpace(active.Configuration().CWD); currentDir != "" {
+			return currentDir
+		}
+	}
+	return application.configuration.CWD
 }
 
 func (application *InteractiveApplication) stopAttachment() {

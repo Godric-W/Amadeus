@@ -1,13 +1,13 @@
 # Amadeus 开发进度
 
-> 最近更新：2026-08-21
+> 最近更新：2026-08-22
 > 唯一架构事实源：`docs/design.md`
-> 当前阶段：R. Basic Multi-Agent Architecture Alignment（DONE）
-> 下一任务：下一阶段待规划
+> 当前阶段：T. Thread + Session UUID Identity Alignment（TODO）
+> 下一任务：T-01 Protocol UUID Identity + Naming Contract
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
-A-R 的条目保留为历史与当前计划记录；其中与当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。
+A-T 的条目保留为历史与当前计划记录；其中与当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。
 
 ## 1. 状态与完成标准
 
@@ -43,6 +43,8 @@ A Runtime + Persistence
 → P Model Reasoning Effort + Provider Thinking Contract
 → Q Web + View Image Tool Contract Closure
 → R Basic Multi-Agent Architecture Alignment
+→ S Codex-style Statusline Architecture Alignment
+→ T Thread + Session UUID Identity Alignment
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先更新 `docs/design.md`。
@@ -939,7 +941,7 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 - 建立最小 `CollaborationMode{Mode ModeKind}` 与 `ThreadSettingsOverrides{CollaborationMode *CollaborationMode}`；暂不复制尚未使用的 per-mode model/reasoning settings 空壳。
 - 扩展 `UserInputOp` 携带 ThreadSettingsOverrides：`/plan <task>` 在单个 Submission 中先应用 Plan mode settings、再冻结 TurnContext、再启动 RegularTask；删除 `pendingModeTask` 和 settings ack 后二次提交路径。
 - `/plan` 与快捷切换继续使用独立 `ThreadSettingsOp`；ActiveTurn 运行期间 settings update 必须拒绝或进入 Session submission queue，不能改变已冻结 TurnContext。
-- `ThreadSettingsAppliedEvent` 返回完整生效模式 snapshot；设置校验失败形成 correlated ErrorEvent，原模式保持不变且不得启动 Turn。
+- N 阶段的 `ThreadSettingsAppliedEvent` 返回完整生效模式 snapshot；S-02 将其 contract 进一步收敛为完整生效 `SessionConfiguration`。设置校验失败形成 correlated ErrorEvent，原模式保持不变且不得启动 Turn。
 
 ### N-11：Plan Prompt + ToolRouter Policy Alignment — `DONE`
 
@@ -1352,7 +1354,174 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - `SubagentDeveloperInstructions`、ToolSpec delegation guidance、`<subagents>` WorldState、`<subagent_notification>` contextual fragment 和 Codex 风格 Rich/Inline/Resume TUI projection 已统一到 typed Event/Rollout 协议。
 - spawn rollback/并发容量/depth、send_input、wait timeout、notification 去重、失败 shutdown 保留 slot、Prompt/Tool isolation、Persistence、完整 Root→child→notification E2E、TUI 与 architecture guards 均有覆盖；`make check`、`go test ./... -count=1`、`go test -race ./... -count=1` 和 `git diff --check` 于 2026-08-21 通过。
 
-## 21. 当前保留能力
+## 21. S. Codex-style Fullscreen TUI Architecture Alignment — `DONE`
+
+### 目标
+
+在不复制 `/statusline` 配置功能的前提下，将 Fullscreen TUI 的固定 statusline 在 Session ownership、typed projection、Footer state、命名和生命周期上对齐 Codex；删除 Startup/Application status/TUI 之间的重复动态状态，并保持 Working、statusline 与 collaboration mode indicator 三者职责独立。在此基础上继续收敛 `/exit` 的 Application shutdown、renderer drain、typed exit result 与 CLI exit presentation 生命周期。
+
+### S-01：Session Configuration + Snapshot Ownership — `DONE`
+
+- 将 `ThreadViewSnapshot` 收敛为 `Generation + ThreadID + Title + Configuration + Items + Usage + ContextWindow`，其中 `Configuration` 直接复用 Event Protocol 的完整 `SessionConfiguration`。
+- 为 `AmadeusThread`/Session 暴露并消费 typed configuration snapshot，保证 new、resume、attach 得到真实 CWD、Provider、Model、ReasoningEffort 和 Mode。
+- 将 `FullscreenStartup` 收敛为真正静态的启动信息；删除 Startup、Application 和 snapshot 中对 cwd/model/provider/mode/context 的重复 owner。
+
+### S-02：TUI Session State + Configuration Lifecycle — `DONE`
+
+- 建立 active `fullscreenSessionState`，统一持有当前 ThreadID、Configuration、title、usage/context 与 attachment generation。
+- 让 initial snapshot、`SessionConfiguredEvent`、`ThreadSettingsAppliedEvent` 和 `ThreadAttached` 共用 `applySessionConfiguration()`；settings applied event 返回完整生效 Configuration，不再只返回 Mode。
+- Resume、new thread、delete/switch 与 attachment replacement 必须清理旧 session/footer 派生状态，并丢弃旧 generation 的迟到 Event 或异步结果。
+
+### S-03：Typed Fixed StatusLine Projection — `DONE`
+
+- 引入固定 `StatusLineItem` 集合：ModelWithReasoning、CurrentDir、GitBranch、ThreadTitle、ContextUsed、ContextWindowSize；不实现 `/statusline`、picker、持久化排序或用户自定义 items。
+- 建立 value resolver、typed segment、cached state 与统一 accent mapping；值不可用时省略对应 item，不显示 placeholder，也不回退到通用 status 文本。
+- 仅在 canonical session/title/token/branch state 改变时 refresh projection；terminal resize 不重新解析业务数据。
+
+### S-04：Footer State + Pure Layout — `DONE`
+
+- 建立 `footerState`/`footerProps`，分离左侧 statusline、右侧 Plan collaboration indicator 和 Footer 外部的 Working/status indicator。
+- 将 `View()` 收敛为纯组合与渲染：不查询 `Application.Status()`、不访问文件系统、不启动 Git 查询、不修改 TUI state。
+- 删除 `model.status` 作为 statusline fallback 的路径；实现确定性窄宽度裁剪，优先移除 title/context/model/current-dir，GitBranch 最后删除，并保证 Plan indicator 右对齐。
+
+### S-05：CurrentDir-keyed Workspace Metadata — `DONE`
+
+- 将 statusline 的目录术语统一为 `CurrentDir`；保留 `ProjectRoot` 作为未来 workspace policy/指令发现边界，不再用 `Project` 混指当前 CWD。
+- 将 Git branch 建模为 CurrentDir-keyed derived cache；CWD 改变时立即清空旧 branch 并异步刷新。
+- branch lookup 携带 attachment generation 与 CWD，完成时校验二者，禁止旧目录的迟到结果覆盖新 Session 状态。
+
+### S-06：Legacy Cleanup、Guards + Acceptance — `DONE`
+
+- 删除旧 `statusBar*` 数据模型、动态 `FullscreenStartup` 字段、snapshot 分散字段和 Application status fallback；迁移测试到新的 statusline/footer 术语。
+- 增加 architecture guards，禁止 `View()` 查询 Application/文件系统、禁止 statusline 自建 Session owner、禁止 Mode 进入固定 `StatusLineItem`。
+- 覆盖 new/resume/attach/settings update、窄终端、无颜色、branch stale result、缺失 optional item 与 live event/snapshot 等价性；运行 targeted tests、`make check`、`go test ./... -count=1`、`go test -race ./... -count=1` 和 `git diff --check`。
+
+### S-07：Codex-style `/exit` App Lifecycle — `DONE`
+
+- 建立 `ExitMode`、`ExitReason` 与 `AppExitInfo` typed model；正常 `/exit`、空输入退出快捷键及其他 user-requested exit 统一进入 `ShutdownFirst`，fatal/escape-hatch 才允许显式 `Immediate`。
+- 将 `Shutting down…` 从 HistoryCell 移为 Composer/BottomPane 区域的 transient shutdown presentation；关闭 Popup/Modal、禁止继续输入，并保证重复退出请求只提交一次 shutdown。
+- 以 pending shutdown target 协调 active Thread detach、Runtime shutdown、Rollout flush、child process cleanup 与 bounded timeout，删除 `/exit → tea.Quit` 和 `ShutdownFinished → tea.Quit` 的单阶段退出路径。
+- 在 `ShutdownFinished` 后进入 `DrainingFrame`，让 `View()` 清空 Composer、Popup、Footer 与 shutdown indicator；Bubble Tea 完成至少一次空 active-frame redraw 并收到 `ExitFrameDrained` 后才执行 `tea.Quit`。
+- 将 `FullscreenApplication.Run` 收敛为返回 `AppExitInfo`；`cmd/amadeus` 仅在 renderer 停止、终端恢复后输出非零 token usage、可用 resume hint 或 fatal diagnostics，不重新查询已关闭 Runtime。
+- 分层覆盖 renderer drain、Application shutdown 和 CLI summary 测试，包括重复退出、zero usage、不可恢复、fatal、timeout 与无 placeholder/Popup/Footer scrollback 残留；增加 guard 禁止 cursor writer、terminal-height padding 和手写 ANSI reposition 回归。
+
+### S 出口
+
+- statusline 数据链唯一为 `typed Session/Thread state → fullscreenSessionState → StatusLineItem projection → footerState/footerProps → render`；Configuration、title、usage/context 与 branch 各自保留准确 typed source。
+- fixed statusline 不依赖 `/statusline` 功能，也不从 Startup、Application Status、Working header 或渲染期 IO 补全数据。
+- Working/status indicator、固定 statusline 与 Plan collaboration indicator 拥有独立数据模型、生命周期和布局职责。
+- CurrentDir、GitBranch、ThreadTitle、Model/Reasoning 与 Context 在 new、resume、attach 和 settings update 后立即与 active Session 一致。
+- user-requested exit 唯一经过 `ShutdownFirst → shutdown/flush/cleanup → renderer drain → AppExitInfo → CLI exit presentation`；TUI active frame、Application resource shutdown 和进程退出信息各自拥有明确 owner 与阶段边界。
+
+### S 验收
+
+- `SessionConfiguredEvent`、`ThreadSettingsAppliedEvent` 与 `ThreadViewSnapshot` 使用同一完整 `SessionConfiguration`；TUI 不保留 Mode/Model/CWD 的并列 snapshot owner。
+- `View()` 不调用 `Application.Status()`、不访问文件系统且不改变状态；resize 只触发布局计算。
+- CurrentDir 改变后旧 branch 立即消失，迟到 lookup 不覆盖新 CWD；optional item 缺失时其余 segment 正常布局。
+- 窄终端仍优先保留 GitBranch workspace identity；Plan mode 标签保持右对齐，Default mode 不显示 mode 标签，Working/retry 文本不进入 statusline。
+- 固定 item 顺序稳定，代码和文档中不存在 `/statusline` 命令、配置 schema、picker 或持久化 customization 主链。
+- `/exit`、空输入退出快捷键与重复退出请求共享幂等 `ShutdownFirst` lifecycle；正常退出 scrollback 不残留 Composer placeholder、Popup、Footer 或 transient shutdown presentation。
+- `FullscreenApplication.Run` 在终端恢复后返回唯一 `AppExitInfo`；token usage/resume hint 各输出至多一次，zero usage、不可恢复、fatal 与 timeout 路径均有确定性测试。
+- 最终 `tea.Quit` 只能发生在 shutdown 终态及 `ExitFrameDrained` 之后；实现不包含 output writer wrapper、terminal-height padding、`CursorUp`/`CursorDown` 或其他手写 ANSI cursor reposition。
+
+### 完成记录
+
+- 2026-08-22 将 `SessionConfiguredEvent`、`ThreadSettingsAppliedEvent` 与 `ThreadViewSnapshot` 统一到完整 typed `SessionConfiguration`；Session 增加并发安全 configuration snapshot，`AmadeusThread` 删除 stale configuration mirror 与 Mode-only query。
+- `InteractiveApplication` 删除 Project/Provider/Model/ContextWindow 并列动态字段，`FullscreenStartup` 收敛为 Version；Fullscreen TUI 以 `fullscreenSessionState` 统一承接 snapshot、configured、settings applied、rename 与 token lifecycle。
+- 新增独立 `session_state.go`、`status_line.go`、`status_line_workspace.go` 与 `footer.go`，固定六个 StatusLineItem，通过 cached projection 和 pure Footer renderer 展示；Working/status 与 Plan collaboration indicator 保持独立。
+- Git branch 改为 CurrentDir + attachment generation keyed async cache，CWD/Thread attach 时清空并刷新，迟到 generation/CWD 结果被丢弃；`View()` 不查询 Application、不访问文件系统，也不使用 status fallback。
+- 删除旧 `statusBar*`、动态 Startup 字段、snapshot 分散配置字段和 TUI Mode/Model/Usage mirrors；新增完整 configuration、缺失 item、窄终端、stale branch、纯 Footer 与 architecture guards 覆盖。
+- 修复 Shift+Tab 模式切换回归：删除将 Codex/Ratatui surface 生搬到 Bubble Tea 的 terminal-height padding 与自定义 cursor writer；Footer 只在活动 frame 当前行内右对齐 Plan indicator。`ThreadSettingsAppliedEvent` 插入描述真实状态变化的 `• Mode changed to <Mode>.` Info HistoryCell，history flush 后由 Bubble Tea 原生 renderer 重绘单份 Composer/Footer。
+- 补齐 Codex Footer/Popup 生命周期：Footer 为右侧 mode 预留独立列并在不足时收缩 cycle hint，左侧 statusline 在列边界前裁剪；Slash popup 激活时替换 Footer，`/e` 仅保留 `/exit`，filter 变化重置 selection，避免旧 `/skills` 行与 statusline 残留。
+- 修复运行中 Slash Popup 的 `/resu` 回归：prefix filter 本身保持正确，`SlashResume.AvailableDuringTask()` 对齐 Codex 返回 true；运行中的真实逐字符输入仍显示并可选择 `/resume`，Thread 切换继续由 Application 事务化 attach lifecycle 负责。
+- 2026-08-22 继续收敛默认 Codex 视觉：Slash Command Popup 不再显示 Modal picker 的 `›` cursor glyph，只通过选中 command name/description style 表达 selection；Resume/Approval/Skills 等 picker 保留 cursor。
+- Statusline 从硬编码 fallback RGB 改为 theme-first：TrueColor/ANSI256 使用明暗自适应 Catppuccin Mocha/Latte Chroma semantic token，并执行 Codex 同款 85% saturation softening；ANSI16 与 No Color 继续走稳定 fallback。
+- 2026-08-22 完成 Codex-style `/exit` lifecycle：新增 `ExitMode`、`ExitReason`、`AppExitInfo`、pending exit target 与独立 `fullscreenExitState`；`/exit` 和空 Composer Ctrl+D 在 idle/running 状态统一进入幂等 `ShutdownFirst`，durable delete 完成后通过显式 `Immediate` 进入同一 renderer drain 终态。
+- `InteractiveApplication.Shutdown` 收敛为同步 typed operation 并迁入独立 `interactive_shutdown.go`，负责关闭 ThreadWorkspace/ThreadManager、flush Rollout、清理 child/process 资源与 detach active Thread；删除 `ShutdownStarted`/`ShutdownFinished` Application Event 和 `shutdownRequested` mirror。
+- `Shutting down…` 改为唯一 transient active-frame presentation；shutdown completion/timeout 进入 `DrainingFrame`，`View()` 先渲染空 active frame，再由 `ExitFrameDrained` 触发唯一 `tea.Quit`。删除 History shutdown cell 与 Application event 直退路径，并用 architecture guard 禁止 cursor writer、terminal padding 和手写 ANSI reposition 回归。
+- `FullscreenApplication.Run` 现返回最终 `AppExitInfo`；CLI 在 Bubble Tea renderer 停止、终端恢复且 InteractiveApplication 关闭后输出非零 token usage、可用 resume hint、timeout warning 或 fatal diagnostics，并复用 `commandExitError.reported` 避免主入口重复报错。Color terminal 对齐 Codex，仅将 resume command 使用 ANSI cyan 高亮并以 foreground reset 收尾；No Color 保持纯文本。
+- `make check` 与 `go test -race ./... -count=1` 于 2026-08-22 全量通过，`git diff --check` 通过。
+
+## 22. T. Thread + Session UUID Identity Alignment — `TODO`
+
+### 目标
+
+在不兼容旧本地开发数据的前提下，将 Thread identity 从 `thread-<unixnano>-<sequence>` 字符串体系替换为 Codex 风格 UUID value object：Amadeus-generated ThreadID 使用 UUIDv7，Resume、Rollout、SQLite、Event 和 Agent routing 使用同一个 canonical ThreadID；同时建立真实 SessionID，明确 Root/child 的 agent-tree ownership，并一次性贯通 Session、AgentControl、persisted child restore、Tool/Audit、Provider metadata、Application/TUI 与 Persistence。SQLite StoredThread 只保存 Thread metadata/parent relation，canonical SessionID 只来自 Rollout SessionMeta。
+
+### T-01：Protocol UUID Identity + Naming Contract — `TODO`
+
+- 在 Protocol/Identity domain 建立可比较的 `ThreadID` 与 `SessionID` UUID value object，提供 UUIDv7 constructor、parse、canonical string、zero-state 和 JSON/Text codec；将 `github.com/google/uuid` 提升为直接依赖。
+- Amadeus-generated ID 固定为 UUIDv7，parser 接受合法 UUID；删除 ThreadID 的 arbitrary safe-string contract、直接 string conversion 和 `thread-` prefix 语义。
+- 将实际承载 Resume target 的 `SessionID` 字段、参数和 helper 改为 `ThreadID`/`ResumeThreadID`，不以用户界面的 Session 文案污染内部 identity naming。
+
+### T-02：Thread Creation + Resume Lifecycle — `TODO`
+
+- Root 与 child New Thread 统一从 Protocol/Identity 生成 UUIDv7；从 ThreadManager 和 Composition Root 删除 `NextID("thread")`、thread prefix factory 分支及对应注入点。
+- New Root 由 ThreadID 派生 SessionID；Resumed Root 从 Rollout SessionMeta 恢复 SessionID，并校验 requested ThreadID、StoredThread.ID、Rollout path identity、SessionMeta.ID 与 Root `SessionIDFromThreadID(ID)` 全部一致。
+- Session configured 成功后再注册 live Thread；生成失败、重复 ID、history mismatch 或 spawn 失败必须完整关闭 writer/runtime，不得留下半注册 Thread。
+
+### T-03：Session + AgentControl Dual Identity — `TODO`
+
+- SessionSpawnArgs、Session、AmadeusThread 与 root-scoped AgentControl 同时持有 typed SessionID/ThreadID；Control 暴露 `SessionID()` 与 `RootThreadID()`，不保留误名 string mirror。
+- 所有 child 从 AgentControl 继承同一个 SessionID 并生成独立 ThreadID；child SessionID 不能从 child ThreadID 派生。
+- ThreadManager registry、AgentID、parent/child relation、send/wait/close routing 继续使用 ThreadID；共享 SessionID 只表达 session-level ownership，不能替代 Thread key。
+
+### T-04：Persisted SubAgent Restore + Internal Resume — `TODO`
+
+- Root Resume 后按 SQLite parent/source relation 查找 persisted descendants，读取每个 child Rollout SessionMeta，并校验 child ID、ParentThreadID 与 `SessionID == AgentControl.SessionID()`；不通过 SQLite SessionID 查询 tree。
+- AgentControl record 支持 persisted/unloaded child metadata；ThreadManager/AgentHost 提供内部 child resume，`send_input` 等操作按 child ThreadID 加载并恢复 runtime，AgentControl 不直接打开 Rollout 或构造 Session。
+- 公开 `/resume`、`--resume`、picker 和 sessions list 仍只选择 Root Thread；不增加公开 `resume_agent` Tool、child attach UI 或 arbitrary detached child recovery。
+
+### T-05：Protocol + Tool + Audit Identity Contract — `TODO`
+
+- `SessionConfiguredEvent`、ThreadViewSnapshot 与 StatusSnapshot 同时携带 SessionID/ThreadID，SessionConfiguredEvent 另带可选 ParentThreadID；其他 Event、attachment matching 与 `ThreadIDOf` 继续按具体 ThreadID 路由。
+- Tool Invocation/InvocationMetadata 同时携带 typed SessionID、ThreadID、TurnID；`spawn_agent` 使用 Invocation.ThreadID 作为 parent，Multi-Agent target 参数在 Tool boundary 通过 ParseThreadID 解析。
+- Audit record 增加 SessionID、ThreadID 与 TurnID，所有 Tool 从 Invocation metadata 取得 identity；ApprovalRequestEvent 继续按 ThreadID + TurnID 路由，Root/child SessionPermissionContext 不因共享 SessionID 自动合并。
+- 保持 `execute_command`/`write_stdin` 模型 schema 中进程 `session_id` 的外部术语，但内部明确使用 process ID，禁止与 Agent SessionID 类型转换或复用。
+
+### T-06：Provider Request Identity Metadata — `TODO`
+
+- Runtime TurnContext 持有 typed SessionID/ThreadID/TurnID，TurnContextItem 继续只持久化 ThreadID/TurnID；Resume 后从 canonical SessionMeta 重新注入 SessionID。
+- 普通 sampling 与 Compaction 使用同一 request metadata projector，向实际 Provider Adapter 贯通 `session_id`、`thread_id`、`turn_id` 和可选 `parent_thread_id`；Root/child 共享 SessionID 但 ThreadID 不同。
+- Adapter 不从 UI、CWD、Tool metadata 或当前 active Thread 猜测 identity，不增加未接线的空 metadata 扩展点。
+
+### T-07：Rollout + SQLite Persistence Reset — `TODO`
+
+- 将 SessionMetaItem 收敛为 `session_id + id + optional parent_thread_id`，删除旧 `thread_id` metadata 字段；Event、TurnContextItem、ResponseItem 和 collaboration payload 继续按具体作用域使用 `thread_id`。
+- SQLite `threads.id` 保持 ThreadID 主键并保存 parent/source/agent metadata；StoredThread 不增加 SessionID。Rebuild 校验 SessionMeta identity contract，但不把 SessionID 复制进 SQLite。
+- Rollout 文件名、SessionMeta.ID、StoredThread.ID 与 Resume target 使用同一 canonical UUID；删除旧 SQLite、Rollout、fixture 和 decoder，不增加 migration、legacy reader 或双格式兼容。
+
+### T-08：CLI、Application + TUI Identity Boundary — `TODO`
+
+- `--resume`、`/resume`、session picker、exit resume hint 和 sessions command 在输入边界调用 `ParseThreadID`，输出统一调用 `ThreadID.String()`；非法 UUID 返回 typed/user-visible error。
+- 将 CLI invocation 中实际承载 resume target 的字段统一命名为 ResumeThreadID；SessionOption.ID、AppExitInfo.ThreadID 和 resume hint 始终使用 ThreadID。
+- TUI/Application attachment、迟到 Event、MCP inventory、Git branch lookup 和 overlay matching 继续使用 generation + ThreadID；不以 SessionID 替代 Thread routing，也不执行强制类型转换、prefix trimming 或维护 display-only ID。
+- 保持用户可见的 session/list/resume 产品术语；状态诊断可以持有 SessionID，但用户可恢复 ID 与 Codex 风格 status item 显示当前 ThreadID。
+
+### T-09：Legacy Cleanup、Guards + Acceptance — `TODO`
+
+- 将测试 fixture 中的 `thread-*` identity 替换为稳定合法 UUID，增加 UUIDv7 generation/parse/codec、Root/child SessionID、Root resume child restore、internal child resume、Provider/Audit metadata、SQLite rebuild 与 CLI/TUI invalid input 覆盖。
+- Architecture guards 禁止 `NextID("thread")`、`protocol.ThreadID(value)`、`strings.TrimPrefix(..., "thread-")`、旧 SessionMeta `thread_id`、SQLite/StoredThread SessionID、将共享 SessionID 用作 Thread registry key，以及从 Tool Invocation.SessionID 路由 SubAgent。
+- 删除旧 SQLite、Rollout、fixture 和本地开发数据；运行 identity/thread/session/multi-agent/tool/audit/provider/persistence/app/TUI/CLI targeted tests、`make check`、`go test -race ./... -count=1` 与 `git diff --check`，全部通过后才能将 T 标记为 DONE。
+
+### T 出口
+
+- 新建 Root/child Thread 的 ID 均为 canonical UUIDv7，整个生产链不存在 `thread-` 前缀和通用 thread ID factory。
+- `/resume`、StoredThread、Rollout filename/metadata、Event scope 与 live registry 对同一 Thread 使用一个 typed canonical ThreadID，非法或不一致 identity 在边界被拒绝。
+- Root/child 共享真实 SessionID，但各自拥有独立 ThreadID；Root Resume 可恢复并校验 persisted child metadata，后续 child 操作继续按 child ThreadID 路由。
+- Tool/Audit/Provider metadata 同时表达真实 SessionID/ThreadID/TurnID；Event、Agent target、Application attachment、CLI/TUI resume 和 SQLite Thread index 不误用 SessionID。
+- canonical SessionID 只存在于 Rollout SessionMeta 和运行时 identity snapshot，SQLite StoredThread 不复制 SessionID。
+- 当前代码、schema、fixtures 和文档只保留 UUID identity contract，不包含旧数据兼容层。
+
+### T 验收
+
+- 连续创建多个 Root/child Thread 时 UUIDv7 唯一且可 canonical round-trip；Root SessionID 与 Root ThreadID 使用同一个 UUID value，child SessionID 继承 Root SessionID 且 child ThreadID 独立。
+- 通过 CLI、TUI picker 和 direct `/resume <uuid>` 恢复时均定位同一 StoredThread；非法 UUID、metadata mismatch 和不存在 Thread 返回明确错误且不改变 active attachment。
+- Root Resume 后 persisted child 以同一 SessionID 进入 Control metadata；对 unloaded child 执行 send_input 时按 child ThreadID 内部恢复，错误 SessionID/parent relation 被拒绝且不污染 registry。
+- 清空 SQLite 后可从当前 UUID Rollout 重建相同 ThreadID、parent relation 和 metadata index，并从每个 Rollout SessionMeta 恢复/校验 SessionID；旧 `thread-*` Rollout 或 schema 不被识别、迁移或静默接受。
+- Root/child Provider request 与 Audit record 显示相同 SessionID、不同 ThreadID 和正确 TurnID；`spawn_agent` 不读取 Invocation.SessionID 作为 parent target。
+
+## 23. 当前保留能力
 
 - 默认启动：`amadeus` 或 `amadeus "<task>"`。
 - 当前配置链和 Provider Adapter 已可使用 OpenAI Responses/Chat Completions 及兼容 Provider。
@@ -1362,7 +1531,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - P 已完成 Model Reasoning Effort 与 Provider Thinking Contract；当前生产主链可从配置冻结到 Turn，并贯通普通 sampling、Compaction 与 Provider wire request。
 - Q 已完成 Web Search/Fetch 与 `view_image` Contract Closure：Web 保持 pinned network、重定向 Approval、readable Markdown 与证据层级；图片主链完成 model-aware visibility、bounded preparation、Provider/Context projection、单份持久化和 `ViewImageCell`。
 
-## 22. 当前执行规则
+## 24. 当前执行规则
 
 1. 每次只推进一个 `TODO`/`DOING` 主任务。
 2. 先修改 `docs/design.md`，再修改代码；实现发现设计问题时暂停并同步 Contract。
@@ -1370,7 +1539,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 4. 任务完成必须运行针对性测试和构建；环境限制导致的测试失败要单独记录。
 5. 本文只更新任务状态和出口，不复制架构设计、源码审计或长篇讨论。
 
-## 23. 源码结构清理 — `DONE`
+## 25. 源码结构清理 — `DONE`
 
 ### 已完成
 

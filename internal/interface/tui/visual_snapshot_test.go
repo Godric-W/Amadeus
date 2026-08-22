@@ -56,13 +56,20 @@ func TestFullscreenRunKeepsMainScreenAndNativeMouse(t *testing.T) {
 	app, err := NewFullscreenApplication(FullscreenOptions{
 		Input: bytes.NewBufferString("/exit\r"), Output: &output, Width: 80, NoColor: true, DisableAnimations: true,
 		Application: newFakeFullscreenApplication(),
-		Snapshot:    application.ThreadViewSnapshot{Generation: 1, ThreadID: "thread-1", Model: "test"},
+		Snapshot: application.ThreadViewSnapshot{
+			Generation: 1, ThreadID: "thread-1",
+			Configuration: protocol.SessionConfiguration{Model: "test", Mode: protocol.ModeKindDefault},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Run(context.Background()); err != nil {
+	exitInfo, err := app.Run(context.Background())
+	if err != nil {
 		t.Fatal(err)
+	}
+	if exitInfo.ExitReason != ExitReasonUserRequested || exitInfo.ThreadID != "thread-1" || exitInfo.ResumeHint != "amadeus --resume thread-1" {
+		t.Fatalf("exit info = %#v", exitInfo)
 	}
 	rendered := output.String()
 	for _, forbidden := range []string{"?1049h", "?1049l", "?1000h", "?1002h", "?1003h"} {

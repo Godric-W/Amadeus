@@ -117,7 +117,7 @@ func (model fullscreenModel) handleSelectionKey(key tea.KeyMsg) (tea.Model, tea.
 				return model, model.input.Focus()
 			}
 			model.status = "deleting session"
-			generation := model.generation
+			generation := model.session.Generation
 			return model, func() tea.Msg {
 				model.app.options.Application.Delete(model.ctx, generation)
 				return nil
@@ -160,7 +160,6 @@ func (model fullscreenModel) handleSelectionKey(key tea.KeyMsg) (tea.Model, tea.
 			if selected != 0 {
 				return model, model.input.Focus()
 			}
-			model.collaboration = turn.ModeKindDefault
 			submission := model.prepareTaskSubmission("Implement the plan.", turn.ModeKindDefault, true)
 			return model, tea.Batch(model.flushHistory(), model.submitTask(submission))
 		}

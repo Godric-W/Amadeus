@@ -7,7 +7,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -20,11 +20,16 @@ func (model fullscreenModel) View() (rendered string) {
 			rendered = xansi.Strip(rendered)
 		}
 	}()
+	if model.exit.drainingFrame() {
+		return ""
+	}
+	if model.exit.shuttingDown() {
+		return model.shutdownView()
+	}
 	if model.viewingDetails {
 		return model.renderTranscriptViewer()
 	}
-	input := model.inputBox()
-	status := model.statusBar()
+	composer := model.composerView()
 	parts := make([]string, 0, 3)
 	if active := model.renderActiveCell(); active != "" {
 		parts = append(parts, active)
@@ -36,14 +41,13 @@ func (model fullscreenModel) View() (rendered string) {
 		parts = append(parts, working)
 	}
 	activity := strings.Join(parts, "\n\n")
-	inputRegion := input + "\n\n" + status
 	if activity == "" {
-		return "\n\n" + inputRegion
+		return "\n\n" + composer
 	}
 	if model.hasEmittedHistoryLines {
 		activity = "\n" + activity
 	}
-	return activity + "\n\n\n" + inputRegion
+	return activity + "\n\n\n" + composer
 }
 
 func newTranscriptViewport(width, height int) viewport.Model {
@@ -102,16 +106,16 @@ func (model fullscreenModel) banner() (rendered string) {
 		version = " (" + version + ")"
 	}
 	title := model.palette.dim().Render(">_ ") + model.palette.bold().Render("Amadeus") + model.palette.dim().Render(version)
-	modelName := strings.TrimSpace(model.model)
-	project := strings.TrimSpace(model.startup.Project)
+	modelName := strings.TrimSpace(model.session.Configuration.Model)
+	currentDir := strings.TrimSpace(model.session.Configuration.CWD)
 	rows := []string{title, ""}
 	innerWidth := minInt(maxInt(0, width-4), 56)
 	rowWidth := maxInt(12, innerWidth-2)
 	if modelName != "" {
 		rows = append(rows, bannerMetadataRow("model:", modelName, rowWidth))
 	}
-	if project != "" {
-		rows = append(rows, bannerMetadataRow("directory:", project, rowWidth))
+	if currentDir != "" {
+		rows = append(rows, bannerMetadataRow("directory:", currentDir, rowWidth))
 	}
 	panelWidth := maxInt(4, innerWidth)
 	panel := fullscreenPanelStyle.BorderForeground(model.palette.border().GetForeground()).Width(panelWidth).Render(strings.Join(rows, "\n"))
@@ -187,98 +191,38 @@ func (model fullscreenModel) inputBox() string {
 	if model.selection != nil {
 		return model.renderSelectionOverlay(width)
 	}
-	input := fullscreenInputFillStyle.Width(width).Render(strings.TrimRight(model.input.View(), "\n"))
+	return fullscreenInputFillStyle.Width(width).Render(strings.TrimRight(model.input.View(), "\n"))
+}
+
+func (model fullscreenModel) composerView() string {
+	input := model.inputBox()
+	auxiliary := model.composerAuxiliaryView()
+	if auxiliary == "" {
+		return input
+	}
+	return input + "\n\n" + auxiliary
+}
+
+func (model fullscreenModel) composerAuxiliaryView() string {
+	if model.selection != nil || model.approvalDialog != nil || model.userInputDialog != nil {
+		return ""
+	}
 	if model.slashPopup.active() {
-		visible, start := model.slashPopup.visibleItems()
-		items := make([]listVisualItem, 0, len(visible))
-		for index, command := range visible {
-			items = append(items, listVisualItem{
-				Name: "/" + command.Name(), Description: command.Description(),
-				Selected: start+index == model.slashPopup.selected,
-			})
-		}
-		list := model.renderListVisual(listVisual{
-			Items: items,
-		}, width)
-		return input + "\n\n" + list
+		return model.slashPopupView()
 	}
-	return input
+	return model.footerView()
 }
 
-func (model fullscreenModel) statusBar() string {
-	width := maxInt(40, model.width)
-	parts := []statusBarPart{}
-	if modelName := strings.TrimSpace(model.model); modelName != "" {
-		parts = append(parts, statusBarPart{text: modelName, style: model.palette.statusLineStyle(statusAccentModel)})
-	} else {
-		parts = append(parts, statusBarPart{text: "AMADEUS", style: model.palette.statusLineStyle(statusAccentModel)})
+func (model fullscreenModel) slashPopupView() string {
+	visible, start := model.slashPopup.visibleItems()
+	items := make([]listVisualItem, 0, len(visible))
+	for index, command := range visible {
+		items = append(items, listVisualItem{
+			Name: "/" + command.Name(), Description: command.Description(),
+			Selected: start+index == model.slashPopup.selected,
+		})
 	}
-	if title := strings.TrimSpace(model.sessionTitle); title != "" && title != "draft" {
-		parts = append(parts, statusBarPart{text: title, style: model.palette.dim()})
-	}
-	if project := strings.TrimSpace(model.startup.Project); project != "" {
-		parts = append(parts, statusBarPart{text: project, style: model.palette.statusLineStyle(statusAccentPath)})
-	}
-	if branch := strings.TrimSpace(model.startup.Branch); branch != "" {
-		parts = append(parts, statusBarPart{text: branch, style: model.palette.statusLineStyle(statusAccentBranch)})
-	}
-	if model.collaboration == turn.ModeKindPlan {
-		parts = append(parts, statusBarPart{text: "Plan", style: model.palette.statusLineStyle(statusAccentMode)})
-	}
-	contextWindow := model.contextLimit
-	if contextWindow <= 0 {
-		contextWindow = model.startup.ContextWindow
-	}
-	if contextWindow > 0 {
-		percent := int64(0)
-		if model.contextUsage > 0 {
-			percent = minInt64(100, model.contextUsage*100/contextWindow)
-		}
-		contextStyle := statusContextStyle(model.palette, percent)
-		parts = append(parts,
-			statusBarPart{text: fmt.Sprintf("Context %d%% used", percent), style: contextStyle},
-			statusBarPart{text: compactTokenCount(contextWindow) + " window", style: model.palette.statusLineStyle(statusAccentUsage)},
-		)
-	}
-	if len(parts) == 1 && strings.TrimSpace(model.startup.Project) == "" && strings.TrimSpace(model.startup.Branch) == "" && contextWindow <= 0 {
-		parts = append(parts, statusBarPart{text: model.status, style: model.palette.dim()})
-	}
-	line := renderStatusBarParts(parts, model.palette)
-	if lipgloss.Width(line) > width {
-		for len(parts) > 1 && lipgloss.Width(renderStatusBarParts(parts, model.palette)) > width {
-			parts = append(parts[:1], parts[2:]...)
-		}
-		line = xansi.Truncate(renderStatusBarParts(parts, model.palette), width, "")
-	}
-	return line
-}
-
-func statusContextStyle(palette terminalPalette, percent int64) lipgloss.Style {
-	switch {
-	case percent >= 90:
-		return palette.failure()
-	case percent >= 70:
-		return palette.warning()
-	default:
-		return palette.statusLineStyle(statusAccentUsage)
-	}
-}
-
-type statusBarPart struct {
-	text  string
-	style lipgloss.Style
-}
-
-func renderStatusBarParts(parts []statusBarPart, palette terminalPalette) string {
-	var builder strings.Builder
-	separator := palette.dim().Render(" · ")
-	for index, part := range parts {
-		if index > 0 {
-			builder.WriteString(separator)
-		}
-		builder.WriteString(part.style.Render(part.text))
-	}
-	return builder.String()
+	return model.renderListVisual(listVisual{Items: items, HideSelectionMarker: true}, maxInt(40, model.width))
 }
 
 func (model fullscreenModel) workingLine() string {
@@ -344,11 +288,33 @@ func minInt64(left, right int64) int64 {
 func (model *fullscreenModel) updateInputLayout() {
 	width := maxInt(40, model.width)
 	model.input.SetWidth(width - 2)
-	rows := 1 + strings.Count(model.input.Value(), "\n")
-	if rows > fullscreenMaxInputRows {
-		rows = fullscreenMaxInputRows
-	}
+	rows, _, _ := textareaVisualMetrics(model.input)
+	rows = minInt(fullscreenMaxInputRows, maxInt(1, rows))
 	model.input.SetHeight(rows)
+}
+
+func textareaVisualMetrics(input textarea.Model) (rows, cursorRow, cursorColumn int) {
+	logicalLines := strings.Split(input.Value(), "\n")
+	currentLine := minInt(maxInt(0, input.Line()), len(logicalLines)-1)
+	info := input.LineInfo()
+	rowsBefore := 0
+	rows = 0
+	for index, line := range logicalLines {
+		probe := input
+		probe.SetValue(line)
+		probe.CursorEnd()
+		height := maxInt(1, probe.LineInfo().Height)
+		if index < currentLine {
+			rowsBefore += height
+		}
+		rows += height
+	}
+	cursorRow = rowsBefore + info.RowOffset
+	visibleRows := minInt(fullscreenMaxInputRows, maxInt(1, rows))
+	cursorRow -= maxInt(0, rows-visibleRows)
+	cursorRow = minInt(maxInt(0, cursorRow), visibleRows-1)
+	cursorColumn = lipgloss.Width(fullscreenInputPrompt) + info.CharOffset
+	return rows, cursorRow, cursorColumn
 }
 
 func (model fullscreenModel) transcriptContent() string {
@@ -398,7 +364,7 @@ func (model fullscreenModel) renderActiveDraft() string {
 	if strings.TrimSpace(model.draft) == "" {
 		return ""
 	}
-	available := maxInt(1, model.height-lipgloss.Height(model.inputBox())-lipgloss.Height(model.statusBar())-2)
+	available := maxInt(1, model.height-lipgloss.Height(model.composerView())-2)
 	sourceLines := strings.Split(model.draft, "\n")
 	if len(sourceLines) > available {
 		sourceLines = sourceLines[len(sourceLines)-available:]
@@ -416,7 +382,7 @@ func (model fullscreenModel) renderActiveCell() string {
 		return ""
 	}
 	rendered := model.renderHistoryCell(model.transcript.ActiveCell)
-	available := maxInt(1, model.height-lipgloss.Height(model.inputBox())-lipgloss.Height(model.statusBar())-4)
+	available := maxInt(1, model.height-lipgloss.Height(model.composerView())-4)
 	lines := strings.Split(rendered, "\n")
 	if len(lines) > available {
 		lines = lines[len(lines)-available:]

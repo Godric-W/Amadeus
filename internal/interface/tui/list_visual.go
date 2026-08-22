@@ -17,14 +17,15 @@ type listVisualItem struct {
 }
 
 type listVisual struct {
-	Title      string
-	Subtitle   string
-	Hint       string
-	InputLabel string
-	InputValue string
-	Details    []string
-	Items      []listVisualItem
-	EmptyText  string
+	Title               string
+	Subtitle            string
+	Hint                string
+	InputLabel          string
+	InputValue          string
+	Details             []string
+	Items               []listVisualItem
+	EmptyText           string
+	HideSelectionMarker bool
 }
 
 func (model fullscreenModel) renderListVisual(visual listVisual, width int) string {
@@ -59,14 +60,14 @@ func (model fullscreenModel) renderListVisual(visual listVisual, width int) stri
 	}
 	nameWidth = minInt(nameWidth, maxInt(8, width/2))
 	for _, item := range visual.Items {
-		lines = append(lines, model.renderListVisualItem(item, nameWidth, width))
+		lines = append(lines, model.renderListVisualItem(item, nameWidth, width, visual.HideSelectionMarker))
 	}
 	return strings.Join(lines, "\n")
 }
 
-func (model fullscreenModel) renderListVisualItem(item listVisualItem, nameWidth, width int) string {
+func (model fullscreenModel) renderListVisualItem(item listVisualItem, nameWidth, width int, hideSelectionMarker bool) string {
 	prefix := "  "
-	if item.Selected {
+	if item.Selected && !hideSelectionMarker {
 		prefix = model.palette.selection().Render("›") + " "
 	}
 	name := truncateFullscreen(strings.TrimSpace(item.Name), nameWidth)
@@ -89,7 +90,7 @@ func (model fullscreenModel) renderListVisualItem(item listVisualItem, nameWidth
 		descriptionStyle = model.palette.selection()
 	} else if item.Disabled {
 		nameStyle = model.palette.dim()
-		if item.Selected {
+		if item.Selected && !hideSelectionMarker {
 			prefix = model.palette.dim().Render("›") + " "
 		}
 	}

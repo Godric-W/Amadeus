@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	application "github.com/Godric-W/Amadeus/internal/app"
 	runtimeprojection "github.com/Godric-W/Amadeus/internal/app/transcript"
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,12 +14,12 @@ import (
 func (model *fullscreenModel) handleAppEvent(event application.InteractiveEvent) tea.Cmd {
 	switch event := event.(type) {
 	case application.SessionEventObserved:
-		if event.Generation != model.generation || protocol.ThreadIDOf(event.Event.Msg) != protocol.ThreadID(applicationThreadID(model.startup.Session)) {
+		if event.Generation != model.session.Generation || protocol.ThreadIDOf(event.Event.Msg) != model.session.ThreadID {
 			return nil
 		}
 		return model.applyEvent(event.Event)
 	case application.ApprovalRequested:
-		if event.Generation != model.generation {
+		if event.Generation != model.session.Generation {
 			return nil
 		}
 		model.approval = &fullscreenApproval{requestID: event.RequestID, request: event.Request}
@@ -31,7 +30,7 @@ func (model *fullscreenModel) handleAppEvent(event application.InteractiveEvent)
 		model.status = "awaiting approval"
 		model.input.Blur()
 	case application.UserInputRequested:
-		if event.Generation != model.generation {
+		if event.Generation != model.session.Generation {
 			return nil
 		}
 		request := event.Request
@@ -57,13 +56,13 @@ func (model *fullscreenModel) handleAppEvent(event application.InteractiveEvent)
 		}
 		model.openSessions(event.Sessions)
 	case application.ThreadNameUpdated:
-		if event.Generation != model.generation || event.ThreadID != applicationThreadID(model.startup.Session) {
+		if event.Generation != model.session.Generation || event.ThreadID != model.session.ThreadID {
 			return nil
 		}
 		model.selection = nil
 		model.selectionKind = ""
-		model.startup.Session = string(event.ThreadID)
-		model.sessionTitle = event.Name
+		model.session.Title = event.Name
+		model.refreshStatusLine()
 		model.status = "idle"
 		model.insertHistoryCell(NewNoticeHistoryCell("Session renamed to " + event.Name))
 	case application.ThreadRenameFailed:
@@ -73,7 +72,8 @@ func (model *fullscreenModel) handleAppEvent(event application.InteractiveEvent)
 		model.selection = nil
 		model.selectionKind = ""
 		model.status = "deleted"
-		return tea.Quit
+		model.session = fullscreenSessionState{}
+		return model.requestExit(ExitModeImmediate, ExitReasonUserRequested, nil)
 	case application.ThreadDeleteFailed:
 		model.selection = nil
 		model.selectionKind = ""
@@ -86,7 +86,7 @@ func (model *fullscreenModel) handleAppEvent(event application.InteractiveEvent)
 		model.status = "starting new chat"
 		return tea.Sequence(func() tea.Msg { return tea.ClearScreen() }, tea.Println(model.banner()))
 	case application.MCPInventoryLoaded:
-		if event.RequestID != model.mcpRequestID || event.Generation != model.generation || event.ThreadID != applicationThreadID(model.startup.Session) {
+		if event.RequestID != model.mcpRequestID || event.Generation != model.session.Generation || event.ThreadID != model.session.ThreadID {
 			return nil
 		}
 		var cell HistoryCell
@@ -100,7 +100,7 @@ func (model *fullscreenModel) handleAppEvent(event application.InteractiveEvent)
 		model.insertHistoryCell(cell)
 		model.status = "idle"
 	case application.SkillsLoaded:
-		if event.Generation != model.generation {
+		if event.Generation != model.session.Generation {
 			return nil
 		}
 		model.status = "idle"
@@ -110,7 +110,7 @@ func (model *fullscreenModel) handleAppEvent(event application.InteractiveEvent)
 		}
 		model.openSkills(event.Skills)
 	case application.SkillEnabledSet:
-		if event.Generation != model.generation {
+		if event.Generation != model.session.Generation {
 			return nil
 		}
 		if event.Error != nil {
@@ -128,15 +128,6 @@ func (model *fullscreenModel) handleAppEvent(event application.InteractiveEvent)
 			model.app.options.Application.LoadSkills()
 			return nil
 		}
-	case application.ShutdownStarted:
-		model.shutdownRequested = true
-		model.status = "shutting down"
-		model.insertHistoryCell(NewNoticeHistoryCell("Shutting down…"))
-	case application.ShutdownFinished:
-		if event.Error != nil {
-			model.insertHistoryCell(NewErrorHistoryCell("shutdown: " + event.Error.Error()))
-		}
-		return tea.Quit
 	case application.ApplicationError:
 		model.insertHistoryCell(NewErrorHistoryCell(event.Operation + ": " + errorText(event.Error)))
 	}
@@ -145,29 +136,15 @@ func (model *fullscreenModel) handleAppEvent(event application.InteractiveEvent)
 
 func (model *fullscreenModel) attachSnapshot(snapshot application.ThreadViewSnapshot) tea.Cmd {
 	model.clearInteractiveState()
-	model.generation = snapshot.Generation
-	model.startup.Session = string(snapshot.ThreadID)
-	model.startup.Provider = snapshot.Provider
-	model.startup.Model = snapshot.Model
-	model.startup.ContextWindow = snapshot.ContextWindow
-	model.model = snapshot.Model
-	model.sessionTitle = snapshot.Title
-	model.collaboration = turn.ModeKindDefault
-	if snapshot.Mode == turn.ModeKindPlan {
-		model.collaboration = turn.ModeKindPlan
-	}
-	model.inputUsage = snapshot.Usage.InputTokens
-	model.outputUsage = snapshot.Usage.OutputTokens
-	model.contextUsage = snapshot.Usage.TotalTokens
-	model.contextLimit = snapshot.ContextWindow
-	model.runtimeTranscript = runtimeprojection.New(protocol.ThreadID(snapshot.ThreadID))
+	branchLookup := model.applyThreadViewSnapshot(snapshot)
+	model.runtimeTranscript = runtimeprojection.New(snapshot.ThreadID)
 	model.restoreCompletedItems(snapshot.Items)
 	model.pendingHistoryCells = append([]HistoryCell(nil), model.historyCells...)
 	model.hasEmittedHistoryLines = false
 	model.clearing = false
 	model.status = "idle"
 	focus := model.input.Focus()
-	return tea.Sequence(func() tea.Msg { return tea.ClearScreen() }, tea.Println(model.banner()), model.flushHistory(), focus)
+	return tea.Sequence(func() tea.Msg { return tea.ClearScreen() }, tea.Println(model.banner()), model.flushHistory(), focus, branchLookup)
 }
 
 func (model *fullscreenModel) clearInteractiveState() {

@@ -102,7 +102,6 @@ func TestRestoreCompletedToolItemsPreservesToolSpecificProjection(t *testing.T) 
 	}
 
 	_, replay := newTestFullscreen(t, func(options *FullscreenOptions) {
-		options.Startup.Session = "thread-replay"
 		options.Snapshot.ThreadID = "thread-replay"
 		options.Snapshot.Items = []protocol.TurnItem{readCompleted, writeCompleted}
 	})

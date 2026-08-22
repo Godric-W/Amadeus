@@ -64,6 +64,7 @@ type ActiveTurn struct {
 type Session struct {
 	threadID   protocol.ThreadID
 	state      SessionState
+	configMu   sync.RWMutex
 	services   SessionServices
 	active     *ActiveTurn
 	deferred   []protocol.Submission
@@ -102,6 +103,7 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 		return nil, SessionIo{}, fmt.Errorf("validate initial history: %w", err)
 	}
 	ctx, cancel := context.WithCancelCause(parent)
+	args.State.Configuration = cloneConfiguration(args.State.Configuration)
 	closeSpawnServices := func() {
 		_ = args.Services.Close()
 		_ = args.Services.LiveThread.Shutdown(context.Background())
@@ -152,13 +154,7 @@ func (session *Session) loop() {
 	}()
 	defer func() { _ = session.services.Close() }()
 	session.publish(protocol.Event{Msg: protocol.SessionConfiguredEvent{
-		ThreadID: protocol.ThreadID(session.threadID),
-		Configuration: protocol.SessionConfiguration{
-			Source: session.state.Configuration.Source.Clone(), CWD: session.state.Configuration.CWD, Provider: session.state.Configuration.Runtime.ModelProvider,
-			Model:           session.state.Configuration.Runtime.Model,
-			ReasoningEffort: llm.CloneReasoningEffort(session.state.Configuration.Runtime.ModelReasoningEffort),
-			Mode:            string(session.state.Configuration.Mode),
-		},
+		ThreadID: session.threadID, Configuration: session.ProtocolConfiguration(),
 	}})
 	sessionDone := session.ctx.Done()
 	for {
@@ -229,8 +225,10 @@ func (session *Session) handleSubmission(submission protocol.Submission) {
 			return
 		}
 		if op.Mode.Valid() {
-			session.state.Configuration.Mode = turn.ModeKind(op.Mode)
-			session.publish(protocol.Event{ID: submission.ID, Msg: protocol.ThreadSettingsAppliedEvent{ThreadID: protocol.ThreadID(session.threadID), Mode: string(op.Mode)}})
+			session.setMode(turn.ModeKind(op.Mode))
+			session.publish(protocol.Event{ID: submission.ID, Msg: protocol.ThreadSettingsAppliedEvent{
+				ThreadID: session.threadID, Configuration: session.ProtocolConfiguration(),
+			}})
 		}
 	case protocol.ApprovalDecisionOp:
 		session.resolveRequest(op.RequestID, op)
@@ -249,8 +247,10 @@ func (session *Session) admitUserMessage(submissionID protocol.SubmissionID, op 
 		if !mode.Valid() {
 			return protocol.UserMessageAdmission{}, fmt.Errorf("collaboration mode %q is invalid", mode)
 		}
-		session.state.Configuration.Mode = turn.ModeKind(mode)
-		session.publish(protocol.Event{ID: submissionID, Msg: protocol.ThreadSettingsAppliedEvent{ThreadID: session.threadID, Mode: string(mode)}})
+		session.setMode(turn.ModeKind(mode))
+		session.publish(protocol.Event{ID: submissionID, Msg: protocol.ThreadSettingsAppliedEvent{
+			ThreadID: session.threadID, Configuration: session.ProtocolConfiguration(),
+		}})
 	}
 	turnID, err := session.steerInput(UserTurnInput{Content: content, ClientID: strings.TrimSpace(op.ClientUserMessageID)}, "")
 	if err == nil {
@@ -304,20 +304,21 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input, cli
 	}
 	now := session.services.Clock().UTC()
 	turnID := protocol.TurnID(session.services.NextID("turn"))
+	configuration := session.Configuration()
 	baseContext := turn.TurnContext{
 		SubmissionID: submissionID,
-		ThreadID:     session.threadID, TurnID: turnID, Provider: session.state.Configuration.Runtime.ModelProvider,
-		Model:           session.state.Configuration.Runtime.Model,
-		ReasoningEffort: llm.CloneReasoningEffort(session.state.Configuration.Runtime.ModelReasoningEffort),
-		CWD:             session.state.Configuration.CWD, Shell: session.state.Configuration.Shell,
-		CurrentDate: session.state.Configuration.CurrentDate, Timezone: session.state.Configuration.Timezone,
-		Mode: session.Mode(), Personality: session.state.Configuration.Personality,
-		OutputSchema:       append(json.RawMessage(nil), session.state.Configuration.OutputSchema...),
-		OutputSchemaStrict: session.state.Configuration.OutputSchemaStrict,
+		ThreadID:     session.threadID, TurnID: turnID, Provider: configuration.Runtime.ModelProvider,
+		Model:           configuration.Runtime.Model,
+		ReasoningEffort: llm.CloneReasoningEffort(configuration.Runtime.ModelReasoningEffort),
+		CWD:             configuration.CWD, Shell: configuration.Shell,
+		CurrentDate: configuration.CurrentDate, Timezone: configuration.Timezone,
+		Mode: configuration.Mode, Personality: configuration.Personality,
+		OutputSchema:       append(json.RawMessage(nil), configuration.OutputSchema...),
+		OutputSchemaStrict: configuration.OutputSchemaStrict,
 	}
 	createInput := thread.CreateInput{
-		ID: session.threadID, Source: session.state.Configuration.Source.Clone(), CWD: session.state.Configuration.CWD, Title: titleFromInput(input),
-		ModelProvider: session.state.Configuration.Runtime.ModelProvider, Model: session.state.Configuration.Runtime.Model, CreatedAt: now,
+		ID: session.threadID, Source: configuration.Source.Clone(), CWD: configuration.CWD, Title: titleFromInput(input),
+		ModelProvider: configuration.Runtime.ModelProvider, Model: configuration.Runtime.Model, CreatedAt: now,
 	}
 	materialized, err := session.materialize(session.ctx, createInput)
 	if err != nil {
@@ -387,13 +388,6 @@ func (session *Session) watchRunningTask(running *RunningTask) {
 		case <-session.terminated:
 		}
 	}()
-}
-
-func (session *Session) Mode() turn.ModeKind {
-	if session == nil {
-		return turn.ModeKindDefault
-	}
-	return session.state.Configuration.Mode
 }
 
 func (session *Session) publishCompactionEvents(submissionID protocol.SubmissionID, turnID protocol.TurnID, items []rollout.RolloutItem) {

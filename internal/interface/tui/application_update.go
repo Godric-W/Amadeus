@@ -21,6 +21,10 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.resizeTranscriptViewport()
 		return model, nil
 	case fullscreenAppEventMsg:
+		if model.exit.active() {
+			model.captureExitAppEvent(message.event)
+			return model, nil
+		}
 		command := model.handleAppEvent(message.event)
 		if model.viewingDetails && model.details != nil && !model.details.Empty() {
 			model.refreshTranscriptViewport()
@@ -35,15 +39,27 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case fullscreenUserMessageRejectedMsg:
 		model.handleUserMessageRejection(message)
 		return model, model.flushHistory()
+	case statusLineBranchUpdatedMsg:
+		model.applyStatusLineBranchUpdate(message)
+		return model, nil
 	case fullscreenWorkingTickMsg:
 		if (!model.running && !model.retryStatus.active) || model.approval != nil || model.userInputDialog != nil {
 			return model, nil
 		}
 		return model, model.workingTick()
+	case fullscreenShutdownFinishedMsg:
+		return model, model.completeShutdown(message.err)
+	case fullscreenShutdownTimeoutMsg:
+		return model, model.expireShutdown()
+	case fullscreenExitFrameDrainedMsg:
+		return model, model.finishExitFrameDrain()
 	case tea.MouseMsg:
 		model.lastMouseEvent = time.Now()
 		return model, nil
 	case tea.KeyMsg:
+		if model.exit.active() {
+			return model, nil
+		}
 		if model.isRecentMouseControlFragment(message) {
 			model.lastMouseEvent = time.Now()
 			return model, nil
@@ -82,6 +98,7 @@ func (model *fullscreenModel) handleOperationFailure(message fullscreenOperation
 		model.running = false
 		model.status = "idle"
 	case "set collaboration mode":
+		model.pendingMode = ""
 		model.status = "idle"
 	}
 }
@@ -94,10 +111,14 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 			model.insertHistoryCell(NewNoticeHistoryCell("Collaboration mode cannot change while a task is in progress."))
 			return model, model.flushHistory()
 		}
+		if model.pendingMode.Valid() {
+			return model, nil
+		}
 		nextMode := turn.ModeKindPlan
-		if model.collaboration == turn.ModeKindPlan {
+		if model.session.mode() == turn.ModeKindPlan {
 			nextMode = turn.ModeKindDefault
 		}
+		model.pendingMode = nextMode
 		model.status = "switching mode"
 		return model, model.setMode(nextMode)
 	case "ctrl+c":
@@ -110,13 +131,8 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		model.updateInputLayout()
 		return model, nil
 	case "ctrl+d":
-		if !model.running && strings.TrimSpace(model.input.Value()) == "" {
-			if model.shutdownRequested {
-				return model, nil
-			}
-			model.shutdownRequested = true
-			model.status = "shutting down"
-			return model, model.shutdown()
+		if strings.TrimSpace(model.input.Value()) == "" {
+			return model, model.requestExit(ExitModeShutdownFirst, ExitReasonUserRequested, nil)
 		}
 	case "ctrl+t":
 		if model.details == nil || model.details.Empty() {
@@ -209,7 +225,7 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		model.updateInputLayout()
 		model.history = append(model.history, text)
 		model.historyPos = -1
-		submission := model.prepareTaskSubmission(text, model.collaboration, false)
+		submission := model.prepareTaskSubmission(text, model.session.mode(), false)
 		return model, tea.Batch(model.flushHistory(), model.submitTask(submission))
 	}
 	var command tea.Cmd
@@ -223,7 +239,7 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 
 func (model *fullscreenModel) prepareTaskSubmission(content string, mode turn.ModeKind, overrideMode bool) TaskSubmission {
 	model.nextClientUserMessage++
-	clientID := fmt.Sprintf("tui-user-%d-%d", model.generation, model.nextClientUserMessage)
+	clientID := fmt.Sprintf("tui-user-%d-%d", model.session.Generation, model.nextClientUserMessage)
 	if model.optimisticUserMessages == nil {
 		model.optimisticUserMessages = make(map[string]string)
 	}

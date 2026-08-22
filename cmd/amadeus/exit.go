@@ -25,10 +25,15 @@ type commandExitError struct {
 	code     int
 	message  string
 	reported bool
+	cause    error
 }
 
 func (err *commandExitError) Error() string {
 	return err.message
+}
+
+func (err *commandExitError) Unwrap() error {
+	return err.cause
 }
 
 func exitCode(err error) int {

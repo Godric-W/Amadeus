@@ -12,7 +12,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
-	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/state"
 	"github.com/Godric-W/Amadeus/internal/thread"
@@ -45,7 +44,6 @@ type AmadeusThread struct {
 	session          *agentsession.Session
 	io               agentsession.SessionIo
 	nextID           func(string) string
-	configuration    agentsession.Configuration
 	agentControl     *multiagent.Control
 	ownsAgentControl bool
 }
@@ -146,7 +144,7 @@ func (manager *ThreadManager) spawn(ctx context.Context, id protocol.ThreadID, l
 	}
 	value := &AmadeusThread{
 		manager: manager, id: id, live: live, session: session, io: io, nextID: manager.services.NextID,
-		configuration: input.Configuration, agentControl: control, ownsAgentControl: ownsControl,
+		agentControl: control, ownsAgentControl: ownsControl,
 	}
 	manager.mu.Lock()
 	if existing := manager.threads[id]; existing != nil {
@@ -274,7 +272,7 @@ func (manager *ThreadManager) SpawnChild(ctx context.Context, control *multiagen
 		return nil, fmt.Errorf("parent thread %q is unavailable", request.ParentThreadID)
 	}
 	id := protocol.ThreadID(manager.services.NextID("thread"))
-	configuration := cloneSessionConfiguration(parent.configuration)
+	configuration := parent.session.Configuration()
 	configuration.Source = protocol.NewSubAgentSessionSource(request.ParentThreadID, request.Depth, request.Nickname, request.Role)
 	configuration.Mode = turn.ModeKindDefault
 	live, err := thread.NewDraftLiveThread(id, manager.store)
@@ -312,15 +310,6 @@ func (manager *ThreadManager) NotifyParent(ctx context.Context, parentID protoco
 	return parent.session.AppendSubagentNotification(ctx, notification.Metadata.ThreadID, content)
 }
 
-func cloneSessionConfiguration(configuration agentsession.Configuration) agentsession.Configuration {
-	cloned := configuration
-	cloned.Runtime = config.Clone(configuration.Runtime)
-	cloned.WorkspaceRoots = append([]string(nil), configuration.WorkspaceRoots...)
-	cloned.OutputSchema = append([]byte(nil), configuration.OutputSchema...)
-	cloned.Source = configuration.Source.Clone()
-	return cloned
-}
-
 func (threadRuntime *AmadeusThread) ID() protocol.ThreadID {
 	if threadRuntime == nil {
 		return ""
@@ -353,11 +342,18 @@ func (threadRuntime *AmadeusThread) RolloutItemCount() int {
 	return threadRuntime.session.RolloutItemCount()
 }
 
-func (threadRuntime *AmadeusThread) Mode() turn.ModeKind {
+func (threadRuntime *AmadeusThread) Configuration() protocol.SessionConfiguration {
 	if threadRuntime == nil || threadRuntime.session == nil {
-		return turn.ModeKindDefault
+		return protocol.SessionConfiguration{}
 	}
-	return threadRuntime.session.Mode()
+	return threadRuntime.session.ProtocolConfiguration()
+}
+
+func (threadRuntime *AmadeusThread) ContextWindow() int64 {
+	if threadRuntime == nil || threadRuntime.session == nil {
+		return 0
+	}
+	return threadRuntime.session.Configuration().Runtime.ModelContextWindow
 }
 
 func (threadRuntime *AmadeusThread) Submit(ctx context.Context, op protocol.Op) error {

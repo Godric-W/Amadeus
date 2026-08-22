@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/alecthomas/chroma/v2"
+	chromastyles "github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 )
@@ -35,13 +37,9 @@ const (
 	statusAccentModel statusLineAccent = iota
 	statusAccentPath
 	statusAccentBranch
-	statusAccentState
 	statusAccentUsage
-	statusAccentLimit
-	statusAccentMetadata
 	statusAccentMode
 	statusAccentThread
-	statusAccentProgress
 )
 
 func detectTerminalPalette(noColor bool) terminalPalette {
@@ -134,14 +132,42 @@ func (p terminalPalette) statusLineStyle(accent statusLineAccent) lipgloss.Style
 	if p.Level == colorLevelANSI16 {
 		return p.plain().Foreground(lipgloss.Color(ansi))
 	}
+	if themed, ok := statusLineThemeRGB(accent, p.Dark); ok {
+		rgb = themed
+	}
 	return p.plain().Foreground(p.bestColor(softenStatusLineRGB(rgb)))
+}
+
+func statusLineThemeRGB(accent statusLineAccent, dark bool) (terminalRGB, bool) {
+	themeName := "catppuccin-mocha"
+	if !dark {
+		themeName = "catppuccin-latte"
+	}
+	token := chroma.NameClass
+	switch accent {
+	case statusAccentPath:
+		token = chroma.LiteralString
+	case statusAccentBranch:
+		token = chroma.NameFunction
+	case statusAccentUsage:
+		token = chroma.LiteralNumber
+	case statusAccentMode:
+		token = chroma.Keyword
+	case statusAccentThread:
+		token = chroma.GenericHeading
+	}
+	colour := chromastyles.Get(themeName).Get(token).Colour
+	if !colour.IsSet() {
+		return terminalRGB{}, false
+	}
+	return terminalRGB{Red: colour.Red(), Green: colour.Green(), Blue: colour.Blue()}, true
 }
 
 func statusLineFallback(accent statusLineAccent) (string, terminalRGB) {
 	switch accent {
-	case statusAccentPath, statusAccentUsage, statusAccentProgress:
+	case statusAccentPath, statusAccentUsage:
 		return "2", terminalRGB{0, 205, 0}
-	case statusAccentBranch, statusAccentLimit, statusAccentThread:
+	case statusAccentBranch, statusAccentMode, statusAccentThread:
 		return "5", terminalRGB{205, 0, 205}
 	default:
 		return "6", terminalRGB{0, 205, 205}

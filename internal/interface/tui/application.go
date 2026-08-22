@@ -13,6 +13,7 @@ import (
 	runtimeprojection "github.com/Godric-W/Amadeus/internal/app/transcript"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,13 +22,7 @@ import (
 )
 
 type FullscreenStartup struct {
-	Version       string
-	Provider      string
-	Model         string
-	Project       string
-	Branch        string
-	Session       string
-	ContextWindow int64
+	Version string
 }
 
 type FullscreenClipboardWriter func(string) error
@@ -49,7 +44,7 @@ type FullscreenApplicationPort interface {
 	LoadMCP(context.Context, uint64, application.MCPDetail)
 	LoadSkills()
 	SetSkillEnabled(string, bool)
-	Shutdown(context.Context)
+	Shutdown(context.Context) error
 }
 
 type FullscreenOptions struct {
@@ -95,12 +90,9 @@ type fullscreenModel struct {
 	status                  string
 	statusDetails           string
 	retryStatus             savedStatus
-	model                   string
-	sessionTitle            string
-	inputUsage              int64
-	outputUsage             int64
-	contextUsage            int64
-	contextLimit            int64
+	session                 fullscreenSessionState
+	footer                  footerState
+	workspace               statusLineWorkspaceState
 	history                 []string
 	historyPos              int
 	runStartedAt            time.Time
@@ -117,15 +109,14 @@ type fullscreenModel struct {
 	userInputDialog         *requestUserInputDialog
 	sessions                []application.SessionOption
 	slashPopup              slashCommandPopup
-	collaboration           turn.ModeKind
+	pendingMode             turn.ModeKind
 	selection               *selectionOverlay
 	selectionKind           string
 	skills                  []application.SkillOption
 	pendingSkillsView       string
-	generation              uint64
 	mcpRequestID            uint64
 	clearing                bool
-	shutdownRequested       bool
+	exit                    fullscreenExitState
 	nextClientUserMessage   uint64
 	optimisticUserMessages  map[string]string
 	seenRuntimeUserMessages map[string]struct{}
@@ -214,9 +205,9 @@ func NewFullscreenApplication(options FullscreenOptions) (*FullscreenApplication
 	return &FullscreenApplication{options: options, done: make(chan struct{})}, nil
 }
 
-func (app *FullscreenApplication) Run(ctx context.Context) error {
+func (app *FullscreenApplication) Run(ctx context.Context) (AppExitInfo, error) {
 	if app == nil {
-		return errors.New("fullscreen TUI application is nil")
+		return AppExitInfo{}, errors.New("fullscreen TUI application is nil")
 	}
 	model := newFullscreenModel(ctx, app)
 	originalColorProfile := lipgloss.ColorProfile()
@@ -228,7 +219,7 @@ func (app *FullscreenApplication) Run(ctx context.Context) error {
 	app.program = program
 	app.programMutex.Unlock()
 	go app.forwardEvents(ctx)
-	_, err := program.Run()
+	finalModel, err := program.Run()
 	app.programMutex.Lock()
 	app.program = nil
 	select {
@@ -237,16 +228,28 @@ func (app *FullscreenApplication) Run(ctx context.Context) error {
 		close(app.done)
 	}
 	app.programMutex.Unlock()
-	if errors.Is(err, tea.ErrProgramKilled) && ctx.Err() != nil {
-		return ctx.Err()
+	exitInfo := model.appExitInfo()
+	if final, ok := finalModel.(fullscreenModel); ok {
+		exitInfo = final.appExitInfo()
 	}
-	return err
+	if errors.Is(err, tea.ErrProgramKilled) && ctx.Err() != nil {
+		exitInfo.ExitReason = ExitReasonFatal
+		exitInfo.Error = ctx.Err()
+		return exitInfo, ctx.Err()
+	}
+	if err != nil {
+		exitInfo.ExitReason = ExitReasonFatal
+		exitInfo.Error = err
+	}
+	return exitInfo, err
 }
 
 func (app *FullscreenApplication) forwardEvents(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-app.done:
 			return
 		case event, ok := <-app.options.Application.Events():
 			if !ok {
@@ -311,32 +314,23 @@ func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscr
 	input.SetWidth(80)
 	input.SetHeight(1)
 	input.Focus()
+	_ = input.Cursor.SetMode(cursor.CursorStatic)
 	renderer, _ := newFullscreenMarkdownRenderer(94, palette)
 	startup := app.options.Startup
 	snapshot := app.options.Snapshot
-	startup.Session = string(snapshot.ThreadID)
-	startup.Provider = snapshot.Provider
-	startup.Model = snapshot.Model
-	startup.ContextWindow = snapshot.ContextWindow
 	initialWidth := app.options.Width
 	if initialWidth < 20 {
 		initialWidth = 100
 	}
 	model := fullscreenModel{
 		app: app, ctx: ctx, startup: startup, input: input, renderer: renderer,
-		width: initialWidth, height: 30, status: "idle", model: startup.Model, historyPos: -1, collaboration: turn.ModeKindDefault,
-		sessionTitle: snapshot.Title,
-		palette:      palette, clock: systemMotionClock{}, motion: motionAnimated, motionStartedAt: time.Now(),
+		width: initialWidth, height: 30, status: "idle", historyPos: -1,
+		palette: palette, clock: systemMotionClock{}, motion: motionAnimated, motionStartedAt: time.Now(),
 		details: newTranscriptDetailStore(0, 0), detailViewport: newTranscriptViewport(initialWidth, 30),
-		runtimeTranscript: runtimeprojection.New(protocol.ThreadID(startup.Session)), generation: snapshot.Generation,
+		runtimeTranscript:      runtimeprojection.New(snapshot.ThreadID),
 		optimisticUserMessages: make(map[string]string), seenRuntimeUserMessages: make(map[string]struct{}),
 	}
-	if snapshot.Mode == turn.ModeKindPlan {
-		model.collaboration = turn.ModeKindPlan
-	}
-	model.inputUsage = snapshot.Usage.InputTokens
-	model.outputUsage = snapshot.Usage.OutputTokens
-	model.contextUsage = snapshot.Usage.TotalTokens
+	_ = model.applyThreadViewSnapshot(snapshot)
 	if app.options.DisableAnimations {
 		model.motion = motionReduced
 	}
@@ -353,7 +347,7 @@ func (model fullscreenModel) Init() tea.Cmd {
 	if len(model.historyCells) > 0 {
 		header += "\n\n" + renderHistoryCells(model.historyCells, model.historyMode, model.historyRenderContext())
 	}
-	commands := []tea.Cmd{tea.Println(header), tea.HideCursor, model.input.Focus()}
+	commands := []tea.Cmd{tea.Println(header), tea.HideCursor, model.input.Focus(), model.statusLineBranchLookupCommand()}
 	if model.app.options.OpenSessions {
 		commands = append(commands, model.loadSessions())
 	}

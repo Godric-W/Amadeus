@@ -12,12 +12,10 @@ type ThreadViewSnapshot struct {
 	Generation    uint64
 	ThreadID      protocol.ThreadID
 	Title         string
-	Mode          turn.ModeKind
+	Configuration protocol.SessionConfiguration
 	Items         []protocol.TurnItem
 	Usage         llm.Usage
 	ContextWindow int64
-	Provider      string
-	Model         string
 }
 
 type SessionOption struct {
@@ -65,7 +63,7 @@ type MCPInventory struct {
 type StatusSnapshot struct {
 	ThreadID             protocol.ThreadID
 	Title                string
-	Project              string
+	CurrentDir           string
 	Provider             string
 	Model                string
 	ReasoningEffort      *llm.ReasoningEffort
@@ -169,14 +167,6 @@ type SkillEnabledSet struct {
 }
 
 func (SkillEnabledSet) isInteractiveEvent() {}
-
-type ShutdownStarted struct{}
-
-func (ShutdownStarted) isInteractiveEvent() {}
-
-type ShutdownFinished struct{ Error error }
-
-func (ShutdownFinished) isInteractiveEvent() {}
 
 type ApplicationError struct {
 	Operation string

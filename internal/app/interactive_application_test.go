@@ -18,9 +18,9 @@ import (
 func TestInteractiveApplicationOwnsThreadLifecycleAndReplay(t *testing.T) {
 	ctx := context.Background()
 	workspace, configuration := newInteractiveTestWorkspace(t, ctx)
+	configuration.Runtime.ModelContextWindow = 128000
 	application, err := NewInteractiveApplication(ctx, InteractiveOptions{
-		Workspace: workspace, Configuration: configuration, Project: configuration.CWD,
-		Provider: configuration.Runtime.ModelProvider, Model: configuration.Runtime.Model, ContextWindow: 128000,
+		Workspace: workspace, Configuration: configuration,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -42,10 +42,14 @@ func TestInteractiveApplicationOwnsThreadLifecycleAndReplay(t *testing.T) {
 	}
 	settings := waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
 		updated, ok := event.Event.Msg.(protocol.ThreadSettingsAppliedEvent)
-		return ok && updated.Mode == string(turn.ModeKindPlan)
+		return ok && updated.Configuration.Mode == protocol.ModeKindPlan
 	})
 	if settings.Generation != initial.Generation {
 		t.Fatalf("settings generation = %d", settings.Generation)
+	}
+	applied := settings.Event.Msg.(protocol.ThreadSettingsAppliedEvent).Configuration
+	if applied.CWD != configuration.CWD || applied.Provider != configuration.Runtime.ModelProvider || applied.Model != configuration.Runtime.Model || applied.Mode != protocol.ModeKindPlan {
+		t.Fatalf("applied configuration = %#v", applied)
 	}
 
 	admission, err := application.SubmitUser(ctx, "inspect repository", "client-1", protocol.ThreadSettingsOverrides{})

@@ -1,7 +1,7 @@
 # Amadeus 架构设计
 
 > 状态：Target Architecture v2
-> 最近修订：2026-08-21
+> 最近修订：2026-08-22
 > 目标语言：Go
 > 产品形态：面向真实软件工程任务的本地 Coding Agent CLI
 > 架构骨架：`../codex-main`
@@ -66,6 +66,7 @@ Amadeus 当前处于未发布开发阶段，不承诺自身旧实现的任何兼
 | N. Runtime Coordination Tools + Plan Mode Alignment | `update_plan`、`request_user_input`、Collaboration Mode 与 Proposed Plan lifecycle |
 | O. Same-Turn User Input + Turn Steer Alignment | UserMessageAdmission、TurnInputQueue、same-Turn continuation、client message identity 与 TUI steer UX |
 | R. Basic Multi-Agent Alignment | Codex V1 风格 AgentControl、SubAgent Thread、协作 Tool、Prompt、Event/Rollout 与 TUI projection |
+| T. Thread + Session UUID Identity Alignment | UUIDv7 ThreadID、SessionID/ThreadID 语义、创建/恢复生命周期、Persistence 与 Resume boundary |
 
 ## 2. 产品目标
 
@@ -336,7 +337,53 @@ internal/tool/builtin/
 
 ### 8.1 Thread Identity 与 Project Context
 
-`ThreadID` 是持久化对话的唯一身份；`AmadeusThread` 是该 Thread 在当前进程中的活动 Runtime 句柄。用户界面继续使用 Session 语义，例如 `amadeus sessions list`、`/resume` 和 `amadeus --resume <id>`。
+`ThreadID` 是一条持久化对话 Thread 的 canonical identity；`AmadeusThread` 是该 Thread 在当前进程中的活动 Runtime 句柄。用户界面可以继续使用 Session 语义，例如 `amadeus sessions list`、`/resume` 和 `amadeus --resume <id>`，但这些恢复入口实际选择和恢复的是 `ThreadID`，内部字段、参数和 operation 不得将其误命名为 `SessionID`。
+
+Amadeus 对齐 Codex，将 `ThreadID` 与 `SessionID` 建模为两个封装 UUID 的 Protocol/Identity value object，而不是允许任意安全字符的字符串 newtype，也不使用 alias 伪造两个领域类型：
+
+```go
+type ThreadID struct {
+    uuid uuid.UUID
+}
+
+type SessionID struct {
+    uuid uuid.UUID
+}
+
+func NewThreadID() (ThreadID, error)
+func ParseThreadID(value string) (ThreadID, error)
+func ParseSessionID(value string) (SessionID, error)
+func SessionIDFromThreadID(id ThreadID) SessionID
+func (id ThreadID) String() string
+func (id ThreadID) IsZero() bool
+```
+
+- Amadeus 创建的新 Thread 一律使用 UUIDv7；生成职责属于 Protocol/Identity domain，不属于 CLI Composition Root、ThreadStore 或通用 `NextID(kind)` factory。
+- `ParseThreadID` 接受合法 UUID 并规范化为小写、带连字符的 canonical 表达；Resume 不要求输入 UUID 必须是 v7，但所有 Amadeus-generated ThreadID 必须是 v7。
+- `ThreadID` 必须保持可比较，从而可以安全作为 ThreadManager、AgentControl 和 projector map 的 key；零值只表示未建立/缺失 identity，不能进入已创建 Thread、Event scope 或 Persistence。
+- JSON、CLI、Tool argument、SQLite 和文件名边界统一使用 `ThreadID.String()`；反向进入 Domain 时必须调用 `ParseThreadID`，禁止 `ThreadID(value)` 强制转换、`strings.TrimPrefix("thread-")` 或 UI-only display ID。
+- ThreadID 的 JSON/Text codec 属于 Protocol/Identity；SQLite adapter 显式扫描字符串并解析，不让 Identity domain 依赖 `database/sql`。
+
+Codex 的 `SessionID` 与 `ThreadID` 是两个独立领域类型，即使 Root Thread 创建时二者具有相同 UUID：
+
+```text
+Root Thread:  SessionID 与 ThreadID 使用同一个 UUID value
+Child Thread: SessionID == Root SessionID
+              ThreadID  == Child 自己的 UUIDv7
+```
+
+`SessionID` 表示 root 与其 child threads 共享的 agent-tree/session-level identity；`ThreadID` 表示具体 Thread、Rollout、运行态 registry entry、Event scope 和 Resume target。Root 创建时由 Root ThreadID 派生 SessionID；child 创建时生成新的 ThreadID，并从共享 AgentControl 继承 SessionID。没有真实 session-level correlation/ownership 需求的接口不得仅为了用户文案引入或传递 `SessionID`。
+
+身份所有权固定为：
+
+| 领域 | Canonical identity |
+|---|---|
+| Root/child tree correlation、Provider metadata、Audit aggregation | SessionID |
+| ThreadManager registry、AgentID、parent/child relation、Event routing、Resume、rename/delete | ThreadID |
+| Turn、Tool execution owner、Approval/UserInput event scope | ThreadID + TurnID |
+| `execute_command`/`write_stdin` 模型参数中的 `session_id` | Process session/process ID，不是 Agent SessionID |
+
+共享 SessionID 不意味着共享全部可变状态。Root 与 child 的 Context、ActiveTurn、SessionPermissionContext、ProcessManager、Tool state 和 Rollout 继续隔离；只有 AgentControl、明确的 tree-level budget/correlation 和身份归属可以共享。
 
 Project Context 由启动目录或 `--project` 指定目录形成 canonical CWD：
 
@@ -364,10 +411,23 @@ ThreadManager
 - `StoredThread` 是 SQLite 中可重建的 Thread metadata/index，不是 Runtime Session。
 - `InitialHistory` 表示 `New` 或 `Resumed` 的启动历史输入。
 - JSONL 是 Resume、Context 重建、Compaction 和历史投影的唯一事实来源。
-- SQLite 只保存 rollout path、CWD、标题、预览、模型、Token、时间和归档状态等可查询元数据。
+- SQLite 只保存 ThreadID、parent/source、rollout path、CWD、标题、预览、模型、Token、时间和归档状态等可重建查询元数据；不保存 SessionID。
 - SQLite 可以落后 JSONL，但不能领先 JSONL；SQLite 丢失后必须可由 Rollout 重建。
 
-`amadeus` 启动时可以先生成 ThreadID 并持有未物化的 AmadeusThread；第一次有效输入时才创建 Thread persistence 并写入 SessionMetaItem。`/resume` 和 `amadeus --resume <id>` 先读取 StoredThread 定位 Rollout，再以 `InitialHistory::Resumed` 重建运行时 SessionState。
+`amadeus` 启动时可以先生成 UUIDv7 ThreadID、派生 Root SessionID 并持有未物化的 AmadeusThread；第一次有效输入时才创建 Thread persistence 并写入 SessionMetaItem。`/resume` 和 `amadeus --resume <id>` 在 CLI/TUI boundary 先解析 ThreadID，再读取 StoredThread 定位 Rollout，以 `InitialHistory::Resumed` 重建运行时 SessionState。Root 恢复必须校验 requested ThreadID、StoredThread.ID、Rollout filename identity 与 SessionMetaItem.ID 完全一致，并要求 `SessionMetaItem.SessionID == SessionIDFromThreadID(SessionMetaItem.ID)`。
+
+`SessionMetaItem` 对齐 Codex，显式保存 session-level 与 thread-level identity：
+
+```go
+type SessionMetaItem struct {
+    SessionID      SessionID `json:"session_id"`
+    ID             ThreadID  `json:"id"`
+    ParentThreadID *ThreadID `json:"parent_thread_id,omitempty"`
+    // source、cwd、title、model、git metadata、created_at ...
+}
+```
+
+SessionID 的 canonical durable source 是各 Thread Rollout 头部的 SessionMetaItem，不是 SQLite StoredThread。Root SessionMeta 的 ParentThreadID 为空；child SessionMeta 使用共享 SessionID、自己的 ID 和直接 parent ThreadID。Event scope、TurnContextItem、ResponseItem 和 collaboration payload 继续使用 `thread_id` 字段表达具体 Thread；只有 Session metadata 使用 `session_id + id`。不得在同一协议中同时保留旧 `SessionMetaItem.thread_id` 和新 `SessionMetaItem.id`。
 
 ### 8.3 ThreadManager
 
@@ -384,8 +444,12 @@ type ThreadManager struct {
 它负责：
 
 - `StartThread`、`ResumeThread`、`GetThread` 和 `ShutdownThread`。
+- 对 New history 生成 UUIDv7 ThreadID，对 Resumed history 复用并校验 Rollout 中的 ThreadID；Root/child 创建都不得调用 `NextID("thread")`。
+- Root 创建时由 Root ThreadID 派生 SessionID；Root Resume 从 canonical SessionMeta 恢复并校验 SessionID。Child 创建时从共享 AgentControl 取得 SessionID，不能从 child ThreadID 派生。
+- Root Resume 后按 SQLite 中的 parent/source relation 查找 persisted descendants，再读取各 child Rollout 的 canonical SessionMeta 校验 `SessionID == AgentControl.SessionID`、ID 和 ParentThreadID；SQLite 不以 SessionID 查询或重建 agent tree。
+- 对已持久化但尚未加载的 child 提供 ThreadManager 内部 child resume 路径；公开 `/resume`/`--resume` 仍只恢复 Root Thread，AgentControl 的 send/input lifecycle 按 child ThreadID 触发内部加载。
 - 创建 `SessionSpawnArgs` 并调用 internal Session 的 spawn 流程。
-- 将 `Session + SessionIo` 包装为 AmadeusThread。
+- 在 Session configured 成功后将 `Session + SessionIo` 包装为 AmadeusThread 并注册进 live Thread registry；失败路径必须关闭 writer/runtime，不留下半注册实例。
 - 持有进程级共享依赖，不执行 `run_turn`，不持有 ActiveTurn。
 
 CLI/TUI 只通过 ThreadManager 和 AmadeusThread 使用 Runtime，不直接装配 Session 级依赖或 Rollout Writer。
@@ -404,9 +468,10 @@ Go 为避免 `thread → agent/session → thread` 包循环，将持久化边�
 
 ```go
 type AmadeusThread struct {
-    session *Session
-    io      SessionIo
-    threadID ThreadID
+    session   *Session
+    io        SessionIo
+    sessionID SessionID
+    threadID  ThreadID
 }
 ```
 
@@ -498,6 +563,7 @@ type UserMessageAdmission struct {
 
 ```go
 type Session struct {
+    sessionID  SessionID
     threadID   ThreadID
     state      SessionState
     services   SessionServices
@@ -508,6 +574,7 @@ type Session struct {
 
 它负责：
 
+- 持有当前 Thread 的 SessionID/ThreadID；Root SessionID 与 Root ThreadID 同 UUID value，child SessionID 从共享 AgentControl 继承。
 - 运行长期 Submission Loop。
 - 接纳用户输入和其他 Op。
 - 创建 TurnContext，并记录 TurnStartedEvent、TurnCompleteEvent 或 TurnAbortedEvent canonical RolloutItem。
@@ -675,7 +742,9 @@ type TurnContextItem struct {
 }
 ```
 
-`TurnContext` 创建后不再修改，但可以持有运行所需的 typed 引用和取消关系；`TurnContextItem` 只保存恢复和诊断所需的稳定纯数据。二者必须通过显式 projector 转换，durable DTO 不引用 Client、API Key、Mutex、Cancellation、Telemetry 或其他进程对象。
+`TurnContext` 创建后不再修改，但可以持有运行所需的 typed 引用和取消关系；运行时 TurnContext 同时知道当前 SessionID、ThreadID 和 TurnID，以构造 Provider request metadata、Tool Invocation 和 Audit correlation。`TurnContextItem` 只保存恢复和诊断所需的稳定 ThreadID/TurnID 与纯数据，不为每个 Turn 重复持久化 SessionID；恢复后的 Session 从 canonical SessionMeta 重新注入 SessionID。二者必须通过显式 projector 转换，durable DTO 不引用 Client、API Key、Mutex、Cancellation、Telemetry 或其他进程对象。
+
+普通 sampling 与 Compaction 的 Provider request metadata 必须来自同一 typed identity snapshot，至少表达 `session_id`、`thread_id`、`turn_id` 和可选 `parent_thread_id`。Root 与 child 请求使用相同 SessionID、不同 ThreadID；Provider Adapter 不得把 ThreadID 填入 `session_id`，也不得在 transport 层重新猜测 parent relation。该 metadata 必须被实际 Adapter 消费，不增加未接线的空扩展字段。
 
 TurnContext 必须在本 Turn 的 Provider、ModelInfo、ModelReasoningEffort、Collaboration Mode、Approval Policy、Permission Profile、OutputSchema 和稳定环境事实解析完成后创建。`Default/Plan` 属于 `ModeKind`/CollaborationMode，不得再命名为 PermissionMode；Approval Policy 与文件/网络 Permission Profile 是彼此独立的安全概念。CurrentDate、Timezone、Personality、ReasoningEffort 和 OutputSchema 要么记录真实生效值，要么明确为空，不能为了贴合结构而填充未接线占位值。Resume 恢复的 `PreviousTurnSettings` 必须存在明确消费点，否则不得作为已完成 capability 保留。
 
@@ -1934,9 +2003,23 @@ type ToolDefinition interface {
 `ValidateInput` 只负责 Schema、类型、字段关系和工具输入的客观合法性；`Prepare` 负责解析路径、读取必要快照、计算副作用、生成 Approval 所需的结构化预览，但不得产生最终文件副作用；`Execute` 只能执行已经通过权限和 Approval 的 `PreparedToolUse`。工具不得在 `Execute` 中重新解释原始模型输入，也不得通过隐式全局状态恢复准备数据。
 
 ```go
+type InvocationMetadata struct {
+    SessionID SessionID
+    ThreadID  ThreadID
+    TurnID    TurnID
+    Source    ToolCallSource
+}
+
+type Invocation struct {
+    SessionID SessionID
+    ThreadID  ThreadID
+    TurnID    TurnID
+    Call      ToolCall
+    Source    ToolCallSource
+}
+
 type ToolUseContext struct {
-    SessionID     string
-    TurnID        string
+    Invocation    Invocation
     CWD           string
     Permission    *SessionPermissionContext
     FileReadState *FileReadStateStore
@@ -1972,6 +2055,12 @@ type FileChangeResult struct {
 ```
 
 `PreparedToolUse.State` 是 Tool 私有的、显式传递的准备态；核心链不得依赖 `context.WithValue` 注入准备数据。`ToolUseContext` 是一次 Tool Use 的运行时上下文，不等同于可持久化的 `TurnContext`；它可以引用 Session 内存状态，但不能把权限 grant、未决 Approval 或未决用户输入请求写入 Rollout。`Interactions` 只暴露 `RequestUserInput` 所需的窄接口，不暴露 Session、Application 或任意 Event 发布能力。
+
+Tool identity 使用固定规则：SessionID 只用于 tree-level correlation/audit，ThreadID 表示当前 Tool owner 和 Event scope，TurnID 表示本次 Turn。`spawn_agent` 必须从 Invocation.ThreadID 取得 parent ThreadID；`send_input`、`wait_agent` 和 `close_agent` 的目标参数在 Tool boundary 解析为 ThreadID。任何 Multi-Agent Tool 都不得从 Invocation.SessionID 推导 parent/target Thread。ApprovalRequestEvent 继续按 ThreadID + TurnID 路由；共享 SessionID 不自动共享 Root/child 的 SessionPermissionContext。
+
+Audit record 至少携带 SessionID、ThreadID、TurnID、RequestID 和 ToolName：SessionID 用于聚合同一 agent tree，ThreadID/TurnID 用于定位实际执行者。command/file/network/MCP audit 都从 Invocation metadata 取得 identity，不能由 Tool 自行读取 UI current session 或把 ThreadID 写进名为 SessionID 的 string 字段。
+
+`execute_command`/`write_stdin` Tool schema 中为兼容模型语料而存在的进程 `session_id` 表示 ProcessManager 分配的 process session/process ID，与 Agent SessionID 属于不同命名空间；内部必须保持 process ID 类型，不参与 Thread/Session UUID parsing。
 
 `ToolRouter` snapshot 同时保存模型可见 ToolSpec、确切 ToolDefinition handler、MCP binding、visibility 和 parallel flag；模型看到的 spec 与随后 dispatch 的 handler 必须来自同一 snapshot。执行阶段不得按工具名重新查询当前 mutable registry，也不得只用 `AllowedTools`/revision 字符串假装冻结 handler identity。
 
@@ -2696,16 +2785,22 @@ ShutdownComplete
 
 ```go
 type ThreadViewSnapshot struct {
-    ThreadID      rollout.ThreadID
+    Generation    uint64
+    SessionID     protocol.SessionID
+    ThreadID      protocol.ThreadID
     Title         string
-    Mode          turn.ModeKind
+    Configuration protocol.SessionConfiguration
     Items         []protocol.TurnItem
     Usage         llm.Usage
     ContextWindow int64
 }
 ```
 
-`Items` 必须由目标 Thread 的 canonical rollout 投影得到；TUI 只能通过既有 `TurnItem → HistoryCell` replay 链渲染，不能直接解析 rollout，也不能复用切换前 Thread 的 `TranscriptState`。
+`SessionID + ThreadID` 与 live `SessionConfiguredEvent` 使用相同 identity contract；`Configuration` 与 live `SessionConfiguredEvent`/`ThreadSettingsAppliedEvent` 使用同一个 typed `SessionConfiguration` 模型。Snapshot 不再分别保存 Mode、Provider、Model 或 CWD 的影子字段。`Items` 必须由目标 Thread 的 canonical rollout 投影得到；TUI 只能通过既有 `TurnItem → HistoryCell` replay 链渲染，不能直接解析 rollout，也不能复用切换前 Thread 的 `TranscriptState`。
+
+TUI attachment、迟到 Event、MCP inventory、Git branch lookup 和 overlay matching 继续只使用 `attachment generation + ThreadID`；SessionID 不替代具体 Thread 路由。`SessionOption.ID`、`AppExitInfo.ThreadID`、resume picker 和 exit resume hint 始终保存 ThreadID。状态面板可以持有 SessionID 供诊断，但 Codex 风格用户可见 “session/thread id” 项仍显示当前可恢复的 ThreadID。
+
+`FullscreenStartup` 只允许携带 Version 等真正属于进程启动且不会随 Thread attach 改变的静态展示信息。NoColor、初始终端尺寸等 TUI options 继续属于界面启动参数，不并入 Session 状态。CWD、Provider、Model、ReasoningEffort、Mode、Thread title、Usage 和 ContextWindow 都属于 active Session/Thread read model，必须来自 `ThreadViewSnapshot` 或 live typed Event；不得在 Startup、Application Status 和 TUI model 中建立三份并列 owner。
 
 #### `/resume`
 
@@ -2729,6 +2824,7 @@ SlashCommand::Resume
 - Resume 只允许存在一个 application-owned `ProjectRolloutItems` projector，按 rollout sequence 投影 ResponseItem 和 EventMsgItem；不得把 completed-item projection、response items 等多个列表合并后按时间重新排序。
 - canonical User ResponseItem 必须投影为 UserMessageItem，CompactedItem/ContextCompactedEvent 必须投影为 ContextCompactionItem；用户消息和压缩边界不能只存在于首次 live TUI 的本地插入中。
 - replay 不重放 Working、Approval wait 或 Delta 动画；已完成项必须与首次启动时的 Resume projection 完全一致。
+- `/resume` 对齐 Codex，任务运行期间仍在 Slash Command Popup 中可见并可执行；切换由 Application 的事务化 Thread attach 接管，旧 active Thread 在新 Thread 成功 attach 后再异步 shutdown，不能在 popup filter 阶段隐藏该命令。
 - 成功后可以追加轻量 Session lineage/notice，但 notice 不能替代历史恢复。
 - 旧 `FullscreenSessionResumer func(...) (string, error)`、`fullscreenResumeMsg.message`、`replayTurnItems` 的 merge/sort 路径和只调用 `refreshCurrentSession()` 的完成路径必须删除。
 
@@ -2850,7 +2946,7 @@ SlashCommand::Status
 → 原位完成 matching StatusHistoryCell
 ```
 
-`StatusSnapshot` 至少包含当前 ThreadID/名称、Model、Collaboration Mode、Token/Context usage、Turn phase 和 Provider identity；可选扩展数据保持 typed field，不拼接成 CLI 文本后再交给 TUI 解析。
+`StatusSnapshot` 至少包含当前 SessionID、ThreadID/名称、Model、Collaboration Mode、Token/Context usage、Turn phase 和 Provider identity；可选扩展数据保持 typed field，不拼接成 CLI 文本后再交给 TUI 解析。Thread attachment 和状态刷新仍以 ThreadID 为 target，SessionID 只提供 tree-level correlation/diagnostics。
 
 - 本地状态卡必须立即可见，不能为了等待可选 Provider/account 数据让回车后无反馈。
 - 每次 `/status` 使用独立 request ID 和 HistoryCell handle；并发请求只更新自己的卡片，迟到或未知 request ID 直接忽略。
@@ -2885,24 +2981,96 @@ SlashCommand::Skills
 
 #### `/exit`
 
-`/exit` 是 Application shutdown request，不是 ChatWidget 直接返回 `tea.Quit`：
+`/exit` 是 Application shutdown request，不是 ChatWidget 直接返回 `tea.Quit`。其目标生命周期对齐 Codex 的 `ExitMode::ShutdownFirst → AppExitInfo → CLI exit messages`，同时适配 Bubble Tea inline renderer：
 
 ```text
 SlashCommand::Exit
 → Exit(ShutdownFirst)
-→ 显示 shutdown in progress
+→ 关闭 Slash Popup / modal，进入 transient shutdown presentation
 → 标记 pending shutdown target
 → shutdown/detach active Thread 与后台资源
 → rollout flush / child process cleanup
-→ ShutdownComplete 或 bounded timeout
-→ Application Exit(UserRequested)
+→ ShutdownFinished 或 bounded timeout
+→ 清除 active Composer/Footer frame
+→ Application Exit(UserRequested, AppExitInfo)
 → tea.Quit
+→ 恢复终端并从 FullscreenApplication.Run 返回 AppExitInfo
+→ cmd/amadeus 在 TUI 结束后打印 token usage / resume hint
 ```
 
 - `ShutdownFirst` 是用户主动退出的默认模式；pending shutdown target 用于阻止正常 Thread termination/failover 逻辑把退出误判为异常切换。
 - shutdown 必须有 UI escape-hatch timeout，避免损坏的 Runtime 让退出永久卡住；超时可以记录 warning 后退出，但不能把 `Immediate` 当常规路径。
 - `Immediate` 只用于 fatal error、shutdown 已完成后的最终跳出或明确的紧急逃生路径，允许跳过 flush 的风险必须在类型命名中可见。
-- 旧 `/exit → tea.Quit` 直接路径必须删除；最终 `tea.Quit` 只能由 Application shutdown lifecycle 的终态触发。
+- `Shutting down…` 是 BottomPane/Composer 区域的 transient presentation，不是 HistoryCell。退出过程不得向永久 transcript 插入 `Shutting down…`，也不得把 Composer、placeholder、Footer 或 Popup 提交到 scrollback。
+- 旧 `/exit → tea.Quit` 和 `ShutdownFinished → tea.Quit` 的单阶段路径必须删除；最终 `tea.Quit` 只能由 Application shutdown lifecycle 的终态及 renderer drain 完成后触发。
+
+退出结果使用 typed model，而不是让 CLI 在 TUI 结束后重新查询已关闭的 Runtime：
+
+```go
+type ExitMode uint8
+
+const (
+    ExitModeShutdownFirst ExitMode = iota
+    ExitModeImmediate
+)
+
+type ExitReason uint8
+
+const (
+    ExitReasonUserRequested ExitReason = iota
+    ExitReasonFatal
+)
+
+type AppExitInfo struct {
+    TokenUsage llm.Usage
+    ThreadID   protocol.ThreadID
+    ThreadName string
+    ResumeHint string
+    ExitReason ExitReason
+    Error      error
+}
+```
+
+`AppExitInfo` 对齐 Codex 同名概念，是 Fullscreen App 的最终返回值，不是 EventMsg、HistoryCell 或 persisted RolloutItem。字段规则如下：
+
+- `TokenUsage` 来自退出时最终 `fullscreenSessionState.Usage`；不能在 CLI 侧重新打开 Session 或解析 Rollout 统计。
+- `ThreadID`/`ThreadName` 来自 active Thread attachment；没有已建立 Thread 时允许为空。
+- `ResumeHint` 只在目标 Thread 已可恢复时生成。基础命令形式为 `amadeus --resume <thread-id>`；若后续 picker/name UX 与 Codex 对齐，可使用名称作为辅助展示，但 ThreadID 仍是稳定 identity。
+- 正常 `/exit` 使用 `ExitReasonUserRequested`。Fatal shutdown、renderer 或 Application 错误使用 `ExitReasonFatal` 并携带 `Error`；不能把 fatal error 降级成普通 usage summary。
+- `FullscreenApplication.Run` 的目标签名为 `Run(context.Context) (AppExitInfo, error)`；`cmd/amadeus` 只在 Run 返回、Bubble Tea renderer 停止且终端恢复后格式化输出。
+
+Codex 的 token usage 和 resume hint 不属于 TUI 最后一帧，也不进入 History。CLI exit presentation 固定为：
+
+```text
+Token usage: total=<total> input=<input> output=<output>
+To continue this session, run amadeus --resume <thread-id>
+```
+
+- Token usage 为零时省略 usage 行。
+- 不可恢复时省略 resume hint；fatal exit 且没有 resume hint 时至少保留 ThreadID，便于诊断。
+- 终端支持颜色时，仅将 resume command 使用 ANSI cyan 高亮并以 foreground reset 结束，说明文字保持默认前景；No Color 时输出完全相同的纯文本内容且不包含 ANSI。
+- 输出写入正常 CLI Output；fatal error 写入 ErrorOutput，并由既有 exit-code policy 决定非零退出码。
+
+Bubble Tea inline renderer 的退出清理必须显式建模为两阶段 UI 生命周期：
+
+```text
+ShutdownFinished
+→ model.exitPhase = DrainingFrame
+→ View() 不再渲染 Composer / Popup / Footer / shutdown indicator
+→ Bubble Tea 完成至少一次空 active-frame redraw
+→ ExitFrameDrained
+→ tea.Quit
+```
+
+原因是 `tea.Quit` 不渲染最终 frame，直接在 `ShutdownFinished` 返回 Quit 只会终止 renderer，可能在终端保留多行 Composer 的 `› Ask Amadeus to do anything`。该 drain 只使用 Bubble Tea 正常 Update/View/render 周期；禁止重新引入 output writer wrapper、terminal-height padding、`CursorUp`/`CursorDown` 或手写 ANSI cursor reposition。
+
+验收要求：
+
+- `/exit`、空输入时双击退出快捷键及其他 user-requested exit 复用同一个 `ShutdownFirst` lifecycle。
+- shutdown 等待期间最多存在一份 transient `Shutting down…`，Composer 不接受新输入，重复 `/exit` 不重复提交 shutdown。
+- 正常退出后 terminal scrollback 不残留 Composer placeholder、Popup 或 Footer。
+- Token usage/resume hint 只在 TUI 完全退出后各打印一次；零 usage、不可恢复、fatal 与 timeout 路径均有独立测试。
+- renderer drain、Application shutdown 和 CLI summary 必须分别可测试，不能依赖真实终端中的人工观察或时间竞争作为唯一验收。
 
 #### `/copy`
 
@@ -2979,8 +3147,10 @@ Replay Mode 不播放 Working、Shimmer 或流式动画，但必须产生与实�
 
 - `◦ Working (1m 32s • esc to interrupt)` 使用单调时钟。
 - Working shimmer 使用终端主题感知的 foreground/dim，而不是固定彩虹色。
-- 完成后显示 `─ Worked for 7m 18s ─────`。
+- Tool 工作与最终 Assistant 回复之间显示不带耗时的 dim rule；完成后在最终回复下方显示 `─ Worked for 7m 18s ─────`。
 - User、Working、Assistant、Separator 和 Composer 的空行由结构化布局决定。
+- Composer 按终端显示宽度软换行，并由 TUI 框架自身管理活动 frame 与输入光标；不得在 Bubble Tea 输出 writer 外层增加自定义 cursor reposition 协议，因为永久 history 输出与 frame redraw 必须共享框架原生清屏/重绘语义。
+- Footer 左侧显示 Model、CurrentDir、GitBranch、ThreadTitle 与 Context 等固定会话元数据；Plan collaboration indicator 使用 magenta 独立右对齐，空闲时附带 `shift+tab to cycle`，Default mode 不显示模式标签。
 - Tool Start/Delta/Complete 原位更新，不重复打印多个树枝。
 - Ran/Explored/Search 等标签使用 TerminalPalette 的强调色。
 - Markdown 代码、路径和命令采用终端主题感知高亮。
@@ -3003,7 +3173,116 @@ Response stream reconnect 复用同一个 status indicator、activity marker、s
 - Replay/Resume initial history 忽略 retrying StreamErrorEvent，不能恢复旧 retry status 或在历史底部生成永久 `Reconnecting...` Cell。
 - `WillRetry=false` 使用最终错误投影，并等待唯一 `TurnCompleteEvent`/`TurnAbortedEvent` 结束 Working；TUI 不自行合成 Turn terminal。
 
-### 19.4 Interactive Request 与 Diff
+### 19.4 Statusline 与 Footer State
+
+Amadeus 不复制 Codex 的 `/statusline` 命令、picker、持久化配置或任意 item 排序能力；基础版只展示产品指定的固定信息。但内部架构、数据模型、概念术语、命名与生命周期按 Codex 的 statusline/footer 分层对齐：
+
+```text
+Session-owned canonical state
+→ typed StatusLineItem projection
+→ cached FooterState
+→ pure FooterProps layout/render
+```
+
+固定 item 集合及默认顺序为：
+
+```go
+type statusLineItem uint8
+
+const (
+    statusLineItemModelWithReasoning statusLineItem = iota
+    statusLineItemCurrentDir
+    statusLineItemGitBranch
+    statusLineItemThreadTitle
+    statusLineItemContextUsed
+    statusLineItemContextWindowSize
+)
+```
+
+`CurrentDir` 表示 Session 当前工作目录，是 Codex `CurrentDir` 的同义概念；不得再使用含义模糊的 `Project` 作为 statusline 字段名。未来若引入 `ProjectRoot`，它表示指令发现或 workspace policy 的根边界，不与当前 CWD 混为同一数据。`GitBranch` 是以 CurrentDir 为 key 的派生 workspace metadata，不进入 `SessionConfiguration` 成为第二 owner。
+
+目标数据模型保持 typed projection 与渲染缓存分离：
+
+```go
+type statusLineSegment struct {
+    Item statusLineItem
+    Text string
+}
+
+type statusLineState struct {
+    Segments []statusLineSegment
+}
+
+type footerState struct {
+    StatusLine             statusLineState
+    CollaborationIndicator collaborationModeIndicator
+}
+
+type footerProps struct {
+    Width        int
+    Running      bool
+    State        footerState
+    Palette      terminalPalette
+    LeftPadding  int
+    RightPadding int
+}
+```
+
+- `statusLineValueForItem()` 只从 TUI 已持有的 `fullscreenSessionState` 和派生 cache 读取值；item 当前不可用时返回 unavailable 并临时省略，不显示 `unknown`、`-` 或 Application status fallback。
+- `refreshStatusLine()` 只在 canonical session state、title、usage/context 或 CurrentDir 对应 branch cache 改变时重建 `statusLineState`。Window resize 只重新计算 `footerProps` 布局，不重复业务 projection。
+- `statusLineSegment` 不提前持有 Lip Gloss style。`statusLineAccentForItem()` 在 Footer render 边界集中映射 TerminalPalette accent，保证颜色策略与数据模型解耦，并在 `NO_COLOR` 下自然降级。
+- Statusline 颜色解析采用 Codex 的 theme-first/fallback 分层：TrueColor 与 ANSI256 根据终端明暗背景选择 Catppuccin Mocha/Latte Chroma style，以 type、string、function、number、keyword、heading token 对应 Codex 的 Model、Path、Branch、Usage、Mode、Thread scope family，之后执行同样的 85% saturation softening；ANSI16 保留 cyan/green/magenta fallback。该基础版不引入 `/theme` 或自定义 tmTheme owner。
+- `footerState` 分别缓存左侧 statusline 与右侧 collaboration mode indicator；Working/status indicator 不属于 Footer metadata，也不得作为 statusline 缺失值的替代文本。
+- `renderFooter(footerProps)` 是纯布局/渲染函数，不查询 Application、不访问文件系统、不启动 branch lookup、不修改 model state。`View()` 只组合已有 view state，不承担 SessionConfiguration 投影。
+- Footer 使用 Codex 风格左右独立列：先为右侧 collaboration indicator 和固定 padding 保留空间，再在剩余宽度内裁剪或省略左侧 statusline segment，禁止通过字符串追加让 context 与 mode 竞争同一列。完整 `Plan mode (shift+tab to cycle)` 无法与左侧内容共存时收缩为 `Plan mode`；左列按 ThreadTitle、ContextWindow、ContextUsed、ModelWithReasoning、CurrentDir、GitBranch 的顺序逐步省略，使 GitBranch 成为最后删除的 workspace identity，并继续保证 indicator 右对齐。Default mode 不渲染模式标签。
+- Slash/File/Skill 等 Composer popup 激活时占用 Codex 的 popup/footer 区域并替换普通 Footer；不得在 popup 下方继续渲染 statusline 或 mode indicator。Popup 关闭后 Footer 才恢复。Slash Command Popup 的 selection 只通过 command name/description style 表达，不显示 Modal picker 使用的 `›` cursor glyph。
+- Collaboration indicator 的“右对齐”只表示 Footer 当前布局行内的独立右列，不要求 Amadeus 复制 Codex/Ratatui 的全屏 surface 或把 Bubble Tea inline frame 人工扩展到 terminal height。`View()` 返回活动 frame 的真实内容高度，不能通过顶部补空行、额外 output writer 或 cursor up/down 转义序列模拟另一个 terminal layout engine。永久 transcript row 由 `tea.Println` 提交，Composer、Popup 与 Footer 只存在于随后重绘的活动 frame。
+
+Session 配置部分使用单一应用路径：
+
+```text
+Session.Configuration
+├─ SessionConfiguredEvent.Configuration
+├─ ThreadSettingsAppliedEvent.Configuration
+└─ ThreadViewSnapshot.Configuration
+          ↓
+fullscreenSessionState
+          ↓
+refreshStatusLine()
+          ↓
+statusLineState{Segments}
+          ↓
+renderFooter(footerProps)
+```
+
+Thread title、usage/context 和 Git branch 分别通过 typed Application event、`TokenCountEvent` 与 CurrentDir-keyed derived cache 合入同一个 `fullscreenSessionState`，不塞入 `SessionConfiguration` 扩大其职责。`ThreadSettingsAppliedEvent` 携带实际生效的完整 `SessionConfiguration`，并与 `SessionConfiguredEvent`、snapshot attach 共用 `applySessionConfiguration()`。该函数原子替换 CurrentDir、Provider、Model、ReasoningEffort 和 CollaborationMode；不能只更新 Mode 后继续从 Startup 或 Application Status 读取其他字段。Resume、new thread 和 attach 必须先清理旧 Thread 的 session/footer 派生状态，再安装新 snapshot，避免旧目录、branch、title 或 context 泄漏。
+
+`ThreadSettingsAppliedEvent` 同时驱动两条相互独立的 UI 路径。第一条通过 `fullscreenSessionState → footerState.CollaborationIndicator → renderFooter()` 更新 Footer 右列模式标签。第二条对齐 Codex 的 settings acknowledgement/info-history 生命周期，但消息必须描述 Amadeus 实际发生的业务事实：基础版 Mode 切换不改变 Model 或 ReasoningEffort，因此插入 `• Mode changed to <Mode>.`，而不是伪造 `Model changed`。该消息不得使用普通 dim notice，也不得把 Composer、Popup 或 Footer 内容拼进 history；`tea.Println` 只提交 HistoryCell，随后由 Bubble Tea 原生 renderer 重绘单份活动 frame。
+
+生命周期固定为：
+
+| 触发 | 状态变化 | Footer 动作 |
+|---|---|---|
+| constructor / initial snapshot | 初始化 active `fullscreenSessionState` | projection 一次 |
+| `SessionConfiguredEvent` | 应用完整 Configuration | refresh |
+| `ThreadSettingsAppliedEvent` | 应用完整已生效 Configuration，Mode 变化时插入 settings acknowledgement info row | refresh projection + right-aligned mode |
+| `ThreadAttached` | 替换 Thread、Configuration、title、usage/context | 清空旧 cache 后 refresh |
+| `TokenCountEvent` | 更新 usage/context window | refresh context items |
+| `ThreadNameUpdated` | 更新 active Thread title | refresh title item |
+| branch lookup completion | 更新 CurrentDir 对应 branch cache | 校验 generation/CWD 后 refresh |
+| Turn start/end 或 retry | 只更新 Working/status indicator 与 cycle hint | 不改变 statusline items |
+| terminal resize | 更新 width | 只 layout |
+| `View()` | 无业务状态变化 | 纯 render |
+
+Git branch 查询必须在 CurrentDir 改变时清空旧值并异步刷新；请求携带 attachment generation 与 CWD，迟到结果只有在两者仍匹配时才能写入 cache。Statusline 不通过 `Application.Status()` 轮询补全目录、模型、标题或上下文，也不在 `View()` 中同步执行 Git/文件系统 IO。
+
+必须严格区分三个 UI 概念：
+
+- **Working/status indicator**：表示当前 Turn 的 Working、retry 或其他短期活动状态，生命周期来自 Event。
+- **Statusline**：表示固定的 Session/Thread metadata 投影，不展示瞬时运行状态。
+- **Collaboration mode indicator**：表示 Plan mode，并在 Footer 右侧独立布局；它读取 `fullscreenSessionState.Configuration.Mode`，但不是 `StatusLineItem`。
+
+### 19.5 Interactive Request 与 Diff
 
 Approval Dialog 是 Rich Inline TUI 的专用交互状态，不复用只显示文字的通用 selection overlay：
 
@@ -3051,7 +3330,7 @@ Plan Mode 的正式方案使用独立 `ProposedPlanCell`，不复用 `UpdatedPla
 - 基础选项为 `Implement this plan` 与 `Stay in Plan mode`。前者提交携带 Default mode override 的新 `UserInputOp("Implement the plan.")`；后者只关闭 Popup，不改变模式或创建 Turn。
 - implementation Popup 是 transient UI state，Replay/Resume 不恢复旧 Popup；Resume 只恢复 completed `ProposedPlanCell`。清空上下文后实施属于后续产品能力，不阻塞基础生命周期对齐。
 
-### 19.5 Tool Projection 与展示 Contract
+### 19.6 Tool Projection 与展示 Contract
 
 TUI 的 Tool 展示必须同时吸收 Codex 的 HistoryCell/树状 activity 表现和 Claude Code 的 Tool-specific UI projection。TUI 不根据模型生成的自然语言标题、`action_summary` 或 Tool Result 文本反推工具身份；`TurnItem.ToolName` 是唯一的工具身份来源，结构化 `ToolDisplayResult` 是结果展示来源。
 
@@ -3225,6 +3504,7 @@ type AgentMetadata struct {
 ```go
 type AgentControl struct {
     host       AgentHost
+    sessionID  SessionID
     rootID     ThreadID
     agents     map[ThreadID]*AgentRecord
     maxAgents  int
@@ -3234,6 +3514,7 @@ type AgentControl struct {
 type AgentRecord struct {
     Metadata AgentMetadata
     Status   AgentStatus
+    Runtime  AgentRuntime // persisted/unloaded child 可以为空
     Changed  <-chan struct{}
 }
 ```
@@ -3251,7 +3532,22 @@ ThreadManager starts Root Thread
 → Child ToolRouter hides collaboration tools because Depth = 1
 ```
 
-`ThreadManager` 仍是 live Thread 实例与 ThreadStore writer 的唯一 owner；`AgentControl` 只拥有 agent-tree metadata、状态订阅、spawn reservation 和控制操作，不成为第二个 Thread registry。
+`ThreadManager` 仍是 live Thread 实例与 ThreadStore writer 的唯一 owner；`AgentControl` 持有从 Root ThreadID 派生的 SessionID，并将同一个 SessionID 传给全部 child Session。它只拥有 session-scoped agent-tree metadata、状态订阅、spawn reservation 和控制操作，不成为第二个 Thread registry。Root 和 child 的运行态查找、AgentID、父子关系与消息路由始终使用各自 ThreadID，不能使用共享 SessionID 作为 map key。
+
+Root Resume 必须恢复该 root tree 的 persisted child metadata，而不是创建一个空 AgentControl 后遗忘历史 child：
+
+```text
+Resume Root ThreadID
+→ 从 Root SessionMeta 恢复并校验 SessionID
+→ 创建 AgentControl(SessionID, RootThreadID)
+→ 按 SQLite parent_thread_id/source 查找 descendants
+→ 读取每个 child Rollout 的 canonical SessionMeta
+→ 校验 child ID、ParentThreadID 与 SessionID
+→ 注册 persisted/unloaded AgentRecord
+→ send_input 等操作按 child ThreadID 触发 ThreadManager internal child resume
+```
+
+AgentControl 可以保存尚未加载 Runtime 的 persisted AgentRecord，但不能自己打开 Rollout 或构造 Session；实际 child resume 仍由 ThreadManager/AgentHost 完成。内部恢复必须使用 child ThreadID 定位 StoredThread/Rollout，并要求 child SessionMeta.SessionID 与 Control.SessionID 相同。公开 `/resume`、`--resume` 和 picker 不直接选择 child Thread；不存在公开 `resume_agent` Tool。
 
 禁止：
 
@@ -3628,8 +3924,8 @@ agent:
 
 R 阶段明确不实现：
 
-- Codex Multi-Agent V2、AgentPath、task name、mailbox、`send_message`、`followup_task`、residency 和冷加载。
-- `resume_agent`、跨进程 agent tree 恢复和 agent graph migration。
+- Codex Multi-Agent V2、AgentPath、task name、mailbox、`send_message`、`followup_task`、residency eviction 和通用冷加载调度。
+- 公开 `resume_agent`、用户直接 attach child transcript、任意 detached child 恢复和 agent graph migration；Root Resume 后恢复其 persisted child metadata/内部 runtime 则属于 identity/lifecycle 正确性，不是该非目标。
 - Parent history full/recent fork、Prompt cache fork 和 compaction-aware fork filtering。
 - 自定义 Agent Definition、Markdown agents、Plugin agents、agent memory、model/reasoning/service-tier override。
 - write-capable worker、并发代码修改、worktree、文件锁或自动 merge。
@@ -3657,6 +3953,7 @@ R 阶段明确不实现：
 12. 默认 session list 不把 child thread 当作顶层用户会话。
 13. TUI 不从 ToolResult 文本解析状态，也不维护第二份 AgentStatus 真相。
 14. Architecture tests 禁止 nested SessionTask、generic agent task bus、child write Tool、未绑定 owner 的 watcher 和旧式字符串 completion message。
+15. Root Resume 恢复同一 SessionID 下且 parent relation 合法的 persisted child metadata；child 的内部恢复、send/wait/close 全部以 child ThreadID 路由，SessionID 不进入 registry key。
 
 ## 22. Persistence
 
@@ -3673,14 +3970,15 @@ $AMADEUS_HOME/
 - 每个 Thread 一个 Rollout 文件。
 - 每行是独立的 RolloutLine JSON 对象。
 - sequence 从 1 开始严格递增，不重复、不倒退。
-- ThreadID/TurnID 使用 Protocol/Identity domain 的路径安全稳定标识，并由对应 SessionMetaItem、TurnContextItem、ResponseItem 或 EventMsg payload 携带；RolloutLine 不定义 ID owner。
+- ThreadID 使用 Protocol/Identity domain 的 canonical UUID value object，新创建值为 UUIDv7；TurnID 使用其对应的 typed stable identity。SessionMetaItem 以 `session_id + id + optional parent_thread_id` 保存 SessionID/ThreadID/parent relation，TurnContextItem、ResponseItem 和 EventMsg payload 按需携带 `thread_id`；RolloutLine 不定义 ID owner。
 - LiveThread/ThreadStore 是唯一文件写入边界；Session、Tool 和 TUI 不直接打开文件追加。
 - 恢复时逐行解析；只有最后一条不完整记录可以被安全忽略或截断，完整但缺少末尾换行的最后一条记录会被补齐后再追加，其他解析错误必须显式报告。
 - append batch 必须先完整编码再写入；部分写失败时回滚到 batch 起始 offset，flush 使用文件同步保证 durable 顺序。
 - ToolCall/ToolResult 使用稳定 CallID 配对。
 - CompactedItem、TurnContextItem、ResponseItem 以及 store policy 选中的 Plan/Token/Approval/Turn EventMsg 均进入 Rollout；未决 ApprovalRequestEvent、未决 RequestUserInputEvent、ApprovalDecisionOp 与 UserInputAnswerOp 不作为独立 canonical history。
 - Runtime 临时状态、goroutine、进程句柄和 Pending Future 不持久化。
-- SessionMetaItem 保存重建索引所需的 CWD、标题、模型、Git metadata、归档初态和创建时间；后续标题/归档变化使用对应 typed EventMsg。
+- SessionMetaItem 保存 canonical SessionID、ThreadID、可选 ParentThreadID，以及重建索引所需的 CWD、标题、模型、Git metadata、归档初态和创建时间；后续标题/归档变化使用对应 typed EventMsg。
+- Rollout 文件名中的 `<thread-id>` 必须是与 SessionMetaItem.ID、SQLite `threads.id` 和 Resume target 完全相同的 canonical UUID，不增加 `thread-` 前缀，也不维护单独 display ID。
 
 ### 22.2 SQLite State DB
 
@@ -3694,6 +3992,11 @@ SQLite 位于 `$AMADEUS_HOME/data/amadeus.db`，核心表保持最小：
 #### `threads`
 
 - id
+- source_kind
+- parent_thread_id
+- agent_depth
+- agent_nickname
+- agent_role
 - rollout_path
 - cwd
 - title
@@ -3707,6 +4010,8 @@ SQLite 位于 `$AMADEUS_HOME/data/amadeus.db`，核心表保持最小：
 - git_sha
 - git_branch
 - git_origin_url
+
+`threads.id` 保存 canonical ThreadID UUID 并作为主键；parent/source/agent metadata 只用于列表过滤、parent/child traversal 和可重建索引。SQLite `StoredThread` 不保存 SessionID，也不以 SessionID 建索引或作为 agent tree 事实源；SessionID 必须从目标 Thread Rollout 的 canonical SessionMeta 恢复。SQLite adapter 必须先扫描 ID string，再通过 Protocol/Identity parser 构造 typed ThreadID；不能让任意数据库文本绕过 Domain validation。
 
 不建立 `projects`、`turns`、`messages`、`summaries` 或 SQLite `rollout_items` 表。Turn、消息、Tool 和 Compaction 历史只存在于 canonical Rollout。
 
@@ -3725,7 +4030,7 @@ LiveThread.AppendItems
 - Recorder 必须维护 durable watermark；MetadataSync 只能读取不超过该 watermark 的 RolloutLine。Buffered Append 不触发 SQLite upsert，显式 Flush 或 Durable Append 成功后才能同步索引。
 - `append → SQLite upsert → flush` 在任何路径都属于非法顺序；进程在 flush 前崩溃时，恢复结果允许缺少 buffered tail，但 SQLite 不能引用该 tail。
 - Metadata 更新失败必须记录警告并保留可重建状态，不能回滚已经 durable 的 canonical history。
-- 当前 schema 的 SQLite index 缺失或漂移时，从当前格式 `SessionMetaItem`、ResponseItem 和 EventMsg 重建 StoredThread；活动 Thread 即使索引被清空，下一次 canonical append 也能直接重新 upsert。
+- 当前 schema 的 SQLite index 缺失或漂移时，从当前格式 `SessionMetaItem`、ResponseItem 和 EventMsg 重建 StoredThread；重建过程校验 SessionMeta.SessionID/ID/ParentThreadID contract，但只把 Thread metadata 与 parent relation 投影进 SQLite，不复制 SessionID。活动 Thread 即使索引被清空，下一次 canonical append 也能直接重新 upsert。
 - `/resume`、列表和搜索优先查询 SQLite；索引缺失或漂移时可扫描 Rollout 修复。
 - `tokens_used` 是各 canonical TokenCountEvent 的 Thread 累计值，不是仅保存最后一个 Turn 的 usage。
 - Session Permission State（Mode、Additional Working Directories 和 Session Rules）只存在于活动 internal Session，不写入 Thread metadata，也不从历史 Approval Decision 恢复。
@@ -3970,7 +4275,7 @@ Approval request 是 `EventMsg` variant，回答使用带 RequestID 的 `Approva
 
 ### 26.2 Submission 与 Event Envelope
 
-Protocol/Identity domain 拥有 ThreadID、TurnID、SubmissionID、RequestID 和 ItemID；rollout、thread、turn 或 persistence package 不得重新定义这些 ID。
+Protocol/Identity domain 拥有 SessionID、ThreadID、TurnID、SubmissionID、RequestID 和 ItemID；rollout、thread、turn 或 persistence package 不得重新定义这些 ID。SessionID/ThreadID 是封装 UUID 的不同领域类型：新建值使用 UUIDv7，跨 CLI、JSON、Tool 与 Persistence boundary 时必须显式 parse/format；其他 ID 是否采用 UUID 由各自 Contract 决定，不通过一个 `NextID(kind)` 抹平语义。
 
 ```go
 type Submission struct {
@@ -4020,7 +4325,20 @@ ErrorEvent
 StreamErrorEvent
 ```
 
-`SessionConfiguredEvent` 必须携带真实生效的 SessionConfiguration 摘要，不允许只发送无内容的 configured marker。`ThreadSettingsAppliedEvent` 表示设置已由 Session 接纳并应用；设置失败使用 correlated ErrorEvent。
+`SessionConfiguredEvent` 必须携带 SessionID、ThreadID、可选 ParentThreadID 和真实生效的完整 `SessionConfiguration`，不允许只发送无内容的 configured marker：
+
+```go
+type SessionConfiguredEvent struct {
+    SessionID      SessionID
+    ThreadID       ThreadID
+    ParentThreadID *ThreadID
+    Configuration  SessionConfiguration
+}
+```
+
+Root event 的 SessionID 与 ThreadID 使用同一 UUID value，ParentThreadID 为空；child event 继承 Root SessionID，使用自己的 ThreadID 和直接 parent ThreadID。Event routing、`ThreadIDOf`、attachment matching 和 Rollout EventMsg scope 始终使用 ThreadID；scoping helper 不能覆盖或从 ThreadID 重新推导 SessionID。
+
+`ThreadSettingsAppliedEvent` 表示设置已由 Session 接纳并应用，也必须携带应用后的完整 `SessionConfiguration`，而不是只返回 Mode 或 caller 请求值；设置失败使用 correlated ErrorEvent。`ThreadViewSnapshot.Configuration`、`SessionConfiguredEvent.Configuration` 和 `ThreadSettingsAppliedEvent.Configuration` 共用同一个 typed model，TUI 统一通过 `applySessionConfiguration()` 应用，避免 snapshot/live event 两套字段、两套 owner 或部分更新生命周期。
 
 `StreamErrorEvent` 是 response stream 生命周期的 typed notification，而不是普通永久 History 项。它至少表达：
 
@@ -4221,10 +4539,14 @@ Provider/stream error 还必须区分：
 - Resume 后 Rollout 顺序稳定。
 - crash/fault injection 验证 SQLite 永不超过 JSONL durable watermark，Buffered Append 不提前 upsert metadata。
 - architecture test 验证 production SessionTask 不引用 `cmd/amadeus` controller、TUI model、Cobra command 或完整 invocation，并直接通过 Session/SessionServices 完成运行。
+- Root/child 创建验证共享 SessionID 与独立 ThreadID；Root Resume 验证 requested ID、StoredThread、Rollout filename、SessionMeta.ID/SessionID 一致，并恢复 parent relation 合法的 persisted child metadata。
+- persisted/unloaded child 通过 child ThreadID 触发 internal resume；错误 SessionID、ParentThreadID 或 Rollout identity 不进入 AgentControl registry，也不留下 live writer/runtime。
 
 ### 28.2 Event Protocol
 
 - Submission/Event 使用 correlation ID；具体 EventMsg 按需携带 ThreadID/TurnID/RequestID/ItemID。
+- SessionConfiguredEvent 同时携带 SessionID、ThreadID 和可选 ParentThreadID；其他 EventMsg 不为 tree-level correlation 重复增加 SessionID，事件路由仍以具体 ThreadID 为准。
+- Tool Invocation、Audit record 与 Provider request metadata 验证 Root/child 使用相同 SessionID、不同 ThreadID 和正确 TurnID；`spawn_agent` 只能从 Invocation.ThreadID 取得 parent target。
 - Delta 只能更新相同 ItemID 的 Active Item；迟到 Delta 不改变 Completed Item。
 - 没有 ItemStartedEvent 的 ItemCompletedEvent 仍可直接渲染。
 - ApprovalRequestEvent 必须通过带 RequestID 的 ApprovalDecisionOp 完成，且不使用独立 Request channel。
@@ -4387,3 +4709,5 @@ Amadeus 至少通过以下真实场景：
 27. Steered input 由 ActiveTurn TurnState 中的 TurnInputQueue 按 FIFO 保存，在当前 Model Step、Tool 和必要 compaction continuation 后进入 canonical history 并触发同一 Turn follow-up；它不创建第二个 Turn lifecycle，也不复用 Approval 或 request_user_input。
 28. Basic Multi-Agent 使用 Codex V1 风格 root-scoped AgentControl 和完整 child AmadeusThread/Session；首版 child 固定为 read-only explorer，结合 Claude Code 风格 Tool allowlist 与权限不升级原则，不引入 nested SessionTask 或第二 agent loop。
 29. Multi-Agent Prompt 由 ToolSpec delegation guidance、SubagentDeveloperInstructions、WorldState `<subagents>` 和 canonical `<subagent_notification>` 分层拥有；CollabAgentToolCallItem 是 live/Resume/Inline TUI 的唯一协作展示协议。
+30. SessionID 是 Root/child tree-level correlation/ownership，ThreadID 是具体 Thread 的 registry、routing、Rollout 和 Resume identity；SQLite StoredThread 不复制 SessionID，canonical SessionID 只来自 Rollout SessionMeta。
+31. Root Resume 必须恢复并校验 persisted child metadata；Tool Invocation、Audit 和 Provider request metadata 同时携带真实 SessionID/ThreadID，而 Multi-Agent target、Event scope、Application attachment 和 CLI/TUI resume 始终使用 ThreadID。

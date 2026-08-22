@@ -4,6 +4,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 func TestBuiltinSlashCommandsMatchesCodexContract(t *testing.T) {
@@ -25,8 +28,14 @@ func TestBuiltinSlashCommandsMatchesCodexContract(t *testing.T) {
 }
 
 func TestSlashCommandFilteringAndValidation(t *testing.T) {
+	if matches := FilterSlashCommands("/e", false); len(matches) != 1 || matches[0] != SlashExit {
+		t.Fatalf("/e matches = %#v, want only /exit", matches)
+	}
 	if matches := FilterSlashCommands("/re", false); len(matches) != 2 || matches[0] != SlashResume || matches[1] != SlashRename {
 		t.Fatalf("prefix matches = %#v", matches)
+	}
+	if matches := FilterSlashCommands("/resu", true); len(matches) != 1 || matches[0] != SlashResume {
+		t.Fatalf("running /resu matches = %#v, want only /resume", matches)
 	}
 	if matches := FilterSlashCommands("/mcp verbose", false); len(matches) != 0 {
 		t.Fatalf("argument input unexpectedly retained popup: %#v", matches)
@@ -45,6 +54,35 @@ func TestSlashCommandFilteringAndValidation(t *testing.T) {
 	parsed, err := ParseInput("inspect repository")
 	if err != nil || parsed.Text != "inspect repository" || parsed.Command != nil {
 		t.Fatalf("plain input parse = %#v err=%v", parsed, err)
+	}
+}
+
+func TestSlashPopupShowsResumeForTypedPrefixDuringTask(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	model.running = true
+	for _, value := range "/resu" {
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{value}})
+		model = updated.(fullscreenModel)
+	}
+	selected, ok := model.slashPopup.selectedItem()
+	if model.input.Value() != "/resu" || !ok || selected != SlashResume {
+		t.Fatalf("input=%q popup=%#v selected=%q ok=%v", model.input.Value(), model.slashPopup, selected, ok)
+	}
+	if rendered := xansi.Strip(model.View()); !strings.Contains(rendered, "/resume") {
+		t.Fatalf("/resu popup omitted /resume: %q", rendered)
+	}
+}
+
+func TestSlashPopupPrefixChangeResetsSelection(t *testing.T) {
+	var popup slashCommandPopup
+	popup.sync("/", false)
+	popup.move(1)
+	if selected, _ := popup.selectedItem(); selected != SlashSkills {
+		t.Fatalf("test setup selected %q, want /skills", selected)
+	}
+	popup.sync("/e", false)
+	if selected, ok := popup.selectedItem(); !ok || selected != SlashExit || popup.selected != 0 {
+		t.Fatalf("/e popup selected=%q index=%d ok=%v", selected, popup.selected, ok)
 	}
 }
 

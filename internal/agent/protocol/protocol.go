@@ -96,7 +96,13 @@ type SessionConfiguration struct {
 	Provider        string
 	Model           string
 	ReasoningEffort *llm.ReasoningEffort `json:"reasoning_effort,omitempty"`
-	Mode            string
+	Mode            ModeKind
+}
+
+func (configuration SessionConfiguration) Clone() SessionConfiguration {
+	configuration.Source = configuration.Source.Clone()
+	configuration.ReasoningEffort = llm.CloneReasoningEffort(configuration.ReasoningEffort)
+	return configuration
 }
 
 type SessionConfiguredEvent struct {
@@ -107,8 +113,8 @@ type SessionConfiguredEvent struct {
 func (SessionConfiguredEvent) isEventMsg() {}
 
 type ThreadSettingsAppliedEvent struct {
-	ThreadID ThreadID
-	Mode     string
+	ThreadID      ThreadID
+	Configuration SessionConfiguration
 }
 
 func (ThreadSettingsAppliedEvent) isEventMsg() {}

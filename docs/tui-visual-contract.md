@@ -24,11 +24,15 @@
 ## Composer And Selection
 
 - Composer prompt 使用 `›`，输入可用时为默认前景 + bold，真正禁用输入时为 dim；Placeholder 使用 dim，输入正文使用默认前景。Run 执行期间仍允许编辑与排队，因此 prompt 保持可用态。
-- Slash Popup、Resume、Approval、Skills 等列表共用同一 Selection Renderer。选中行的 cursor、名称与说明全部使用 selection，即 accent + bold；未选中名称使用默认前景，说明使用 dim，禁用项整体 dim。
+- Slash Popup、Resume、Approval、Skills 等列表共用同一 Selection Renderer。Modal picker 的选中行保留 cursor，Slash Command Popup 对齐 Codex CommandPopup，不显示 `›` cursor glyph；两者的选中名称与说明仍统一使用 selection，未选中名称使用默认前景，说明使用 dim，禁用项整体 dim。
 - Slash Command 列表不整体染成青色，也不使用黄色 selected row；搜索命中字符可额外 bold，但不能破坏 selected row 的统一样式。
-- Footer/Status Bar 对齐 Codex StatusLineAccent fallback：model/state/metadata 使用 cyan，project/path 与 context usage 使用 green，branch/thread 与 Plan mode 使用 magenta，分隔符使用 dim；context 达到警告/失败阈值后覆盖为 yellow/red。
+- Footer/Statusline 对齐 Codex StatusLineAccent 的 theme-first 规则：TrueColor/ANSI256 根据终端明暗背景选择 Catppuccin Mocha/Latte，并从对应语义 token 解析 model/type、path/string、branch/function、usage/number、mode/keyword 与 thread/heading 色，再应用 Codex 85% saturation softening；ANSI16 使用 Codex cyan/green/magenta fallback，No Color 整行 dim。分隔符使用 dim；context 达到警告/失败阈值后覆盖为 yellow/red。Plan mode 不混入左侧状态段，而是在预留的独立右列使用 mode accent 右对齐；宽度允许时显示 `Plan mode (shift+tab to cycle)`，与左侧 statusline 不能共存时收缩为 `Plan mode`，Default mode 不显示模式标签。左侧内容必须在右列起点前完成裁剪，不得与 context 重叠。
+- Fullscreen inline View 使用真实内容高度，不通过顶部补空行模拟 Codex/Ratatui 的全屏 surface。Footer 是活动 frame 的最后一行，Plan mode 在该行独立右对齐；Bubble Tea renderer 独占永久输出和 frame redraw，Amadeus 不在 output writer 外层追加 cursor up/down 定位协议。
+- Shift+Tab 的 settings acknowledgement 刷新右侧 collaboration mode indicator，并插入 `• Mode changed to <Mode>.` Info HistoryCell。History row 只包含该消息，重复切换不得把 Composer、placeholder、Slash Popup 或 Footer 固化到 terminal scrollback。
+- Slash command popup 使用 command name 的 exact/prefix 匹配；`/e` 只显示 `/exit`。Popup 激活时替换普通 Footer 区域，不与 statusline 或 mode indicator 同屏，filter 变化时 selection 重置到首个候选。
+- `/exit` 与空 Composer 的退出快捷键进入唯一 shutdown-first lifecycle。等待期间活动 frame 只显示一份 `Shutting down…`，不写入 History；shutdown 完成或 bounded timeout 后先渲染空 active frame，再退出 Bubble Tea。终端 scrollback 不得残留 Composer placeholder、Popup 或 Footer；token usage 与 resume hint 只在终端恢复后由 CLI 输出。Color terminal 只将 resume command 染为 ANSI cyan，周围说明文字保持默认前景；No Color 不输出 ANSI。
 - Rich TUI 不因父进程为 shell Tool 注入 `NO_COLOR` 而静默退化成黑白；No Color 由终端能力或显式 Renderer 选项控制，非 TTY 交互直接拒绝，不再切换 Plain 交互主链。
-- 当前动态范围是终端颜色能力、明暗背景、ANSI 最近色与 Markdown 深浅 Chroma 主题；尚未复制 Codex 基于语法 scope 为所有 UI 语义动态解析颜色的通用 resolver。状态栏现阶段采用 Codex 的稳定 fallback 分类，不宣称与用户自定义 Codex 语法主题逐色一致。
+- 当前 Statusline 与 Markdown 共用明暗自适应 Chroma theme source；尚未复制 Codex 的 `/theme`、自定义 tmTheme 加载与全局 syntax scope resolver，因此对齐默认 Catppuccin Mocha/Latte 和 ANSI fallback，不宣称与用户自定义 Codex 主题逐色一致。
 
 ## Markdown And Code
 
@@ -59,15 +63,16 @@
 
 ## Separator
 
-- Tool 工作结束后，在最终 Assistant 消息前按内容边界插入 dim rule。
-- Run terminal 时如仍有未封口的工作活动，追加 Final Message Separator。
+- Tool 工作结束后，在最终 Assistant 消息前按内容边界插入不带耗时的 dim rule。
+- Run terminal 时如本 Turn 发生过具体工作，在最终 Assistant 消息后追加 Final Message Separator；耗时标签不得提前出现在最终回复上方。
 - 不超过 60s 的 Run 只显示 dim rule；超过 60s 显示 `─ Worked for 2m 05s ───`。
 - 不因 Model Step 数量增加 separator。
 
 ## Layout And Terminal Matrix
 
 - Agent、Tool、Separator 与下一条 User Message 之间保持统一的一行空白。
-- Composer 与活动内容保持两行视觉距离；运行期间 Composer 仍可输入并排队。
+- Composer 与活动内容保持两行视觉距离；运行期间 Composer 仍可输入并排队。输入超过可用宽度时按终端显示宽度软换行并扩展到最多五行。
+- Rich TUI 必须把真实终端光标锚定到 Composer 的显示光标；即使使用绘制型块光标，也不能让 macOS 等平台的输入法候选窗口停留在 Statusline。
 - 已完成 Cell 提交到 main-screen scrollback 时不得附加尾部空行；空闲 Bottom Pane 独占最终回复到 Composer 的两次换行，避免提交空行与 View 前导空行叠加成三行距离。
 - 40～59 列使用紧凑 Logo/面板；60 列以上使用宽布局并保留右侧 margin。
 - 中文、emoji 和宽字符不破坏截断、换行、选择器或输入光标。

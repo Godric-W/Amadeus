@@ -186,6 +186,29 @@ func (cell NoticeHistoryCell) DisplayLines(HistoryRenderContext) []styledLine {
 func (cell NoticeHistoryCell) RawLines() []string    { return rawLines(cell.Content) }
 func (NoticeHistoryCell) IsStreamContinuation() bool { return false }
 
+type InfoHistoryCell struct{ Content string }
+
+func NewInfoHistoryCell(content string) HistoryCell {
+	return InfoHistoryCell{Content: strings.TrimSpace(content)}
+}
+
+func (cell InfoHistoryCell) DisplayLines(HistoryRenderContext) []styledLine {
+	content := sanitizeFullscreenContent(cell.Content)
+	if content == "" {
+		return nil
+	}
+	return []styledLine{{{Text: "• ", Style: styleDim}, {Text: content}}}
+}
+
+func (cell InfoHistoryCell) RawLines() []string {
+	if content := strings.TrimSpace(cell.Content); content != "" {
+		return []string{"• " + content}
+	}
+	return nil
+}
+
+func (InfoHistoryCell) IsStreamContinuation() bool { return false }
+
 type DiagnosticHistoryCell struct{ Content string }
 
 func NewDiagnosticHistoryCell(content string) HistoryCell {

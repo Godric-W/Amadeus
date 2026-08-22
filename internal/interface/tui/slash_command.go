@@ -73,7 +73,7 @@ func (command SlashCommand) SupportsInlineArgs() bool {
 }
 
 func (command SlashCommand) AvailableDuringTask() bool {
-	return command == SlashSkills || command == SlashCopy || command == SlashStatus || command == SlashMCP
+	return command == SlashResume || command == SlashSkills || command == SlashCopy || command == SlashStatus || command == SlashMCP || command == SlashExit
 }
 
 func SlashCommands() []string {
@@ -114,15 +114,10 @@ func FindSlashCommand(name string) (SlashCommand, bool) {
 }
 
 func FilterSlashCommands(input string, running bool) []SlashCommand {
-	input = strings.TrimSpace(input)
-	if !strings.HasPrefix(input, "/") || strings.Contains(strings.TrimPrefix(input, "/"), "/") {
+	query, ok := slashCommandFilterValue(input)
+	if !ok {
 		return nil
 	}
-	trimmed := strings.TrimPrefix(input, "/")
-	if strings.ContainsAny(trimmed, " \t\r\n") {
-		return nil
-	}
-	query := strings.ToLower(trimmed)
 	commands := BuiltinSlashCommands()
 	result := make([]SlashCommand, 0, len(commands))
 	for _, command := range commands {
@@ -134,6 +129,23 @@ func FilterSlashCommands(input string, running bool) []SlashCommand {
 		}
 	}
 	return result
+}
+
+func slashCommandFilter(input string) string {
+	query, _ := slashCommandFilterValue(input)
+	return query
+}
+
+func slashCommandFilterValue(input string) (string, bool) {
+	input = strings.TrimSpace(input)
+	if !strings.HasPrefix(input, "/") || strings.Contains(strings.TrimPrefix(input, "/"), "/") {
+		return "", false
+	}
+	trimmed := strings.TrimPrefix(input, "/")
+	if strings.ContainsAny(trimmed, " \t\r\n") {
+		return "", false
+	}
+	return strings.ToLower(trimmed), true
 }
 
 func CompleteSlashCommand(prefix string) []string {

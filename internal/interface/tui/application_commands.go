@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -33,15 +32,17 @@ func (model fullscreenModel) dispatchCommand(invocation SlashInvocation) (tea.Mo
 	case SlashPlan:
 		task := strings.TrimSpace(arguments)
 		if task == "" {
+			if model.pendingMode.Valid() || model.session.mode() == turn.ModeKindPlan {
+				return model, nil
+			}
+			model.pendingMode = turn.ModeKindPlan
 			model.status = "switching to Plan mode"
 			return model, model.setMode(turn.ModeKindPlan)
 		}
 		submission := model.prepareTaskSubmission(task, turn.ModeKindPlan, true)
 		return model, tea.Batch(model.flushHistory(), model.submitTask(submission))
 	case SlashExit:
-		model.shutdownRequested = true
-		model.status = "shutting down"
-		return model, model.shutdown()
+		return model, model.requestExit(ExitModeShutdownFirst, ExitReasonUserRequested, nil)
 	case SlashCopy:
 		if strings.TrimSpace(model.transcript.LastAgentMarkdown) == "" {
 			model.insertHistoryCell(NewErrorHistoryCell("No agent response to copy"))
@@ -68,7 +69,7 @@ func (model fullscreenModel) dispatchCommand(invocation SlashInvocation) (tea.Mo
 			model.status = "renaming session"
 			return model, model.rename(arguments)
 		}
-		model.selection = &selectionOverlay{Title: "Rename session", Subtitle: "Type a name and press Enter", Input: true, Value: model.sessionTitle, Hint: "Esc cancel"}
+		model.selection = &selectionOverlay{Title: "Rename session", Subtitle: "Type a name and press Enter", Input: true, Value: model.session.Title, Hint: "Esc cancel"}
 		model.selectionKind = "rename"
 		model.input.Blur()
 		return model, nil
@@ -163,16 +164,7 @@ func (model fullscreenModel) setMode(mode turn.ModeKind) tea.Cmd {
 
 func (model fullscreenModel) rename(name string) tea.Cmd {
 	return func() tea.Msg {
-		model.app.options.Application.Rename(model.ctx, model.generation, name)
-		return nil
-	}
-}
-
-func (model fullscreenModel) shutdown() tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(model.ctx), 3*time.Second)
-		defer cancel()
-		model.app.options.Application.Shutdown(ctx)
+		model.app.options.Application.Rename(model.ctx, model.session.Generation, name)
 		return nil
 	}
 }
