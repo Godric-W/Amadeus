@@ -296,18 +296,19 @@ Domain/Runtime 不依赖 infrastructure adapter 或上层具体 controller/model
 ```text
 cmd/amadeus/
   composition.go             Composition Root：配置、Adapter、Session spawn args 与 ThreadManager 装配
-  turn_interface.go          CLI/TUI 对 SessionIo 的提交、等待与终态适配
-  agent_interactive.go       Fullscreen TUI 启动与 active attachment wiring
-  interactive_commands.go    Slash Command 对 Application/Session typed API 的调用适配
-  interactive_history.go     persisted ResponseItem/EventMsgItem 的界面恢复投影
+  turn_interface.go          one-shot/plain CLI 对 SessionIo 的提交、等待、Event 与 Approval 适配
+  agent_interactive.go       plain/fullscreen 入口选择与 InteractiveApplication/TUI wiring
+  interactive_request.go     Protocol Approval Event 与 Policy Decision 的 CLI 边界转换
 
 internal/app/
+  interactive_application.go Fullscreen active attachment、唯一 SessionIo event pump 与 typed command API
+  interactive_history.go     persisted ResponseItem/EventMsgItem 的 canonical replay 投影
   thread_workspace.go        当前 Thread 选择、切换、恢复、重命名和删除生命周期
 
 internal/agent/session/
   session.go                 Session 状态机、submission loop 与 Turn 生命周期
-  history.go                 ContextManager、Plan、canonical append 与增量 record
-  interaction.go             Event/EventMsg 发布与 correlated approval waiter
+  host.go                    canonical append、ContextManager 增量 record 与 Session host API
+  interaction.go             Event/EventMsg 发布与 correlated Approval/User Input waiter
 
 internal/interface/tui/
   application.go             Fullscreen Application 类型、生命周期与模型装配
@@ -385,7 +386,7 @@ Child Thread: SessionID == Root SessionID
 
 共享 SessionID 不意味着共享全部可变状态。Root 与 child 的 Context、ActiveTurn、SessionPermissionContext、ProcessManager、Tool state 和 Rollout 继续隔离；只有 AgentControl、明确的 tree-level budget/correlation 和身份归属可以共享。
 
-Project Context 由启动目录或 `--project` 指定目录形成 canonical CWD：
+Project Context 由启动目录或 `-C, --cd` 指定目录形成 canonical CWD：
 
 - canonical CWD 进入 Thread metadata、SessionConfiguration 和 TurnContext。
 - `/resume` 默认按 canonical CWD 过滤 StoredThread。

@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	flagProject = "project"
-	flagAddDir  = "add-dir"
+	flagCD     = "cd"
+	flagAddDir = "add-dir"
 )
 
 type projectFlags struct {
@@ -21,7 +21,7 @@ type projectFlags struct {
 }
 
 func (flags *projectFlags) bind(command *cobra.Command) {
-	command.PersistentFlags().StringVar(&flags.path, flagProject, "", "use an explicit target project directory")
+	command.PersistentFlags().StringVarP(&flags.path, flagCD, "C", "", "use the specified directory as the working root")
 	command.PersistentFlags().StringArrayVar(&flags.addDirs, flagAddDir, nil, "add an additional writable directory (repeatable)")
 }
 
@@ -53,7 +53,7 @@ func (flags *projectFlags) resolveAdditional(runtime commandRuntime, primary pro
 }
 
 func (flags *projectFlags) resolve(command *cobra.Command, runtime commandRuntime) (project.Root, error) {
-	explicit := command.Root().PersistentFlags().Changed(flagProject)
+	explicit := command.Root().PersistentFlags().Changed(flagCD)
 	return resolveProjectRoot(runtime.workingDirectory, runtime.workingDirectoryErr, flags.path, explicit)
 }
 
@@ -65,10 +65,10 @@ func resolveProjectRoot(startupWorkingDirectory string, startupWorkingDirectoryE
 		}
 		path = startupWorkingDirectory
 	} else if strings.TrimSpace(path) == "" {
-		return project.Root{}, errors.New("explicit project path is empty")
+		return project.Root{}, errors.New("explicit working root is empty")
 	} else if !filepath.IsAbs(path) {
 		if startupWorkingDirectoryErr != nil {
-			return project.Root{}, fmt.Errorf("resolve relative project path without startup working directory: %w", startupWorkingDirectoryErr)
+			return project.Root{}, fmt.Errorf("resolve relative working root without startup working directory: %w", startupWorkingDirectoryErr)
 		}
 		if startupWorkingDirectory == "" {
 			return project.Root{}, errors.New("startup working directory is empty")
@@ -78,7 +78,7 @@ func resolveProjectRoot(startupWorkingDirectory string, startupWorkingDirectoryE
 
 	root, err := project.NewRoot(path)
 	if err != nil {
-		return project.Root{}, fmt.Errorf("resolve target project: %w", err)
+		return project.Root{}, fmt.Errorf("resolve working root: %w", err)
 	}
 	return root, nil
 }

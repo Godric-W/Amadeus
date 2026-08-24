@@ -93,7 +93,7 @@ func TestRootCommandUsesExplicitProjectForAgent(t *testing.T) {
 	runner := &recordingAgentCommand{}
 	runtime := testAgentCommandRuntime(startupDirectory, runner, false)
 	command := newRootCommandWithRuntime(&configFlags{}, runtime)
-	command.SetArgs([]string{"--project", "workspace", "task"})
+	command.SetArgs([]string{"--cd", "workspace", "task"})
 	if err := command.Execute(); err != nil {
 		t.Fatalf("execute explicit-project Agent task: %v", err)
 	}

@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestProjectFlagResolvesRelativeToStartupWorkingDirectory(t *testing.T) {
+func TestCDFlagResolvesRelativeToStartupWorkingDirectory(t *testing.T) {
 	startupWorkingDirectory := t.TempDir()
 	projectDirectory := filepath.Join(startupWorkingDirectory, "workspace")
 	if err := os.Mkdir(projectDirectory, 0o755); err != nil {
@@ -24,9 +24,9 @@ func TestProjectFlagResolvesRelativeToStartupWorkingDirectory(t *testing.T) {
 	command := newRootCommandWithFlags(&configFlags{}, flags, runtime)
 	command.SetOut(&bytes.Buffer{})
 	command.SetErr(&bytes.Buffer{})
-	command.SetArgs([]string{"version", "--project", "workspace"})
+	command.SetArgs([]string{"version", "--cd", "workspace"})
 	if err := command.Execute(); err != nil {
-		t.Fatalf("parse project flag: %v", err)
+		t.Fatalf("parse cd flag: %v", err)
 	}
 
 	root, err := flags.resolve(command, runtime)
@@ -66,7 +66,7 @@ func TestDefaultProjectUsesCapturedStartupWorkingDirectory(t *testing.T) {
 	}
 }
 
-func TestAbsoluteProjectDoesNotRequireStartupWorkingDirectory(t *testing.T) {
+func TestAbsoluteCDDoesNotRequireStartupWorkingDirectory(t *testing.T) {
 	projectDirectory := t.TempDir()
 	startupErr := errors.New("working directory unavailable")
 	runtime := commandRuntime{
@@ -78,9 +78,9 @@ func TestAbsoluteProjectDoesNotRequireStartupWorkingDirectory(t *testing.T) {
 	command := newRootCommandWithFlags(&configFlags{}, flags, runtime)
 	command.SetOut(&bytes.Buffer{})
 	command.SetErr(&bytes.Buffer{})
-	command.SetArgs([]string{"version", "--project", projectDirectory})
+	command.SetArgs([]string{"version", "-C", projectDirectory})
 	if err := command.Execute(); err != nil {
-		t.Fatalf("parse absolute project flag: %v", err)
+		t.Fatalf("parse absolute cd flag: %v", err)
 	}
 
 	root, err := flags.resolve(command, runtime)
@@ -92,7 +92,7 @@ func TestAbsoluteProjectDoesNotRequireStartupWorkingDirectory(t *testing.T) {
 	}
 }
 
-func TestRelativeProjectRequiresStartupWorkingDirectory(t *testing.T) {
+func TestRelativeCDRequiresStartupWorkingDirectory(t *testing.T) {
 	startupErr := errors.New("working directory unavailable")
 	_, err := resolveProjectRoot("", startupErr, "workspace", true)
 	if !errors.Is(err, startupErr) {
@@ -100,9 +100,9 @@ func TestRelativeProjectRequiresStartupWorkingDirectory(t *testing.T) {
 	}
 }
 
-func TestExplicitEmptyProjectIsRejected(t *testing.T) {
+func TestExplicitEmptyCDIsRejected(t *testing.T) {
 	_, err := resolveProjectRoot(t.TempDir(), nil, "", true)
-	if err == nil || err.Error() != "explicit project path is empty" {
+	if err == nil || err.Error() != "explicit working root is empty" {
 		t.Fatalf("unexpected explicit empty project error: %v", err)
 	}
 }
@@ -130,14 +130,17 @@ func TestProjectRootIsIndependentFromAmadeusRoot(t *testing.T) {
 	}
 }
 
-func TestRootCommandExposesProjectFlag(t *testing.T) {
+func TestRootCommandExposesCDFlag(t *testing.T) {
 	command := newRootCommand()
-	flag := command.PersistentFlags().Lookup(flagProject)
+	flag := command.PersistentFlags().Lookup(flagCD)
 	if flag == nil {
-		t.Fatal("root command does not expose --project")
+		t.Fatal("root command does not expose --cd")
 	}
-	if flag.Usage != "use an explicit target project directory" {
-		t.Fatalf("unexpected --project usage: %q", flag.Usage)
+	if flag.Shorthand != "C" || flag.Usage != "use the specified directory as the working root" {
+		t.Fatalf("unexpected --cd contract: shorthand=%q usage=%q", flag.Shorthand, flag.Usage)
+	}
+	if removed := command.PersistentFlags().Lookup("project"); removed != nil {
+		t.Fatal("root command retains removed --project flag")
 	}
 }
 
@@ -154,7 +157,7 @@ func TestAddDirResolvesRepeatableWritableRoots(t *testing.T) {
 	runtime := commandRuntime{workingDirectory: startup, lookupEnv: emptyEnvLookup}
 	flags := &projectFlags{}
 	command := newRootCommandWithFlags(&configFlags{}, flags, runtime)
-	command.SetArgs([]string{"version", "--project", "primary", "--add-dir", "additional", "--add-dir", additional})
+	command.SetArgs([]string{"version", "--cd", "primary", "--add-dir", "additional", "--add-dir", additional})
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}

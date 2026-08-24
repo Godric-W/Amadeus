@@ -4,165 +4,118 @@
 
 # Amadeus
 
-Amadeus 是一个使用 Go 实现的 codex-like 终端 Coding Agent。它可以在指定项目中读取和搜索代码、编辑文件、执行命令、查看图片、调用 Web、Skill 与 MCP 工具，也可以把独立的只读探索任务委派给由 Amadeus 自己驱动的 SubAgent，并通过可恢复的会话持续完成软件开发任务。
+Amadeus is a Codex-like terminal coding agent written in Go. It can inspect and edit repositories, run commands, work with resumable sessions, load `AGENTS.md` instructions, use Skills and MCP servers, and delegate focused research to read-only SubAgents.
 
-Amadeus 支持交互式 TUI 和一次性任务两种使用方式。运行时使用单一 Turn continuation loop：模型可以连续调用工具、读取执行结果并继续工作，直到返回最终回答。会话历史以 canonical rollout 持久化，可用于继续或恢复此前的对话。
+## Features
 
-## 启动命令
+- Interactive terminal UI and one-shot task execution.
+- File reading, search, editing, command execution, and image inspection.
+- OpenAI Responses and Chat Completions APIs, including compatible providers.
+- Resumable local sessions.
+- Hierarchical `AGENTS.md` instructions.
+- User and project Skills with progressive resource loading.
+- Stdio and Streamable HTTP MCP servers.
+- Read-only explorer SubAgents for parallel investigation.
+- Optional web search and web fetch tools.
+- Plan mode, approvals, session-scoped permission grants, and tool output limits.
 
-### 交互模式
+## Quick Start
 
-在目标项目目录中直接启动：
-
-```bash
-amadeus
-```
-
-未指定 `--project` 时，启动命令所在的当前目录就是目标项目目录。
-
-### 执行一次性任务
-
-通过位置参数提交一个任务：
-
-```bash
-amadeus "修复登录接口的错误处理并运行相关测试"
-```
-
-也可以从标准输入读取任务：
+Amadeus currently requires Go 1.26 or later.
 
 ```bash
-printf '%s\n' '总结这个项目的目录结构' | amadeus
+git clone https://github.com/Godric-W/Amadeus.git
+cd Amadeus
+
+go mod tidy
+make build
 ```
 
-一次启动最多接受一个任务参数。带任务参数或从非 TTY 标准输入读取任务时，Amadeus 使用一次性模式；没有任务且标准输入为终端时，Amadeus 进入交互模式。
-
-### 指定项目和附加目录
-
-```bash
-amadeus --project /path/to/project "运行测试并修复失败用例"
-```
-
-通过可重复的 `--add-dir` 增加当前进程可以写入的附加目录：
-
-```bash
-amadeus \
-  --project /workspace/backend \
-  --add-dir /workspace/frontend \
-  --add-dir ../shared \
-  "同步修改后端、前端和共享模块"
-```
-
-相对路径以启动 Amadeus 时的当前工作目录为基准。`--add-dir` 不会改变主项目身份或会话归属。
-
-### 继续或恢复会话
-
-继续当前项目最近使用的会话：
-
-```bash
-amadeus --continue
-```
-
-在交互界面中选择一个历史会话：
-
-```bash
-amadeus --resume
-```
-
-直接恢复指定会话：
-
-```bash
-amadeus --resume <session-id>
-```
-
-恢复指定会话并立即执行一个任务：
-
-```bash
-amadeus --resume <session-id> "继续完成剩余测试"
-```
-
-也可以使用等号形式：
-
-```bash
-amadeus --resume=<session-id> "继续完成剩余测试"
-```
-
-用户界面继续使用“session”术语，但 `<session-id>` 实际是该对话 Thread 的 canonical UUID。Amadeus 新建 Thread 使用 UUIDv7；CLI 和 `/resume` 会在边界校验 UUID，不接受展示用前缀或任意字符串 ID。
-
-`--continue` 和 `--resume` 不能同时使用。不带会话 ID 的 `--resume` 只适用于交互终端。
-
-## 启动参数
-
-命令格式：
+The binary is written to:
 
 ```text
-amadeus [task] [flags]
+bin/amadeus
 ```
 
-| 参数 | 说明 |
-|---|---|
-| `[task]` | 可选的一次性任务文本，最多一个 |
-| `--project <path>` | 指定主项目目录；默认使用启动时的当前目录 |
-| `--add-dir <path>` | 增加附加可写目录，可重复使用 |
-| `--continue` | 继续当前项目最近使用的会话 |
-| `--resume[=<session-id>]` | 恢复指定会话；省略 ID 时打开会话选择界面 |
-| `--config <path>` | 使用显式指定的配置文件 |
-| `--model-provider <name>` | 为当前进程覆盖模型 Provider |
-| `--model <name>` | 为当前进程覆盖模型名称 |
-| `--model-reasoning-effort <effort>` | 覆盖推理强度：`none`、`minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；省略时使用厂商默认值 |
-| `--model-input-modalities <values>` | 覆盖模型输入模态，逗号分隔；基础版支持 `text`、`image` |
-| `--model-supports-original-image-detail` | 声明当前模型支持 `view_image.detail=original` |
-| `--wire-api <api>` | 覆盖 Provider Wire API，可用值为 `responses` 或 `chat_completions` |
-| `--dialect <dialect>` | 覆盖 Provider 方言，可用值为 `standard`、`openai`、`deepseek`、`qwen` 或 `glm` |
-| `--base-url <url>` | 为当前进程覆盖 Provider Base URL |
-| `-h`, `--help` | 显示命令帮助 |
-
-示例：
+For a normal user installation, place the binary on your `PATH`:
 
 ```bash
-amadeus \
-  --config ./config.yaml \
-  --project /workspace/project \
-  --model-provider openai \
-  --model gpt-5 \
-  "检查当前修改并运行测试"
+mkdir -p "$HOME/.local/bin"
+install -m 0755 bin/amadeus "$HOME/.local/bin/amadeus"
 ```
 
-可以随时通过以下命令查看当前版本支持的参数：
+### Configure `AMADEUS_HOME`
 
-```bash
-amadeus --help
-```
+`AMADEUS_HOME` is the directory used for Amadeus configuration, user Skills, MCP configuration, and local session data.
 
-配置文件可使用顶层 `model_reasoning_effort`，环境变量为 `AMADEUS_MODEL_REASONING_EFFORT`。显式配置时 Responses 发送 `reasoning.effort`，Chat Completions 发送 `reasoning_effort`；DeepSeek、Qwen、GLM 的 Chat `none` 会转换为各自的关闭 thinking 字段。`amadeus config show` 输出脱敏后的有效配置，`amadeus config explain` 同时显示各字段来源。
-
-模型图片能力必须显式配置，不能从 Provider 或 OpenAI-compatible Dialect 推断。默认 `model_input_modalities: [text]`；只有真实支持图片的模型才应配置 `[text, image]`。`model_supports_original_image_detail` 默认 `false`，仅对明确支持 original detail 的模型开启。对应环境变量为 `AMADEUS_MODEL_INPUT_MODALITIES` 与 `AMADEUS_MODEL_SUPPORTS_ORIGINAL_IMAGE_DETAIL`。
-
-## 配置目录
-
-Amadeus 使用 `AMADEUS_HOME` 保存用户级配置、Skill 和会话数据。建议显式设置一个用户可写目录：
+Setting it explicitly is recommended:
 
 ```bash
 export AMADEUS_HOME="$HOME/.amadeus"
 mkdir -p "$AMADEUS_HOME"
 ```
 
-如果未设置 `AMADEUS_HOME`，Amadeus 会使用解析后的可执行文件所在目录。用户级主配置默认位于 `$AMADEUS_HOME/config.yaml`；也可以通过 `--config <path>` 为当前进程指定其他主配置文件。
+If `AMADEUS_HOME` is not set, Amadeus uses the resolved directory containing the executable. For example, running the repository binary directly makes `bin/` the Amadeus home. This is useful for local development, but an explicit user directory is more predictable for regular use.
 
-仓库提供了完整示例：
+A typical home directory looks like this:
+
+```text
+$AMADEUS_HOME/
+├── config.yaml
+├── AGENTS.md
+├── mcp.yaml
+├── skills.yaml
+├── skills/
+│   └── review/
+│       ├── SKILL.md
+│       ├── references/
+│       ├── scripts/
+│       └── assets/
+├── sessions/
+│   └── YYYY/MM/DD/*.jsonl
+└── data/
+    └── amadeus.db
+```
+
+Files and directories are created as needed. Audit logs use the platform state directory instead of `AMADEUS_HOME`:
+
+```text
+$XDG_STATE_HOME/amadeus/audit/audit.jsonl
+```
+
+If `XDG_STATE_HOME` is unset, the default is `~/.local/state/amadeus/audit/audit.jsonl`.
+
+### Create `config.yaml`
+
+Copy the repository example:
 
 ```bash
 cp configs/amadeus.example.yaml "$AMADEUS_HOME/config.yaml"
-amadeus config check --config "$AMADEUS_HOME/config.yaml"
-amadeus config show
 ```
 
-`config show` 会输出脱敏后的有效主配置，`config explain` 会同时显示字段来源。MCP 和 Skill 使用下文所述的独立配置文件与目录，不写入 `config.yaml`。
-
-## Multi-Agent
-
-默认启用基础 Multi-Agent。Root Agent 可以创建由 Amadeus 自己驱动的只读 `explorer` SubAgent；每个 child 都是独立的 Thread/Session，使用同一项目目录，但拥有独立 Context、Tool 执行状态、权限状态和持久化历史。
+Then configure a model and provider. A minimal OpenAI configuration is:
 
 ```yaml
+version: 2
+
+model: gpt-5
+model_provider: openai
+model_context_window: 400000
+model_input_modalities: [text]
+model_supports_original_image_detail: false
+tool_output_token_limit: 10000
+
+model_providers:
+  openai:
+    wire_api: responses
+    dialect: openai
+    api_key: ""
+    base_url: https://api.openai.com/v1
+    timeout: 120s
+    request_max_retries: 4
+    stream_max_retries: 5
+    stream_idle_timeout: 5m
+
 agent:
   max_parallel_tools: 4
   multi_agent:
@@ -172,56 +125,265 @@ agent:
     child_max_samples: 20
     child_max_tool_calls: 100
     child_max_duration: 15m
+
+logging:
+  level: info
+  trace_llm: false
 ```
 
-当前基础版仅支持 Root 的直接 child。SubAgent 固定为只读 explorer，只能使用 `read`、`glob`、`grep`，以及条件可见的 `read_skill` 和 `web_search`；不能编辑文件、执行命令、请求用户输入、调用 MCP 或继续创建 SubAgent。Root Agent 通过 `spawn_agent`、`send_input`、`wait_agent` 和 `close_agent` 管理 child。
+Keep API keys out of the file when possible:
 
-## Web 工具
+```bash
+export AMADEUS_API_KEY="your-api-key"
+```
 
-`web_search` 与 `web_fetch` 使用独立开关。仅启用搜索时，可以使用无需 API Key 的 DuckDuckGo：
+The selected provider is an alias under `model_providers`. Amadeus also supports OpenAI-compatible providers through `wire_api: chat_completions` and `dialect: standard`, plus provider dialects for OpenAI, DeepSeek, Qwen, and GLM.
+
+Validate and inspect the effective configuration:
+
+```bash
+amadeus config check
+amadeus config show
+amadeus config explain
+```
+
+Use `--config <path>` to select a main configuration file without changing `AMADEUS_HOME`:
+
+```bash
+amadeus --config ./config.yaml config check
+```
+
+The complete configuration template is available at [`configs/amadeus.example.yaml`](configs/amadeus.example.yaml).
+
+### Start Amadeus
+
+Start the interactive TUI in the current directory:
+
+```bash
+amadeus
+```
+
+Run a one-shot task:
+
+```bash
+amadeus "Inspect the current changes, fix the failing tests, and verify the result"
+```
+
+Read a task from standard input:
+
+```bash
+printf '%s\n' 'Summarize this repository' | amadeus
+```
+
+Use another directory as the working root:
+
+```bash
+amadeus -C /path/to/project
+amadeus --cd /path/to/project "Run the test suite"
+```
+
+Add extra writable directories without changing the primary working root:
+
+```bash
+amadeus \
+  --cd /workspace/backend \
+  --add-dir /workspace/frontend \
+  --add-dir ../shared \
+  "Update the API and its clients"
+```
+
+Continue or resume a session:
+
+```bash
+amadeus --continue
+amadeus --resume
+amadeus --resume <session-id>
+amadeus --resume=<session-id> "Continue the remaining work"
+```
+
+`--continue` and `--resume` cannot be used together. Running `--resume` without an ID opens the session picker and requires an interactive terminal.
+
+## CLI Options
+
+Command form:
+
+```text
+amadeus [task] [flags]
+```
+
+| Option | Description |
+|---|---|
+| `[task]` | Optional one-shot task. At most one positional task is accepted. |
+| `-C, --cd <dir>` | Use the specified directory as the working root. Relative paths are resolved from the startup directory. |
+| `--add-dir <dir>` | Add another writable directory. May be repeated. |
+| `--continue` | Continue the most recently updated session for the current working root. |
+| `--resume[=<session-id>]` | Resume a session by ID, or open the session picker when no ID is supplied. |
+| `--config <path>` | Load the main configuration from an explicit path. |
+| `--model-provider <name>` | Override the selected provider alias. |
+| `--model <name>` | Override the model name. |
+| `--model-reasoning-effort <effort>` | Set `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
+| `--model-input-modalities <values>` | Override model inputs, for example `text` or `text,image`. |
+| `--model-supports-original-image-detail` | Expose original image detail for a model that supports it. |
+| `--wire-api <api>` | Override the wire API: `responses` or `chat_completions`. |
+| `--dialect <dialect>` | Override the provider dialect: `standard`, `openai`, `deepseek`, `qwen`, or `glm`. |
+| `--base-url <url>` | Override the selected provider base URL. |
+| `-h, --help` | Show command help. |
+
+Useful environment overrides include:
+
+| Environment variable | Purpose |
+|---|---|
+| `AMADEUS_HOME` | Configuration and session data directory. |
+| `AMADEUS_API_KEY` | API key for the selected provider. |
+| `AMADEUS_MODEL_PROVIDER` | Provider alias from `model_providers`. |
+| `AMADEUS_MODEL` | Model name. |
+| `AMADEUS_BASE_URL` | Provider base URL. |
+| `AMADEUS_WIRE_API` | `responses` or `chat_completions`. |
+| `AMADEUS_DIALECT` | Provider dialect. |
+| `AMADEUS_MODEL_REASONING_EFFORT` | Model reasoning effort. |
+| `AMADEUS_MODEL_INPUT_MODALITIES` | Comma-separated model input modalities. |
+| `AMADEUS_MODEL_SUPPORTS_ORIGINAL_IMAGE_DETAIL` | Enable or disable original image detail support. |
+
+Run `amadeus --help` for the authoritative option list.
+
+## Slash Commands
+
+Slash Commands are available in the interactive TUI. Type `/` to open the command list.
+
+| Command | Description |
+|---|---|
+| `/resume [session-id]` | Resume a saved session or open the session picker. |
+| `/skills` | List Skills or enable and disable them. |
+| `/rename [name]` | Rename the current session. Without a name, opens an input dialog. |
+| `/delete` | Permanently delete the current session and exit. |
+| `/compact` | Compact the current conversation context. |
+| `/plan [task]` | Enter Plan mode. With a task, submits it after changing mode. |
+| `/copy` | Copy the latest agent Markdown response. |
+| `/status` | Show session, model, reasoning, permission, and token information. |
+| `/mcp` | Show configured MCP servers, tools, and resource counts. |
+| `/mcp verbose` | Show the detailed MCP inventory. |
+| `/clear` | Clear the UI and start a new session. |
+| `/exit` | Shut down the current session and exit. |
+
+`/resume`, `/skills`, `/copy`, `/status`, `/mcp`, and `/exit` remain available while a task is running. Skill enable/disable changes are unavailable until the task becomes idle. Use `Shift+Tab` to switch between Default and Plan modes while idle.
+
+## AGENTS.md
+
+`AGENTS.md` provides persistent instructions for how Amadeus should work.
+
+Amadeus loads:
+
+```text
+$AMADEUS_HOME/AGENTS.md
+<working-root>/AGENTS.md
+<working-root>/path/to/current/AGENTS.md
+```
+
+The user-level file is loaded first. Project files are loaded from the working root toward directories that Amadeus reads, edits, or uses as command working directories. This allows broad repository guidance at the root and more specific guidance in subdirectories.
+
+Example:
+
+```markdown
+# Repository Instructions
+
+- Run `go test ./...` after changing Go code.
+- Use `gofmt` on modified files.
+- Do not edit generated files manually.
+- Keep public APIs backwards compatible.
+```
+
+Rules:
+
+- Files must be regular, non-empty UTF-8 text files.
+- The combined instruction budget is 64 KiB.
+- Instructions are refreshed as Amadeus works in new directories.
+- File-changing and command tools reject stale instruction snapshots instead of executing against changed guidance.
+- `--add-dir` roots may contain their own applicable `AGENTS.md` files.
+
+## Skills
+
+A Skill is a directory containing a `SKILL.md` file and optional supporting resources.
+
+Amadeus scans:
+
+```text
+$AMADEUS_HOME/skills/<skill-name>/SKILL.md
+<working-root>/.amadeus/skills/<skill-name>/SKILL.md
+```
+
+Project Skills replace user Skills with the same frontmatter `name`.
+
+Recommended layout:
+
+```text
+.amadeus/skills/review/
+├── SKILL.md
+├── references/
+│   └── checklist.md
+├── scripts/
+│   └── check.sh
+└── assets/
+    └── report-template.md
+```
+
+Minimal `SKILL.md`:
+
+```markdown
+---
+name: review
+description: Review changed code and report focused correctness risks
+short_description: Review code changes
+allow_implicit_invocation: true
+---
+
+# Review Workflow
+
+1. Inspect the relevant diff and surrounding code.
+2. Prioritize correctness, regressions, and missing tests.
+3. Report findings with concrete paths and evidence.
+```
+
+Skill names use lowercase letters, digits, and hyphens. `description` and a non-empty body are required. `short_description` and `allow_implicit_invocation` are optional.
+
+The model initially receives a Skill metadata index, not every Skill body and resource. It can load the body or files under `references/` as needed. Scripts are not executed automatically; project Skill scripts run only through the normal command tool and approval flow. User-level Skill scripts are treated as reference material under the current security policy.
+
+Invoke a Skill explicitly with `$<name>`:
+
+```bash
+amadeus '$review inspect the current changes'
+```
+
+Enable or disable Skills through `/skills`. Disabled names are stored in:
+
+```text
+$AMADEUS_HOME/skills.yaml
+<working-root>/.amadeus/skills.yaml
+```
+
+Example:
 
 ```yaml
-web:
-  search:
-    enabled: true
-    provider: duckduckgo
-  fetch:
-    enabled: false
+disabled:
+  - review
+  - release-check
 ```
 
-`duckduckgo` 是默认搜索 Provider，因此 `web.search.enabled: true` 且未显式设置 `provider` 时也会使用 DuckDuckGo。还可配置 `tavily`、`searxng` 或 `brave`；Tavily 和 Brave 需要各自的 API Key，SearXNG 通常需要配置实例 `base_url`。完整字段参见 `configs/amadeus.example.yaml`。
+See [`configs/skills/review/SKILL.md`](configs/skills/review/SKILL.md) for a repository example.
 
-- `web_search` 返回搜索引擎整理的标题、链接和摘要，默认不请求 Approval；摘要适合发现来源，但不等同于已核验的网页全文。
-- `web_fetch` 读取一个精确 HTTP(S) URL 的有界正文并转换为可读 Markdown，适用于用户直接提供 URL、搜索摘要不足或需要核对原文的场景。
-- `web_fetch` 对未授权 Hostname 请求 Approval；“不再询问”只授权当前 Session 中的精确 Hostname，不会授权其他域名。
-- 同 Hostname 重定向可在安全校验后按限制跟随；跨 Hostname 重定向会停止，后续 URL 必须通过新的 `web_fetch` 调用单独授权。
-- `web.fetch.max_redirects: 0` 表示拒绝所有重定向；`max_bytes` 超限时返回带 `Partial` 标记的截断结果。
+## MCP
 
-若只需要搜索，打开 `web.search.enabled` 即可；若还需要读取网页正文，再单独打开 `web.fetch.enabled`。两个能力关闭时不会注册对应 Tool，模型也不可见。
+MCP servers are configured separately from the main `config.yaml`.
 
-## 图片工具
-
-`view_image` 只对显式声明 `image` 输入能力的模型可见。它读取本地 PNG、JPEG、WebP 或静态 GIF，经过尺寸和 patch 预算约束后再作为图片 ToolResult 发送给模型；动态 GIF 会被拒绝，静态 GIF 会规范化为 PNG。
-
-```yaml
-model_input_modalities: [text, image]
-model_supports_original_image_detail: false
-```
-
-默认 detail 为 `high`。只有开启 `model_supports_original_image_detail` 时，Tool Schema 才会向模型暴露 `original`；该模式仍受 6000 单边和 10000 个 32×32 patch 的预算约束，不表示无界原始文件直传。工作目录外的图片沿用 read-directory Approval 与当前 Session Grant。
-
-## MCP 配置
-
-MCP 使用独立的 `mcp.yaml`。Amadeus 会同时读取：
+Amadeus loads:
 
 ```text
 $AMADEUS_HOME/mcp.yaml
-<project>/.amadeus/mcp.yaml
+<working-root>/.amadeus/mcp.yaml
 ```
 
-用户级配置适合所有项目共享的 Server，项目级配置适合仓库专用 Server。两边的 Server 按名称合并；如果名称相同，项目级 Server 会**整体替换**用户级 Server，而不是逐字段合并。
+User and project servers are merged by name. A project server replaces the complete user server definition with the same name.
 
-### Stdio Server
+### Stdio server
 
 ```yaml
 servers:
@@ -235,9 +397,7 @@ servers:
     enabled: true
 ```
 
-`stdio` Server 必须配置 `command`，可以配置 `args` 和传递给子进程的 `env`，但不能配置 `url` 或 `headers`。
-
-### Streamable HTTP Server
+### Streamable HTTP server
 
 ```yaml
 servers:
@@ -250,124 +410,86 @@ servers:
     enabled: true
 ```
 
-`streamable_http` Server 必须配置 `url`，可以配置请求 `headers`，但不能配置 `command`、`args` 或 `env`。
+MCP rules:
 
-MCP 配置规则：
+- Server names may contain letters, digits, `-`, and `_`.
+- `enabled` defaults to `true` when omitted.
+- `${VARIABLE}` values are expanded from the environment when the file is loaded.
+- A missing referenced environment variable is a configuration error.
+- Stdio servers use `command`, `args`, and `env`.
+- Streamable HTTP servers use `url` and `headers`.
+- YAML fields are validated strictly.
+- Connections, tool catalogs, and resource catalogs are loaded on demand.
+- Read-only MCP tools can run directly; other MCP tool calls use the normal approval flow.
 
-- Server 名称只能包含字母、数字、`-` 和 `_`。
-- `enabled` 省略时默认为启用；临时停用 Server 时显式设置为 `false`。
-- `${VARIABLE}` 会在加载配置时从环境变量展开；变量未设置会导致 MCP 配置加载失败。
-- YAML 使用严格字段校验，并且一个文件只能包含一个 YAML document。
-- `env` 和 `headers` 中解析后的值会在诊断输出中脱敏，但仍不建议把密钥直接写入文件。
-- Server、Tool Catalog 和 Resource Catalog 按需连接和发现，不会在启动时无条件连接全部 Server。
+Inspect MCP configuration in the TUI with `/mcp` or `/mcp verbose`.
 
-配置完成后，在交互模式中使用：
+See [`configs/mcp.example.yaml`](configs/mcp.example.yaml) for a complete example.
 
-```text
-/mcp
-/mcp verbose
-```
+## SubAgents
 
-模型侧通过 `mcp_list_tools`、`mcp_call`、`mcp_list_resources` 和 `mcp_read_resource` 使用 MCP。标记为 read-only 的 MCP Tool 可以直接执行；其他 MCP Tool 会进入正常的 Approval 流程，并可按当前 Session 的精确 `server/tool` 授权。MCP 返回值按不可信外部数据处理。
+Amadeus includes basic Codex-style delegation. The root agent can create read-only explorer SubAgents for independent investigations and continue working while they run.
 
-完整模板参见 `configs/mcp.example.yaml`。
-
-## Skills 配置
-
-Skill 是一个包含 `SKILL.md` 的目录。Amadeus 会扫描两类 Skill Root：
-
-```text
-$AMADEUS_HOME/skills/<skill-name>/SKILL.md
-<project>/.amadeus/skills/<skill-name>/SKILL.md
-```
-
-用户级 Skill 可以跨项目复用，项目级 Skill 随仓库维护。如果两边包含相同的 frontmatter `name`，项目级 Skill 覆盖用户级 Skill。
-
-最小 Skill 示例：
-
-```markdown
----
-name: review
-description: Review changed code and report focused correctness risks
-short_description: Review changed code
-allow_implicit_invocation: true
----
-
-# Review Workflow
-
-1. Inspect the relevant diff and surrounding code.
-2. Prioritize correctness, safety, regressions, and missing tests.
-3. Report findings with concrete file paths and concise evidence.
-```
-
-推荐的目录结构：
-
-```text
-.amadeus/skills/review/
-├── SKILL.md
-├── references/
-│   └── checklist.md
-├── scripts/
-│   └── check.sh
-└── assets/
-    └── template.json
-```
-
-Skill 规则：
-
-- `SKILL.md` 必须是 UTF-8 普通文件，并包含 YAML frontmatter 和非空正文。
-- `name` 必须使用小写字母、数字和 `-`；建议目录名与 `name` 保持一致。
-- `description` 必填；`short_description` 和 `allow_implicit_invocation` 可选。
-- `references/` 中的文件由 `read_skill` 按需、有界读取；调用时路径相对于 `references/`，例如 `checklist.md`。
-- `scripts/` 不会自动执行。项目级脚本只能通过普通 `execute_command` 主链运行，仍受文件系统策略、Approval、Session Grant、取消和 Process 生命周期约束。
-- 当前安全策略下，用户级 `$AMADEUS_HOME/skills` 脚本只作为参考资源，不作为可执行项目脚本。
-- `assets/` 只记录为 Skill 资源，不会自动注入模型上下文；需要通过实际可用的文件或图片 Tool 读取。
-- `allow_implicit_invocation` 默认为 `true`；当前实现主要用它控制 `scripts/` 中命令是否被识别和归属为 Skill Script。设为 `false` 不会禁用该 Skill。
-
-在任务中使用 `$<skill-name>` 可以显式注入 Skill 正文：
-
-```bash
-amadeus '$review 检查当前改动并列出高优先级问题'
-```
-
-即使没有显式 `$review`，模型仍会看到已启用 Skill 的 metadata index，并可以通过 `read_skill` 渐进读取 Skill 正文或 `references/`。完整 Skill 正文、references、scripts 和 assets 不会默认全部塞入系统提示词。
-
-交互模式中可以通过 `/skills` 查看、启用或禁用 Skill。禁用状态分别保存到：
-
-```text
-$AMADEUS_HOME/skills.yaml
-<project>/.amadeus/skills.yaml
-```
-
-对应文件格式为：
+Configure delegation in `config.yaml`:
 
 ```yaml
-disabled:
-  - review
-  - release-check
+agent:
+  max_parallel_tools: 4
+  multi_agent:
+    enabled: true
+    max_agents: 4
+    max_depth: 1
+    child_max_samples: 20
+    child_max_tool_calls: 100
+    child_max_duration: 15m
 ```
 
-任务执行期间 `/skills` 仍可查看当前目录，但不能修改启用状态。仓库内示例参见 `configs/skills/review/SKILL.md`。
+Current SubAgent behavior:
 
-## Slash Command
+- Only direct children of the root agent are supported.
+- SubAgents use the same working root but have independent conversations and tool state.
+- SubAgents are read-only explorers.
+- They can use `read`, `glob`, `grep`, and conditionally available read-only capabilities such as `read_skill` and `web_search`.
+- They cannot edit files, execute commands, request user input, call MCP tools, or create additional SubAgents.
+- The root agent manages them through `spawn_agent`, `send_input`, `wait_agent`, and `close_agent`.
+- Saved child work is restored with its root session when needed.
 
-Slash Command 仅在交互模式中使用。在输入框中输入 `/` 可以查看和筛选可用命令。
+Delegation is most useful for bounded tasks such as locating an implementation, comparing independent modules, or gathering evidence while the root agent handles the critical path.
 
-| 命令 | 说明 |
-|---|---|
-| `/resume [session-id]` | 恢复历史会话；省略 ID 时打开会话选择界面 |
-| `/skills` | 浏览可用 Skill，或启用、禁用 Skill |
-| `/rename [name]` | 重命名当前会话；省略名称时打开输入界面 |
-| `/delete` | 确认后永久删除当前会话并退出 |
-| `/compact` | 压缩当前会话上下文，降低上下文占用 |
-| `/plan [task]` | 切换到 Plan Mode；提供任务时会在切换后立即提交该任务 |
-| `/copy` | 将最近一次 Agent Markdown 回答复制到剪贴板 |
-| `/status` | 显示当前会话、模型、已配置 reasoning effort、权限和 Token 使用状态 |
-| `/mcp` | 显示已配置的 MCP Server、Tool 和 Resource 摘要 |
-| `/mcp verbose` | 显示更详细的 MCP 清单 |
-| `/clear` | 清空当前界面并创建一个新会话 |
-| `/exit` | 关闭当前会话并退出 Amadeus |
+## Optional Web and Image Tools
 
-`/resume`、`/rename`、`/plan` 和 `/mcp` 支持行内参数，其他 Slash Command 不接受参数。
+Web tools are disabled by default. Enable them in `config.yaml`:
 
-任务运行期间，仅 `/skills`、`/copy`、`/status` 和 `/mcp` 可用；此时 `/skills` 可以查看 Skill，但不能修改启用状态。Plan Mode 也可以通过 `Shift+Tab` 在 Plan 与默认执行模式之间切换。
+```yaml
+web:
+  search:
+    enabled: true
+    provider: duckduckgo
+    timeout: 15s
+    max_results: 5
+  fetch:
+    enabled: true
+    timeout: 30s
+    max_bytes: 1048576
+    max_redirects: 3
+```
+
+Supported search providers are DuckDuckGo, Tavily, SearXNG, and Brave. DuckDuckGo does not require an API key. Web fetch requests may require approval for new hostnames.
+
+To expose `view_image`, declare image input support for the selected model:
+
+```yaml
+model_input_modalities: [text, image]
+model_supports_original_image_detail: false
+```
+
+Amadeus supports PNG, JPEG, WebP, and static GIF input with bounded image preparation.
+
+## Development
+
+```bash
+make check
+go test -race ./... -count=1
+```
+
+Architecture notes and implementation progress are maintained in [`docs/design.md`](docs/design.md) and [`docs/development-progress.md`](docs/development-progress.md).
