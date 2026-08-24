@@ -76,7 +76,7 @@ func TestApprovalDialogRendersClaudeStyleCommandPrompt(t *testing.T) {
 		"Run the project test suite",
 		"This command requires approval",
 		"Do you want to proceed?",
-		"1. Yes",
+		"› 1. Yes",
 		"2. Yes, and don't ask again for this exact command during this session",
 		"3. No",
 		"Esc to reject",
@@ -94,7 +94,7 @@ func TestApprovalDialogRendersClaudeStyleCommandPrompt(t *testing.T) {
 			t.Fatalf("approval prompt unexpectedly contains %q:\n%s", forbidden, rendered)
 		}
 	}
-	if strings.Contains(rendered, "❯") {
-		t.Fatalf("approval prompt unexpectedly contains a selection pointer:\n%s", rendered)
+	if count := strings.Count(rendered, "›"); count != 1 {
+		t.Fatalf("approval prompt selection pointer count = %d:\n%s", count, rendered)
 	}
 }

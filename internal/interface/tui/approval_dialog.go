@@ -158,6 +158,7 @@ func (model fullscreenModel) renderApprovalDialog(width int) string {
 		prefix := "   "
 		style := model.palette.plain()
 		if index == dialog.selected {
+			prefix = " " + model.palette.selection().Render("›") + " "
 			style = model.palette.selection()
 		}
 		rows = append(rows, prefix+style.Render(fmt.Sprintf("%d. %s", index+1, choice.label)))
