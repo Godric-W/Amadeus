@@ -1,8 +1,8 @@
 # Amadeus 架构白皮书
 
-> 文档日期：2026-08-21  
-> 适用版本：当前 `main` 分支基础能力与 Basic Multi-Agent 实现  
-> 规范来源：`docs/design.md` 仍是唯一架构事实源；本文负责解释架构、所有权、运行流程与核心数据模型。
+> 文档日期：2026-08-24
+> 适用版本：当前 `main` 分支基础能力、Basic Multi-Agent 与 Next-Turn Queue 实现
+> 规范来源：`docs/design.md` 是主要 Contract 工作文档；本文负责解释架构、所有权、运行流程与核心数据模型。两份文档都可能过期，遇到不确定处必须回查 Codex/Claude Code 源码并同步修正。
 
 ## 1. 文档目的
 
@@ -14,6 +14,7 @@ Amadeus 是一个使用 Go 实现的终端 Coding Agent。它不是简单的“�
 - Prompt、Context、ToolRouter 和 Provider Request 在每次模型采样时形成一致快照。
 - MCP、Skill、Web、图片和 Multi-Agent 都进入同一 Session/Tool/Event 主链，不建立第二套 Agent Runtime。
 - Root Agent 可以创建由 Amadeus 自己驱动的只读 explorer SubAgent；SubAgent 本身仍是完整 Thread/Session。
+- Fullscreen TUI 将 Enter same-turn steer 与 Tab next-turn queue 分开；未提交 queue state 不进入 Runtime 或 canonical persistence。
 
 本文面向以下读者：
 
@@ -179,6 +180,7 @@ flowchart TD
 - 一个 `SessionServices` 在 Session 生命周期内复用 Provider client、Context、Tool、Approval、MCP、Skill、Process 和 Compactor。
 - 一个 `StepContext` 只对应一次模型采样及其紧随的 Tool dispatch；下一次采样必须重新捕获。
 - `AgentControl` 只由 Root Thread 拥有；child 共享引用但不能关闭它。
+- `NextTurnQueue` 由 Bubble Tea `fullscreenModel` 串行拥有，按 active Thread attachment 隔离；它不是 Session deferred submission 或 TurnInputQueue。
 
 ## 5. Canonical Turn 数据流
 
@@ -237,6 +239,7 @@ sequenceDiagram
 | `TurnItem` | `agent/protocol` | live/Resume/Inline 共用的稳定 UI replay unit。 |
 | `PromptSnapshot` | `context` | 一次模型请求看到的消息、usage、history revision 和 world-state revision。 |
 | `StepContext` | `agent/engine` | 一次模型采样的不可变能力快照，绑定 Prompt、Model、ToolRouter 和 revisions。 |
+| `NextTurnQueue` | `interface/tui` | 尚未提交的下一 Turn 输入 FIFO 与 InFlight gate；terminal 后才通过普通 UserInputOp 启动新 Turn。 |
 
 ## 6. 配置与 Composition Root
 
@@ -473,6 +476,8 @@ flowchart LR
 | `ThreadSettingsOp` | 在没有 active Turn 时更新 Mode。 |
 | `ThreadSettingsOverrides` | 用户消息附带的 request-scoped collaboration mode override。 |
 
+Tab queue 不增加新的 `Op`：输入在 Fullscreen TUI 中 enqueue 时尚未跨越 Submission boundary，只有 terminal 后 dequeue 才创建普通 `UserInputOp`。因此 Protocol 仍只有 Started/Steered admission，不存在 Queued admission。
+
 ### 9.2 输出事件模型
 
 | 模型 | 职责 |
@@ -539,6 +544,8 @@ Session loop 只处理以下协调工作：
 - shutdown 时取消 active Turn，并等待清理完成。
 
 模型循环、Tool 执行和 Compaction 算法不直接写在 Session select loop 中。
+
+Session 不保存 next-turn user queue。运行中 Enter 已提交输入仍由 Session 决定 Started/Steered；运行中 Tab 输入由 TUI 等待 terminal，随后作为新的普通 Submission 进入 Session。
 
 ### 10.2 数据模型职责
 
@@ -1143,6 +1150,9 @@ flowchart LR
 - UI 使用 `ToolDisplayResult`、`TurnItem.CollabAgent` 等 typed fields，不解析 ToolResult 文本反推状态。
 - Approval、UserInput request 和 Diff 是 overlay/application state，不写入普通聊天气泡。
 - Composer 使用首行 prompt 与 continuation gutter；编辑状态由 Bubble Tea textarea 管理，展示层按全局视觉 cursor 行投影最多五行的可见窗口。
+- Composer input state 拥有 attachment-scoped `NextTurnQueue`：Tab enqueue 不产生 HistoryCell，terminal 后每次 FIFO 提交一条；aborted/blocked 或提交前失败恢复 composer。
+- queued preview 最多展示三条单行摘要和剩余数量，Slash Popup/交互 overlay 激活时隐藏，不进入 scrollback、statusline 或 Resume replay。
+- running Turn 中 Composer 存在 queueable ordinary draft 时，`footerProps.HasQueueableDraft` 纯派生为 true；Footer 用 `tab to queue message`/`tab to queue` 临时替换固定 statusline，Plan indicator 只在可容纳时保留。该 hint 不进入 footerState、StatusLineItem 或 Runtime Event。
 
 ### 20.2 主要展示模型
 
@@ -1160,6 +1170,8 @@ flowchart LR
 | `CollabAgentHistoryCell` | spawn/send/wait/close 的 Codex 风格展示。 |
 | `WarningHistoryCell` / `ErrorHistoryCell` | 非普通对话的 warning/error。 |
 | `approvalDialog` | `ApprovalPresentation` 的 TUI 私有交互状态。 |
+| `NextTurnQueue` / `QueuedUserInput` | Fullscreen pending FIFO、InFlight/start-pending gate、ThreadID/generation/Mode isolation 和 bounded preview source。 |
+| `footerProps.HasQueueableDraft` | 从 running + Composer ParseInput + overlay state 纯派生的 transient queue guidance input；不持久化。 |
 
 ### 20.3 One-shot Renderer
 
@@ -1235,6 +1247,7 @@ flowchart TD
 ### 22.1 并发规则
 
 - Session loop 本身串行处理协调状态。
+- Bubble Tea reducer 串行拥有 NextTurnQueue；异步 SubmitUser `tea.Cmd` 创建前先同步把 FIFO head 移入 InFlight，避免 terminal/key/admission 竞态重复发送。
 - RunningTask 在独立 goroutine 中执行，并通过单值 Completion channel 返回。
 - ToolExecutionService 只并行执行声明 parallel-safe 且不会违反 batch 顺序的 Tool。
 - ProcessManager 为每个进程维护独立 lock、I/O lock、done channel 和 timeout context。
@@ -1267,6 +1280,9 @@ flowchart TD
 13. Root/child 共享 SessionID 但使用不同 ThreadID；registry、Event、Resume 和 Agent target 始终按 ThreadID 路由。
 14. Tool Invocation、Audit 和 Provider request metadata 同时携带 SessionID、ThreadID 与 TurnID。
 15. SessionMeta 是 SessionID 的 durable source；SQLite StoredThread 不保存 SessionID。
+16. Enter steer 与 Tab queue 是不同输入意图；NextTurnQueue 只存在于 Fullscreen input layer，Core/Protocol/Rollout/Context 不保存 Queued Op、admission 或 durable item。
+17. matching TurnComplete 每次最多 drain 一条 queued input 且 admission 必须为 Started；aborted/blocked/rejection 和旧 attachment 结果不能把输入发送到错误 Turn。
+18. queue hint 只由 footerProps 的 queueable-draft 派生值驱动；running draft 时优先于 passive statusline 并按 full/short 降级，不能成为 footerState、StatusLineItem、HistoryCell 或 Runtime/canonical fact。
 
 `internal/architecture/guard_test.go` 通过源码结构检查保护这些边界，例如禁止已移除的旧 Runtime/Planner 抽象重新出现，并验证 Web、Tool、Multi-Agent 等关键 package 分层。
 
@@ -1314,7 +1330,7 @@ flowchart TD
 | `internal/config` | 配置模型、分层加载、覆盖、来源追踪、校验和脱敏。 |
 | `internal/app` | 交互应用、ThreadWorkspace、Application events。 |
 | `internal/interface/cli` | 终端 Approval 等 CLI adapter。 |
-| `internal/interface/tui` | TUI reducer、HistoryCell、Slash Command 和 overlays。 |
+| `internal/interface/tui` | TUI reducer、NextTurnQueue、HistoryCell、Slash Command 和 overlays。 |
 | `internal/thread/manager` | live Thread registry、Root/child Thread 生命周期。 |
 | `internal/thread` | LiveThread 和 ThreadStore port。 |
 | `internal/thread/local` | JSONL + SQLite 本地 ThreadStore。 |

@@ -36,6 +36,7 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 		return model.applySessionConfigured(item)
 	case protocol.TurnStartedEvent:
 		model.clearRetryStatus()
+		model.nextTurnQueue.ConfirmStarted(model.session.ThreadID, model.session.Generation)
 		model.running = true
 		model.runStartedAt = item.StartedAt
 		if model.runStartedAt.IsZero() {
@@ -223,7 +224,16 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 		model.finishTurn(model.runElapsed())
 		model.running = false
 		model.status = "completed"
-		if model.session.mode() == turn.ModeKindPlan && model.completedProposedPlan && model.approval == nil && model.userInputDialog == nil {
+		if item.Outcome == protocol.TurnOutcomeBlocked || model.nextTurnQueue.Halted() {
+			model.restoreQueuedInputsToComposer()
+			model.completedProposedPlan = false
+			return nil
+		}
+		if model.nextTurnQueue.HasPending() {
+			model.completedProposedPlan = false
+			return model.maybeSubmitNextQueuedInput()
+		}
+		if !model.nextTurnQueue.HasQueuedFollowUp() && model.session.mode() == turn.ModeKindPlan && model.completedProposedPlan && model.approval == nil && model.userInputDialog == nil {
 			model.selection = &selectionOverlay{Title: "Implement this plan?", Items: []selectionItem{{Name: "Implement this plan", Description: "Switch to Default mode and start implementation"}, {Name: "Stay in Plan mode", Description: "Keep planning without starting implementation"}}}
 			model.selectionKind = "implement-plan"
 			model.completedProposedPlan = false
@@ -237,11 +247,13 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 		model.finishTurn(model.runElapsed())
 		model.running = false
 		model.status = "aborted"
+		model.restoreQueuedInputsToComposer()
 	case protocol.ErrorEvent:
 		model.clearRetryStatus()
 		model.finishDraft()
-		model.running = false
-		model.status = "idle"
+		if !model.running {
+			model.status = "idle"
+		}
 		if strings.TrimSpace(item.Message) != "" {
 			model.insertHistoryCell(NewErrorHistoryCell(item.Message))
 		}

@@ -370,6 +370,141 @@ func TestTurnSteerHasDedicatedCoordinationBoundaries(t *testing.T) {
 	}
 }
 
+func TestNextTurnQueueRemainsAFullscreenInputBoundary(t *testing.T) {
+	root := repositoryRoot(t)
+	queuePath := "internal/interface/tui/input_queue.go"
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(queuePath))); err != nil {
+		t.Fatalf("required next-turn queue boundary is missing: %v", err)
+	}
+
+	queuedFields := architectureStructFields(t, root, queuePath, "QueuedUserInput")
+	for _, required := range []string{"Content", "Mode", "ThreadID", "AttachmentGeneration"} {
+		if _, ok := queuedFields[required]; !ok {
+			t.Errorf("QueuedUserInput is missing field %q", required)
+		}
+	}
+	queueFields := architectureStructFields(t, root, queuePath, "NextTurnQueue")
+	for _, required := range []string{"Pending", "InFlight"} {
+		if _, ok := queueFields[required]; !ok {
+			t.Errorf("NextTurnQueue is missing field %q", required)
+		}
+	}
+	inputFields := architectureStructFields(t, root, "internal/interface/tui/slash_command.go", "InputResult")
+	if _, ok := inputFields["Queue"]; !ok {
+		t.Error("InputResult does not distinguish queued composer input")
+	}
+
+	queueSource := mustReadArchitectureFile(t, root, queuePath)
+	for _, forbidden := range []string{"internal/agent/session", "internal/context", "internal/rollout", "Session.deferred", "UserMessageAdmissionQueued", "QueuedInputOp"} {
+		if strings.Contains(queueSource, forbidden) {
+			t.Errorf("next-turn queue owns forbidden Runtime boundary %q", forbidden)
+		}
+	}
+
+	for _, relative := range []string{"internal/agent", "internal/context", "internal/rollout"} {
+		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, forbidden := range []string{"NextTurnQueue", "QueuedUserInput", "UserMessageAdmissionQueued", "QueuedInputOp"} {
+				if strings.Contains(string(content), forbidden) {
+					t.Errorf("Runtime/canonical package owns TUI queue symbol %q in %s", forbidden, filepath.ToSlash(path[len(root)+1:]))
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan next-turn queue boundaries in %s: %v", relative, err)
+		}
+	}
+}
+
+func TestQueueHintRemainsTransientFooterGuidance(t *testing.T) {
+	root := repositoryRoot(t)
+	footerPath := "internal/interface/tui/footer.go"
+	propsFields := architectureStructFields(t, root, footerPath, "footerProps")
+	if _, ok := propsFields["HasQueueableDraft"]; !ok {
+		t.Error("footerProps does not carry the pure queueable-draft input")
+	}
+	stateFields := architectureStructFields(t, root, footerPath, "footerState")
+	for _, forbidden := range []string{"HasQueueableDraft", "QueueHint", "QueueableDraft"} {
+		if _, exists := stateFields[forbidden]; exists {
+			t.Errorf("footerState persists transient queue hint field %q", forbidden)
+		}
+	}
+
+	footerSource := mustReadArchitectureFile(t, root, footerPath)
+	for _, required := range []string{"footerQueueHintFull", "footerQueueHintShort", "renderQueueHintFooter", "HasQueueableDraft"} {
+		if !strings.Contains(footerSource, required) {
+			t.Errorf("footer queue hint boundary is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"Application.Status(", "SubmitUser(", "HistoryCell", "protocol.Event"} {
+		if strings.Contains(footerSource, forbidden) {
+			t.Errorf("pure footer queue hint owns forbidden dependency %q", forbidden)
+		}
+	}
+
+	statusSource := mustReadArchitectureFile(t, root, "internal/interface/tui/status_line.go")
+	for _, forbidden := range []string{"statusLineItemQueue", "statusLineItemQueueHint", "HasQueueableDraft", "tab to queue"} {
+		if strings.Contains(statusSource, forbidden) {
+			t.Errorf("fixed statusline owns transient queue hint %q", forbidden)
+		}
+	}
+
+	tuiRoot := filepath.Join(root, "internal", "interface", "tui")
+	err := filepath.WalkDir(tuiRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if filepath.ToSlash(path[len(root)+1:]) != footerPath && strings.Contains(string(content), "tab to queue") {
+			t.Errorf("queue hint presentation leaked outside footer boundary into %s", filepath.ToSlash(path[len(root)+1:]))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan queue hint presentation boundary: %v", err)
+	}
+
+	for _, relative := range []string{"internal/agent", "internal/context", "internal/rollout"} {
+		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, forbidden := range []string{"HasQueueableDraft", "QueueHint", "tab to queue"} {
+				if strings.Contains(string(content), forbidden) {
+					t.Errorf("Runtime/canonical package owns queue hint %q in %s", forbidden, filepath.ToSlash(path[len(root)+1:]))
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan queue hint Runtime boundaries in %s: %v", relative, err)
+		}
+	}
+}
+
 func TestProtocolContainsContractsWithoutUIProjection(t *testing.T) {
 	root := repositoryRoot(t)
 	protocolRoot := filepath.Join(root, "internal", "agent", "protocol")

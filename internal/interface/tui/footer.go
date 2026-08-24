@@ -13,6 +13,8 @@ const (
 	fullscreenFooterLeftPadding  = 2
 	fullscreenFooterRightPadding = 2
 	fullscreenFooterColumnGap    = 1
+	footerQueueHintFull          = "tab to queue message"
+	footerQueueHintShort         = "tab to queue"
 )
 
 type collaborationModeIndicator uint8
@@ -25,12 +27,13 @@ type footerState struct {
 }
 
 type footerProps struct {
-	Width        int
-	Running      bool
-	State        footerState
-	Palette      terminalPalette
-	LeftPadding  int
-	RightPadding int
+	Width             int
+	Running           bool
+	HasQueueableDraft bool
+	State             footerState
+	Palette           terminalPalette
+	LeftPadding       int
+	RightPadding      int
 }
 
 func collaborationModeIndicatorFor(mode turn.ModeKind) collaborationModeIndicator {
@@ -42,7 +45,7 @@ func collaborationModeIndicatorFor(mode turn.ModeKind) collaborationModeIndicato
 
 func (model fullscreenModel) footerView() string {
 	return renderFooter(footerProps{
-		Width: model.width, Running: model.running, State: model.footer,
+		Width: model.width, Running: model.running, HasQueueableDraft: model.hasQueueableDraft(), State: model.footer,
 		Palette: model.palette, LeftPadding: fullscreenFooterLeftPadding,
 		RightPadding: fullscreenFooterRightPadding,
 	})
@@ -63,6 +66,9 @@ func renderFooter(props footerProps) string {
 	if contentWidth == 0 {
 		return ""
 	}
+	if props.HasQueueableDraft {
+		return renderQueueHintFooter(props, leftPadding, rightPadding, contentWidth)
+	}
 
 	segments := append([]statusLineSegment(nil), props.State.StatusLine.Segments...)
 	statusLine := renderStatusLineSegments(segments, props.Palette, props.State.StatusLine.ContextUsedPercent)
@@ -81,6 +87,46 @@ func renderFooter(props footerProps) string {
 	gap := maxInt(0, contentWidth-lipgloss.Width(left)-indicatorWidth)
 	return strings.Repeat(" ", leftPadding) + left + strings.Repeat(" ", gap) +
 		props.Palette.statusLineStyle(statusAccentMode).Render(indicator) + strings.Repeat(" ", rightPadding)
+}
+
+func renderQueueHintFooter(props footerProps, leftPadding, rightPadding, contentWidth int) string {
+	mode := footerIndicatorLabel(props.State.CollaborationIndicator, false)
+	type candidate struct {
+		hint     string
+		showMode bool
+	}
+	candidates := make([]candidate, 0, 4)
+	if mode != "" {
+		candidates = append(candidates,
+			candidate{hint: footerQueueHintFull, showMode: true},
+			candidate{hint: footerQueueHintShort, showMode: true},
+		)
+	}
+	candidates = append(candidates,
+		candidate{hint: footerQueueHintFull},
+		candidate{hint: footerQueueHintShort},
+	)
+	for _, current := range candidates {
+		required := lipgloss.Width(current.hint)
+		if current.showMode {
+			required += fullscreenFooterColumnGap + lipgloss.Width(mode)
+		}
+		if required <= contentWidth {
+			return renderQueueHintCandidate(props, current.hint, mode, current.showMode, leftPadding, rightPadding, contentWidth)
+		}
+	}
+	hint := xansi.Truncate(footerQueueHintShort, contentWidth, "")
+	return strings.Repeat(" ", leftPadding) + props.Palette.dim().Render(hint) +
+		strings.Repeat(" ", maxInt(0, contentWidth-lipgloss.Width(hint)+rightPadding))
+}
+
+func renderQueueHintCandidate(props footerProps, hint, mode string, showMode bool, leftPadding, rightPadding, contentWidth int) string {
+	left := strings.Repeat(" ", leftPadding) + props.Palette.dim().Render(hint)
+	if !showMode {
+		return left + strings.Repeat(" ", maxInt(0, contentWidth-lipgloss.Width(hint)+rightPadding))
+	}
+	gap := maxInt(fullscreenFooterColumnGap, contentWidth-lipgloss.Width(hint)-lipgloss.Width(mode))
+	return left + strings.Repeat(" ", gap) + props.Palette.statusLineStyle(statusAccentMode).Render(mode) + strings.Repeat(" ", rightPadding)
 }
 
 func fitFooterColumns(indicator, statusLine string, segments []statusLineSegment, contentWidth int, props footerProps) (string, string) {

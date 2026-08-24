@@ -210,7 +210,15 @@ func (model fullscreenModel) composerAuxiliaryView() string {
 	if model.slashPopup.active() {
 		return model.slashPopupView()
 	}
-	return model.footerView()
+	preview := model.queuedInputPreview()
+	footer := model.footerView()
+	if preview == "" {
+		return footer
+	}
+	if footer == "" {
+		return preview
+	}
+	return preview + "\n" + footer
 }
 
 func (model fullscreenModel) slashPopupView() string {

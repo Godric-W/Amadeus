@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 )
 
@@ -12,6 +13,9 @@ type TaskSubmission struct {
 	ClientUserMessageID string
 	Mode                turn.ModeKind
 	OverrideMode        bool
+	FromNextTurnQueue   bool
+	OriginThreadID      protocol.ThreadID
+	OriginGeneration    uint64
 }
 
 type SlashCommand string
@@ -101,6 +105,7 @@ func (invocation SlashInvocation) String() string {
 type InputResult struct {
 	Text    string
 	Command *SlashInvocation
+	Queue   bool
 }
 
 func FindSlashCommand(name string) (SlashCommand, bool) {

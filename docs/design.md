@@ -1,7 +1,7 @@
 # Amadeus 架构设计
 
 > 状态：Target Architecture v2
-> 最近修订：2026-08-22
+> 最近修订：2026-08-24
 > 目标语言：Go
 > 产品形态：面向真实软件工程任务的本地 Coding Agent CLI
 > 架构骨架：`../codex-main`
@@ -67,6 +67,7 @@ Amadeus 当前处于未发布开发阶段，不承诺自身旧实现的任何兼
 | O. Same-Turn User Input + Turn Steer Alignment | UserMessageAdmission、TurnInputQueue、same-Turn continuation、client message identity 与 TUI steer UX |
 | R. Basic Multi-Agent Alignment | Codex V1 风格 AgentControl、SubAgent Thread、协作 Tool、Prompt、Event/Rollout 与 TUI projection |
 | T. Thread + Session UUID Identity Alignment | UUIDv7 ThreadID、SessionID/ThreadID 语义、创建/恢复生命周期、Persistence 与 Resume boundary |
+| U. Next-Turn User Input Queue Alignment | Codex 风格 Composer queue、下一 Turn FIFO、terminal drain、失败恢复、attachment isolation 与 pre-enqueue Footer hint |
 
 ## 2. 产品目标
 
@@ -80,6 +81,7 @@ Amadeus 的目标是成为一个真正可用于日常软件开发的通用 Codin
 - `/plan` 进入与 Codex 对齐的显式 Plan Mode，用于分析和规划，不实施文件或命令副作用。
 - Default 与 Plan Mode 都可以通过 `request_user_input` 在当前 Turn 内请求结构化用户输入并继续执行；用户提问是独立交互能力，不属于 Approval。
 - 用户可以在 Regular Turn 运行期间继续提交普通消息；Runtime 将其作为 steer input 接纳到同一 Turn，并在当前 Model Step 后继续，而不是静默排队成下一 Turn。
+- Fullscreen TUI 运行期间，用户也可以用显式 Tab queue 动作把普通文字暂存为后续新 Turn；该输入在当前 Turn terminal 前不提交 Runtime，也不进入 canonical history。
 - Root Agent 可以把边界清晰、可独立推进的探索任务交给 SubAgent；SubAgent 使用完整 Thread/Session/runtime 主链并与 Root 共享工作区，但拥有独立 Context、Turn、Tool 状态和 canonical Rollout。
 - `/compact` 调用正式的上下文压缩服务，而不是仅清空 TUI 文本。
 - 文件修改默认对能力较弱或不稳定的模型保持安全：先生成 Diff，再由用户确认，最后写入。
@@ -101,6 +103,7 @@ Amadeus 的目标是成为一个真正可用于日常软件开发的通用 Codin
 | Codex-style Runtime Tool | Codex | `update_plan`、`write_stdin` 和命令续接提示以 Codex 对应 Tool Prompt/Contract 为准 |
 | 用户输入 Tool | Codex 为架构、Claude Code 为 UX 参考 | `request_user_input` 使用独立 Request Event/Answer Op/Session waiter；稳定 Question ID、Default/Plan 通用，并选择性吸收多选与 Other 体验，不复用 Approval `updatedInput` |
 | Turn Steer | Codex | 普通 `UserInputOp` 通过 Started/Steered admission 接纳；ActiveTurn 持有 TurnInputQueue，`run_turn` 在 Model Step 边界 drain 并继续同一 Turn |
+| Next-Turn Queue | Codex | Tab queue 是 Fullscreen TUI/ChatWidget 等价层的 transient FIFO；terminal 后才通过普通 `UserInputOp` 启动下一 Turn，不新增 Core queue Op 或 durable history |
 | Command Tool | Codex + Amadeus | `execute_command`、ProcessManager、Approval 复用和宿主执行边界遵循 Amadeus 已有 Contract 与 Codex unified exec 语义 |
 | Approval TUI | Claude Code | 展示操作和结构化 Diff，使用范围明确的动态选项与键盘交互；不直接修改权限状态 |
 | Event Protocol | Codex | Submission、UserMessageAdmission request/response、Event、EventMsg、TurnItem 生命周期、Approval/User Input request 与 Delta |
@@ -312,6 +315,7 @@ internal/agent/session/
 
 internal/interface/tui/
   application.go             Fullscreen Application 类型、生命周期与模型装配
+  input_queue.go             下一 Turn 输入 FIFO、in-flight admission 与 attachment scope
   application_update.go      Bubble Tea Update 与输入状态转换
   application_events.go      EventMsg / TurnItem 投影与历史状态更新
   application_view.go        View、状态栏、输入框与终端内容清理
@@ -538,7 +542,7 @@ type ThreadSettingsOp struct {
 
 `UserInputOp.ThreadSettings` 在接纳用户消息前原子应用；因此 `/plan <task>` 不需要 TUI 保存 `pendingModeTask`、等待 settings acknowledgement 后再提交第二个业务请求。若消息启动新 Turn，更新后的 settings 用于冻结新 TurnContext；若消息 steer 当前 Turn，当前已冻结 TurnContext 保持不变，更新后的 SessionConfiguration 只影响后续 Turn。独立 `ThreadSettingsOp` 只用于不提交用户消息的 `/plan` 和快捷模式切换，不能在 ActiveTurn 运行期间原地改变已冻结的 TurnContext。
 
-普通用户消息只有一个 `UserInputOp`；steer 是该消息被 Runtime 接纳到当前 Turn 的方式，不是第二种用户意图，也不新增 `SteerOp`。Session 必须为用户消息返回 typed admission：
+提交到 Runtime 的普通用户消息只有一个 `UserInputOp`；steer 是该消息被 Runtime 接纳到当前 Turn 的方式，不是第二种 Core Op，也不新增 `SteerOp`。Fullscreen Tab queue 在提交前只是 Interface 持有的未来输入，不改变这一 Protocol Contract。Session 必须为已提交的用户消息返回 typed admission：
 
 ```go
 type UserMessageAdmissionKind string
@@ -554,7 +558,7 @@ type UserMessageAdmission struct {
 }
 ```
 
-`UserMessageAdmission` 是 submission request 的同步接纳结果，不是 `EventMsg`、TurnItem 或 canonical RolloutItem。`Started` 表示消息创建并启动新 Regular Turn；`Steered` 表示消息已进入现有 Regular ActiveTurn 的 pending input。`AmadeusThread.SubmitUserInputAndWaitForAdmission` 对齐 CodexThread 的 admission API：先按 SubmissionID 注册一次性 waiter，再通过既有 SessionIo Submission 边界提交，Session 完成接纳后返回 admission。普通 `Submit` 只保证 Submission 已进入 Runtime channel，不能被 TUI 用来推断 Started/Steered。
+`UserMessageAdmission` 是 submission request 的同步接纳结果，不是 `EventMsg`、TurnItem 或 canonical RolloutItem。`Started` 表示消息创建并启动新 Regular Turn；`Steered` 表示消息已进入现有 Regular ActiveTurn 的 pending input。没有 `Queued` admission：Tab queue 尚未跨越 Runtime submission boundary。`AmadeusThread.SubmitUserInputAndWaitForAdmission` 对齐 CodexThread 的 admission API：先按 SubmissionID 注册一次性 waiter，再通过既有 SessionIo Submission 边界提交，Session 完成接纳后返回 admission。普通 `Submit` 只保证 Submission 已进入 Runtime channel，不能被 TUI 用来推断 Started/Steered。
 
 对需要基于缓存 ActiveTurn 做严格路由的未来远程/API caller，`AmadeusThread.SteerInput` 接受 required `ExpectedTurnID`；实际 ActiveTurn 不存在、TurnID 不匹配或当前 Task 不可 steer 时必须返回 typed error，不能静默注入另一个 Turn。基础 in-process TUI 优先使用 admission API，避免只依据本地 `running` 状态猜测 Core 状态。
 
@@ -583,6 +587,7 @@ type Session struct {
 - 路由 Approval Decision、User Input Answer 与 Interrupt。
 - 对 `UserInputOp` 执行 Started/Steered admission，并完成按 SubmissionID 注册的 user message admission waiter。
 - 将 steer input 放入当前 Turn 的 `TurnInputQueue`，而不是 Session deferred submission queue。
+- 不拥有 Fullscreen Tab queue；下一 Turn 输入只有在 Interface 从队列正式提交后才进入 Session。
 - 决定需要记录的 Runtime 事实，通过 LiveThread 追加 canonical RolloutItem；瞬时 Delta、Working 和未决交互请求不进入 canonical Rollout。
 - 使用 InitialHistory 重建 SessionState 与 ContextManager 投影。
 - 在持久化和 flush 后发布 Turn 终态事件。
@@ -920,11 +925,82 @@ Receive UserInputOp
 - `ActiveTurnNotSteerable{TaskKind}`
 - `EmptyInput`
 
-Session 的 deferred submission queue 只保存明确允许延后执行的 Session operation；`UserInputOp` 在 ActiveTurn 期间不得进入该 queue。Core 不静默把 rejected steer 变成下一 Turn；如未来需要“压缩结束后自动发送”，由 Interface/Application 维护用户可见的 rejected-steer queue，并在重新提交时获得新的 admission。
+Session 的 deferred submission queue 只保存明确允许延后执行的 Session operation；`UserInputOp` 在 ActiveTurn 期间不得进入该 queue。Core 不静默把 Enter 提交或 rejected steer 变成下一 Turn；显式 Tab queue 与 rejected-steer recovery 都由 Interface/Application 持有，并在真正重新提交时获得新的 admission。
 
 Steer 默认不取消正在进行的普通模型 stream、Tool、Approval wait 或 `request_user_input` wait。特殊等待 Tool 若未来需要被新输入唤醒，必须订阅 typed InputQueue activity，不得让所有 Tool 隐式观察全局输入 channel。
 
 `ClientUserMessageID` 用于 Interface optimistic rendering 与 Runtime UserMessage Item 的确认/去重。初始输入和 steered input 都必须形成同一 canonical/live 生命周期：先追加当前 Turn 的 `ResponseUserMessage` 和需要持久化的 completed UserMessage TurnItem，再发布 Item lifecycle Event；TUI 不得长期依赖“初始消息只由本地插入、steer 消息只由 Runtime 插入”的双来源规则。
+
+### 8.17 Next-Turn User Input Queue
+
+Next-turn queue 表示用户在 Fullscreen TUI 的一个 Turn 运行期间显式按 Tab，把普通文字保留为后续独立 Turn。它与 same-turn steer 是两个不同的输入意图：Enter 立即提交 `UserInputOp` 并由 Runtime 返回 Started/Steered；Tab 在本地排队，当前 Turn terminal 前不得调用 Runtime。
+
+该能力对齐 Codex `ChatComposer.InputResult::Queued`、`ChatWidget.InputQueueState` 与 terminal 后 `maybe_send_next_queued_input` 的职责关系，但只实现 Amadeus 当前需要的普通文字队列，不提前复制 queued Slash/Shell、图片附件、paste placeholder 或跨产品 thread-tab state。
+
+Go 数据模型固定为：
+
+```go
+type QueuedUserInput struct {
+    Content              string
+    Mode                 ModeKind
+    ThreadID             ThreadID
+    AttachmentGeneration uint64
+}
+
+type NextTurnQueue struct {
+    Pending  []QueuedUserInput
+    InFlight *QueuedUserInput
+}
+```
+
+`NextTurnQueue` 由 `fullscreenModel` 对应的 Input/ChatWidget 层拥有，并放在独立的 `internal/interface/tui/input_queue.go`；它不是 `SessionState`、`Session.inputQueue`、Application Thread registry、Context history 或新的业务 Event reducer。队列只保存尚未提交的用户意图，因此：
+
+- enqueue 不创建 Submission、UserMessageAdmission、TurnItem、EventMsg、RolloutItem、Context message 或 SQLite record。
+- enqueue 不插入普通 `UserMessageCell`，只更新本地 input recall 与有界 queued preview；真正出队并提交时才生成 ClientUserMessageID 和 optimistic UserMessage projection。
+- `Pending` 是 FIFO；`InFlight` 保存已经从 FIFO 取出但尚未收到 Started admission/TurnStarted 确认的唯一输入，防止 Bubble Tea `tea.Cmd` 与 terminal/key event 竞态重复启动 Turn。
+- 每个 queued input 必须绑定 enqueue 时的 ThreadID、attachment generation 和 Mode；旧 attachment 的 queued/in-flight input 不得发送到新 Thread。基础版在 Resume、Clear、Delete 或 shutdown 替换 attachment 时清除旧 attachment queue，与未提交 composer draft 一样不持久化。
+- dequeue 时当前 Session mode 必须仍与 queued Mode 一致；不一致时按提交前失败恢复 composer，不把 queued input 静默切换模式或发送到另一 Collaboration Mode。
+- 初始版本只 queue `InputResult.Text`；Slash Popup 的 Tab completion 优先于 queue，Slash Command 不以原始字符串延迟解析。未来需要 queued command 时必须增加显式 action kind 和 dequeue parser，不得把 command 文本当普通 UserInputOp。
+
+键盘与提交语义固定为：
+
+```text
+Active Turn + Enter + ordinary text
+→ existing SubmitUser
+→ Runtime admission Started / Steered / typed rejection
+
+Active Turn + Tab + ordinary text
+→ NextTurnQueue.Enqueue
+→ clear composer
+→ no Runtime call
+
+Tab while Slash Popup has a selected item
+→ complete selected Slash Command
+→ do not enqueue
+```
+
+在用户已经输入可排队的普通文字、但尚未按 Tab 时，Fullscreen Footer 必须对齐 Codex 显示 transient queue hint。`HasQueueableDraft` 或等价派生值只在以下条件全部成立时为 true：当前 Turn 正在运行、Composer trim 后非空、`ParseInput` 结果为普通 `Text`、没有活动 Slash/Selection/Approval/User Input overlay。Slash Command 或 invalid slash 不得显示会误导用户的 queue hint。
+
+```text
+Running + queueable ordinary draft
+→ replace passive fixed statusline with "tab to queue message"
+→ narrow fallback: "tab to queue"
+→ preserve Plan indicator only when it fits
+→ drop statusline/context and then Plan indicator before dropping queue hint
+```
+
+queue hint 是 Composer action guidance，不是 queued preview、StatusLineItem、Working header、HistoryCell 或 Runtime state。真正按 Tab enqueue 后 Composer 变空，hint 消失，已有 `Queued (n)` preview 继续显示；如果用户继续输入另一条普通文字，则 preview 与 queue hint 同时显示。Popup/overlay 继续占用整个 auxiliary/footer 区域并隐藏两者。
+
+terminal drain 与恢复策略固定为：
+
+- `TurnCompleteEvent` 且 Outcome 为 Completed 或 Failed：当前 Turn UI 先完成，再 FIFO 取出至多一条并通过现有 `SubmitUser` 路径启动下一 Turn；其 admission 必须为 Started，Steered 视为 attachment/ordering invariant violation，并产生可见诊断，不得静默当作成功对齐。
+- `TurnCompleteEvent` 且 Outcome 为 Blocked，或 `TurnAbortedEvent`：不自动提交；将 InFlight 与 Pending 按原 FIFO 合并恢复到 composer，清空 queue，并保留用户重新编辑/提交的控制权。
+- 普通 `ErrorEvent` 不单独触发 drain；已经开始的失败 Turn 仍等待唯一 `TurnCompleteEvent`，避免 Error + Complete 双提交。
+- queued submission 在尚未被 Runtime 接纳前返回错误或 malformed admission 时，将 InFlight 恢复到 composer，保留剩余 Pending，不自动跳过失败输入继续发送。若 Runtime 已返回合法但错误的 Steered admission，消息已经进入当前 ActiveTurn，TUI 必须清除 InFlight、停止后续自动 drain 并显示 invariant violation；不得把同一内容恢复后再次提交。
+- 一个 terminal 只允许启动一个 queued input；下一条必须等待新 Turn 自己的 terminal。`TurnStartedEvent` 清除匹配的 InFlight/start-pending gate。
+- Plan Turn terminal 时如果存在 queued input，优先启动 queued Plan input，不显示 `Implement this plan?` overlay；没有 queued input 时保持现有 Proposed Plan transition。
+
+queued preview 是 transient Composer state：显示有界数量、FIFO 顺序和总数，但不伪装成聊天历史、Tool activity、statusline metadata 或 Runtime Working 状态。窄终端必须截断而不能覆盖 Composer/Footer。Queue 不进入 Resume replay；进程退出、Thread attach 替换或显式 Clear 后不恢复。
 
 ## 9. Canonical Runtime 流程
 
@@ -1007,6 +1083,34 @@ Same-turn steer 的关键不变量：
 6. Final model response 与 pending input 同时存在时，Final Response 先完成其 canonical Item lifecycle，然后 pending input 触发同 Turn follow-up。
 7. Interrupt 或终态竞态不得静默丢弃已经返回 `Steered` 的输入；无法继续采样时至少应在 terminal 前记录已接纳 UserMessage，或通过原子 sealing 让该提交退化为新 Turn admission。
 8. ApprovalDecisionOp、UserInputAnswerOp 和 steer UserInputOp 使用不同路由；普通用户消息不得满足 interactive waiter。
+
+#### 9.1.2 Next-Turn Queue Flow
+
+运行中的 Tab queue 不进入上述 same-turn flow：
+
+```text
+Ordinary composer text + Tab while Turn is running
+→ Fullscreen Input layer validates active attachment and non-empty text
+→ enqueue QueuedUserInput(ThreadID, generation, Mode)
+→ clear composer and refresh queued preview
+→ current Turn continues unchanged
+→ Session persists terminal and clears ActiveTurn
+→ matching terminal Event reaches Fullscreen reducer
+→ finalize current Turn UI
+→ move FIFO head to InFlight and synchronously close the local drain gate
+→ submit through the normal UserInputOp/admission path
+→ require Started{new TurnID}
+→ TurnStarted clears matching InFlight and begins the next Turn UI
+```
+
+关键不变量：
+
+1. enqueue 与 current Turn 的 Session、TurnInputQueue、ContextManager 和 Rollout 完全隔离；只有 dequeue submission 才成为 Runtime fact。
+2. terminal Event 是自动 drain 的唯一触发源；`running=false`、spinner 停止、`tea.Cmd` 返回或 `ErrorEvent` 本身都不能代替 terminal。
+3. Session 在发布 terminal 前已经完成 canonical append、flush 和 ActiveTurn 清理，因此正常 dequeue admission 必须为 Started，而不是 Steered。
+4. FIFO head 从 Pending 移入 InFlight 与 drain gate 设置必须发生在创建异步 `tea.Cmd` 前；重复 terminal、resize、status refresh 或 admission callback 不得再次发送同一输入。
+5. ThreadID 或 attachment generation 不匹配时不得 drain；旧 attachment queue 不迁移到新 Thread，也不进入 Resume replay。
+6. TurnAborted、Blocked、pre-admission submit rejection 和 malformed admission 按 8.17 恢复用户输入；已经接纳的 unexpected Steered 按 invariant failure 停止自动 drain，不得重复恢复同一消息。
 
 ### 9.2 Go Runtime Concurrency Model
 
@@ -2681,12 +2785,16 @@ type SlashInvocation struct {
 type InputResult struct {
     Text    string
     Command *SlashInvocation
+    Queue   bool
 }
 ```
 
 ```text
 普通文本
-→ InputResult.Text
+→ InputResult{Text: text}
+
+运行中普通文本 + Tab
+→ InputResult{Text: text, Queue: true}
 
 /plan
 → InputResult.Command(Command: plan)
@@ -2695,7 +2803,9 @@ type InputResult struct {
 → InputResult.Command(Command: plan, Args: <task>)
 ```
 
-Popup 只负责过滤和选择 `BuiltinSlashCommands`；Enter 后返回类型化 `InputResult`，Esc 只关闭 Popup。命令历史记录只有在分发成功后才提交，失败的输入不污染本地输入回忆。
+Popup 只负责过滤和选择 `BuiltinSlashCommands`；Enter 后返回普通提交/命令结果，运行中的 Tab 对普通文字返回 queue result，Esc 只关闭 Popup。Slash Popup 存在 selection 时 Tab completion 优先，不产生 queue result。命令历史记录只有在分发成功后才提交；queued ordinary text 可以在 enqueue 时进入本地输入回忆，但不进入 transcript/canonical history。
+
+`InputResult.Queue=true` 只允许与非空 `Text` 组合，`Command` 必须为空；命令、空输入、idle composer 和 popup completion 不产生 queue result。该字段表达 Composer action disposition，不是 Runtime admission。
 
 ### 18.3 单一分发中心
 
@@ -2745,6 +2855,7 @@ Fullscreen interactive mode 必须像 Codex `App` 一样持续拥有当前 Threa
 
 - 同一时刻只有一个 active Thread attachment；它是 `SessionIo.Events` 和 termination 的唯一消费者，并在内部从 EventMsg 派生 transcript/status read model。
 - 普通用户输入与 `/compact` 只负责向 active `AmadeusThread` 提交 typed Op；Turn running、approval、completion 和 history 更新全部由 attachment event pump 送回 Bubble Tea AppEvent。
+- Fullscreen Tab queue 在提交前属于 TUI input state；它只消费 matching attachment 的 terminal Event 来触发下一次普通提交，不创建第二个 SessionIo consumer 或 TUI terminal truth。
 - Resume 成功后先停止旧 attachment 的转发，再原子安装新 attachment；带旧 ThreadID 或旧 attachment generation 的迟到消息必须被丢弃。
 - `waitTurn` 只保留给 one-shot/非 Fullscreen CLI；Fullscreen 主链不得通过 `runOnce → waitTurn → EventSink` 形成第二套事件消费和 Turn 完成协议。
 - Bubble Tea 后台 command 的完成只表示 Application request goroutine 已返回，不能表示 Turn 已完成；Turn 终态仍唯一来自 `TurnCompleteEvent`/`TurnAbortedEvent`。
@@ -3091,9 +3202,10 @@ ShutdownFinished
 - 历史内容尽量进入终端原生 scrollback。
 - 鼠标默认保留终端选择文本能力。
 - 输入运行期间仍可编辑；普通文本 Enter 始终提交 `UserInputOp`，由 Runtime admission 决定 Started、Steered 或 typed rejection，TUI 不依据 `running bool` 自行改写为下一 Turn。
+- 运行中普通文本 Tab 显式进入 attachment-scoped `NextTurnQueue`；它与 Enter steer 分开展示、分开恢复，并只在 matching terminal 后逐条提交。
 - Amadeus 只维护这一套 Rich Inline 交互运行时；不提供 `--plain` 第二套输入、状态和事件路径。
 
-运行中提交普通文本并获得 `Steered` 时，TUI 保持当前 Turn 的 elapsed timer、Working/activity state、details store 和 active item，不重新执行新 Turn 初始化，也不插入第二个 Worked boundary。获得 `Started` 时由后续 `TurnStartedEvent` 初始化新 Turn；获得 `ActiveTurnNotSteerable` 等 rejection 时恢复或保留 composer 内容并显示明确错误，不能假装提交成功后静默排队。
+运行中按 Enter 提交普通文本并获得 `Steered` 时，TUI 保持当前 Turn 的 elapsed timer、Working/activity state、details store 和 active item，不重新执行新 Turn 初始化，也不插入第二个 Worked boundary。获得 `Started` 时由后续 `TurnStartedEvent` 初始化新 Turn；获得 `ActiveTurnNotSteerable` 等 rejection 时恢复或保留 composer 内容并显示明确错误，不能把 Enter submission 偷换成 Tab queue。Tab enqueue 时不插入 UserMessageCell；只有 terminal 后真正提交 FIFO head 时才使用普通 optimistic/canonical UserMessage lifecycle。
 
 ### 19.2 HistoryCell
 
@@ -3151,7 +3263,7 @@ Replay Mode 不播放 Working、Shimmer 或流式动画，但必须产生与实�
 - Tool 工作与最终 Assistant 回复之间显示不带耗时的 dim rule；完成后在最终回复下方显示 `─ Worked for 7m 18s ─────`。
 - User、Working、Assistant、Separator 和 Composer 的空行由结构化布局决定。
 - Composer 按终端显示宽度软换行；`› ` 只属于第一条视觉行，后续软换行与显式换行使用等宽空白 gutter。五行上限是可见 viewport 高度而不是输入长度限制；超过上限后，展示投影截取包含当前 cursor 的五条视觉行，Home/End/方向移动必须同步滚动可见窗口。输入使用 Bubble Tea textarea 的软件光标；当前 Bubble Tea renderer 不暴露 model hardware-cursor position，基础版不通过 output writer 或手写 cursor reposition 强行实现 IME 候选窗口锚定。
-- Footer 左侧显示 Model、CurrentDir、GitBranch、ThreadTitle 与 Context 等固定会话元数据；Plan collaboration indicator 使用 magenta 独立右对齐，空闲时附带 `shift+tab to cycle`，Default mode 不显示模式标签。
+- Footer 左侧通常显示 Model、CurrentDir、GitBranch、ThreadTitle 与 Context 等固定会话元数据；running Turn 中存在 queueable draft 时临时替换为 queue hint。Plan collaboration indicator 使用 magenta 独立右对齐，空闲时附带 `shift+tab to cycle`，Default mode 不显示模式标签。
 - Tool Start/Delta/Complete 原位更新，不重复打印多个树枝。
 - Ran/Explored/Search 等标签使用 TerminalPalette 的强调色。
 - Markdown 代码、路径和命令采用终端主题感知高亮。
@@ -3220,12 +3332,13 @@ type footerState struct {
 }
 
 type footerProps struct {
-    Width        int
-    Running      bool
-    State        footerState
-    Palette      terminalPalette
-    LeftPadding  int
-    RightPadding int
+    Width             int
+    Running           bool
+    HasQueueableDraft bool
+    State             footerState
+    Palette           terminalPalette
+    LeftPadding       int
+    RightPadding      int
 }
 ```
 
@@ -3234,9 +3347,11 @@ type footerProps struct {
 - `statusLineSegment` 不提前持有 Lip Gloss style。`statusLineAccentForItem()` 在 Footer render 边界集中映射 TerminalPalette accent，保证颜色策略与数据模型解耦，并在 `NO_COLOR` 下自然降级。
 - Statusline 颜色解析采用 Codex 的 theme-first/fallback 分层：TrueColor 与 ANSI256 根据终端明暗背景选择 Catppuccin Mocha/Latte Chroma style，以 type、string、function、number、keyword、heading token 对应 Codex 的 Model、Path、Branch、Usage、Mode、Thread scope family，之后执行同样的 85% saturation softening；ANSI16 保留 cyan/green/magenta fallback。该基础版不引入 `/theme` 或自定义 tmTheme owner。
 - `footerState` 分别缓存左侧 statusline 与右侧 collaboration mode indicator；Working/status indicator 不属于 Footer metadata，也不得作为 statusline 缺失值的替代文本。
+- `HasQueueableDraft` 不写入 `footerState`，而是在每次构造 `footerProps` 时从 TUI 已持有的 `running + composer text + ParseInput` 纯派生；它不创建第二份 Composer 或 queue truth。
 - `renderFooter(footerProps)` 是纯布局/渲染函数，不查询 Application、不访问文件系统、不启动 branch lookup、不修改 model state。`View()` 只组合已有 view state，不承担 SessionConfiguration 投影。
 - Footer 使用 Codex 风格左右独立列：先为右侧 collaboration indicator 和固定 padding 保留空间，再在剩余宽度内裁剪或省略左侧 statusline segment，禁止通过字符串追加让 context 与 mode 竞争同一列。完整 `Plan mode (shift+tab to cycle)` 无法与左侧内容共存时收缩为 `Plan mode`；左列按 ThreadTitle、ContextWindow、ContextUsed、ModelWithReasoning、CurrentDir、GitBranch 的顺序逐步省略，使 GitBranch 成为最后删除的 workspace identity，并继续保证 indicator 右对齐。Default mode 不渲染模式标签。
-- Slash/File/Skill 等 Composer popup 激活时占用 Codex 的 popup/footer 区域并替换普通 Footer；不得在 popup 下方继续渲染 statusline 或 mode indicator。Popup 关闭后 Footer 才恢复。Slash Command Popup 的 selection 只通过 command name/description style 表达，不显示 Modal picker 使用的 `›` cursor glyph。
+- `HasQueueableDraft=true` 时 Footer 进入 transient queue-hint layout：左侧优先显示 dim `tab to queue message`，宽度不足时收缩为 `tab to queue`；固定 statusline 暂停渲染。Plan indicator 只有与 hint 同行可容纳时才保留，空间不足时先删除 Plan indicator，queue hint 是该状态的最后保留信息。Composer 清空或 Turn terminal 后恢复普通 statusline layout。
+- Slash/File/Skill 等 Composer popup 激活时占用 Codex 的 popup/footer 区域并替换普通 Footer；不得在 popup 下方继续渲染 statusline、queue hint 或 mode indicator。Popup 关闭后 Footer 才恢复。Slash Command Popup 的 selection 只通过 command name/description style 表达，不显示 Modal picker 使用的 `›` cursor glyph。
 - Selection overlay 对齐 Codex `SelectionViewParams`：footer hint 默认为空，不由公共 renderer 合成按键说明；确有必要时由调用方显式提供。非空 subtitle 与列表/搜索输入之间统一保留一行，不允许按命令增加视觉特例开关。`/skills` 顶层菜单与 `/resume` picker 不显示 footer hint。
 - Collaboration indicator 的“右对齐”只表示 Footer 当前布局行内的独立右列，不要求 Amadeus 复制 Codex/Ratatui 的全屏 surface 或把 Bubble Tea inline frame 人工扩展到 terminal height。`View()` 返回活动 frame 的真实内容高度，不能通过顶部补空行、额外 output writer 或 cursor up/down 转义序列模拟另一个 terminal layout engine。永久 transcript row 由 `tea.Println` 提交，Composer、Popup 与 Footer 只存在于随后重绘的活动 frame。
 
@@ -3273,16 +3388,19 @@ Thread title、usage/context 和 Git branch 分别通过 typed Application event
 | `ThreadNameUpdated` | 更新 active Thread title | refresh title item |
 | branch lookup completion | 更新 CurrentDir 对应 branch cache | 校验 generation/CWD 后 refresh |
 | Turn start/end 或 retry | 只更新 Working/status indicator 与 cycle hint | 不改变 statusline items |
+| running Turn 中 queueable Composer draft 出现/变化 | 只更新派生 `HasQueueableDraft` | queue hint 替换 passive statusline；完整/短文案按宽度选择 |
+| Tab enqueue 后 Composer 清空 | NextTurnQueue 增加 Pending，`HasQueueableDraft=false` | queue hint 消失，queued preview 保留，普通 statusline 恢复 |
 | terminal resize | 更新 width | 只 layout |
 | `View()` | 无业务状态变化 | 纯 render |
 
 Git branch 查询必须在 CurrentDir 改变时清空旧值并异步刷新；请求携带 attachment generation 与 CWD，迟到结果只有在两者仍匹配时才能写入 cache。Statusline 不通过 `Application.Status()` 轮询补全目录、模型、标题或上下文，也不在 `View()` 中同步执行 Git/文件系统 IO。
 
-必须严格区分三个 UI 概念：
+必须严格区分四个 UI 概念：
 
 - **Working/status indicator**：表示当前 Turn 的 Working、retry 或其他短期活动状态，生命周期来自 Event。
 - **Statusline**：表示固定的 Session/Thread metadata 投影，不展示瞬时运行状态。
 - **Collaboration mode indicator**：表示 Plan mode，并在 Footer 右侧独立布局；它读取 `fullscreenSessionState.Configuration.Mode`，但不是 `StatusLineItem`。
+- **Queue hint**：表示当前 Composer draft 可用 Tab 排入下一 Turn，是纯 TUI transient guidance；它临时取代 passive statusline，但不表示已经 enqueue，也不进入 footerState/canonical state。
 
 ### 19.5 Interactive Request 与 Diff
 
@@ -4275,6 +4393,8 @@ Trace / Telemetry    Runtime 内部诊断，不进入产品 Event Protocol
 
 Approval request 是 `EventMsg` variant，回答使用带 RequestID 的 `ApprovalDecisionOp` 作为新的 Submission。`request_user_input` 使用独立的 `RequestUserInputEvent → UserInputAnswerOp` pair，两种交互共享 Session waiter 基础设施但保持 payload 与语义分离。
 
+NextTurnQueue 是尚未提交的 TUI state，不是 Session Event Protocol。enqueue、preview、InFlight gate 和 attachment replacement 不新增 `QueuedInputOp`、`QueuedAdmissionEvent` 或 durable queue item；只有 dequeue 后正常提交的 `UserInputOp` 及其 Started Turn lifecycle 进入公共协议。
+
 ### 26.2 Submission 与 Event Envelope
 
 Protocol/Identity domain 拥有 SessionID、ThreadID、TurnID、SubmissionID、RequestID 和 ItemID；rollout、thread、turn 或 persistence package 不得重新定义这些 ID。SessionID/ThreadID 是封装 UUID 的不同领域类型：新建值使用 UUIDv7，跨 CLI、JSON、Tool 与 Persistence boundary 时必须显式 parse/format；其他 ID 是否采用 UUID 由各自 Contract 决定，不通过一个 `NextID(kind)` 抹平语义。
@@ -4467,7 +4587,7 @@ type ApprovalRequestEvent struct {
 持久化策略：
 
 - 持久化 store policy 指定的 TurnStartedEvent、TurnCompleteEvent/TurnAbortedEvent、ItemCompletedEvent（包含 completed Proposed Plan）、TokenCountEvent、ContextCompactedEvent 和恢复所需 Context facts。
-- 不持久化高频 Agent/Reasoning/Command/Plan Delta、Working、未决 ApprovalRequestEvent、未决 `RequestUserInputEvent`、`PlanUpdateEvent`、Popup、动画 Tick 和 retrying StreamErrorEvent。`update_plan` 与 `request_user_input` 的 Function Call/Function Call Output 仍作为普通 ResponseItem 持久化。
+- 不持久化高频 Agent/Reasoning/Command/Plan Delta、Working、未决 ApprovalRequestEvent、未决 `RequestUserInputEvent`、`PlanUpdateEvent`、NextTurnQueue/queued preview、Popup、动画 Tick 和 retrying StreamErrorEvent。`update_plan` 与 `request_user_input` 的 Function Call/Function Call Output 仍作为普通 ResponseItem 持久化。
 - Resume 从 typed ResponseItem 和 EventMsgItem 重建 Context/History，不重放旧 Delta。
 - ResponseItem 与对应 ItemCompletedEvent 必须由 Session 在同一 ordered append 主链中提交；live ItemCompletedEvent 只能在该 append 成功后发布，`run_turn` 不保留等待 Turn 尾部才写入的私有 completed-item queue。
 - 高频 completed facts 先由 Session 串行 buffered append 到 JSONL，并增量更新 Session 内存投影；SQLite 只保持到最近 durable watermark。Session 在 TurnStartedEvent、TurnCompleteEvent/TurnAbortedEvent 和其他 durability boundary 执行 flush，随后 MetadataSync 才推进 SQLite。
@@ -4614,6 +4734,11 @@ Provider/stream error 还必须区分：
 - retrying StreamErrorEvent 复用 status indicator 显示 `Reconnecting... n/m` 与 details，不生成 HistoryCell、不结束 draft；下一条非 retry live Event 恢复此前 status header。
 - Replay/Resume 忽略 transient retry status；无颜色、窄终端和隐藏 status indicator 场景仍有稳定降级。
 - Bubble Tea Task 返回不作为第二套 Turn 终态。
+- Enter 与 Tab 在运行期间保持不同语义：Enter 提交并 steer，Tab 只 enqueue；enqueue 不调用 Runtime、不插入 UserMessageCell、不改变当前 Working/elapsed/activity。
+- 多条 queued input 按 FIFO 每个 terminal 至多提交一条；InFlight/start-pending gate 阻止 terminal、admission 和键盘竞态重复发送，正常 dequeue admission 必须为 Started。
+- TurnAborted/Blocked 和 queued submission rejection 将输入恢复到 composer；ErrorEvent 不提前 drain，旧 attachment generation 的 queue 不泄漏到 Resume/Clear 后的新 Thread。
+- queued preview 在宽屏、窄屏和 No Color 下保持有界，不覆盖 Composer/Footer；存在 queued Plan input 时不显示 implementation popup。
+- running + ordinary draft 时 Footer 显示 `tab to queue message`，窄屏降级为 `tab to queue`；queue hint 优先于固定 statusline，Plan indicator 仅在可容纳时保留，popup/overlay 与非 queueable Slash input 不显示该提示。
 - Terminal 无颜色和窄宽度降级。
 - Tool 展示使用真实 `TurnItem.ToolName`，不从 `action_summary` 或自然语言标题猜测工具身份。
 - `read`、`grep`、`glob` 的探索树叶节点显示对应 Tool 名和必要参数；`execute_command` 显示 Codex 风格的 `Running`/`Ran` 与命令结果。
@@ -4679,6 +4804,9 @@ Amadeus 至少通过以下真实场景：
 28. response stream 在部分 Assistant/Reasoning/Tool Call/Plan Delta 后断开并恢复时，transcript、canonical Rollout 和后续 Resume 均不出现重复文本、重复 Tool Call、重复 Proposed Plan 或 attempt-local draft。
 29. Root Agent 在同一 Turn 中并行 spawn 多个 read-only explorer；child 使用独立 Thread/Session/Context 和同一 workspace，完成后只注入一次 bounded notification，wait/send/close 状态与 TUI/Resume projection 一致。
 30. Root Turn 被中断时 open child 继续运行；Root shutdown 或 close_agent 后 child writer、event consumer、watcher、slot 和 nickname 全部释放，默认 `/resume` 列表不显示 child Thread。
+31. Regular Turn 运行期间按 Enter 提交补充信息时仍进入当前 Turn；相同状态下按 Tab 只进入 NextTurnQueue，当前 Turn 的 Session/Context/Rollout 不出现该输入。
+32. 当前 Turn 正常 terminal 后 queued input 按 FIFO 每次启动一个新 Turn；aborted/blocked、submit rejection 和 attachment replacement 不会把输入静默注入错误 Turn，queued state 不出现在 Resume replay。
+33. Turn 运行期间 Composer 输入可排队普通文字时，Footer 用 `tab to queue message`/`tab to queue` 临时替换固定 statusline；Plan indicator 按宽度让位，Slash/popup/overlay、空输入和 idle draft 不显示错误 hint，Tab enqueue 后固定 statusline 恢复。
 
 ## 30. 最终架构结论
 
@@ -4713,3 +4841,5 @@ Amadeus 至少通过以下真实场景：
 29. Multi-Agent Prompt 由 ToolSpec delegation guidance、SubagentDeveloperInstructions、WorldState `<subagents>` 和 canonical `<subagent_notification>` 分层拥有；CollabAgentToolCallItem 是 live/Resume/Inline TUI 的唯一协作展示协议。
 30. SessionID 是 Root/child tree-level correlation/ownership，ThreadID 是具体 Thread 的 registry、routing、Rollout 和 Resume identity；SQLite StoredThread 不复制 SessionID，canonical SessionID 只来自 Rollout SessionMeta。
 31. Root Resume 必须恢复并校验 persisted child metadata；Tool Invocation、Audit 和 Provider request metadata 同时携带真实 SessionID/ThreadID，而 Multi-Agent target、Event scope、Application attachment 和 CLI/TUI resume 始终使用 ThreadID。
+32. Fullscreen Enter steer 与 Tab next-turn queue 是不同输入意图：前者立即进入唯一 UserInputOp/admission 主链，后者由 attachment-scoped TUI FIFO 暂存并在 terminal 后逐条重新使用该主链；Core 不拥有第二个用户输入 queue 或 `Queued` admission。
+33. Queue hint 是 queueable Composer draft 的 transient Footer guidance，不是 StatusLineItem、footerState、HistoryCell 或 Runtime Event；它在 running draft 时优先于 passive statusline，并通过纯 footerProps layout 实现 Codex 风格完整/短文案降级。

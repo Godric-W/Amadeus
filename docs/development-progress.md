@@ -1,13 +1,13 @@
 # Amadeus 开发进度
 
-> 最近更新：2026-08-22
-> 唯一架构事实源：`docs/design.md`
-> 当前阶段：T. Thread + Session UUID Identity Alignment（DONE）
+> 最近更新：2026-08-24
+> 主要架构与 Contract 工作文档：`docs/design.md`
+> 当前阶段：U. Next-Turn User Input Queue Alignment（DONE）
 > 下一任务：下一阶段待规划
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
-A-T 的条目保留为历史与当前计划记录；其中与当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。
+A-U 的条目保留为历史与当前计划记录；其中与当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
 
 ## 1. 状态与完成标准
 
@@ -45,9 +45,10 @@ A Runtime + Persistence
 → R Basic Multi-Agent Architecture Alignment
 → S Codex-style Statusline Architecture Alignment
 → T Thread + Session UUID Identity Alignment
+→ U Next-Turn User Input Queue Alignment
 ```
 
-Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先更新 `docs/design.md`。
+Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先分析对应参考源码，再同步更新 `docs/design.md` 与本文。
 
 ## 3. A. Runtime + Persistence — `DONE`
 
@@ -1534,25 +1535,122 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - 新增 identity architecture guard，禁止通用 thread ID factory、直接 ThreadID conversion、旧 SessionMeta field 和 SQLite SessionID 回归；本地开发数据库已直接清理。
 - `make check`、`go test -race ./... -count=1` 与 `git diff --check` 于 2026-08-22 全量通过；Provider root/child identity、persisted child lazy resume、Audit identity 和 SQLite child rebuild targeted tests 通过。
 
-## 23. 当前保留能力
+## 23. U. Next-Turn User Input Queue Alignment — `DONE`
+
+### 目标
+
+在 O 已完成的 same-turn steer 主链之外，增加 Codex 风格显式下一 Turn 排队：Regular/Plan/Compact Turn 运行期间，普通文字 Enter 继续使用现有 Runtime admission（Regular 可 steer，Compact 保持 typed rejection），普通文字 Tab 只进入 Fullscreen TUI 的 attachment-scoped transient FIFO；当前 Turn terminal 后每次只通过既有 `UserInputOp`/UserMessageAdmission 主链启动一个新 Turn。Queue 不提前进入 Session、Context、Rollout、Resume 或 SQLite，也不复用 Session deferred submission/TurnInputQueue。
+
+本阶段依据 Codex `ChatComposer.InputResult::Queued`、`ChatWidget.InputQueueState`、`maybe_send_next_queued_input` 和 interrupted-turn draft restore 源码确定 owner 与时序；不复制 queued Slash/Shell、图片/paste、多 thread-tab composer state 或可配置 keymap 等当前 Amadeus 不需要的产品复杂度。
+
+### U-01：Queue Contract + Ownership — `DONE`
+
+- [x] 在 `internal/interface/tui/input_queue.go` 建立 `QueuedUserInput` 与 `NextTurnQueue{Pending, InFlight}`；字段包含 Content、Mode、ThreadID 和 attachment generation，职责只覆盖尚未提交的未来用户输入。
+- [x] 保持 Session `InputQueue`/`TurnInputQueue` 只拥有已被 Runtime 接纳的 same-turn input；禁止新增 `QueuedInputOp`、`UserMessageAdmissionQueued`、queued EventMsg/RolloutItem 或把 Tab 输入塞进 `Session.deferred`。
+- [x] 明确队列是 transient TUI input state，不成为第二 conversation history、Application Thread registry 或 Runtime terminal owner；在架构 guard 中保护 owner 和禁止项。
+
+### U-02：Composer Input Result + Tab Queue — `DONE`
+
+- [x] 扩展 Composer/InputResult 以区分普通 submit 与 queue disposition；运行中普通文字 Enter 保持现有 SubmitUser/Started-or-Steered admission，Tab 只 enqueue 并清空 composer。
+- [x] Slash Popup selection 的 Tab completion 优先于 queue；初始版本不 queue Slash Command/Shell action，不把 `/...` 原始字符串作为普通 UserInputOp 延迟提交。
+- [x] enqueue 时只更新本地 input recall 与 queued preview，不生成 ClientUserMessageID、不插入 UserMessageCell、不调用 Runtime；真正 dequeue 时才复用 `prepareTaskSubmission` optimistic/canonical lifecycle。
+
+### U-03：Terminal Drain + Admission Handshake — `DONE`
+
+- [x] 只有 matching `TurnCompleteEvent` 才自动 drain；当前 Turn UI 先完成，再将 FIFO head 同步移入 InFlight、关闭本地 drain gate，然后创建异步 SubmitUser command。
+- [x] 一个 terminal 至多启动一条 queued input；InFlight/start-pending 在 matching `TurnStartedEvent` 前阻止重复 terminal、resize、status refresh、admission callback 或按键触发第二次发送。
+- [x] dequeue admission 必须为 Started；Steered 作为 Thread/attachment/ordering invariant violation 显示诊断，不能静默接受为 queue success。下一条 Pending 等待新 Turn 自己的 terminal。
+- [x] Plan Turn 存在 queued follow-up 时跳过 `Implement this plan?` overlay，并优先启动 queued Plan input；无 queue 时保持现有 Proposed Plan transition。
+
+### U-04：Abort、Failure + Attachment Isolation — `DONE`
+
+- [x] `TurnAbortedEvent` 和 `TurnOutcomeBlocked` 不自动提交，将 InFlight/Pending 按 FIFO 恢复到 composer 并清空 queue；普通 ErrorEvent 等待唯一 TurnComplete，不提前 drain。
+- [x] queued submission error、malformed admission 或 application cancellation 在 Runtime 接纳前将 InFlight 恢复到 composer，保留其余 Pending，不跳过失败 head 继续自动发送；已经接纳的 unexpected Steered 只停止 drain 并显示 invariant diagnostic，不重复恢复。
+- [x] dequeue、admission 和异步结果校验 origin ThreadID + attachment generation；Resume、Clear、Delete、shutdown 或新 Thread attach 清理旧 attachment queue，绝不把旧输入发到新 Thread。
+- [x] dequeue 前校验当前 Session mode 与 queued Mode；不一致时恢复 composer，不静默改写 queued input 的 Collaboration Mode。
+- [x] 明确 queue 不持久化、不进入 Resume replay；进程退出或 attachment replacement 后不声称 queued input 已被接纳。
+
+### U-05：Queued Preview + Rich TUI Lifecycle — `DONE`
+
+- [x] 在 Composer area 增加紧凑、有界的 FIFO preview，显示 queued 数量与截断后的内容；它不是 HistoryCell、Tool activity、Working header 或固定 statusline item。
+- [x] 宽屏、窄屏、No Color、Slash Popup、Approval/User Input overlay 和五行 composer viewport 下保持稳定布局，不覆盖 Composer/Footer，也不把 preview 刷入 terminal history。
+- [x] enqueue 不改变当前 Turn 的 elapsed timer、Working/status、active item、details store 或 plan stream；dequeue 后的新 Turn 仍完全由 TurnStartedEvent 初始化。
+
+### U-06：Tests、Docs、Guards + Acceptance — `DONE`
+
+- [x] 覆盖运行中 Enter steer 与 Tab queue 分流、Slash completion 优先、空输入、FIFO、多 terminal 去重、InFlight/TurnStarted handshake 和每 Turn 仅一条自动提交。
+- [x] 覆盖 completed/failed 自动 drain、aborted/blocked restore、submit rejection、malformed/unexpected admission、Plan popup suppression 和旧 generation/ThreadID isolation。
+- [x] 覆盖 queue 不进入 Event/Rollout/Context/Resume、optimistic UserMessage 只在 dequeue 时产生、preview 窄宽度/No Color/overlay 布局和 input recall。
+- [x] 增加 architecture guards，禁止 Core queued Op/admission、Session deferred UserInput、TUI 第二 terminal truth 和 queue state 进入 canonical projector；运行 targeted tests、`make check`、`go test -race ./... -count=1` 与 `git diff --check`。
+
+### U-07：Codex-style Queue Hint Footer — `DONE`
+
+- [x] 为 `footerProps` 增加 `HasQueueableDraft` 或等价纯派生输入；只在 Turn running、Composer 普通文字非空、`ParseInput` 为 Text 且没有 popup/overlay 时启用，不写入 `footerState`、Session、NextTurnQueue 或 statusLineState。
+- [x] 对齐 Codex `FooterMode::ComposerHasDraft + is_task_running`：queueable draft 出现时固定 statusline 临时让位，Footer 左侧显示 dim `tab to queue message`；窄屏收缩为 `tab to queue`。
+- [x] 建立 queue-hint 专用纯布局函数或内聚分支：完整 hint + Plan indicator 可共存时保留两者，不足时依次使用短 hint、删除 Plan indicator，禁止先隐藏 queue hint 或让左右内容重叠。
+- [x] Tab enqueue 清空 Composer 后 hint 立即消失并恢复普通 statusline；已有 `Queued (n)` preview 时继续输入下一条 queueable draft，preview 与 footer hint 同时显示。
+- [x] Slash Popup、Selection、Approval 和 Request User Input overlay 继续拥有更高优先级并隐藏普通 Footer/queue hint；Slash Command、invalid slash、空输入和 idle draft 不显示误导性提示。
+
+### U-08：Queue Hint Visual Tests、Guards + Docs — `DONE`
+
+- [x] 增加 pure Footer 与 fullscreen snapshot/semantic tests，覆盖 running empty/draft、idle draft、Default/Plan、已有 queued preview、Slash Popup、各类 overlay、ordinary/slash input 和 Tab enqueue 前后状态转换。
+- [x] 覆盖 40 列及更窄有效布局、完整/短 hint fallback、Plan indicator 让位顺序、No Color/ANSI16/ANSI256/TrueColor 和动态输入清空恢复，保证文字不截断成不可辨识状态且不进入 scrollback。
+- [x] 扩展 architecture guard，禁止将 queue hint 建模为 StatusLineItem、footerState 持久字段、HistoryCell 或 Runtime Event；`View()`/renderFooter 保持纯渲染且不查询 Application/Runtime。
+- [x] 同步 README、TUI visual contract、architecture whitepaper、design 和本进度文档；运行 focused snapshot tests、`make check`、`go test -race ./... -count=1` 与 `git diff --check` 后才重新将 U 标记 DONE。
+
+### U 出口
+
+- Enter 与 Tab 对运行中普通文字具有稳定且可见的不同语义：Enter 属于当前 Turn，Tab 属于后续独立 Turn。
+- NextTurnQueue 只有 Fullscreen input layer 一个 owner；Session、Protocol、Rollout、Context 和 Persistence 不保存未提交 queue state。
+- terminal 后按 FIFO 每次只启动一个新 Turn，admission 为 Started；aborted/blocked/rejection 不会丢失输入或发送到错误 attachment。
+- queued preview、Plan transition、Resume/Clear/Exit 和现有 same-turn steer 在宽/窄终端下形成一致生命周期。
+- running Turn 中 queueable ordinary draft 将 Footer 切换为 Codex 风格 Tab queue hint；固定 statusline 暂时让位，窄屏优先保留完整或短 hint，Plan indicator 只在可容纳时显示。
+
+### U 验收
+
+- Regular Turn 运行期间依次 Tab queue `second`、`third`，当前 Turn 的 Rollout/Prompt 都不包含二者；当前 Turn 完成后启动只含 `second` 的新 Turn，第二个 Turn 完成后再启动 `third`。
+- 同一状态下按 Enter 提交 `clarification` 返回 Steered 并进入当前 Turn；Tab queue 不产生 Steered、额外 TurnStarted 或当前 Turn UserMessage Item。
+- 当前 Turn aborted 或 blocked 时 queued 内容恢复到 composer 且没有新 Submission；queued submit 失败时首项恢复、后续项保持原 FIFO。
+- Resume/Clear 切换 attachment、迟到 terminal/admission 和重复 Bubble Tea message 均不能把旧 queue 发送到新 Thread 或重复提交。
+- Plan Turn 有 queue 时不弹 implementation overlay 并继续 queued Plan Turn；无 queue 时保留现有 implementation transition。
+- Default/Plan Turn 运行时输入 ordinary draft，Footer 分别显示完整/短 `tab to queue message`/`tab to queue` 且不与右列重叠；清空或 Tab enqueue 后恢复固定 statusline，Slash/popup/overlay 不显示错误 hint。
+
+### U-01～U-06 阶段完成记录
+
+- 2026-08-24 完成 Codex 风格 next-turn queue：新增独立 `input_queue.go`，由 Bubble Tea `fullscreenModel` 串行拥有 `QueuedUserInput`、Pending FIFO、InFlight/start-pending gate 和 bounded preview；Session、Protocol、Rollout、Context 与 Persistence 未增加 queued state。
+- 运行中普通文字 Enter 保持原 Started/Steered admission，Tab 在 Slash completion 之后进入 transient queue；真正 dequeue 才生成 ClientUserMessageID、optimistic UserMessage 和普通 `UserInputOp`，一个 terminal 只发送 FIFO 一项。
+- TurnStarted confirmation、failed terminal drain、aborted/blocked restore、pre-admission rejection、unexpected Steered halt、Mode/ThreadID/generation isolation、Plan popup suppression 与 attachment clear 均已实现并有针对性测试。
+- 新增 next-turn queue architecture guard，继续复用 O 阶段 UserInput 不得进入 Session deferred queue 的 AST guard；README、design、TUI visual contract 与本进度文档已同步。
+- `make check`、`go test -race ./... -count=1`、focused TUI/architecture race tests 与 `git diff --check` 于 2026-08-24 通过。
+
+### U-07～U-08 完成记录
+
+- 2026-08-24 对齐 Codex ComposerHasDraft queue hint：`footerProps.HasQueueableDraft` 从 running、Composer `ParseInput` 与 overlay state 纯派生，`footerState`、StatusLineItem、NextTurnQueue 和 Runtime 均未增加提示状态。
+- 新增 `renderQueueHintFooter` 纯布局：宽屏显示 `tab to queue message`，窄屏显示 `tab to queue`；Plan indicator 只在可容纳时右对齐保留，固定 statusline 在 queueable draft 期间让位。
+- Tab enqueue 后 fixed statusline 恢复；已有 queued preview 时新 ordinary draft 同时显示 preview 与 hint；Slash/invalid slash、empty/idle、popup 和各类 interactive overlay 不显示误导提示。
+- 新增 pure/fullscreen snapshot、宽度 fallback、Plan priority、No Color/ANSI16/ANSI256/TrueColor、状态转换与 render purity 测试；architecture guard 禁止 hint 进入 footerState、StatusLineItem、HistoryCell 或 Runtime/canonical package。
+- README、TUI visual contract、architecture whitepaper、design 与本进度文档已同步；focused race、`make check`、`go test -race ./... -count=1` 和 `git diff --check` 于 2026-08-24 通过。
+
+## 24. 当前保留能力
 
 - 默认启动：`amadeus` 或 `amadeus "<task>"`。
 - 当前配置链和 Provider Adapter 已可使用 OpenAI Responses/Chat Completions 及兼容 Provider。
 - JSONL Canonical Rollout + SQLite Metadata Index 已可支持 Session 恢复。
 - TUI 和 Inline 输出以当前代码和 `docs/design.md` 为准。
 - 内置 Tool、Approval、Diff、Web Search 和 Slash Command 已进入基础主链；N 收敛 `update_plan`、引入 `request_user_input`，并将现有 `/plan` 重构为 Codex 风格 Collaboration Mode 与 Proposed Plan lifecycle；O 已补齐同 Turn 用户输入与 steer lifecycle。
+- U 已补齐 Fullscreen next-turn queue 与 Codex-style pre-enqueue footer hint：运行中 Enter steer 当前 Turn，Tab queue 后续独立 Turn，terminal 后按 FIFO 逐条提交，aborted/blocked 路径恢复 composer；queueable draft 期间 fixed statusline 让位给完整/短 Tab hint。
 - P 已完成 Model Reasoning Effort 与 Provider Thinking Contract；当前生产主链可从配置冻结到 Turn，并贯通普通 sampling、Compaction 与 Provider wire request。
 - Q 已完成 Web Search/Fetch 与 `view_image` Contract Closure：Web 保持 pinned network、重定向 Approval、readable Markdown 与证据层级；图片主链完成 model-aware visibility、bounded preparation、Provider/Context projection、单份持久化和 `ViewImageCell`。
 
-## 24. 当前执行规则
+## 25. 当前执行规则
 
 1. 每次只推进一个 `TODO`/`DOING` 主任务。
-2. 先修改 `docs/design.md`，再修改代码；实现发现设计问题时暂停并同步 Contract。
+2. `docs/design.md` 与本文都可能存在过期或不完整结论；遇到不确定 Contract 时先分析对应 Codex/Claude Code 源码并结合 Amadeus 范围作出确定性设计，再同步更新两份文档和代码。
 3. 每个 Architecture Closure 任务必须在同一任务内完成 ownership 迁移、调用方切换和对应旧主链删除；不接受“新接口包住旧 executor/projector”作为阶段性完成，不保留长期双实现。
 4. 任务完成必须运行针对性测试和构建；环境限制导致的测试失败要单独记录。
 5. 本文只更新任务状态和出口，不复制架构设计、源码审计或长篇讨论。
 
-## 25. 源码结构清理 — `DONE`
+## 26. 源码结构清理 — `DONE`
 
 ### 已完成
 

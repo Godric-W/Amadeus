@@ -120,6 +120,7 @@ type fullscreenModel struct {
 	nextClientUserMessage   uint64
 	optimisticUserMessages  map[string]string
 	seenRuntimeUserMessages map[string]struct{}
+	nextTurnQueue           NextTurnQueue
 }
 
 type savedStatus struct {

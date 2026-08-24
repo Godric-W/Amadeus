@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -185,6 +186,9 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 			model.updateInputLayout()
 			return model, nil
 		}
+		if model.running || model.nextTurnQueue.StartPending() {
+			return model.queueComposerInput()
+		}
 	case "enter":
 		if selected, ok := model.slashPopup.selectedItem(); ok {
 			invocation := SlashInvocation{Command: selected}
@@ -221,6 +225,10 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 			return model.dispatchCommand(*input.Command)
 		}
 		text = input.Text
+		if model.nextTurnQueue.StartPending() {
+			input.Queue = true
+			return model.enqueueInputResult(input)
+		}
 		model.input.Reset()
 		model.updateInputLayout()
 		model.history = append(model.history, text)
@@ -250,14 +258,30 @@ func (model *fullscreenModel) prepareTaskSubmission(content string, mode turn.Mo
 }
 
 func (model *fullscreenModel) handleUserMessageAdmission(message fullscreenUserMessageAdmittedMsg) {
+	if message.task.FromNextTurnQueue && (message.task.OriginThreadID != model.session.ThreadID || message.task.OriginGeneration != model.session.Generation) {
+		return
+	}
 	if err := message.admission.Validate(); err != nil {
 		model.handleUserMessageRejection(fullscreenUserMessageRejectedMsg{task: message.task, err: err})
+		return
+	}
+	if !message.task.FromNextTurnQueue || message.admission.Kind == protocol.UserMessageAdmissionStarted {
+		return
+	}
+	if message.admission.Kind == protocol.UserMessageAdmissionSteered {
+		model.nextTurnQueue.AcceptUnexpectedSteer(message.task)
+		model.insertHistoryCell(NewDiagnosticHistoryCell("queued input was admitted into an active turn; automatic queue drain stopped"))
 	}
 }
 
 func (model *fullscreenModel) handleUserMessageRejection(message fullscreenUserMessageRejectedMsg) {
 	delete(model.optimisticUserMessages, message.task.ClientUserMessageID)
-	if strings.TrimSpace(model.input.Value()) == "" {
+	if message.task.FromNextTurnQueue {
+		if message.task.OriginThreadID != model.session.ThreadID || message.task.OriginGeneration != model.session.Generation {
+			return
+		}
+		model.restoreRejectedQueuedInput(message.task)
+	} else if strings.TrimSpace(model.input.Value()) == "" {
 		model.input.SetValue(message.task.Content)
 		model.input.CursorEnd()
 		model.updateInputLayout()
