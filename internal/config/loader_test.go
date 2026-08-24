@@ -36,10 +36,9 @@ web:
 	}
 }
 
-func TestLoadReadsConfigV2AndAppliesProviderDefaults(t *testing.T) {
+func TestLoadReadsCurrentConfigAndAppliesProviderDefaults(t *testing.T) {
 	loader := newTestLoader(t.TempDir())
 	writeConfig(t, loader, `
-version: 2
 model: compatible-model
 model_provider: compatible
 model_context_window: 128000
@@ -58,7 +57,7 @@ agent:
 
 	configured, err := loader.Load()
 	if err != nil {
-		t.Fatalf("load config v2: %v", err)
+		t.Fatalf("load current config: %v", err)
 	}
 	provider := configured.ModelProviders["compatible"]
 	if configured.Model != "compatible-model" || configured.ModelProvider != "compatible" || configured.ModelContextWindow != 128_000 || len(configured.ModelInputModalities) != 2 || !configured.ModelSupportsOriginalImageDetail {
@@ -81,7 +80,7 @@ func TestLoadRejectsLegacyConfigSchema(t *testing.T) {
 		content string
 		field   string
 	}{
-		{name: "version one", content: "version: 1\n", field: "version"},
+		{name: "removed version", content: "version: 2\n", field: "version"},
 		{name: "default provider", content: "default_provider: compatible\n", field: "default_provider"},
 		{name: "providers", content: "providers: {}\n", field: "providers"},
 		{name: "provider api", content: "model_providers:\n  compatible:\n    api: responses\n", field: "api"},

@@ -7,13 +7,11 @@ import (
 )
 
 const (
-	CurrentVersion              = 2
 	DefaultToolOutputTokenLimit = int64(10_000)
 )
 
 func Default() Config {
 	return Config{
-		Version:              CurrentVersion,
 		ModelInputModalities: []llm.InputModality{llm.InputModalityText},
 		ToolOutputTokenLimit: DefaultToolOutputTokenLimit,
 		ModelProviders:       make(map[string]ModelProviderInfo),

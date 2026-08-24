@@ -113,9 +113,5 @@ func decodeAndApply(base Config, reader io.Reader, lookupEnv EnvLookup) (Config,
 		return Config{}, err
 	}
 
-	configured := patch.apply(base)
-	if configured.Version != CurrentVersion {
-		return Config{}, fmt.Errorf("config version is %d, expected %d", configured.Version, CurrentVersion)
-	}
-	return configured, nil
+	return patch.apply(base), nil
 }

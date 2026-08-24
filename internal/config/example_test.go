@@ -12,7 +12,7 @@ func TestExampleConfigLoadsAndValidatesWithoutEnvironment(t *testing.T) {
 		t.Fatal("locate example config test file")
 	}
 
-	path := filepath.Join(filepath.Dir(testFile), "..", "..", "configs", "amadeus.example.yaml")
+	path := filepath.Join(filepath.Dir(testFile), "..", "..", "configs", "config.yaml.example")
 	loader := NewFileLoader(path).WithEnvLookup(func(string) (string, bool) {
 		return "", false
 	})

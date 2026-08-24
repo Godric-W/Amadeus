@@ -53,10 +53,6 @@ func Validate(configured Config) error {
 		issues = append(issues, ValidationIssue{Path: path, Message: message})
 	}
 
-	if configured.Version != CurrentVersion {
-		addIssue("version", fmt.Sprintf("must be %d", CurrentVersion))
-	}
-
 	if strings.TrimSpace(configured.Model) == "" {
 		addIssue("model", "must not be empty")
 	}

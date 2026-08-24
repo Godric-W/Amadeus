@@ -7,7 +7,6 @@ import (
 )
 
 type configPatch struct {
-	Version                          *int                          `yaml:"version"`
 	Model                            *string                       `yaml:"model"`
 	ModelProvider                    *string                       `yaml:"model_provider"`
 	ModelContextWindow               *int64                        `yaml:"model_context_window"`
@@ -76,7 +75,6 @@ type loggingPatch struct {
 func (patch configPatch) apply(base Config) Config {
 	configured := clone(base)
 
-	assign(&configured.Version, patch.Version)
 	assign(&configured.Model, patch.Model)
 	assign(&configured.ModelProvider, patch.ModelProvider)
 	assign(&configured.ModelContextWindow, patch.ModelContextWindow)

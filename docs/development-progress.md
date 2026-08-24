@@ -2,12 +2,12 @@
 
 > 最近更新：2026-08-24
 > 主要架构与 Contract 工作文档：`docs/design.md`
-> 当前阶段：U. Next-Turn User Input Queue Alignment（DONE）
+> 当前阶段：V. Versionless Config Schema + Example Naming（DONE）
 > 下一任务：下一阶段待规划
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
-A-U 的条目保留为历史与当前计划记录；其中与当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
+A-V 的条目保留为历史与当前计划记录；其中与当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
 
 ## 1. 状态与完成标准
 
@@ -46,6 +46,7 @@ A Runtime + Persistence
 → S Codex-style Statusline Architecture Alignment
 → T Thread + Session UUID Identity Alignment
 → U Next-Turn User Input Queue Alignment
+→ V Versionless Config Schema + Example Naming
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先分析对应参考源码，再同步更新 `docs/design.md` 与本文。
@@ -1631,7 +1632,52 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - 新增 pure/fullscreen snapshot、宽度 fallback、Plan priority、No Color/ANSI16/ANSI256/TrueColor、状态转换与 render purity 测试；architecture guard 禁止 hint 进入 footerState、StatusLineItem、HistoryCell 或 Runtime/canonical package。
 - README、TUI visual contract、architecture whitepaper、design 与本进度文档已同步；focused race、`make check`、`go test -race ./... -count=1` 和 `git diff --check` 于 2026-08-24 通过。
 
-## 24. 当前保留能力
+## 24. V. Versionless Config Schema + Example Naming — `DONE`
+
+### 目标
+
+删除 Amadeus 用户配置中没有运行时价值的顶层 `version` gate，将当前配置收敛为唯一 versionless strict schema；任何旧 `version:` 字段通过 `KnownFields(true)` 直接拒绝，不保留 migration、alias 或兼容 decoder。同时将仓库模板从 `configs/amadeus.example.yaml` 唯一重命名为 `configs/config.yaml.example`，运行时自动发现文件仍固定为 `$AMADEUS_HOME/config.yaml`。
+
+### V-01：Versionless Config Domain + Loader — `DONE`
+
+- [x] 从 `config.Config`、`configPatch`、Default、Clone/apply、Validation 和 Loader 删除 Version/CurrentVersion；不增加替代 revision 字段或隐藏 schema marker。
+- [x] 从 Sources/provenance 与 `config explain` 删除 version 路径，从 `config show` YAML 删除 version 输出；CLI/env/provider/model 配置优先级保持不变。
+- [x] 保持 strict YAML KnownFields；`version: 2`、`version: 1` 和其他旧 schema 字段作为 unknown field 明确失败，不静默忽略且不进入兼容分支。
+
+### V-02：Example File Rename + Current Fixtures — `DONE`
+
+- [x] 将 `configs/amadeus.example.yaml` 直接重命名为 `configs/config.yaml.example`，不保留旧文件、symlink 或 duplicate template。
+- [x] 删除模板、README minimal config 和全部当前测试 fixture 中的 `version: 2`；更新 README copy/link、模板自说明与 `internal/config/example_test.go` 路径。
+- [x] 保持用户运行时文件名 `$AMADEUS_HOME/config.yaml`、`--config` 行为和 Config v2 历史进度记录不变；历史名称不构成生产兼容入口。
+
+### V-03：Docs、Guards + Acceptance — `DONE`
+
+- [x] 同步 design、architecture whitepaper、README 与本进度文档，明确 versionless schema、strict rejection、模板/运行时文件名边界和无旧配置兼容。
+- [x] 增加 architecture guard，禁止 `internal/config` 重新出现 Config Version/CurrentVersion/version yaml tag，要求新模板存在、旧模板不存在，并禁止 README/当前设计引用旧路径。
+- [x] 覆盖 missing file defaults、versionless file load/validation、removed `version` rejection、show/explain/provenance 无 version、CLI/env override、example validation 与 Provider E2E fixture。
+- [x] 运行 focused config/CLI tests、`make check`、`go test -race ./... -count=1` 和 `git diff --check` 后，将 V 标记 DONE。
+
+### V 出口
+
+- 用户配置只有一个严格当前 schema，Domain、Patch、Loader、Validation、Sources 和 CLI output 均不存在顶层 version 事实或兼容路径。
+- `configs/config.yaml.example` 是仓库唯一完整 config 模板；`$AMADEUS_HOME/config.yaml` 是唯一自动发现文件，旧示例路径不再存在。
+- 当前 versionless 配置、默认值、override、show/explain、E2E 和文档一致；旧 `version:` 输入可见失败而不是被迁移或忽略。
+
+### V 验收
+
+- versionless `config.yaml` 通过 `config check/show/explain`；输出和 provenance 不包含 version。
+- 添加 `version: 2` 后 strict decoder 返回包含 `version` 的 unknown-field error；删除后同一配置恢复有效。
+- `configs/config.yaml.example` 无环境变量即可加载和验证；仓库与 README 不存在 `configs/amadeus.example.yaml` 当前引用或文件。
+
+### V 完成记录
+
+- 2026-08-24 删除用户 Config/patch/default/loader/validation/provenance/explain 中的 Version/CurrentVersion 主链；Rollout 自身的持久化版本保持独立，不受影响。
+- YAML loader 继续使用 `KnownFields(true)`，旧 `version:` 与其他删除字段一样返回明确 unknown-field error；没有 migration、alias、双 schema 或静默忽略路径。
+- 仓库模板唯一重命名为 `configs/config.yaml.example`，README、模板自说明、example validation 和全部当前 CLI/Provider fixture 已切换；运行时自动发现仍固定为 `$AMADEUS_HOME/config.yaml`。
+- architecture guard 固化 versionless Config 与唯一模板路径，config show/explain/provenance 测试确认不再输出 version。
+- focused config/CLI/architecture tests、`make check`、`go test -race ./... -count=1` 与 `git diff --check` 于 2026-08-24 通过；首次全量 race 的未改动 PTY 测试发生一次时序波动，单包与全仓重跑均通过。
+
+## 25. 当前保留能力
 
 - 默认启动：`amadeus` 或 `amadeus "<task>"`。
 - 当前配置链和 Provider Adapter 已可使用 OpenAI Responses/Chat Completions 及兼容 Provider。
@@ -1639,10 +1685,11 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - TUI 和 Inline 输出以当前代码和 `docs/design.md` 为准。
 - 内置 Tool、Approval、Diff、Web Search 和 Slash Command 已进入基础主链；N 收敛 `update_plan`、引入 `request_user_input`，并将现有 `/plan` 重构为 Codex 风格 Collaboration Mode 与 Proposed Plan lifecycle；O 已补齐同 Turn 用户输入与 steer lifecycle。
 - U 已补齐 Fullscreen next-turn queue 与 Codex-style pre-enqueue footer hint：运行中 Enter steer 当前 Turn，Tab queue 后续独立 Turn，terminal 后按 FIFO 逐条提交，aborted/blocked 路径恢复 composer；queueable draft 期间 fixed statusline 让位给完整/短 Tab hint。
+- V 已将用户配置收敛为唯一 versionless strict schema，并将仓库模板统一为 `configs/config.yaml.example`；旧 `version:` 配置直接拒绝且不迁移。
 - P 已完成 Model Reasoning Effort 与 Provider Thinking Contract；当前生产主链可从配置冻结到 Turn，并贯通普通 sampling、Compaction 与 Provider wire request。
 - Q 已完成 Web Search/Fetch 与 `view_image` Contract Closure：Web 保持 pinned network、重定向 Approval、readable Markdown 与证据层级；图片主链完成 model-aware visibility、bounded preparation、Provider/Context projection、单份持久化和 `ViewImageCell`。
 
-## 25. 当前执行规则
+## 26. 当前执行规则
 
 1. 每次只推进一个 `TODO`/`DOING` 主任务。
 2. `docs/design.md` 与本文都可能存在过期或不完整结论；遇到不确定 Contract 时先分析对应 Codex/Claude Code 源码并结合 Amadeus 范围作出确定性设计，再同步更新两份文档和代码。
@@ -1650,7 +1697,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 4. 任务完成必须运行针对性测试和构建；环境限制导致的测试失败要单独记录。
 5. 本文只更新任务状态和出口，不复制架构设计、源码审计或长篇讨论。
 
-## 26. 源码结构清理 — `DONE`
+## 27. 源码结构清理 — `DONE`
 
 ### 已完成
 

@@ -989,6 +989,9 @@ func TestModelProviderConfigurationHasCodexOwnershipBoundaries(t *testing.T) {
 			t.Errorf("Config retains legacy field %q", field)
 		}
 	}
+	if _, ok := configFields["Version"]; ok {
+		t.Error("Config retains removed schema Version field")
+	}
 
 	legacyIdentifiers := regexp.MustCompile(`\b(?:ProviderConfig|APIMode|DefaultProvider|APIResponses|APIChatCompletions|ToolOutputMaxTokens|EnvProvider|EnvAPI|flagProvider|flagAPI)\b`)
 	legacySampling := regexp.MustCompile(`\b(?:Temperature|MaxOutputTokens)\b`)
@@ -1044,6 +1047,54 @@ func TestModelProviderConfigurationHasCodexOwnershipBoundaries(t *testing.T) {
 	}
 	if strings.Contains(compactor, ".modelClient.Model()") || strings.Contains(compactor, ".client.Model()") {
 		t.Fatal("Compactor bypasses the effective ModelInfo with Adapter metadata")
+	}
+}
+
+func TestUserConfigSchemaIsVersionlessAndExampleNameIsCanonical(t *testing.T) {
+	root := repositoryRoot(t)
+	configRoot := filepath.Join(root, "internal", "config")
+	err := filepath.WalkDir(configRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		for _, forbidden := range []string{"CurrentVersion", `yaml:"version"`, "configured.Version", "patch.Version"} {
+			if strings.Contains(string(content), forbidden) {
+				t.Errorf("versioned user config concern %q remains in %s", forbidden, filepath.ToSlash(path[len(root)+1:]))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan versionless config boundary: %v", err)
+	}
+
+	currentExample := filepath.Join(root, "configs", "config.yaml.example")
+	content, err := os.ReadFile(currentExample)
+	if err != nil {
+		t.Fatalf("canonical config example is missing: %v", err)
+	}
+	if regexp.MustCompile(`(?m)^version\s*:`).Match(content) {
+		t.Fatal("canonical config example contains removed version field")
+	}
+	legacyExample := filepath.Join(root, "configs", "amadeus.example.yaml")
+	if _, err := os.Stat(legacyExample); err == nil {
+		t.Fatal("legacy config example path still exists")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("inspect legacy config example: %v", err)
+	}
+
+	for _, relative := range []string{"README.md", "docs/design.md"} {
+		source := mustReadArchitectureFile(t, root, relative)
+		if strings.Contains(source, "configs/amadeus.example.yaml") {
+			t.Errorf("current documentation %s references legacy config example", relative)
+		}
 	}
 }
 

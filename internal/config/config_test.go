@@ -10,7 +10,6 @@ import (
 
 func TestConfigCanBeConstructed(t *testing.T) {
 	configured := Config{
-		Version:                          CurrentVersion,
 		Model:                            "test-model",
 		ModelProvider:                    "compatible",
 		ModelContextWindow:               128_000,
@@ -46,9 +45,6 @@ func TestConfigCanBeConstructed(t *testing.T) {
 
 func TestDefaultContainsFieldDefaultsWithoutBuiltInProvider(t *testing.T) {
 	configured := Default()
-	if configured.Version != CurrentVersion {
-		t.Fatalf("unexpected config version: got %d, want %d", configured.Version, CurrentVersion)
-	}
 	if configured.Model != "" || configured.ModelProvider != "" || len(configured.ModelProviders) != 0 {
 		t.Fatalf("default config must not synthesize a model provider: %#v", configured)
 	}
@@ -63,6 +59,12 @@ func TestDefaultContainsFieldDefaultsWithoutBuiltInProvider(t *testing.T) {
 	}
 	if configured.Agent.MaxParallelTools != 4 || configured.Agent.MultiAgent.MaxAgents != 4 || configured.Agent.MultiAgent.MaxDepth != 1 || !configured.Agent.MultiAgent.Enabled || configured.Logging.Level != LogLevelInfo {
 		t.Fatalf("unexpected field defaults: %#v", configured)
+	}
+}
+
+func TestConfigSourcesDoNotExposeSchemaVersion(t *testing.T) {
+	if _, exists := SourcesFor(Default())["version"]; exists {
+		t.Fatal("configuration provenance contains removed schema version")
 	}
 }
 

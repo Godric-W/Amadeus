@@ -1,14 +1,13 @@
 # Amadeus example configuration.
 #
 # Copy this file to <amadeus-root>/config.yaml, or load it explicitly with:
-#   amadeus config check --config ./configs/amadeus.example.yaml
+#   amadeus config check --config ./configs/config.yaml.example
 #
 # All Provider entries are user-defined. Keep credentials out of this file and
 # inject the selected Provider key with AMADEUS_API_KEY when possible.
 # AMADEUS_MODEL_PROVIDER selects an alias from model_providers, while
 # AMADEUS_MODEL selects the model independently of its transport configuration.
 
-version: 2
 model: your-model
 model_provider: openai
 model_context_window: 128000

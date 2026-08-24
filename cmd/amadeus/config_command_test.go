@@ -25,7 +25,6 @@ func TestConfigCheckRejectsMissingUserModelProvider(t *testing.T) {
 func TestConfigCheckRejectsInvalidConfiguration(t *testing.T) {
 	amadeusRoot := t.TempDir()
 	writeCommandConfig(t, filepath.Join(amadeusRoot, "config.yaml"), `
-version: 2
 model: test-model
 model_provider: openai
 model_context_window: 8192
@@ -50,7 +49,6 @@ model_providers:
 func TestConfigCheckAppliesCLIFlagsBeforeValidation(t *testing.T) {
 	amadeusRoot := t.TempDir()
 	writeCommandConfig(t, filepath.Join(amadeusRoot, "config.yaml"), `
-version: 2
 model: test-model
 model_provider: openai
 model_context_window: 8192
@@ -74,7 +72,6 @@ model_providers:
 func TestConfigCheckUsesExplicitConfigWithoutAmadeusRoot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "explicit.yaml")
 	writeCommandConfig(t, path, `
-version: 2
 model: explicit-model
 model_provider: openai
 model_context_window: 8192
@@ -107,7 +104,6 @@ func TestConfigCheckDoesNotPrintAPIKey(t *testing.T) {
 	amadeusRoot := t.TempDir()
 	const secret = "do-not-print-this-secret"
 	writeCommandConfig(t, filepath.Join(amadeusRoot, "config.yaml"), `
-version: 2
 model: test-model
 model_provider: openai
 model_context_window: 8192
@@ -134,7 +130,6 @@ func TestConfigExplainShowsFinalValuesAndSources(t *testing.T) {
 	path := filepath.Join(amadeusRoot, "config.yaml")
 	const secret = "explain-must-not-print-this"
 	writeCommandConfig(t, path, `
-version: 2
 model: file-model
 model_provider: compatible
 model_context_window: 128000
@@ -191,6 +186,9 @@ model_providers:
 	if strings.Contains(explanation, "agent.mode") {
 		t.Fatalf("config explanation contains removed agent mode:\n%s", explanation)
 	}
+	if strings.Contains(explanation, "\nversion:") {
+		t.Fatalf("config explanation contains removed schema version:\n%s", explanation)
+	}
 	if strings.Contains(explanation, secret) {
 		t.Fatalf("config explanation leaked API key: %s", explanation)
 	}
@@ -199,7 +197,6 @@ model_providers:
 func TestConfigShowPrintsRedactedEffectiveConfiguration(t *testing.T) {
 	amadeusRoot := t.TempDir()
 	writeCommandConfig(t, filepath.Join(amadeusRoot, "config.yaml"), `
-version: 2
 model: test-model
 model_provider: openai
 model_context_window: 8192
@@ -223,12 +220,14 @@ model_providers:
 	if strings.Contains(shown, "secret-value") {
 		t.Fatalf("config show leaked API key: %s", shown)
 	}
+	if strings.Contains(shown, "\nversion:") || strings.HasPrefix(shown, "version:") {
+		t.Fatalf("config show contains removed schema version: %s", shown)
+	}
 }
 
 func TestConfigExplainRejectsInvalidEffectiveConfiguration(t *testing.T) {
 	amadeusRoot := t.TempDir()
 	writeCommandConfig(t, filepath.Join(amadeusRoot, "config.yaml"), `
-version: 2
 model: test-model
 model_provider: openai
 model_context_window: 8192

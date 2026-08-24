@@ -90,14 +90,12 @@ If `XDG_STATE_HOME` is unset, the default is `~/.local/state/amadeus/audit/audit
 Copy the repository example:
 
 ```bash
-cp configs/amadeus.example.yaml "$AMADEUS_HOME/config.yaml"
+cp configs/config.yaml.example "$AMADEUS_HOME/config.yaml"
 ```
 
 Then configure a model and provider. A minimal OpenAI configuration is:
 
 ```yaml
-version: 2
-
 model: gpt-5
 model_provider: openai
 model_context_window: 400000
@@ -153,7 +151,7 @@ Use `--config <path>` to select a main configuration file without changing `AMAD
 amadeus --config ./config.yaml config check
 ```
 
-The complete configuration template is available at [`configs/amadeus.example.yaml`](configs/amadeus.example.yaml).
+The complete configuration template is available at [`configs/config.yaml.example`](configs/config.yaml.example).
 
 ### Start Amadeus
 

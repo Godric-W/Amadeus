@@ -21,7 +21,7 @@ func validConfig() Config {
 	return configured
 }
 
-func TestValidateAcceptsConfigV2(t *testing.T) {
+func TestValidateAcceptsCurrentConfig(t *testing.T) {
 	if err := Validate(validConfig()); err != nil {
 		t.Fatalf("validate config: %v", err)
 	}
@@ -40,7 +40,6 @@ func TestValidateRejectsInvalidMultiAgentLimits(t *testing.T) {
 
 func TestValidateReportsStableModelAndProviderPaths(t *testing.T) {
 	configured := validConfig()
-	configured.Version = 1
 	configured.Model = ""
 	configured.ModelProvider = "missing"
 	configured.ModelContextWindow = 0
@@ -62,7 +61,7 @@ func TestValidateReportsStableModelAndProviderPaths(t *testing.T) {
 	}
 	message := validationError.Error()
 	for _, path := range []string{
-		"version", "model", "model_provider", "model_context_window", "model_auto_compact_token_limit",
+		"model", "model_provider", "model_context_window", "model_auto_compact_token_limit",
 		"tool_output_token_limit", "model_providers.broken.wire_api", "model_providers.broken.dialect",
 		"model_providers.broken.base_url", "model_providers.broken.timeout",
 		"model_providers.broken.request_max_retries", "model_providers.broken.stream_max_retries",

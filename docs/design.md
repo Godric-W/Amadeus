@@ -61,13 +61,14 @@ Amadeus 当前处于未发布开发阶段，不承诺自身旧实现的任何兼
 | I. Prompt Construction + Optimization | Codex Prompt 数据模型、ModelMessages、WorldState/Collaboration Mode、Prompt 资产迁移与缓存/Token/Contract 验证 |
 | J. Slash Command + TUI Application Lifecycle Alignment | Active Thread Attachment、canonical replay、typed command lifecycle 与专用 HistoryCell |
 | K. Response Stream Reconnect Lifecycle Alignment | Provider retry 分层、ModelClientSession 重连、typed transient error 与 TUI 状态恢复 |
-| L. Model + Provider Configuration Ownership Alignment | Config v2、Provider transport、ModelInfo、runtime override 与 token policy |
+| L. Model + Provider Configuration Ownership Alignment | Provider transport、ModelInfo、runtime override 与 token policy |
 | M. Codex Architecture Realignment | Protocol identity、typed Rollout、SessionState/Services、SessionTask、StepContext 与 legacy cleanup |
 | N. Runtime Coordination Tools + Plan Mode Alignment | `update_plan`、`request_user_input`、Collaboration Mode 与 Proposed Plan lifecycle |
 | O. Same-Turn User Input + Turn Steer Alignment | UserMessageAdmission、TurnInputQueue、same-Turn continuation、client message identity 与 TUI steer UX |
 | R. Basic Multi-Agent Alignment | Codex V1 风格 AgentControl、SubAgent Thread、协作 Tool、Prompt、Event/Rollout 与 TUI projection |
 | T. Thread + Session UUID Identity Alignment | UUIDv7 ThreadID、SessionID/ThreadID 语义、创建/恢复生命周期、Persistence 与 Resume boundary |
 | U. Next-Turn User Input Queue Alignment | Codex 风格 Composer queue、下一 Turn FIFO、terminal drain、失败恢复、attachment isolation 与 pre-enqueue Footer hint |
+| V. Versionless Config Schema + Example Naming | 删除顶层 version gate、严格当前 schema、`config.yaml.example` 模板与旧配置零兼容 |
 
 ## 2. 产品目标
 
@@ -1975,8 +1976,6 @@ Dialect 只处理经过验证的协议差异，不根据域名猜测：
 配置模型向 Codex 的概念、命名和职责划分收敛，目标稳定形态为：
 
 ```yaml
-version: 2
-
 model: provider-model
 model_provider: compatible
 model_context_window: 128000
@@ -1999,6 +1998,7 @@ model_providers:
 
 所有权固定如下：
 
+- 当前配置是唯一的 versionless strict schema，不包含顶层 `version` 字段、`CurrentVersion` 常量或 schema-version provenance。Loader 使用 `KnownFields(true)`；任何旧 `version:` 字段与其他删除字段一样直接返回 unknown-field error，不提供 decoder、migration、alias 或静默忽略。
 - `model`、`model_context_window`、`model_reasoning_effort`、`model_input_modalities`、`model_supports_original_image_detail`、`model_auto_compact_token_limit` 和 `tool_output_token_limit` 属于当前 Model/Runtime 配置，不进入 `ModelProviderInfo`。
 - `model_provider` 选择 `model_providers` 中的用户定义 Provider；Provider 只保存 transport、auth、wire API、Dialect、timeout、retry 和 capability。
 - `model_context_window` 在 Amadeus 尚无可信 Model Catalog 时必须显式为正数；不得为任意未知模型伪造统一的 128K Context Window 默认值。
@@ -4347,6 +4347,8 @@ $AMADEUS_HOME/config.yaml
 
 如果未设置 `AMADEUS_HOME`，由 Bootstrap 使用二进制所在目录作为默认 Home。不得回退到任意当前工作目录寻找配置。
 
+仓库中的完整模板固定命名为 `configs/config.yaml.example`。它只是供用户复制或通过 `--config` 显式校验的样例，不是第二个自动发现位置；生产 Loader 仍只自动读取 `$AMADEUS_HOME/config.yaml`。
+
 ### 25.2 配置优先级
 
 ```text
@@ -4769,6 +4771,7 @@ Provider/stream error 还必须区分：
 - backoff cancellation、Retry-After、不可恢复错误、部分 Delta 后重连和无重复 ResponseItem/Tool Call。
 - 普通 sampling、手动 compact 与自动 compact 复用同一 stream retry policy。
 - timeout、取消、错误脱敏和 request/stream retry 边界。
+- Config show/explain、strict decode、默认值、CLI/env override 与 example validation 全部使用无版本 schema；输出不包含 `version`，`version:` 输入被拒绝，测试只读取 `configs/config.yaml.example`。
 
 ## 29. 架构验收场景
 
@@ -4843,3 +4846,4 @@ Amadeus 至少通过以下真实场景：
 31. Root Resume 必须恢复并校验 persisted child metadata；Tool Invocation、Audit 和 Provider request metadata 同时携带真实 SessionID/ThreadID，而 Multi-Agent target、Event scope、Application attachment 和 CLI/TUI resume 始终使用 ThreadID。
 32. Fullscreen Enter steer 与 Tab next-turn queue 是不同输入意图：前者立即进入唯一 UserInputOp/admission 主链，后者由 attachment-scoped TUI FIFO 暂存并在 terminal 后逐条重新使用该主链；Core 不拥有第二个用户输入 queue 或 `Queued` admission。
 33. Queue hint 是 queueable Composer draft 的 transient Footer guidance，不是 StatusLineItem、footerState、HistoryCell 或 Runtime Event；它在 running draft 时优先于 passive statusline，并通过纯 footerProps layout 实现 Codex 风格完整/短文案降级。
+34. Amadeus 用户配置使用唯一 versionless strict schema；代码和输出不包含顶层 Config version，旧 `version:` 文件直接拒绝且不迁移，仓库模板唯一命名为 `configs/config.yaml.example`。

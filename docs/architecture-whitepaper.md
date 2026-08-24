@@ -269,6 +269,7 @@ flowchart LR
 
 - `cmd/amadeus` 解析进程级参数，确定 `AMADEUS_HOME`、项目目录、附加目录、Provider、Model 和运行模式。
 - `internal/config` 负责默认值、文件加载、环境变量、CLI patch、provenance、脱敏和验证。
+- 用户配置采用唯一 versionless strict schema；Loader 通过 KnownFields 拒绝 `version:` 和其他删除字段，不运行 schema migration。仓库模板为 `configs/config.yaml.example`，自动发现文件仍只有 `$AMADEUS_HOME/config.yaml`。
 - Composition Root 创建 ThreadStore、Provider adapter factory、Audit factory、Web/MCP dependencies 和 `ThreadManager`。
 - 配置进入 Session 前被克隆和冻结；Turn 再从 Session Configuration 派生稳定 `TurnContext`。
 
@@ -1283,6 +1284,7 @@ flowchart TD
 16. Enter steer 与 Tab queue 是不同输入意图；NextTurnQueue 只存在于 Fullscreen input layer，Core/Protocol/Rollout/Context 不保存 Queued Op、admission 或 durable item。
 17. matching TurnComplete 每次最多 drain 一条 queued input 且 admission 必须为 Started；aborted/blocked/rejection 和旧 attachment 结果不能把输入发送到错误 Turn。
 18. queue hint 只由 footerProps 的 queueable-draft 派生值驱动；running draft 时优先于 passive statusline 并按 full/short 降级，不能成为 footerState、StatusLineItem、HistoryCell 或 Runtime/canonical fact。
+19. Config/patch/default/validation/provenance/output 不保存 schema version；`version:` 被 strict decoder 拒绝，`configs/config.yaml.example` 是仓库唯一完整模板且不是自动发现位置。
 
 `internal/architecture/guard_test.go` 通过源码结构检查保护这些边界，例如禁止已移除的旧 Runtime/Planner 抽象重新出现，并验证 Web、Tool、Multi-Agent 等关键 package 分层。
 

@@ -40,7 +40,6 @@ func SourcesFor(configured Config) Sources {
 		sources[path] = Source{Kind: SourceDefault}
 	}
 
-	set("version")
 	for _, path := range []string{"model", "model_provider", "model_context_window", "model_reasoning_effort", "model_input_modalities", "model_supports_original_image_detail", "model_auto_compact_token_limit", "tool_output_token_limit"} {
 		set(path)
 	}

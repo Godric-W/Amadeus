@@ -476,8 +476,7 @@ func TestResolveAuditPathUsesXDGThenHome(t *testing.T) {
 
 func writeCodingCommandConfig(t *testing.T, directory string) {
 	t.Helper()
-	content := `version: 2
-model: mock-model
+	content := `model: mock-model
 model_provider: openai
 model_context_window: 8192
 tool_output_token_limit: 10000

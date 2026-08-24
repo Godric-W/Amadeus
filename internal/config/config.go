@@ -25,7 +25,6 @@ const (
 )
 
 type Config struct {
-	Version                          int                          `yaml:"version"`
 	Model                            string                       `yaml:"model"`
 	ModelProvider                    string                       `yaml:"model_provider"`
 	ModelContextWindow               int64                        `yaml:"model_context_window"`

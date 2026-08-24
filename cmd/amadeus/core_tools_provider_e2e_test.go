@@ -64,7 +64,6 @@ func TestCoreToolsProviderMockE2E(t *testing.T) {
 				dialect = config.DialectOpenAI
 			}
 			writeCommandConfig(t, filepath.Join(amadeusHome, "config.yaml"), fmt.Sprintf(`
-version: 2
 model: mock-model
 model_provider: mock
 model_context_window: 8192
@@ -159,7 +158,6 @@ func TestCoreToolsProviderMockE2EDeniedWrite(t *testing.T) {
 				dialect = config.DialectOpenAI
 			}
 			writeCommandConfig(t, filepath.Join(amadeusHome, "config.yaml"), fmt.Sprintf(`
-version: 2
 model: mock-model
 model_provider: mock
 model_context_window: 8192
@@ -267,7 +265,6 @@ func TestCoreToolsProviderMockE2EPermissionGrant(t *testing.T) {
 				dialect = config.DialectOpenAI
 			}
 			writeCommandConfig(t, filepath.Join(amadeusHome, "config.yaml"), fmt.Sprintf(`
-version: 2
 model: mock-model
 model_provider: mock
 model_context_window: 8192

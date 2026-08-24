@@ -144,7 +144,6 @@ func loadConfiguredConfig(command *cobra.Command, flags *configFlags, runtime co
 
 func writeConfigExplanation(writer io.Writer, path string, configured config.Config, sources config.Sources) {
 	fmt.Fprintf(writer, "config: %s\n", path)
-	writeExplainedValue(writer, "version", configured.Version, sources)
 	writeExplainedValue(writer, "model", configured.Model, sources)
 	writeExplainedValue(writer, "model_provider", configured.ModelProvider, sources)
 	writeExplainedValue(writer, "model_context_window", configured.ModelContextWindow, sources)
