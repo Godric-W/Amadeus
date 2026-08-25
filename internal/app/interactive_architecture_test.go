@@ -11,7 +11,7 @@ import (
 func TestFullscreenInteractiveArchitectureHasNoLegacyControlChain(t *testing.T) {
 	root := repositoryRoot(t)
 	paths := []string{
-		filepath.Join(root, "cmd", "amadeus", "agent_interactive.go"),
+		filepath.Join(root, "internal", "interface", "tui", "run.go"),
 		filepath.Join(root, "internal", "interface", "tui", "application.go"),
 		filepath.Join(root, "internal", "interface", "tui", "application_update.go"),
 		filepath.Join(root, "internal", "interface", "tui", "application_commands.go"),
@@ -43,7 +43,7 @@ func TestInteractiveApplicationIsOnlyFullscreenSessionIOConsumer(t *testing.T) {
 	if count := strings.Count(string(applicationSource), "active.Io()"); count != 1 {
 		t.Fatalf("interactive application SessionIo consumers = %d, want 1", count)
 	}
-	entrySource, err := os.ReadFile(filepath.Join(root, "cmd", "amadeus", "agent_interactive.go"))
+	entrySource, err := os.ReadFile(filepath.Join(root, "internal", "interface", "tui", "run.go"))
 	if err != nil {
 		t.Fatal(err)
 	}

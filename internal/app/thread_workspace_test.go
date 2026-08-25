@@ -71,12 +71,20 @@ func TestThreadWorkspaceOwnsCurrentThreadLifecycle(t *testing.T) {
 	if _, ok := workspace.Current(); ok {
 		t.Fatal("NewDraft retained the previous current thread")
 	}
-	resumed, err := workspace.Resume(ctx, id, configuration)
-	if err != nil {
+	latest, err := workspace.PrepareStart(ctx, ThreadTarget{Kind: ThreadTargetLatest}, configuration)
+	if err != nil || latest.Active == nil || latest.Metadata == nil || latest.Metadata.ID != id {
+		t.Fatalf("PrepareStart latest = %#v, %v", latest, err)
+	}
+	resumed := latest.Active
+	if resumed == current {
+		t.Fatal("latest target reused the terminated thread runtime")
+	}
+	if err := workspace.NewDraft(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if resumed == current {
-		t.Fatal("Resume reused the terminated thread runtime")
+	explicit, err := workspace.PrepareStart(ctx, ThreadTarget{Kind: ThreadTargetResume, ThreadID: id}, configuration)
+	if err != nil || explicit.Active == nil || explicit.Metadata == nil || explicit.Metadata.ID != id {
+		t.Fatalf("PrepareStart resume = %#v, %v", explicit, err)
 	}
 	deleted, err := workspace.DeleteCurrent(ctx)
 	if err != nil || deleted != id {

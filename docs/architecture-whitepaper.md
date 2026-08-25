@@ -129,7 +129,7 @@ flowchart TB
 
 | 层 | 主要 package | 职责 | 不拥有的内容 |
 |---|---|---|---|
-| Interface | `cmd/amadeus`、`internal/interface/*` | 参数、终端输入、TUI 渲染、Approval 交互 | Session 状态、Thread map、Tool truth |
+| Interface | `internal/cli`、`internal/exec`、`internal/interface/tui` | multitool 参数与分发、one-shot Event processor、终端输入、TUI 渲染、Approval 交互 | Session 状态、Thread map、Tool truth |
 | Application | `internal/app` | 当前 Thread 选择、UI generation、事件泵、Slash Command 应用生命周期 | Provider、Rollout writer、Tool executor |
 | Thread | `internal/thread/*` | Thread identity、live registry、writer、Resume、metadata 操作 | Active Turn、模型循环 |
 | Agent Runtime | `internal/agent/*` | Session loop、Turn、Task、Step、模型 continuation、Multi-Agent control | SQLite 实现、TUI cell |
@@ -241,7 +241,7 @@ sequenceDiagram
 | `StepContext` | `agent/engine` | 一次模型采样的不可变能力快照，绑定 Prompt、Model、ToolRouter 和 revisions。 |
 | `NextTurnQueue` | `interface/tui` | 尚未提交的下一 Turn 输入 FIFO 与 InFlight gate；terminal 后才通过普通 UserInputOp 启动新 Turn。 |
 
-## 6. 配置与 Composition Root
+## 6. 配置与 Bootstrap
 
 ```mermaid
 flowchart LR
@@ -252,7 +252,9 @@ flowchart LR
     L[Config Loader]
     V[Validation]
     CFG[Effective Config]
-    COMP[cmd/amadeus Composition Root]
+    CLI[internal/cli dispatch]
+    COMP[internal/bootstrap composition]
+	EXEC[internal/exec or TUI]
     SS[Session Configuration / ServiceAdapters]
 
     D --> L
@@ -261,16 +263,20 @@ flowchart LR
     C --> L
     L --> V
     V --> CFG
-    CFG --> COMP
+	CFG --> CLI
+	CLI --> EXEC
+	EXEC --> COMP
     COMP --> SS
 ```
 
 ### 6.1 模块职责
 
-- `cmd/amadeus` 解析进程级参数，确定 `AMADEUS_HOME`、项目目录、附加目录、Provider、Model 和运行模式。
+- `cmd/amadeus` 只建立 process context/标准流、调用 `internal/cli.Run` 并映射进程退出码。
+- `internal/cli` 定义 Cobra command tree，解析项目目录、附加目录、Provider/Model override、Session target 和 Agent launch mode，再分发到 `internal/exec` 或 TUI。
 - `internal/config` 负责默认值、文件加载、环境变量、CLI patch、provenance、脱敏和验证。
 - 用户配置采用唯一 versionless strict schema；Loader 通过 KnownFields 拒绝 `version:` 和其他删除字段，不运行 schema migration。仓库模板为 `configs/config.yaml.example`，自动发现文件仍只有 `$AMADEUS_HOME/config.yaml`。
-- Composition Root 创建 ThreadStore、Provider adapter factory、Audit factory、Web/MCP dependencies 和 `ThreadManager`。
+- `internal/bootstrap` 通过窄 constructor 创建 ThreadStore、Provider adapter factory、Audit factory、Web/MCP dependencies、`ThreadManager` 和 `ThreadWorkspace`；它不持有 CLI/TUI 状态，也不是通用 Service Locator。
+- `internal/exec` 与 TUI 分别拥有一次 invocation 的 start/event/close lifecycle，并在逆序资源清理后把 typed exit result 交回 CLI。
 - 配置进入 Session 前被克隆和冻结；Turn 再从 Session Configuration 派生稳定 `TurnContext`。
 
 ### 6.2 数据模型职责
@@ -290,7 +296,7 @@ flowchart LR
 | `Source` / `Sources` | 记录每个字段来自 default、file、environment 还是 CLI。 |
 | `ValidationIssue` / `ValidationError` | 聚合可定位到字段路径的配置错误。 |
 | `session.Configuration` | Session 冻结配置；增加 CWD、workspace roots、日期、时区、Mode、Personality 和 OutputSchema。 |
-| `ServiceAdapters` | Composition Root 注入 Provider、MCP、Web、Audit 和 ModelMessages factory/adapter。 |
+| `ServiceAdapters` | bootstrap 注入 Provider、MCP、Web、Audit 和 ModelMessages factory/adapter。 |
 
 ## 7. Interface 与 Application 架构
 
@@ -926,7 +932,7 @@ flowchart LR
     Launch -. 尚未接入 .-> Future
 ```
 
-`internal/sandbox` 已实现 Linux bubblewrap 探测和 launch 参数生成，但当前 Composition Root 与 `execute_command` 尚未使用该 Runner；命令执行的强制边界目前主要是 CommandGuard、Approval、CWD/FileSystemPolicy 检查和 ProcessManager。白皮书把 Sandbox 标记为“可用基础设施、待接入主链”，避免把目标架构误写成现状。
+`internal/sandbox` 已实现 Linux bubblewrap 探测和 launch 参数生成，但当前 bootstrap 与 `execute_command` 尚未使用该 Runner；命令执行的强制边界目前主要是 CommandGuard、Approval、CWD/FileSystemPolicy 检查和 ProcessManager。白皮书把 Sandbox 标记为“可用基础设施、待接入主链”，避免把目标架构误写成现状。
 
 | 模型 | 职责 |
 |---|---|
@@ -1330,11 +1336,13 @@ flowchart TD
 
 | Package | 主要内容 |
 |---|---|
-| `cmd/amadeus` | Composition Root、CLI、启动与进程级配置。 |
+| `cmd/amadeus` | thin process entry：signal context、标准流、`cli.Run` 和 exit code。 |
+| `internal/cli` | Cobra command tree、flags、multitool dispatch、CLI output 和 exit semantics。 |
+| `internal/bootstrap` | 环境/路径、外部 Adapter、ThreadStore/ThreadManager/ThreadWorkspace concrete composition。 |
+| `internal/exec` | one-shot Thread target、SessionIo Event processor、Approval/UserInput、interrupt 和 terminal result。 |
 | `internal/config` | 配置模型、分层加载、覆盖、来源追踪、校验和脱敏。 |
 | `internal/app` | 交互应用、ThreadWorkspace、Application events。 |
-| `internal/interface/cli` | 终端 Approval 等 CLI adapter。 |
-| `internal/interface/tui` | TUI reducer、NextTurnQueue、HistoryCell、Slash Command 和 overlays。 |
+| `internal/interface/tui` | InlineRenderer、Fullscreen TUI startup/reducer、NextTurnQueue、HistoryCell、Slash Command 和 overlays；InlineRenderer 不拥有 Event pump。 |
 | `internal/thread/manager` | live Thread registry、Root/child Thread 生命周期。 |
 | `internal/thread` | LiveThread 和 ThreadStore port。 |
 | `internal/thread/local` | JSONL + SQLite 本地 ThreadStore。 |

@@ -185,7 +185,7 @@ func TestFullscreenExitArchitectureUsesTypedLifecycleAndFrameDrain(t *testing.T)
 	for _, relative := range []string{
 		"internal/interface/tui/application_exit.go",
 		"internal/app/interactive_shutdown.go",
-		"cmd/amadeus/agent_exit.go",
+		"internal/cli/tui_exit.go",
 	} {
 		if _, err := os.Stat(filepath.Join(root, relative)); err != nil {
 			t.Errorf("required exit lifecycle boundary file is missing: %s: %v", relative, err)
@@ -555,7 +555,7 @@ func TestSessionTaskDependencyDirection(t *testing.T) {
 	root := repositoryRoot(t)
 	taskRoot := filepath.Join(root, "internal", "agent", "session")
 	forbidden := []string{
-		"cmd/amadeus", "internal/interface/tui", "internal/app/bootstrap",
+		"cmd/amadeus", "internal/cli", "internal/bootstrap", "internal/exec", "internal/interface/tui",
 		"github.com/spf13/cobra", "cobra.Command", "tea.Model",
 	}
 	err := filepath.WalkDir(taskRoot, func(path string, entry os.DirEntry, walkErr error) error {
@@ -583,6 +583,94 @@ func TestSessionTaskDependencyDirection(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOuterCLIArchitectureUsesOwnedPackages(t *testing.T) {
+	root := repositoryRoot(t)
+	commandDirectory := filepath.Join(root, "cmd", "amadeus")
+	entries, err := os.ReadDir(commandDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".go" {
+			continue
+		}
+		if entry.Name() != "main.go" {
+			t.Errorf("cmd/amadeus retains non-entry Go file %q", entry.Name())
+		}
+	}
+	mainSource := mustReadArchitectureFile(t, root, "cmd/amadeus/main.go")
+	for _, required := range []string{"internal/cli", "cli.Run("} {
+		if !strings.Contains(mainSource, required) {
+			t.Errorf("thin main is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"github.com/spf13/cobra", "ThreadWorkspace", "ThreadManager", "SessionIo"} {
+		if strings.Contains(mainSource, forbidden) {
+			t.Errorf("thin main owns forbidden concern %q", forbidden)
+		}
+	}
+
+	for _, relative := range []string{
+		"internal/cli/root.go", "internal/cli/agent.go", "internal/cli/config_loader.go",
+		"internal/bootstrap/workspace.go", "internal/bootstrap/adapters.go",
+		"internal/exec/run.go", "internal/exec/event_processor.go",
+		"internal/interface/tui/run.go",
+	} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); err != nil {
+			t.Errorf("X package boundary file is missing: %s: %v", relative, err)
+		}
+	}
+
+	legacy := []string{"type agentController", "type commandRuntime", "type agentInvocation", "type agentCommandFactory", "func (runner *agentController) waitTurn"}
+	for _, relative := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, symbol := range legacy {
+				if strings.Contains(string(content), symbol) {
+					t.Errorf("legacy outer CLI concept %q remains in %s", symbol, filepath.ToSlash(path[len(root)+1:]))
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan %s: %v", relative, err)
+		}
+	}
+
+	for _, relative := range []string{"internal/agent", "internal/context", "internal/thread", "internal/tool", "internal/policy"} {
+		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, forbidden := range []string{"internal/cli", "internal/bootstrap", "internal/exec", "internal/interface/tui"} {
+				if strings.Contains(string(content), forbidden) {
+					t.Errorf("domain/runtime file %s depends on outer package %q", filepath.ToSlash(path[len(root)+1:]), forbidden)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan dependency root %s: %v", relative, err)
+		}
 	}
 }
 

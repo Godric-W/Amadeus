@@ -2,12 +2,12 @@
 
 > 最近更新：2026-08-25
 > 主要架构与 Contract 工作文档：`docs/design.md`
-> 当前阶段：W. Context Accounting + Compaction Realignment（DONE）
-> 下一任务：下一阶段待规划
+> 当前阶段：Y. Initial Prompt + Single TUI Frontend Alignment（TODO）
+> 下一任务：Y-01 CLI PROMPT + single TUI dispatch
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
-A-W 的条目保留为历史与当前完成记录；其中与当前 `docs/design.md` 冲突的 token、compaction、术语、兼容策略和 owner 结论均视为已被 W 取代，不得作为新实现依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
+A-Y 的条目保留为历史与当前阶段记录；其中与当前 `docs/design.md` 冲突的 token/compaction 结论由 W 取代，第一轮外层 package 结论由 X 取代，X 中的 one-shot/`internal/exec`/InlineRenderer 结论再由 Y 取代。不得以历史 DONE 状态恢复旧 owner。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
 
 ## 1. 状态与完成标准
 
@@ -48,6 +48,8 @@ A Runtime + Persistence
 → U Next-Turn User Input Queue Alignment
 → V Versionless Config Schema + Example Naming
 → W Context Accounting + Compaction Realignment
+→ X CLI + Bootstrap + Exec Package Architecture
+→ Y Initial Prompt + Single TUI Frontend Alignment
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先分析对应参考源码，再同步更新 `docs/design.md` 与本文。
@@ -82,7 +84,7 @@ JSONL 是完整历史的唯一事实源，SQLite 只保存可重建的 Thread me
 ### A-CL-01：SessionTask 执行所有权 — `DONE`
 
 - 将生产 RegularTask/CompactTask 的真实执行入口迁入 internal Session/Agent Runtime，不回调 `cmd/amadeus` controller。F 替换其中旧 Reactor 内核，G 继续将过渡 Host interface 收敛为 Session typed methods，但不改变该依赖方向成果。
-- 删除 `codingTaskFactory → agentController.execute*Turn` 反向依赖；`cmd/amadeus` 只保留配置解析、Composition Root、Thread/Application 启动和 Interface 适配。
+- 删除 `codingTaskFactory → agentController.execute*Turn` 反向依赖；该阶段暂把配置解析、Composition Root、Thread/Application 启动和 Interface 适配保留在 `cmd/amadeus`，最终外层 package 归属由 X 重新划分。
 - CLI invocation 在跨越 Runtime 边界前归一化为 typed Session configuration、Submission 和 Turn input；生产 SessionTask 不持有 Cobra command、TUI model 或完整 invocation。
 - 增加无 CLI/TUI controller 的 Runtime fixture，证明 internal Session 可独立完成 regular/compact Turn。
 
@@ -425,7 +427,7 @@ G 当时完成了 capability 的 Session-scoped 复用；其过渡 `engine.Servi
 ### G-02：删除 Coding Factory/Runtime — `DONE`
 
 - 删除 `CodingFactory`、`CodingFactoryOptions`、`CodingRuntime`、`RuntimeOptions`、通用 `task.Factory`、`PrepareRequest`、`Prepared`、`Capabilities` facade 与惰性 `ensureRuntime` 主链。
-- G 当时仍保留的 services builder、session setup 和 task constructor closure 已由 M-04/M-05 删除；Composition Root 现在只注入外部 Adapter 与 Session spawn args，Session 自己构造 services 并按 Op 直接创建 Task。
+- G 当时仍保留的 services builder、session setup 和 task constructor closure 已由 M-04/M-05 删除；Session 外部装配只注入 Adapter 与 Session spawn args，Session 自己构造 services 并按 Op 直接创建 Task；该装配代码的最终 package 归属由 X 迁入 `internal/bootstrap`。
 - architecture guard 禁止生产代码重新引入 `Coding*Runtime`、`Coding*Factory`、`SessionRuntime` 或 Factory capability type assertion。
 
 ### G-03：SessionTask 与 `run_turn` 主链 — `DONE`
@@ -815,7 +817,7 @@ M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/
 
 - 让 `SessionServices` 直接拥有 ModelClient、ToolRegistry、ToolExecutionService、ProcessManager、AgentsMdManager、MCPRuntime、SkillCatalog、Web、Approval、Permission、当时的 Compactor、LiveThread 和 ID/Time services；W 已将该 slot 替换为无状态 CompactionService。
 - 删除 `engine.Services`、`AgentServices`、`ServicesBuilder`、`SessionSetup`、`TaskConstructors`、CLI factory closure、`CapabilityView` 和相关 adapter/guard exceptions。
-- Composition Root 只构造外部 Adapter 和 Session spawn args；Session 自己构造 services、tasks 并负责 shutdown。
+- bootstrap 只构造外部 Adapter 和 Session spawn args；Session 自己构造 services、tasks 并负责 shutdown。
 - `SessionState.Configuration` 成为当前配置唯一事实源，删除 `engine.Services.configured`、首次 closure capture 和其他重复 configuration snapshot。
 - 更新 ThreadManager、Application typed query、fixtures 和 mocks，禁止通过 capability facade 或 type assertion 取回 Session 内部服务。
 
@@ -1405,7 +1407,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - 将 `Shutting down…` 从 HistoryCell 移为 Composer/BottomPane 区域的 transient shutdown presentation；关闭 Popup/Modal、禁止继续输入，并保证重复退出请求只提交一次 shutdown。
 - 以 pending shutdown target 协调 active Thread detach、Runtime shutdown、Rollout flush、child process cleanup 与 bounded timeout，删除 `/exit → tea.Quit` 和 `ShutdownFinished → tea.Quit` 的单阶段退出路径。
 - 在 `ShutdownFinished` 后进入 `DrainingFrame`，让 `View()` 清空 Composer、Popup、Footer 与 shutdown indicator；Bubble Tea 完成至少一次空 active-frame redraw 并收到 `ExitFrameDrained` 后才执行 `tea.Quit`。
-- 将 `FullscreenApplication.Run` 收敛为返回 `AppExitInfo`；`cmd/amadeus` 仅在 renderer 停止、终端恢复后输出非零 token usage、可用 resume hint 或 fatal diagnostics，不重新查询已关闭 Runtime。
+- 将 `FullscreenApplication.Run` 收敛为返回 `AppExitInfo`；X 将最终 exit presenter 迁入 `internal/cli`，并保持只在 renderer 停止、终端恢复后输出非零 token usage、可用 resume hint 或 fatal diagnostics，不重新查询已关闭 Runtime。
 - 分层覆盖 renderer drain、Application shutdown 和 CLI summary 测试，包括重复退出、zero usage、不可恢复、fatal、timeout 与无 placeholder/Popup/Footer scrollback 残留；增加 guard 禁止 cursor writer、terminal-height padding 和手写 ANSI reposition 回归。
 
 ### S 出口
@@ -1461,7 +1463,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 
 ### T-02：Thread Creation + Resume Lifecycle — `DONE`
 
-- Root 与 child New Thread 统一从 Protocol/Identity 生成 UUIDv7；从 ThreadManager 和 Composition Root 删除 `NextID("thread")`、thread prefix factory 分支及对应注入点。
+- Root 与 child New Thread 统一从 Protocol/Identity 生成 UUIDv7；从 ThreadManager 和外层装配删除 `NextID("thread")`、thread prefix factory 分支及对应注入点。
 - New Root 由 ThreadID 派生 SessionID；Resumed Root 从 Rollout SessionMeta 恢复 SessionID，并校验 requested ThreadID、StoredThread.ID、Rollout path identity、SessionMeta.ID 与 Root `SessionIDFromThreadID(ID)` 全部一致。
 - Session configured 成功后再注册 live Thread；生成失败、重复 ID、history mismatch 或 spawn 失败必须完整关闭 writer/runtime，不得留下半注册 Thread。
 
@@ -1766,7 +1768,7 @@ W 取代 B/L/M/O 中与当前实现一致但与最新 Codex reference 不再一�
 
 ## 26. 当前保留能力
 
-- 默认启动：`amadeus` 或 `amadeus "<task>"`。
+- 当前实现支持 `amadeus` Fullscreen 和 `amadeus "<task>"` one-shot；Y 将删除后者的独立执行链，并把根 positional 统一为 `PROMPT`：`amadeus [PROMPT]` 始终启动同一 TUI，非空 Prompt 在 startup/replay barrier 后通过正常 UserMessage lifecycle 自动提交。
 - 当前配置链和 Provider Adapter 已可使用 OpenAI Responses/Chat Completions 及兼容 Provider。
 - JSONL Canonical Rollout + SQLite Metadata Index 已可支持 Session 恢复。
 - TUI 和 Inline 输出以当前代码和 `docs/design.md` 为准。
@@ -1785,7 +1787,7 @@ W 取代 B/L/M/O 中与当前实现一致但与最新 Codex reference 不再一�
 4. 任务完成必须运行针对性测试和构建；环境限制导致的测试失败要单独记录。
 5. 本文只更新任务状态和出口，不复制架构设计、源码审计或长篇讨论。
 
-## 28. 源码结构清理 — `DONE`
+## 28. 源码结构清理 — `DONE`（外层 CLI 布局由 X 取代）
 
 ### 已完成
 
@@ -1793,14 +1795,140 @@ W 取代 B/L/M/O 中与当前实现一致但与最新 Codex reference 不再一�
 - 新增 `ThreadWorkspace` 作为当前 Thread 的唯一选择 owner；CLI 不再分别保存 `ThreadManager`、`currentThread` 和锁，Thread 切换、Resume、New Draft、Rename、Delete 与 metadata 查询均通过 Application Service。
 - 修正 ThreadManager shutdown 后仅异步移除实例的问题，`ShutdownThread` 现在同步移除已终止 Runtime，立即 Resume 不会重新取得 terminated Thread。
 - 将 internal Session 按 runtime loop、TaskHost/history 和 event/request interaction 拆为 `session.go`、`host.go` 与 `interaction.go`。
-- 将 CLI Composition Root、Turn interface、Fullscreen wiring、interactive command adapter 和 history replay 分成准确命名的文件。
+- 当时将 CLI Composition Root、Turn interface、Fullscreen wiring、interactive command adapter 和 history replay 在扁平 `package main` 内分成独立文件；X 已确认文件级拆分不足以表达真实 package/lifecycle 边界。
 - 将 Fullscreen TUI 聚合文件拆为 lifecycle/model、update/input、event projection 和 view rendering，Slash Command 与 selection 保持原有独立文件。
 - 将 Approval 核心拆为 types、request、decision 和 port，Presentation 与 Coordinator 保持独立职责。
 - 将 FileTools 拆为 read、edit、write 和共享 file-change pipeline，并移除字符串分支入口与未使用的旧 Approval reason helper。
 - 扩展 HistoryCell 架构约束测试，使其覆盖所有拆分后的 Application 主链文件。
 
-### 保留判断
+### 当前仍有效的判断
 
 - `internal/agent/session/session.go` 保留约 500 行的核心状态机与 Turn 生命周期；History/TaskHost 和 Event/Request 已拆出，不再包含互不相关的 adapter 或 persistence 实现。
-- Composition Root 明确保留在 `cmd/amadeus/composition.go`；`internal/app` 只承载界面无关的 Application Service，不重新引入 bootstrap Service Locator。
-- `cmd/amadeus` 继续维持扁平 main package，但只保留 command、flags、Composition Root 和 Interface adaptation；Runtime、当前 Thread 选择和 Session capability 均由 internal package 持有。
+- `internal/app` 只承载界面无关的 Application Service；X 新增的 `internal/bootstrap` 是 concrete composition boundary，不得变成 Application Service 或通用 Service Locator。
+
+### 被 X 取代的判断
+
+- “Composition Root 固定保留在 `cmd/amadeus/composition.go`”不再是目标；具体装配迁入 `internal/bootstrap` 的窄构造函数。X 曾让 exec/TUI 分别拥有 invocation lifecycle，Y 将最终收敛为只有 TUI 拥有交互 invocation 的启动和关闭。
+- “`cmd/amadeus` 继续维持扁平 main package”不再是目标；最终目录只保留 `main.go`，Cobra command tree、flags、output 和 exit semantics 迁入 `internal/cli`。
+- 28 阶段形成的 `agentController`、`commandRuntime`、混合 `agentInvocation`、CLI-local one-shot Event loop 和不可达 Session selector 不构成兼容接口，X 必须在调用方切换后直接删除。
+
+## 29. X. CLI + Bootstrap + Exec Package Architecture — `DONE`（one-shot/exec 结论由 Y 取代）
+
+### 目标
+
+按 `docs/design.md` 第 7 章和 Codex 的 `cli → exec/tui → core` 边界重构 Amadeus 外层架构：`cmd/amadeus` 缩为 thin process entry，`internal/cli` 拥有 multitool 参数与 dispatch，`internal/bootstrap` 拥有 concrete dependency composition，`internal/exec` 拥有 one-shot SessionIo lifecycle，`internal/interface/tui` 拥有交互启动与 renderer/Application 生命周期。迁移必须切换全部生产调用方并删除旧 controller/runtime/invocation，不建立包装旧 `package main` 主链的新 facade。
+
+X 只调整外层 package、数据模型、文件和生命周期所有权，不重写已经稳定的 Session、ThreadManager、Context、Compaction、Tool 或 TUI reducer 语义；行为变化只限于清除不可达 selector、重复装配和错误的关闭/依赖边界。
+
+X 的 thin `cmd/amadeus`、`internal/cli`、`internal/bootstrap`、ThreadTarget、TUI run boundary 和旧 main controller cleanup 继续有效。X-03、X-05～X-07 中关于 positional task 进入 one-shot、`internal/exec`、Terminal Approval、stdin request_user_input、InlineRenderer 和 exec/TUI 双 frontend 的结论仅作为历史完成记录；Y 按最新 Codex `PROMPT → TUI initial_user_message` 源码 Contract 直接删除这些路径，不保留 wrapper 或兼容入口。
+
+X-01～X-07 是同一次 Architecture Closure 的工作分解，不是可长期独立交付的兼容阶段。X 切换生产入口时必须同时完成调用方迁移和旧文件删除；任一中间提交若暂时存在新旧代码，也不能增加 wrapper/Facade 互调，不能标记子任务或主任务 DONE，且最终验收前生产代码只能保留一条入口和完成协议。
+
+### X-01：Thin Process Entry + CLI Command Package — `DONE`
+
+- [x] 新建 `internal/cli`，迁入 Cobra root、config/project/session flags、config/sessions/tools/web/version commands、task/stdin/TTY 解析、CLI output 和 exit status；按职责使用 `root.go`、`agent.go`、`config.go`、`config_flags.go`、`config_loader.go`、`config_output.go`、`sessions.go` 等文件。
+- [x] 将 `cmd/amadeus/main.go` 收敛为 process context/标准流、`cli.Run` 和进程退出码；`cmd/amadeus` 不再定义其他生产 `.go` 文件，也不成为测试 fixture owner。
+- [x] 保持现有命令、flags、stdin/TTY、config precedence、输出流和 exit code 行为；CLI 单元测试迁到 `internal/cli`，不通过导入或访问 `package main` 私有 symbol 测试。
+
+### X-02：Bootstrap Composition + Resource Ownership — `DONE`
+
+- [x] 新建 `internal/bootstrap`，按 `environment.go`、`workspace.go`、`adapters.go`、`audit.go`、`thread_store.go`、`thread_catalog.go` 拆分路径解析、Store/Manager/Workspace、catalog query 和 Session 外部 Adapter 装配。
+- [x] 用 owner-specific constructor/options 取代 `commandRuntime` 万能依赖包；禁止 `Get/Resolve(kind)`、callback map 或仅为测试暴露全部 Runtime 能力的 Service Locator。
+- [x] 固化部分启动失败的逆序清理和成功路径的 bounded Workspace/Manager/Store close；sessions catalog 复用同一装配/查询边界，不自行复制 ThreadManager construction。
+
+### X-03：One-shot Exec Lifecycle — `DONE`
+
+- [x] 新建 `internal/exec`，迁入 one-shot Thread target、UserInputOp 提交、SessionIo Event processor、TTY/非 TTY renderer、Terminal Approval、RequestUserInput response、interrupt 和 typed terminal/exit mapping。
+- [x] 将旧 `turn_interface.go`/`interactive_request.go` 按 `run.go`、`event_processor.go`、`interface.go`、`approval.go` 的真实职责拆分；吸收并删除只服务 one-shot 的 `internal/interface/cli` 旧 package。
+- [x] Event processor 只消费匹配 Turn 的唯一终态，cancellation 至多提交一次 `InterruptOp`，Thread termination、render failure、Approval/UserInput failure 和 cleanup 保持确定性错误顺序。
+
+### X-04：TUI Startup + Exit Boundary — `DONE`
+
+- [x] 在 `internal/interface/tui/run.go` 建立 terminal preflight、InteractiveApplication/FullscreenApplication construction、start/run/close 和 `AppExitInfo` 返回边界；迁入旧 `agent_interactive.go` 的真实交互生命周期。
+- [x] `internal/cli` 只 dispatch 并在 TUI renderer drain、terminal restore、Application/Workspace shutdown 后呈现 exit summary；`cmd/amadeus` 不构造 TUI、不格式化 summary，也不查询已关闭 Runtime。
+- [x] 保持 Fullscreen active attachment、Session picker、Slash Command、next-turn queue 和 shutdown/draining-frame 现有单一主链，不新增 CLI event pump 或 TUI callback controller。
+
+### X-05：Typed Launch Model + Session Start Semantics — `DONE`
+
+- [x] 删除混合 `agentInvocation`，CLI raw flags 在边界转换为互不共享 capability 的 `exec.Options` 或 `tui.RunOptions`；EventSink、ApprovalPort 和 IO lifecycle 归各 interface owner。
+- [x] 将 new/latest/explicit resume 建模为 typed Thread target；无 ID 的 `--resume` 只进入 Fullscreen canonical picker，non-interactive 明确失败，删除不可达 `bufio` selector。
+- [x] Thread 当前选择继续唯一归 `app.ThreadWorkspace`；删除 `agentController` 对 Workspace/context/mutex 的镜像及 `newDraft`、rename/delete/list 等无调用 wrapper。
+
+### X-06：File/Test Migration + Legacy Cleanup — `DONE`
+
+- [x] 删除 `agent_controller.go`、`composition.go`、`turn_interface.go`、`interactive_request.go`、`session_lifecycle.go` 等迁移后旧文件，以及 `runtime_ids.go`、未使用 helper、`runOutcome`/`foldSummary` 和过期 `cmd/amadeus/README.md`。
+- [x] command/flag/output 测试归 `internal/cli`，composition/failure cleanup 测试归 `internal/bootstrap`，one-shot/Approval/interrupt 测试归 `internal/exec`，Fullscreen 测试归 TUI；大型 flow/provider/tool fixture 按行为拆分到明确 integration tests。
+- [x] 文件按内聚行为命名，不为每个旧文件建立一个 package，也不通过 alias、Facade 或新 package callback 回调旧 main controller。
+
+### X-07：Guards + Acceptance — `DONE`
+
+- [x] 增加 architecture guard：`cmd/amadeus` 只有 thin `main.go`；Domain/Runtime 不依赖 cli/bootstrap/exec/TUI；生产代码不存在 `agentController`、`commandRuntime`、混合 `agentInvocation`、`agentCommandFactory` 或 CLI-local `waitTurn`。
+- [x] 覆盖 root/config/sessions/tools/web/version、argument/stdin/TTY、new/continue/resume/select、one-shot Tool/Approval/UserInput/interrupt、Fullscreen start/exit、部分 bootstrap 失败和重复 close。
+- [x] 运行 focused tests、`go test ./... -count=1`、`go test -race ./... -count=1`、`make check`、`go build ./cmd/amadeus` 和 `git diff --check`；同步 design/progress/必要 README 后才将 X 标记 DONE。
+
+### X 出口
+
+- `cmd/amadeus` 只拥有进程入口；Cobra、Composition、one-shot Event processor 和 TUI startup 各有唯一 package owner。
+- CLI raw args、exec options、TUI options、bootstrap inputs 和 Session configuration 是分层 typed model，不再由一个 invocation/runtime/controller aggregate 贯穿全部生命周期。
+- exec 与 TUI 复用 bootstrap construction 但各自拥有 start/event/close protocol；ThreadWorkspace、Session、Context 和 terminal truth 不产生第二 owner。
+- 旧扁平 main 主链、不可达 selector、无调用 wrapper、万能测试注入 bag 和 `internal/interface/cli` 过渡 package 全部删除。
+
+### X 完成记录
+
+- 2026-08-25 将 `cmd/amadeus` 收敛为 19 行 thin process entry；Cobra command tree、flags、config loader/output、sessions/tools/web/version、Agent dispatch 和 exit presentation 全部迁入 `internal/cli`。
+- 新建 `internal/bootstrap`，按 environment、Adapter、audit、ThreadStore、thread catalog 和 Workspace composition 拆分；部分启动失败逆序关闭、成功/重复 close 和 detached Manager lifecycle 均有 contract test。
+- 新建 `internal/exec`，唯一拥有 one-shot UserInputOp、SessionIo Event processor、Terminal Approval、request_user_input、单次 InterruptOp、匹配 Turn terminal 和 typed exit mapping；InlineRenderer 只作为无状态 TUI projection 复用。
+- `internal/interface/tui/run.go` 现在拥有 terminal preflight、Thread target、InteractiveApplication/FullscreenApplication 和 renderer/Application/Workspace 关闭顺序；CLI 只在返回后呈现 `AppExitInfo`。
+- 新增 `app.ThreadTarget`/`PrepareStart`，统一 new/latest/explicit resume；无 ID resume 只进入 Fullscreen picker，non-interactive 明确失败，旧 `bufio` selector 已删除。
+- 删除 `agentController`、`commandRuntime`、混合 `agentInvocation`、`agentCommandFactory`、CLI-local `waitTurn`、旧 Composition/Session lifecycle/helper/ID 文件、`internal/interface/cli` 和过期 `cmd/amadeus/README.md`；测试随 cli/bootstrap/exec/TUI owner 迁移。
+- architecture guard、focused tests、Provider/Core Tools mock E2E、`make check`、`go test ./... -count=1`、`go test -race ./... -count=1`、构建产物 version/help smoke 和 `git diff --check` 全部通过。
+
+## 30. Y. Initial Prompt + Single TUI Frontend Alignment — `TODO`
+
+### 目标
+
+按 Codex 根入口、TUI `Cli.prompt`、ChatWidget `initial_user_message`、Session configured、Resume replay 和正常 `submit_user_message` 源码 Contract，将 Amadeus 根 positional 从 one-shot Task 改为 TUI initial Prompt：`amadeus [PROMPT]` 始终启动同一 Rich TUI，Prompt 由 Fullscreen model 作为 pending UserMessage 持有，并在 active Thread configured、snapshot/replay 和 startup surface ready 后通过普通 user-message/admission 链 take-once 提交。Amadeus 当前范围不实现独立 headless exec；删除 X 引入的 `internal/exec`、Terminal Approval/stdin user input 和 one-shot InlineRenderer，不建立新 wrapper 包裹旧链。
+
+Y 不改变 `run_turn`、Tool/Approval 内层、steer/admission、NextTurnQueue 或 Fullscreen exit 的既有生命周期；它统一 frontend、UI message 数据模型、启动时序、命名与测试 owner，并让 initial/normal/steered UserMessage 在 Interface→Session→canonical history 中保存同一非空 Text，而不是在下层重复 trim。
+
+### Y-01：CLI `PROMPT` + Single TUI Dispatch — `TODO`
+
+- [ ] 将 root usage、字段和错误文本从 `amadeus [task]`/Task 改为 `amadeus [PROMPT]`/Prompt；CLI dispatch 只做 CRLF/CR→LF 归一化并保留其他文本，exact empty Prompt 表示无 initial message，不在 CLI 构造 UserInputOp。保留 Amadeus 既有 bounded message size 作为产品约束。
+- [ ] 删除 `agentLaunchOnce`/`agentLaunchInteractive` 分支、`ExecRunner`、`exec.Options`、`readRootTask` 和“stdin 是否 TTY 决定 frontend/Approval”的语义；无 subcommand 时统一调用 TUI runner，非 TTY 由 TUI terminal preflight 明确失败。
+- [ ] 保持 config/project/session flags 与 management subcommands；latest/explicit resume 可以携带 Prompt 并先恢复目标 Thread，无 ID picker 不同时接收 Prompt。CLI positional Prompt 不经过 Slash Command parser。
+
+### Y-02：TUI `UserMessage` + Naming Realignment — `TODO`
+
+- [ ] 在 `internal/interface/tui/user_message.go` 建立当前范围最小 `UserMessage{Text}`；`tui.RunOptions.Prompt` 在 TUI boundary 转换为 `*UserMessage`，`FullscreenOptions`/`fullscreenModel` 使用唯一 `InitialUserMessage`/`initialUserMessage` owner。
+- [ ] 直接将 `TaskSubmission`、`prepareTaskSubmission`、`submitTask` 改为 `UserMessageSubmission`、`prepareUserMessageSubmission`、`submitUserMessage`；不保留 alias、wrapper 或双方法。
+- [ ] 将 `QueuedUserInput` 统一为 Codex 术语 `QueuedUserMessage` 并持有 UserMessage；Runtime `UserInputOp` 保持 Protocol boundary。将 `MaxTaskBytes`/`maxTaskBytes` 和相关文案改为 `MaxUserMessageBytes`/`maxUserMessageBytes`。
+- [ ] Prompt 不进入 `FullscreenStartup`、InteractiveApplication、ThreadWorkspace、Session Configuration、Protocol Event 或 Rollout；当前未支持的 CLI image/TextElement/mention 不增加占位字段。
+- [ ] 移除 InteractiveApplication/Session/canonical UserMessage 对非空 Text 的二次 TrimSpace；exact empty 仍拒绝，Composer 自身 parse policy保持独立，initial Prompt、ResponseUserMessage 和 completed UserMessage Item 保存一致文本。
+
+### Y-03：Configured/Replay-gated Initial Submission — `TODO`
+
+- [ ] 利用现有 `ThreadManager.spawn` 等待 `SessionIo.Configured` 和 `InteractiveApplication.Start` 完成 canonical snapshot/replay/attachment 的同步 barrier，不复制 Codex app-server 专用的第二份 configured queue。
+- [ ] Fullscreen model 保存 pending initialUserMessage；Bubble Tea `Init` 只发送无 payload startup-ready lifecycle message，`Update` 调用 take-once `submitInitialUserMessageIfPending`。不得把 Prompt 数据搬进 tea.Msg、goroutine closure 或 timeout。
+- [ ] initial message 复用普通 Composer submit：当前 attachment generation 下生成 ClientUserMessageID、写 input recall、插入 optimistic UserMessageCell、调用 SubmitUser、等待 Started/Steered/rejection，并由 canonical completed UserMessage 确认去重；Application 不对 UserMessage 做第二次 trim/rewrite。
+- [ ] explicit resume/continue 必须先展示 replay history 再显示/提交 initial message；protected startup surface 或 direct-input block 时继续 pending或恢复 Composer。失败不得丢消息、自动入 NextTurnQueue、创建 InitialPromptOp 或退出 TUI。
+
+### Y-04：One-shot/Inline Legacy Cleanup + Test Ownership — `TODO`
+
+- [ ] 删除整个 `internal/exec`、`internal/render`、one-shot `internal/interface/tui/inline.go`、Terminal Approval prompt、stdin request_user_input scanner 和相关只服务旧 frontend 的 DTO/helper/test；Fullscreen Approval 与 RequestUserInput overlay 保持唯一人工交互 owner。
+- [ ] 删除 CLI one-shot renderer/output/interrupt expectations；root/CLI tests 改为验证无 Prompt/有 Prompt/latest/resume 都只产生 TUI RunOptions，非 TTY 由 TUI preflight 拒绝。
+- [ ] 将 Provider/Core Tools/Skill/MCP/Web 跨层 E2E 迁入明确的 test-only integration package，通过 `InteractiveApplication` 驱动真实 Runtime 和 typed Approval/UserInput response；不得为保留测试而建立生产 single-turn runner。
+- [ ] 更新 architecture guards：`cmd/amadeus` thin entry 保持不变；生产代码不存在 `internal/exec`、`internal/render`、InlineRenderer、ExecRunner、agentLaunchOnce、readRootTask 或第二 SessionIo consumer。
+
+### Y-05：Lifecycle Tests、Docs + Acceptance — `TODO`
+
+- [ ] 覆盖 initial UserMessage take-once、CRLF normalization/非空文本保持、普通 Fresh、latest/explicit Resume replay-before-prompt、optimistic/canonical dedupe、submission rejection restore、literal `/compact` prompt、attachment generation、picker exclusion、startup cancellation 和 exit-after-turn-stays-in-TUI。
+- [ ] 覆盖 normal Composer、same-turn steer、Tab queue、Plan mode、Approval、request_user_input、Resume/Clear 和 shutdown 不因 UserMessage 命名迁移回退；验证 initial message 与普通 message 使用同一 submission/admission helper。
+- [ ] 同步 `docs/design.md`、本进度文档、README 和 architecture whitepaper，明确 Amadeus 当前不提供 headless exec；历史 X one-shot 记录不得覆盖 Y 当前目标。
+- [ ] 运行 focused CLI/TUI/Application/integration tests、Provider/Core Tools mock E2E、PTY initial prompt smoke、`make check`、`go test ./... -count=1`、`go test -race ./... -count=1`、`go build ./cmd/amadeus` 和 `git diff --check` 后才将 Y 标记 DONE。
+
+### Y 出口
+
+- `amadeus` 与 `amadeus "PROMPT"` 只有一套 TUI frontend、一个 active attachment event pump 和一套 Approval/UserInput overlay；不存在依据 TTY 临时改变安全协议的 one-shot path。
+- CLI Prompt、TUI UserMessage、pending initialUserMessage、UserMessageSubmission、QueuedUserMessage 和 Runtime UserInputOp 各有准确 owner；未提交 Prompt 不进入 canonical state，提交后只走普通 UserMessage lifecycle。
+- Fresh configured、Resume replay、startup readiness、optimistic projection、admission、失败恢复和 TUI continued-running 顺序与 `docs/design.md` 的 Codex-aligned Contract 一致。
+- X 引入的 exec/inline legacy 和相关测试装配全部删除；跨层 E2E 不依赖生产第二 frontend。
