@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,13 +43,7 @@ func Open(ctx context.Context, amadeusHome string) (*Database, error) {
 	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("secure state directory: %w", err)
 	}
-	location := &url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
-	query := location.Query()
-	query.Add("_pragma", "journal_mode(WAL)")
-	query.Add("_pragma", "busy_timeout(5000)")
-	query.Add("_pragma", "synchronous(NORMAL)")
-	location.RawQuery = query.Encode()
-	database, err := sql.Open("sqlite", location.String())
+	database, err := sql.Open("sqlite", databaseDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open state database: %w", err)
 	}
