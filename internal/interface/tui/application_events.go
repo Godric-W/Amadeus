@@ -107,7 +107,10 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 		case protocol.ItemPlan:
 			model.proposedPlanDraft = ""
 			return nil
-		case protocol.ItemAssistantMessage, protocol.ItemReasoning, protocol.ItemUserMessage, protocol.ItemContextCompaction:
+		case protocol.ItemContextCompaction:
+			model.status = "compacting context"
+			return nil
+		case protocol.ItemAssistantMessage, protocol.ItemReasoning, protocol.ItemUserMessage:
 			return nil
 		}
 		model.finishDraft()
@@ -172,7 +175,11 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 			return nil
 		case protocol.ItemContextCompaction:
 			model.flushCompletedActivityBeforeBoundary()
-			model.insertHistoryCell(NewContextCompactedCell())
+			if item.Item.Status == protocol.ItemStatusCompleted {
+				model.insertHistoryCell(NewContextCompactedCell())
+			} else {
+				model.insertHistoryCell(NewErrorHistoryCell(item.Item.Text))
+			}
 			return nil
 		}
 		model.finishDraft()
@@ -257,8 +264,6 @@ func (model *fullscreenModel) applyEvent(event protocol.Event) tea.Cmd {
 		if strings.TrimSpace(item.Message) != "" {
 			model.insertHistoryCell(NewErrorHistoryCell(item.Message))
 		}
-	case protocol.ContextCompactedEvent:
-		model.insertHistoryCell(NewContextCompactedCell())
 	case protocol.ShutdownCompleteEvent:
 		model.status = "shutting down"
 	}

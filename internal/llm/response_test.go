@@ -29,7 +29,7 @@ func TestResponsePreservesNormalizedAndProviderMetadata(t *testing.T) {
 		Message:              ResponseItem{Role: RoleAssistant, Content: "done", Reasoning: "opaque reasoning"},
 		FinishReason:         FinishReasonError,
 		ProviderFinishReason: "insufficient_system_resource",
-		Usage: Usage{
+		TokenUsage: TokenUsage{
 			InputTokens:       10,
 			CachedInputTokens: 4,
 			OutputTokens:      6,
@@ -44,7 +44,7 @@ func TestResponsePreservesNormalizedAndProviderMetadata(t *testing.T) {
 	if response.ProviderFinishReason != "insufficient_system_resource" {
 		t.Fatalf("unexpected provider finish reason: %q", response.ProviderFinishReason)
 	}
-	if response.Usage.CachedInputTokens != 4 || response.Usage.ReasoningTokens != 2 {
-		t.Fatalf("unexpected usage: %#v", response.Usage)
+	if response.TokenUsage.CachedInputTokens != 4 || response.TokenUsage.ReasoningTokens != 2 {
+		t.Fatalf("unexpected usage: %#v", response.TokenUsage)
 	}
 }

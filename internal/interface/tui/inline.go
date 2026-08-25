@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
 const maxInlineEventTextRunes = 240
@@ -77,25 +78,34 @@ func (renderer *InlineRenderer) Publish(ctx context.Context, event protocol.Even
 			}
 			return renderer.writeStatusBar()
 		}
+		if typed.Item.Kind == protocol.ItemContextCompaction {
+			if typed.Item.Status == protocol.ItemStatusCompleted {
+				return renderer.statusLine("context compacted")
+			}
+			return renderer.statusLine("compaction failed: %s", typed.Item.Text)
+		}
 		return renderer.toolBlock(typed.Item, true)
 	case protocol.PlanUpdateEvent:
 		renderer.phase = "planning"
 		return renderer.planBlock(typed)
 	case protocol.ItemStartedEvent:
 		renderer.phase = "working"
+		if typed.Item.Kind == protocol.ItemContextCompaction {
+			return renderer.statusLine("compacting context")
+		}
 		renderer.toolCalls++
 		return renderer.toolBlock(typed.Item, false)
 	case protocol.TurnStartedEvent:
 		renderer.phase = "starting"
 		return renderer.statusLine("turn started")
 	case protocol.TokenCountEvent:
-		renderer.inputTokens = typed.Usage.InputTokens
-		renderer.outputTokens = typed.Usage.OutputTokens
-		total := typed.Usage.TotalTokens
-		if total == 0 {
-			total = typed.Usage.InputTokens + typed.Usage.OutputTokens
+		usage := llm.TokenUsage{}
+		if typed.Info != nil {
+			usage = typed.Info.TotalTokenUsage
 		}
-		return renderer.statusLine("usage: input=%d output=%d total=%d", typed.Usage.InputTokens, typed.Usage.OutputTokens, total)
+		renderer.inputTokens = usage.InputTokens
+		renderer.outputTokens = usage.OutputTokens
+		return renderer.statusLine("usage: input=%d output=%d total=%d context=%d", usage.InputTokens, usage.OutputTokens, usage.TotalTokens, typed.ActiveContextTokens)
 	case protocol.TurnCompleteEvent:
 		renderer.phase = "idle"
 		if typed.Summary != "" {

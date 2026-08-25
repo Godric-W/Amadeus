@@ -137,8 +137,8 @@ func collectStream(stream llm.Stream) (llm.Response, error) {
 		if len(chunk.ToolCalls) != 0 {
 			response.Message.ToolCalls = append(response.Message.ToolCalls, chunk.ToolCalls...)
 		}
-		if chunk.Usage != nil {
-			response.Usage = *chunk.Usage
+		if chunk.TokenUsage != nil {
+			response.TokenUsage = *chunk.TokenUsage
 		}
 		if chunk.Completed() {
 			response.FinishReason = chunk.FinishReason

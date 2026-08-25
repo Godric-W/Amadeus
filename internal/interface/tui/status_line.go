@@ -87,7 +87,11 @@ func (model fullscreenModel) statusLineValueForItem(item statusLineItem) (string
 		if model.session.ContextWindow <= 0 {
 			return "", false
 		}
-		return fmt.Sprintf("Context %d%% used", model.statusLineContextUsedPercent()), true
+		marker := ""
+		if model.session.ContextEstimated {
+			marker = "~"
+		}
+		return fmt.Sprintf("Context %s%d%% used", marker, model.statusLineContextUsedPercent()), true
 	case statusLineItemContextWindowSize:
 		if model.session.ContextWindow <= 0 {
 			return "", false

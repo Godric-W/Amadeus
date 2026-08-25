@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ import (
 )
 
 func TestManagerNormalizesToolProtocolAndProjectsLargeResults(t *testing.T) {
-	manager := NewManager(ConservativeEstimator{})
+	manager := NewManager(ApproxTokenEstimator{})
 	lines := []rollout.Line{
 		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "inspect"}),
 		contextResponseLine(t, 2, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"large.md"}`)}),
@@ -92,20 +93,21 @@ func TestManagerSeparatesProviderAndEstimatedUsage(t *testing.T) {
 	manager := NewManager(nil)
 	lines := []rollout.Line{
 		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "hello"}),
-		contextEventLine(t, 2, protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}}),
-		contextEventLine(t, 3, protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 7, OutputTokens: 3, TotalTokens: 10}}),
+		contextEventLine(t, 2, tokenCountEvent(llm.TokenUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}, llm.TokenUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}, 12)),
+		contextEventLine(t, 3, tokenCountEvent(llm.TokenUsage{InputTokens: 17, OutputTokens: 5, TotalTokens: 22}, llm.TokenUsage{InputTokens: 7, OutputTokens: 3, TotalTokens: 10}, 10)),
 	}
 	if err := manager.Rebuild(lines); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := manager.Snapshot(llm.ModelInfo{ContextWindow: 1000}, llm.Prompt{})
-	if !snapshot.Usage.HasProviderUsage || snapshot.Usage.ProviderUsage.TotalTokens != 22 {
-		t.Fatalf("provider usage was not retained: %#v", snapshot.Usage)
+	tokenSnapshot := manager.TokenSnapshot()
+	if tokenSnapshot.Info == nil || tokenSnapshot.Info.TotalTokenUsage.TotalTokens != 22 || tokenSnapshot.Info.LastTokenUsage.TotalTokens != 10 {
+		t.Fatalf("token usage snapshot was not retained: %#v", tokenSnapshot)
 	}
-	if snapshot.Usage.EstimatedInputTokens <= 0 {
-		t.Fatalf("estimated usage was not calculated: %#v", snapshot.Usage)
+	if snapshot.EstimatedInputTokens <= 0 {
+		t.Fatalf("estimated usage was not calculated: %#v", snapshot)
 	}
-	if snapshot.Usage.EstimatedInputTokens == snapshot.Usage.ProviderUsage.InputTokens {
+	if snapshot.EstimatedInputTokens == tokenSnapshot.Info.TotalTokenUsage.InputTokens {
 		t.Fatal("provider and estimated usage were conflated")
 	}
 }
@@ -115,7 +117,7 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 	if err := manager.Rebuild([]rollout.Line{
 		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "stale history"}),
 		contextEventLine(t, 2, protocol.ContextUpdateEvent{Key: string(UpdateMCP), Content: "stale mcp"}),
-		contextEventLine(t, 3, protocol.TokenCountEvent{Usage: llm.Usage{TotalTokens: 999}}),
+		contextEventLine(t, 3, tokenCountEvent(llm.TokenUsage{TotalTokens: 999}, llm.TokenUsage{TotalTokens: 999}, 999)),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -138,17 +140,18 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 	lines := append(coveredLines,
 		contextEventLine(t, 5, protocol.ContextUpdateEvent{Key: string(UpdateAgents), Content: "project agents"}),
 		contextItemLine(t, 6, rollout.CompactedItem{
+			Trigger: protocol.CompactionTriggerManual, Reason: protocol.CompactionReasonUserRequested, Phase: protocol.CompactionPhaseStandaloneTurn,
 			Summary: "inspection complete", CoveredThroughSequence: 4,
 			SourceHash: hex.EncodeToString(digest[:]),
-			ReplacementHistory: []rollout.ReplacementMessage{
-				{Role: "user", Content: "initial objective"},
-				{Role: "assistant", Content: "## Compaction Checkpoint\n\ninspection complete"},
+			ReplacementHistory: []llm.ResponseItem{
+				llm.UserMessage("initial objective"),
+				llm.UserMessage("## Compaction Checkpoint\n\ninspection complete"),
 			},
 		}),
 		contextResponseLine(t, 7, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "now run tests"}),
 		contextResponseLine(t, 8, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-2", Name: "execute_command", Arguments: json.RawMessage(`{"command":"go test ./..."}`)}),
 		contextEventLine(t, 9, protocol.TurnAbortedEvent{Reason: "interrupted", FinishedAt: time.Unix(9, 0).UTC()}),
-		contextEventLine(t, 10, protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 40, OutputTokens: 8, TotalTokens: 48}}),
+		contextEventLine(t, 10, tokenCountEvent(llm.TokenUsage{InputTokens: 40, OutputTokens: 8, TotalTokens: 48}, llm.TokenUsage{InputTokens: 40, OutputTokens: 8, TotalTokens: 48}, 48)),
 	)
 	if err := manager.Rebuild(lines); err != nil {
 		t.Fatal(err)
@@ -166,8 +169,8 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 	if snapshot.Items[5].Role != llm.RoleTool || snapshot.Items[5].ToolCallID != "call-2" || !strings.Contains(snapshot.Items[5].Content, "did not complete") {
 		t.Fatalf("interrupted Tool Call was not normalized: %#v", snapshot.Items)
 	}
-	if !snapshot.Usage.HasProviderUsage || snapshot.Usage.ProviderUsage.TotalTokens != 48 {
-		t.Fatalf("provider Usage was not restored: %#v", snapshot.Usage)
+	if tokenSnapshot := manager.TokenSnapshot(); tokenSnapshot.Info == nil || tokenSnapshot.Info.TotalTokenUsage.TotalTokens != 48 {
+		t.Fatalf("token usage was not restored: %#v", tokenSnapshot)
 	}
 	for _, item := range snapshot.Items {
 		if strings.Contains(item.Content, "stale") {
@@ -222,7 +225,7 @@ func TestProjectRolloutMessagesIncludesSubagentNotificationAsContextualUserInput
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(projection.Messages) != 1 || projection.Messages[0].Role != llm.RoleUser || projection.Messages[0].Content != content {
+	if len(projection.Messages) != 1 || projection.Messages[0].Role != llm.RoleUser || projection.Messages[0].Content != content || !reflect.DeepEqual(projection.Origins, []MessageOrigin{MessageOriginSubagent}) {
 		t.Fatalf("subagent notification projection = %#v", projection.Messages)
 	}
 }
@@ -242,14 +245,14 @@ func TestManagerPromptSnapshotDoesNotShareMutableHistory(t *testing.T) {
 }
 
 func TestManagerCompactionThresholdAccountsForFullPrompt(t *testing.T) {
-	manager := NewManager(ConservativeEstimator{})
+	manager := NewManager(ApproxTokenEstimator{})
 	if err := manager.Rebuild([]rollout.Line{contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: strings.Repeat("h", 300)})}); err != nil {
 		t.Fatal(err)
 	}
 	model := llm.ModelInfo{ContextWindow: 900, AutoCompactTokenLimit: 500}
 	bare := llm.Prompt{}
 	bareSnapshot := manager.Snapshot(model, bare)
-	if bareSnapshot.NeedsCompaction(model) {
+	if bareSnapshot.EstimatedInputTokens >= model.AutoCompactTokenLimit {
 		t.Fatal("small history unexpectedly requires compaction")
 	}
 	prompt := llm.Prompt{
@@ -257,11 +260,75 @@ func TestManagerCompactionThresholdAccountsForFullPrompt(t *testing.T) {
 		Tools:            []llm.ToolSpec{{Name: "large_tool", Description: strings.Repeat("d", 900), InputSchema: json.RawMessage(`{"type":"object"}`)}},
 	}
 	fullSnapshot := manager.Snapshot(model, prompt)
-	if !fullSnapshot.NeedsCompaction(model) {
+	if fullSnapshot.EstimatedInputTokens < model.AutoCompactTokenLimit {
 		t.Fatal("full Prompt was not included in compaction threshold")
 	}
-	if fullSnapshot.Usage.EstimatedInputTokens <= bareSnapshot.Usage.EstimatedInputTokens {
+	if fullSnapshot.EstimatedInputTokens <= bareSnapshot.EstimatedInputTokens {
 		t.Fatal("full Prompt estimate did not include instructions and Tool Specs")
+	}
+}
+
+func TestManagerActiveContextAddsLocalToolSuffixToLastProviderUsage(t *testing.T) {
+	result := &tool.ToolResult{CallID: "call-1", ToolName: "read", Text: "new local tool output"}
+	manager, err := NewManagerFromRollout([]rollout.Line{
+		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "inspect"}),
+		contextResponseLine(t, 2, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`)}),
+		contextEventLine(t, 3, tokenCountEvent(llm.TokenUsage{TotalTokens: 100}, llm.TokenUsage{TotalTokens: 100}, 100)),
+		contextResponseLine(t, 4, rollout.ResponseItem{Type: rollout.ResponseToolResult, Role: "tool", CallID: "call-1", Name: "read", Status: "succeeded", Result: result}),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, estimated := manager.ActiveContextTokens(llm.ModelInfo{ContextWindow: 10_000, ToolOutputTokenLimit: 1_000})
+	if active <= 100 || !estimated {
+		t.Fatalf("active context = %d estimated=%v", active, estimated)
+	}
+}
+
+func TestManagerPreviewRejectsStaleCompactionSourceWithoutMutation(t *testing.T) {
+	manager, err := NewManagerFromRollout([]rollout.Line{
+		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "current history"}),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := manager.Projection()
+	compacted := rollout.ScopeItem(rollout.CompactedItem{
+		Trigger: protocol.CompactionTriggerManual, Reason: protocol.CompactionReasonUserRequested, Phase: protocol.CompactionPhaseStandaloneTurn,
+		Summary: "stale summary", ReplacementHistory: []llm.ResponseItem{llm.UserMessage("summary")},
+		CoveredThroughSequence: 1, SourceHash: "stale-hash",
+	}, testutil.ThreadID(1), "turn-2")
+	if _, err := manager.PreviewRecord(manager.NextSequence(), llm.ModelInfo{ContextWindow: 10_000}, llm.Prompt{}, compacted); err == nil {
+		t.Fatal("stale compaction source was accepted")
+	}
+	if !reflect.DeepEqual(manager.Projection(), before) {
+		t.Fatal("failed compaction preview mutated context")
+	}
+}
+
+func TestManagerObservedWatermarkKeepsConcurrentLocalFactInActiveContext(t *testing.T) {
+	tokenEvent := tokenCountEvent(llm.TokenUsage{TotalTokens: 100}, llm.TokenUsage{TotalTokens: 100}, 100)
+	tokenEvent.ObservedThroughSequence = 1
+	manager, err := NewManagerFromRollout([]rollout.Line{
+		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "provider-visible prompt"}),
+		contextResponseLine(t, 2, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "concurrent subagent fact"}),
+		contextResponseLine(t, 3, rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "provider output"}),
+		contextEventLine(t, 4, tokenEvent),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, estimated := manager.ActiveContextTokens(llm.ModelInfo{ContextWindow: 10_000})
+	if active <= 100 || !estimated {
+		t.Fatalf("active context = %d estimated=%v", active, estimated)
+	}
+}
+
+func tokenCountEvent(total, last llm.TokenUsage, active int64) protocol.TokenCountEvent {
+	return protocol.TokenCountEvent{
+		Info:                    &protocol.TokenUsageInfo{TotalTokenUsage: total, LastTokenUsage: last, ModelContextWindow: 10_000},
+		ActiveContextTokens:     active,
+		ObservedThroughSequence: 1,
 	}
 }
 
@@ -277,6 +344,10 @@ func contextItemLine(t *testing.T, sequence uint64, item rollout.RolloutItem) ro
 
 func contextEventLine(t *testing.T, sequence uint64, event protocol.EventMsg) rollout.Line {
 	t.Helper()
+	if tokenCount, ok := event.(protocol.TokenCountEvent); ok && tokenCount.ObservedThroughSequence == 0 && sequence > 0 {
+		tokenCount.ObservedThroughSequence = sequence - 1
+		event = tokenCount
+	}
 	return contextItemLine(t, sequence, rollout.EventMsgItem{Msg: event})
 }
 

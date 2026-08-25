@@ -79,7 +79,11 @@ func TestStateRetryAndStreamErrorProjection(t *testing.T) {
 
 func TestStateProjectsContextCompaction(t *testing.T) {
 	state := New(testutil.ThreadID(1))
-	apply(t, state, protocol.ContextCompactedEvent{ItemID: "compact-1"})
+	now := time.Now().UTC()
+	apply(t, state, protocol.ItemCompletedEvent{Item: protocol.TurnItem{
+		ID: "compact-1", Kind: protocol.ItemContextCompaction, Status: protocol.ItemStatusCompleted,
+		CreatedAt: now, CompletedAt: now, Payload: protocol.ContextCompactionItem{Trigger: protocol.CompactionTriggerManual, Reason: protocol.CompactionReasonUserRequested, Phase: protocol.CompactionPhaseStandaloneTurn},
+	}})
 	if len(state.Items) != 1 || state.Items[0].Kind != protocol.ItemContextCompaction {
 		t.Fatalf("compaction projection = %#v", state.Items)
 	}

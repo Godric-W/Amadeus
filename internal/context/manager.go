@@ -32,23 +32,25 @@ var updateOrder = [...]UpdateKey{
 	UpdateMCP,
 }
 
-type UsageSnapshot struct {
-	ProviderUsage        llm.Usage
-	HasProviderUsage     bool
+type PromptSnapshot struct {
+	Items                []llm.ResponseItem
 	EstimatedInputTokens int64
+	HistoryVersion       uint64
+	WorldStateRevision   string
+	Revision             string
 }
 
-type PromptSnapshot struct {
-	Items              []llm.ResponseItem
-	Usage              UsageSnapshot
-	HistoryVersion     uint64
-	WorldStateRevision string
-	Revision           string
+type TokenSnapshot struct {
+	Info                   *protocol.TokenUsageInfo
+	ActiveContextTokens    int64
+	ActiveContextEstimated bool
+	Sequence               uint64
 }
 
 type contextUpdateState struct {
 	Content  string
 	Revision string
+	Sequence uint64
 }
 
 // SkillInjection is the explicitly requested portion of a Skill that becomes
@@ -65,16 +67,19 @@ type Manager struct {
 	mu              sync.RWMutex
 	items           []llm.ResponseItem
 	sourceSequences []int64
+	origins         []MessageOrigin
 	updates         map[UpdateKey]contextUpdateState
 	lastSequence    uint64
-	providerUsage   llm.Usage
-	hasUsage        bool
+	tokenInfo       *protocol.TokenUsageInfo
+	activeTokens    int64
+	activeEstimated bool
+	tokenSequence   uint64
 	estimator       Estimator
 }
 
 func NewManager(estimator Estimator) *Manager {
 	if estimator == nil {
-		estimator = ConservativeEstimator{}
+		estimator = ApproxTokenEstimator{}
 	}
 	return &Manager{updates: make(map[UpdateKey]contextUpdateState), estimator: estimator}
 }
@@ -134,6 +139,24 @@ func (manager *Manager) ValidateRecord(firstSequence uint64, items ...rollout.Ro
 	return nil
 }
 
+func (manager *Manager) PreviewRecord(firstSequence uint64, model llm.ModelInfo, prompt llm.Prompt, items ...rollout.RolloutItem) (PromptSnapshot, error) {
+	if manager == nil {
+		return PromptSnapshot{}, errors.New("context manager is nil")
+	}
+	manager.mu.RLock()
+	state := manager.recordState()
+	estimator := manager.estimator
+	manager.mu.RUnlock()
+	for index, item := range items {
+		if err := state.record(firstSequence+uint64(index), item); err != nil {
+			return PromptSnapshot{}, err
+		}
+	}
+	preview := &Manager{updates: make(map[UpdateKey]contextUpdateState), estimator: estimator}
+	preview.applyRecordState(state)
+	return preview.Snapshot(model, prompt), nil
+}
+
 func (manager *Manager) NextSequence() uint64 {
 	if manager == nil {
 		return 1
@@ -158,15 +181,17 @@ func (manager *Manager) Projection() RolloutMessageProjection {
 	}
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	return RolloutMessageProjection{Messages: cloneResponseItems(manager.items), SourceSequences: append([]int64(nil), manager.sourceSequences...)}
+	return RolloutMessageProjection{Messages: cloneResponseItems(manager.items), SourceSequences: append([]int64(nil), manager.sourceSequences...), Origins: append([]MessageOrigin(nil), manager.origins...)}
 }
 
 type recordState struct {
-	projection    RolloutMessageProjection
-	updates       map[UpdateKey]contextUpdateState
-	lastSequence  uint64
-	providerUsage llm.Usage
-	hasUsage      bool
+	projection      RolloutMessageProjection
+	updates         map[UpdateKey]contextUpdateState
+	lastSequence    uint64
+	tokenInfo       *protocol.TokenUsageInfo
+	activeTokens    int64
+	activeEstimated bool
+	tokenSequence   uint64
 }
 
 func newRecordState() recordState {
@@ -179,8 +204,10 @@ func (manager *Manager) recordState() recordState {
 		updates[key] = value
 	}
 	return recordState{
-		projection: RolloutMessageProjection{Messages: cloneResponseItems(manager.items), SourceSequences: append([]int64(nil), manager.sourceSequences...)},
-		updates:    updates, lastSequence: manager.lastSequence, providerUsage: manager.providerUsage, hasUsage: manager.hasUsage,
+		projection: RolloutMessageProjection{Messages: cloneResponseItems(manager.items), SourceSequences: append([]int64(nil), manager.sourceSequences...), Origins: append([]MessageOrigin(nil), manager.origins...)},
+		updates:    updates, lastSequence: manager.lastSequence,
+		tokenInfo: cloneTokenUsageInfo(manager.tokenInfo), activeTokens: manager.activeTokens,
+		activeEstimated: manager.activeEstimated, tokenSequence: manager.tokenSequence,
 	}
 }
 
@@ -206,12 +233,14 @@ func (state *recordState) record(sequence uint64, item rollout.RolloutItem) erro
 				if content == "" {
 					delete(state.updates, key)
 				} else {
-					state.updates[key] = contextUpdateState{Content: content, Revision: strings.TrimSpace(update.Revision)}
+					state.updates[key] = contextUpdateState{Content: content, Revision: strings.TrimSpace(update.Revision), Sequence: sequence}
 				}
 			}
 		case protocol.TokenCountEvent:
-			state.providerUsage = addUsage(state.providerUsage, update.Usage)
-			state.hasUsage = true
+			state.tokenInfo = cloneTokenUsageInfo(update.Info)
+			state.activeTokens = update.ActiveContextTokens
+			state.activeEstimated = update.ActiveContextEstimated
+			state.tokenSequence = update.ObservedThroughSequence
 		}
 	}
 	state.lastSequence = sequence
@@ -221,10 +250,76 @@ func (state *recordState) record(sequence uint64, item rollout.RolloutItem) erro
 func (manager *Manager) applyRecordState(state recordState) {
 	manager.items = state.projection.Messages
 	manager.sourceSequences = state.projection.SourceSequences
+	manager.origins = state.projection.Origins
 	manager.updates = state.updates
 	manager.lastSequence = state.lastSequence
-	manager.providerUsage = state.providerUsage
-	manager.hasUsage = state.hasUsage
+	manager.tokenInfo = cloneTokenUsageInfo(state.tokenInfo)
+	manager.activeTokens = state.activeTokens
+	manager.activeEstimated = state.activeEstimated
+	manager.tokenSequence = state.tokenSequence
+}
+
+func (manager *Manager) TokenSnapshot() TokenSnapshot {
+	if manager == nil {
+		return TokenSnapshot{}
+	}
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return TokenSnapshot{
+		Info: cloneTokenUsageInfo(manager.tokenInfo), ActiveContextTokens: manager.activeTokens,
+		ActiveContextEstimated: manager.activeEstimated, Sequence: manager.tokenSequence,
+	}
+}
+
+func (manager *Manager) ActiveContextTokens(model llm.ModelInfo) (int64, bool) {
+	if manager == nil {
+		return 0, true
+	}
+	manager.mu.RLock()
+	items := cloneResponseItems(manager.items)
+	sequences := append([]int64(nil), manager.sourceSequences...)
+	updates := make([]contextUpdateState, 0, len(manager.updates))
+	for _, update := range manager.updates {
+		updates = append(updates, update)
+	}
+	tokenInfo := cloneTokenUsageInfo(manager.tokenInfo)
+	checkpoint := manager.activeTokens
+	estimatedCheckpoint := manager.activeEstimated
+	tokenSequence := manager.tokenSequence
+	estimator := manager.estimator
+	manager.mu.RUnlock()
+	if tokenInfo == nil {
+		return 0, true
+	}
+	active := checkpoint
+	if active <= 0 {
+		active = tokenInfo.LastTokenUsage.TotalTokens
+	}
+	var suffix []llm.ResponseItem
+	for index, sequence := range sequences {
+		if uint64(sequence) > tokenSequence {
+			suffix = append(suffix, items[index])
+		}
+	}
+	normalizedSuffix := normalizeHistory(suffix, model.Normalized(), estimator)
+	suffixTokens := estimateResponseItems(normalizedSuffix, estimator)
+	if !estimatedCheckpoint {
+		for index := len(normalizedSuffix) - 1; index >= 0; index-- {
+			if normalizedSuffix[index].Role == llm.RoleAssistant {
+				suffixTokens -= estimateResponseItem(normalizedSuffix[index], estimator)
+				break
+			}
+		}
+	}
+	active += max(int64(0), suffixTokens)
+	estimated := estimatedCheckpoint || len(suffix) > 0
+	for _, update := range updates {
+		if update.Sequence > tokenSequence {
+			active += estimateResponseItem(llm.DeveloperMessage(update.Content), estimator)
+			estimated = true
+		}
+	}
+	return active, estimated
 }
 
 func (manager *Manager) Update(key UpdateKey) string {
@@ -245,14 +340,12 @@ func (manager *Manager) UpdateRevision(key UpdateKey) string {
 	return manager.updates[key].Revision
 }
 
-func addUsage(left, right llm.Usage) llm.Usage {
-	return llm.Usage{
-		InputTokens:       left.InputTokens + right.InputTokens,
-		CachedInputTokens: left.CachedInputTokens + right.CachedInputTokens,
-		OutputTokens:      left.OutputTokens + right.OutputTokens,
-		ReasoningTokens:   left.ReasoningTokens + right.ReasoningTokens,
-		TotalTokens:       left.TotalTokens + right.TotalTokens,
+func cloneTokenUsageInfo(info *protocol.TokenUsageInfo) *protocol.TokenUsageInfo {
+	if info == nil {
+		return nil
 	}
+	cloned := info.Clone()
+	return &cloned
 }
 
 func validUpdateKey(key UpdateKey) bool {
@@ -455,8 +548,7 @@ func truncateRunesToTokens(runes []rune, maximum int64, estimator Estimator, fro
 func estimateResponseItems(items []llm.ResponseItem, estimator Estimator) int64 {
 	var total int64
 	for _, item := range items {
-		encoded, _ := json.Marshal(item)
-		total += estimator.EstimateText(string(encoded)) + 4
+		total += estimateResponseItem(item, estimator)
 	}
 	return total
 }

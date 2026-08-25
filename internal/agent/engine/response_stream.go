@@ -99,8 +99,8 @@ func mergeStreamChunk(response *llm.Response, chunk llm.StreamChunk) {
 	response.Message.Content += chunk.ContentDelta
 	response.Message.Reasoning += chunk.ReasoningDelta
 	response.Message.ToolCalls = append(response.Message.ToolCalls, chunk.ToolCalls...)
-	if chunk.Usage != nil {
-		response.Usage = *chunk.Usage
+	if chunk.TokenUsage != nil {
+		response.TokenUsage = *chunk.TokenUsage
 	}
 	if chunk.Completed() {
 		response.FinishReason = chunk.FinishReason

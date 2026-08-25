@@ -32,6 +32,12 @@ func (StatusHistoryCell) IsStreamContinuation() bool { return false }
 
 func (cell StatusHistoryCell) values() []string {
 	snapshot := cell.Snapshot
+	usage := llm.TokenUsage{}
+	contextWindow := int64(0)
+	if snapshot.TokenInfo != nil {
+		usage = snapshot.TokenInfo.TotalTokenUsage
+		contextWindow = snapshot.TokenInfo.ModelContextWindow
+	}
 	values := []string{
 		fmt.Sprintf("Session: %s", displayValue(snapshot.SessionID.String())),
 		fmt.Sprintf("Thread: %s", displayValue(snapshot.ThreadID.String())),
@@ -40,7 +46,7 @@ func (cell StatusHistoryCell) values() []string {
 		fmt.Sprintf("Model: %s / %s", displayValue(snapshot.Provider), displayValue(snapshot.Model)),
 		fmt.Sprintf("Reasoning effort: %s", displayReasoningEffort(snapshot.ReasoningEffort)),
 		fmt.Sprintf("Mode: %s · Phase: %s", displayValue(string(snapshot.Mode)), displayValue(snapshot.Phase)),
-		fmt.Sprintf("Tokens: %d input · %d output · %d total / %d context", snapshot.Usage.InputTokens, snapshot.Usage.OutputTokens, snapshot.Usage.TotalTokens, snapshot.ContextWindow),
+		fmt.Sprintf("Tokens: %d input · %d output · %d total · %d / %d context", usage.InputTokens, usage.OutputTokens, usage.TotalTokens, snapshot.ActiveContextTokens, contextWindow),
 		fmt.Sprintf("Rollout items: %d · Permission grants: %d", snapshot.RolloutItems, snapshot.PermissionGrantCount),
 	}
 	if strings.TrimSpace(snapshot.SkillRevision) != "" || strings.TrimSpace(snapshot.MCPRevision) != "" {

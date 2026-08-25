@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -113,6 +112,12 @@ func (item TurnItem) Validate() error {
 	} else if item.CollabAgent != nil {
 		return errors.New("non-collaboration turn item has collaboration payload")
 	}
+	if item.Kind == ItemContextCompaction {
+		payload, ok := item.Payload.(ContextCompactionItem)
+		if !ok || !payload.Validate() {
+			return errors.New("context compaction item payload is invalid")
+		}
+	}
 	return nil
 }
 
@@ -162,22 +167,28 @@ type CommandOutputDeltaEvent struct {
 func (CommandOutputDeltaEvent) isEventMsg() {}
 
 type TokenCountEvent struct {
-	ThreadID             ThreadID
-	TurnID               TurnID
-	Usage                llm.Usage
-	EstimatedInputTokens int64
-	ContextWindow        int64
+	ThreadID                ThreadID
+	TurnID                  TurnID
+	Info                    *TokenUsageInfo
+	ActiveContextTokens     int64
+	ActiveContextEstimated  bool
+	ObservedThroughSequence uint64
 }
 
 func (TokenCountEvent) isEventMsg() {}
 
-type ContextCompactedEvent struct {
-	ThreadID ThreadID
-	TurnID   TurnID
-	ItemID   ItemID
+func (event TokenCountEvent) Validate() error {
+	if event.ActiveContextTokens < 0 {
+		return errors.New("active context tokens are negative")
+	}
+	if event.Info == nil {
+		return nil
+	}
+	if event.Info.TotalTokenUsage.TotalTokens > 0 && event.ObservedThroughSequence == 0 {
+		return errors.New("token usage checkpoint has no observed history watermark")
+	}
+	return event.Info.Validate()
 }
-
-func (ContextCompactedEvent) isEventMsg() {}
 
 func ScopeItemEventMsg(message EventMsg, threadID ThreadID, turnID TurnID) EventMsg {
 	switch value := message.(type) {
@@ -205,9 +216,6 @@ func ScopeItemEventMsg(message EventMsg, threadID ThreadID, turnID TurnID) Event
 	case TokenCountEvent:
 		value.ThreadID, value.TurnID = threadID, turnID
 		return value
-	case ContextCompactedEvent:
-		value.ThreadID, value.TurnID = threadID, turnID
-		return value
 	default:
 		return message
 	}
@@ -231,8 +239,6 @@ func ItemEventThreadID(message EventMsg) ThreadID {
 		return value.ThreadID
 	case TokenCountEvent:
 		return value.ThreadID
-	case ContextCompactedEvent:
-		return value.ThreadID
 	default:
 		return ThreadID{}
 	}
@@ -255,8 +261,6 @@ func ItemEventTurnID(message EventMsg) TurnID {
 	case PlanDeltaEvent:
 		return value.TurnID
 	case TokenCountEvent:
-		return value.TurnID
-	case ContextCompactedEvent:
 		return value.TurnID
 	default:
 		return ""

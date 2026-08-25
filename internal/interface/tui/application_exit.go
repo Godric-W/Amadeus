@@ -28,7 +28,7 @@ const (
 )
 
 type AppExitInfo struct {
-	TokenUsage llm.Usage
+	TokenUsage llm.TokenUsage
 	ThreadID   protocol.ThreadID
 	ThreadName string
 	ResumeHint string
@@ -64,7 +64,7 @@ type fullscreenExitTarget struct {
 	generation uint64
 	threadID   protocol.ThreadID
 	threadName string
-	tokenUsage llm.Usage
+	tokenUsage llm.TokenUsage
 	resumable  bool
 }
 
@@ -95,7 +95,7 @@ func (model *fullscreenModel) requestExit(mode ExitMode, reason ExitReason, exit
 			generation: model.session.Generation,
 			threadID:   model.session.ThreadID,
 			threadName: strings.TrimSpace(model.session.Title),
-			tokenUsage: model.session.Usage,
+			tokenUsage: model.session.totalTokenUsage(),
 			resumable:  !model.session.ThreadID.IsZero(),
 		},
 	}
@@ -195,7 +195,7 @@ func (model *fullscreenModel) captureExitAppEvent(event application.InteractiveE
 		}
 		if usage, ok := event.Event.Msg.(protocol.TokenCountEvent); ok {
 			model.session.applyTokenCount(usage)
-			model.exit.target.tokenUsage = usage.Usage
+			model.exit.target.tokenUsage = model.session.totalTokenUsage()
 		}
 	case application.ThreadNameUpdated:
 		if event.Generation == model.exit.target.generation && event.ThreadID == model.exit.target.threadID {
@@ -216,7 +216,7 @@ func (model fullscreenModel) appExitInfo() AppExitInfo {
 			generation: model.session.Generation,
 			threadID:   model.session.ThreadID,
 			threadName: strings.TrimSpace(model.session.Title),
-			tokenUsage: model.session.Usage,
+			tokenUsage: model.session.totalTokenUsage(),
 			resumable:  !model.session.ThreadID.IsZero(),
 		}
 	}

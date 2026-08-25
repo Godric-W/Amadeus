@@ -21,7 +21,7 @@ type chatCompletionChunkStream interface {
 type chatCompletionsStream struct {
 	stream            chatCompletionChunkStream
 	pendingCompletion *llm.StreamChunk
-	usage             *llm.Usage
+	usage             *llm.TokenUsage
 	toolCalls         toolCallAggregator
 	dialect           Dialect
 }
@@ -139,7 +139,7 @@ func chatReasoningDelta(dialect Dialect, raw string) (string, error) {
 
 func (stream *chatCompletionsStream) takeCompletion() llm.StreamChunk {
 	completion := *stream.pendingCompletion
-	completion.Usage = stream.usage
+	completion.TokenUsage = stream.usage
 	stream.pendingCompletion = nil
 	stream.usage = nil
 	return completion
@@ -149,8 +149,8 @@ func (stream *chatCompletionsStream) Close() error {
 	return stream.stream.Close()
 }
 
-func chatCompletionsUsage(usage openaisdk.CompletionUsage) llm.Usage {
-	return llm.Usage{
+func chatCompletionsUsage(usage openaisdk.CompletionUsage) llm.TokenUsage {
+	return llm.TokenUsage{
 		InputTokens:       usage.PromptTokens,
 		CachedInputTokens: usage.PromptTokensDetails.CachedTokens,
 		OutputTokens:      usage.CompletionTokens,

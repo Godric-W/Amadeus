@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
 const maxAgentEventTextRunes = 240
@@ -58,6 +59,9 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, event protocol.Event
 		if typed.Item.Kind == protocol.ItemAssistantMessage || typed.Item.Kind == protocol.ItemReasoning {
 			return nil
 		}
+		if typed.Item.Kind == protocol.ItemContextCompaction {
+			return renderer.writeStatus("context: compacting")
+		}
 		return renderer.writeStatus("tool: %s (%s) started", typed.Item.ToolName, typed.Item.CallID)
 	case protocol.ItemCompletedEvent:
 		if typed.Item.Kind == protocol.ItemAssistantMessage {
@@ -65,6 +69,9 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, event protocol.Event
 		}
 		if typed.Item.Kind == protocol.ItemReasoning {
 			return nil
+		}
+		if typed.Item.Kind == protocol.ItemContextCompaction {
+			return renderer.writeStatus("context: %s", map[bool]string{true: "compacted", false: "compaction failed"}[typed.Item.Status == protocol.ItemStatusCompleted])
 		}
 		status := "completed"
 		if typed.Item.Status != protocol.ItemStatusCompleted {
@@ -74,7 +81,11 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, event protocol.Event
 	case protocol.PlanUpdateEvent:
 		return renderer.writeStatus("plan: updated items=%d", len(typed.Plan))
 	case protocol.TokenCountEvent:
-		return renderer.writeStatus("usage: input=%d cached=%d output=%d reasoning=%d total=%d", typed.Usage.InputTokens, typed.Usage.CachedInputTokens, typed.Usage.OutputTokens, typed.Usage.ReasoningTokens, typed.Usage.TotalTokens)
+		usage := llm.TokenUsage{}
+		if typed.Info != nil {
+			usage = typed.Info.TotalTokenUsage
+		}
+		return renderer.writeStatus("usage: input=%d cached=%d output=%d reasoning=%d total=%d context=%d", usage.InputTokens, usage.CachedInputTokens, usage.OutputTokens, usage.ReasoningTokens, usage.TotalTokens, typed.ActiveContextTokens)
 	case protocol.TurnStartedEvent:
 		return renderer.writeStatus("turn: started")
 	case protocol.TurnCompleteEvent:
@@ -98,7 +109,7 @@ func (renderer *AgentRenderer) Publish(ctx context.Context, event protocol.Event
 			return renderer.writeStatus("%s", message)
 		}
 		return renderer.writeStatus("error: %s", message)
-	case protocol.ReasoningContentDeltaEvent, protocol.CommandOutputDeltaEvent, protocol.ContextCompactedEvent:
+	case protocol.ReasoningContentDeltaEvent, protocol.CommandOutputDeltaEvent:
 		return nil
 	default:
 		return nil

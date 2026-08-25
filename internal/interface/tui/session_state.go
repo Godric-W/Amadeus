@@ -11,14 +11,15 @@ import (
 )
 
 type fullscreenSessionState struct {
-	Generation    uint64
-	SessionID     protocol.SessionID
-	ThreadID      protocol.ThreadID
-	Title         string
-	Configuration protocol.SessionConfiguration
-	Usage         llm.Usage
-	ContextUsed   int64
-	ContextWindow int64
+	Generation       uint64
+	SessionID        protocol.SessionID
+	ThreadID         protocol.ThreadID
+	Title            string
+	Configuration    protocol.SessionConfiguration
+	TokenInfo        *protocol.TokenUsageInfo
+	ContextUsed      int64
+	ContextWindow    int64
+	ContextEstimated bool
 }
 
 func (state *fullscreenSessionState) applyConfiguration(configuration protocol.SessionConfiguration) bool {
@@ -30,7 +31,8 @@ func (state *fullscreenSessionState) applyConfiguration(configuration protocol.S
 func (model *fullscreenModel) applyThreadViewSnapshot(snapshot application.ThreadViewSnapshot) tea.Cmd {
 	model.session = fullscreenSessionState{
 		Generation: snapshot.Generation, SessionID: snapshot.SessionID, ThreadID: snapshot.ThreadID, Title: snapshot.Title,
-		Usage: snapshot.Usage, ContextUsed: snapshot.Usage.TotalTokens, ContextWindow: snapshot.ContextWindow,
+		TokenInfo: cloneTUITokenInfo(snapshot.TokenInfo), ContextUsed: snapshot.ActiveContextTokens,
+		ContextWindow: tokenInfoContextWindow(snapshot.TokenInfo), ContextEstimated: snapshot.ActiveContextEstimated,
 	}
 	model.workspace = statusLineWorkspaceState{}
 	return model.applySessionConfiguration(snapshot.Configuration)
@@ -43,16 +45,32 @@ func (model *fullscreenModel) applySessionConfigured(event protocol.SessionConfi
 }
 
 func (state *fullscreenSessionState) applyTokenCount(event protocol.TokenCountEvent) {
-	state.Usage = event.Usage
-	if event.EstimatedInputTokens > 0 {
-		state.ContextUsed = event.EstimatedInputTokens
+	state.TokenInfo = cloneTUITokenInfo(event.Info)
+	state.ContextUsed = event.ActiveContextTokens
+	state.ContextEstimated = event.ActiveContextEstimated
+	state.ContextWindow = tokenInfoContextWindow(event.Info)
+}
+
+func (state fullscreenSessionState) totalTokenUsage() (usage llm.TokenUsage) {
+	if state.TokenInfo != nil {
+		return state.TokenInfo.TotalTokenUsage
 	}
-	if event.Usage.InputTokens > 0 {
-		state.ContextUsed = event.Usage.InputTokens
+	return usage
+}
+
+func cloneTUITokenInfo(info *protocol.TokenUsageInfo) *protocol.TokenUsageInfo {
+	if info == nil {
+		return nil
 	}
-	if event.ContextWindow > 0 {
-		state.ContextWindow = event.ContextWindow
+	cloned := info.Clone()
+	return &cloned
+}
+
+func tokenInfoContextWindow(info *protocol.TokenUsageInfo) int64 {
+	if info == nil {
+		return 0
 	}
+	return info.ModelContextWindow
 }
 
 func (state fullscreenSessionState) mode() turn.ModeKind {

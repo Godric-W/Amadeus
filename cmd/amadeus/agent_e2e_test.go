@@ -48,12 +48,12 @@ func (client *codingWorkflowClient) Stream(_ context.Context, request llm.Reques
 		call = llm.ToolCall{ID: "test-project", Name: "execute_command", Arguments: json.RawMessage(`{"command":"go test ./...","timeout_ms":30000}`)}
 	default:
 		return &codingCommandStream{chunks: []llm.StreamChunk{
-			{ID: "workflow-final", ContentDelta: "fixed Add and verified go test", Usage: &llm.Usage{InputTokens: 20, OutputTokens: 6, TotalTokens: 26}},
+			{ID: "workflow-final", ContentDelta: "fixed Add and verified go test", TokenUsage: &llm.TokenUsage{InputTokens: 20, OutputTokens: 6, TotalTokens: 26}},
 			{ID: "workflow-final", FinishReason: llm.FinishReasonStop, ProviderFinishReason: "stop"},
 		}}, nil
 	}
 	return &codingCommandStream{chunks: []llm.StreamChunk{
-		{ID: "workflow-tool", ToolCalls: []llm.ToolCall{call}, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}},
+		{ID: "workflow-tool", ToolCalls: []llm.ToolCall{call}, TokenUsage: &llm.TokenUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}},
 		{ID: "workflow-tool", FinishReason: llm.FinishReasonToolCalls, ProviderFinishReason: "tool_calls"},
 	}}, nil
 }
@@ -316,7 +316,7 @@ func (client *skillWorkflowClient) Stream(_ context.Context, request llm.Request
 		return skillWorkflowToolStream("read-reference", "read_skill", `{"name":"review","path":"guide.md"}`), nil
 	case 3:
 		return &codingCommandStream{chunks: []llm.StreamChunk{
-			{ID: "skill-final", ContentDelta: "review Skill was loaded", Usage: &llm.Usage{InputTokens: 20, OutputTokens: 6, TotalTokens: 26}},
+			{ID: "skill-final", ContentDelta: "review Skill was loaded", TokenUsage: &llm.TokenUsage{InputTokens: 20, OutputTokens: 6, TotalTokens: 26}},
 			{ID: "skill-final", FinishReason: llm.FinishReasonStop, ProviderFinishReason: "stop"},
 		}}, nil
 	default:
@@ -326,7 +326,7 @@ func (client *skillWorkflowClient) Stream(_ context.Context, request llm.Request
 
 func skillWorkflowToolStream(id, name, arguments string) llm.Stream {
 	return &codingCommandStream{chunks: []llm.StreamChunk{
-		{ID: id, ToolCalls: []llm.ToolCall{{ID: id, Name: name, Arguments: json.RawMessage(arguments)}}, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}},
+		{ID: id, ToolCalls: []llm.ToolCall{{ID: id, Name: name, Arguments: json.RawMessage(arguments)}}, TokenUsage: &llm.TokenUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}},
 		{ID: id, FinishReason: llm.FinishReasonToolCalls, ProviderFinishReason: "tool_calls"},
 	}}
 }

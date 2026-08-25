@@ -11,6 +11,12 @@ type EncodedEventMsg struct {
 }
 
 func EncodeEventMsg(message EventMsg) (EncodedEventMsg, error) {
+	message = eventMsgValue(message)
+	if tokenCount, ok := message.(TokenCountEvent); ok {
+		if err := tokenCount.Validate(); err != nil {
+			return EncodedEventMsg{}, err
+		}
+	}
 	kind, err := eventMsgType(message)
 	if err != nil {
 		return EncodedEventMsg{}, err
@@ -67,8 +73,6 @@ func DecodeEventMsg(encoded EncodedEventMsg) (EventMsg, error) {
 		message = &PlanDeltaEvent{}
 	case "token_count":
 		message = &TokenCountEvent{}
-	case "context_compacted":
-		message = &ContextCompactedEvent{}
 	case "context_update":
 		message = &ContextUpdateEvent{}
 	case "subagent_notification":
@@ -82,7 +86,13 @@ func DecodeEventMsg(encoded EncodedEventMsg) (EventMsg, error) {
 	if err := json.Unmarshal(encoded.Payload, message); err != nil {
 		return nil, fmt.Errorf("decode event message %q: %w", encoded.Type, err)
 	}
-	return eventMsgValue(message), nil
+	message = eventMsgValue(message)
+	if tokenCount, ok := message.(TokenCountEvent); ok {
+		if err := tokenCount.Validate(); err != nil {
+			return nil, fmt.Errorf("decode event message %q: %w", encoded.Type, err)
+		}
+	}
+	return message, nil
 }
 
 func eventMsgType(message EventMsg) (string, error) {
@@ -129,8 +139,6 @@ func eventMsgType(message EventMsg) (string, error) {
 		return "plan_delta", nil
 	case TokenCountEvent:
 		return "token_count", nil
-	case ContextCompactedEvent:
-		return "context_compacted", nil
 	case ContextUpdateEvent:
 		return "context_update", nil
 	case SubagentNotificationEvent:
@@ -183,8 +191,6 @@ func eventMsgValue(message EventMsg) EventMsg {
 	case *PlanDeltaEvent:
 		return *value
 	case *TokenCountEvent:
-		return *value
-	case *ContextCompactedEvent:
 		return *value
 	case *ContextUpdateEvent:
 		return *value

@@ -14,7 +14,7 @@ import (
 
 func TestFullscreenExitUsesShutdownThenFrameDrain(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
-	model.session.Usage = llm.Usage{InputTokens: 7, OutputTokens: 3, TotalTokens: 10}
+	model.session.TokenInfo = &protocol.TokenUsageInfo{TotalTokenUsage: llm.TokenUsage{InputTokens: 7, OutputTokens: 3, TotalTokens: 10}}
 	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashExit})
 	model = updated.(fullscreenModel)
 	if command == nil || !model.exit.shuttingDown() {
@@ -86,15 +86,14 @@ func TestFullscreenExitCapturesFinalUsageWithoutRenderingEvents(t *testing.T) {
 	model.requestExit(ExitModeShutdownFirst, ExitReasonUserRequested, nil)
 	event := application.SessionEventObserved{
 		Generation: model.session.Generation,
-		Event: protocol.Event{Msg: protocol.TokenCountEvent{
-			ThreadID: model.session.ThreadID,
-			Usage:    llm.Usage{InputTokens: 11, OutputTokens: 4, TotalTokens: 15},
-		}},
+		Event: protocol.Event{Msg: protocol.ScopeEventMsg(
+			protocol.NewTokenCountEvent(llm.TokenUsage{InputTokens: 11, OutputTokens: 4, TotalTokens: 15}, 128_000, 1), model.session.ThreadID, "turn-1",
+		)},
 	}
 	updated, command := model.Update(fullscreenAppEventMsg{event: event})
 	model = updated.(fullscreenModel)
-	if command != nil || model.session.Usage.TotalTokens != 15 || len(model.historyCells) != 0 {
-		t.Fatalf("exit event projection usage=%#v cells=%d command=%v", model.session.Usage, len(model.historyCells), command != nil)
+	if command != nil || model.session.totalTokenUsage().TotalTokens != 15 || len(model.historyCells) != 0 {
+		t.Fatalf("exit event projection usage=%#v cells=%d command=%v", model.session.totalTokenUsage(), len(model.historyCells), command != nil)
 	}
 }
 

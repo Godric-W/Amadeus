@@ -124,6 +124,22 @@ func (session *Session) RolloutItemCount() int {
 	return session.state.Context.RolloutItemCount()
 }
 
+func (session *Session) TokenCountSnapshot() protocol.TokenCountEvent {
+	if session == nil || session.state.Context == nil {
+		return protocol.TokenCountEvent{}
+	}
+	snapshot := session.state.Context.TokenSnapshot()
+	active, estimated := session.state.Context.ActiveContextTokens(session.services.ModelInfo())
+	if active <= 0 {
+		active = snapshot.ActiveContextTokens
+		estimated = snapshot.ActiveContextEstimated
+	}
+	return protocol.TokenCountEvent{
+		Info: cloneProtocolTokenUsageInfo(snapshot.Info), ActiveContextTokens: active,
+		ActiveContextEstimated: estimated,
+	}
+}
+
 func (session *Session) Rename(ctx context.Context, title string, at time.Time) error {
 	if session == nil {
 		return errors.New("session is nil")

@@ -88,6 +88,9 @@ func (event Event) Validate() error {
 	if configured, ok := event.Msg.(SessionConfiguredEvent); ok {
 		return configured.Validate()
 	}
+	if tokenCount, ok := event.Msg.(TokenCountEvent); ok {
+		return tokenCount.Validate()
+	}
 	return nil
 }
 

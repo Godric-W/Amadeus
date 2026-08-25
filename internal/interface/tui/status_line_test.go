@@ -82,3 +82,14 @@ func TestFixedStatusLineItemOrder(t *testing.T) {
 		t.Fatalf("fixed status line order = %#v, want %#v", fixedStatusLineItems, want)
 	}
 }
+
+func TestStatusLineMarksEstimatedContextUsage(t *testing.T) {
+	_, model := newTestFullscreen(t, nil)
+	model.session.ContextUsed = 64_000
+	model.session.ContextWindow = 128_000
+	model.session.ContextEstimated = true
+	value, ok := model.statusLineValueForItem(statusLineItemContextUsed)
+	if !ok || value != "Context ~50% used" {
+		t.Fatalf("estimated context status = %q available=%v", value, ok)
+	}
+}

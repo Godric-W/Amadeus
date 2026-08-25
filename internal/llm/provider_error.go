@@ -18,6 +18,7 @@ const (
 	ProviderErrorNetwork        ProviderErrorKind = "network"
 	ProviderErrorCancelled      ProviderErrorKind = "cancelled"
 	ProviderErrorTimeout        ProviderErrorKind = "timeout"
+	ProviderErrorContextWindow  ProviderErrorKind = "context_window_exceeded"
 	ProviderErrorInvalidRequest ProviderErrorKind = "invalid_request"
 	ProviderErrorUnavailable    ProviderErrorKind = "unavailable"
 	ProviderErrorProtocol       ProviderErrorKind = "protocol"
@@ -81,6 +82,7 @@ func (kind ProviderErrorKind) Valid() bool {
 		ProviderErrorNetwork,
 		ProviderErrorCancelled,
 		ProviderErrorTimeout,
+		ProviderErrorContextWindow,
 		ProviderErrorInvalidRequest,
 		ProviderErrorUnavailable,
 		ProviderErrorProtocol,

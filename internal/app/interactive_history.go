@@ -5,13 +5,14 @@ import (
 	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
 type RolloutProjection struct {
-	Items []protocol.TurnItem
-	Usage llm.Usage
+	Items                  []protocol.TurnItem
+	TokenInfo              *protocol.TokenUsageInfo
+	ActiveContextTokens    int64
+	ActiveContextEstimated bool
 }
 
 func ProjectRolloutItems(lines []rollout.Line) (RolloutProjection, error) {
@@ -41,7 +42,7 @@ func ProjectRolloutItems(lines []rollout.Line) (RolloutProjection, error) {
 			projected := protocol.TurnItem{
 				ID: protocol.ItemID(fmt.Sprintf("compaction-%d", line.Sequence)), Kind: protocol.ItemContextCompaction,
 				Status: protocol.ItemStatusCompleted, CreatedAt: line.Timestamp, CompletedAt: line.Timestamp,
-				Payload: item,
+				Payload: protocol.ContextCompactionItem{Trigger: item.Trigger, Reason: item.Reason, Phase: item.Phase},
 			}
 			if err := projected.Validate(); err != nil {
 				return RolloutProjection{}, fmt.Errorf("project compaction at sequence %d: %w", line.Sequence, err)
@@ -75,20 +76,9 @@ func (projection *RolloutProjection) applyEvent(line rollout.Line, message proto
 		}
 		projection.Items = append(projection.Items, cloneTurnItem(event.Item))
 	case protocol.TokenCountEvent:
-		projection.Usage = addProjectedUsage(projection.Usage, event.Usage)
-	case protocol.ContextCompactedEvent:
-		itemID := event.ItemID
-		if itemID == "" {
-			itemID = protocol.ItemID(fmt.Sprintf("compaction-event-%d", line.Sequence))
-		}
-		projected := protocol.TurnItem{
-			ID: itemID, Kind: protocol.ItemContextCompaction, Status: protocol.ItemStatusCompleted,
-			CreatedAt: line.Timestamp, CompletedAt: line.Timestamp, Payload: event,
-		}
-		if err := projected.Validate(); err != nil {
-			return fmt.Errorf("project context compaction at sequence %d: %w", line.Sequence, err)
-		}
-		projection.Items = append(projection.Items, projected)
+		projection.TokenInfo = cloneTokenInfo(event.Info)
+		projection.ActiveContextTokens = event.ActiveContextTokens
+		projection.ActiveContextEstimated = event.ActiveContextEstimated
 	}
 	return nil
 }
@@ -101,11 +91,10 @@ func cloneTurnItem(item protocol.TurnItem) protocol.TurnItem {
 	return item
 }
 
-func addProjectedUsage(total, next llm.Usage) llm.Usage {
-	total.InputTokens += next.InputTokens
-	total.CachedInputTokens += next.CachedInputTokens
-	total.OutputTokens += next.OutputTokens
-	total.ReasoningTokens += next.ReasoningTokens
-	total.TotalTokens += next.TotalTokens
-	return total
+func cloneTokenInfo(info *protocol.TokenUsageInfo) *protocol.TokenUsageInfo {
+	if info == nil {
+		return nil
+	}
+	cloned := info.Clone()
+	return &cloned
 }

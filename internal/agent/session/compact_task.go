@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
-	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
 func (sessionTask *compactTask) Run(ctx context.Context, session *Session, turnContext *turn.TurnContext) (TaskOutput, error) {
@@ -18,12 +16,11 @@ func (sessionTask *compactTask) Run(ctx context.Context, session *Session, turnC
 	if err != nil {
 		return TaskOutput{}, err
 	}
-	items, err := sessionTask.runtime.Compact(ctx, engine.CompactRequest{
-		History: session.ContextProjection(), ModelSession: modelSession,
-		Reasoning: llm.ReasoningConfigForEffort(turnContext.ReasoningEffort), Metadata: requestMetadata(*turnContext), Events: sessionTask.events,
+	_, err = session.runCompaction(ctx, sessionTask.runtime, modelSession, *turnContext, nil, sessionTask.events, compactionInvocation{
+		Trigger: protocol.CompactionTriggerManual, Reason: protocol.CompactionReasonUserRequested, Phase: protocol.CompactionPhaseStandaloneTurn,
 	})
 	if err != nil {
 		return TaskOutput{}, err
 	}
-	return TaskOutput{Items: items, Summary: "result: completed", Outcome: protocol.TurnOutcomeCompleted}, nil
+	return TaskOutput{Summary: "result: completed", Outcome: protocol.TurnOutcomeCompleted}, nil
 }

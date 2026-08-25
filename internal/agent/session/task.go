@@ -6,16 +6,12 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
-	"github.com/Godric-W/Amadeus/internal/llm"
-	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
 type TaskOutput struct {
-	Items         []rollout.RolloutItem
 	Summary       string
 	Outcome       protocol.TurnOutcome
 	Reason        string
-	Usage         llm.Usage
 	ToolCallCount int
 }
 

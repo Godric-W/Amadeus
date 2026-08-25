@@ -1,7 +1,7 @@
 # Amadeus 架构设计
 
 > 状态：Target Architecture v2
-> 最近修订：2026-08-24
+> 最近修订：2026-08-25
 > 目标语言：Go
 > 产品形态：面向真实软件工程任务的本地 Coding Agent CLI
 > 架构骨架：`../codex-main`
@@ -65,10 +65,14 @@ Amadeus 当前处于未发布开发阶段，不承诺自身旧实现的任何兼
 | M. Codex Architecture Realignment | Protocol identity、typed Rollout、SessionState/Services、SessionTask、StepContext 与 legacy cleanup |
 | N. Runtime Coordination Tools + Plan Mode Alignment | `update_plan`、`request_user_input`、Collaboration Mode 与 Proposed Plan lifecycle |
 | O. Same-Turn User Input + Turn Steer Alignment | UserMessageAdmission、TurnInputQueue、same-Turn continuation、client message identity 与 TUI steer UX |
+| P. Model Reasoning Effort + Provider Thinking Contract | ReasoningEffort、Turn freeze、Provider Dialect 与 wire mapping |
+| Q. Web + View Image Tool Contract Closure | pinned Web transport、typed Web result、image preparation、modality budget 与 ViewImageCell |
 | R. Basic Multi-Agent Alignment | Codex V1 风格 AgentControl、SubAgent Thread、协作 Tool、Prompt、Event/Rollout 与 TUI projection |
+| S. Codex-style Fullscreen TUI Architecture Alignment | Session snapshot、fixed statusline、Footer state、workspace metadata 与 exit lifecycle |
 | T. Thread + Session UUID Identity Alignment | UUIDv7 ThreadID、SessionID/ThreadID 语义、创建/恢复生命周期、Persistence 与 Resume boundary |
 | U. Next-Turn User Input Queue Alignment | Codex 风格 Composer queue、下一 Turn FIFO、terminal drain、失败恢复、attachment isolation 与 pre-enqueue Footer hint |
 | V. Versionless Config Schema + Example Naming | 删除顶层 version gate、严格当前 schema、`config.yaml.example` 模板与旧配置零兼容 |
+| W. Context Accounting + Compaction Realignment | TokenUsageInfo、active context、结构化 TokenEstimator、手动/自动 Compaction、atomic install 与 live/Resume 等价 |
 
 ## 2. 产品目标
 
@@ -96,7 +100,8 @@ Amadeus 的目标是成为一个真正可用于日常软件开发的通用 Codin
 | Agent Runtime | Codex | Session、SessionState、SessionServices、TurnContext、StepContext、SessionTask 与单一 `run_turn` continuation loop |
 | Multi-Agent | Codex 为骨架、Claude Code 为能力过滤参考 | SubAgent 是完整 AmadeusThread/Session；同一 Root tree 共享 AgentControl，首版采用 Codex V1 生命周期和协作 Tool，并使用 Claude Code 风格 child Tool allowlist、独立上下文与权限不升级原则 |
 | Plan | Codex | `update_plan` 是 transient 软 checklist Event；`/plan` 是 Collaboration Mode；最终方案使用 `<proposed_plan>`、`PlanDeltaEvent` 与 completed Plan TurnItem |
-| Context Manager | Codex 为骨架 | 统一历史投影、Token Accounting 和 Compaction 生命周期 |
+| Context Manager | Codex 为骨架 | 统一历史投影；区分 Thread 累计 Token 消耗、最近请求 Usage、当前 active context 与 preflight estimate |
+| Compaction | Codex | Session 拥有 trigger/reason/phase、Item lifecycle、durable replacement install 与 token recompute；CompactionService 只生成 typed output |
 | Prompt Assembly | Codex | Prompt、BaseInstructions、ResponseItem、ToolSpec、ModelMessages、WorldState、CollaborationModeState 和 ContextualUserFragment 使用 Codex 同构职责；不保留旧 Prompt 构造双轨 |
 | 普通/Plan/Compact Prompt | Codex | 普通 Turn 复用 ModelInstructions + WorldState + Conversation + ToolSpec；Plan 使用 CollaborationModeMessages.plan；Compact 使用 Codex summarization prompt 与 summary prefix |
 | Tool 路由与内层协议 | Codex + Claude Code | StepContext 捕获本次 ToolRouter/ToolSet；ToolExecutionService 执行 Validate、Prepare、Permission、Approval、Execute 和 Typed ToolResult |
@@ -249,10 +254,11 @@ internal/app/                Application Services
 internal/thread/             LiveThread、ThreadStore、InitialHistory 与恢复逻辑
 internal/thread/local/       LocalThreadStore 组合与本地路径布局
 internal/thread/manager/     ThreadManager 与 AmadeusThread
-internal/agent/session/      Session、SessionState、SessionServices、ActiveTurn、RunningTask、SessionTask、StepContext 与 run_turn
+internal/agent/session/      Session、SessionState、SessionServices、ActiveTurn、RunningTask、SessionTask、StepContext、context-window policy 与 run_turn
+internal/agent/compact/      Compaction domain、Prompt request builder 与无状态摘要生成服务
 internal/agent/turn/         TurnContext、ModeKind 与 Personality
-internal/agent/protocol/     Identity、Submission、Event、EventMsg 与 TurnItem DTO
-internal/context/            ContextManager、Token Accounting、Projection 与 Compaction
+internal/agent/protocol/     Identity、Submission、Event、EventMsg、TurnItem DTO 与稳定 Compaction lifecycle enums
+internal/context/            ContextManager、Token Accounting、Prompt estimate、Projection 与 replacement validation
 internal/prompt/             BaseInstructions、Prompt 与内置 Prompt 资产
 internal/llm/                LLM Domain Port
 internal/llm/openai/         OpenAI-compatible Adapter
@@ -313,6 +319,12 @@ internal/agent/session/
   session.go                 Session 状态机、submission loop 与 Turn 生命周期
   host.go                    canonical append、ContextManager 增量 record 与 Session host API
   interaction.go             Event/EventMsg 发布与 correlated Approval/User Input waiter
+  context_window.go          active/preflight Token status、auto-compact policy 与 typed limit failure
+  compaction.go              trigger/reason/phase、source capture、durable install 与 token recompute
+
+internal/agent/compact/
+  types.go                   CompactionSource/Request/Output，复用 Protocol trigger/reason/phase
+  service.go                 Codex compact Prompt request 和 typed summary/replacement 生成
 
 internal/interface/tui/
   application.go             Fullscreen Application 类型、生命周期与模型装配
@@ -627,7 +639,7 @@ type CollaborationMode struct {
 
 基础版只要求 `ModeKind`；顶层 `model_reasoning_effort` 是全局 Model/Runtime override，不属于按模式设置。当 Amadeus 真正支持按模式覆盖模型、reasoning effort 或 developer instructions 时，再按 Codex 扩展 `CollaborationMode.Settings`，不得提前建立空壳配置层。TUI 不定义 `Execute/Plan` 第二套模式 enum；UI、Protocol、Session、TurnContext 和 Rollout 统一使用 `Default/Plan`。
 
-Session 从 `InitialHistory` 恢复 ContextManager、PreviousTurnSettings 和当前 SessionConfiguration；canonical Rollout 由 LiveThread/ThreadStore 持有，SessionState 不再并列保存第二份 `[]RolloutLine`。`update_plan` checklist 不是 SessionState，也不从 Rollout 恢复；它只作为当前运行期间的 transient `PlanUpdateEvent` 交给 Interface 展示。Proposed Plan 也不是 SessionState：模型原始 ResponseItem 与 completed Plan TurnItem 进入 canonical history，未决 parser、stream buffer 和实施 Popup 不恢复。StoredThread 只用于定位 Rollout 和展示索引元数据。SessionPermissionContext 是 SessionServices 中的瞬时服务，Session spawn 时重新初始化，Resume 不恢复历史 grant。
+Session 从 `InitialHistory` 恢复 ContextManager、ContextManager 内最后一个 TokenUsageInfo snapshot、PreviousTurnSettings 和当前 SessionConfiguration；恢复完成后根据 replacement history 与最后一个 TokenCount checkpoint sequence 后的 local suffix 重算 ActiveContextTokens。canonical Rollout 由 LiveThread/ThreadStore 持有，SessionState 不再并列保存第二份 `[]RolloutLine`。`update_plan` checklist 不是 SessionState，也不从 Rollout 恢复；它只作为当前运行期间的 transient `PlanUpdateEvent` 交给 Interface 展示。Proposed Plan 也不是 SessionState：模型原始 ResponseItem 与 completed Plan TurnItem 进入 canonical history，未决 parser、stream buffer 和实施 Popup 不恢复。StoredThread 只用于定位 Rollout 和展示索引元数据。SessionPermissionContext 是 SessionServices 中的瞬时服务，Session spawn 时重新初始化，Resume 不恢复历史 grant。
 
 ### 8.8 SessionServices
 
@@ -647,7 +659,7 @@ type SessionServices struct {
     Approvals    ApprovalService
     UserInput    UserInputRequester
     Permissions  *SessionPermissionContext
-    Compactor    Compactor
+    Compaction   *CompactionService
     TimeProvider TimeProvider
     NextID       IDFactory
 }
@@ -659,7 +671,8 @@ Composition Root 只构造外部 Adapter 和创建 Session 所需参数；Sessio
 
 - CLI flags 和 invocation 必须先归一化为 typed SessionConfiguration 或 `Submission{ID, Op}`，再跨越 Runtime 边界。
 - `SessionState.Configuration` 是当前 Session 配置的唯一事实源；SessionServices 或 closure 不得保存另一份 configured snapshot。
-- Provider client、ToolRegistry、ToolExecutionService、ProcessManager、AgentsMdManager、Approval、Permission、MCP、Skill、Web 和 Compactor 不得在每个 Turn 中重新创建。
+- Provider client、ToolRegistry、ToolExecutionService、ProcessManager、AgentsMdManager、Approval、Permission、MCP、Skill、Web 和 CompactionService 不得在每个 Turn 中重新创建。
+- CompactionService 只接收 immutable CompactionRequest 并返回 typed CompactionOutput；它不读取或修改 Session、ContextManager、Rollout、TUI、TokenUsageInfo 或 ActiveTurn，也不构造 canonical RolloutItem。
 - Session 根据 Op 和 Turn 类型直接创建 `RegularTask`、`CompactTask` 或后续 ReviewTask。
 - `RegularTask` 持有从 `UserInputOp` 接纳的目标、scoped EventSink 和 SessionServices 引用，并以 Session、TurnContext 和 cancellation 调用 Session 模块内 `run_turn`；Task 不持有或关闭 SessionServices。
 - SessionTask 不反向调用 Application 的 `execute*Turn` 方法，也不持有 `cmd/amadeus` controller、Cobra command、TUI model 或完整 CLI invocation。
@@ -806,7 +819,7 @@ type TurnState struct {
 }
 ```
 
-ActiveTurn 只保存当前 Submission correlation、RunningTask 和 TurnState。TurnState 是当前 Turn 的可变协调状态：Approval 与 `request_user_input` 使用不同 Request/Response 类型，但都由 Session Loop 按 RequestID 注册、交付和清理；`pendingInput` 保存已接纳但尚未进入模型 history 的同 Turn 输入，两者不得复用 channel、RequestID 或 payload。Usage 与 Tool Call 计数由 `run_turn` 累计并通过最小 `TaskOutput` 返回；SessionPermissionContext 属于 SessionServices。Turn 完成后，Session 清除 pending waiter、TurnInputQueue 与 ActiveTurn，历史 Turn 生命周期继续保存在 canonical Rollout 中。
+ActiveTurn 只保存当前 Submission correlation、RunningTask 和 TurnState。TurnState 是当前 Turn 的可变协调状态：Approval 与 `request_user_input` 使用不同 Request/Response 类型，但都由 Session Loop 按 RequestID 注册、交付和清理；`pendingInput` 保存已接纳但尚未进入模型 history 的同 Turn 输入，两者不得复用 channel、RequestID 或 payload。Tool Call count 和安全预算进度由 `run_turn` 累计；每个成功 Model/Compaction request 的 TokenUsage 立即交给 Session 更新 TokenUsageInfo，不等待 TaskOutput 或 Turn terminal 批量汇总。SessionPermissionContext 属于 SessionServices。Turn 完成后，Session 清除 pending waiter、TurnInputQueue 与 ActiveTurn，历史 Turn 生命周期继续保存在 canonical Rollout 中。
 
 ### 8.13 RunningTask 与 SessionTask
 
@@ -825,7 +838,7 @@ const (
 )
 ```
 
-SessionTask 直接使用 Session 提供的 typed 方法。ContextManager 的 mutation 只能由 Session 对已接纳的 canonical facts 执行。`TaskOutput` 只表达任务产生的最小业务输出。TurnCompleteEvent、TurnAbortedEvent、ErrorEvent、Usage、Tool count、canonical append 和 Event 发布由 Session 统一创建。`RunningTask` 是 Session 保存的运行记录，持有具体 Task、TaskKind、TurnContext、cancellation、execution handle 和 completion notification；启动 goroutine、取消、清理 ActiveTurn 与终态收尾属于 Session。基础版只有 Regular 可 steer，Compact 明确返回 `ActiveTurnNotSteerable`；不得继续使用 `compact bool` 作为 Task identity 或 steerability 判断。
+SessionTask 直接使用 Session 提供的 typed 方法。ContextManager 的 mutation 只能由 Session 对已接纳的 canonical facts 执行。`TaskOutput` 只表达 Turn outcome、summary/reason 和 Tool Call count，不携带跨 Model Step 聚合 Usage，也不返回待 Session 在 Turn 尾部安装的 CompactedItem。TurnCompleteEvent、TurnAbortedEvent、ErrorEvent、TokenUsageInfo、canonical append 和 Event 发布由 Session 统一创建。`RunningTask` 是 Session 保存的运行记录，持有具体 Task、TaskKind、TurnContext、cancellation、execution handle 和 completion notification；启动 goroutine、取消、清理 ActiveTurn 与终态收尾属于 Session。基础版只有 Regular 可 steer，Compact 明确返回 `ActiveTurnNotSteerable`；不得继续使用 `compact bool` 作为 Task identity 或 steerability 判断。
 
 首批 SessionTask：
 
@@ -860,6 +873,26 @@ type RolloutItem interface {
 - `EventMsgItem`
 
 `ResponseItem` 保存模型可见的 User/Assistant/Reasoning/Tool Call/Tool Result 事实；需要恢复的 Turn/Item 生命周期、Plan、Token、Context、Approval 结果和终态使用对应的 typed `EventMsg` 原样持久化。
+
+`CompactedItem` 是 replacement install 的 canonical checkpoint，而不是摘要字符串 wrapper：
+
+```go
+type CompactedItem struct {
+    ThreadID               ThreadID
+    TurnID                 TurnID
+    Trigger                CompactionTrigger
+    Reason                 CompactionReason
+    Phase                  CompactionPhase
+    Summary                string
+    ReplacementHistory     []ResponseItem
+    CoveredThroughSequence int64
+    SourceHash             string
+    Provider               string
+    Model                  string
+}
+```
+
+ReplacementHistory 必须能无损表达当前 LLM domain 的 typed ResponseItem；Role/Content-only DTO、map payload 或从 summary 文本反解析角色均不允许进入当前格式。CompactedItem 与随后同批写入的 TokenCountEvent.Info 一起建立新 active context checkpoint；旧 RolloutLine 保留但不再进入后续模型投影。
 
 ItemStartedEvent、ItemCompletedEvent、TurnCompleteEvent、TurnAbortedEvent 等是否持久化由统一 store policy 决定；高频 Delta、Working、未决 ApprovalRequestEvent、未决 RequestUserInputEvent 和 retrying StreamErrorEvent 默认不持久化。Resume 只读取当前版本 typed RolloutItem，并由同一 Event/ResponseItem projector 重建 Context 与 UI。
 
@@ -1022,17 +1055,18 @@ User Input
 → 发布 TurnStartedEvent
 → RegularTask 调用 Session 模块内 run_turn
 → capture StepContext：AgentsMd、环境、MCP binding、Skill snapshot 与 ToolRouter snapshot
-→ 必要时通过 Compactor 追加 CompactedItem/ContextCompactedEvent 并重新 capture StepContext
+→ 计算 ContextWindowTokenStatus，必要时由 Session inline runCompaction 并重新 capture StepContext
 → Turn-scoped ModelClientSession 发起 LLM Stream
 → 发布 ItemStartedEvent 与 Agent/Reasoning Delta Event
 → 模型完成一个 ResponseItem 后 canonical append ResponseItem 与需要持久化的 ItemCompletedEvent
+→ Session 立即记录本次 TokenUsageInfo snapshot 并发布 TokenCountEvent
 → 发布 ItemCompletedEvent
 → 若存在 Tool Call，使用同一 StepContext 的 Tool Router 执行
 → Tool + Approval Event/Response Runtime
 → canonical append Tool Result 与需要持久化的 ItemCompletedEvent
 → 下一 Model Step 重新 capture StepContext
 → 模型返回 Final Response 后结束 run_turn
-→ Session 追加 TokenCount 与 TurnComplete EventMsg
+→ Session 追加 TurnComplete EventMsg
 → flush JSONL canonical rollout
 → MetadataSync 更新 SQLite StoredThread
 → Session 清除 ActiveTurn
@@ -1049,6 +1083,7 @@ User Input
 5. TUI 消失或动画停止不能代替 Turn 终态。
 6. Resume 通过 StoredThread 定位 Rollout，并由 InitialHistory 重建语义，不恢复 Go goroutine 或旧 RunningTask。
 7. 尚未接纳的 Turn 失败使用 correlated ErrorEvent；已经发出 TurnStartedEvent 的 Turn 必须以 TurnCompleteEvent 或 TurnAbortedEvent 收尾。
+8. 每个成功 Model/Compaction request 的 TokenUsage 只记录一次；TokenCountEvent 是完整 TokenUsageInfo snapshot，不是等待 Turn 结束才写入的 usage delta。
 
 `SessionIo` 是唯一 canonical 生命周期协议。`run_turn`、Tool 和 Application 只通过 Session-owned typed methods 与 `Submission/Event/EventMsg` 边界进入统一主链。
 
@@ -1223,10 +1258,10 @@ ThreadManager
 所有权必须满足：
 
 - Session spawn 时构造完整 SessionServices；不得通过首次 `Prepare` 惰性创建第二层 capability aggregate。
-- Provider client、ToolRegistry、ToolExecutionService、ProcessManager、MCP/Skill/Web、Approval、Permission 和 Compactor 不在每 Turn 重建。
+- Provider client、ToolRegistry、ToolExecutionService、ProcessManager、MCP/Skill/Web、Approval、Permission 和 CompactionService 不在每 Turn 重建。
 - Session 根据 Op 直接创建具体 Task。
 - RegularTask 只把 Session、TurnContext、目标和 cancellation 交给 `run_turn`。
-- CompactTask 与自动压缩共享 SessionServices.Compactor；自动压缩是 `run_turn` 操作，不是嵌套 SessionTask。
+- CompactTask 与自动压缩共享 SessionServices.Compaction，但 trigger/reason/phase、Item lifecycle、TokenUsageInfo 更新和 durable replacement install 都由 Session.runCompaction 负责；自动压缩是 `run_turn` 操作，不是嵌套 SessionTask。
 - Session shutdown 直接关闭 SessionServices 中由本 Session 拥有的资源，不通过 Factory Close 间接释放。
 
 ### 10.2 `run_turn` Contract
@@ -1262,9 +1297,10 @@ Session 是 Task completion、Turn terminal、ActiveTurn cleanup 和 durable ter
 
 ```text
 Capture StepContext
-→ Check Context Budget / Maybe Compact
+→ Compute ContextWindowTokenStatus / Maybe Session.runCompaction
 → Sample Model Stream
 → Persist completed model ResponseItems
+→ Record this request's TokenUsageInfo snapshot
 → If Tool Calls: Execute with the same StepContext
 → Persist one Tool Result for every Tool Call
 → Inspect model continuation and pending TurnInput
@@ -1282,6 +1318,8 @@ Capture StepContext
 - Final Response 不由独立 Analyze 阶段判定；Provider Adapter 输出的标准化 finish reason 与 ResponseItem 决定 continuation。
 - Final Response 只表示当前 sampling request 不再要求模型自身 continuation；当 ActiveTurn 仍有 pending TurnInput 时，`run_turn` 必须在同一 Turn 内继续。
 - `run_turn` 不保存可恢复执行位置；Resume 从 canonical Rollout 重建 Context，再由新 Turn 重新采样。
+- preflight budget 使用 exact StepContext 的 Prompt estimate；response 完成后的 continuation budget 优先使用 Provider-reported LastTokenUsage 加最近模型输出后新增本地 items。二者由同一 ContextWindowTokenStatus 汇合，不能由 PromptSnapshot、TUI 和 Compaction callback 分别判断。
+- compact 成功后必须立即重新计算 active context；若 replacement 没有使 active tokens 显著下降或仍达到硬窗口，同一 history/window 不得再次无界 compact，而应返回 typed `compaction_insufficient`/`context_window_exceeded` failure。
 
 #### 10.3.1 Pending Input Drain 与 Compaction 顺序
 
@@ -1344,7 +1382,7 @@ Provider request retry 与 response stream reconnect 是两个不同生命周期
 - `request_max_retries` 只处理请求建立前后可安全重试的 HTTP/transport failure，由 Provider client/adapter 按统一配置执行；它不产生 Turn-visible `Reconnecting...` 状态。
 - `stream_max_retries` 处理已经建立的 response stream 在完成前断开、idle timeout 或其他可恢复读取错误，由 Turn-scoped `ModelClientSession` 或 Session 模块内专用 response retry helper 负责。
 - `stream_idle_timeout` 定义 response stream 多久无活动后视为连接丢失；Provider Adapter 负责把 transport timeout、Retry-After 和底层错误归一化为 typed `ProviderError`，不拥有 Turn 状态或 TUI 文案。
-- retryability 判定、retry counter、delay、取消、瞬态 Event 和重试耗尽后的最终错误必须由同一 Core owner 串行协调；不得由 OpenAI SDK、TUI 和 Compactor 分别维护三套重试事实。
+- retryability 判定、retry counter、delay、取消、瞬态 Event 和重试耗尽后的最终错误必须由同一 Core owner 串行协调；不得由 OpenAI SDK、TUI 和 CompactionService 分别维护三套重试事实。
 
 当前 Amadeus 只支持 HTTP/SSE Provider transport，因此 K 阶段的连接恢复配置固定为上述 **2 个 retry count + 1 个 stream idle timeout**。Codex 另有 `websocket_connect_timeout_ms`，但 Amadeus 在真正实现 WebSocket transport、capability detection 和 transport fallback 前不得增加无效的 `websocket_connect_timeout` 配置或伪 fallback 分支。
 
@@ -1363,7 +1401,7 @@ Sample Model Stream
 
 重试耗尽或错误不可恢复时，Core 发布 `WillRetry: false` 的最终错误语义并让 `run_turn` 返回 failed result；Session 仍按唯一 Turn terminal protocol 完成 durable terminal append、ActiveTurn cleanup 和 `TurnCompleteEvent`。TUI 不得根据计数或错误字符串自行决定 Turn 是否结束。
 
-普通 sampling、手动 `/compact` 的 CompactTask 和 `run_turn` 内自动 compaction 必须复用同一 response-stream retry policy；Compactor 可以使用不同请求类型和 Prompt，但不得拥有独立、不可观察的 retry loop。
+普通 sampling、手动 `/compact` 的 CompactTask 和 `run_turn` 内自动 compaction 必须复用同一 Turn-scoped ModelClientSession/response-stream retry policy；CompactionService 可以使用不同请求类型和 Prompt，但不得拥有独立、不可观察的 retry loop。
 
 #### 10.4.2 Partial Delta 与恢复边界
 
@@ -1389,7 +1427,7 @@ Response stream retry Event 是 live、transient、non-canonical notification。
 - 最大 Turn wall-clock；
 - Model context/token limit。
 
-这些限制是 Amadeus 明确保留的高阈值 runaway safety，并非声称与 Codex 一比一同构。它们不再暴露旧 `agent.max_iterations`、`agent.max_tool_calls` 或 `agent.max_duration` 配置，避免形成低阈值且行为不稳定的产品契约。接近预算时只向模型注入一次明确的完成提醒，使其总结当前结果；真正耗尽后返回 typed blocked outcome，而不是伪装成 Provider 或 Tool infrastructure error。模型采样、Tool Call、token 与 elapsed time 在 Turn 执行期间累计，最终 Usage/Tool count 进入 TaskOutput，canonical TokenCountEvent 支持 Resume 后重建累计事实。
+这些限制是 Amadeus 明确保留的高阈值 runaway safety，并非声称与 Codex 一比一同构。它们不再暴露旧 `agent.max_iterations`、`agent.max_tool_calls` 或 `agent.max_duration` 配置，避免形成低阈值且行为不稳定的产品契约。接近预算时只向模型注入一次明确的完成提醒，使其总结当前结果；真正耗尽后返回 typed blocked outcome，而不是伪装成 Provider 或 Tool infrastructure error。模型采样、Tool Call 和 elapsed time 在 Turn 执行期间累计；Tool count 进入 TaskOutput，每个 request 的 TokenUsage 则即时进入 Session-owned TokenUsageInfo/canonical TokenCountEvent，不在 Turn terminal 再生成第二份聚合 usage。
 
 ### 10.6 默认执行与软计划
 
@@ -1722,21 +1760,24 @@ Plan Prompt 由 Collaboration Mode 注入，ToolRouter policy 和 ToolExecutionS
 
 ### 12.1.3 Codex 风格 Compaction Prompt
 
-Compaction 使用独立于普通 BaseInstructions 的 Codex Prompt Asset：
+Compaction 使用 Codex Prompt Asset，但 summarization prompt 的消息层级必须与 Codex 一致：普通模型 BaseInstructions 保持不变，`SUMMARIZATION_PROMPT` 作为 compact request 最后一条 synthetic User ResponseItem，而不是替换 BaseInstructions。
 
 ```text
-codex-rs/prompts/templates/compact/prompt.md
-+ Covered Canonical ResponseItems
-→ Summary
+Current StepContext.BaseInstructions
++ exact normalized model-visible PromptSnapshot.Items
++ User(codex-rs/prompts/templates/compact/prompt.md)
++ Tools = none
+→ Summary Response
 
 codex-rs/prompts/templates/compact/summary_prefix.md
 + Summary
-→ Replacement History
+→ User(SUMMARY_PREFIX + Summary)
+→ typed Replacement History
 ```
 
-Amadeus 必须迁移 Codex 的 `SUMMARIZATION_PROMPT` 和 `SUMMARY_PREFIX` 语义与结构，保留自身 `rollout.Compaction`、SourceHash、CoveredThroughSequence 和原位 ContextManager rebuild Contract。Compact 请求不得调用 Tool，不得使用普通 Turn 的 CollaborationMode/Tool Guidance 代替 Compaction Prompt，也不得把摘要当成任务完成证明。
+Amadeus 必须迁移 Codex 的 `SUMMARIZATION_PROMPT` 和 `SUMMARY_PREFIX` 语义与结构，保留自身 `CompactedItem`、SourceHash、CoveredThroughSequence 和原位 ContextManager replacement Contract。CompactionService 的输入必须来自 exact StepContext/PromptSnapshot，因此摘要模型看到与当前 Model Step 一致的 BaseInstructions、AGENTS.md、环境、Skill、MCP、用户/Assistant/Tool history 和 modality projection；不能退回只含裸 conversation projection 的第二条 Prompt 主链。Compact 请求不得暴露 Tool，不得把 summarization prompt 放进 BaseInstructions，也不得把摘要当成任务完成证明。
 
-Compaction Summary 至少保留：当前目标、关键决策、约束和用户偏好、已完成进度、重要文件/数据/结果、未完成事项、下一步和继续任务所需的关键引用。`CompactTask` 只调用 SessionServices 的 Compactor，不拥有第二套历史投影或 Prompt 装配逻辑。
+Compaction Summary 至少保留：当前目标、关键决策、约束和用户偏好、已完成进度、重要文件/数据/结果、未完成事项、下一步和继续任务所需的关键引用。`CompactTask` 只请求 Session 执行 standalone compaction；Session 调用 SessionServices.Compaction 生成 typed output，再统一完成 canonical install。CompactTask 和 CompactionService 都不拥有第二套历史投影、TokenUsageInfo、Rollout writer 或完成协议。
 
 ### 12.1.4 Tool Prompt 来源与装配边界
 
@@ -1800,22 +1841,55 @@ Initial Rollout Replay
 - 删除孤立 ToolResult，并为中断或缺失结果补显式 synthetic ToolResult。
 - 按 ModelInfo 的限制投影超大 Tool Result。
 - 根据模型输入能力移除不支持的内容类型。
-- 应用 Compaction Replacement History。
-- 保存 Provider Usage、估算值和 history version。
+- 校验并应用 typed Compaction Replacement History。
+- 保存 TokenUsageInfo、最新 ActiveContextTokens/estimated checkpoint、history version、TokenCount checkpoint sequence 和 rollout source sequence。
 - 返回不可变的 Prompt 输入快照。
 
 ContextManager 是活动 Session 的内存 history owner；canonical Rollout 是 durable source。Resume 时从 Rollout 重建一次，运行期间由 Session 在 durable append 成功后对同一 typed fact 执行增量 record。`run_turn`、TUI、CLI 和 CompactTask 不得各自实现第二套历史裁剪或消息投影。
 
-只有 Session 可以提交 ContextManager mutation。Task/`run_turn` 通过 Session typed methods 请求 canonical append，并在 sampling request 构建时取得 immutable `PromptSnapshot`；不得持有 `*ContextManager` 或调用无 Rollout 对应事实的 Record/Replace fallback。正常 append 不得读取全部 `[]RolloutLine` 再 rebuild；全量 rebuild 只用于 Resume、显式 Compaction replacement 和测试校验。增量 record 与 Resume projector 必须共享同一 typed normalization 规则并通过 semantic-equivalence 测试。
+只有 Session 可以提交 ContextManager mutation。Task/`run_turn` 通过 Session typed methods 请求 canonical append，并在 sampling request 构建时取得 immutable `PromptSnapshot`；不得持有 `*ContextManager` 或调用无 Rollout 对应事实的 Record/Replace fallback。正常 append 不得读取全部 `[]RolloutLine` 再 rebuild；Resume 从 Rollout 重建，Compaction 通过 Session-owned durable install 原位替换模型历史。增量 record、replacement preview/install 与 Resume projector 必须共享同一 typed normalization/estimation 规则并通过 semantic-equivalence 测试。
 
 ### 12.4 Token Accounting
 
-Token 预算来源按优先级处理：
+Token accounting 必须区分四个不同业务事实：
 
-1. Provider 返回的真实 usage，是已完成请求的权威统计。
-2. 发送请求前使用模型 tokenizer；未实现专属 tokenizer 时使用保守 TokenEstimator。
+1. `TotalTokenUsage`：Thread 内所有成功普通 sampling 与 Compaction request 的累计消耗，用于成本/统计和 SQLite `tokens_used` projection。
+2. `LastTokenUsage`：最近一次成功 Provider request 的 usage，是 Provider 已观察到的 active context 基线。
+3. `ActiveContextTokens`：使用 TokenCountEvent 保存的明确 active checkpoint，加该 canonical event sequence 之后尚未被 Provider 观察的 User/Tool/Context items；成功响应 checkpoint 通常为 LastTokenUsage.TotalTokens，未持久化输出的失败响应使用 InputTokens，Compaction replacement 后使用新 replacement 的完整本地估算 checkpoint。
+4. `EstimatedInputTokens`：发送下一 request 前对 exact StepContext Prompt 的结构化估算，只用于 preflight、fallback、Compaction 后重算和诊断。
 
-TokenEstimator 只用于发送前容量预估，不得覆盖 Provider 已返回的真实 Usage。UI 展示估算值时必须标记为 estimated。
+不得把累计消耗当成当前 context occupancy，也不得让 live TUI 使用单次 usage、Resume TUI 却累加全部历史 usage。Provider 返回的真实 usage 是完成请求后的权威基线；TokenEstimator 不覆盖该事实，只补充尚未被 Provider 观察的本地增长或完整 preflight。
+
+稳定数据模型对齐 Codex：
+
+```go
+type TokenUsage struct {
+    InputTokens       int64
+    CachedInputTokens int64
+    OutputTokens      int64
+    ReasoningTokens   int64
+    TotalTokens       int64
+}
+
+type TokenUsageInfo struct {
+    TotalTokenUsage   TokenUsage
+    LastTokenUsage    TokenUsage
+    ModelContextWindow int64
+}
+
+type ContextWindowTokenStatus struct {
+    ActiveContextTokens    int64
+    EstimatedInputTokens   int64
+    AutoCompactTokenLimit  int64
+    FullContextWindowLimit int64
+    BaseWindowTokensRemaining int64
+    TokenLimitReached      bool
+}
+```
+
+`TokenUsage` 属于 LLM domain 的 Provider-neutral response contract；`TokenUsageInfo` 属于 Event Protocol，并由 ContextManager 保存同构内存 snapshot；`ContextWindowTokenStatus` 是 Session 内部 policy/read model，不进入 Provider Adapter、Rollout schema 或 TUI 自行计算路径。
+
+每个成功 Model/Compaction request 只在 Session 中调用一次 `RecordTokenUsage`：累加 TotalTokenUsage、替换 LastTokenUsage、写入完整 TokenUsageInfo snapshot，并发布同一 snapshot 的 TokenCountEvent。尚未被 Provider 观察的 canonical User/Tool/Context fact 在下一 Model Step 边界触发 `RefreshContextWindowStatus`，它可以发布 Total/Last 不变但 ActiveContextTokens 更新的完整 snapshot。TaskOutput、TUI 和 Application projector 不再二次累加 request usage。Compaction request 的真实 usage 仍进入 Total/Last；replacement 安装后 Session 只用本地估算设置新的 ActiveContextTokens checkpoint 和 estimated marker，不用估算值覆盖 LastTokenUsage。Resume 取最后一个 canonical TokenCountEvent snapshot，并在 Session spawn 时用恢复后的 history 校正 active suffix，而不是重放时逐条求和。
 
 ModelInfo 至少保存：
 
@@ -1831,9 +1905,10 @@ input_modalities
 - `auto_compact_token_limit` 默认取 context window 的 90%；用户配置 `model_auto_compact_token_limit` 只能进一步收紧，不得扩大默认安全窗口。
 - `truncation_policy` 是模型可见 Tool/Function Output 的投影策略；顶层 `tool_output_token_limit` 覆盖其 token limit，默认 `10000`。
 - 普通 sampling 和 Compaction Request 均不提供用户可配置的 `temperature` 或 `max_output_tokens`，Adapter 省略对应 wire 参数并使用模型厂商默认值。
-- Provider Usage 只作为已完成请求的权威统计；下一次请求容量判断始终重新估算当前完整 Prompt，避免把上次请求 Usage 当成不同 Prompt 的容量值。
-- ContextManager 中的 live Usage、canonical TokenCountEvent 和 Resume 重建使用同一累计语义；单次 Model Step usage 只能先累加到 Turn/Thread usage，再更新投影，不能覆盖前序 Model Step。
-- 完整 Prompt 估算包含 BaseInstructions、ContextManager 输入、模型可见 Tool Specs 与 OutputSchema。
+- Provider LastTokenUsage 与当前完整 Prompt estimate 都进入 Session-owned ContextWindowTokenStatus：post-response continuation 优先使用 active usage，pre-request 使用 exact StepContext estimate；阈值判断不能散落在 PromptSnapshot、callback 或 TUI。
+- 完整 Prompt 估算包含 BaseInstructions、ContextManager 输入、模型可见 Tool Specs、OutputSchema 和 modality cost。
+- TokenEstimator 按结构估算 ResponseItem，而不是直接把 Go struct 的偶然 JSON 编码当成 wire contract。文本默认使用 provider-independent byte/rune heuristic；图片按 prepared dimensions/detail/patch cost 或稳定 fallback 估算，并排除 Base64 payload；Tool Call、Tool Result、Reasoning、ToolSpec 和 OutputSchema 分别计算明确开销。
+- 未实现可信 tokenizer 时类型命名使用 `ApproxTokenEstimator`，不得用 `ConservativeEstimator` 声称对中文、图片或所有 Provider 必然保守；90% auto-compact limit 继续提供独立 headroom。
 - `base_tokens_remaining = min(auto_compact_token_limit - active_context_tokens, context_window - active_context_tokens)`。
 - 自动压缩阈值负责为模型输出、系统开销和协议开销预留 headroom；硬 Context Window 判断只比较当前 active/estimated input 与 `context_window`，不得重新引入用户配置的最大模型输出预算。
 - Token Budget 不按 System、Instructions、History、Tools 或 Resources 设置固定百分比分区。
@@ -1855,28 +1930,79 @@ Tool Result 不保留独立的即时 replay 历史：Tool Call/Result 先 canoni
 
 ### 12.6 Compaction
 
-Compaction 是 Runtime 用例，不是 TUI 文本操作：
+Compaction 是 Session-owned Runtime 用例，不是 TUI 文本操作，也不是返回 RolloutItem 的模型 helper。CompactionService 只负责纯粹的摘要 request/response；Session 负责 trigger/reason/phase、Item lifecycle、TokenUsageInfo、source validation、durable install、ContextManager replacement 和失败终态。
 
-```text
-CompactOp / Auto Compact Trigger
-→ CompactTask
-→ Canonical history projection + History Normalization
-→ Build Compaction Prompt
-→ 无 Tool 的 LLM Summary
-→ Build Replacement History
-→ Append Compaction + TokenUsage RolloutItem
-→ Session 原位 Atomic Rebuild ContextManager
+```go
+// Stable lifecycle enums are owned by agent/protocol because Event and
+// CompactedItem persist them.
+type CompactionTrigger string // manual | auto
+type CompactionReason string  // user_requested | context_limit
+type CompactionPhase string   // standalone_turn | pre_turn | mid_turn
+
+type CompactionSource struct {
+    HistoryVersion         uint64
+    CoveredThroughSequence int64
+    SourceHash             string
+    CanonicalHistory       []ResponseItem
+    UserMessages           []ResponseItem
+    PromptItems            []ResponseItem
+}
+
+type CompactionRequest struct {
+    Trigger      CompactionTrigger
+    Reason       CompactionReason
+    Phase        CompactionPhase
+    Source       CompactionSource
+    Prompt       Prompt
+    Model        ModelInfo
+    Reasoning    *ReasoningConfig
+}
+
+type CompactionOutput struct {
+    Message            ResponseItem
+    FinishReason       FinishReason
+    ReplacementHistory []ResponseItem
+    TokenUsage          TokenUsage
+}
 ```
 
-- `/compact` 触发手动压缩。
-- 新 Turn 首次采样前，以及 Tool Result 后准备 capture 下一 StepContext 前，都检查自动压缩阈值。
-- 原始 RolloutItem 不删除。
-- Replacement History 只改变后续 ContextManager 模型投影。
-- Summary 必须保留用户目标、已修改文件、Tool 结果、失败、未完成事项和关键决策。
-- ToolCall/ToolResult 配对不能被压缩成协议非法历史。
-- D 工作流通过统一 EventMsg/TurnItem 投影压缩开始、完成和失败；CompactTask 本身只返回 canonical 结果与错误，不另建第二事件通道。
-- LLM Compaction 失败时保持原 ContextManager 不变并返回明确错误，不使用本地摘要替代。
-- Replacement History 至少包含初始用户目标和带明确 checkpoint 前缀的 Summary；最近用户消息保留在压缩覆盖范围之外。
+CompactionTrigger/Reason/Phase 属于 Agent Protocol 的稳定枚举；`internal/agent/compact`、Session、Event 和 Rollout 共同引用它们。Rollout 不得依赖 `internal/agent/compact` runtime package，CompactionService 也不得重新定义同名 enum 后在边界转换字符串。
+
+`ReplacementHistory` 使用完整 typed ResponseItem，不使用只有 `Role/Content` 的 `ReplacementMessage`。Amadeus 保留 SourceHash 与 CoveredThroughSequence：Compaction 异步执行期间若有合法 trailing canonical fact 到达，install 只替换已校验 prefix 并保留 trailing items；source hash/version 不匹配时返回 typed stale compaction failure，不覆盖新事实。
+
+手动 `/compact` 生命周期：
+
+```text
+CompactOp
+→ CompactTask（standalone, non-steerable）
+→ Session.runCompaction{manual,user_requested,standalone_turn}
+→ ItemStarted(ContextCompaction)
+→ capture exact CompactionSource + StepContext
+→ CompactionService.Generate
+→ Session.RecordTokenUsage(compaction request)
+→ validate summary/finish reason/no Tool Calls
+→ Session.installCompaction durable append
+→ ContextManager replacement + ActiveContextTokens recompute
+→ TokenCountEvent
+→ ItemCompleted(ContextCompaction)
+→ WarningEvent
+→ Turn terminal
+```
+
+自动 Compaction 是 regular `run_turn` 的 inline lifecycle，不创建嵌套 CompactTask：
+
+- Turn 首次 sampling 前对 exact StepContext 执行 preflight estimate；超过 auto limit 时使用 `auto/context_limit/pre_turn`。
+- 一个 sampling request 及其 Tool Result 已 canonical record 且确实需要 model/steer follow-up 时，按 Provider active usage 检查；超过 limit 时使用 `auto/context_limit/mid_turn`。
+- auto-compaction request 不包含尚未 drain 的 steer。compact 后若必须恢复原 model/tool continuation，先继续原 continuation；若只有 steer 需要 follow-up，允许直接 drain。
+- manual 与 auto 复用同一 CompactionService、Turn-scoped ModelClientSession retry policy、typed output 和 Session.installCompaction；差异只存在于 trigger/reason/phase 和是否拥有 standalone Task。
+
+Replacement History 对齐 Codex 本地 compaction 语义：Context projector 以 typed MessageOrigin 区分真实 User、SubAgent notification 和 Runtime/contextual user fact，CompactionSource.UserMessages 只携带真实用户输入；服务从最新真实 User messages 向前选择有界总 token budget，保持原顺序，最后追加 `User(SUMMARY_PREFIX + summary)`。不得按 role 或 XML/string prefix 猜测真实用户来源；summary 不作为普通 Assistant 完成消息展示。当前 WorldState/AGENTS.md/Skill/MCP 等 canonical context 由下一 StepContext 从 Session 当前状态重新注入，不能把 compact request 中可能过期的 developer/context fragments 固化为 replacement 事实。
+
+Provider 成功返回 Compaction response 后，Session 必须先通过普通 `RecordTokenUsage` 持久化本次真实消耗，再校验 summary、finish reason、Tool Call absence 和 source freshness；即使随后 output invalid、source stale 或 replacement persistence 失败，TotalTokenUsage 仍包含已经发生的请求。replacement install 本身是另一个原子 durability boundary：Session 用当前 ContextManager preview 验证 source/replacement 并计算新的 ActiveContextTokens/estimated checkpoint，再将 `CompactedItem + refreshed TokenCountEvent` 作为同一 durable append 写入。append/flush 成功后才更新 live ContextManager 并发布 completed Event。失败、取消、Provider error、stale source 或 persistence error 均保持原 ContextManager 不变，并以相同 ItemID 完成 failed/aborted lifecycle；不得使用本地摘要 fallback。
+
+Context-window failure 必须 typed：Provider Adapter 将明确的 context length rejection 归一化为 `context_window_exceeded`。Compaction request 自身超限时，可以按完整 User/Tool-call group 从最旧端有界裁剪后重试，不能删除单边 ToolCall/ToolResult；裁剪到最小输入仍失败则终止。成功 install 后立即比较 before/after active tokens；没有实质下降或仍达到硬窗口时返回 `compaction_insufficient`，同一 history/window 不得重复无界 compact。
+
+第一版固定采用 total active context，不实现 Remote Compaction、`body_after_prefix`、fallback compact prompt、window UUID 或 Codex TokenBudget feature；只有真实 Provider/runtime 需求出现时才扩展，不提前建立空状态。
 
 ## 13. LLM Domain 与 Provider Adapter
 
@@ -1896,7 +2022,7 @@ Domain Request 统一表达：
 - Tool definitions。
 - Tool call 与 Tool result 配对。
 - model selection 与 Provider 支持的显式请求控制。
-- reasoning 与 usage。
+- reasoning 与 typed TokenUsage。
 
 通用 reasoning request control 只表达模型推理强度，不抽象厂商特有的 thinking 开关或历史清理策略：
 
@@ -1920,6 +2046,8 @@ type ReasoningConfig struct {
 
 `ReasoningConfig` 不保留通用 `Enabled` 或 `Preserve`。省略 `Effort` 表示不发送 reasoning control 并使用模型/Provider 默认值；`none` 是显式关闭 reasoning 的唯一通用语义。Reasoning history 是否回传、Provider 是否需要 `reasoning_content`、`thinking`、`enable_thinking` 或其他字段，属于 Dialect 的协议正确性，不是用户可配置的通用模型开关。
 
+每个成功 Response 的 `TokenUsage` 是单次 request usage，不是 Turn aggregate；Adapter 不累加跨 request 状态。Session 在 canonical ResponseItem 已接纳后调用唯一 RecordTokenUsage，维护 TokenUsageInfo 与 ContextWindowTokenStatus。
+
 普通 Domain Request 不保存稳定的 `temperature` 或 `max_output_tokens` 字段。Amadeus 不用内部默认值伪装模型厂商默认值；Responses 与 Chat Completions Adapter 都必须在普通 sampling 和 Compaction 中省略对应 wire 参数。未来确有 Provider 必需扩展时，只能由经过契约测试的 Dialect/request extension 显式提供，不能重新变成所有 Provider 共用的用户配置。
 
 ### 13.2 OpenAI Adapter
@@ -1933,7 +2061,7 @@ type ReasoningConfig struct {
 - Provider Dialect 的最小兼容差异。
 - Developer role 降级。
 - Tool call argument 增量聚合。
-- Provider Error、retryability、Retry-After、transport/idle timeout 和 Usage 归一化。
+- Provider Error、retryability、Retry-After、transport/idle timeout 和 TokenUsage 归一化；明确 context length rejection 映射为 typed `context_window_exceeded`。
 
 它不负责：
 
@@ -2005,7 +2133,7 @@ model_providers:
 - `model_auto_compact_token_limit` 可省略，省略时取 Context Window 的 90%；显式值必须大于 0 且不超过该派生上限。
 - `tool_output_token_limit` 是顶层可配置项，默认 `10000`，覆盖 ModelInfo 的 Tool Output truncation policy；不得放回单个 Provider。
 - `model_input_modalities` 默认仅为 `[text]`，只接受 `text`/`image` 且必须包含 `text`；`model_supports_original_image_detail` 默认 `false`，为 `true` 时必须同时声明 `image`。两者由 Session 冻结进 ModelInfo，不能从 Provider/Dialect 推断。
-- Codex 的 `model_auto_compact_token_limit_scope` 依赖 carried-prefix/body-after-prefix 计数模型。Amadeus 在实现对应 Context Window 生命周期前不暴露未接线的 scope 配置，当前固定采用 total active context 语义。
+- Codex 的 `model_auto_compact_token_limit_scope` 依赖 carried-prefix/body-after-prefix 和 window identity。Amadeus W 第一版明确固定采用 total active context 语义，不暴露 scope 配置；只有真实 Provider/runtime 需求出现时才同时引入完整 window lifecycle，不能先增加未接线字段。
 - `temperature` 和 `max_output_tokens` 从稳定配置、ProviderConfig、ModelInfo、SampleRequest 与普通 LLM Request 中删除；普通 sampling 和 Compaction 使用模型厂商默认参数。
 
 #### 13.5.1 Model Reasoning Effort
@@ -2903,8 +3031,9 @@ type ThreadViewSnapshot struct {
     Title         string
     Configuration protocol.SessionConfiguration
     Items         []protocol.TurnItem
-    Usage         llm.Usage
-    ContextWindow int64
+    TokenInfo     *protocol.TokenUsageInfo
+    ActiveContextTokens int64
+    ActiveContextEstimated bool
 }
 ```
 
@@ -2912,7 +3041,7 @@ type ThreadViewSnapshot struct {
 
 TUI attachment、迟到 Event、MCP inventory、Git branch lookup 和 overlay matching 继续只使用 `attachment generation + ThreadID`；SessionID 不替代具体 Thread 路由。`SessionOption.ID`、`AppExitInfo.ThreadID`、resume picker 和 exit resume hint 始终保存 ThreadID。状态面板可以持有 SessionID 供诊断，但 Codex 风格用户可见 “session/thread id” 项仍显示当前可恢复的 ThreadID。
 
-`FullscreenStartup` 只允许携带 Version 等真正属于进程启动且不会随 Thread attach 改变的静态展示信息。NoColor、初始终端尺寸等 TUI options 继续属于界面启动参数，不并入 Session 状态。CWD、Provider、Model、ReasoningEffort、Mode、Thread title、Usage 和 ContextWindow 都属于 active Session/Thread read model，必须来自 `ThreadViewSnapshot` 或 live typed Event；不得在 Startup、Application Status 和 TUI model 中建立三份并列 owner。
+`FullscreenStartup` 只允许携带 Version 等真正属于进程启动且不会随 Thread attach 改变的静态展示信息。NoColor、初始终端尺寸等 TUI options 继续属于界面启动参数，不并入 Session 状态。CWD、Provider、Model、ReasoningEffort、Mode、Thread title、TokenUsageInfo 和 ActiveContextTokens 都属于 active Session/Thread read model，必须来自 `ThreadViewSnapshot` 或 live typed Event；不得在 Startup、Application Status 和 TUI model 中建立三份并列 owner。
 
 #### `/resume`
 
@@ -2934,7 +3063,7 @@ SlashCommand::Resume
 - 目标 Thread 恢复、history projection 或 TUI attach 失败时，当前 Thread 与当前 transcript 必须保持不变；不得先关闭当前 Thread 再尝试恢复目标 Thread。
 - replay 必须按 canonical 顺序一次性缓冲并刷新，避免用户看到只切换 Session 标识、半段历史或逐条闪烁。
 - Resume 只允许存在一个 application-owned `ProjectRolloutItems` projector，按 rollout sequence 投影 ResponseItem 和 EventMsgItem；不得把 completed-item projection、response items 等多个列表合并后按时间重新排序。
-- canonical User ResponseItem 必须投影为 UserMessageItem，CompactedItem/ContextCompactedEvent 必须投影为 ContextCompactionItem；用户消息和压缩边界不能只存在于首次 live TUI 的本地插入中。
+- canonical User ResponseItem 必须投影为 UserMessageItem，CompactedItem 必须投影为 completed ContextCompactionItem；用户消息和压缩边界不能只存在于首次 live TUI 的本地插入中。
 - replay 不重放 Working、Approval wait 或 Delta 动画；已完成项必须与首次启动时的 Resume projection 完全一致。
 - `/resume` 对齐 Codex，任务运行期间仍在 Slash Command Popup 中可见并可执行；切换由 Application 的事务化 Thread attach 接管，旧 active Thread 在新 Thread 成功 attach 后再异步 shutdown，不能在 popup filter 阶段隐藏该命令。
 - 成功后可以追加轻量 Session lineage/notice，但 notice 不能替代历史恢复。
@@ -2950,8 +3079,9 @@ SlashCommand::Compact
 → AmadeusThread.Submit(CompactOp)
 → TurnStartedEvent(kind=compact)
 → CompactTask
-→ durable Compaction rollout item
-→ ContextCompacted
+→ ItemStartedEvent(ContextCompaction)
+→ durable CompactedItem + refreshed TokenCountEvent snapshot
+→ ItemCompletedEvent(ContextCompaction)
 → Warning("Heads up: Long threads...")
 → TurnCompleteEvent / TurnAbortedEvent
 → TUI 离开 task running state
@@ -2959,8 +3089,8 @@ SlashCommand::Compact
 
 - `TurnStartedEvent` 必须携带稳定的 Turn/Task kind，使 TUI 显示 `Compacting context`，而不是把压缩伪装成普通用户 Turn 或仅修改不可见的 status 字符串。
 - 提交 `CompactOp` 后 TUI 可以像 Codex 一样先设置 pending/running projection，消除事件往返前的空白；Runtime 的 `TurnStartedEvent`、`TurnCompleteEvent` 和 `TurnAbortedEvent` 仍是最终真相。
-- `ContextCompacted` 必须在 compaction durable append 成功后发布，并固定投影为 Codex 同义的 `• Context compacted`；生成的 summary 只属于 durable replacement history/compaction payload，不得作为 Assistant 消息、Reason 文本或 TUI 详情泄露。
-- `ContextCompactedEvent` 后必须立即发布独立的 typed `WarningEvent`，由黄色 `WarningHistoryCell` 显示 `⚠ Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.`；该提示不是 compaction summary，也不并入 `TurnCompleteEvent` 文本。
+- completed ContextCompaction Item 必须在 `CompactedItem + refreshed TokenCountEvent` durable append 和 ContextManager install 成功后发布，并固定投影为 Codex 同义的 `• Context compacted`；生成的 summary 只属于 durable replacement history/compaction payload，不得作为 Assistant 消息、Reason 文本或 TUI 详情泄露。
+- completed ContextCompaction Item 后必须立即发布独立的 typed `WarningEvent`，由黄色 `WarningHistoryCell` 显示 `⚠ Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.`；该提示不是 compaction summary，也不并入 `TurnCompleteEvent` 文本。
 - `/compact` 不通过 TUI callback 内部调用 `waitTurn`，不返回 `"Conversation compacted"` 字符串作为完成协议，也不维护独立 `fullscreenCompactMsg` 终态。
 - Compact 期间的新输入遵循普通 task queue 规则，不创建仅对 Compact 生效的第二套输入状态机。
 
@@ -3134,7 +3264,7 @@ const (
 )
 
 type AppExitInfo struct {
-    TokenUsage llm.Usage
+    TokenUsage llm.TokenUsage
     ThreadID   protocol.ThreadID
     ThreadName string
     ResumeHint string
@@ -3145,7 +3275,7 @@ type AppExitInfo struct {
 
 `AppExitInfo` 对齐 Codex 同名概念，是 Fullscreen App 的最终返回值，不是 EventMsg、HistoryCell 或 persisted RolloutItem。字段规则如下：
 
-- `TokenUsage` 来自退出时最终 `fullscreenSessionState.Usage`；不能在 CLI 侧重新打开 Session 或解析 Rollout 统计。
+- `TokenUsage` 来自退出时最终 `fullscreenSessionState.TokenInfo.TotalTokenUsage`；不能在 CLI 侧重新打开 Session、累加 TokenCountEvent 或解析 Rollout 统计。
 - `ThreadID`/`ThreadName` 来自 active Thread attachment；没有已建立 Thread 时允许为空。
 - `ResumeHint` 只在目标 Thread 已可恢复时生成。基础命令形式为 `amadeus --resume <thread-id>`；若后续 picker/name UX 与 Codex 对齐，可使用名称作为辅助展示，但 ThreadID 仍是稳定 identity。
 - 正常 `/exit` 使用 `ExitReasonUserRequested`。Fatal shutdown、renderer 或 Application 错误使用 `ExitReasonFatal` 并携带 `Error`；不能把 fatal error 降级成普通 usage summary。
@@ -3372,7 +3502,7 @@ statusLineState{Segments}
 renderFooter(footerProps)
 ```
 
-Thread title、usage/context 和 Git branch 分别通过 typed Application event、`TokenCountEvent` 与 CurrentDir-keyed derived cache 合入同一个 `fullscreenSessionState`，不塞入 `SessionConfiguration` 扩大其职责。`ThreadSettingsAppliedEvent` 携带实际生效的完整 `SessionConfiguration`，并与 `SessionConfiguredEvent`、snapshot attach 共用 `applySessionConfiguration()`。该函数原子替换 CurrentDir、Provider、Model、ReasoningEffort 和 CollaborationMode；不能只更新 Mode 后继续从 Startup 或 Application Status 读取其他字段。Resume、new thread 和 attach 必须先清理旧 Thread 的 session/footer 派生状态，再安装新 snapshot，避免旧目录、branch、title 或 context 泄漏。
+Thread title、TokenUsageInfo/ActiveContextTokens 和 Git branch 分别通过 typed Application event、`TokenCountEvent` 与 CurrentDir-keyed derived cache 合入同一个 `fullscreenSessionState`，不塞入 `SessionConfiguration` 扩大其职责。TokenCountEvent 和 ThreadViewSnapshot 都携带完整 snapshot，Reducer 只替换、不累加。`ThreadSettingsAppliedEvent` 携带实际生效的完整 `SessionConfiguration`，并与 `SessionConfiguredEvent`、snapshot attach 共用 `applySessionConfiguration()`。该函数原子替换 CurrentDir、Provider、Model、ReasoningEffort 和 CollaborationMode；不能只更新 Mode 后继续从 Startup 或 Application Status 读取其他字段。Resume、new thread 和 attach 必须先清理旧 Thread 的 session/footer 派生状态，再安装新 snapshot，避免旧目录、branch、title 或 context 泄漏。
 
 `ThreadSettingsAppliedEvent` 同时驱动两条相互独立的 UI 路径。第一条通过 `fullscreenSessionState → footerState.CollaborationIndicator → renderFooter()` 更新 Footer 右列模式标签。第二条对齐 Codex 的 settings acknowledgement/info-history 生命周期，但消息必须描述 Amadeus 实际发生的业务事实：基础版 Mode 切换不改变 Model 或 ReasoningEffort，因此插入 `• Mode changed to <Mode>.`，而不是伪造 `Model changed`。该消息不得使用普通 dim notice，也不得把 Composer、Popup 或 Footer 内容拼进 history；`tea.Println` 只提交 HistoryCell，随后由 Bubble Tea 原生 renderer 重绘单份活动 frame。
 
@@ -3384,7 +3514,7 @@ Thread title、usage/context 和 Git branch 分别通过 typed Application event
 | `SessionConfiguredEvent` | 应用完整 Configuration | refresh |
 | `ThreadSettingsAppliedEvent` | 应用完整已生效 Configuration，Mode 变化时插入 settings acknowledgement info row | refresh projection + right-aligned mode |
 | `ThreadAttached` | 替换 Thread、Configuration、title、usage/context | 清空旧 cache 后 refresh |
-| `TokenCountEvent` | 更新 usage/context window | refresh context items |
+| `TokenCountEvent` | 替换 TokenUsageInfo snapshot，并从 LastTokenUsage/active projection 更新 context | refresh context items |
 | `ThreadNameUpdated` | 更新 active Thread title | refresh title item |
 | branch lookup completion | 更新 CurrentDir 对应 branch cache | 校验 generation/CWD 后 refresh |
 | Turn start/end 或 retry | 只更新 Working/status indicator 与 cycle hint | 不改变 statusline items |
@@ -4152,7 +4282,7 @@ LiveThread.AppendItems
 - Metadata 更新失败必须记录警告并保留可重建状态，不能回滚已经 durable 的 canonical history。
 - 当前 schema 的 SQLite index 缺失或漂移时，从当前格式 `SessionMetaItem`、ResponseItem 和 EventMsg 重建 StoredThread；重建过程校验 SessionMeta.SessionID/ID/ParentThreadID contract，但只把 Thread metadata 与 parent relation 投影进 SQLite，不复制 SessionID。活动 Thread 即使索引被清空，下一次 canonical append 也能直接重新 upsert。
 - `/resume`、列表和搜索优先查询 SQLite；索引缺失或漂移时可扫描 Rollout 修复。
-- `tokens_used` 是各 canonical TokenCountEvent 的 Thread 累计值，不是仅保存最后一个 Turn 的 usage。
+- `tokens_used` 投影最后一个 canonical TokenCountEvent.Info.TotalTokenUsage.TotalTokens；TokenCountEvent 是累计 snapshot，因此 Metadata projector 必须替换该值，不能把历次 snapshot 再次求和。
 - Session Permission State（Mode、Additional Working Directories 和 Session Rules）只存在于活动 internal Session，不写入 Thread metadata，也不从历史 Approval Decision 恢复。
 
 只有当真实产品需求证明需要分页历史或全文搜索时，才增加可重建的 SQLite History Projection。
@@ -4440,7 +4570,6 @@ CommandOutputDeltaEvent
 
 PlanUpdateEvent
 TokenCountEvent
-ContextCompactedEvent
 ApprovalRequestEvent
 RequestUserInputEvent
 
@@ -4463,6 +4592,21 @@ type SessionConfiguredEvent struct {
 Root event 的 SessionID 与 ThreadID 使用同一 UUID value，ParentThreadID 为空；child event 继承 Root SessionID，使用自己的 ThreadID 和直接 parent ThreadID。Event routing、`ThreadIDOf`、attachment matching 和 Rollout EventMsg scope 始终使用 ThreadID；scoping helper 不能覆盖或从 ThreadID 重新推导 SessionID。
 
 `ThreadSettingsAppliedEvent` 表示设置已由 Session 接纳并应用，也必须携带应用后的完整 `SessionConfiguration`，而不是只返回 Mode 或 caller 请求值；设置失败使用 correlated ErrorEvent。`ThreadViewSnapshot.Configuration`、`SessionConfiguredEvent.Configuration` 和 `ThreadSettingsAppliedEvent.Configuration` 共用同一个 typed model，TUI 统一通过 `applySessionConfiguration()` 应用，避免 snapshot/live event 两套字段、两套 owner 或部分更新生命周期。
+
+`TokenCountEvent` 携带完整 snapshot，不是 delta：
+
+```go
+type TokenCountEvent struct {
+    ThreadID              ThreadID
+    TurnID                TurnID
+    Info                  *TokenUsageInfo
+    ActiveContextTokens   int64
+    ActiveContextEstimated bool
+    ObservedThroughSequence uint64
+}
+```
+
+每个成功 request、local suffix refresh 和 Compaction replacement recompute 都产生完整 snapshot；`ObservedThroughSequence` 是该 active checkpoint 已包含的 canonical history watermark，request 执行期间并发到达但未被模型看到的事实即使排在 TokenCountEvent 之前，也必须作为 watermark 后的 local suffix 计入。live reducer 与 Resume projector 只替换当前值。`TotalTokenUsage` 用于累计统计，`LastTokenUsage.TotalTokens` 用于 Provider-observed baseline，`ActiveContextTokens` 是 Session 已汇合 Provider baseline、local suffix 和 estimator fallback 后的唯一 UI occupancy；`ActiveContextEstimated` 只在没有可信 Provider baseline 或 replacement 后本地重算时为 true。Event consumer 不自行累加，也不使用 `InputTokens` 覆盖 `EstimatedInputTokens` 一类字段优先级猜测当前占用。
 
 `StreamErrorEvent` 是 response stream 生命周期的 typed notification，而不是普通永久 History 项。它至少表达：
 
@@ -4494,7 +4638,7 @@ type StreamErrorEvent struct {
 
 ### 26.4 TurnItem
 
-`TurnItem` 是 EventMsg 和 TUI History 的稳定业务项；需要恢复的完成态通过 `EventMsgItem(ItemCompletedEvent)` 原样持久化。首批类型：
+`TurnItem` 是 EventMsg 和 TUI History 的稳定业务项；需要恢复的完成态通常通过 `EventMsgItem(ItemCompletedEvent)` 原样持久化，拥有专用 canonical item 的类型按 store policy 只保留一个 durable owner。首批类型：
 
 ```text
 UserMessageItem
@@ -4514,6 +4658,7 @@ ContextCompactionItem
 - `FileChangeItem`：edit/write、Structured Diff、Approval 结果和最终修改状态。
 - `PlanUpdateEvent` 不属于 TurnItem；它是 live transient checklist notification，不参与 canonical replay。
 - `PlanItem`：显式 Plan Mode 中 `<proposed_plan>` 的完整 Markdown；它是可 Replay 的完成态业务投影。
+- `ContextCompactionItem`：live 使用普通 ItemStarted/ItemCompleted；Replay 的唯一完成事实是 CompactedItem，store policy 不再额外持久化该 ItemCompletedEvent，避免同一 checkpoint 生成两个 HistoryCell。
 
 Item 状态至少包括：
 
@@ -4588,7 +4733,7 @@ type ApprovalRequestEvent struct {
 
 持久化策略：
 
-- 持久化 store policy 指定的 TurnStartedEvent、TurnCompleteEvent/TurnAbortedEvent、ItemCompletedEvent（包含 completed Proposed Plan）、TokenCountEvent、ContextCompactedEvent 和恢复所需 Context facts。
+- 持久化 store policy 指定的 TurnStartedEvent、TurnCompleteEvent/TurnAbortedEvent、ItemCompletedEvent（包含 completed Proposed Plan）、TokenCountEvent 和恢复所需 Context facts；Compaction replay 以 CompactedItem 为唯一 checkpoint，不再持久化或发布第二个 ContextCompactedEvent 完成协议。
 - 不持久化高频 Agent/Reasoning/Command/Plan Delta、Working、未决 ApprovalRequestEvent、未决 `RequestUserInputEvent`、`PlanUpdateEvent`、NextTurnQueue/queued preview、Popup、动画 Tick 和 retrying StreamErrorEvent。`update_plan` 与 `request_user_input` 的 Function Call/Function Call Output 仍作为普通 ResponseItem 持久化。
 - Resume 从 typed ResponseItem 和 EventMsgItem 重建 Context/History，不重放旧 Delta。
 - ResponseItem 与对应 ItemCompletedEvent 必须由 Session 在同一 ordered append 主链中提交；live ItemCompletedEvent 只能在该 append 成功后发布，`run_turn` 不保留等待 Turn 尾部才写入的私有 completed-item queue。
@@ -4631,6 +4776,15 @@ Provider/stream error 还必须区分：
 
 - transient retrying：Core 已决定自动重试，Turn 保持 running，只更新 live status。
 - terminal provider failure：不可恢复或重试耗尽，进入 failed SessionTask result 和唯一 Turn terminal protocol。
+- context window exceeded：Provider 明确拒绝当前上下文，Adapter 归一化为 typed `context_window_exceeded`，不得退化为通用 invalid_request 或依赖错误字符串触发 compact。
+
+Compaction error 至少区分：
+
+- `compaction_no_history`：没有可压缩的真实模型历史。
+- `compaction_stale`：生成摘要后 source version/hash 已变化，replacement 未安装。
+- `compaction_insufficient`：安装预览或安装后 active tokens 没有实质下降，不能继续无界重复 compact。
+- `compaction_invalid_output`：摘要为空、包含 Tool Call、finish reason 不完整或 replacement 无法通过 typed validation。
+- `compaction_persistence_failed`：replacement durable append/flush 失败，live ContextManager 保持旧状态。
 
 所有错误必须：
 
@@ -4656,6 +4810,8 @@ Provider/stream error 还必须区分：
 - Turn 在模型调用前持久化。
 - ItemStartedEvent/ItemCompletedEvent 使用相同 ItemID；持久化的 ItemCompletedEvent 足以独立 Replay。
 - ResponseItem 与 ItemCompletedEvent 在 live ItemCompletedEvent 前进入 ordered canonical append；进程在 Turn 中途退出时不会出现“UI 已 completed、Rollout 无事实”。
+- 每个成功 sampling/compaction request 在下一模型动作前只记录一次 TokenUsageInfo；Turn terminal 不再从 TaskOutput 追加第二个聚合 usage。
+- Compaction install 将 CompactedItem 与 refreshed TokenCountEvent snapshot 作为同一 durable boundary；flush 失败时 ContextManager、live completed item 和后续 sampling 都不能越过该 checkpoint。
 - Completed/Aborted 终态唯一，失败信息进入唯一终态。
 - completed、blocked、failed 和 aborted 按 TaskOutcome/terminal contract 映射，不使用通用 Go error 表达 blocked 或 budget limit。
 - Interface 只依赖 Event/EventMsg 识别 Turn terminal，不同时等待私有 Task completion。
@@ -4679,6 +4835,7 @@ Provider/stream error 还必须区分：
 - `/plan <task>` 的 mode override 与用户输入在同一个 UserInputOp 中应用；设置失败不得创建 Turn，ActiveTurn 期间不得改变已经冻结的 CollaborationMode。
 - 慢 Renderer、已关闭 TUI 或调试 Subscriber 不导致 Agent Turn 失败。
 - Live 和 Replay 对相同 ItemCompletedEvent 生成一致 HistoryCell。
+- TokenCountEvent 在 live、attach snapshot 和 Resume 中都采用 replace-snapshot reducer；ContextCompaction live Item lifecycle 与 CompactedItem replay 只生成一个 ContextCompactedCell。
 - Protocol package 只包含 identity/DTO/contracts；TranscriptState、TUI reducer 和 rollout replay projector 位于各自 projection/application package。
 
 ### 28.3 Context
@@ -4695,11 +4852,14 @@ Provider/stream error 还必须区分：
 - canonical Rollout payload 通过统一 typed encoder/decoder round-trip；writer 与 projector 不使用彼此独立的 ad-hoc schema，也不存在旧格式 decoder/fallback。
 - ContextManager 只能由 Session 根据 canonical facts 增量更新；Resume 重建一次，普通 append 不触发全量 Rollout rebuild。
 - 访问嵌套目录后应用对应 AGENTS.md；AgentsMdManager/LoadedAgentsMd 是唯一 owner，stale snapshot 触发下一 Step recapture。
-- Compaction 保留目标、修改、失败和待办。
-- Compaction 后 Tool 协议合法。
-- Provider usage 可以校准 estimator；多 Model Step live usage 与 Resume 后累计 usage 一致。
+- Compaction request 保留普通 BaseInstructions，把 `SUMMARIZATION_PROMPT` 作为最后一个 synthetic User item，Tools 为空；摘要模型看到 exact StepContext 的 AGENTS.md/WorldState/Skill/MCP 与 canonical history。
+- Compaction 保留目标、修改、失败和待办；ReplacementHistory 使用 typed ResponseItem、按最近真实 User message 总预算选择并以 `User(SUMMARY_PREFIX + summary)` 结束，安装后 Tool 协议合法。
+- TotalTokenUsage、LastTokenUsage、ActiveContextTokens 与 EstimatedInputTokens 在多 Model Step、Tool Result、Compaction、interrupt、live 和 Resume 中保持各自语义；TokenCountEvent/replay/SQLite 不重复累加 snapshot。
+- 文本 ASCII/中文、Tool Call/Result、Reasoning、ToolSpec、OutputSchema、prepared high/original image 的结构化估算有独立 fixture；图片 Base64 不按文本 token 重复计费。
+- 手动 compact 与 auto pre-turn/mid-turn 使用相同 Session.runCompaction/install contract；auto 不嵌套 CompactTask，pending steer 不进入 compact request。
+- source hash/version race、compaction request context overflow oldest-group trimming、stream retry/cancel、invalid summary、durable append failure 和 compact 后无进展均保持原 ContextManager 或产生唯一成功 checkpoint，不出现无限 compact。
 - ModelInfo input modalities 控制不支持内容的投影，不把能力检查推迟到 Provider Adapter 报错。
-- 自动压缩与 `/compact` 复用同一 SessionServices.Compactor；`run_turn` 不嵌套运行 CompactTask。
+- architecture guards 禁止 `TaskOutput.Usage`、Role/Content-only ReplacementMessage、Compactor 返回 RolloutItem、`compactFunc/compactCallback`、ContextCompactedEvent 第二完成协议、字符串 compaction error 判断和 TUI/replay usage 累加重新进入生产路径。
 
 ### 28.4 Tool 与 Approval
 
@@ -4786,7 +4946,7 @@ Amadeus 至少通过以下真实场景：
 7. Plan Mode 在探索后通过 `request_user_input` 询问关键取舍，用户回答后同一 Turn 继续并产生 decision-complete 方案；Default Mode 也能在必要时复用同一协议。
 8. 用户在 Proposed Plan 完成后选择实施，Runtime 以 Default mode override 创建后续普通 Turn，不在 Plan Turn 内直接执行。
 9. 普通复杂任务中模型按需调用 `update_plan`，TUI 显示 Updated Plan，且该 checklist 不成为 Proposed Plan 或 SessionState。
-10. 用户运行 `/compact`，历史被压缩但原始 Rollout 保留，后续对话不丢目标。
+10. 用户运行 `/compact`，Runtime 以普通 BaseInstructions + synthetic summarization User prompt 生成 typed replacement，原始 Rollout 保留，后续对话不丢目标；live 和 Resume 各只显示一个 Context compacted checkpoint。
 11. 用户中断 Turn 后输入“继续”，新 Turn 能看到中断事实并重新规划。
 12. `execute_command` 完成后展示命令、输出和退出码，不伪造文件 Diff 或修改归因。
 13. Provider、Context 或 Tool 失败时 TUI 明确显示错误，不静默卡死。
@@ -4810,6 +4970,8 @@ Amadeus 至少通过以下真实场景：
 31. Regular Turn 运行期间按 Enter 提交补充信息时仍进入当前 Turn；相同状态下按 Tab 只进入 NextTurnQueue，当前 Turn 的 Session/Context/Rollout 不出现该输入。
 32. 当前 Turn 正常 terminal 后 queued input 按 FIFO 每次启动一个新 Turn；aborted/blocked、submit rejection 和 attachment replacement 不会把输入静默注入错误 Turn，queued state 不出现在 Resume replay。
 33. Turn 运行期间 Composer 输入可排队普通文字时，Footer 用 `tab to queue message`/`tab to queue` 临时替换固定 statusline；Plan indicator 按宽度让位，Slash/popup/overlay、空输入和 idle draft 不显示错误 hint，Tab enqueue 后固定 statusline 恢复。
+34. 多步 Tool Turn 的 TotalTokenUsage 持续累计而 LastTokenUsage 只反映最近 request；大 Tool Result 进入 active suffix，auto compact 后 active context 明显下降，Resume 与 live 显示相同 context occupancy，SQLite `tokens_used` 不重复累计 snapshot。
+35. 当前 Turn 的大 Tool Result 导致 mid-turn compact 时，replacement 覆盖 exact source 并继续原 model/tool continuation；compaction 无法降低 active context、source 在等待期间变化或 Provider 返回 context length error 时产生 typed failure，不重复 compact 或覆盖新事实。
 
 ## 30. 最终架构结论
 
@@ -4818,7 +4980,7 @@ Amadeus 至少通过以下真实场景：
 3. 默认 Agent 使用单一 Codex 风格 Turn continuation loop；`update_plan` 按需发布 transient checklist Event，普通 Tool Call/Result 进入模型历史，checklist 不参与 Resume 恢复。
 4. `/plan` 是显式只规划不实施的 Collaboration Mode，复用同一 RegularTask、`run_turn`、Context 和 Event/Rollout 主链；`/plan <task>` 原子应用 mode override，正式方案使用 `<proposed_plan>`、PlanDeltaEvent 和 completed PlanItem。
 5. `request_user_input` 是 Default/Plan 通用的独立交互 Tool；两种模式共享 Tool/Event/waiter/answer lifecycle，只由 Prompt 决定提问倾向，不复用 Approval 或 checklist lifecycle。
-6. `/compact` 提交 CompactOp，由 CompactTask 调用 SessionServices.Compactor；自动压缩由 `run_turn` 调用同一 Compactor，并保留 canonical rollout。
+6. `/compact` 提交 CompactOp 并由 CompactTask 请求 Session.runCompaction；自动压缩由 `run_turn` inline 调用同一 Session lifecycle。SessionServices.Compaction 只生成 typed output，Session 独占 source validation、TokenUsageInfo、durable CompactedItem install、ContextManager replacement 和完成协议。
 7. 结构化文件修改遵循 Read → Diff Preview → Approval → Revalidate → Atomic Apply → Verify。
 8. `execute_command` 默认 Ask，经 Session 精确规则复用授权后直接在宿主执行；不解析任意命令的完整路径副作用。
 9. Prompt 构造以 Codex 的 `Prompt`、`BaseInstructions`、`ResponseItem`、`ToolSpec`、`ModelMessages`、`WorldState` 和 Collaboration Mode 语义为唯一目标；不保留旧 Prompt 装配兼容层。

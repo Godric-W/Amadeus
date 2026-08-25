@@ -51,14 +51,14 @@ func TestChatCompletionsStreamParsesTextFinishAndUsage(t *testing.T) {
 	if !completed.Completed() || completed.ID != "chatcmpl_1" || completed.FinishReason != llm.FinishReasonStop || completed.ProviderFinishReason != "stop" {
 		t.Fatalf("unexpected completion chunk: %#v", completed)
 	}
-	if completed.Usage == nil || *completed.Usage != (llm.Usage{
+	if completed.TokenUsage == nil || *completed.TokenUsage != (llm.TokenUsage{
 		InputTokens:       10,
 		CachedInputTokens: 4,
 		OutputTokens:      6,
 		ReasoningTokens:   2,
 		TotalTokens:       16,
 	}) {
-		t.Fatalf("unexpected completion usage: %#v", completed.Usage)
+		t.Fatalf("unexpected completion usage: %#v", completed.TokenUsage)
 	}
 	_, err = stream.Recv()
 	if !errors.Is(err, io.EOF) {
@@ -80,7 +80,7 @@ func TestChatCompletionsStreamReturnsFinishWithoutUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("receive completion chunk: %v", err)
 	}
-	if completed.FinishReason != llm.FinishReasonLength || completed.ProviderFinishReason != "length" || completed.Usage != nil {
+	if completed.FinishReason != llm.FinishReasonLength || completed.ProviderFinishReason != "length" || completed.TokenUsage != nil {
 		t.Fatalf("unexpected completion without usage: %#v", completed)
 	}
 }

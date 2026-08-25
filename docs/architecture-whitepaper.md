@@ -177,7 +177,7 @@ flowchart TD
 - 一个 `Session` 同时最多拥有一个 `ActiveTurn`，但可以保存 deferred submissions 和 same-turn pending input。
 - 一个 `ActiveTurn` 拥有一个 `RunningTask`、一个 `TurnState` 和当前 `TaskOutput`。
 - 一个 `RunningTask` 拥有 cancellation context，并执行一个 `SessionTask`。
-- 一个 `SessionServices` 在 Session 生命周期内复用 Provider client、Context、Tool、Approval、MCP、Skill、Process 和 Compactor。
+- 一个 `SessionServices` 在 Session 生命周期内复用 Provider client、Context、Tool、Approval、MCP、Skill、Process 和无状态 CompactionService；Session 自身拥有 compaction lifecycle 与 durable install。
 - 一个 `StepContext` 只对应一次模型采样及其紧随的 Tool dispatch；下一次采样必须重新捕获。
 - `AgentControl` 只由 Root Thread 拥有；child 共享引用但不能关闭它。
 - `NextTurnQueue` 由 Bubble Tea `fullscreenModel` 串行拥有，按 active Thread attachment 隔离；它不是 Session deferred submission 或 TurnInputQueue。
@@ -330,12 +330,12 @@ flowchart TD
 | `InteractiveOptions` | 构造 InteractiveApplication 所需的 Workspace、Session Configuration 和 UI 限制。 |
 | `InteractiveApplication` | 交互生命周期、active Thread attachment、event pump、pending interaction 和 shutdown owner。 |
 | `ThreadWorkspace` | ThreadManager 上层的当前 Thread 选择与事务化切换边界。 |
-| `ThreadViewSnapshot` | attach 时提供给 UI 的完整可渲染快照：generation、Thread、完整 SessionConfiguration、Items、Usage 与 ContextWindow。 |
+| `ThreadViewSnapshot` | attach 时提供给 UI 的完整可渲染快照：generation、Thread、完整 SessionConfiguration、Items、TokenUsageInfo 与 ActiveContextTokens。 |
 | `SessionOption` | `/resume` 列表中的稳定候选项。 |
 | `SkillOption` | `/skills` 展示和启停操作所需 read model。 |
 | `MCPServerStatus` | 单个 MCP Server 的启用、认证、Tool、Resource 和错误摘要。 |
 | `MCPInventory` | `/mcp` 的 Server 集合。 |
-| `StatusSnapshot` | `/status` 的 Thread、Provider、Usage、Permission、Skill/MCP revision 聚合。 |
+| `StatusSnapshot` | `/status` 的 Thread、Provider、TokenUsageInfo/active context、Permission、Skill/MCP revision 聚合。 |
 | `InteractiveEvent` | Application 到 TUI 的封闭事件族。 |
 | `SessionEventObserved` | 带 generation 的 protocol Event。 |
 | `ApprovalRequested` | UI 需要展示 Approval 时的 typed request。 |
@@ -495,11 +495,11 @@ Tab queue 不增加新的 `Op`：输入在 Fullscreen TUI 中 enqueue 时尚未�
 | `AgentMessageContentDeltaEvent` | Assistant 流式文本增量。 |
 | `ReasoningContentDeltaEvent` | Reasoning 流式增量。 |
 | `CommandOutputDeltaEvent` | 长运行 Process 输出增量。 |
-| `TokenCountEvent` | Provider usage 和估算输入 token。 |
+| `TokenCountEvent` | 完整 TokenUsageInfo + ActiveContextTokens + observed history watermark snapshot；consumer 只替换，不累加。 |
 | `ApprovalRequestEvent` | Tool 需要 UI/CLI 决策。 |
 | `RequestUserInputEvent` | Agent 需要结构化用户输入。 |
 | `PlanUpdateEvent` / `PlanDeltaEvent` | `update_plan` 和 proposed plan 的 typed lifecycle。 |
-| `ContextCompactedEvent` | Compaction 完成后的 UI/diagnostic fact。 |
+| `ContextCompactionItem` | live 使用 ItemStarted/ItemCompleted；Replay 的唯一完成事实来自 CompactedItem。 |
 | `SubagentNotificationEvent` | child terminal result 注入 parent context 的 durable fact。 |
 | `ShutdownCompleteEvent` | Session 完全终止。 |
 
@@ -567,7 +567,7 @@ Session 不保存 next-turn user queue。运行中 Enter 已提交输入仍由 S
 | `compactTask` | 执行显式 Compaction。 |
 | `RunningTask` | SessionTask 的 goroutine、context、cancel cause、panic capture 和 Completion channel owner。 |
 | `Completion` | RunningTask 返回 Session 的 terminal envelope。 |
-| `TaskOutput` | Task 的 RolloutItems、summary、outcome、usage 和 ToolCallCount。 |
+| `TaskOutput` | Task 的 summary、outcome、reason 和 ToolCallCount；不延迟返回 canonical items 或 usage。 |
 | `TurnContext` | 一个 Turn 的稳定 runtime settings：Thread/Turn、Provider、Model、Reasoning、CWD、Mode、OutputSchema。 |
 | `TurnContextItem` | TurnContext 的可持久化纯数据版本。 |
 
@@ -589,7 +589,9 @@ flowchart TD
 
     Start --> Prepare
     Prepare --> Capture
-    Capture --> Sample
+    Capture --> Compact
+    Compact -- yes --> Capture
+    Compact -- no --> Sample
     Sample --> Final
     Final -- yes --> Pending
     Final -- no --> Calls
@@ -597,9 +599,7 @@ flowchart TD
     Execute --> Persist
     Persist --> Pending
     Pending -- yes --> Prepare
-    Pending -- no --> Compact
-    Compact -- yes --> Prepare
-    Compact -- no --> Done
+    Pending -- no --> Done
 ```
 
 ### 11.1 数据模型职责
@@ -614,10 +614,10 @@ flowchart TD
 | `ModelClientSession` | Turn-scoped stream/reconnect owner；在同一 Turn 的 sampling 与 compaction 间复用 client。 |
 | `ModelClientSessionConfig` | stream retry 次数、idle timeout 和可测试 backoff/sleep。 |
 | `TurnBudget` | 最大 sample、Tool call、duration 和 warning ratio。 |
-| `CompactRequest` | Compactor 所需 history projection、ModelSession、Reasoning 和 EventSink。 |
-| `Compactor` | 将可覆盖历史变成 CompactedItem + usage item。 |
+| `compact.Request` | exact Prompt/Source、ModelSession、Reasoning 和 lifecycle metadata。 |
+| `CompactionService` | 只生成 typed Message/ReplacementHistory/TokenUsage，不访问 Session、Rollout 或 UI。 |
 
-Continuation loop 当前直接维护 sample 数、Tool call 数、elapsed time 和累计 `llm.Usage`；这些运行中计数尚未封装为独立公开数据模型。
+Continuation loop 只维护 sample、Tool call 和 elapsed safety budget；每个成功 request 的 TokenUsage 立即由 Session 累加到 TokenUsageInfo，Turn terminal 不再生成第二份聚合 usage。
 
 ## 12. Prompt、Context 与 AGENTS.md
 
@@ -663,13 +663,13 @@ flowchart LR
 | `ModelInstructionsVariables` | personality 文本变量。 |
 | `CollaborationModeMessages` | Default/Plan developer instructions。 |
 | `BaseInstructions` | 已解析 personality 的系统基础指令。 |
-| `context.Manager` | canonical model-visible history、WorldState updates、usage 和 revision 的唯一 owner。 |
+| `context.Manager` | canonical model-visible history、WorldState updates、TokenUsageInfo/active checkpoint 和 revision 的唯一 owner。 |
 | `UpdateKey` | collaboration、agents、environment、permission、skills、MCP 的稳定更新槽位。 |
 | `WorldState` | 有序 contextual fragments 集合及 revision。 |
 | `ContextualUserFragment` | 运行时注入模型、但不代表真实用户意图的上下文片段。 |
 | `SkillInjection` | 用户通过 `$skill-name` 显式选择后注入的 Skill 正文事实。 |
-| `UsageSnapshot` | Provider usage 与估算输入 token。 |
-| `PromptSnapshot` | 一次 sample 的模型消息及 history/world-state revision。 |
+| `TokenUsageInfo` | Thread 累计 TotalTokenUsage 与最近 request LastTokenUsage。 |
+| `PromptSnapshot` | 一次 sample 的模型消息、EstimatedInputTokens 及 history/world-state revision。 |
 | `RolloutMessageProjection` | 从 Rollout 投影得到的 provider-neutral消息及 source sequences。 |
 | `AgentsMdManager` | 扫描、合并、刷新用户级和目录层级 AGENTS.md。 |
 | `agentsmd.Document` | 单个 AGENTS.md 的来源、路径、scope、hash 和正文。 |
@@ -700,7 +700,7 @@ flowchart LR
 
 ### 13.1 Domain/Adapter 边界
 
-- `internal/llm` 不依赖具体 HTTP SDK，定义稳定 Request、Response、Stream、Usage、ModelInfo 和 ProviderError。
+- `internal/llm` 不依赖具体 HTTP SDK，定义稳定 Request、Response、Stream、TokenUsage、ModelInfo 和 ProviderError。
 - `internal/llm/openai` 负责 Responses/Chat wire 编解码、Dialect 字段归一化和 transport retry。
 - request retry 属于 Provider adapter；已建立连接后的 stream reconnect 属于 `ModelClientSession`。
 - Engine 只理解 tool calls、final response、usage 和 typed provider error，不理解具体 JSON wire shape。
@@ -721,7 +721,7 @@ flowchart LR
 | `Response` | 最终 message、finish reason、usage 和 provider request identity。 |
 | `Stream` | 顺序读取 StreamChunk 的端口。 |
 | `StreamChunk` | content/reasoning delta、ToolCalls、usage 和 terminal finish reason。 |
-| `Usage` | input、cached input、output、reasoning 和 total token。 |
+| `TokenUsage` | 单次 request 的 input、cached input、output、reasoning 和 total token。 |
 | `ReasoningConfig` | request-scoped thinking/reasoning effort。 |
 | `ProviderError` | kind、code、status、request ID、retryability 和 retry delay。 |
 
@@ -1285,6 +1285,8 @@ flowchart TD
 17. matching TurnComplete 每次最多 drain 一条 queued input 且 admission 必须为 Started；aborted/blocked/rejection 和旧 attachment 结果不能把输入发送到错误 Turn。
 18. queue hint 只由 footerProps 的 queueable-draft 派生值驱动；running draft 时优先于 passive statusline 并按 full/short 降级，不能成为 footerState、StatusLineItem、HistoryCell 或 Runtime/canonical fact。
 19. Config/patch/default/validation/provenance/output 不保存 schema version；`version:` 被 strict decoder 拒绝，`configs/config.yaml.example` 是仓库唯一完整模板且不是自动发现位置。
+20. TokenCountEvent 是完整 snapshot：TotalTokenUsage、LastTokenUsage、ActiveContextTokens 和 preflight estimate 不混用，live/Resume/SQLite 不重复累加。
+21. CompactionService 只生成 typed output；Session 独占 trigger/reason/phase、真实 request usage、source validation、durable CompactedItem install、active recompute 和 Item terminal。
 
 `internal/architecture/guard_test.go` 通过源码结构检查保护这些边界，例如禁止已移除的旧 Runtime/Planner 抽象重新出现，并验证 Web、Tool、Multi-Agent 等关键 package 分层。
 
@@ -1339,7 +1341,8 @@ flowchart TD
 | `internal/state/sqlite` | Thread metadata index。 |
 | `internal/agent/protocol` | Submission、Op、EventMsg、TurnItem、Multi-Agent protocol。 |
 | `internal/agent/session` | Session loop、Task、Turn completion、Step capture。 |
-| `internal/agent/engine` | ModelClientSession、continuation primitives、Compactor、Tool events。 |
+| `internal/agent/engine` | ModelClientSession、continuation primitives 与 Tool events。 |
+| `internal/agent/compact` | Compaction Source/Request/Output 与无状态生成服务。 |
 | `internal/agent/turn` | TurnContext、Mode 和 Personality。 |
 | `internal/agent/multiagent` | AgentControl、reservation、status、wait、shutdown。 |
 | `internal/context` | `Manager`、WorldState、PromptSnapshot、Rollout projection。 |

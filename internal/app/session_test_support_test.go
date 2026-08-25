@@ -28,7 +28,14 @@ func (*appTestClient) Complete(context.Context, llm.Request) (llm.Response, erro
 
 func (client *appTestClient) Stream(_ context.Context, request llm.Request) (llm.Stream, error) {
 	text := "token budget"
-	if !strings.Contains(request.Prompt.BaseInstructions.Text, "CONTEXT CHECKPOINT COMPACTION") {
+	isCompaction := false
+	for _, item := range request.Prompt.Input {
+		if item.Role == llm.RoleUser && strings.Contains(item.Content, "CONTEXT CHECKPOINT COMPACTION") {
+			isCompaction = true
+			break
+		}
+	}
+	if !isCompaction {
 		input := ""
 		for index := len(request.Prompt.Input) - 1; index >= 0; index-- {
 			if request.Prompt.Input[index].Role == llm.RoleUser {

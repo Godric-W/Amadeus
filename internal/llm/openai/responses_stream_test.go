@@ -62,14 +62,14 @@ func TestResponsesStreamNormalizesTextReasoningCompletionAndUsage(t *testing.T) 
 	if !completed.Completed() || completed.FinishReason != llm.FinishReasonStop || completed.ProviderFinishReason != "completed" {
 		t.Fatalf("unexpected completion chunk: %#v", completed)
 	}
-	if completed.Usage == nil || *completed.Usage != (llm.Usage{
+	if completed.TokenUsage == nil || *completed.TokenUsage != (llm.TokenUsage{
 		InputTokens:       10,
 		CachedInputTokens: 4,
 		OutputTokens:      6,
 		ReasoningTokens:   2,
 		TotalTokens:       16,
 	}) {
-		t.Fatalf("unexpected completion usage: %#v", completed.Usage)
+		t.Fatalf("unexpected completion usage: %#v", completed.TokenUsage)
 	}
 	_, err = stream.Recv()
 	if !errors.Is(err, io.EOF) {

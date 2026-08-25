@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	agentcompact "github.com/Godric-W/Amadeus/internal/agent/compact"
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
@@ -167,6 +168,10 @@ type continuationEventSink struct {
 
 func (sink *continuationEventSink) Publish(ctx context.Context, event protocol.Event) error {
 	if completed, ok := event.Msg.(protocol.ItemCompletedEvent); ok {
+		if completed.Item.Kind == protocol.ItemContextCompaction {
+			sink.events = append(sink.events, event)
+			return nil
+		}
 		history, err := sink.session.services.LiveThread.History(ctx)
 		if err != nil {
 			return err
@@ -193,18 +198,22 @@ func (sink *continuationEventSink) Publish(ctx context.Context, event protocol.E
 
 func TestContinueTurnPersistsAndContinuesAfterToolFailure(t *testing.T) {
 	client := &continuationTestClient{streams: []llm.Stream{
-		continuationStream(llm.StreamChunk{ToolCalls: []llm.ToolCall{{ID: "call-1", Name: "unstable", Arguments: json.RawMessage(`{}`)}}, FinishReason: llm.FinishReasonToolCalls, Usage: &llm.Usage{TotalTokens: 10}}),
-		continuationStream(llm.StreamChunk{ContentDelta: "recovered"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop, Usage: &llm.Usage{TotalTokens: 5}}),
+		continuationStream(llm.StreamChunk{ToolCalls: []llm.ToolCall{{ID: "call-1", Name: "unstable", Arguments: json.RawMessage(`{}`)}}, FinishReason: llm.FinishReasonToolCalls, TokenUsage: &llm.TokenUsage{TotalTokens: 10}}),
+		continuationStream(llm.StreamChunk{ContentDelta: "recovered"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop, TokenUsage: &llm.TokenUsage{TotalTokens: 5}}),
 	}}
 	session := newContinuationTestSession(t, client, []tool.ToolDefinition{&continuationFailingTool{}}, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), engine.DefaultTurnBudget())
 	appendContinuationUser(t, session, "turn-1", "do work")
 	events := &continuationEventSink{session: session}
-	result, err := runContinuationTestTurn(session, "turn-1", events, nil)
+	result, err := runContinuationTestTurn(session, "turn-1", events)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Outcome != protocol.TurnOutcomeCompleted || result.Usage.TotalTokens != 15 || len(client.requests) != 2 {
+	if result.Outcome != protocol.TurnOutcomeCompleted || len(client.requests) != 2 {
 		t.Fatalf("turn result=%#v requests=%d", result, len(client.requests))
+	}
+	tokenSnapshot := session.state.Context.TokenSnapshot()
+	if tokenSnapshot.Info == nil || tokenSnapshot.Info.TotalTokenUsage.TotalTokens != 15 || tokenSnapshot.Info.LastTokenUsage.TotalTokens != 5 {
+		t.Fatalf("token snapshot = %#v", tokenSnapshot)
 	}
 	secondInput := client.requests[1].Prompt.Input
 	if len(secondInput) == 0 || secondInput[len(secondInput)-1].Role != llm.RoleTool || !strings.Contains(secondInput[len(secondInput)-1].Content, "temporary failure") {
@@ -224,7 +233,7 @@ func TestContinueTurnKeepsFrozenReasoningEffortAcrossContinuations(t *testing.T)
 	session.state.Configuration.Runtime.ModelReasoningEffort = &high
 	changingTool.after = func() { session.state.Configuration.Runtime.ModelReasoningEffort = &low }
 	appendContinuationUser(t, session, "turn-effort", "do work")
-	if _, err := runContinuationTestTurn(session, "turn-effort", &continuationEventSink{session: session}, nil); err != nil {
+	if _, err := runContinuationTestTurn(session, "turn-effort", &continuationEventSink{session: session}); err != nil {
 		t.Fatal(err)
 	}
 	if len(client.requests) != 2 {
@@ -284,7 +293,7 @@ func TestContinueTurnWarnsThenReturnsBlockedAtSafetyBudget(t *testing.T) {
 	budget := engine.TurnBudget{MaxSamples: 2, MaxToolCalls: 100, MaxDuration: time.Hour, WarnRatio: 0.5}
 	session := newContinuationTestSession(t, client, []tool.ToolDefinition{&continuationFailingTool{}}, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), budget)
 	appendContinuationUser(t, session, "turn-budget", "keep trying")
-	result, err := runContinuationTestTurn(session, "turn-budget", &continuationEventSink{session: session}, nil)
+	result, err := runContinuationTestTurn(session, "turn-budget", &continuationEventSink{session: session})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,133 +302,6 @@ func TestContinueTurnWarnsThenReturnsBlockedAtSafetyBudget(t *testing.T) {
 	}
 	if len(client.requests) != 2 || !strings.Contains(continuationRequestText(client.requests[1]), "approaching its internal safety budget") {
 		t.Fatalf("completion reminder missing: %#v", client.requests)
-	}
-}
-
-func TestContinueTurnChecksAutomaticCompactionBeforeSampling(t *testing.T) {
-	client := &continuationTestClient{streams: []llm.Stream{
-		continuationStream(llm.StreamChunk{ContentDelta: "done"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
-	}}
-	model := continuationModelInfo(llm.ModelMessages{})
-	model.ContextWindow = 1_000
-	model.AutoCompactTokenLimit = 1
-	session := newContinuationTestSession(t, client, nil, model, continuationProvider(0), engine.DefaultTurnBudget())
-	appendContinuationUser(t, session, "turn-compact", "a context that exceeds one token")
-	checks := 0
-	compact := func(context.Context) (bool, error) {
-		checks++
-		return false, nil
-	}
-	result, err := runContinuationTestTurn(session, "turn-compact", &continuationEventSink{session: session}, compact)
-	if err != nil || result.Outcome != protocol.TurnOutcomeCompleted || checks != 1 || len(client.requests) != 1 {
-		t.Fatalf("auto compaction result=%#v checks=%d requests=%d err=%v", result, checks, len(client.requests), err)
-	}
-}
-
-func TestSteeredInputFollowsCompactionWhenOnlySteerNeedsFollowUp(t *testing.T) {
-	client := &continuationTestClient{streams: []llm.Stream{
-		continuationStream(llm.StreamChunk{ContentDelta: strings.Repeat("a", 5000)}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
-		continuationStream(llm.StreamChunk{ContentDelta: "processed steer"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
-	}}
-	model := continuationModelInfo(llm.ModelMessages{})
-	model.AutoCompactTokenLimit = 200
-	session := newContinuationTestSession(t, client, nil, model, continuationProvider(0), engine.DefaultTurnBudget())
-	appendContinuationUser(t, session, "turn-steer-compact", "first prompt")
-	state := newTurnState()
-	if err := session.inputQueue.Enqueue(state, UserTurnInput{Content: "second prompt", ClientID: "client-2"}); err != nil {
-		t.Fatal(err)
-	}
-	compactChecks := make([]string, 0, 1)
-	compact := func(context.Context) (bool, error) {
-		projection := session.ContextProjection()
-		parts := make([]string, len(projection.Messages))
-		for index, message := range projection.Messages {
-			parts[index] = message.Content
-		}
-		compactChecks = append(compactChecks, strings.Join(parts, "\n"))
-		session.services.modelInfo.AutoCompactTokenLimit = 100_000
-		return true, nil
-	}
-	result, err := runContinuationWithState(session, "turn-steer-compact", state, &continuationEventSink{session: session}, compact, false)
-	if err != nil || result.Outcome != protocol.TurnOutcomeCompleted {
-		t.Fatalf("result=%#v err=%v", result, err)
-	}
-	if len(compactChecks) != 1 || strings.Contains(compactChecks[0], "second prompt") {
-		t.Fatalf("compact inputs = %#v", compactChecks)
-	}
-	if len(client.requests) != 2 || strings.Contains(continuationRequestText(client.requests[0]), "second prompt") || !strings.Contains(continuationRequestText(client.requests[1]), "second prompt") {
-		t.Fatalf("requests = %#v", client.requests)
-	}
-}
-
-func TestSteeredInputWaitsForPostCompactToolContinuation(t *testing.T) {
-	client := &continuationTestClient{streams: []llm.Stream{
-		continuationStream(llm.StreamChunk{ToolCalls: []llm.ToolCall{{ID: "call-1", Name: "large_output", Arguments: json.RawMessage(`{}`)}}, FinishReason: llm.FinishReasonToolCalls}),
-		continuationStream(llm.StreamChunk{ContentDelta: "resumed after compact"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
-		continuationStream(llm.StreamChunk{ContentDelta: "processed steer"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
-	}}
-	model := continuationModelInfo(llm.ModelMessages{})
-	model.AutoCompactTokenLimit = 100_000
-	largeTool := &continuationLargeTool{}
-	session := newContinuationTestSession(t, client, []tool.ToolDefinition{largeTool}, model, continuationProvider(0), engine.DefaultTurnBudget())
-	largeTool.after = func() { session.services.modelInfo.AutoCompactTokenLimit = 200 }
-	appendContinuationUser(t, session, "turn-tool-compact", "first prompt")
-	state := newTurnState()
-	if err := session.inputQueue.Enqueue(state, UserTurnInput{Content: "second prompt", ClientID: "client-2"}); err != nil {
-		t.Fatal(err)
-	}
-	compactCalls := 0
-	compact := func(context.Context) (bool, error) {
-		compactCalls++
-		if strings.Contains(contextProjectionText(session.ContextProjection().Messages), "second prompt") {
-			t.Fatal("steered input entered compact request")
-		}
-		session.services.modelInfo.AutoCompactTokenLimit = 100_000
-		return true, nil
-	}
-	result, err := runContinuationWithState(session, "turn-tool-compact", state, &continuationEventSink{session: session}, compact, false)
-	if err != nil || result.Outcome != protocol.TurnOutcomeCompleted {
-		t.Fatalf("result=%#v err=%v", result, err)
-	}
-	if compactCalls != 1 || len(client.requests) != 3 {
-		t.Fatalf("compact calls=%d requests=%d", compactCalls, len(client.requests))
-	}
-	if strings.Contains(continuationRequestText(client.requests[1]), "second prompt") || !strings.Contains(continuationRequestText(client.requests[2]), "second prompt") {
-		t.Fatalf("request ordering = %#v", client.requests)
-	}
-}
-
-func TestSteeredInputWaitsForModelContinuationAfterMidTurnCompact(t *testing.T) {
-	client := &continuationTestClient{streams: []llm.Stream{
-		continuationStream(llm.StreamChunk{ToolCalls: []llm.ToolCall{{ID: "call-1", Name: "compact_trigger", Arguments: json.RawMessage(`{}`)}}, FinishReason: llm.FinishReasonToolCalls}),
-		continuationStream(llm.StreamChunk{ContentDelta: "resumed old task"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
-		continuationStream(llm.StreamChunk{ContentDelta: "processed steer"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
-	}}
-	model := continuationModelInfo(llm.ModelMessages{})
-	model.AutoCompactTokenLimit = 100_000
-	trigger := &continuationLargeTool{name: "compact_trigger", text: "ok"}
-	session := newContinuationTestSession(t, client, []tool.ToolDefinition{trigger}, model, continuationProvider(0), engine.DefaultTurnBudget())
-	trigger.after = func() { session.services.modelInfo.AutoCompactTokenLimit = 1 }
-	appendContinuationUser(t, session, "turn-mid-compact", "first prompt")
-	state := newTurnState()
-	if err := session.inputQueue.Enqueue(state, UserTurnInput{Content: "second prompt", ClientID: "client-2"}); err != nil {
-		t.Fatal(err)
-	}
-	compactCalls := 0
-	compact := func(context.Context) (bool, error) {
-		compactCalls++
-		session.services.modelInfo.AutoCompactTokenLimit = 100_000
-		return true, nil
-	}
-	result, err := runContinuationWithState(session, "turn-mid-compact", state, &continuationEventSink{session: session}, compact, false)
-	if err != nil || result.Outcome != protocol.TurnOutcomeCompleted {
-		t.Fatalf("result=%#v err=%v", result, err)
-	}
-	if compactCalls != 1 || len(client.requests) != 3 {
-		t.Fatalf("compact calls=%d requests=%d", compactCalls, len(client.requests))
-	}
-	if strings.Contains(continuationRequestText(client.requests[1]), "second prompt") || !strings.Contains(continuationRequestText(client.requests[2]), "second prompt") {
-		t.Fatalf("request ordering = %#v", client.requests)
 	}
 }
 
@@ -433,7 +315,7 @@ func TestContinueTurnRetryPersistsOnlySuccessfulAttempt(t *testing.T) {
 	}}
 	session := newContinuationTestSession(t, client, nil, continuationModelInfo(llm.ModelMessages{}), continuationProvider(1), engine.DefaultTurnBudget())
 	appendContinuationUser(t, session, "turn-retry", "continue")
-	result, err := runContinuationTestTurn(session, "turn-retry", &continuationEventSink{session: session}, nil)
+	result, err := runContinuationTestTurn(session, "turn-retry", &continuationEventSink{session: session})
 	if err != nil || result.Outcome != protocol.TurnOutcomeCompleted {
 		t.Fatalf("run result=%#v err=%v", result, err)
 	}
@@ -456,6 +338,22 @@ func TestContinueTurnRetryPersistsOnlySuccessfulAttempt(t *testing.T) {
 	}
 }
 
+func TestFailedSampleCountsConsumptionButExcludesDiscardedOutputFromActiveContext(t *testing.T) {
+	usage := llm.TokenUsage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150}
+	client := &continuationTestClient{streams: []llm.Stream{
+		continuationStream(llm.StreamChunk{ContentDelta: "discarded"}, llm.StreamChunk{FinishReason: llm.FinishReasonLength, TokenUsage: &usage}),
+	}}
+	session := newContinuationTestSession(t, client, nil, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), engine.DefaultTurnBudget())
+	appendContinuationUser(t, session, "turn-length", "generate")
+	if _, err := runContinuationTestTurn(session, "turn-length", &continuationEventSink{session: session}); err == nil {
+		t.Fatal("length-limited sample unexpectedly completed")
+	}
+	tokenSnapshot := session.state.Context.TokenSnapshot()
+	if tokenSnapshot.Info == nil || tokenSnapshot.Info.TotalTokenUsage.TotalTokens != 150 || tokenSnapshot.Info.LastTokenUsage.TotalTokens != 150 || tokenSnapshot.ActiveContextTokens != 100 {
+		t.Fatalf("token snapshot = %#v", tokenSnapshot)
+	}
+}
+
 func TestSessionServicesPreferModelMessagesFromCurrentModel(t *testing.T) {
 	catalog := continuationModelMessages(t)
 	modelMessages := catalog
@@ -471,7 +369,88 @@ func TestSessionServicesPreferModelMessagesFromCurrentModel(t *testing.T) {
 	}
 }
 
+func TestContinueTurnAutoCompactsExactPromptBeforeSampling(t *testing.T) {
+	messages := continuationModelMessages(t)
+	compactUsage := llm.TokenUsage{InputTokens: 6_000, OutputTokens: 20, TotalTokens: 6_020}
+	finalUsage := llm.TokenUsage{InputTokens: 4_200, OutputTokens: 10, TotalTokens: 4_210}
+	client := &continuationTestClient{messages: messages, streams: []llm.Stream{
+		continuationStream(llm.StreamChunk{ContentDelta: "short checkpoint"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop, TokenUsage: &compactUsage}),
+		continuationStream(llm.StreamChunk{ContentDelta: "continued after compact"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop, TokenUsage: &finalUsage}),
+	}}
+	model := continuationModelInfo(messages)
+	model.AutoCompactTokenLimit = 5_000
+	session := newContinuationTestSession(t, client, nil, model, continuationProvider(0), engine.DefaultTurnBudget())
+	appendContinuationUser(t, session, "turn-old", "original objective")
+	appendContinuationAssistant(t, session, "turn-old", strings.Repeat("old assistant detail ", 1_500))
+	appendContinuationUser(t, session, "turn-current", "continue the task")
+	events := &continuationEventSink{session: session}
+	result, err := runContinuationTestTurn(session, "turn-current", events)
+	if err != nil || result.Outcome != protocol.TurnOutcomeCompleted {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if len(client.requests) != 2 || !strings.Contains(continuationRequestText(client.requests[0]), "CONTEXT CHECKPOINT COMPACTION") || !strings.Contains(continuationRequestText(client.requests[1]), "Another language model started") {
+		t.Fatalf("requests = %#v", client.requests)
+	}
+	history, err := session.services.LiveThread.History(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	compactions := 0
+	for _, line := range history.Lines {
+		if _, ok := line.Item.(rollout.CompactedItem); ok {
+			compactions++
+		}
+	}
+	if compactions != 1 {
+		t.Fatalf("compaction checkpoints = %d", compactions)
+	}
+	tokenSnapshot := session.state.Context.TokenSnapshot()
+	if tokenSnapshot.Info == nil || tokenSnapshot.Info.TotalTokenUsage.TotalTokens != compactUsage.TotalTokens+finalUsage.TotalTokens || tokenSnapshot.Info.LastTokenUsage != finalUsage {
+		t.Fatalf("token snapshot = %#v", tokenSnapshot)
+	}
+}
+
+func TestMidTurnCompactionResumesModelBeforeDrainingSteer(t *testing.T) {
+	messages := continuationModelMessages(t)
+	toolUsage := llm.TokenUsage{InputTokens: 3_900, OutputTokens: 100, TotalTokens: 4_000}
+	compactUsage := llm.TokenUsage{InputTokens: 6_500, OutputTokens: 20, TotalTokens: 6_520}
+	resumeUsage := llm.TokenUsage{InputTokens: 4_300, OutputTokens: 10, TotalTokens: 4_310}
+	steerUsage := llm.TokenUsage{InputTokens: 4_400, OutputTokens: 10, TotalTokens: 4_410}
+	client := &continuationTestClient{messages: messages, streams: []llm.Stream{
+		continuationStream(llm.StreamChunk{ToolCalls: []llm.ToolCall{{ID: "call-large", Name: "large_output", Arguments: json.RawMessage(`{}`)}}, FinishReason: llm.FinishReasonToolCalls, TokenUsage: &toolUsage}),
+		continuationStream(llm.StreamChunk{ContentDelta: "mid-turn checkpoint"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop, TokenUsage: &compactUsage}),
+		continuationStream(llm.StreamChunk{ContentDelta: "resumed existing work"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop, TokenUsage: &resumeUsage}),
+		continuationStream(llm.StreamChunk{ContentDelta: "processed steer"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop, TokenUsage: &steerUsage}),
+	}}
+	model := continuationModelInfo(messages)
+	largeTool := &continuationLargeTool{text: strings.Repeat("tool output ", 2_000)}
+	session := newContinuationTestSession(t, client, []tool.ToolDefinition{largeTool}, model, continuationProvider(0), engine.DefaultTurnBudget())
+	largeTool.after = func() { session.services.modelInfo.AutoCompactTokenLimit = 5_000 }
+	appendContinuationUser(t, session, "turn-mid", "inspect and continue")
+	state := newTurnState()
+	if err := session.inputQueue.Enqueue(state, UserTurnInput{Content: "steer after existing work", ClientID: "client-steer"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := runContinuationWithState(session, "turn-mid", state, &continuationEventSink{session: session}, false)
+	if err != nil || result.Outcome != protocol.TurnOutcomeCompleted {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if len(client.requests) != 4 {
+		t.Fatalf("requests = %d", len(client.requests))
+	}
+	if !strings.Contains(continuationRequestText(client.requests[1]), "CONTEXT CHECKPOINT COMPACTION") || strings.Contains(continuationRequestText(client.requests[1]), "steer after existing work") {
+		t.Fatalf("compact request consumed pending steer: %q", continuationRequestText(client.requests[1]))
+	}
+	if strings.Contains(continuationRequestText(client.requests[2]), "steer after existing work") || !strings.Contains(continuationRequestText(client.requests[3]), "steer after existing work") {
+		t.Fatalf("resume/steer ordering = %#v", client.requests)
+	}
+}
+
 func newContinuationTestSession(t *testing.T, client llm.Client, definitions []tool.ToolDefinition, model llm.ModelInfo, provider config.ModelProviderInfo, budget engine.TurnBudget) *Session {
+	return newContinuationTestSessionWithStore(t, client, definitions, model, provider, budget, nil)
+}
+
+func newContinuationTestSessionWithStore(t *testing.T, client llm.Client, definitions []tool.ToolDefinition, model llm.ModelInfo, provider config.ModelProviderInfo, budget engine.TurnBudget, wrap func(thread.ThreadStore) thread.ThreadStore) *Session {
 	t.Helper()
 	ctx := context.Background()
 	home := t.TempDir()
@@ -488,7 +467,11 @@ func newContinuationTestSession(t *testing.T, client llm.Client, definitions []t
 	if err != nil {
 		t.Fatal(err)
 	}
-	live, err := thread.NewDraftLiveThread(testutil.ThreadID(1), threadStore)
+	var liveStore thread.ThreadStore = threadStore
+	if wrap != nil {
+		liveStore = wrap(threadStore)
+	}
+	live, err := thread.NewDraftLiveThread(testutil.ThreadID(1), liveStore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -524,6 +507,7 @@ func newContinuationTestSession(t *testing.T, client llm.Client, definitions []t
 		modelClient: client, provider: provider, modelInfo: model, modelMessages: continuationModelMessages(t),
 		tools: registry, toolExecutor: executor, visibility: map[string]bool{}, budget: budget,
 	}
+	session.services.compaction = &agentcompact.Service{ModelInfo: model, ModelMessages: session.services.modelMessages}
 	t.Cleanup(func() {
 		cancel(errors.New("test cleanup"))
 		_ = live.Shutdown(context.Background())
@@ -544,16 +528,27 @@ func appendContinuationUser(t *testing.T, session *Session, turnID protocol.Turn
 	}
 }
 
-func runContinuationTestTurn(session *Session, turnID protocol.TurnID, events protocol.EventSink, compact compactFunc) (TaskOutput, error) {
-	return runContinuationWithState(session, turnID, newTurnState(), events, compact, false)
+func appendContinuationAssistant(t *testing.T, session *Session, turnID protocol.TurnID, content string) {
+	t.Helper()
+	assistant, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: string(llm.RoleAssistant), Content: content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendItems(context.Background(), turnID, assistant); err != nil {
+		t.Fatal(err)
+	}
 }
 
-func runContinuationWithState(session *Session, turnID protocol.TurnID, state *TurnState, events protocol.EventSink, compact compactFunc, canDrainPendingInput bool) (TaskOutput, error) {
+func runContinuationTestTurn(session *Session, turnID protocol.TurnID, events protocol.EventSink) (TaskOutput, error) {
+	return runContinuationWithState(session, turnID, newTurnState(), events, false)
+}
+
+func runContinuationWithState(session *Session, turnID protocol.TurnID, state *TurnState, events protocol.EventSink, canDrainPendingInput bool) (TaskOutput, error) {
 	modelSession, err := session.services.NewModelClientSession()
 	if err != nil {
 		return TaskOutput{}, err
 	}
-	return session.continueTurn(context.Background(), &session.services, modelSession, continuationTurnContext(session, turnID, turn.ModeKindDefault), state, events, compact, canDrainPendingInput)
+	return session.continueTurn(context.Background(), &session.services, modelSession, continuationTurnContext(session, turnID, turn.ModeKindDefault), state, events, canDrainPendingInput)
 }
 
 func contextProjectionText(messages []llm.ResponseItem) string {

@@ -29,8 +29,8 @@ func TestCanonicalProjectionIsEquivalentForLiveAndResume(t *testing.T) {
 			Type: rollout.ResponseToolResult, Role: "tool", CallID: "call-1", Name: "execute_command", Status: "failed", Result: &result,
 			Error: &rollout.ResponseError{Kind: "process_error", Message: "exit status 7"}, Partial: true,
 		}),
-		contextEventLine(t, 4, protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 20, OutputTokens: 5, TotalTokens: 25}}),
-		contextEventLine(t, 5, protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 4, OutputTokens: 1, TotalTokens: 5}}),
+		contextEventLine(t, 4, tokenCountEvent(llm.TokenUsage{InputTokens: 20, OutputTokens: 5, TotalTokens: 25}, llm.TokenUsage{InputTokens: 20, OutputTokens: 5, TotalTokens: 25}, 25)),
+		contextEventLine(t, 5, tokenCountEvent(llm.TokenUsage{InputTokens: 24, OutputTokens: 6, TotalTokens: 30}, llm.TokenUsage{InputTokens: 4, OutputTokens: 1, TotalTokens: 5}, 5)),
 	}
 	model := llm.ModelInfo{ContextWindow: 10_000, ToolOutputTokenLimit: 160, InputModalities: []llm.InputModality{llm.InputModalityText}}
 	live := NewManager(nil)
@@ -45,11 +45,11 @@ func TestCanonicalProjectionIsEquivalentForLiveAndResume(t *testing.T) {
 	}
 	liveSnapshot := live.Snapshot(model, llm.Prompt{})
 	resumeSnapshot := resumed.Snapshot(model, llm.Prompt{})
-	if !reflect.DeepEqual(liveSnapshot.Items, resumeSnapshot.Items) || !reflect.DeepEqual(liveSnapshot.Usage, resumeSnapshot.Usage) {
+	if !reflect.DeepEqual(liveSnapshot, resumeSnapshot) || !reflect.DeepEqual(live.TokenSnapshot(), resumed.TokenSnapshot()) {
 		t.Fatalf("live projection %#v differs from resume %#v", liveSnapshot, resumeSnapshot)
 	}
-	if liveSnapshot.Usage.ProviderUsage.TotalTokens != 30 {
-		t.Fatalf("cumulative usage = %#v", liveSnapshot.Usage.ProviderUsage)
+	if tokenSnapshot := live.TokenSnapshot(); tokenSnapshot.Info == nil || tokenSnapshot.Info.TotalTokenUsage.TotalTokens != 30 || tokenSnapshot.Info.LastTokenUsage.TotalTokens != 5 {
+		t.Fatalf("token snapshot = %#v", tokenSnapshot)
 	}
 	var payload ToolResultPayload
 	if err := json.Unmarshal([]byte(liveSnapshot.Items[2].Content), &payload); err != nil {
@@ -70,7 +70,7 @@ func TestIncrementalRecordMatchesResumeAcrossTerminalAndCompactionFacts(t *testi
 		mustContextResponseItem(t, rollout.ResponseItem{Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "I will inspect it."}),
 		mustContextResponseItem(t, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"main.go"}`)}),
 		mustContextResponseItem(t, rollout.ResponseItem{Type: rollout.ResponseToolResult, Role: "tool", CallID: "call-1", Name: "read", Status: "succeeded", Result: &toolResult}),
-		rollout.EventMsgItem{Msg: protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 12, OutputTokens: 3, TotalTokens: 15}}},
+		rollout.EventMsgItem{Msg: tokenCountEvent(llm.TokenUsage{InputTokens: 12, OutputTokens: 3, TotalTokens: 15}, llm.TokenUsage{InputTokens: 12, OutputTokens: 3, TotalTokens: 15}, 15)},
 		rollout.EventMsgItem{Msg: protocol.ContextUpdateEvent{Key: string(UpdateAgents), Content: "project agents", Revision: "agents-r1"}},
 		rollout.EventMsgItem{Msg: protocol.TurnAbortedEvent{Reason: "interrupted", FinishedAt: time.Unix(7, 0).UTC()}},
 	}
@@ -92,15 +92,16 @@ func TestIncrementalRecordMatchesResumeAcrossTerminalAndCompactionFacts(t *testi
 	}
 	digest := sha256.Sum256(encoded)
 	compacted := rollout.ScopeItem(rollout.CompactedItem{
+		Trigger: protocol.CompactionTriggerManual, Reason: protocol.CompactionReasonUserRequested, Phase: protocol.CompactionPhaseStandaloneTurn,
 		Summary: "inspection checkpoint",
-		ReplacementHistory: []rollout.ReplacementMessage{
-			{Role: "user", Content: "inspect main.go"},
-			{Role: "assistant", Content: "Inspection was interrupted after reading main.go."},
+		ReplacementHistory: []llm.ResponseItem{
+			llm.UserMessage("inspect main.go"),
+			llm.UserMessage("Inspection was interrupted after reading main.go."),
 		},
 		CoveredThroughSequence: 7,
 		SourceHash:             hex.EncodeToString(digest[:]),
 	}, testutil.ThreadID(1), "turn-2")
-	trailing := rollout.ScopeItem(rollout.EventMsgItem{Msg: protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 2, OutputTokens: 1, TotalTokens: 3}}}, testutil.ThreadID(1), "turn-2")
+	trailing := rollout.ScopeItem(rollout.EventMsgItem{Msg: tokenCountEvent(llm.TokenUsage{InputTokens: 14, OutputTokens: 4, TotalTokens: 18}, llm.TokenUsage{InputTokens: 2, OutputTokens: 1, TotalTokens: 3}, 3)}, testutil.ThreadID(1), "turn-2")
 	if err := live.Record(8, compacted, trailing); err != nil {
 		t.Fatal(err)
 	}
@@ -128,12 +129,15 @@ func TestIncrementalRecordMatchesResumeAcrossTerminalAndCompactionFacts(t *testi
 	if live.Update(UpdateAgents) != "project agents" || resumed.Update(UpdateAgents) != "project agents" {
 		t.Fatalf("context update differs: live=%q resume=%q", live.Update(UpdateAgents), resumed.Update(UpdateAgents))
 	}
-	if usage := live.Snapshot(model, llm.Prompt{}).Usage.ProviderUsage; usage.TotalTokens != 18 {
-		t.Fatalf("cumulative usage = %#v", usage)
+	if tokenSnapshot := live.TokenSnapshot(); tokenSnapshot.Info == nil || tokenSnapshot.Info.TotalTokenUsage.TotalTokens != 18 {
+		t.Fatalf("token snapshot = %#v", tokenSnapshot)
 	}
 	projection := live.Projection()
 	if len(projection.Messages) != 2 || projection.Messages[1].Content != "Inspection was interrupted after reading main.go." {
 		t.Fatalf("compaction replacement = %#v", projection.Messages)
+	}
+	if !reflect.DeepEqual(projection.Origins, []MessageOrigin{MessageOriginUser, MessageOriginCompaction}) {
+		t.Fatalf("compaction origins = %#v", projection.Origins)
 	}
 }
 

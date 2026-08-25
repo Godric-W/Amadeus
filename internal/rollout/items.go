@@ -143,20 +143,18 @@ func validateResponseItem(item ResponseItem, requireScope bool) error {
 	return nil
 }
 
-type ReplacementMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
 type CompactedItem struct {
-	ThreadID               protocol.ThreadID    `json:"thread_id"`
-	TurnID                 protocol.TurnID      `json:"turn_id"`
-	Summary                string               `json:"summary"`
-	ReplacementHistory     []ReplacementMessage `json:"replacement_history"`
-	CoveredThroughSequence int64                `json:"covered_through_sequence"`
-	SourceHash             string               `json:"source_hash"`
-	Provider               string               `json:"provider,omitempty"`
-	Model                  string               `json:"model,omitempty"`
+	ThreadID               protocol.ThreadID          `json:"thread_id"`
+	TurnID                 protocol.TurnID            `json:"turn_id"`
+	Trigger                protocol.CompactionTrigger `json:"trigger"`
+	Reason                 protocol.CompactionReason  `json:"reason"`
+	Phase                  protocol.CompactionPhase   `json:"phase"`
+	Summary                string                     `json:"summary"`
+	ReplacementHistory     []llm.ResponseItem         `json:"replacement_history"`
+	CoveredThroughSequence int64                      `json:"covered_through_sequence"`
+	SourceHash             string                     `json:"source_hash"`
+	Provider               string                     `json:"provider,omitempty"`
+	Model                  string                     `json:"model,omitempty"`
 }
 
 func (CompactedItem) isRolloutItem() {}
@@ -168,8 +166,16 @@ func (item CompactedItem) Validate() error {
 	if err := validateID("turn", string(item.TurnID)); err != nil {
 		return err
 	}
+	if !item.Trigger.Valid() || !item.Reason.Valid() || !item.Phase.Valid() {
+		return errors.New("compacted item lifecycle is invalid")
+	}
 	if strings.TrimSpace(item.Summary) == "" || len(item.ReplacementHistory) == 0 || item.CoveredThroughSequence <= 0 || strings.TrimSpace(item.SourceHash) == "" {
 		return errors.New("compacted item is incomplete")
+	}
+	for _, replacement := range item.ReplacementHistory {
+		if replacement.Role != llm.RoleUser || strings.TrimSpace(replacement.Content) == "" || len(replacement.ToolCalls) > 0 || replacement.ToolCallID != "" {
+			return errors.New("compacted replacement history is invalid")
+		}
 	}
 	return nil
 }
@@ -314,7 +320,7 @@ func CloneItem(item RolloutItem) RolloutItem {
 		}
 		return value
 	case CompactedItem:
-		value.ReplacementHistory = append([]ReplacementMessage(nil), value.ReplacementHistory...)
+		value.ReplacementHistory = cloneLLMResponseItems(value.ReplacementHistory)
 		return value
 	case TurnContextItem:
 		value.OutputSchema = append(json.RawMessage(nil), value.OutputSchema...)
@@ -332,6 +338,19 @@ func CloneItem(item RolloutItem) RolloutItem {
 	default:
 		return item
 	}
+}
+
+func cloneLLMResponseItems(items []llm.ResponseItem) []llm.ResponseItem {
+	cloned := make([]llm.ResponseItem, len(items))
+	for index, item := range items {
+		cloned[index] = item
+		cloned[index].Parts = append([]llm.ContentPart(nil), item.Parts...)
+		cloned[index].ToolCalls = append([]llm.ToolCall(nil), item.ToolCalls...)
+		for callIndex := range cloned[index].ToolCalls {
+			cloned[index].ToolCalls[callIndex].Arguments = append(json.RawMessage(nil), item.ToolCalls[callIndex].Arguments...)
+		}
+	}
+	return cloned
 }
 
 func cloneMap(source map[string]any) map[string]any {

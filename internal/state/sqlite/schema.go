@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const CurrentSchemaVersion = 3
+const CurrentSchemaVersion = 4
 
 var ErrUnsupportedSchema = errors.New("unsupported state schema")
 

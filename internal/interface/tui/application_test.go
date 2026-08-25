@@ -110,7 +110,8 @@ func newTestFullscreen(t *testing.T, configure func(*FullscreenOptions)) (*Fulls
 		Input: &bytes.Buffer{}, Output: &bytes.Buffer{}, Width: 100, DisableAnimations: true,
 		Application: fake,
 		Snapshot: application.ThreadViewSnapshot{
-			Generation: 1, SessionID: protocol.SessionIDFromThreadID(testThreadID(1)), ThreadID: testThreadID(1), ContextWindow: 128000,
+			Generation: 1, SessionID: protocol.SessionIDFromThreadID(testThreadID(1)), ThreadID: testThreadID(1),
+			TokenInfo:     &protocol.TokenUsageInfo{ModelContextWindow: 128000},
 			Configuration: protocol.SessionConfiguration{CWD: "/workspace/amadeus", Model: "test-model", Mode: protocol.ModeKindDefault},
 		},
 	}
@@ -414,11 +415,12 @@ func TestFullscreenBannerUsesRestrainedMetadata(t *testing.T) {
 
 func TestFullscreenContextStatusUsesRuntimeUsage(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
-	model.applyEvent(testProtocolEvent(testThreadID(1), "turn-1", protocol.TokenCountEvent{
-		Usage: llm.Usage{InputTokens: 13000, OutputTokens: 800}, EstimatedInputTokens: 12000, ContextWindow: 128000,
-	}))
-	if model.session.ContextUsed != 13000 || model.session.Usage.InputTokens != 13000 || model.session.Usage.OutputTokens != 800 {
-		t.Fatalf("usage = context %d input %d output %d", model.session.ContextUsed, model.session.Usage.InputTokens, model.session.Usage.OutputTokens)
+	tokenEvent := protocol.NewTokenCountEvent(llm.TokenUsage{InputTokens: 13000, OutputTokens: 800, TotalTokens: 13800}, 128000, 1)
+	tokenEvent.ActiveContextTokens = 13000
+	model.applyEvent(testProtocolEvent(testThreadID(1), "turn-1", tokenEvent))
+	usage := model.session.totalTokenUsage()
+	if model.session.ContextUsed != 13000 || usage.InputTokens != 13000 || usage.OutputTokens != 800 {
+		t.Fatalf("usage = context %d input %d output %d", model.session.ContextUsed, usage.InputTokens, usage.OutputTokens)
 	}
 }
 
@@ -501,7 +503,7 @@ func TestFullscreenResumeReplaysSnapshotAndRejectsStaleEvents(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
 	model.insertHistoryCell(NewNoticeHistoryCell("old transcript"))
 	now := time.Now().UTC()
-	snapshot := application.ThreadViewSnapshot{Generation: 2, SessionID: protocol.SessionIDFromThreadID(testThreadID(2)), ThreadID: testThreadID(2), Configuration: protocol.SessionConfiguration{CWD: "/workspace/next", Model: "next", Mode: protocol.ModeKindPlan}, ContextWindow: 64000, Items: []protocol.TurnItem{
+	snapshot := application.ThreadViewSnapshot{Generation: 2, SessionID: protocol.SessionIDFromThreadID(testThreadID(2)), ThreadID: testThreadID(2), Configuration: protocol.SessionConfiguration{CWD: "/workspace/next", Model: "next", Mode: protocol.ModeKindPlan}, TokenInfo: &protocol.TokenUsageInfo{ModelContextWindow: 64000}, Items: []protocol.TurnItem{
 		{ID: "user", Kind: protocol.ItemUserMessage, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now, Text: "hello"},
 		{ID: "assistant", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now, Text: "world"},
 	}}
@@ -581,7 +583,11 @@ func TestFullscreenCompactHasPendingAndCompletedStates(t *testing.T) {
 		t.Fatalf("pending compact state running=%v status=%q", model.running, model.status)
 	}
 	executeCommand(t, command)
-	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: testProtocolEvent(testThreadID(1), "turn-1", protocol.ContextCompactedEvent{ItemID: "compact-1"})}})
+	now := time.Now().UTC()
+	updated, _ = model.Update(fullscreenAppEventMsg{event: application.SessionEventObserved{Generation: 1, Event: testProtocolEvent(testThreadID(1), "turn-1", protocol.ItemCompletedEvent{Item: protocol.TurnItem{
+		ID: "compact-1", Kind: protocol.ItemContextCompaction, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now,
+		Payload: protocol.ContextCompactionItem{Trigger: protocol.CompactionTriggerManual, Reason: protocol.CompactionReasonUserRequested, Phase: protocol.CompactionPhaseStandaloneTurn},
+	}})}})
 	model = updated.(fullscreenModel)
 	if lastCellContent(model) != "Context compacted" {
 		t.Fatalf("compact result = %q", lastCellContent(model))

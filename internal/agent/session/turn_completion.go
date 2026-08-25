@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
@@ -49,9 +48,6 @@ func (session *Session) finishTurn(completion Completion) {
 		if err := session.recordPendingInputBeforeTerminal(completion.TurnID); err != nil && completion.Error == nil {
 			completion.Error = err
 		}
-	}
-	if err := session.persistTaskOutput(submissionID, &completion); err != nil && completion.Error == nil {
-		completion.Error = err
 	}
 	if completion.Cause != nil {
 		session.finishAbortedTurn(submissionID, completion)
@@ -102,8 +98,6 @@ func (session *Session) recordPendingInputBeforeTerminal(turnID protocol.TurnID)
 }
 
 func mergeTaskOutput(total, next TaskOutput) TaskOutput {
-	total.Items = append(total.Items, next.Items...)
-	total.Usage = addUsage(total.Usage, next.Usage)
 	total.ToolCallCount += next.ToolCallCount
 	if next.Summary != "" {
 		total.Summary = next.Summary
@@ -115,27 +109,6 @@ func mergeTaskOutput(total, next TaskOutput) TaskOutput {
 		total.Reason = next.Reason
 	}
 	return total
-}
-
-func (session *Session) persistTaskOutput(submissionID protocol.SubmissionID, completion *Completion) error {
-	items := append([]rollout.RolloutItem(nil), completion.Output.Items...)
-	if completion.Output.Usage.TotalTokens > 0 {
-		usageItem, err := engine.UsageItem(completion.Output.Usage)
-		if err != nil {
-			return err
-		}
-		items = append(items, usageItem)
-	}
-	if len(items) == 0 {
-		return nil
-	}
-	cleanupCtx, cancel := session.cleanupContext()
-	err := session.appendItemsDurable(cleanupCtx, completion.TurnID, items...)
-	cancel()
-	if err == nil {
-		session.publishCompactionEvents(submissionID, completion.TurnID, items)
-	}
-	return err
 }
 
 func (session *Session) finishAbortedTurn(submissionID protocol.SubmissionID, completion Completion) {

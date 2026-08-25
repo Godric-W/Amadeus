@@ -25,6 +25,7 @@ func TestNormalizeProviderErrorClassifiesAPIErrors(t *testing.T) {
 		{name: "authentication code", statusCode: http.StatusBadRequest, code: "invalid_api_key", expected: llm.ProviderErrorAuthentication},
 		{name: "rate limit status", statusCode: http.StatusTooManyRequests, expected: llm.ProviderErrorRateLimit},
 		{name: "quota code", statusCode: http.StatusBadRequest, code: "insufficient_quota", expected: llm.ProviderErrorRateLimit},
+		{name: "context length", statusCode: http.StatusBadRequest, code: "context_length_exceeded", expected: llm.ProviderErrorContextWindow},
 		{name: "invalid request", statusCode: http.StatusUnprocessableEntity, expected: llm.ProviderErrorInvalidRequest},
 		{name: "timeout", statusCode: http.StatusGatewayTimeout, expected: llm.ProviderErrorTimeout},
 		{name: "unavailable", statusCode: http.StatusServiceUnavailable, expected: llm.ProviderErrorUnavailable},

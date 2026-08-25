@@ -95,11 +95,11 @@ func TestFakeClientImplementsCompleteContract(t *testing.T) {
 }
 
 func TestFakeStreamImplementsRecvContract(t *testing.T) {
-	usage := Usage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5}
+	usage := TokenUsage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5}
 	stream := &fakeStream{chunks: []StreamChunk{
 		{ContentDelta: "hel"},
 		{ContentDelta: "lo"},
-		{FinishReason: FinishReasonStop, Usage: &usage},
+		{FinishReason: FinishReasonStop, TokenUsage: &usage},
 	}}
 	client := &fakeClient{stream: stream}
 
@@ -117,7 +117,7 @@ func TestFakeStreamImplementsRecvContract(t *testing.T) {
 		t.Fatalf("unexpected second chunk: %#v, err=%v", second, err)
 	}
 	completed, err := opened.Recv()
-	if err != nil || !completed.Completed() || completed.Usage == nil || completed.Usage.TotalTokens != 5 {
+	if err != nil || !completed.Completed() || completed.TokenUsage == nil || completed.TokenUsage.TotalTokens != 5 {
 		t.Fatalf("unexpected completion chunk: %#v, err=%v", completed, err)
 	}
 	_, err = opened.Recv()

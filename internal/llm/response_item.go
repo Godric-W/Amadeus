@@ -16,12 +16,12 @@ const (
 )
 
 type ResponseItem struct {
-	Role       Role
-	Content    string
-	Parts      []ContentPart
-	Reasoning  string
-	ToolCalls  []ToolCall
-	ToolCallID string
+	Role       Role          `json:"role"`
+	Content    string        `json:"content,omitempty"`
+	Parts      []ContentPart `json:"parts,omitempty"`
+	Reasoning  string        `json:"reasoning,omitempty"`
+	ToolCalls  []ToolCall    `json:"tool_calls,omitempty"`
+	ToolCallID string        `json:"tool_call_id,omitempty"`
 }
 
 type ContentKind string
@@ -52,9 +52,9 @@ func ImagePartWithDetail(mediaType, base64Data, detail string) ContentPart {
 }
 
 type ToolCall struct {
-	ID        string
-	Name      string
-	Arguments json.RawMessage
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
 }
 
 func SystemMessage(content string) ResponseItem {

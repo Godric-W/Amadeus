@@ -4,23 +4,22 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/llm"
 )
 
 type State struct {
-	ThreadID protocol.ThreadID
-	TurnID   protocol.TurnID
-	Working  bool
-	Items    []protocol.TurnItem
-	Active   map[protocol.ItemID]protocol.TurnItem
-	Plan     *protocol.PlanUpdateEvent
-	Usage    llm.Usage
-	Pending  *protocol.ApprovalRequestEvent
-	Warning  string
-	Error    string
+	ThreadID            protocol.ThreadID
+	TurnID              protocol.TurnID
+	Working             bool
+	Items               []protocol.TurnItem
+	Active              map[protocol.ItemID]protocol.TurnItem
+	Plan                *protocol.PlanUpdateEvent
+	TokenInfo           *protocol.TokenUsageInfo
+	ActiveContextTokens int64
+	Pending             *protocol.ApprovalRequestEvent
+	Warning             string
+	Error               string
 }
 
 func New(threadID protocol.ThreadID) *State {
@@ -78,10 +77,8 @@ func (state *State) Apply(event protocol.Event) error {
 		copy := message
 		state.Plan = &copy
 	case protocol.TokenCountEvent:
-		state.Usage = message.Usage
-	case protocol.ContextCompactedEvent:
-		now := time.Now().UTC()
-		replaceItem(&state.Items, protocol.TurnItem{ID: message.ItemID, Kind: protocol.ItemContextCompaction, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now})
+		state.TokenInfo = cloneTokenUsageInfo(message.Info)
+		state.ActiveContextTokens = message.ActiveContextTokens
 	case protocol.WarningEvent:
 		state.Warning = message.Message
 	case protocol.StreamErrorEvent:
@@ -90,6 +87,14 @@ func (state *State) Apply(event protocol.Event) error {
 		}
 	}
 	return nil
+}
+
+func cloneTokenUsageInfo(info *protocol.TokenUsageInfo) *protocol.TokenUsageInfo {
+	if info == nil {
+		return nil
+	}
+	cloned := info.Clone()
+	return &cloned
 }
 
 func (state *State) applyDelta(itemID protocol.ItemID, delta string, reset bool) error {

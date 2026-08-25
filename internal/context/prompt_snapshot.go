@@ -23,7 +23,6 @@ func (manager *Manager) Snapshot(model llm.ModelInfo, prompt llm.Prompt) PromptS
 		worldStateParts = append(worldStateParts, string(key)+":"+value.Revision)
 	}
 	version := manager.lastSequence
-	usage := UsageSnapshot{ProviderUsage: manager.providerUsage, HasProviderUsage: manager.hasUsage}
 	estimator := manager.estimator
 	manager.mu.RUnlock()
 	sort.Strings(worldStateParts)
@@ -39,7 +38,7 @@ func (manager *Manager) Snapshot(model llm.ModelInfo, prompt llm.Prompt) PromptS
 		}
 	}
 	result = append(result, normalized...)
-	usage.EstimatedInputTokens = estimateResponseItems(result, estimator) + estimatePromptOverhead(prompt, estimator)
+	estimatedInputTokens := estimateResponseItems(result, estimator) + estimatePromptOverhead(prompt, estimator)
 	revisionInput := struct {
 		Items              []llm.ResponseItem
 		Prompt             llm.Prompt
@@ -48,25 +47,15 @@ func (manager *Manager) Snapshot(model llm.ModelInfo, prompt llm.Prompt) PromptS
 	encoded, _ := json.Marshal(revisionInput)
 	promptHash := sha256.Sum256(encoded)
 	return PromptSnapshot{
-		Items: result, Usage: usage, HistoryVersion: version,
+		Items: result, EstimatedInputTokens: estimatedInputTokens, HistoryVersion: version,
 		WorldStateRevision: worldStateRevision, Revision: hex.EncodeToString(promptHash[:]),
 	}
-}
-
-func (snapshot PromptSnapshot) NeedsCompaction(model llm.ModelInfo) bool {
-	model = model.Normalized()
-	if model.AutoCompactTokenLimit > 0 && snapshot.Usage.EstimatedInputTokens >= model.AutoCompactTokenLimit {
-		return true
-	}
-	return model.ContextWindow > 0 && snapshot.Usage.EstimatedInputTokens >= model.ContextWindow
 }
 
 func estimatePromptOverhead(prompt llm.Prompt, estimator Estimator) int64 {
 	estimated := estimateResponseItems(prompt.Input, estimator)
 	estimated += estimator.EstimateText(prompt.BaseInstructions.Text)
-	if encoded, err := json.Marshal(prompt.Tools); err == nil {
-		estimated += estimator.EstimateText(string(encoded))
-	}
+	estimated += estimateToolSpecs(prompt.Tools, estimator)
 	if len(prompt.OutputSchema) > 0 {
 		estimated += estimator.EstimateText(string(prompt.OutputSchema))
 	}

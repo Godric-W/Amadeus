@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	agentcompact "github.com/Godric-W/Amadeus/internal/agent/compact"
 	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/multiagent"
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
@@ -67,7 +68,7 @@ type SessionServices struct {
 	webSearch     websearch.Provider
 	approvals     policy.ApprovalPort
 	permissions   *policy.SessionPermissionContext
-	compactor     *engine.Compactor
+	compaction    *agentcompact.Service
 	fileSystem    *project.FileSystemPolicy
 	visibility    map[string]bool
 	source        protocol.SessionSource
@@ -230,7 +231,7 @@ func buildSessionServices(ctx context.Context, owner *Session, base SessionServi
 	base.webSearch = toolRuntime.WebSearch
 	base.approvals = approvalPort
 	base.permissions = permissions
-	base.compactor = &engine.Compactor{ProviderName: providerName, ModelInfo: modelInfo, ModelMessages: base.modelMessages}
+	base.compaction = &agentcompact.Service{ModelInfo: modelInfo, ModelMessages: base.modelMessages}
 	base.fileSystem = fileSystem
 	base.visibility = toolRuntime.Visibility
 	base.source = configuration.Source.Clone()

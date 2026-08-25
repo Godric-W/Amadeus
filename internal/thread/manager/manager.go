@@ -411,6 +411,13 @@ func (threadRuntime *AmadeusThread) RolloutItemCount() int {
 	return threadRuntime.session.RolloutItemCount()
 }
 
+func (threadRuntime *AmadeusThread) TokenCountSnapshot() protocol.TokenCountEvent {
+	if threadRuntime == nil || threadRuntime.session == nil {
+		return protocol.TokenCountEvent{}
+	}
+	return threadRuntime.session.TokenCountSnapshot()
+}
+
 func (threadRuntime *AmadeusThread) Configuration() protocol.SessionConfiguration {
 	if threadRuntime == nil || threadRuntime.session == nil {
 		return protocol.SessionConfiguration{}

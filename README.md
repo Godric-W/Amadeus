@@ -263,6 +263,8 @@ Slash Commands are available in the interactive TUI. Type `/` to open the comman
 | `/clear` | Clear the UI and start a new session. |
 | `/exit` | Shut down the current session and exit. |
 
+`/compact` creates a durable context checkpoint while preserving the original rollout. Automatic compaction uses the same checkpoint lifecycle when the active model context reaches its configured limit. A `~` before the statusline context percentage marks a local preflight estimate; provider-reported request usage replaces that estimate after a successful response.
+
 `/resume`, `/skills`, `/copy`, `/status`, `/mcp`, and `/exit` remain available while a task is running. Skill enable/disable changes are unavailable until the task becomes idle. Use `Shift+Tab` to switch between Default and Plan modes while idle.
 
 While a turn is running, press `Enter` to send ordinary text into the current turn or `Tab` to queue it for a new turn. When the composer contains a queueable draft, the footer shows `tab to queue message` (or `tab to queue` at narrow widths) instead of the passive statusline. Queued messages are submitted one at a time in FIFO order after each turn completes. They remain local to the active TUI attachment until submitted; interrupted or budget-blocked turns restore them to the composer instead of sending them automatically.

@@ -109,9 +109,12 @@ func providerErrorKind(statusCode int, code string) llm.ProviderErrorKind {
 		strings.Contains(normalizedCode, "internal_error"),
 		strings.Contains(normalizedCode, "service_unavailable"):
 		return llm.ProviderErrorUnavailable
+	case strings.Contains(normalizedCode, "context_length"),
+		strings.Contains(normalizedCode, "context_window"),
+		strings.Contains(normalizedCode, "too_many_tokens"):
+		return llm.ProviderErrorContextWindow
 	case strings.Contains(normalizedCode, "invalid_request"),
-		strings.Contains(normalizedCode, "invalid_parameter"),
-		strings.Contains(normalizedCode, "context_length"):
+		strings.Contains(normalizedCode, "invalid_parameter"):
 		return llm.ProviderErrorInvalidRequest
 	}
 
@@ -187,6 +190,8 @@ func providerErrorMessage(kind llm.ProviderErrorKind, statusCode int) string {
 		return "request cancelled"
 	case llm.ProviderErrorTimeout:
 		return "provider request timed out"
+	case llm.ProviderErrorContextWindow:
+		return "provider context window exceeded"
 	case llm.ProviderErrorInvalidRequest:
 		return "provider rejected the request"
 	case llm.ProviderErrorUnavailable:

@@ -45,7 +45,7 @@ func TestStoreDurableHistoryAndRebuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	usage := rollout.EventMsgItem{Msg: protocol.TokenCountEvent{Usage: llm.Usage{TotalTokens: 42}}}
+	usage := rollout.EventMsgItem{Msg: protocol.NewTokenCountEvent(llm.TokenUsage{TotalTokens: 42}, 128_000, 1)}
 	result, err = store.AppendItems(ctx, testutil.ThreadID(1), "turn-1", response, usage)
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +64,9 @@ func TestStoreDurableHistoryAndRebuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	rename := rollout.EventMsgItem{Msg: protocol.ThreadNameUpdatedEvent{Name: "Recovered Index"}}
-	moreUsage := rollout.EventMsgItem{Msg: protocol.TokenCountEvent{Usage: llm.Usage{TotalTokens: 8}}}
+	moreUsageEvent := protocol.NewTokenCountEvent(llm.TokenUsage{TotalTokens: 8}, 128_000, 1)
+	moreUsageEvent.Info.TotalTokenUsage.TotalTokens = 50
+	moreUsage := rollout.EventMsgItem{Msg: moreUsageEvent}
 	result, err = store.AppendItems(ctx, testutil.ThreadID(1), "", rename)
 	if err != nil {
 		t.Fatal(err)
@@ -209,7 +211,7 @@ func TestBufferedAppendDoesNotAdvanceSQLiteBeforeDurableAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	usage := rollout.EventMsgItem{Msg: protocol.TokenCountEvent{Usage: llm.Usage{TotalTokens: 17}}}
+	usage := rollout.EventMsgItem{Msg: protocol.NewTokenCountEvent(llm.TokenUsage{TotalTokens: 17}, 128_000, 1)}
 	if _, err := store.AppendItemsBuffered(ctx, testutil.ThreadID(2), "turn-1", response, usage); err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +347,7 @@ func TestDurableAppendOrdersAppendFlushAndMetadataSync(t *testing.T) {
 	}
 
 	store.state = stateStore
-	usage := rollout.EventMsgItem{Msg: protocol.TokenCountEvent{Usage: llm.Usage{TotalTokens: 3}}}
+	usage := rollout.EventMsgItem{Msg: protocol.NewTokenCountEvent(llm.TokenUsage{TotalTokens: 3}, 128_000, 1)}
 	if _, err := store.AppendItems(ctx, testutil.ThreadID(3), "turn-2", usage); err != nil {
 		t.Fatal(err)
 	}

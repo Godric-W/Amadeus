@@ -195,11 +195,6 @@ func (projection *sampleStreamProjection) observe(ctx context.Context, chunk llm
 			return fmt.Errorf("publish model text delta: %w", err)
 		}
 	}
-	if chunk.Usage != nil {
-		if err := projection.events.Publish(ctx, protocol.Event{Msg: protocol.TokenCountEvent{Usage: *chunk.Usage}}); err != nil {
-			return fmt.Errorf("publish model usage: %w", err)
-		}
-	}
 	return nil
 }
 

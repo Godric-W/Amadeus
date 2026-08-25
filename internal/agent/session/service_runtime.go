@@ -8,7 +8,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/mcp"
-	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/skill"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -141,11 +140,4 @@ func (services *SessionServices) SkillWarnings() []error {
 		return nil
 	}
 	return append([]error(nil), services.skillWarnings...)
-}
-
-func (services *SessionServices) Compact(ctx context.Context, request engine.CompactRequest) ([]rollout.RolloutItem, error) {
-	if services == nil || services.compactor == nil {
-		return nil, errors.New("compactor is unavailable")
-	}
-	return services.compactor.Compact(ctx, request)
 }

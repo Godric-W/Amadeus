@@ -47,7 +47,7 @@ func TestInlineRendererRendersPlanAndUsage(t *testing.T) {
 		testProtocolEvent(testThreadID(1), "turn-1", protocol.PlanUpdateEvent{UpdatePlanArgs: protocol.UpdatePlanArgs{Plan: []protocol.PlanItemArg{{Step: "Read source", Status: protocol.StepPending}}}}),
 		testProtocolEvent(testThreadID(1), "turn-1", started),
 		testProtocolEvent(testThreadID(1), "turn-1", toolCompletedMessage(started, protocol.ItemStatusCompleted, "done", "0s", false)),
-		testProtocolEvent(testThreadID(1), "turn-1", protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 3, OutputTokens: 5}}),
+		testProtocolEvent(testThreadID(1), "turn-1", protocol.NewTokenCountEvent(llm.TokenUsage{InputTokens: 3, OutputTokens: 5, TotalTokens: 8}, 128_000, 1)),
 		testProtocolEvent(testThreadID(1), "turn-1", protocol.TurnCompleteEvent{Status: "completed", FinishedAt: time.Now().UTC()}),
 	} {
 		if err := renderer.Publish(context.Background(), event); err != nil {
@@ -55,7 +55,7 @@ func TestInlineRendererRendersPlanAndUsage(t *testing.T) {
 		}
 	}
 	output := status.String()
-	for _, fragment := range []string{"Updated Plan", "□ Read source", "Created file", "usage: input=3 output=5 total=8", "status: phase=idle"} {
+	for _, fragment := range []string{"Updated Plan", "□ Read source", "Created file", "usage: input=3 output=5 total=8 context=8", "status: phase=idle"} {
 		if !strings.Contains(output, fragment) {
 			t.Fatalf("inline transcript omitted %q: %s", fragment, output)
 		}

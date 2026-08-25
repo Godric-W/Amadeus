@@ -9,14 +9,15 @@ import (
 )
 
 type ThreadViewSnapshot struct {
-	Generation    uint64
-	SessionID     protocol.SessionID
-	ThreadID      protocol.ThreadID
-	Title         string
-	Configuration protocol.SessionConfiguration
-	Items         []protocol.TurnItem
-	Usage         llm.Usage
-	ContextWindow int64
+	Generation             uint64
+	SessionID              protocol.SessionID
+	ThreadID               protocol.ThreadID
+	Title                  string
+	Configuration          protocol.SessionConfiguration
+	Items                  []protocol.TurnItem
+	TokenInfo              *protocol.TokenUsageInfo
+	ActiveContextTokens    int64
+	ActiveContextEstimated bool
 }
 
 type SessionOption struct {
@@ -62,21 +63,22 @@ type MCPInventory struct {
 }
 
 type StatusSnapshot struct {
-	SessionID            protocol.SessionID
-	ThreadID             protocol.ThreadID
-	Title                string
-	CurrentDir           string
-	Provider             string
-	Model                string
-	ReasoningEffort      *llm.ReasoningEffort
-	Mode                 turn.ModeKind
-	Phase                string
-	Usage                llm.Usage
-	ContextWindow        int64
-	RolloutItems         int
-	PermissionGrantCount int
-	SkillRevision        string
-	MCPRevision          string
+	SessionID              protocol.SessionID
+	ThreadID               protocol.ThreadID
+	Title                  string
+	CurrentDir             string
+	Provider               string
+	Model                  string
+	ReasoningEffort        *llm.ReasoningEffort
+	Mode                   turn.ModeKind
+	Phase                  string
+	TokenInfo              *protocol.TokenUsageInfo
+	ActiveContextTokens    int64
+	ActiveContextEstimated bool
+	RolloutItems           int
+	PermissionGrantCount   int
+	SkillRevision          string
+	MCPRevision            string
 }
 
 type InteractiveEvent interface{ isInteractiveEvent() }

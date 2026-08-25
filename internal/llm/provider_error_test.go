@@ -33,6 +33,7 @@ func TestProviderErrorKindValidation(t *testing.T) {
 		ProviderErrorNetwork,
 		ProviderErrorCancelled,
 		ProviderErrorTimeout,
+		ProviderErrorContextWindow,
 		ProviderErrorInvalidRequest,
 		ProviderErrorUnavailable,
 		ProviderErrorProtocol,

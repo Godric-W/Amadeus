@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -99,7 +100,7 @@ func TestInteractiveApplicationCompactPublishesTypedLifecycle(t *testing.T) {
 	if _, err := application.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := application.SubmitUser(ctx, "seed", "client-1", protocol.ThreadSettingsOverrides{}); err != nil {
+	if _, err := application.SubmitUser(ctx, strings.Repeat("seed context ", 200), "client-1", protocol.ThreadSettingsOverrides{}); err != nil {
 		t.Fatal(err)
 	}
 	waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
@@ -114,9 +115,12 @@ func TestInteractiveApplicationCompactPublishesTypedLifecycle(t *testing.T) {
 		return ok
 	})
 	compacted := waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
-		_, ok := event.Event.Msg.(protocol.ContextCompactedEvent)
-		return ok
+		value, ok := event.Event.Msg.(protocol.ItemCompletedEvent)
+		return ok && value.Item.Kind == protocol.ItemContextCompaction
 	})
+	if item := compacted.Event.Msg.(protocol.ItemCompletedEvent).Item; item.Status != protocol.ItemStatusCompleted {
+		t.Fatalf("compaction failed: %#v", item)
+	}
 	warning := waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
 		value, ok := event.Event.Msg.(protocol.WarningEvent)
 		return ok && value.Message == "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted."

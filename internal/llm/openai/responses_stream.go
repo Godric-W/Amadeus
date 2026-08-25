@@ -88,7 +88,7 @@ func (stream *responsesStream) Recv() (llm.StreamChunk, error) {
 				ID:                   response.ID,
 				FinishReason:         finishReason,
 				ProviderFinishReason: string(response.Status),
-				Usage:                &usage,
+				TokenUsage:           &usage,
 				ToolCalls:            toolCalls,
 			}, nil
 		case "response.incomplete":
@@ -99,7 +99,7 @@ func (stream *responsesStream) Recv() (llm.StreamChunk, error) {
 				ID:                   response.ID,
 				FinishReason:         incompleteFinishReason(response.IncompleteDetails.Reason),
 				ProviderFinishReason: incompleteProviderReason(response),
-				Usage:                &usage,
+				TokenUsage:           &usage,
 			}, nil
 		case "response.failed":
 			response := event.AsResponseFailed().Response
@@ -129,8 +129,8 @@ func (stream *responsesStream) Close() error {
 	return stream.stream.Close()
 }
 
-func responsesUsage(usage responses.ResponseUsage) llm.Usage {
-	return llm.Usage{
+func responsesUsage(usage responses.ResponseUsage) llm.TokenUsage {
+	return llm.TokenUsage{
 		InputTokens:       usage.InputTokens,
 		CachedInputTokens: usage.InputTokensDetails.CachedTokens,
 		OutputTokens:      usage.OutputTokens,

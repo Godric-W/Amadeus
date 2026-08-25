@@ -13,6 +13,5 @@ func (session *Session) runTurn(ctx context.Context, runtime *SessionServices, m
 	if session == nil || runtime == nil || modelSession == nil || state == nil || events == nil {
 		return TaskOutput{}, errors.New("session turn execution is incomplete")
 	}
-	compact := session.compactCallback(runtime, modelSession, turnContext, events)
-	return session.continueTurn(ctx, runtime, modelSession, turnContext, state, events, compact, canDrainPendingInput)
+	return session.continueTurn(ctx, runtime, modelSession, turnContext, state, events, canDrainPendingInput)
 }

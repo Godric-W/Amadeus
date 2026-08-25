@@ -50,7 +50,7 @@ func TestAgentRendererRendersCompleteAgentEventSequence(t *testing.T) {
 		sessionMessage(protocol.ItemCompletedEvent{Item: completedAssistant}),
 		sessionMessage(protocol.ItemStartedEvent{Item: started}),
 		sessionMessage(protocol.ItemCompletedEvent{Item: completed}),
-		sessionMessage(protocol.TokenCountEvent{Usage: llm.Usage{InputTokens: 10, CachedInputTokens: 2, OutputTokens: 4, ReasoningTokens: 1, TotalTokens: 14}}),
+		sessionMessage(protocol.NewTokenCountEvent(llm.TokenUsage{InputTokens: 10, CachedInputTokens: 2, OutputTokens: 4, ReasoningTokens: 1, TotalTokens: 14}, 128_000, 1)),
 		sessionMessage(protocol.WarningEvent{Message: "output was truncated"}),
 		sessionMessage(protocol.StreamErrorEvent{Message: "provider\nfailed"}),
 		sessionMessage(protocol.TurnAbortedEvent{Reason: "user interrupted", FinishedAt: time.Now().UTC()}),

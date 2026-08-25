@@ -152,12 +152,12 @@ func (client *codingCommandClient) Stream(_ context.Context, request llm.Request
 	case 1:
 		return &codingCommandStream{chunks: []llm.StreamChunk{
 			{ID: "response-tools", ToolCalls: []llm.ToolCall{{ID: "read-1", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`)}},
-				Usage: &llm.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}},
+				TokenUsage: &llm.TokenUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}},
 			{ID: "response-tools", FinishReason: llm.FinishReasonToolCalls, ProviderFinishReason: "tool_calls"},
 		}}, nil
 	case 2:
 		return &codingCommandStream{chunks: []llm.StreamChunk{
-			{ID: "response-final", ContentDelta: "Task completed successfully.", Usage: &llm.Usage{InputTokens: 20, OutputTokens: 3, TotalTokens: 23}},
+			{ID: "response-final", ContentDelta: "Task completed successfully.", TokenUsage: &llm.TokenUsage{InputTokens: 20, OutputTokens: 3, TotalTokens: 23}},
 			{ID: "response-final", FinishReason: llm.FinishReasonStop, ProviderFinishReason: "stop"},
 		}}, nil
 	default:
@@ -511,7 +511,7 @@ func (client *plannedCodingCommandClient) Complete(_ context.Context, request ll
 func (client *plannedCodingCommandClient) Stream(_ context.Context, request llm.Request) (llm.Stream, error) {
 	client.streamRequests = append(client.streamRequests, request)
 	return &codingCommandStream{chunks: []llm.StreamChunk{
-		{ID: "planned-final", ContentDelta: "1. Inspect repository\n2. Implement changes\n3. Run tests", Usage: &llm.Usage{InputTokens: 10, OutputTokens: 12, TotalTokens: 22}},
+		{ID: "planned-final", ContentDelta: "1. Inspect repository\n2. Implement changes\n3. Run tests", TokenUsage: &llm.TokenUsage{InputTokens: 10, OutputTokens: 12, TotalTokens: 22}},
 		{ID: "planned-final", FinishReason: llm.FinishReasonStop, ProviderFinishReason: "stop"},
 	}}, nil
 }

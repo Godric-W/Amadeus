@@ -20,9 +20,11 @@ func TestProjectRolloutItemsPreservesCanonicalSequenceWithoutResponseFallback(t 
 		projectorLine(3, rollout.EventMsgItem{Msg: protocol.ItemCompletedEvent{ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Item: assistant}}),
 		projectorLine(4, rollout.ResponseItem{ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Type: rollout.ResponseToolResult, Role: "tool", CallID: "call-1", Name: "grep", Status: "succeeded", Result: nil}),
 		projectorLine(5, rollout.EventMsgItem{Msg: protocol.ItemCompletedEvent{ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Item: toolItem}}),
-		projectorLine(7, rollout.EventMsgItem{Msg: protocol.TokenCountEvent{ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Usage: llm.Usage{InputTokens: 10, TotalTokens: 10}}}),
-		projectorLine(8, rollout.EventMsgItem{Msg: protocol.TokenCountEvent{ThreadID: testutil.ThreadID(1), TurnID: "turn-2", Usage: llm.Usage{OutputTokens: 5, TotalTokens: 5}}}),
-		projectorLine(9, rollout.CompactedItem{ThreadID: testutil.ThreadID(1), TurnID: "turn-2", Summary: "summary", ReplacementHistory: []rollout.ReplacementMessage{{Role: "assistant", Content: "summary"}}, CoveredThroughSequence: 3, SourceHash: "hash"}),
+		projectorLine(7, rollout.EventMsgItem{Msg: protocol.ScopeEventMsg(protocol.NewTokenCountEvent(llm.TokenUsage{InputTokens: 10, TotalTokens: 10}, 128_000, 1), testutil.ThreadID(1), "turn-1")}),
+		projectorLine(8, rollout.EventMsgItem{Msg: protocol.TokenCountEvent{ThreadID: testutil.ThreadID(1), TurnID: "turn-2", Info: &protocol.TokenUsageInfo{
+			TotalTokenUsage: llm.TokenUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}, LastTokenUsage: llm.TokenUsage{OutputTokens: 5, TotalTokens: 5}, ModelContextWindow: 128_000,
+		}, ActiveContextTokens: 5}}),
+		projectorLine(9, rollout.CompactedItem{ThreadID: testutil.ThreadID(1), TurnID: "turn-2", Trigger: protocol.CompactionTriggerManual, Reason: protocol.CompactionReasonUserRequested, Phase: protocol.CompactionPhaseStandaloneTurn, Summary: "summary", ReplacementHistory: []llm.ResponseItem{llm.UserMessage("summary")}, CoveredThroughSequence: 3, SourceHash: "hash"}),
 	}
 	projection, err := ProjectRolloutItems(lines)
 	if err != nil {
@@ -37,8 +39,8 @@ func TestProjectRolloutItemsPreservesCanonicalSequenceWithoutResponseFallback(t 
 			t.Fatalf("item %d kind = %q, want %q", index, projection.Items[index].Kind, kind)
 		}
 	}
-	if projection.Usage.InputTokens != 10 || projection.Usage.OutputTokens != 5 || projection.Usage.TotalTokens != 15 {
-		t.Fatalf("projected usage = %#v", projection.Usage)
+	if projection.TokenInfo == nil || projection.TokenInfo.TotalTokenUsage.TotalTokens != 15 || projection.TokenInfo.LastTokenUsage.TotalTokens != 5 || projection.ActiveContextTokens != 5 {
+		t.Fatalf("projected token snapshot = %#v", projection)
 	}
 }
 

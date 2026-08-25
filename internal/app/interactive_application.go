@@ -266,10 +266,11 @@ func (application *InteractiveApplication) Delete(ctx context.Context, generatio
 func (application *InteractiveApplication) Status() StatusSnapshot {
 	active, generation, err := application.current()
 	if err != nil {
+		info := &protocol.TokenUsageInfo{ModelContextWindow: application.configuration.Runtime.ModelContextWindow}
 		return StatusSnapshot{
 			CurrentDir: application.configuration.CWD, Provider: application.configuration.Runtime.ModelProvider,
 			Model: application.configuration.Runtime.Model, ReasoningEffort: llm.CloneReasoningEffort(application.configuration.Runtime.ModelReasoningEffort),
-			Mode: application.configuration.Mode, Phase: "unavailable", ContextWindow: application.configuration.Runtime.ModelContextWindow,
+			Mode: application.configuration.Mode, Phase: "unavailable", TokenInfo: info,
 		}
 	}
 	application.mu.RLock()
@@ -283,7 +284,8 @@ func (application *InteractiveApplication) Status() StatusSnapshot {
 		Provider: configuration.Provider, Model: configuration.Model,
 		ReasoningEffort: llm.CloneReasoningEffort(configuration.ReasoningEffort),
 		Mode:            turn.ModeKind(configuration.Mode), Phase: phase,
-		Usage: usage.Usage, ContextWindow: active.ContextWindow(), RolloutItems: active.RolloutItemCount(),
+		TokenInfo: cloneTokenInfo(usage.Info), ActiveContextTokens: usage.ActiveContextTokens,
+		ActiveContextEstimated: usage.ActiveContextEstimated, RolloutItems: active.RolloutItemCount(),
 	}
 	result.PermissionGrantCount = active.PermissionGrantCount()
 	result.SkillRevision = shortRevision(active.SkillRevision())
@@ -394,6 +396,7 @@ func (application *InteractiveApplication) snapshot(ctx context.Context, active 
 	if err != nil {
 		return ThreadViewSnapshot{}, err
 	}
+	tokenSnapshot := active.TokenCountSnapshot()
 	title := "draft"
 	configuration := active.Configuration()
 	metadata, metadataErr := application.metadata(ctx, active.ID(), configuration.CWD)
@@ -404,7 +407,8 @@ func (application *InteractiveApplication) snapshot(ctx context.Context, active 
 	}
 	return ThreadViewSnapshot{
 		Generation: generation, SessionID: active.SessionID(), ThreadID: active.ID(), Title: title, Configuration: configuration,
-		Items: projection.Items, Usage: projection.Usage, ContextWindow: active.ContextWindow(),
+		Items: projection.Items, TokenInfo: cloneTokenInfo(tokenSnapshot.Info),
+		ActiveContextTokens: tokenSnapshot.ActiveContextTokens, ActiveContextEstimated: tokenSnapshot.ActiveContextEstimated,
 	}, nil
 }
 
@@ -439,7 +443,10 @@ func (application *InteractiveApplication) installAttachment(active *threadmanag
 	application.attachmentCancel = cancel
 	application.title = snapshot.Title
 	application.phase = "idle"
-	application.usage = protocol.TokenCountEvent{Usage: snapshot.Usage, ContextWindow: snapshot.ContextWindow}
+	application.usage = protocol.TokenCountEvent{
+		Info: cloneTokenInfo(snapshot.TokenInfo), ActiveContextTokens: snapshot.ActiveContextTokens,
+		ActiveContextEstimated: snapshot.ActiveContextEstimated,
+	}
 	application.mu.Unlock()
 	go application.pumpAttachment(ctx, active, snapshot.Generation)
 }
@@ -449,7 +456,8 @@ func (application *InteractiveApplication) currentSnapshot(active *threadmanager
 	defer application.mu.RUnlock()
 	return ThreadViewSnapshot{
 		Generation: generation, SessionID: active.SessionID(), ThreadID: active.ID(), Title: application.title, Configuration: active.Configuration(),
-		Usage: application.usage.Usage, ContextWindow: active.ContextWindow(),
+		TokenInfo: cloneTokenInfo(application.usage.Info), ActiveContextTokens: application.usage.ActiveContextTokens,
+		ActiveContextEstimated: application.usage.ActiveContextEstimated,
 	}
 }
 

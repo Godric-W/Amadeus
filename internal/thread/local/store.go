@@ -350,7 +350,9 @@ func projectMetadata(path string, lines []rollout.Line) (state.StoredThread, err
 			case protocol.ThreadArchivedEvent:
 				thread.Archived = event.Archived
 			case protocol.TokenCountEvent:
-				thread.TokensUsed += event.Usage.TotalTokens
+				if event.Info != nil {
+					thread.TokensUsed = event.Info.TotalTokenUsage.TotalTokens
+				}
 			}
 		case rollout.ResponseItem:
 			if thread.Preview == "" {

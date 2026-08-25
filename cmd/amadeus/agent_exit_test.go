@@ -16,7 +16,7 @@ func TestPresentFullscreenExitPrintsUsageAndResumeHint(t *testing.T) {
 	var errorOutput bytes.Buffer
 	threadID := testutil.ThreadID(1)
 	err := presentFullscreenExit(tui.AppExitInfo{
-		TokenUsage: llm.Usage{InputTokens: 8, OutputTokens: 5, TotalTokens: 13},
+		TokenUsage: llm.TokenUsage{InputTokens: 8, OutputTokens: 5, TotalTokens: 13},
 		ThreadID:   threadID,
 		ResumeHint: "amadeus --resume " + threadID.String(),
 		ExitReason: tui.ExitReasonUserRequested,

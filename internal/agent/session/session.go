@@ -407,25 +407,6 @@ func (session *Session) watchRunningTask(running *RunningTask) {
 	}()
 }
 
-func (session *Session) publishCompactionEvents(submissionID protocol.SubmissionID, turnID protocol.TurnID, items []rollout.RolloutItem) {
-	for _, item := range items {
-		if _, ok := item.(rollout.CompactedItem); !ok {
-			continue
-		}
-		session.publish(protocol.Event{
-			ID: submissionID,
-			Msg: protocol.ContextCompactedEvent{
-				ThreadID: session.threadID, TurnID: turnID,
-				ItemID: protocol.ItemID(fmt.Sprintf("compaction-%s", turnID)),
-			},
-		})
-		session.publish(protocol.Event{
-			ID:  submissionID,
-			Msg: protocol.WarningEvent{ThreadID: session.threadID, TurnID: turnID, Message: compactionWarningMessage},
-		})
-	}
-}
-
 func (session *Session) cancelActive(cause error) {
 	if session.active == nil {
 		return

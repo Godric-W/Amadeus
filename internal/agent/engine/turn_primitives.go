@@ -113,16 +113,3 @@ func persistAndPublishModelCompletion(ctx context.Context, appendItems func(cont
 	}
 	return events.Publish(completionCtx, protocol.Event{Msg: protocol.ItemCompletedEvent{Item: turnItem}})
 }
-
-func addUsage(total, next llm.Usage) llm.Usage {
-	total.InputTokens += next.InputTokens
-	total.CachedInputTokens += next.CachedInputTokens
-	total.OutputTokens += next.OutputTokens
-	total.ReasoningTokens += next.ReasoningTokens
-	total.TotalTokens += next.TotalTokens
-	return total
-}
-
-func UsageItem(usage llm.Usage) (rollout.RolloutItem, error) {
-	return rollout.NewEventMsgItem(protocol.TokenCountEvent{Usage: usage})
-}

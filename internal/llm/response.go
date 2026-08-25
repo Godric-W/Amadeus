@@ -12,7 +12,7 @@ const (
 	FinishReasonUnknown       FinishReason = "unknown"
 )
 
-type Usage struct {
+type TokenUsage struct {
 	InputTokens       int64
 	CachedInputTokens int64
 	OutputTokens      int64
@@ -26,7 +26,18 @@ type Response struct {
 	Message              ResponseItem
 	FinishReason         FinishReason
 	ProviderFinishReason string
-	Usage                Usage
+	TokenUsage           TokenUsage
+}
+
+func (usage *TokenUsage) Add(other TokenUsage) {
+	if usage == nil {
+		return
+	}
+	usage.InputTokens += other.InputTokens
+	usage.CachedInputTokens += other.CachedInputTokens
+	usage.OutputTokens += other.OutputTokens
+	usage.ReasoningTokens += other.ReasoningTokens
+	usage.TotalTokens += other.TotalTokens
 }
 
 func (reason FinishReason) Valid() bool {

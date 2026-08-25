@@ -9,7 +9,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 )
 
-const CurrentVersion = 3
+const CurrentVersion = 4
 
 const (
 	itemTypeSessionMeta = "session_meta"

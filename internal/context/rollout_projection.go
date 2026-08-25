@@ -17,7 +17,19 @@ import (
 type RolloutMessageProjection struct {
 	Messages        []llm.ResponseItem
 	SourceSequences []int64
+	Origins         []MessageOrigin
 }
+
+type MessageOrigin string
+
+const (
+	MessageOriginUser       MessageOrigin = "user"
+	MessageOriginAssistant  MessageOrigin = "assistant"
+	MessageOriginTool       MessageOrigin = "tool"
+	MessageOriginRuntime    MessageOrigin = "runtime"
+	MessageOriginSubagent   MessageOrigin = "subagent"
+	MessageOriginCompaction MessageOrigin = "compaction"
+)
 
 func ProjectRolloutMessages(lines []rollout.Line) (RolloutMessageProjection, error) {
 	projection := RolloutMessageProjection{}
@@ -38,13 +50,13 @@ func (projection *RolloutMessageProjection) record(sequence uint64, item rollout
 	case rollout.EventMsgItem:
 		switch message := item.Msg.(type) {
 		case protocol.TurnAbortedEvent:
-			projection.append(llm.DeveloperMessage("Previous turn was interrupted: "+message.Reason+". Re-plan from the current workspace state."), sequence)
+			projection.append(llm.DeveloperMessage("Previous turn was interrupted: "+message.Reason+". Re-plan from the current workspace state."), sequence, MessageOriginRuntime)
 		case protocol.TurnCompleteEvent:
 			if message.Status == protocol.TurnStatusFailed {
-				projection.append(llm.DeveloperMessage("Previous turn failed: "+message.Error+". Re-plan from the current workspace state."), sequence)
+				projection.append(llm.DeveloperMessage("Previous turn failed: "+message.Error+". Re-plan from the current workspace state."), sequence, MessageOriginRuntime)
 			}
 		case protocol.SubagentNotificationEvent:
-			projection.append(llm.UserMessage(message.Content), sequence)
+			projection.append(llm.UserMessage(message.Content), sequence, MessageOriginSubagent)
 		}
 	case rollout.CompactedItem:
 		if err := projection.applyCompaction(item); err != nil {
@@ -58,15 +70,16 @@ func (projection RolloutMessageProjection) Clone() RolloutMessageProjection {
 	return RolloutMessageProjection{
 		Messages:        cloneResponseItems(projection.Messages),
 		SourceSequences: append([]int64(nil), projection.SourceSequences...),
+		Origins:         append([]MessageOrigin(nil), projection.Origins...),
 	}
 }
 
 func (projection *RolloutMessageProjection) appendResponse(sequence uint64, item rollout.ResponseItem) error {
 	switch item.Type {
 	case rollout.ResponseUserMessage:
-		projection.append(llm.UserMessage(item.Content), sequence)
+		projection.append(llm.UserMessage(item.Content), sequence, MessageOriginUser)
 	case rollout.ResponseAssistantMessage:
-		projection.append(llm.ResponseItem{Role: llm.RoleAssistant, Content: item.Content, Reasoning: item.Reasoning}, sequence)
+		projection.append(llm.ResponseItem{Role: llm.RoleAssistant, Content: item.Content, Reasoning: item.Reasoning}, sequence, MessageOriginAssistant)
 	case rollout.ResponseToolCall:
 		callID := strings.TrimSpace(item.CallID)
 		if callID == "" {
@@ -106,7 +119,7 @@ func (projection *RolloutMessageProjection) appendResponse(sequence uint64, item
 		if projectErr != nil {
 			return projectErr
 		}
-		projection.append(message, sequence)
+		projection.append(message, sequence, MessageOriginTool)
 	}
 	return nil
 }
@@ -125,12 +138,13 @@ func (projection *RolloutMessageProjection) appendAssistantToolCall(message llm.
 		projection.SourceSequences[last] = int64(sequence)
 		return
 	}
-	projection.append(message, sequence)
+	projection.append(message, sequence, MessageOriginAssistant)
 }
 
-func (projection *RolloutMessageProjection) append(message llm.ResponseItem, sequence uint64) {
+func (projection *RolloutMessageProjection) append(message llm.ResponseItem, sequence uint64, origin MessageOrigin) {
 	projection.Messages = append(projection.Messages, message)
 	projection.SourceSequences = append(projection.SourceSequences, int64(sequence))
+	projection.Origins = append(projection.Origins, origin)
 }
 
 func (projection *RolloutMessageProjection) applyCompaction(payload rollout.CompactedItem) error {
@@ -151,11 +165,18 @@ func (projection *RolloutMessageProjection) applyCompaction(payload rollout.Comp
 	}
 	replacements := make([]llm.ResponseItem, 0, len(payload.ReplacementHistory))
 	sequences := make([]int64, 0, len(payload.ReplacementHistory))
-	for _, replacement := range payload.ReplacementHistory {
-		replacements = append(replacements, llm.ResponseItem{Role: llm.Role(replacement.Role), Content: replacement.Content})
+	origins := make([]MessageOrigin, 0, len(payload.ReplacementHistory))
+	for index, replacement := range payload.ReplacementHistory {
+		replacements = append(replacements, cloneResponseItems([]llm.ResponseItem{replacement})[0])
 		sequences = append(sequences, payload.CoveredThroughSequence)
+		origin := MessageOriginUser
+		if index == len(payload.ReplacementHistory)-1 {
+			origin = MessageOriginCompaction
+		}
+		origins = append(origins, origin)
 	}
 	projection.Messages = append(replacements, projection.Messages[covered:]...)
 	projection.SourceSequences = append(sequences, projection.SourceSequences[covered:]...)
+	projection.Origins = append(origins, projection.Origins[covered:]...)
 	return nil
 }

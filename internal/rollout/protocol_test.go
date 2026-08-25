@@ -30,17 +30,18 @@ func TestRolloutItemVariantsRoundTrip(t *testing.T) {
 			Metadata: map[string]any{"path": "README.md"}, Partial: true, Duration: int64(time.Second),
 		}},
 		{name: "compacted", item: CompactedItem{
-			ThreadID: threadID, TurnID: "turn-1", Summary: "inspection completed",
-			ReplacementHistory:     []ReplacementMessage{{Role: "user", Content: "inspect"}, {Role: "assistant", Content: "summary"}},
+			ThreadID: threadID, TurnID: "turn-1", Trigger: protocol.CompactionTriggerManual,
+			Reason: protocol.CompactionReasonUserRequested, Phase: protocol.CompactionPhaseStandaloneTurn, Summary: "inspection completed",
+			ReplacementHistory:     []llm.ResponseItem{llm.UserMessage("inspect"), llm.UserMessage("summary")},
 			CoveredThroughSequence: 12, SourceHash: "source-hash", Provider: "mock", Model: "model",
 		}},
 		{name: "turn context", item: TurnContextItem{
 			ThreadID: threadID, TurnID: "turn-1", Provider: "mock", Model: "model", CWD: "/workspace",
 			ReasoningEffort: &effort, Shell: "bash", CurrentDate: "2026-08-20", Timezone: "Asia/Shanghai", Mode: "default",
 		}},
-		{name: "event message", item: EventMsgItem{Msg: protocol.TokenCountEvent{
-			ThreadID: threadID, TurnID: "turn-1", Usage: llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
-		}}},
+		{name: "event message", item: EventMsgItem{Msg: protocol.ScopeEventMsg(
+			protocol.NewTokenCountEvent(llm.TokenUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}, 128_000, 1), threadID, "turn-1",
+		)}},
 		{name: "collaboration event", item: EventMsgItem{Msg: protocol.ItemCompletedEvent{ThreadID: threadID, TurnID: "turn-1", Item: protocol.TurnItem{
 			ID: "call-1", Kind: protocol.ItemCollabAgentToolCall, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now,
 			ToolName: "spawn_agent", CallID: "call-1", CollabAgent: &protocol.CollabAgentToolCallItem{
@@ -88,8 +89,9 @@ func TestLineRejectsInvalidCurrentFormats(t *testing.T) {
 		content string
 		want    string
 	}{
-		{name: "unknown type", content: `{"version":3,"sequence":1,"timestamp":"` + now + `","type":"future_item","payload":{}}`, want: `unsupported rollout item type "future_item"`},
-		{name: "missing payload", content: `{"version":3,"sequence":1,"timestamp":"` + now + `","type":"response_item"}`, want: "unsupported rollout item format"},
+		{name: "old W-incompatible version", content: `{"version":3,"sequence":1,"timestamp":"` + now + `","type":"event_msg","payload":{}}`, want: "unsupported rollout format version 3"},
+		{name: "unknown type", content: `{"version":4,"sequence":1,"timestamp":"` + now + `","type":"future_item","payload":{}}`, want: `unsupported rollout item type "future_item"`},
+		{name: "missing payload", content: `{"version":4,"sequence":1,"timestamp":"` + now + `","type":"response_item"}`, want: "unsupported rollout item format"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

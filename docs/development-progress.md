@@ -1,13 +1,13 @@
 # Amadeus 开发进度
 
-> 最近更新：2026-08-24
+> 最近更新：2026-08-25
 > 主要架构与 Contract 工作文档：`docs/design.md`
-> 当前阶段：V. Versionless Config Schema + Example Naming（DONE）
+> 当前阶段：W. Context Accounting + Compaction Realignment（DONE）
 > 下一任务：下一阶段待规划
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
-A-V 的条目保留为历史与当前计划记录；其中与当前 `docs/design.md` 冲突的术语、兼容策略和 owner 结论均视为已被取代，不得作为新实现依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
+A-W 的条目保留为历史与当前完成记录；其中与当前 `docs/design.md` 冲突的 token、compaction、术语、兼容策略和 owner 结论均视为已被 W 取代，不得作为新实现依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
 
 ## 1. 状态与完成标准
 
@@ -47,6 +47,7 @@ A Runtime + Persistence
 → T Thread + Session UUID Identity Alignment
 → U Next-Turn User Input Queue Alignment
 → V Versionless Config Schema + Example Naming
+→ W Context Accounting + Compaction Realignment
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先分析对应参考源码，再同步更新 `docs/design.md` 与本文。
@@ -124,7 +125,93 @@ JSONL 是完整历史的唯一事实源，SQLite 只保存可重建的 Thread me
 - [x] SQLite 不保存不可重建事实，也不包含超过 JSONL durable watermark 的 metadata。
 - [x] Resume、取消、panic、submit failure 和异常终态均可恢复且只完成一次。
 
-## 4. B. Context + Prompt — `DONE`
+## 4. B. ## 25. W. Context Accounting + Compaction Realignment — `DONE`
+
+### 目标
+
+按 `docs/design.md` 当前 Contract 替换旧 token/context/compaction 主链：区分 Thread 累计 Token 消耗、最近 Provider request usage、当前 active context 和 exact Prompt preflight estimate；将 Compaction 收敛为 Session-owned lifecycle，使 CompactionService 只生成 typed output，手动与自动压缩共享 source validation、真实 request usage record、durable replacement install、ActiveContextTokens recompute、Item lifecycle 和失败顺序。
+
+W 取代 B/L/M/O 中与当前实现一致但与最新 Codex reference 不再一致的 token/compaction 结论；历史阶段状态保持 DONE，但不得通过 alias、wrapper、双写或兼容 decoder 保留旧 `TaskOutput.Usage`、Role/Content replacement、Compactor Rollout writer 或 ContextCompactedEvent 完成协议。
+
+### W-01：Token Usage Protocol + Context Status Contract — `DONE`
+
+- [x] 将 LLM domain 的 `Usage` 收敛为 `TokenUsage`，建立 Codex 风格 `TokenUsageInfo{TotalTokenUsage, LastTokenUsage, ModelContextWindow}`；字段语义在 Responses、Chat Completions 和 compatible Provider 中一致。
+- [x] 将 `TokenCountEvent` 改为完整 snapshot，携带 TokenUsageInfo、ActiveContextTokens、estimated marker 和 Provider 实际观察的 history watermark；删除 `Usage + EstimatedInputTokens + ContextWindow` 的优先级猜测模型。
+- [x] 增加 typed `ContextWindowTokenStatus`、`context_window_exceeded` Provider error 和 compaction_no_history/stale/invalid_output/insufficient/persistence_failed error contract。
+- [x] 将 CompactionTrigger/Reason/Phase 定义为 Agent Protocol 稳定枚举，供 Session、Event 和 CompactedItem 复用；禁止 Rollout 依赖 runtime CompactionService package 或在边界转换字符串。
+- [x] 直接重置 TokenCountEvent Rollout codec、fixtures 和本地开发数据到新协议；CompactedItem 的格式替换随 W-03/W-04 同步完成，不保留旧 reader、migration、alias 或 fallback decoder。
+
+### W-02：ContextManager Active Usage + Structured Estimator — `DONE`
+
+- [x] ContextManager 保存最后一个 TokenUsageInfo 与 ActiveContextTokens/estimated snapshot、history version、TokenCount checkpoint sequence 和 rollout source sequence；Resume 使用最后 snapshot 并重算该 sequence 后的 local suffix，不累加所有历史 TokenCountEvent。
+- [x] 实现 Session-owned `ContextWindowTokenStatus`：post-response 使用 LastTokenUsage.TotalTokens + local suffix，首次/缺失 usage/replacement 后使用 exact Prompt estimate checkpoint，preflight 与 active budget 由同一 policy 汇合；estimate 不覆盖 LastTokenUsage。
+- [x] 以结构化 `ApproxTokenEstimator` 替换 `ConservativeEstimator` 和 Go struct JSON 偶然编码：分别覆盖 text、reasoning、Tool Call/Result、ToolSpec、OutputSchema 和固定协议开销。
+- [x] 图片按 prepared dimensions/detail/patch cost 或稳定 fallback 估算并排除 Base64 payload；覆盖 ASCII、中文、high/original image、modality omission 和 tool_output_token_limit 交互。
+- [x] 保持当前 total active context scope 和 90% auto limit；不引入 remote compaction、body_after_prefix、fallback compact prompt、window UUID 或 TokenBudget feature。
+
+### W-03：Compaction Domain + Prompt/Replacement Contract — `DONE`
+
+- [x] 新建责任独立的 `internal/agent/compact`，定义 CompactionSource/Request/Output 并复用 Protocol 的 Trigger/Reason/Phase；SessionServices 只持有无状态 CompactionService。
+- [x] CompactionService 使用 exact StepContext：保留普通 BaseInstructions，将 Codex `SUMMARIZATION_PROMPT` 追加为最后一个 synthetic User item，Tools 为空，并复用 frozen ModelInfo/Reasoning/ModelClientSession retry policy。
+- [x] 摘要请求输入包含模型实际可见的 AGENTS.md、WorldState、Skill、MCP、conversation 和 modality projection；删除只读取裸 ContextProjection 的第二 Prompt 主链。
+- [x] Context projector 增加 typed MessageOrigin，CompactionSource 只传递真实 User messages；ReplacementHistory 改为完整 typed ResponseItem，按 Codex 语义从最新真实 User messages 向前选择有界总预算，并以 `User(SUMMARY_PREFIX + summary)` 结束，不用 role/XML 字符串猜测来源。
+- [x] CompactionService 只返回包含 Message、FinishReason、ReplacementHistory 和 TokenUsage 的 CompactionOutput，不构造 CompactedItem、TokenCountEvent 或其他 RolloutItem，不访问 Session/ContextManager/TUI。
+
+### W-04：Session-owned Manual Compaction + Atomic Install — `DONE`
+
+- [x] 实现唯一 `Session.runCompaction`/`installCompaction`，由 Session 创建 source snapshot、ItemID、trigger/reason/phase，调用服务，先记录成功 Provider response 的真实 TokenUsage，再校验 summary、finish reason、Tool Call absence、source version/hash 和 typed replacement。
+- [x] `/compact` 保持 standalone non-steerable CompactTask，但 Task 只请求 Session 执行 `manual/user_requested/standalone_turn`，不通过 TaskOutput 返回待安装 RolloutItem。
+- [x] 将 replacement 的 `CompactedItem + refreshed TokenCountEvent` 作为同一 durable append/flush boundary；成功后才更新 live ContextManager 并发布 TokenCount、ItemCompleted 和 Warning。output invalid/stale/install failure 仍保留先前已持久化的真实 Compaction request usage。
+- [x] started、completed、failed、aborted 使用同一 ContextCompaction ItemID；Provider、取消、stale source、invalid output 和 persistence failure 均保持旧 ContextManager，不产生双终态或永久 Working。
+- [x] CompactedItem 持久化 trigger/reason/phase、typed replacement、CoveredThroughSequence 和 SourceHash；合法 concurrent trailing facts 保留，旧 prefix 只替换一次。
+
+### W-05：Automatic Compaction + Continuation/Failure Ordering — `DONE`
+
+- [x] 每个成功普通/Compaction request 在下一模型动作前由 Session 只记录一次 TokenUsageInfo；删除 Turn 末尾从 TaskOutput 追加聚合 usage 的路径。
+- [x] regular `run_turn` 在 exact StepContext preflight 执行 auto pre-turn compact，并在 sampling/Tool facts 已 canonical record 且确实需要 follow-up 时按 active usage 执行 auto mid-turn compact；不创建嵌套 CompactTask。
+- [x] 保持 O 的 steer 顺序：未 drain steer 不进入 compact request；compact 后需要恢复原 model/tool continuation 时继续 pending，只有 steer 需要 follow-up 时可直接 drain。
+- [x] Provider context length rejection 使用 typed recovery；compact request 自身超限时按完整 User/Tool-call group 从最旧端有界裁剪，禁止制造孤立 ToolCall/ToolResult。
+- [x] compact install 后立即比较 before/after active tokens；没有实质下降或仍达到硬窗口时返回 compaction_insufficient，同一 history/window 不重复无界 compact。
+
+### W-06：Protocol、Persistence、Application + TUI Projection — `DONE`
+
+- [x] ThreadViewSnapshot/fullscreenSessionState/AppExitInfo 使用 TokenUsageInfo 与 ActiveContextTokens；live、attach 和 Resume reducer 只替换 snapshot，不累加 Event 或以 InputTokens 覆盖 estimate。
+- [x] 删除独立 ContextCompactedEvent 完成协议；live 使用 ContextCompaction ItemStarted/ItemCompleted，Replay 从 CompactedItem 生成唯一 completed ContextCompactionItem/ContextCompactedCell。
+- [x] SQLite `tokens_used` 投影最后一个 TokenCountEvent.Info.TotalTokenUsage.TotalTokens，不重复累加累计 snapshot；durable watermark 顺序保持不变。
+- [x] manual/auto compaction 的 Working、retry、completed、warning、failed/aborted 和 statusline context lifecycle 在 Rich TUI、Inline、TranscriptState 与 Resume 中语义一致。
+
+### W-07：Legacy Cleanup、Docs、Guards + Acceptance — `DONE`
+
+- [x] 删除 `TaskOutput.Usage`、Turn usage aggregator、`UsageItem` terminal append、`UsageSnapshot.ProviderUsage/HasProviderUsage`、`PromptSnapshot.NeedsCompaction` 分散 policy 和 TUI/replay usage sum。
+- [x] 删除旧 `engine.Compactor.Compact() -> []RolloutItem`、`SessionServices.Compact` wrapper、`compactFunc/compactCallback`、prefix-only `projectCompactionSource`、Role/Content ReplacementMessage、`publishCompactionEvents` 和字符串 no-history 判断。
+- [x] 增加 architecture guards，验证 Session/Context/CompactionService 依赖方向、每 request 唯一 TokenUsage、atomic install、typed error、单一 live/replay compaction completion 和旧 symbol 不回流。
+- [x] 同步 `docs/design.md`、本进度文档、README/config diagnostics 和必要架构白皮书；历史阶段的 superseded token/compaction 结论不得覆盖 W。
+- [x] 运行 focused context/session/compact/provider/TUI/persistence tests、provider mock E2E、`make check`、`go test -race ./... -count=1` 和 `git diff --check` 后才将 W 标记 DONE。
+
+### W 出口
+
+- TotalTokenUsage、LastTokenUsage、ActiveContextTokens 和 EstimatedInputTokens 各有唯一 owner、命名和恢复语义；live、Resume、statusline、exit summary 与 SQLite 不再混用或重复累计。
+- manual 与 auto compaction 使用同一 Session.runCompaction/install lifecycle，CompactionService 不拥有 Session mutation、Rollout schema、Event terminal 或 token state。
+- compact prompt、typed replacement、source validation、durability、steer ordering、retry/cancel 和 context overflow recovery 与 `docs/design.md` 一致。
+- 旧 token aggregator、Compactor Rollout writer、callback、Role/Content replacement、ContextCompactedEvent 和字符串 failure 路径全部删除，不存在新接口包裹旧执行链。
+
+### W 验收
+
+- 多 Step Tool Turn 的 TotalTokenUsage 单调累计、LastTokenUsage 只替换最近 request，Tool/Context local suffix 进入 ActiveContextTokens；Resume 后所有值与 live terminal snapshot 一致。
+- ASCII/中文/图片/Tool/Schema prompt estimate 可预测，prepared image Base64 不导致虚假超限；Provider usage 缺失时稳定回退 estimate。
+- `/compact` 和 auto pre-turn/mid-turn 生成相同 prompt/replacement contract，成功只产生一个 durable checkpoint 和一个用户可见 Context compacted cell。
+- 大 Tool Result、pending steer、source race、context-window rejection、stream retry、取消、invalid summary、flush failure 和 insufficient reduction 都有确定性结果且不丢历史、不重复 compact、不双完成。
+
+### W 完成记录
+
+- 2026-08-25 将 LLM `Usage` 替换为单 request `TokenUsage`，Protocol 引入 `TokenUsageInfo` 与包含 active/estimated/observed-watermark 的完整 TokenCountEvent snapshot；ContextManager、live/Resume、TUI、exit summary 与 SQLite 全部改为 snapshot replace 语义。
+- 新增结构化 `ApproxTokenEstimator` 和 ContextWindowTokenStatus，覆盖 ASCII、中文、Tool/Schema、prepared image/原始 Base64 排除、Provider checkpoint、local suffix、失败响应 input baseline 与 Compaction replacement estimate。
+- 新建 `internal/agent/compact`，使用普通 BaseInstructions + synthetic Codex summarization User prompt、exact StepContext PromptItems、typed MessageOrigin/真实 User selection、有界 typed ReplacementHistory 和 context-window oldest-group retry。
+- Session 现在唯一拥有 manual/auto pre-turn/mid-turn compaction、真实 request usage、source hash/watermark、atomic `CompactedItem + TokenCountEvent` install、before/after reduction、Item lifecycle 和 Warning/terminal ordering；删除 engine Compactor、callback、TaskOutput Usage/Items 和 ContextCompactedEvent。
+- Rollout 当前格式与 SQLite schema 均提升到 `4`，旧开发格式直接拒绝且不保留 decoder/migration；architecture guard 固化新依赖方向与 legacy 禁止项。
+- focused functional/race tests、`make check`、全仓 `go test -race ./... -count=1`、Responses/Chat Provider mock E2E、core-tools Provider mock E2E 与 `git diff --check` 于 2026-08-25 通过。
+
+## 26.xt + Prompt — `DONE`
 
 ### 目标
 
@@ -419,7 +506,7 @@ G 完成了当时的第一轮 Runtime 收敛和可工作主链，但其 `engine.
 
 ### G-01：SessionServices Ownership — `DONE`
 
-G 当时完成了 capability 的 Session-scoped 复用；其过渡 `engine.Services`/builder/view 模型已由 M-04 删除。当前最终实现由 `SessionServices` 直接拥有 ModelClient、ToolRegistry、ToolExecutionService、ProcessManager、AgentsMdManager、MCPRuntime、SkillCatalog、Web、Approval、Permission、Compactor、LiveThread、Clock 与 ID service；SessionState 只保存 Configuration、Mode、ContextManager 和 Plan。
+G 当时完成了 capability 的 Session-scoped 复用；其过渡 `engine.Services`/builder/view 模型已由 M-04 删除。M 随后让 `SessionServices` 直接拥有 ModelClient、ToolRegistry、ToolExecutionService、ProcessManager、AgentsMdManager、MCPRuntime、SkillCatalog、Web、Approval、Permission、当时的 Compactor、LiveThread、Clock 与 ID service；W 已进一步用无状态 CompactionService 取代 Compactor，并把 token/compaction 状态归回 Session/ContextManager。
 
 ### G-02：删除 Coding Factory/Runtime — `DONE`
 
@@ -435,7 +522,7 @@ G 当时完成了 capability 的 Session-scoped 复用；其过渡 `engine.Servi
 
 ### G-04：Turn、Mode 与 Interaction State — `DONE`
 
-G 完成了 `TurnContext` 与 `ModeKind` 的第一轮术语迁移；M-05 随后删除未消费的 TurnState、TaskKind、TurnInput 和 pending user-input 模型。当前 ActiveTurn 只保存 Submission correlation、RunningTask 与 typed pending Approval，Usage/Tool count 经 TaskOutput 返回，terminal mapping 归 Session。
+G 完成了 `TurnContext` 与 `ModeKind` 的第一轮术语迁移；M-05 随后删除未消费的 TurnState、TaskKind、TurnInput 和 pending user-input 模型。该阶段曾通过 TaskOutput 返回 Usage/Tool count；W 已删除 TaskOutput Usage/Items，改为每个 request 立即由 Session 记录 TokenUsageInfo，TaskOutput 只保留 outcome/summary/reason/Tool count。
 
 ### G-05：StepContext 与混合 Tool Boundary — `DONE`
 
@@ -449,7 +536,7 @@ G 完成了 `TurnContext` 与 `ModeKind` 的第一轮术语迁移；M-05 随后�
 - 建立 Session-scoped provider client 与 Turn-scoped `ModelClientSession`；同一 Turn 的 continuation sampling 复用 session，不跨 Turn 复用。
 - stream aggregation/delta 发布作为 sampling request 处理，不再以独立 `ModelSampler` aggregate 持有 Session capability；`ModelClientSession` 只在 Turn continuation 生命周期内复用。
 - ContextManager 是 Session 内模型历史投影 owner；Task/`run_turn` 只通过 Session typed methods append canonical facts 和构建 PromptSnapshot。
-- 自动压缩与 CompactTask 复用 Session-owned Compactor，`run_turn` 不嵌套 SessionTask；自动压缩 callback 由 Session 内部构造。
+- 当时自动压缩与 CompactTask 复用 Session-owned Compactor，`run_turn` 不嵌套 SessionTask；W 已删除 callback/Compactor Rollout writer，改为两者复用 Session.runCompaction/installCompaction 与无状态 CompactionService。
 
 ### G-07：Integration、迁移与架构验收 — `SUPERSEDED BY M`
 
@@ -592,7 +679,7 @@ E 阶段已经交付 Slash Command 的基础命令集、Composer 解析、Popup 
 ### J-04：`/compact` Session Op + Visible Lifecycle — `DONE`
 
 - 将 `/compact` 接入正式 `CompactOp → CompactTask` 主链，并让 `TurnStarted` 携带稳定 task kind；提交后立即进入可见 pending/running UI，Runtime Event 仍是最终真相。
-- durable compaction item 写入后发布 `ContextCompacted → Warning → TurnCompleted`；TUI 固定显示 `• Context compacted` 与 Codex 原文 Heads-up 警告，生成 summary 仅保留在 replacement history，不进入 transcript 文本。
+- 当时 durable compaction item 写入后发布 `ContextCompacted → Warning → TurnCompleted`；W 已删除独立 ContextCompactedEvent，改为 live ContextCompaction ItemCompleted 与 Replay CompactedItem 共用一个 `• Context compacted` 投影，Warning/Turn terminal 顺序保持不变。
 - 删除 `FullscreenCompactor`、`fullscreenCompactMsg`、`compactInteractiveSession` 及 Fullscreen 内部 `waitTurn` 完成路径。
 
 ### J-05：`/mcp` Typed Inventory Query — `DONE`
@@ -682,7 +769,7 @@ K 从单一 `max_retries`、`Recv` 失败即终止和 terminal-only `StreamError
 ### K-02：Core Response Stream Retry Owner — `DONE`
 
 - [x] 在 Turn-scoped `ModelClientSession` 或 Session 模块内建立唯一 response retry helper，统一 retryability、counter、cancellable backoff、idle timeout 和 retry exhaustion。
-- [x] 同一 Turn 内复用 ModelClientSession 与 sampling request 语义；TUI、SDK Adapter、RegularTask 和 Compactor 不分别维护重试状态。
+- [x] 同一 Turn 内复用 ModelClientSession 与 sampling request 语义；TUI、SDK Adapter、RegularTask 和当时的 Compactor 不分别维护重试状态。W 的 CompactionService 延续该边界。
 - [x] cancellation 在 stream read 和 backoff 中立即生效；不可恢复错误和重试耗尽只进入一次最终 failed task result，由 Session 完成唯一 Turn terminal protocol。
 
 ### K-03：Typed Transient StreamError Protocol — `DONE`
@@ -701,7 +788,7 @@ K 从单一 `max_retries`、`Recv` 失败即终止和 terminal-only `StreamError
 ### K-05：Sampling + Compaction Policy Convergence — `DONE`
 
 - [x] 普通 sampling、手动 `/compact` CompactTask 和 `run_turn` 自动 compaction 复用同一 response-stream retry policy，仅保留请求类型和 Prompt 差异。
-- [x] Compactor 不拥有独立静默 retry loop；重连期间保持 Compact Turn running，成功后继续既有 `ContextCompacted → Warning → TurnCompleted` 顺序。
+- [x] 当时的 Compactor 不拥有独立静默 retry loop；W 删除 Compactor 和 ContextCompactedEvent 后，重连仍由同一 ModelClientSession 负责，成功顺序改为 ContextCompaction ItemCompleted → Warning → TurnCompleted。
 - [x] compact retry exhausted 保持原 ContextManager/replacement history 不变，并产生明确最终错误与唯一 Turn terminal。
 
 ### K-06：Partial Delta Attempt Isolation — `DONE`
@@ -812,7 +899,7 @@ M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/
 
 ### M-04：SessionServices Ownership — `DONE`
 
-- 让 `SessionServices` 直接拥有 ModelClient、ToolRegistry、ToolExecutionService、ProcessManager、AgentsMdManager、MCPRuntime、SkillCatalog、Web、Approval、Permission、Compactor、LiveThread 和 ID/Time services。
+- 让 `SessionServices` 直接拥有 ModelClient、ToolRegistry、ToolExecutionService、ProcessManager、AgentsMdManager、MCPRuntime、SkillCatalog、Web、Approval、Permission、当时的 Compactor、LiveThread 和 ID/Time services；W 已将该 slot 替换为无状态 CompactionService。
 - 删除 `engine.Services`、`AgentServices`、`ServicesBuilder`、`SessionSetup`、`TaskConstructors`、CLI factory closure、`CapabilityView` 和相关 adapter/guard exceptions。
 - Composition Root 只构造外部 Adapter 和 Session spawn args；Session 自己构造 services、tasks 并负责 shutdown。
 - `SessionState.Configuration` 成为当前配置唯一事实源，删除 `engine.Services.configured`、首次 closure capture 和其他重复 configuration snapshot。
@@ -1677,7 +1764,84 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - architecture guard 固化 versionless Config 与唯一模板路径，config show/explain/provenance 测试确认不再输出 version。
 - focused config/CLI/architecture tests、`make check`、`go test -race ./... -count=1` 与 `git diff --check` 于 2026-08-24 通过；首次全量 race 的未改动 PTY 测试发生一次时序波动，单包与全仓重跑均通过。
 
-## 25. 当前保留能力
+## 25. W. Context Accounting + Compaction Realignment — `DONE`
+
+### 目标
+
+按 `docs/design.md` 当前 Contract 替换旧 token/context/compaction 主链：区分 Thread 累计 Token 消耗、最近 Provider request usage、当前 active context 和 exact Prompt preflight estimate；将 Compaction 收敛为 Session-owned lifecycle，使 CompactionService 只生成 typed output，手动与自动压缩共享 source validation、真实 request usage record、durable replacement install、ActiveContextTokens recompute、Item lifecycle 和失败顺序。
+
+W 取代 B/L/M/O 中与当前实现一致但与最新 Codex reference 不再一致的 token/compaction 结论；历史阶段状态保持 DONE，但不得通过 alias、wrapper、双写或兼容 decoder 保留旧 `TaskOutput.Usage`、Role/Content replacement、Compactor Rollout writer 或 ContextCompactedEvent 完成协议。
+
+### W-01：Token Usage Protocol + Context Status Contract — `DONE`
+
+- [x] 将 LLM domain 的 `Usage` 收敛为 `TokenUsage`，建立 Codex 风格 `TokenUsageInfo{TotalTokenUsage, LastTokenUsage, ModelContextWindow}`；字段语义在 Responses、Chat Completions 和 compatible Provider 中一致。
+- [x] 将 `TokenCountEvent` 改为完整 snapshot，携带 TokenUsageInfo、ActiveContextTokens、estimated marker 和 Provider 实际观察的 history watermark；删除 `Usage + EstimatedInputTokens + ContextWindow` 的优先级猜测模型。
+- [x] 增加 typed `ContextWindowTokenStatus`、`context_window_exceeded` Provider error 和 compaction_no_history/stale/invalid_output/insufficient/persistence_failed error contract。
+- [x] 将 CompactionTrigger/Reason/Phase 定义为 Agent Protocol 稳定枚举，供 Session、Event 和 CompactedItem 复用；禁止 Rollout 依赖 runtime CompactionService package 或在边界转换字符串。
+- [x] 直接重置 TokenCountEvent Rollout codec、fixtures 和本地开发数据到新协议；CompactedItem 的格式替换随 W-03/W-04 同步完成，不保留旧 reader、migration、alias 或 fallback decoder。
+
+### W-02：ContextManager Active Usage + Structured Estimator — `DONE`
+
+- [x] ContextManager 保存最后一个 TokenUsageInfo 与 ActiveContextTokens/estimated snapshot、history version、TokenCount checkpoint sequence 和 rollout source sequence；Resume 使用最后 snapshot 并重算该 sequence 后的 local suffix，不累加所有历史 TokenCountEvent。
+- [x] 实现 Session-owned `ContextWindowTokenStatus`：post-response 使用 LastTokenUsage.TotalTokens + local suffix，首次/缺失 usage/replacement 后使用 exact Prompt estimate checkpoint，preflight 与 active budget 由同一 policy 汇合；estimate 不覆盖 LastTokenUsage。
+- [x] 以结构化 `ApproxTokenEstimator` 替换 `ConservativeEstimator` 和 Go struct JSON 偶然编码：分别覆盖 text、reasoning、Tool Call/Result、ToolSpec、OutputSchema 和固定协议开销。
+- [x] 图片按 prepared dimensions/detail/patch cost 或稳定 fallback 估算并排除 Base64 payload；覆盖 ASCII、中文、high/original image、modality omission 和 tool_output_token_limit 交互。
+- [x] 保持当前 total active context scope 和 90% auto limit；不引入 remote compaction、body_after_prefix、fallback compact prompt、window UUID 或 TokenBudget feature。
+
+### W-03：Compaction Domain + Prompt/Replacement Contract — `DONE`
+
+- [x] 新建责任独立的 `internal/agent/compact`，定义 CompactionSource/Request/Output 并复用 Protocol 的 Trigger/Reason/Phase；SessionServices 只持有无状态 CompactionService。
+- [x] CompactionService 使用 exact StepContext：保留普通 BaseInstructions，将 Codex `SUMMARIZATION_PROMPT` 追加为最后一个 synthetic User item，Tools 为空，并复用 frozen ModelInfo/Reasoning/ModelClientSession retry policy。
+- [x] 摘要请求输入包含模型实际可见的 AGENTS.md、WorldState、Skill、MCP、conversation 和 modality projection；删除只读取裸 ContextProjection 的第二 Prompt 主链。
+- [x] Context projector 增加 typed MessageOrigin，CompactionSource 只传递真实 User messages；ReplacementHistory 改为完整 typed ResponseItem，按 Codex 语义从最新真实 User messages 向前选择有界总预算，并以 `User(SUMMARY_PREFIX + summary)` 结束，不用 role/XML 字符串猜测来源。
+- [x] CompactionService 只返回包含 Message、FinishReason、ReplacementHistory 和 TokenUsage 的 CompactionOutput，不构造 CompactedItem、TokenCountEvent 或其他 RolloutItem，不访问 Session/ContextManager/TUI。
+
+### W-04：Session-owned Manual Compaction + Atomic Install — `DONE`
+
+- [x] 实现唯一 `Session.runCompaction`/`installCompaction`，由 Session 创建 source snapshot、ItemID、trigger/reason/phase，调用服务，先记录成功 Provider response 的真实 TokenUsage，再校验 summary、finish reason、Tool Call absence、source version/hash 和 typed replacement。
+- [x] `/compact` 保持 standalone non-steerable CompactTask，但 Task 只请求 Session 执行 `manual/user_requested/standalone_turn`，不通过 TaskOutput 返回待安装 RolloutItem。
+- [x] 将 replacement 的 `CompactedItem + refreshed TokenCountEvent` 作为同一 durable append/flush boundary；成功后才更新 live ContextManager 并发布 TokenCount、ItemCompleted 和 Warning。output invalid/stale/install failure 仍保留先前已持久化的真实 Compaction request usage。
+- [x] started、completed、failed、aborted 使用同一 ContextCompaction ItemID；Provider、取消、stale source、invalid output 和 persistence failure 均保持旧 ContextManager，不产生双终态或永久 Working。
+- [x] CompactedItem 持久化 trigger/reason/phase、typed replacement、CoveredThroughSequence 和 SourceHash；合法 concurrent trailing facts 保留，旧 prefix 只替换一次。
+
+### W-05：Automatic Compaction + Continuation/Failure Ordering — `DONE`
+
+- [x] 每个成功普通/Compaction request 在下一模型动作前由 Session 只记录一次 TokenUsageInfo；删除 Turn 末尾从 TaskOutput 追加聚合 usage 的路径。
+- [x] regular `run_turn` 在 exact StepContext preflight 执行 auto pre-turn compact，并在 sampling/Tool facts 已 canonical record 且确实需要 follow-up 时按 active usage 执行 auto mid-turn compact；不创建嵌套 CompactTask。
+- [x] 保持 O 的 steer 顺序：未 drain steer 不进入 compact request；compact 后需要恢复原 model/tool continuation 时继续 pending，只有 steer 需要 follow-up 时可直接 drain。
+- [x] Provider context length rejection 使用 typed recovery；compact request 自身超限时按完整 User/Tool-call group 从最旧端有界裁剪，禁止制造孤立 ToolCall/ToolResult。
+- [x] compact install 后立即比较 before/after active tokens；没有实质下降或仍达到硬窗口时返回 compaction_insufficient，同一 history/window 不重复无界 compact。
+
+### W-06：Protocol、Persistence、Application + TUI Projection — `DONE`
+
+- [x] ThreadViewSnapshot/fullscreenSessionState/AppExitInfo 使用 TokenUsageInfo 与 ActiveContextTokens；live、attach 和 Resume reducer 只替换 snapshot，不累加 Event 或以 InputTokens 覆盖 estimate。
+- [x] 删除独立 ContextCompactedEvent 完成协议；live 使用 ContextCompaction ItemStarted/ItemCompleted，Replay 从 CompactedItem 生成唯一 completed ContextCompactionItem/ContextCompactedCell。
+- [x] SQLite `tokens_used` 投影最后一个 TokenCountEvent.Info.TotalTokenUsage.TotalTokens，不重复累加累计 snapshot；durable watermark 顺序保持不变。
+- [x] manual/auto compaction 的 Working、retry、completed、warning、failed/aborted 和 statusline context lifecycle 在 Rich TUI、Inline、TranscriptState 与 Resume 中语义一致。
+
+### W-07：Legacy Cleanup、Docs、Guards + Acceptance — `DONE`
+
+- [x] 删除 `TaskOutput.Usage`、Turn usage aggregator、`UsageItem` terminal append、`UsageSnapshot.ProviderUsage/HasProviderUsage`、`PromptSnapshot.NeedsCompaction` 分散 policy 和 TUI/replay usage sum。
+- [x] 删除旧 `engine.Compactor.Compact() -> []RolloutItem`、`SessionServices.Compact` wrapper、`compactFunc/compactCallback`、prefix-only `projectCompactionSource`、Role/Content ReplacementMessage、`publishCompactionEvents` 和字符串 no-history 判断。
+- [x] 增加 architecture guards，验证 Session/Context/CompactionService 依赖方向、每 request 唯一 TokenUsage、atomic install、typed error、单一 live/replay compaction completion 和旧 symbol 不回流。
+- [x] 同步 `docs/design.md`、本进度文档、README/config diagnostics 和必要架构白皮书；历史阶段的 superseded token/compaction 结论不得覆盖 W。
+- [x] 运行 focused context/session/compact/provider/TUI/persistence tests、provider mock E2E、`make check`、`go test -race ./... -count=1` 和 `git diff --check` 后才将 W 标记 DONE。
+
+### W 出口
+
+- TotalTokenUsage、LastTokenUsage、ActiveContextTokens 和 EstimatedInputTokens 各有唯一 owner、命名和恢复语义；live、Resume、statusline、exit summary 与 SQLite 不再混用或重复累计。
+- manual 与 auto compaction 使用同一 Session.runCompaction/install lifecycle，CompactionService 不拥有 Session mutation、Rollout schema、Event terminal 或 token state。
+- compact prompt、typed replacement、source validation、durability、steer ordering、retry/cancel 和 context overflow recovery 与 `docs/design.md` 一致。
+- 旧 token aggregator、Compactor Rollout writer、callback、Role/Content replacement、ContextCompactedEvent 和字符串 failure 路径全部删除，不存在新接口包裹旧执行链。
+
+### W 验收
+
+- 多 Step Tool Turn 的 TotalTokenUsage 单调累计、LastTokenUsage 只替换最近 request，Tool/Context local suffix 进入 ActiveContextTokens；Resume 后所有值与 live terminal snapshot 一致。
+- ASCII/中文/图片/Tool/Schema prompt estimate 可预测，prepared image Base64 不导致虚假超限；Provider usage 缺失时稳定回退 estimate。
+- `/compact` 和 auto pre-turn/mid-turn 生成相同 prompt/replacement contract，成功只产生一个 durable checkpoint 和一个用户可见 Context compacted cell。
+- 大 Tool Result、pending steer、source race、context-window rejection、stream retry、取消、invalid summary、flush failure 和 insufficient reduction 都有确定性结果且不丢历史、不重复 compact、不双完成。
+
+## 26. 当前保留能力
 
 - 默认启动：`amadeus` 或 `amadeus "<task>"`。
 - 当前配置链和 Provider Adapter 已可使用 OpenAI Responses/Chat Completions 及兼容 Provider。
@@ -1686,10 +1850,11 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - 内置 Tool、Approval、Diff、Web Search 和 Slash Command 已进入基础主链；N 收敛 `update_plan`、引入 `request_user_input`，并将现有 `/plan` 重构为 Codex 风格 Collaboration Mode 与 Proposed Plan lifecycle；O 已补齐同 Turn 用户输入与 steer lifecycle。
 - U 已补齐 Fullscreen next-turn queue 与 Codex-style pre-enqueue footer hint：运行中 Enter steer 当前 Turn，Tab queue 后续独立 Turn，terminal 后按 FIFO 逐条提交，aborted/blocked 路径恢复 composer；queueable draft 期间 fixed statusline 让位给完整/短 Tab hint。
 - V 已将用户配置收敛为唯一 versionless strict schema，并将仓库模板统一为 `configs/config.yaml.example`；旧 `version:` 配置直接拒绝且不迁移。
+- W 已完成 Context Accounting + Compaction Realignment：TokenUsageInfo/active context/estimate 各有单一语义，manual/auto compaction 共享 Session-owned lifecycle，无状态 CompactionService 不拥有 Rollout、Event terminal 或 Context mutation。
 - P 已完成 Model Reasoning Effort 与 Provider Thinking Contract；当前生产主链可从配置冻结到 Turn，并贯通普通 sampling、Compaction 与 Provider wire request。
 - Q 已完成 Web Search/Fetch 与 `view_image` Contract Closure：Web 保持 pinned network、重定向 Approval、readable Markdown 与证据层级；图片主链完成 model-aware visibility、bounded preparation、Provider/Context projection、单份持久化和 `ViewImageCell`。
 
-## 26. 当前执行规则
+## 27. 当前执行规则
 
 1. 每次只推进一个 `TODO`/`DOING` 主任务。
 2. `docs/design.md` 与本文都可能存在过期或不完整结论；遇到不确定 Contract 时先分析对应 Codex/Claude Code 源码并结合 Amadeus 范围作出确定性设计，再同步更新两份文档和代码。
@@ -1697,7 +1862,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 4. 任务完成必须运行针对性测试和构建；环境限制导致的测试失败要单独记录。
 5. 本文只更新任务状态和出口，不复制架构设计、源码审计或长篇讨论。
 
-## 27. 源码结构清理 — `DONE`
+## 28. 源码结构清理 — `DONE`
 
 ### 已完成
 

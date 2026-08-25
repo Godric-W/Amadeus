@@ -12,7 +12,7 @@ type StreamChunk struct {
 	ReasoningDelta       string
 	FinishReason         FinishReason
 	ProviderFinishReason string
-	Usage                *Usage
+	TokenUsage           *TokenUsage
 	ToolCalls            []ToolCall
 }
 

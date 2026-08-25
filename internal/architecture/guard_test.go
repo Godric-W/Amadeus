@@ -93,7 +93,7 @@ func TestStatusLineArchitectureUsesTypedSessionStateAndPureFooter(t *testing.T) 
 	}
 
 	snapshotFields := architectureStructFields(t, root, "internal/app/interactive_types.go", "ThreadViewSnapshot")
-	for _, required := range []string{"Generation", "ThreadID", "Title", "Configuration", "Items", "Usage", "ContextWindow"} {
+	for _, required := range []string{"Generation", "ThreadID", "Title", "Configuration", "Items", "TokenInfo", "ActiveContextTokens"} {
 		if _, ok := snapshotFields[required]; !ok {
 			t.Errorf("ThreadViewSnapshot is missing field %q", required)
 		}
@@ -894,7 +894,7 @@ func TestResponseStreamReconnectHasCodexOwnershipBoundaries(t *testing.T) {
 		}
 	}
 
-	compactor := mustReadArchitectureFile(t, root, "internal/agent/engine/compactor.go")
+	compactor := mustReadArchitectureFile(t, root, "internal/agent/compact/service.go")
 	for _, forbidden := range []string{"runtime.client.Complete(", "Reconnecting...", "responseRetryPolicy"} {
 		if strings.Contains(compactor, forbidden) {
 			t.Errorf("Compactor owns response retry through %q", forbidden)
@@ -908,12 +908,8 @@ func TestResponseStreamReconnectHasCodexOwnershipBoundaries(t *testing.T) {
 	if !strings.Contains(regularTask, "modelSession, err := sessionTask.runtime.NewModelClientSession()") {
 		t.Fatal("RegularTask does not create one Turn-scoped ModelClientSession")
 	}
-	runTurn := mustReadArchitectureFile(t, root, "internal/agent/session/run_turn.go")
-	if !strings.Contains(runTurn, "session.compactCallback(runtime, modelSession") {
-		t.Fatal("run_turn does not share the RegularTask ModelClientSession with automatic compaction")
-	}
 	continuation := mustReadArchitectureFile(t, root, "internal/agent/session/continuation.go")
-	if !strings.Contains(continuation, "ModelSession: modelSession") {
+	if !strings.Contains(continuation, "session.runCompaction(ctx, runtime, modelSession") {
 		t.Fatal("automatic compaction does not receive the Turn-scoped ModelClientSession")
 	}
 
@@ -1041,9 +1037,9 @@ func TestModelProviderConfigurationHasCodexOwnershipBoundaries(t *testing.T) {
 		}
 	}
 
-	compactor := mustReadArchitectureFile(t, root, "internal/agent/engine/compactor.go")
-	if !strings.Contains(compactor, "NormalizeResponseItems(projection.Covered, compactor.ModelInfo, nil)") {
-		t.Fatal("Compactor does not use the effective ModelInfo projection policy")
+	compactor := mustReadArchitectureFile(t, root, "internal/agent/compact/service.go")
+	if !strings.Contains(compactor, "cloneItems(request.Source.PromptItems)") {
+		t.Fatal("CompactionService does not use the exact StepContext prompt projection")
 	}
 	if strings.Contains(compactor, ".modelClient.Model()") || strings.Contains(compactor, ".client.Model()") {
 		t.Fatal("Compactor bypasses the effective ModelInfo with Adapter metadata")
@@ -1098,6 +1094,53 @@ func TestUserConfigSchemaIsVersionlessAndExampleNameIsCanonical(t *testing.T) {
 	}
 }
 
+func TestContextAccountingAndCompactionHaveWOwnershipBoundaries(t *testing.T) {
+	root := repositoryRoot(t)
+	if _, err := os.Stat(filepath.Join(root, "internal", "agent", "engine", "compactor.go")); !os.IsNotExist(err) {
+		t.Fatal("legacy engine Compactor remains")
+	}
+	for _, relative := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			relativePath := filepath.ToSlash(path[len(root)+1:])
+			for _, forbidden := range []string{"type Usage struct", "ContextCompactedEvent", "ReplacementMessage", "compactFunc", "compactCallback", "UsageItem("} {
+				if strings.Contains(string(content), forbidden) {
+					t.Errorf("legacy W symbol %q remains in %s", forbidden, relativePath)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan %s: %v", relative, err)
+		}
+	}
+	service := mustReadArchitectureFile(t, root, "internal/agent/compact/service.go")
+	for _, forbidden := range []string{"internal/agent/session", "internal/rollout"} {
+		if strings.Contains(service, forbidden) {
+			t.Errorf("CompactionService depends on owner %q", forbidden)
+		}
+	}
+	rolloutItems := mustReadArchitectureFile(t, root, "internal/rollout/items.go")
+	if strings.Contains(rolloutItems, "internal/agent/compact") {
+		t.Fatal("Rollout depends on runtime CompactionService package")
+	}
+	sessionCompaction := mustReadArchitectureFile(t, root, "internal/agent/session/compaction.go")
+	for _, required := range []string{"recordTokenUsage(", "appendItemsDurable(", "CompactedItem", "ActiveContextTokens"} {
+		if !strings.Contains(sessionCompaction, required) {
+			t.Errorf("Session compaction lacks %q", required)
+		}
+	}
+}
+
 func TestReasoningEffortHasTurnScopedProviderBoundaries(t *testing.T) {
 	root := repositoryRoot(t)
 	reasoningFields := architectureStructFields(t, root, "internal/llm/reasoning.go", "ReasoningConfig")
@@ -1123,14 +1166,15 @@ func TestReasoningEffortHasTurnScopedProviderBoundaries(t *testing.T) {
 	}
 
 	continuation := mustReadArchitectureFile(t, root, "internal/agent/session/continuation.go")
-	if strings.Count(continuation, "ReasoningConfigForEffort(turnContext.ReasoningEffort)") < 2 {
+	compactionRuntime := mustReadArchitectureFile(t, root, "internal/agent/session/compaction.go")
+	if !strings.Contains(continuation, "ReasoningConfigForEffort(turnContext.ReasoningEffort)") || !strings.Contains(compactionRuntime, "ReasoningConfigForEffort(turnContext.ReasoningEffort)") {
 		t.Fatal("regular sampling and automatic compaction do not share frozen Turn effort")
 	}
 	compactTask := mustReadArchitectureFile(t, root, "internal/agent/session/compact_task.go")
-	if !strings.Contains(compactTask, "ReasoningConfigForEffort(turnContext.ReasoningEffort)") {
-		t.Fatal("manual compaction does not use frozen Turn effort")
+	if !strings.Contains(compactTask, "session.runCompaction(") {
+		t.Fatal("manual compaction does not use the Session-owned compaction lifecycle")
 	}
-	compactor := mustReadArchitectureFile(t, root, "internal/agent/engine/compactor.go")
+	compactor := mustReadArchitectureFile(t, root, "internal/agent/compact/service.go")
 	if !strings.Contains(compactor, "Reasoning: request.Reasoning.Clone()") {
 		t.Fatal("Compactor does not propagate reasoning into the wire request")
 	}
