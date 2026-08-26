@@ -14,7 +14,7 @@ import (
 func completedUserMessageItem(id protocol.ItemID, content, clientID string, at time.Time) protocol.TurnItem {
 	return protocol.TurnItem{
 		ID: id, Kind: protocol.ItemUserMessage, Status: protocol.ItemStatusCompleted,
-		CreatedAt: at, CompletedAt: at, Text: strings.TrimSpace(content), ClientUserMessageID: strings.TrimSpace(clientID),
+		CreatedAt: at, CompletedAt: at, Text: content, ClientUserMessageID: strings.TrimSpace(clientID),
 	}
 }
 
@@ -23,7 +23,7 @@ func (session *Session) recordUserTurnInput(ctx context.Context, turnID protocol
 		return err
 	}
 	now := session.services.Clock().UTC()
-	responseItem, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: string(llm.RoleUser), Content: strings.TrimSpace(input.Content)})
+	responseItem, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: string(llm.RoleUser), Content: input.Content})
 	if err != nil {
 		return err
 	}

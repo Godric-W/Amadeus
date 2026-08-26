@@ -144,7 +144,14 @@ func (model *fullscreenModel) attachSnapshot(snapshot application.ThreadViewSnap
 	model.clearing = false
 	model.status = "idle"
 	focus := model.input.Focus()
-	return tea.Sequence(func() tea.Msg { return tea.ClearScreen() }, tea.Println(model.banner()), model.flushHistory(), focus, branchLookup)
+	return tea.Sequence(
+		func() tea.Msg { return tea.ClearScreen() },
+		tea.Println(model.banner()),
+		model.flushHistory(),
+		focus,
+		branchLookup,
+		func() tea.Msg { return fullscreenStartupReadyMsg{} },
+	)
 }
 
 func (model *fullscreenModel) clearInteractiveState() {

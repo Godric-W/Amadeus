@@ -1,4 +1,4 @@
-package cli
+package integration
 
 import (
 	"bytes"
@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/audit"
+	"github.com/Godric-W/Amadeus/internal/cli"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
 )
@@ -20,16 +21,6 @@ import (
 type codingCommandClient struct {
 	streamRequests   []llm.Request
 	completeRequests []llm.Request
-}
-
-type interruptingCodingClient struct {
-	*codingCommandClient
-	cancel context.CancelFunc
-}
-
-type inlineApprovalCodingClient struct {
-	completeRequests int
-	streamRequests   int
 }
 
 type finalOnlyCodingClient struct {
@@ -41,46 +32,6 @@ type finalOnlyCodingClient struct {
 type toolFailureRecoveryClient struct {
 	streamRequests   []llm.Request
 	completeRequests []llm.Request
-}
-
-func (client *interruptingCodingClient) Stream(ctx context.Context, _ llm.Request) (llm.Stream, error) {
-	client.cancel()
-	<-ctx.Done()
-	return nil, ctx.Err()
-}
-
-func (client *inlineApprovalCodingClient) Complete(_ context.Context, _ llm.Request) (llm.Response, error) {
-	client.completeRequests++
-	content := "PLAN\n- Create the requested file"
-	if client.completeRequests > 1 {
-		content = "COMPLETE\nfile created"
-	}
-	return llm.Response{Message: llm.AssistantMessage(content), FinishReason: llm.FinishReasonStop}, nil
-}
-
-func (client *inlineApprovalCodingClient) Stream(_ context.Context, _ llm.Request) (llm.Stream, error) {
-	client.streamRequests++
-	switch client.streamRequests {
-	case 1:
-		return &codingCommandStream{chunks: []llm.StreamChunk{
-			{ID: "write-tool", ToolCalls: []llm.ToolCall{{ID: "write-1", Name: "write", Arguments: json.RawMessage(`{"path":"approved.txt","content":"approved\n"}`)}}, FinishReason: llm.FinishReasonToolCalls},
-		}}, nil
-	case 2:
-		return &codingCommandStream{chunks: []llm.StreamChunk{
-			{ID: "write-final", ContentDelta: "created"},
-			{ID: "write-final", FinishReason: llm.FinishReasonStop},
-		}}, nil
-	default:
-		return nil, errors.New("unexpected inline approval stream request")
-	}
-}
-
-func (client *inlineApprovalCodingClient) Model() llm.ModelInfo {
-	return llm.ModelInfo{Provider: "mock", Name: "mock-model"}
-}
-
-func (client *inlineApprovalCodingClient) Capabilities() llm.Capabilities {
-	return llm.Capabilities{SupportsStreaming: true, SupportsDeveloperRole: true}
 }
 
 func (client *finalOnlyCodingClient) Complete(_ context.Context, request llm.Request) (llm.Response, error) {
@@ -197,7 +148,7 @@ func TestDefaultGreetingUsesTurnEngineWithoutPlanner(t *testing.T) {
 	options := testAgentRootOptions(amadeusHome, projectDirectory, false)
 	options.Bootstrap.ClientFactory = func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil }
 	options.Bootstrap.NextID = testNextID("greeting-run")
-	command := newRootCommandWithOptions(&configFlags{}, options)
+	command := cli.NewRootCommand(options)
 	var stdout, stderr bytes.Buffer
 	command.SetIn(strings.NewReader(""))
 	command.SetOut(&stdout)
@@ -219,7 +170,7 @@ func TestTurnEngineRecoversFromToolFailure(t *testing.T) {
 	options := testAgentRootOptions(amadeusHome, projectDirectory, false)
 	options.Bootstrap.ClientFactory = func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil }
 	options.Bootstrap.NextID = testNextID("tool-recovery-run")
-	command := newRootCommandWithOptions(&configFlags{}, options)
+	command := cli.NewRootCommand(options)
 	var stdout, stderr bytes.Buffer
 	command.SetIn(strings.NewReader(""))
 	command.SetOut(&stdout)
@@ -252,7 +203,7 @@ func TestCodingAgentPublishesNonFatalSkillLoadWarnings(t *testing.T) {
 	options := testAgentRootOptions(amadeusHome, projectDirectory, false)
 	options.Bootstrap.ClientFactory = func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil }
 	options.Bootstrap.NextID = testNextID("skill-warning-run")
-	command := newRootCommandWithOptions(&configFlags{}, options)
+	command := cli.NewRootCommand(options)
 	var stdout, stderr bytes.Buffer
 	command.SetIn(strings.NewReader(""))
 	command.SetOut(&stdout)
@@ -281,7 +232,7 @@ func TestCodingAgentInjectsExplicitSkillIntoFirstRequestContext(t *testing.T) {
 	options := testAgentRootOptions(amadeusHome, projectDirectory, false)
 	options.Bootstrap.ClientFactory = func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil }
 	options.Bootstrap.NextID = testNextID("explicit-skill-run")
-	command := newRootCommandWithOptions(&configFlags{}, options)
+	command := cli.NewRootCommand(options)
 	var stdout, stderr bytes.Buffer
 	command.SetIn(strings.NewReader(""))
 	command.SetOut(&stdout)
@@ -295,7 +246,7 @@ func TestCodingAgentInjectsExplicitSkillIntoFirstRequestContext(t *testing.T) {
 	}
 }
 
-func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
+func TestInteractiveApplicationProviderWorkflowUsesCanonicalToolLifecycle(t *testing.T) {
 	amadeusHome := t.TempDir()
 	projectDirectory := t.TempDir()
 	writeCodingCommandConfig(t, amadeusHome)
@@ -320,7 +271,7 @@ func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 	}
 	options.Bootstrap.AuditFactory = func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil }
 	options.Bootstrap.NextID = testNextID("run-test")
-	command := newRootCommandWithOptions(&configFlags{}, options)
+	command := cli.NewRootCommand(options)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	command.SetIn(strings.NewReader(""))
@@ -335,7 +286,7 @@ func TestRootCommandUsesInlineRendererForTerminalOneShot(t *testing.T) {
 		t.Fatalf("unexpected Coding Agent stdout: %q", stdout.String())
 	}
 	for _, fragment := range []string{
-		"Exploring", "Read README.md", "Explored", "status: phase=idle", "result: completed",
+		"Running read", "Ran read", "project readme", "result: completed",
 	} {
 		if !strings.Contains(stderr.String(), fragment) {
 			t.Fatalf("Coding Agent stderr missing %q: %s", fragment, stderr.String())
@@ -396,30 +347,6 @@ func messageContents(messages []llm.ResponseItem) string {
 		parts[index] = message.Content
 	}
 	return strings.Join(parts, "\n")
-}
-
-func TestOneShotInterruptReturnsCancelledExitCode(t *testing.T) {
-	amadeusHome := t.TempDir()
-	projectDirectory := t.TempDir()
-	writeCodingCommandConfig(t, amadeusHome)
-	runCtx, currentCancel := context.WithCancel(context.Background())
-	defer currentCancel()
-	options := testAgentRootOptions(amadeusHome, projectDirectory, false)
-	options.Bootstrap.ClientFactory = func(string, string, config.ModelProviderInfo) (llm.Client, error) {
-		return &interruptingCodingClient{codingCommandClient: &codingCommandClient{}, cancel: currentCancel}, nil
-	}
-	options.Bootstrap.NextID = testNextID("cancelled-once")
-	command := newRootCommandWithOptions(&configFlags{}, options)
-	command.SetContext(runCtx)
-	var stderr bytes.Buffer
-	command.SetIn(strings.NewReader(""))
-	command.SetOut(io.Discard)
-	command.SetErr(&stderr)
-	command.SetArgs([]string{"cancel task"})
-	err := command.Execute()
-	if exitCode(err) != exitCodeCancelled || !errorAlreadyReported(err) || !strings.Contains(stderr.String(), "result: cancelled") {
-		t.Fatalf("unexpected one-shot interrupt result: code=%d err=%v stderr=%s", exitCode(err), err, stderr.String())
-	}
 }
 
 func writeCodingCommandConfig(t *testing.T, directory string) {

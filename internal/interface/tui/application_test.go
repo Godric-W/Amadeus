@@ -43,12 +43,14 @@ type fakeFullscreenApplication struct {
 	interruptErr    error
 	approvalErr     error
 	shutdownErr     error
+	submittedSignal chan string
 }
 
 func newFakeFullscreenApplication() *fakeFullscreenApplication {
 	return &fakeFullscreenApplication{
 		events:          make(chan application.InteractiveEvent, 32),
 		submitAdmission: protocol.UserMessageAdmission{Kind: protocol.UserMessageAdmissionStarted, TurnID: "turn-1"},
+		submittedSignal: make(chan string, 8),
 	}
 }
 
@@ -57,6 +59,10 @@ func (fake *fakeFullscreenApplication) Events() <-chan application.InteractiveEv
 }
 func (fake *fakeFullscreenApplication) SubmitUser(_ context.Context, content, _ string, _ protocol.ThreadSettingsOverrides) (protocol.UserMessageAdmission, error) {
 	fake.submitted = append(fake.submitted, content)
+	select {
+	case fake.submittedSignal <- content:
+	default:
+	}
 	return fake.submitAdmission, fake.submitErr
 }
 func (fake *fakeFullscreenApplication) ResolveUserInput(_ context.Context, requestID protocol.RequestID, _ protocol.RequestUserInputResponse) error {
@@ -445,7 +451,7 @@ func TestFullscreenSubmitsInputDirectlyWhileRunning(t *testing.T) {
 
 func TestFullscreenRuntimeUserMessageConfirmsOptimisticProjection(t *testing.T) {
 	_, model := newTestFullscreen(t, nil)
-	submission := model.prepareTaskSubmission("continue", turn.ModeKindDefault, false)
+	submission := model.prepareUserMessageSubmission(UserMessage{Text: "continue"}, turn.ModeKindDefault, false)
 	before := len(model.historyCells)
 	event := testProtocolEvent(testThreadID(1), "turn-1", protocol.ItemCompletedEvent{Item: protocol.TurnItem{
 		ID: "user-1", Kind: protocol.ItemUserMessage, Status: protocol.ItemStatusCompleted,
@@ -465,8 +471,8 @@ func TestFullscreenRejectedSteerRestoresComposerWithoutStoppingTurn(t *testing.T
 	_, model := newTestFullscreen(t, nil)
 	model.running = true
 	model.status = "working"
-	submission := model.prepareTaskSubmission("retry this", turn.ModeKindDefault, false)
-	model.handleUserMessageRejection(fullscreenUserMessageRejectedMsg{task: submission, err: errors.New("active compact turn is not steerable")})
+	submission := model.prepareUserMessageSubmission(UserMessage{Text: "retry this"}, turn.ModeKindDefault, false)
+	model.handleUserMessageRejection(fullscreenUserMessageRejectedMsg{submission: submission, err: errors.New("active compact turn is not steerable")})
 	if model.input.Value() != "retry this" || !model.running || model.status != "working" {
 		t.Fatalf("rejection state = input %q running %v status %q", model.input.Value(), model.running, model.status)
 	}

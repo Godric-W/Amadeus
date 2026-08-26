@@ -119,7 +119,7 @@ func validateResponseItem(item ResponseItem, requireScope bool) error {
 	}
 	switch item.Type {
 	case ResponseUserMessage:
-		if strings.TrimSpace(item.Content) == "" {
+		if item.Content == "" {
 			return errors.New("user response item content is empty")
 		}
 	case ResponseAssistantMessage:

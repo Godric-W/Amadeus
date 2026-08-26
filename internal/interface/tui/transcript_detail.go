@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -13,6 +14,8 @@ const (
 	defaultTranscriptDetailItemBytes = 32 * 1024
 	defaultTranscriptDetailRunBytes  = 256 * 1024
 )
+
+var transcriptSensitiveValue = regexp.MustCompile(`(?i)\bauthorization\s*[:=]\s*bearer\s+\S+|\b(?:api[_-]?key|token|password)\s*[:=]\s*\S+|\bbearer\s+\S+`)
 
 type transcriptDetail struct {
 	ID        string
@@ -97,7 +100,7 @@ func (store *transcriptDetailStore) Render() string {
 }
 
 func sanitizeTranscriptDetail(value string) string {
-	value = inlineSensitiveValue.ReplaceAllString(xansi.Strip(value), "[REDACTED]")
+	value = transcriptSensitiveValue.ReplaceAllString(xansi.Strip(value), "[REDACTED]")
 	var builder strings.Builder
 	for _, character := range value {
 		if character == '\n' || character == '\t' || !unicode.IsControl(character) {

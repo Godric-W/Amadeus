@@ -1,9 +1,9 @@
 # Amadeus 开发进度
 
-> 最近更新：2026-08-25
+> 最近更新：2026-08-26
 > 主要架构与 Contract 工作文档：`docs/design.md`
-> 当前阶段：Y. Initial Prompt + Single TUI Frontend Alignment（TODO）
-> 下一任务：Y-01 CLI PROMPT + single TUI dispatch
+> 当前阶段：Y. Initial Prompt + Single TUI Frontend Alignment（DONE）
+> 下一任务：下一阶段待规划
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
@@ -1883,7 +1883,7 @@ X-01～X-07 是同一次 Architecture Closure 的工作分解，不是可长期�
 - 删除 `agentController`、`commandRuntime`、混合 `agentInvocation`、`agentCommandFactory`、CLI-local `waitTurn`、旧 Composition/Session lifecycle/helper/ID 文件、`internal/interface/cli` 和过期 `cmd/amadeus/README.md`；测试随 cli/bootstrap/exec/TUI owner 迁移。
 - architecture guard、focused tests、Provider/Core Tools mock E2E、`make check`、`go test ./... -count=1`、`go test -race ./... -count=1`、构建产物 version/help smoke 和 `git diff --check` 全部通过。
 
-## 30. Y. Initial Prompt + Single TUI Frontend Alignment — `TODO`
+## 30. Y. Initial Prompt + Single TUI Frontend Alignment — `DONE`
 
 ### 目标
 
@@ -1891,40 +1891,40 @@ X-01～X-07 是同一次 Architecture Closure 的工作分解，不是可长期�
 
 Y 不改变 `run_turn`、Tool/Approval 内层、steer/admission、NextTurnQueue 或 Fullscreen exit 的既有生命周期；它统一 frontend、UI message 数据模型、启动时序、命名与测试 owner，并让 initial/normal/steered UserMessage 在 Interface→Session→canonical history 中保存同一非空 Text，而不是在下层重复 trim。
 
-### Y-01：CLI `PROMPT` + Single TUI Dispatch — `TODO`
+### Y-01：CLI `PROMPT` + Single TUI Dispatch — `DONE`
 
-- [ ] 将 root usage、字段和错误文本从 `amadeus [task]`/Task 改为 `amadeus [PROMPT]`/Prompt；CLI dispatch 只做 CRLF/CR→LF 归一化并保留其他文本，exact empty Prompt 表示无 initial message，不在 CLI 构造 UserInputOp。保留 Amadeus 既有 bounded message size 作为产品约束。
-- [ ] 删除 `agentLaunchOnce`/`agentLaunchInteractive` 分支、`ExecRunner`、`exec.Options`、`readRootTask` 和“stdin 是否 TTY 决定 frontend/Approval”的语义；无 subcommand 时统一调用 TUI runner，非 TTY 由 TUI terminal preflight 明确失败。
-- [ ] 保持 config/project/session flags 与 management subcommands；latest/explicit resume 可以携带 Prompt 并先恢复目标 Thread，无 ID picker 不同时接收 Prompt。CLI positional Prompt 不经过 Slash Command parser。
+- [x] 将 root usage、字段和错误文本从 `amadeus [task]`/Task 改为 `amadeus [PROMPT]`/Prompt；CLI dispatch 只做 CRLF/CR→LF 归一化并保留其他文本，exact empty Prompt 表示无 initial message，不在 CLI 构造 UserInputOp。保留 Amadeus 既有 bounded message size 作为产品约束。
+- [x] 删除 `agentLaunchOnce`/`agentLaunchInteractive` 分支、`ExecRunner`、`exec.Options`、`readRootTask` 和“stdin 是否 TTY 决定 frontend/Approval”的语义；无 subcommand 时统一调用 TUI runner，非 TTY 由 TUI terminal preflight 明确失败。
+- [x] 保持 config/project/session flags 与 management subcommands；latest/explicit resume 可以携带 Prompt 并先恢复目标 Thread，无 ID picker 不同时接收 Prompt。CLI positional Prompt 不经过 Slash Command parser。
 
-### Y-02：TUI `UserMessage` + Naming Realignment — `TODO`
+### Y-02：TUI `UserMessage` + Naming Realignment — `DONE`
 
-- [ ] 在 `internal/interface/tui/user_message.go` 建立当前范围最小 `UserMessage{Text}`；`tui.RunOptions.Prompt` 在 TUI boundary 转换为 `*UserMessage`，`FullscreenOptions`/`fullscreenModel` 使用唯一 `InitialUserMessage`/`initialUserMessage` owner。
-- [ ] 直接将 `TaskSubmission`、`prepareTaskSubmission`、`submitTask` 改为 `UserMessageSubmission`、`prepareUserMessageSubmission`、`submitUserMessage`；不保留 alias、wrapper 或双方法。
-- [ ] 将 `QueuedUserInput` 统一为 Codex 术语 `QueuedUserMessage` 并持有 UserMessage；Runtime `UserInputOp` 保持 Protocol boundary。将 `MaxTaskBytes`/`maxTaskBytes` 和相关文案改为 `MaxUserMessageBytes`/`maxUserMessageBytes`。
-- [ ] Prompt 不进入 `FullscreenStartup`、InteractiveApplication、ThreadWorkspace、Session Configuration、Protocol Event 或 Rollout；当前未支持的 CLI image/TextElement/mention 不增加占位字段。
-- [ ] 移除 InteractiveApplication/Session/canonical UserMessage 对非空 Text 的二次 TrimSpace；exact empty 仍拒绝，Composer 自身 parse policy保持独立，initial Prompt、ResponseUserMessage 和 completed UserMessage Item 保存一致文本。
+- [x] 在 `internal/interface/tui/user_message.go` 建立当前范围最小 `UserMessage{Text}`；`tui.RunOptions.Prompt` 在 TUI boundary 转换为 `*UserMessage`，`FullscreenOptions`/`fullscreenModel` 使用唯一 `InitialUserMessage`/`initialUserMessage` owner。
+- [x] 直接将 `TaskSubmission`、`prepareTaskSubmission`、`submitTask` 改为 `UserMessageSubmission`、`prepareUserMessageSubmission`、`submitUserMessage`；不保留 alias、wrapper 或双方法。
+- [x] 将 `QueuedUserInput` 统一为 Codex 术语 `QueuedUserMessage` 并持有 UserMessage；Runtime `UserInputOp` 保持 Protocol boundary。将 `MaxTaskBytes`/`maxTaskBytes` 和相关文案改为 `MaxUserMessageBytes`/`maxUserMessageBytes`。
+- [x] Prompt 不进入 `FullscreenStartup`、InteractiveApplication、ThreadWorkspace、Session Configuration、Protocol Event 或 Rollout；当前未支持的 CLI image/TextElement/mention 不增加占位字段。
+- [x] 移除 InteractiveApplication/Session/canonical UserMessage 对非空 Text 的二次 TrimSpace；exact empty 仍拒绝，Composer 自身 parse policy保持独立，initial Prompt、ResponseUserMessage 和 completed UserMessage Item 保存一致文本。
 
-### Y-03：Configured/Replay-gated Initial Submission — `TODO`
+### Y-03：Configured/Replay-gated Initial Submission — `DONE`
 
-- [ ] 利用现有 `ThreadManager.spawn` 等待 `SessionIo.Configured` 和 `InteractiveApplication.Start` 完成 canonical snapshot/replay/attachment 的同步 barrier，不复制 Codex app-server 专用的第二份 configured queue。
-- [ ] Fullscreen model 保存 pending initialUserMessage；Bubble Tea `Init` 只发送无 payload startup-ready lifecycle message，`Update` 调用 take-once `submitInitialUserMessageIfPending`。不得把 Prompt 数据搬进 tea.Msg、goroutine closure 或 timeout。
-- [ ] initial message 复用普通 Composer submit：当前 attachment generation 下生成 ClientUserMessageID、写 input recall、插入 optimistic UserMessageCell、调用 SubmitUser、等待 Started/Steered/rejection，并由 canonical completed UserMessage 确认去重；Application 不对 UserMessage 做第二次 trim/rewrite。
-- [ ] explicit resume/continue 必须先展示 replay history 再显示/提交 initial message；protected startup surface 或 direct-input block 时继续 pending或恢复 Composer。失败不得丢消息、自动入 NextTurnQueue、创建 InitialPromptOp 或退出 TUI。
+- [x] 利用现有 `ThreadManager.spawn` 等待 `SessionIo.Configured` 和 `InteractiveApplication.Start` 完成 canonical snapshot/replay/attachment 的同步 barrier，不复制 Codex app-server 专用的第二份 configured queue。
+- [x] Fullscreen model 保存 pending initialUserMessage；Bubble Tea `Init` 只发送无 payload startup-ready lifecycle message，`Update` 调用 take-once `submitInitialUserMessageIfPending`。不得把 Prompt 数据搬进 tea.Msg、goroutine closure 或 timeout。
+- [x] initial message 复用普通 Composer submit：当前 attachment generation 下生成 ClientUserMessageID、写 input recall、插入 optimistic UserMessageCell、调用 SubmitUser、等待 Started/Steered/rejection，并由 canonical completed UserMessage 确认去重；Application 不对 UserMessage 做第二次 trim/rewrite。
+- [x] explicit resume/continue 必须先展示 replay history 再显示/提交 initial message；protected startup surface 或 direct-input block 时继续 pending或恢复 Composer。失败不得丢消息、自动入 NextTurnQueue、创建 InitialPromptOp 或退出 TUI。
 
-### Y-04：One-shot/Inline Legacy Cleanup + Test Ownership — `TODO`
+### Y-04：One-shot/Inline Legacy Cleanup + Test Ownership — `DONE`
 
-- [ ] 删除整个 `internal/exec`、`internal/render`、one-shot `internal/interface/tui/inline.go`、Terminal Approval prompt、stdin request_user_input scanner 和相关只服务旧 frontend 的 DTO/helper/test；Fullscreen Approval 与 RequestUserInput overlay 保持唯一人工交互 owner。
-- [ ] 删除 CLI one-shot renderer/output/interrupt expectations；root/CLI tests 改为验证无 Prompt/有 Prompt/latest/resume 都只产生 TUI RunOptions，非 TTY 由 TUI preflight 拒绝。
-- [ ] 将 Provider/Core Tools/Skill/MCP/Web 跨层 E2E 迁入明确的 test-only integration package，通过 `InteractiveApplication` 驱动真实 Runtime 和 typed Approval/UserInput response；不得为保留测试而建立生产 single-turn runner。
-- [ ] 更新 architecture guards：`cmd/amadeus` thin entry 保持不变；生产代码不存在 `internal/exec`、`internal/render`、InlineRenderer、ExecRunner、agentLaunchOnce、readRootTask 或第二 SessionIo consumer。
+- [x] 删除整个 `internal/exec`、`internal/render`、one-shot `internal/interface/tui/inline.go`、Terminal Approval prompt、stdin request_user_input scanner 和相关只服务旧 frontend 的 DTO/helper/test；Fullscreen Approval 与 RequestUserInput overlay 保持唯一人工交互 owner。
+- [x] 删除 CLI one-shot renderer/output/interrupt expectations；root/CLI tests 改为验证无 Prompt/有 Prompt/latest/resume 都只产生 TUI RunOptions，非 TTY 由 TUI preflight 拒绝。
+- [x] 将 Provider/Core Tools/Skill/MCP/Web 跨层 E2E 迁入明确的 test-only integration package，通过 `InteractiveApplication` 驱动真实 Runtime 和 typed Approval/UserInput response；不得为保留测试而建立生产 single-turn runner。
+- [x] 更新 architecture guards：`cmd/amadeus` thin entry 保持不变；生产代码不存在 `internal/exec`、`internal/render`、InlineRenderer、ExecRunner、agentLaunchOnce、readRootTask 或第二 SessionIo consumer。
 
-### Y-05：Lifecycle Tests、Docs + Acceptance — `TODO`
+### Y-05：Lifecycle Tests、Docs + Acceptance — `DONE`
 
-- [ ] 覆盖 initial UserMessage take-once、CRLF normalization/非空文本保持、普通 Fresh、latest/explicit Resume replay-before-prompt、optimistic/canonical dedupe、submission rejection restore、literal `/compact` prompt、attachment generation、picker exclusion、startup cancellation 和 exit-after-turn-stays-in-TUI。
-- [ ] 覆盖 normal Composer、same-turn steer、Tab queue、Plan mode、Approval、request_user_input、Resume/Clear 和 shutdown 不因 UserMessage 命名迁移回退；验证 initial message 与普通 message 使用同一 submission/admission helper。
-- [ ] 同步 `docs/design.md`、本进度文档、README 和 architecture whitepaper，明确 Amadeus 当前不提供 headless exec；历史 X one-shot 记录不得覆盖 Y 当前目标。
-- [ ] 运行 focused CLI/TUI/Application/integration tests、Provider/Core Tools mock E2E、PTY initial prompt smoke、`make check`、`go test ./... -count=1`、`go test -race ./... -count=1`、`go build ./cmd/amadeus` 和 `git diff --check` 后才将 Y 标记 DONE。
+- [x] 覆盖 initial UserMessage take-once、CRLF normalization/非空文本保持、普通 Fresh、latest/explicit Resume replay-before-prompt、optimistic/canonical dedupe、submission rejection restore、literal `/compact` prompt、attachment generation、picker exclusion、startup cancellation 和 exit-after-turn-stays-in-TUI。
+- [x] 覆盖 normal Composer、same-turn steer、Tab queue、Plan mode、Approval、request_user_input、Resume/Clear 和 shutdown 不因 UserMessage 命名迁移回退；验证 initial message 与普通 message 使用同一 submission/admission helper。
+- [x] 同步 `docs/design.md`、本进度文档、README 和 architecture whitepaper，明确 Amadeus 当前不提供 headless exec；历史 X one-shot 记录不得覆盖 Y 当前目标。
+- [x] 运行 focused CLI/TUI/Application/integration tests、Provider/Core Tools mock E2E、PTY initial prompt smoke、`make check`、`go test ./... -count=1`、`go test -race ./... -count=1`、`go build ./cmd/amadeus` 和 `git diff --check` 后才将 Y 标记 DONE。
 
 ### Y 出口
 
@@ -1932,3 +1932,13 @@ Y 不改变 `run_turn`、Tool/Approval 内层、steer/admission、NextTurnQueue 
 - CLI Prompt、TUI UserMessage、pending initialUserMessage、UserMessageSubmission、QueuedUserMessage 和 Runtime UserInputOp 各有准确 owner；未提交 Prompt 不进入 canonical state，提交后只走普通 UserMessage lifecycle。
 - Fresh configured、Resume replay、startup readiness、optimistic projection、admission、失败恢复和 TUI continued-running 顺序与 `docs/design.md` 的 Codex-aligned Contract 一致。
 - X 引入的 exec/inline legacy 和相关测试装配全部删除；跨层 E2E 不依赖生产第二 frontend。
+
+### Y 完成记录
+
+- 2026-08-26 将根入口统一为 `amadeus [PROMPT] → TUI`；CLI 只规范化 CRLF/CR 并传递 Prompt，不再读取 stdin task、推断 one-shot mode 或依据 TTY 改变 Approval 行为。
+- 新增 TUI-owned `UserMessage`/`initialUserMessage`/`UserMessageSubmission`，将 `QueuedUserInput` 改为 `QueuedUserMessage`，并把 MaxTaskBytes 术语统一为 MaxUserMessageBytes；UI 与 Runtime UserInputOp 保持明确边界。
+- Fullscreen model 通过 startup-ready typed message take-once 提交 initial UserMessage；Fresh 使用 configured/snapshot barrier，latest/explicit Resume 先 replay，随后复用普通 optimistic、ClientUserMessageID、SubmitUser 和 admission lifecycle。literal Slash Prompt 不进入 Slash dispatcher，拒绝时恢复 Composer。
+- InteractiveApplication、Session、ResponseUserMessage、completed UserMessage Item 和 Resume projector 不再裁剪非空 Text；CLI Prompt 除换行规范化外原样进入同一 canonical lifecycle。
+- 删除 `internal/exec`、`internal/render`、one-shot InlineRenderer、Terminal Approval/stdin request_user_input 和第二 SessionIo consumer；Fullscreen Approval/UserInput overlay 成为唯一人工交互 frontend。
+- Provider/Core Tools/Skill/MCP/Web/Resume E2E 迁到 `internal/integration`，通过 test-only InteractiveApplication harness 驱动真实 Runtime；不存在为测试保留的生产 single-turn runner。
+- initial take-once、replay ordering、literal Slash、rejection restore、picker exclusion、文本保持、CLI dispatch 和 Unix PTY startup/continued-interactive smoke 已覆盖；`make check`、全仓 `go test -race ./... -count=1` 和 `git diff --check` 通过。

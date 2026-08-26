@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
@@ -27,7 +26,7 @@ func ProjectRolloutItems(lines []rollout.Line) (RolloutProjection, error) {
 				projected := protocol.TurnItem{
 					ID: protocol.ItemID(fmt.Sprintf("response-%d", line.Sequence)), Kind: protocol.ItemUserMessage,
 					Status: protocol.ItemStatusCompleted, CreatedAt: line.Timestamp, CompletedAt: line.Timestamp,
-					Text: strings.TrimSpace(item.Content), Payload: item,
+					Text: item.Content, Payload: item,
 				}
 				if err := projected.Validate(); err != nil {
 					return RolloutProjection{}, fmt.Errorf("project user response at sequence %d: %w", line.Sequence, err)
@@ -65,7 +64,7 @@ func responseHasCanonicalUserItem(lines []rollout.Line, index int, response roll
 	if !ok || completed.Item.Kind != protocol.ItemUserMessage {
 		return false
 	}
-	return completed.TurnID == response.TurnID && strings.TrimSpace(completed.Item.Text) == strings.TrimSpace(response.Content)
+	return completed.TurnID == response.TurnID && completed.Item.Text == response.Content
 }
 
 func (projection *RolloutProjection) applyEvent(line rollout.Line, message protocol.EventMsg) error {

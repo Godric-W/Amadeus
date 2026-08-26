@@ -12,10 +12,11 @@ import (
 )
 
 type RunOptions struct {
-	Bootstrap    bootstrap.WorkspaceOptions
-	Target       app.ThreadTarget
-	OpenSessions bool
-	MaxTaskBytes int
+	Bootstrap           bootstrap.WorkspaceOptions
+	Target              app.ThreadTarget
+	OpenSessions        bool
+	Prompt              string
+	MaxUserMessageBytes int
 
 	Input       io.Reader
 	Output      io.Writer
@@ -63,7 +64,7 @@ func Run(ctx context.Context, options RunOptions) (result RunResult, runErr erro
 
 	interactive, err := app.NewInteractiveApplication(ctx, app.InteractiveOptions{
 		Workspace: bootstrapped.Workspace, Configuration: bootstrapped.Configuration,
-		MaxTaskBytes: options.MaxTaskBytes,
+		MaxUserMessageBytes: options.MaxUserMessageBytes,
 	})
 	if err != nil {
 		return result, err
@@ -75,8 +76,9 @@ func Run(ctx context.Context, options RunOptions) (result RunResult, runErr erro
 	}
 	fullscreen, err := NewFullscreenApplication(FullscreenOptions{
 		Input: options.Input, Output: options.Output,
-		OpenSessions: options.OpenSessions,
-		NoColor:      !capabilities.Color, Width: capabilities.Width,
+		OpenSessions:       options.OpenSessions,
+		InitialUserMessage: createInitialUserMessage(options.Prompt),
+		NoColor:            !capabilities.Color, Width: capabilities.Width,
 		Snapshot: snapshot, Application: interactive,
 		Startup: FullscreenStartup{Version: buildinfo.Current().Version},
 	})

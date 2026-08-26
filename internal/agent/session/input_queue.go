@@ -2,7 +2,6 @@ package session
 
 import (
 	"errors"
-	"strings"
 	"sync"
 )
 
@@ -18,7 +17,7 @@ type UserTurnInput struct {
 func (UserTurnInput) isTurnInput() {}
 
 func (input UserTurnInput) validate() error {
-	if strings.TrimSpace(input.Content) == "" {
+	if input.Content == "" {
 		return errors.New("turn user input is empty")
 	}
 	return nil

@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"errors"
-	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/agent/turn"
@@ -31,7 +30,7 @@ func (session *Session) createTask(ctx context.Context, input string, snapshot t
 	default:
 		return nil, turn.TurnContext{}, errors.New("session task kind is invalid")
 	}
-	goal := strings.TrimSpace(input)
+	goal := input
 	if goal == "" {
 		return nil, turn.TurnContext{}, errors.New("regular task goal is empty")
 	}

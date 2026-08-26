@@ -88,6 +88,44 @@ func TestInteractiveApplicationOwnsThreadLifecycleAndReplay(t *testing.T) {
 	}
 }
 
+func TestInteractiveApplicationPreservesNonEmptyUserMessageTextThroughResume(t *testing.T) {
+	ctx := context.Background()
+	client := &appTestClient{}
+	workspace, configuration := newInteractiveTestWorkspaceWithClient(t, ctx, client)
+	application, err := NewInteractiveApplication(ctx, InteractiveOptions{Workspace: workspace, Configuration: configuration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	defer workspace.Close(context.Background())
+	initial, err := application.Start(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const message = "  preserve leading and trailing spaces  "
+	if _, err := application.SubmitUser(ctx, message, "client-spaces", protocol.ThreadSettingsOverrides{}); err != nil {
+		t.Fatal(err)
+	}
+	waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
+		_, ok := event.Event.Msg.(protocol.TurnCompleteEvent)
+		return ok
+	})
+	client.mu.Lock()
+	modelInput := client.lastInput
+	client.mu.Unlock()
+	if modelInput != message {
+		t.Fatalf("model input = %q, want %q", modelInput, message)
+	}
+	application.Clear(ctx)
+	waitInteractiveEvent[ClearUIStarted](t, application.Events(), nil)
+	waitInteractiveEvent[ThreadAttached](t, application.Events(), nil)
+	application.Resume(ctx, initial.ThreadID)
+	resumed := waitInteractiveEvent[ThreadAttached](t, application.Events(), nil)
+	if len(resumed.Snapshot.Items) == 0 || resumed.Snapshot.Items[0].Kind != protocol.ItemUserMessage || resumed.Snapshot.Items[0].Text != message {
+		t.Fatalf("resumed user message = %#v", resumed.Snapshot.Items)
+	}
+}
+
 func TestInteractiveApplicationCompactPublishesTypedLifecycle(t *testing.T) {
 	ctx := context.Background()
 	workspace, configuration := newInteractiveTestWorkspace(t, ctx)
@@ -135,6 +173,10 @@ func TestInteractiveApplicationCompactPublishesTypedLifecycle(t *testing.T) {
 }
 
 func newInteractiveTestWorkspace(t *testing.T, ctx context.Context) (*ThreadWorkspace, agentsession.Configuration) {
+	return newInteractiveTestWorkspaceWithClient(t, ctx, &appTestClient{})
+}
+
+func newInteractiveTestWorkspaceWithClient(t *testing.T, ctx context.Context, client *appTestClient) (*ThreadWorkspace, agentsession.Configuration) {
 	t.Helper()
 	home := t.TempDir()
 	database, err := statesqlite.Open(ctx, home)
@@ -151,7 +193,7 @@ func newInteractiveTestWorkspace(t *testing.T, ctx context.Context) (*ThreadWork
 	}
 	var sequence atomic.Uint64
 	manager, err := threadmanager.New(ctx, threadStore, threadmanager.SharedServices{
-		SessionAdapters: appSessionAdapters(t, &appTestClient{}),
+		SessionAdapters: appSessionAdapters(t, client),
 		NextID: func(prefix string) string {
 			return prefix + "-" + time.Unix(0, int64(sequence.Add(1))).UTC().Format("150405.000000000")
 		},

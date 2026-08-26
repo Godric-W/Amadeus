@@ -82,6 +82,26 @@ func TestResponseItemValidationRejectsInvalidContracts(t *testing.T) {
 	}
 }
 
+func TestResponseUserMessageUsesExactEmptyValidationAndPreservesText(t *testing.T) {
+	item := ResponseItem{
+		ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Type: ResponseUserMessage,
+		Role: "user", Content: "  preserve spaces  ",
+	}
+	if err := item.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	whitespace := item
+	whitespace.Content = "   "
+	if err := whitespace.Validate(); err != nil {
+		t.Fatalf("non-empty whitespace user message was rejected: %v", err)
+	}
+	empty := item
+	empty.Content = ""
+	if err := empty.Validate(); err == nil {
+		t.Fatal("exact empty user message was accepted")
+	}
+}
+
 func TestLineRejectsInvalidCurrentFormats(t *testing.T) {
 	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC).Format(time.RFC3339Nano)
 	tests := []struct {

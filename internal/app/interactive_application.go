@@ -21,16 +21,16 @@ import (
 )
 
 type InteractiveOptions struct {
-	Workspace     *ThreadWorkspace
-	Configuration agentsession.Configuration
-	MaxTaskBytes  int
+	Workspace           *ThreadWorkspace
+	Configuration       agentsession.Configuration
+	MaxUserMessageBytes int
 }
 
 type InteractiveApplication struct {
-	workspace     *ThreadWorkspace
-	configuration agentsession.Configuration
-	maxTaskBytes  int
-	operationMu   sync.Mutex
+	workspace           *ThreadWorkspace
+	configuration       agentsession.Configuration
+	maxUserMessageBytes int
+	operationMu         sync.Mutex
 
 	mu               sync.RWMutex
 	active           *threadmanager.AmadeusThread
@@ -52,8 +52,8 @@ func NewInteractiveApplication(parent context.Context, options InteractiveOption
 	ctx, cancel := context.WithCancel(parent)
 	return &InteractiveApplication{
 		workspace: options.Workspace, configuration: options.Configuration,
-		maxTaskBytes: options.MaxTaskBytes,
-		ctx:          ctx, cancel: cancel, events: make(chan InteractiveEvent, 256), phase: "idle",
+		maxUserMessageBytes: options.MaxUserMessageBytes,
+		ctx:                 ctx, cancel: cancel, events: make(chan InteractiveEvent, 256), phase: "idle",
 	}, nil
 }
 
@@ -78,12 +78,11 @@ func (application *InteractiveApplication) Events() <-chan InteractiveEvent {
 }
 
 func (application *InteractiveApplication) SubmitUser(ctx context.Context, content, clientUserMessageID string, overrides protocol.ThreadSettingsOverrides) (protocol.UserMessageAdmission, error) {
-	content = strings.TrimSpace(content)
 	if content == "" {
-		return protocol.UserMessageAdmission{}, errors.New("interactive task is empty")
+		return protocol.UserMessageAdmission{}, errors.New("interactive user message is empty")
 	}
-	if application.maxTaskBytes > 0 && len(content) > application.maxTaskBytes {
-		return protocol.UserMessageAdmission{}, fmt.Errorf("interactive task exceeds %d bytes", application.maxTaskBytes)
+	if application.maxUserMessageBytes > 0 && len(content) > application.maxUserMessageBytes {
+		return protocol.UserMessageAdmission{}, fmt.Errorf("interactive user message exceeds %d bytes", application.maxUserMessageBytes)
 	}
 	active, _, err := application.current()
 	if err != nil {

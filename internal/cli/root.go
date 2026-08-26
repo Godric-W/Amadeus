@@ -6,23 +6,16 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/bootstrap"
 	"github.com/Godric-W/Amadeus/internal/buildinfo"
-	agentexec "github.com/Godric-W/Amadeus/internal/exec"
 	"github.com/Godric-W/Amadeus/internal/interface/tui"
 	"github.com/spf13/cobra"
 )
 
-type ExecRunner func(context.Context, agentexec.Options) error
 type TUIRunner func(context.Context, tui.RunOptions) (tui.RunResult, error)
-
-type AgentRunners struct {
-	Exec ExecRunner
-	TUI  TUIRunner
-}
 
 type RootOptions struct {
 	Environment bootstrap.Environment
 	Bootstrap   bootstrap.Dependencies
-	Runners     AgentRunners
+	TUI         TUIRunner
 	IsTerminal  func(io.Reader) bool
 }
 
@@ -31,11 +24,7 @@ func DefaultRootOptions() RootOptions {
 	return RootOptions{
 		Environment: environment,
 		Bootstrap:   bootstrap.DefaultDependencies(environment),
-		Runners: AgentRunners{
-			Exec: agentexec.Run,
-			TUI:  tui.Run,
-		},
-		IsTerminal: isTerminalInput,
+		TUI:         tui.Run,
 	}
 }
 
@@ -59,7 +48,7 @@ func newRootCommandWithFlags(configFlags *configFlags, projectFlags *projectFlag
 	options = normalizeRootOptions(options)
 	sessionFlags := &sessionFlags{}
 	command := &cobra.Command{
-		Use:           "amadeus [task]",
+		Use:           "amadeus [PROMPT]",
 		Short:         "Amadeus agent CLI",
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -103,14 +92,8 @@ func normalizeRootOptions(options RootOptions) RootOptions {
 	if options.Bootstrap.NextID == nil {
 		options.Bootstrap.NextID = defaults.NextID
 	}
-	if options.Runners.Exec == nil {
-		options.Runners.Exec = agentexec.Run
-	}
-	if options.Runners.TUI == nil {
-		options.Runners.TUI = tui.Run
-	}
-	if options.IsTerminal == nil {
-		options.IsTerminal = isTerminalInput
+	if options.TUI == nil {
+		options.TUI = tui.Run
 	}
 	return options
 }

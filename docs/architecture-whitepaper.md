@@ -129,7 +129,7 @@ flowchart TB
 
 | 层 | 主要 package | 职责 | 不拥有的内容 |
 |---|---|---|---|
-| Interface | `internal/cli`、`internal/exec`、`internal/interface/tui` | multitool 参数与分发、one-shot Event processor、终端输入、TUI 渲染、Approval 交互 | Session 状态、Thread map、Tool truth |
+| Interface | `internal/cli`、`internal/interface/tui` | multitool 参数与分发、initial UserMessage、终端输入、TUI 渲染、Approval 交互 | Session 状态、Thread map、Tool truth |
 | Application | `internal/app` | 当前 Thread 选择、UI generation、事件泵、Slash Command 应用生命周期 | Provider、Rollout writer、Tool executor |
 | Thread | `internal/thread/*` | Thread identity、live registry、writer、Resume、metadata 操作 | Active Turn、模型循环 |
 | Agent Runtime | `internal/agent/*` | Session loop、Turn、Task、Step、模型 continuation、Multi-Agent control | SQLite 实现、TUI cell |
@@ -254,7 +254,7 @@ flowchart LR
     CFG[Effective Config]
     CLI[internal/cli dispatch]
     COMP[internal/bootstrap composition]
-	EXEC[internal/exec or TUI]
+    TUI[internal/interface/tui]
     SS[Session Configuration / ServiceAdapters]
 
     D --> L
@@ -263,20 +263,20 @@ flowchart LR
     C --> L
     L --> V
     V --> CFG
-	CFG --> CLI
-	CLI --> EXEC
-	EXEC --> COMP
+    CFG --> CLI
+    CLI --> TUI
+    TUI --> COMP
     COMP --> SS
 ```
 
 ### 6.1 模块职责
 
 - `cmd/amadeus` 只建立 process context/标准流、调用 `internal/cli.Run` 并映射进程退出码。
-- `internal/cli` 定义 Cobra command tree，解析项目目录、附加目录、Provider/Model override、Session target 和 Agent launch mode，再分发到 `internal/exec` 或 TUI。
+- `internal/cli` 定义 Cobra command tree，解析可选 PROMPT、项目目录、附加目录、Provider/Model override 和 Session target；无 Agent subcommand 时唯一分发到 TUI。
 - `internal/config` 负责默认值、文件加载、环境变量、CLI patch、provenance、脱敏和验证。
 - 用户配置采用唯一 versionless strict schema；Loader 通过 KnownFields 拒绝 `version:` 和其他删除字段，不运行 schema migration。仓库模板为 `configs/config.yaml.example`，自动发现文件仍只有 `$AMADEUS_HOME/config.yaml`。
 - `internal/bootstrap` 通过窄 constructor 创建 ThreadStore、Provider adapter factory、Audit factory、Web/MCP dependencies、`ThreadManager` 和 `ThreadWorkspace`；它不持有 CLI/TUI 状态，也不是通用 Service Locator。
-- `internal/exec` 与 TUI 分别拥有一次 invocation 的 start/event/close lifecycle，并在逆序资源清理后把 typed exit result 交回 CLI。
+- TUI 拥有 invocation 的 start/event/close lifecycle，并在逆序资源清理后把 typed `AppExitInfo` 交回 CLI。PROMPT 在 configured/snapshot/replay barrier 后作为 pending UserMessage 通过正常 admission 提交。
 - 配置进入 Session 前被克隆和冻结；Turn 再从 Session Configuration 派生稳定 `TurnContext`。
 
 ### 6.2 数据模型职责
@@ -389,7 +389,8 @@ Slash Command 属于 Interface control plane，而不是模型 Tool：解析和�
 | `SlashCommand` | 内置命令枚举，并提供名称、说明、inline 参数支持和 running-task 可用性规则。 |
 | `SlashInvocation` | 已解析的 command + arguments。 |
 | `InputResult` | 普通用户文本与 SlashInvocation 的互斥解析结果。 |
-| `TaskSubmission` | TUI 提交普通或 Plan Mode 用户任务时的 content、client ID 和 mode override。 |
+| `UserMessage` | 尚未跨越 Runtime boundary 的 TUI 用户消息；CLI initial Prompt 和 queue 都复用该模型。 |
+| `UserMessageSubmission` | TUI 提交普通或 Plan Mode 用户消息时的 message、client ID、mode override 和 queue scope。 |
 | `slashCommandPopup` | TUI 私有的筛选结果、选择游标和 dismissal 状态。 |
 
 ## 8. Thread 与持久化架构
@@ -1177,28 +1178,8 @@ flowchart LR
 | `CollabAgentHistoryCell` | spawn/send/wait/close 的 Codex 风格展示。 |
 | `WarningHistoryCell` / `ErrorHistoryCell` | 非普通对话的 warning/error。 |
 | `approvalDialog` | `ApprovalPresentation` 的 TUI 私有交互状态。 |
-| `NextTurnQueue` / `QueuedUserInput` | Fullscreen pending FIFO、InFlight/start-pending gate、ThreadID/generation/Mode isolation 和 bounded preview source。 |
+| `NextTurnQueue` / `QueuedUserMessage` | Fullscreen pending FIFO、InFlight/start-pending gate、ThreadID/generation/Mode isolation 和 bounded preview source。 |
 | `footerProps.HasQueueableDraft` | 从 running + Composer ParseInput + overlay state 纯派生的 transient queue guidance input；不持久化。 |
-
-### 20.3 One-shot Renderer
-
-```mermaid
-flowchart LR
-    Event[protocol.Event]
-    Renderer[render.AgentRenderer]
-    Stdout[Assistant Text / stdout]
-    Stderr[Status / stderr]
-
-    Event --> Renderer
-    Renderer --> Stdout
-    Renderer --> Stderr
-```
-
-非 TUI 的 one-shot 模式复用同一 typed Event 流，但通过 `render.AgentRenderer` 做轻量终端投影：Assistant delta 写 stdout，Tool/Turn/Usage 状态写 stderr。它不拥有 Session 状态，也不从日志文本反推事件。
-
-| 模型 | 职责 |
-|---|---|
-| `render.AgentRenderer` | 实现 `protocol.EventSink`，串行、安全、bounded 地投影 one-shot Event。 |
 
 ## 21. Audit、Logging 与诊断
 
@@ -1339,10 +1320,9 @@ flowchart TD
 | `cmd/amadeus` | thin process entry：signal context、标准流、`cli.Run` 和 exit code。 |
 | `internal/cli` | Cobra command tree、flags、multitool dispatch、CLI output 和 exit semantics。 |
 | `internal/bootstrap` | 环境/路径、外部 Adapter、ThreadStore/ThreadManager/ThreadWorkspace concrete composition。 |
-| `internal/exec` | one-shot Thread target、SessionIo Event processor、Approval/UserInput、interrupt 和 terminal result。 |
 | `internal/config` | 配置模型、分层加载、覆盖、来源追踪、校验和脱敏。 |
 | `internal/app` | 交互应用、ThreadWorkspace、Application events。 |
-| `internal/interface/tui` | InlineRenderer、Fullscreen TUI startup/reducer、NextTurnQueue、HistoryCell、Slash Command 和 overlays；InlineRenderer 不拥有 Event pump。 |
+| `internal/interface/tui` | pending initial UserMessage、Fullscreen TUI startup/reducer、NextTurnQueue、HistoryCell、Slash Command 和 overlays。 |
 | `internal/thread/manager` | live Thread registry、Root/child Thread 生命周期。 |
 | `internal/thread` | LiveThread 和 ThreadStore port。 |
 | `internal/thread/local` | JSONL + SQLite 本地 ThreadStore。 |
@@ -1375,7 +1355,6 @@ flowchart TD
 | `internal/rollout` | Canonical Rollout item、codec 和 recorder。 |
 | `internal/audit` | 审计 port 与实现。 |
 | `internal/logging` | 结构化日志、等级和敏感字段脱敏。 |
-| `internal/render` | one-shot typed Event 终端投影。 |
 | `internal/buildinfo` | 构建版本、commit 和 build time。 |
 | `internal/architecture` | 架构守卫测试，不包含生产 Runtime。 |
 

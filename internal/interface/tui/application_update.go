@@ -40,6 +40,8 @@ func (model fullscreenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case fullscreenUserMessageRejectedMsg:
 		model.handleUserMessageRejection(message)
 		return model, model.flushHistory()
+	case fullscreenStartupReadyMsg:
+		return model, model.submitInitialUserMessageIfPending()
 	case statusLineBranchUpdatedMsg:
 		model.applyStatusLineBranchUpdate(message)
 		return model, nil
@@ -231,10 +233,10 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 		}
 		model.input.Reset()
 		model.updateInputLayout()
-		model.history = append(model.history, text)
-		model.historyPos = -1
-		submission := model.prepareTaskSubmission(text, model.session.mode(), false)
-		return model, tea.Batch(model.flushHistory(), model.submitTask(submission))
+		message := UserMessage{Text: text}
+		model.recordUserMessageHistory(message)
+		submission := model.prepareUserMessageSubmission(message, model.session.mode(), false)
+		return model, tea.Batch(model.flushHistory(), model.submitUserMessage(submission))
 	}
 	var command tea.Cmd
 	model.input, command = model.input.Update(key)
@@ -245,44 +247,44 @@ func (model fullscreenModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd)
 	return model, command
 }
 
-func (model *fullscreenModel) prepareTaskSubmission(content string, mode turn.ModeKind, overrideMode bool) TaskSubmission {
+func (model *fullscreenModel) prepareUserMessageSubmission(message UserMessage, mode turn.ModeKind, overrideMode bool) UserMessageSubmission {
 	model.nextClientUserMessage++
 	clientID := fmt.Sprintf("tui-user-%d-%d", model.session.Generation, model.nextClientUserMessage)
 	if model.optimisticUserMessages == nil {
 		model.optimisticUserMessages = make(map[string]string)
 	}
-	model.optimisticUserMessages[clientID] = content
+	model.optimisticUserMessages[clientID] = message.Text
 	model.flushCompletedActivityBeforeBoundary()
-	model.insertHistoryCell(NewUserMessageCell(content))
-	return TaskSubmission{Content: content, ClientUserMessageID: clientID, Mode: mode, OverrideMode: overrideMode}
+	model.insertHistoryCell(NewUserMessageCell(message.Text))
+	return UserMessageSubmission{Message: message, ClientUserMessageID: clientID, Mode: mode, OverrideMode: overrideMode}
 }
 
 func (model *fullscreenModel) handleUserMessageAdmission(message fullscreenUserMessageAdmittedMsg) {
-	if message.task.FromNextTurnQueue && (message.task.OriginThreadID != model.session.ThreadID || message.task.OriginGeneration != model.session.Generation) {
+	if message.submission.FromNextTurnQueue && (message.submission.OriginThreadID != model.session.ThreadID || message.submission.OriginGeneration != model.session.Generation) {
 		return
 	}
 	if err := message.admission.Validate(); err != nil {
-		model.handleUserMessageRejection(fullscreenUserMessageRejectedMsg{task: message.task, err: err})
+		model.handleUserMessageRejection(fullscreenUserMessageRejectedMsg{submission: message.submission, err: err})
 		return
 	}
-	if !message.task.FromNextTurnQueue || message.admission.Kind == protocol.UserMessageAdmissionStarted {
+	if !message.submission.FromNextTurnQueue || message.admission.Kind == protocol.UserMessageAdmissionStarted {
 		return
 	}
 	if message.admission.Kind == protocol.UserMessageAdmissionSteered {
-		model.nextTurnQueue.AcceptUnexpectedSteer(message.task)
+		model.nextTurnQueue.AcceptUnexpectedSteer(message.submission)
 		model.insertHistoryCell(NewDiagnosticHistoryCell("queued input was admitted into an active turn; automatic queue drain stopped"))
 	}
 }
 
 func (model *fullscreenModel) handleUserMessageRejection(message fullscreenUserMessageRejectedMsg) {
-	delete(model.optimisticUserMessages, message.task.ClientUserMessageID)
-	if message.task.FromNextTurnQueue {
-		if message.task.OriginThreadID != model.session.ThreadID || message.task.OriginGeneration != model.session.Generation {
+	delete(model.optimisticUserMessages, message.submission.ClientUserMessageID)
+	if message.submission.FromNextTurnQueue {
+		if message.submission.OriginThreadID != model.session.ThreadID || message.submission.OriginGeneration != model.session.Generation {
 			return
 		}
-		model.restoreRejectedQueuedInput(message.task)
+		model.restoreRejectedQueuedInput(message.submission)
 	} else if strings.TrimSpace(model.input.Value()) == "" {
-		model.input.SetValue(message.task.Content)
+		model.input.SetValue(message.submission.Message.Text)
 		model.input.CursorEnd()
 		model.updateInputLayout()
 	}

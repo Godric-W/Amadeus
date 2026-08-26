@@ -39,8 +39,8 @@ func (model fullscreenModel) dispatchCommand(invocation SlashInvocation) (tea.Mo
 			model.status = "switching to Plan mode"
 			return model, model.setMode(turn.ModeKindPlan)
 		}
-		submission := model.prepareTaskSubmission(task, turn.ModeKindPlan, true)
-		return model, tea.Batch(model.flushHistory(), model.submitTask(submission))
+		submission := model.prepareUserMessageSubmission(UserMessage{Text: task}, turn.ModeKindPlan, true)
+		return model, tea.Batch(model.flushHistory(), model.submitUserMessage(submission))
 	case SlashExit:
 		return model, model.requestExit(ExitModeShutdownFirst, ExitReasonUserRequested, nil)
 	case SlashCopy:
@@ -131,17 +131,17 @@ func (model fullscreenModel) loadSessions() tea.Cmd {
 	}
 }
 
-func (model fullscreenModel) submitTask(task TaskSubmission) tea.Cmd {
+func (model fullscreenModel) submitUserMessage(submission UserMessageSubmission) tea.Cmd {
 	return func() tea.Msg {
 		overrides := protocol.ThreadSettingsOverrides{}
-		if task.OverrideMode && task.Mode.Valid() {
-			overrides.CollaborationMode = &protocol.CollaborationMode{Mode: protocol.ModeKind(task.Mode)}
+		if submission.OverrideMode && submission.Mode.Valid() {
+			overrides.CollaborationMode = &protocol.CollaborationMode{Mode: protocol.ModeKind(submission.Mode)}
 		}
-		admission, err := model.app.options.Application.SubmitUser(model.ctx, task.Content, task.ClientUserMessageID, overrides)
+		admission, err := model.app.options.Application.SubmitUser(model.ctx, submission.Message.Text, submission.ClientUserMessageID, overrides)
 		if err != nil {
-			return fullscreenUserMessageRejectedMsg{task: task, err: err}
+			return fullscreenUserMessageRejectedMsg{submission: submission, err: err}
 		}
-		return fullscreenUserMessageAdmittedMsg{task: task, admission: admission}
+		return fullscreenUserMessageAdmittedMsg{submission: submission, admission: admission}
 	}
 }
 

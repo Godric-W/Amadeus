@@ -1,4 +1,4 @@
-package cli
+package integration
 
 import (
 	"bytes"
@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/audit"
+	"github.com/Godric-W/Amadeus/internal/cli"
 	"github.com/Godric-W/Amadeus/internal/config"
 )
 
@@ -75,7 +76,7 @@ agent:
 			options := testAgentRootOptions(amadeusHome, projectDirectory, false)
 			options.Bootstrap.AuditFactory = func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil }
 			options.Bootstrap.NextID = testNextID("provider-" + string(api))
-			command := newRootCommandWithOptions(&configFlags{}, options)
+			command := cli.NewRootCommand(options)
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
 			command.SetIn(strings.NewReader(""))

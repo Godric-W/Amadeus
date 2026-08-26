@@ -48,16 +48,17 @@ type FullscreenApplicationPort interface {
 }
 
 type FullscreenOptions struct {
-	Input             io.Reader
-	Output            io.Writer
-	Startup           FullscreenStartup
-	Snapshot          application.ThreadViewSnapshot
-	Application       FullscreenApplicationPort
-	ClipboardWrite    FullscreenClipboardWriter
-	OpenSessions      bool
-	NoColor           bool
-	DisableAnimations bool
-	Width             int
+	Input              io.Reader
+	Output             io.Writer
+	Startup            FullscreenStartup
+	InitialUserMessage *UserMessage
+	Snapshot           application.ThreadViewSnapshot
+	Application        FullscreenApplicationPort
+	ClipboardWrite     FullscreenClipboardWriter
+	OpenSessions       bool
+	NoColor            bool
+	DisableAnimations  bool
+	Width              int
 }
 
 type FullscreenApplication struct {
@@ -120,6 +121,7 @@ type fullscreenModel struct {
 	nextClientUserMessage   uint64
 	optimisticUserMessages  map[string]string
 	seenRuntimeUserMessages map[string]struct{}
+	initialUserMessage      *UserMessage
 	nextTurnQueue           NextTurnQueue
 }
 
@@ -172,14 +174,15 @@ type fullscreenOperationFailedMsg struct {
 	err       error
 }
 type fullscreenUserMessageAdmittedMsg struct {
-	task      TaskSubmission
-	admission protocol.UserMessageAdmission
+	submission UserMessageSubmission
+	admission  protocol.UserMessageAdmission
 }
 type fullscreenUserMessageRejectedMsg struct {
-	task TaskSubmission
-	err  error
+	submission UserMessageSubmission
+	err        error
 }
 type fullscreenWorkingTickMsg time.Time
+type fullscreenStartupReadyMsg struct{}
 
 const (
 	fullscreenInputPrompt      = "› "
@@ -200,6 +203,15 @@ func NewFullscreenApplication(options FullscreenOptions) (*FullscreenApplication
 	if options.Application == nil {
 		return nil, errors.New("fullscreen interactive application is nil")
 	}
+	if options.OpenSessions && options.InitialUserMessage != nil {
+		return nil, errors.New("fullscreen session picker cannot start with an initial user message")
+	}
+	if options.InitialUserMessage != nil {
+		if err := options.InitialUserMessage.Validate(); err != nil {
+			return nil, err
+		}
+	}
+	options.InitialUserMessage = cloneUserMessage(options.InitialUserMessage)
 	if options.ClipboardWrite == nil {
 		options.ClipboardWrite = clipboard.WriteAll
 	}
@@ -335,6 +347,7 @@ func newFullscreenModel(ctx context.Context, app *FullscreenApplication) fullscr
 		details: newTranscriptDetailStore(0, 0), detailViewport: newTranscriptViewport(initialWidth, 30),
 		runtimeTranscript:      runtimeprojection.New(snapshot.ThreadID),
 		optimisticUserMessages: make(map[string]string), seenRuntimeUserMessages: make(map[string]struct{}),
+		initialUserMessage: cloneUserMessage(app.options.InitialUserMessage),
 	}
 	_ = model.applyThreadViewSnapshot(snapshot)
 	if app.options.DisableAnimations {
@@ -357,6 +370,7 @@ func (model fullscreenModel) Init() tea.Cmd {
 	if model.app.options.OpenSessions {
 		commands = append(commands, model.loadSessions())
 	}
+	commands = append(commands, func() tea.Msg { return fullscreenStartupReadyMsg{} })
 	return tea.Sequence(commands...)
 }
 

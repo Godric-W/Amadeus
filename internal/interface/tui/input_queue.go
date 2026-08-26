@@ -18,16 +18,16 @@ var (
 
 const maxQueuedInputPreviewItems = 3
 
-type QueuedUserInput struct {
-	Content              string
+type QueuedUserMessage struct {
+	Message              UserMessage
 	Mode                 turn.ModeKind
 	ThreadID             protocol.ThreadID
 	AttachmentGeneration uint64
 }
 
-func (input QueuedUserInput) Validate() error {
-	if strings.TrimSpace(input.Content) == "" {
-		return errors.New("queued user input is empty")
+func (input QueuedUserMessage) Validate() error {
+	if err := input.Message.Validate(); err != nil {
+		return fmt.Errorf("queued user message: %w", err)
 	}
 	if !input.Mode.Valid() {
 		return fmt.Errorf("queued user input mode %q is invalid", input.Mode)
@@ -42,16 +42,15 @@ func (input QueuedUserInput) Validate() error {
 }
 
 type NextTurnQueue struct {
-	Pending  []QueuedUserInput
-	InFlight *QueuedUserInput
+	Pending  []QueuedUserMessage
+	InFlight *QueuedUserMessage
 	halted   bool
 }
 
-func (queue *NextTurnQueue) Enqueue(input QueuedUserInput) error {
+func (queue *NextTurnQueue) Enqueue(input QueuedUserMessage) error {
 	if queue == nil {
 		return errors.New("next-turn queue is nil")
 	}
-	input.Content = strings.TrimSpace(input.Content)
 	if err := input.Validate(); err != nil {
 		return err
 	}
@@ -59,16 +58,16 @@ func (queue *NextTurnQueue) Enqueue(input QueuedUserInput) error {
 	return nil
 }
 
-func (queue *NextTurnQueue) Begin(threadID protocol.ThreadID, generation uint64, mode turn.ModeKind) (QueuedUserInput, bool, error) {
+func (queue *NextTurnQueue) Begin(threadID protocol.ThreadID, generation uint64, mode turn.ModeKind) (QueuedUserMessage, bool, error) {
 	if queue == nil || queue.halted || queue.InFlight != nil || len(queue.Pending) == 0 {
-		return QueuedUserInput{}, false, nil
+		return QueuedUserMessage{}, false, nil
 	}
 	next := queue.Pending[0]
 	if next.ThreadID != threadID || next.AttachmentGeneration != generation {
-		return QueuedUserInput{}, false, errNextTurnQueueAttachmentChanged
+		return QueuedUserMessage{}, false, errNextTurnQueueAttachmentChanged
 	}
 	if next.Mode != mode {
-		return QueuedUserInput{}, false, errNextTurnQueueModeChanged
+		return QueuedUserMessage{}, false, errNextTurnQueueModeChanged
 	}
 	queue.Pending = queue.Pending[1:]
 	queue.InFlight = &next
@@ -83,17 +82,17 @@ func (queue *NextTurnQueue) ConfirmStarted(threadID protocol.ThreadID, generatio
 	return true
 }
 
-func (queue *NextTurnQueue) RejectInFlight(task TaskSubmission) (QueuedUserInput, bool) {
-	if queue == nil || queue.InFlight == nil || !queuedTaskMatches(*queue.InFlight, task) {
-		return QueuedUserInput{}, false
+func (queue *NextTurnQueue) RejectInFlight(submission UserMessageSubmission) (QueuedUserMessage, bool) {
+	if queue == nil || queue.InFlight == nil || !queuedSubmissionMatches(*queue.InFlight, submission) {
+		return QueuedUserMessage{}, false
 	}
 	input := *queue.InFlight
 	queue.InFlight = nil
 	return input, true
 }
 
-func (queue *NextTurnQueue) AcceptUnexpectedSteer(task TaskSubmission) bool {
-	if queue == nil || queue.InFlight == nil || !queuedTaskMatches(*queue.InFlight, task) {
+func (queue *NextTurnQueue) AcceptUnexpectedSteer(submission UserMessageSubmission) bool {
+	if queue == nil || queue.InFlight == nil || !queuedSubmissionMatches(*queue.InFlight, submission) {
 		return false
 	}
 	queue.InFlight = nil
@@ -101,9 +100,9 @@ func (queue *NextTurnQueue) AcceptUnexpectedSteer(task TaskSubmission) bool {
 	return true
 }
 
-func queuedTaskMatches(input QueuedUserInput, task TaskSubmission) bool {
-	return task.FromNextTurnQueue && input.Content == task.Content && input.Mode == task.Mode &&
-		input.ThreadID == task.OriginThreadID && input.AttachmentGeneration == task.OriginGeneration
+func queuedSubmissionMatches(input QueuedUserMessage, submission UserMessageSubmission) bool {
+	return submission.FromNextTurnQueue && input.Message == submission.Message && input.Mode == submission.Mode &&
+		input.ThreadID == submission.OriginThreadID && input.AttachmentGeneration == submission.OriginGeneration
 }
 
 func (queue *NextTurnQueue) HasPending() bool {
@@ -122,11 +121,11 @@ func (queue *NextTurnQueue) Halted() bool {
 	return queue != nil && queue.halted
 }
 
-func (queue *NextTurnQueue) DrainForRestore() []QueuedUserInput {
+func (queue *NextTurnQueue) DrainForRestore() []QueuedUserMessage {
 	if queue == nil {
 		return nil
 	}
-	result := make([]QueuedUserInput, 0, len(queue.Pending)+1)
+	result := make([]QueuedUserMessage, 0, len(queue.Pending)+1)
 	if queue.InFlight != nil {
 		result = append(result, *queue.InFlight)
 	}
@@ -173,8 +172,8 @@ func (model fullscreenModel) enqueueInputResult(input InputResult) (tea.Model, t
 	if !input.Queue || strings.TrimSpace(input.Text) == "" || input.Command != nil {
 		return model, nil
 	}
-	err := model.nextTurnQueue.Enqueue(QueuedUserInput{
-		Content: strings.TrimSpace(input.Text), Mode: model.session.mode(), ThreadID: model.session.ThreadID,
+	err := model.nextTurnQueue.Enqueue(QueuedUserMessage{
+		Message: UserMessage{Text: strings.TrimSpace(input.Text)}, Mode: model.session.mode(), ThreadID: model.session.ThreadID,
 		AttachmentGeneration: model.session.Generation,
 	})
 	if err != nil {
@@ -184,8 +183,7 @@ func (model fullscreenModel) enqueueInputResult(input InputResult) (tea.Model, t
 	model.input.Reset()
 	model.slashPopup.dismiss("")
 	model.updateInputLayout()
-	model.history = append(model.history, strings.TrimSpace(input.Text))
-	model.historyPos = -1
+	model.recordUserMessageHistory(UserMessage{Text: strings.TrimSpace(input.Text)})
 	return model, nil
 }
 
@@ -207,11 +205,11 @@ func (model *fullscreenModel) maybeSubmitNextQueuedInput() tea.Cmd {
 	if !ok {
 		return nil
 	}
-	submission := model.prepareTaskSubmission(queued.Content, queued.Mode, false)
+	submission := model.prepareUserMessageSubmission(queued.Message, queued.Mode, false)
 	submission.FromNextTurnQueue = true
 	submission.OriginThreadID = queued.ThreadID
 	submission.OriginGeneration = queued.AttachmentGeneration
-	return model.submitTask(submission)
+	return model.submitUserMessage(submission)
 }
 
 func (model *fullscreenModel) restoreQueuedInputsToComposer() {
@@ -224,7 +222,7 @@ func (model *fullscreenModel) restoreQueuedInputsToComposer() {
 	}
 	parts := make([]string, 0, len(queued)+1)
 	for _, input := range queued {
-		if content := strings.TrimSpace(input.Content); content != "" {
+		if content := strings.TrimSpace(input.Message.Text); content != "" {
 			parts = append(parts, content)
 		}
 	}
@@ -236,15 +234,15 @@ func (model *fullscreenModel) restoreQueuedInputsToComposer() {
 	model.updateInputLayout()
 }
 
-func (model *fullscreenModel) restoreRejectedQueuedInput(task TaskSubmission) bool {
-	if model == nil || !task.FromNextTurnQueue || task.OriginThreadID != model.session.ThreadID || task.OriginGeneration != model.session.Generation {
+func (model *fullscreenModel) restoreRejectedQueuedInput(submission UserMessageSubmission) bool {
+	if model == nil || !submission.FromNextTurnQueue || submission.OriginThreadID != model.session.ThreadID || submission.OriginGeneration != model.session.Generation {
 		return false
 	}
-	queued, ok := model.nextTurnQueue.RejectInFlight(task)
+	queued, ok := model.nextTurnQueue.RejectInFlight(submission)
 	if !ok {
 		return false
 	}
-	parts := []string{strings.TrimSpace(queued.Content)}
+	parts := []string{strings.TrimSpace(queued.Message.Text)}
 	if current := strings.TrimSpace(model.input.Value()); current != "" {
 		parts = append(parts, current)
 	}
@@ -263,7 +261,7 @@ func (model fullscreenModel) queuedInputPreview() string {
 	lines := []string{model.palette.dim().Render(fmt.Sprintf("Queued (%d)", count))}
 	limit := minInt(count, maxQueuedInputPreviewItems)
 	for index := 0; index < limit; index++ {
-		content := strings.Join(strings.Fields(model.nextTurnQueue.Pending[index].Content), " ")
+		content := strings.Join(strings.Fields(model.nextTurnQueue.Pending[index].Message.Text), " ")
 		prefix := fmt.Sprintf("  %d. ", index+1)
 		content = xansi.Truncate(content, maxInt(1, width-len(prefix)), "...")
 		lines = append(lines, model.palette.dim().Render(prefix+content))

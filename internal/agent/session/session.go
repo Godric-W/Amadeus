@@ -254,7 +254,7 @@ func (session *Session) handleSubmission(submission protocol.Submission) {
 }
 
 func (session *Session) admitUserMessage(submissionID protocol.SubmissionID, op protocol.UserInputOp) (protocol.UserMessageAdmission, error) {
-	content := strings.TrimSpace(op.Content)
+	content := op.Content
 	if content == "" {
 		return protocol.UserMessageAdmission{}, errors.New("user input is empty")
 	}

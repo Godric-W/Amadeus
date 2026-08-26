@@ -79,7 +79,7 @@ func (state *TranscriptState) reset() { *state = TranscriptState{} }
 type UserMessageCell struct{ Content string }
 
 func NewUserMessageCell(content string) HistoryCell {
-	return UserMessageCell{Content: strings.TrimSpace(content)}
+	return UserMessageCell{Content: content}
 }
 
 func (cell UserMessageCell) DisplayLines(ctx HistoryRenderContext) []styledLine {

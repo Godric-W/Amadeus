@@ -1,4 +1,4 @@
-package cli
+package integration
 
 import (
 	"bytes"
@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/audit"
+	"github.com/Godric-W/Amadeus/internal/cli"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/mcp"
@@ -107,7 +108,7 @@ func TestCodingAgentExposesAndExecutesUpdatePlan(t *testing.T) {
 	options := testAgentRootOptions(amadeusHome, projectDirectory, true)
 	options.Bootstrap.ClientFactory = func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil }
 	options.Bootstrap.NextID = testNextID("plan-guided-e2e")
-	command := newRootCommandWithOptions(&configFlags{}, options)
+	command := cli.NewRootCommand(options)
 	var stdout, stderr bytes.Buffer
 	command.SetIn(strings.NewReader(""))
 	command.SetOut(&stdout)
@@ -177,7 +178,7 @@ func TestCodingAgentCommandReadsFixesTestsAndCompletes(t *testing.T) {
 	options.Bootstrap.ClientFactory = func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil }
 	options.Bootstrap.AuditFactory = func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil }
 	options.Bootstrap.NextID = testNextID("coding-workflow-e2e")
-	command := newRootCommandWithOptions(&configFlags{}, options)
+	command := cli.NewRootCommand(options)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	command.SetIn(strings.NewReader("s\ns\n"))
@@ -195,7 +196,7 @@ func TestCodingAgentCommandReadsFixesTestsAndCompletes(t *testing.T) {
 	if stdout.String() != "fixed Add and verified go test\n" {
 		t.Fatalf("unexpected workflow stdout: %q", stdout.String())
 	}
-	for _, fragment := range []string{"Exploring", "Read calc.go", "Updating calc.go", "Running go test ./...", "result: completed"} {
+	for _, fragment := range []string{"Running read", "Ran read", "Running edit", "Ran edit", "Running execute_command", "Ran execute_command", "result: completed"} {
 		if !strings.Contains(stderr.String(), fragment) {
 			t.Fatalf("workflow stderr missing %q: %s", fragment, stderr.String())
 		}
@@ -256,7 +257,7 @@ func TestCodingAgentAddDirAllowsPatchAcrossWorkspaceRoots(t *testing.T) {
 	options := testAgentRootOptions(amadeusHome, projectDirectory, true)
 	options.Bootstrap.ClientFactory = func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil }
 	options.Bootstrap.NextID = testNextID("add-dir-e2e")
-	command := newRootCommandWithOptions(&configFlags{}, options)
+	command := cli.NewRootCommand(options)
 	var stdout, stderr bytes.Buffer
 	command.SetIn(strings.NewReader("s\n"))
 	command.SetOut(&stdout)
@@ -343,7 +344,7 @@ func TestCodingAgentSkillWorkflowUsesProjectOverrideAndNextRequestContext(t *tes
 	options := testAgentRootOptions(amadeusHome, projectDirectory, true)
 	options.Bootstrap.ClientFactory = func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil }
 	options.Bootstrap.NextID = testNextID("skill-workflow-e2e")
-	command := newRootCommandWithOptions(&configFlags{}, options)
+	command := cli.NewRootCommand(options)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	command.SetIn(strings.NewReader(""))
@@ -468,7 +469,7 @@ func TestCodingWorkflowIntegratesSkillMCPWebAndDiagnosticHook(t *testing.T) {
 	options.Bootstrap.WebFetcher = &integratedWebFetcher{}
 	options.Bootstrap.AuditFactory = func() (audit.Sink, io.Closer, error) { return auditSink, nil, nil }
 	options.Bootstrap.NextID = testNextID("integrated-m6")
-	command := newRootCommandWithOptions(&configFlags{}, options)
+	command := cli.NewRootCommand(options)
 	var stdout, stderr bytes.Buffer
 	command.SetIn(strings.NewReader("s\ns\ns\ns\n"))
 	command.SetOut(&stdout)

@@ -12,8 +12,8 @@ import (
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
-func queuedInput(content string, mode turn.ModeKind, threadID protocol.ThreadID, generation uint64) QueuedUserInput {
-	return QueuedUserInput{Content: content, Mode: mode, ThreadID: threadID, AttachmentGeneration: generation}
+func queuedInput(content string, mode turn.ModeKind, threadID protocol.ThreadID, generation uint64) QueuedUserMessage {
+	return QueuedUserMessage{Message: UserMessage{Text: content}, Mode: mode, ThreadID: threadID, AttachmentGeneration: generation}
 }
 
 func TestNextTurnQueueFIFOAndStartHandshake(t *testing.T) {
@@ -26,7 +26,7 @@ func TestNextTurnQueueFIFOAndStartHandshake(t *testing.T) {
 	}
 
 	first, ok, err := queue.Begin(threadID, 1, turn.ModeKindDefault)
-	if err != nil || !ok || first.Content != "second" {
+	if err != nil || !ok || first.Message.Text != "second" {
 		t.Fatalf("first begin = %#v, %v, %v", first, ok, err)
 	}
 	if _, ok, err := queue.Begin(threadID, 1, turn.ModeKindDefault); err != nil || ok {
@@ -36,7 +36,7 @@ func TestNextTurnQueueFIFOAndStartHandshake(t *testing.T) {
 		t.Fatal("matching TurnStarted did not clear InFlight")
 	}
 	second, ok, err := queue.Begin(threadID, 1, turn.ModeKindDefault)
-	if err != nil || !ok || second.Content != "third" {
+	if err != nil || !ok || second.Message.Text != "third" {
 		t.Fatalf("second begin = %#v, %v, %v", second, ok, err)
 	}
 }
@@ -60,7 +60,7 @@ func TestNextTurnQueueRejectsStaleAttachmentAndMode(t *testing.T) {
 
 func TestNextTurnQueueRejectsIncompleteInput(t *testing.T) {
 	threadID := testThreadID(1)
-	for _, input := range []QueuedUserInput{
+	for _, input := range []QueuedUserMessage{
 		queuedInput("", turn.ModeKindDefault, threadID, 1),
 		queuedInput("content", "invalid", threadID, 1),
 		queuedInput("content", turn.ModeKindDefault, protocol.ThreadID{}, 1),
@@ -87,7 +87,7 @@ func TestFullscreenTabQueuesWithoutRuntimeSubmission(t *testing.T) {
 	if submitted := fakeApplication(t, model).submitted; len(submitted) != 0 {
 		t.Fatalf("Tab queue submitted to Runtime: %v", submitted)
 	}
-	if len(model.nextTurnQueue.Pending) != 1 || model.nextTurnQueue.Pending[0].Content != "inspect the next issue" {
+	if len(model.nextTurnQueue.Pending) != 1 || model.nextTurnQueue.Pending[0].Message.Text != "inspect the next issue" {
 		t.Fatalf("queue = %#v", model.nextTurnQueue)
 	}
 	if model.input.Value() != "" || len(model.historyCells) != 0 || len(model.optimisticUserMessages) != 0 {
@@ -193,7 +193,7 @@ func TestFullscreenEnterQueuesBehindPendingStart(t *testing.T) {
 	if command != nil || len(fakeApplication(t, model).submitted) != 0 {
 		t.Fatal("Enter raced the queued start with another Runtime submission")
 	}
-	if len(model.nextTurnQueue.Pending) != 1 || model.nextTurnQueue.Pending[0].Content != "after pending start" {
+	if len(model.nextTurnQueue.Pending) != 1 || model.nextTurnQueue.Pending[0].Message.Text != "after pending start" {
 		t.Fatalf("pending-start queue = %#v", model.nextTurnQueue)
 	}
 }
@@ -268,7 +268,7 @@ func TestFullscreenQueuedSubmissionFailureRestoresHeadAndKeepsTail(t *testing.T)
 		t.Fatalf("submission result = %T", command())
 	}
 	model.handleUserMessageRejection(message)
-	if model.input.Value() != "second" || len(model.nextTurnQueue.Pending) != 1 || model.nextTurnQueue.Pending[0].Content != "third" {
+	if model.input.Value() != "second" || len(model.nextTurnQueue.Pending) != 1 || model.nextTurnQueue.Pending[0].Message.Text != "third" {
 		t.Fatalf("rejection input=%q queue=%#v", model.input.Value(), model.nextTurnQueue)
 	}
 }
@@ -373,14 +373,14 @@ func TestFullscreenStaleQueuedSubmissionResultCannotRestoreIntoNewAttachment(t *
 	if err != nil || !ok {
 		t.Fatalf("begin old queued input = %v, %v", ok, err)
 	}
-	task := TaskSubmission{
-		Content: queued.Content, Mode: queued.Mode, FromNextTurnQueue: true,
+	submission := UserMessageSubmission{
+		Message: queued.Message, Mode: queued.Mode, FromNextTurnQueue: true,
 		OriginThreadID: queued.ThreadID, OriginGeneration: queued.AttachmentGeneration,
 	}
 	model.clearInteractiveState()
 	model.session.ThreadID = testThreadID(2)
 	model.session.Generation = 2
-	model.handleUserMessageRejection(fullscreenUserMessageRejectedMsg{task: task, err: errors.New("late")})
+	model.handleUserMessageRejection(fullscreenUserMessageRejectedMsg{submission: submission, err: errors.New("late")})
 	if model.input.Value() != "" || model.nextTurnQueue.HasQueuedFollowUp() {
 		t.Fatalf("stale result polluted new attachment: input=%q queue=%#v", model.input.Value(), model.nextTurnQueue)
 	}

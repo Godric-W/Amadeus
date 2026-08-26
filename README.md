@@ -8,7 +8,7 @@ Amadeus is a Codex-like terminal coding agent written in Go. It can inspect and 
 
 ## Features
 
-- Interactive terminal UI and one-shot task execution.
+- Interactive terminal UI with optional initial prompts.
 - File reading, search, editing, command execution, and image inspection.
 - OpenAI Responses and Chat Completions APIs, including compatible providers.
 - Resumable local sessions.
@@ -161,17 +161,13 @@ Start the interactive TUI in the current directory:
 amadeus
 ```
 
-Run a one-shot task:
+Start the TUI and automatically submit an initial prompt:
 
 ```bash
 amadeus "Inspect the current changes, fix the failing tests, and verify the result"
 ```
 
-Read a task from standard input:
-
-```bash
-printf '%s\n' 'Summarize this repository' | amadeus
-```
+The TUI remains open after the initial turn. Amadeus currently has no headless or stdin task mode.
 
 Use another directory as the working root:
 
@@ -206,12 +202,12 @@ amadeus --resume=<session-id> "Continue the remaining work"
 Command form:
 
 ```text
-amadeus [task] [flags]
+amadeus [PROMPT] [flags]
 ```
 
 | Option | Description |
 |---|---|
-| `[task]` | Optional one-shot task. At most one positional task is accepted. |
+| `[PROMPT]` | Optional initial TUI prompt. At most one positional prompt is accepted. |
 | `-C, --cd <dir>` | Use the specified directory as the working root. Relative paths are resolved from the startup directory. |
 | `--add-dir <dir>` | Add another writable directory. May be repeated. |
 | `--continue` | Continue the most recently updated session for the current working root. |

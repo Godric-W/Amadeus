@@ -160,8 +160,8 @@ func (model fullscreenModel) handleSelectionKey(key tea.KeyMsg) (tea.Model, tea.
 			if selected != 0 {
 				return model, model.input.Focus()
 			}
-			submission := model.prepareTaskSubmission("Implement the plan.", turn.ModeKindDefault, true)
-			return model, tea.Batch(model.flushHistory(), model.submitTask(submission))
+			submission := model.prepareUserMessageSubmission(UserMessage{Text: "Implement the plan."}, turn.ModeKindDefault, true)
+			return model, tea.Batch(model.flushHistory(), model.submitUserMessage(submission))
 		}
 	}
 	return model, nil

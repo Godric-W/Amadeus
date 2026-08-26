@@ -377,10 +377,10 @@ func TestNextTurnQueueRemainsAFullscreenInputBoundary(t *testing.T) {
 		t.Fatalf("required next-turn queue boundary is missing: %v", err)
 	}
 
-	queuedFields := architectureStructFields(t, root, queuePath, "QueuedUserInput")
-	for _, required := range []string{"Content", "Mode", "ThreadID", "AttachmentGeneration"} {
+	queuedFields := architectureStructFields(t, root, queuePath, "QueuedUserMessage")
+	for _, required := range []string{"Message", "Mode", "ThreadID", "AttachmentGeneration"} {
 		if _, ok := queuedFields[required]; !ok {
-			t.Errorf("QueuedUserInput is missing field %q", required)
+			t.Errorf("QueuedUserMessage is missing field %q", required)
 		}
 	}
 	queueFields := architectureStructFields(t, root, queuePath, "NextTurnQueue")
@@ -413,7 +413,7 @@ func TestNextTurnQueueRemainsAFullscreenInputBoundary(t *testing.T) {
 			if readErr != nil {
 				return readErr
 			}
-			for _, forbidden := range []string{"NextTurnQueue", "QueuedUserInput", "UserMessageAdmissionQueued", "QueuedInputOp"} {
+			for _, forbidden := range []string{"NextTurnQueue", "QueuedUserInput", "QueuedUserMessage", "UserMessageAdmissionQueued", "QueuedInputOp"} {
 				if strings.Contains(string(content), forbidden) {
 					t.Errorf("Runtime/canonical package owns TUI queue symbol %q in %s", forbidden, filepath.ToSlash(path[len(root)+1:]))
 				}
@@ -616,15 +616,37 @@ func TestOuterCLIArchitectureUsesOwnedPackages(t *testing.T) {
 	for _, relative := range []string{
 		"internal/cli/root.go", "internal/cli/agent.go", "internal/cli/config_loader.go",
 		"internal/bootstrap/workspace.go", "internal/bootstrap/adapters.go",
-		"internal/exec/run.go", "internal/exec/event_processor.go",
-		"internal/interface/tui/run.go",
+		"internal/interface/tui/run.go", "internal/interface/tui/user_message.go",
 	} {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); err != nil {
-			t.Errorf("X package boundary file is missing: %s: %v", relative, err)
+			t.Errorf("outer package boundary file is missing: %s: %v", relative, err)
+		}
+	}
+	userMessageFields := architectureStructFields(t, root, "internal/interface/tui/user_message.go", "UserMessage")
+	if _, ok := userMessageFields["Text"]; !ok {
+		t.Error("TUI UserMessage is missing Text")
+	}
+	fullscreenOptions := architectureStructFields(t, root, "internal/interface/tui/application.go", "FullscreenOptions")
+	if _, ok := fullscreenOptions["InitialUserMessage"]; !ok {
+		t.Error("FullscreenOptions is missing InitialUserMessage")
+	}
+	fullscreenModel := architectureStructFields(t, root, "internal/interface/tui/application.go", "fullscreenModel")
+	if _, ok := fullscreenModel["initialUserMessage"]; !ok {
+		t.Error("fullscreenModel does not own pending initialUserMessage")
+	}
+
+	for _, relative := range []string{"internal/exec", "internal/render", "internal/interface/tui/inline.go"} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); err == nil {
+			t.Errorf("removed one-shot frontend path still exists: %s", relative)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("inspect removed path %s: %v", relative, err)
 		}
 	}
 
-	legacy := []string{"type agentController", "type commandRuntime", "type agentInvocation", "type agentCommandFactory", "func (runner *agentController) waitTurn"}
+	legacy := []string{
+		"type agentController", "type commandRuntime", "type agentInvocation", "type agentCommandFactory",
+		"func (runner *agentController) waitTurn", "type ExecRunner", "agentLaunchOnce", "readRootTask", "type InlineRenderer",
+	}
 	for _, relative := range []string{"cmd", "internal"} {
 		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
