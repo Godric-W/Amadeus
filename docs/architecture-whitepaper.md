@@ -1,7 +1,7 @@
 # Amadeus 架构白皮书
 
-> 文档日期：2026-08-24
-> 适用版本：当前 `main` 分支基础能力、Basic Multi-Agent 与 Next-Turn Queue 实现
+> 文档日期：2026-08-26
+> 适用版本：当前 `main` 分支基础能力、Basic Multi-Agent、Next-Turn Queue 与单一 TUI frontend 实现
 > 规范来源：`docs/design.md` 是主要 Contract 工作文档；本文负责解释架构、所有权、运行流程与核心数据模型。两份文档都可能过期，遇到不确定处必须回查 Codex/Claude Code 源码并同步修正。
 
 ## 1. 文档目的
@@ -48,8 +48,8 @@ Amadeus 是一个使用 Go 实现的终端 Coding Agent。它不是简单的“�
 ```mermaid
 flowchart TB
     subgraph Interface[Interface Layer]
-        CLI[CLI / One-shot]
-        TUI[Interactive TUI]
+        CLI[CLI Dispatch]
+        TUI[Single Interactive TUI]
     end
 
     subgraph Application[Application Layer]
@@ -96,7 +96,7 @@ flowchart TB
         AUDIT[Audit Sink]
     end
 
-    CLI --> IA
+    CLI --> TUI
     TUI --> IA
     IA --> TW
     TW --> TM
@@ -236,7 +236,7 @@ sequenceDiagram
 | `Submission` | `agent/protocol` | 输入 envelope，由 `ID + Op` 组成，进入 Session loop。 |
 | `Event` | `agent/protocol` | 输出 envelope，由关联 `ID + EventMsg` 组成，离开 Session loop。 |
 | `RolloutItem` | `rollout` | JSONL canonical history 的 tagged domain item。 |
-| `TurnItem` | `agent/protocol` | live/Resume/Inline 共用的稳定 UI replay unit。 |
+| `TurnItem` | `agent/protocol` | live TUI 与 Resume 共用的稳定 UI replay unit。 |
 | `PromptSnapshot` | `context` | 一次模型请求看到的消息、usage、history revision 和 world-state revision。 |
 | `StepContext` | `agent/engine` | 一次模型采样的不可变能力快照，绑定 Prompt、Model、ToolRouter 和 revisions。 |
 | `NextTurnQueue` | `interface/tui` | 尚未提交的下一 Turn 输入 FIFO 与 InFlight gate；terminal 后才通过普通 UserInputOp 启动新 Turn。 |
@@ -503,7 +503,7 @@ Tab queue 不增加新的 `Op`：输入在 Fullscreen TUI 中 enqueue 时尚未�
 | `ReasoningContentDeltaEvent` | Reasoning 流式增量。 |
 | `CommandOutputDeltaEvent` | 长运行 Process 输出增量。 |
 | `TokenCountEvent` | 完整 TokenUsageInfo + ActiveContextTokens + observed history watermark snapshot；consumer 只替换，不累加。 |
-| `ApprovalRequestEvent` | Tool 需要 UI/CLI 决策。 |
+| `ApprovalRequestEvent` | Tool 需要 TUI 交互决策。 |
 | `RequestUserInputEvent` | Agent 需要结构化用户输入。 |
 | `PlanUpdateEvent` / `PlanDeltaEvent` | `update_plan` 和 proposed plan 的 typed lifecycle。 |
 | `ContextCompactionItem` | live 使用 ItemStarted/ItemCompleted；Replay 的唯一完成事实来自 CompactedItem。 |
@@ -514,7 +514,7 @@ Tab queue 不增加新的 `Op`：输入在 Fullscreen TUI 中 enqueue 时尚未�
 
 | 模型 | 职责 |
 |---|---|
-| `TurnItem` | live、Resume 和 Inline 的统一展示事实。 |
+| `TurnItem` | live TUI 与 Resume 的统一展示事实。 |
 | `ItemKind` | user、assistant、reasoning、tool、command、file、plan、compaction、collaboration 分类。 |
 | `ItemStatus` | in-progress、completed、failed、declined。 |
 | `ToolResult` | completed Tool 的 display-safe 结果。 |
@@ -1109,7 +1109,7 @@ flowchart TB
 | `CollabAgentToolCallStatus` | in-progress/completed/failed。 |
 | `CollabAgentRef` | TUI 需要的 ThreadID、nickname 和 role。 |
 | `CollabAgentState` | AgentStatus wrapper。 |
-| `CollabAgentToolCallItem` | live/Resume/Inline 唯一 collaboration 展示协议。 |
+| `CollabAgentToolCallItem` | live TUI 与 Resume 唯一 collaboration 展示协议。 |
 
 ### 19.3 AgentStatus 状态机
 
@@ -1139,7 +1139,6 @@ flowchart LR
     Active[ActiveHistoryCell]
     Complete[Completed HistoryCell]
     Render[Styled Lines]
-    Inline[Inline Output]
     Resume[Resume Replay]
 
     Event --> Reducer
@@ -1147,7 +1146,6 @@ flowchart LR
     Reducer --> Complete
     Active --> Render
     Complete --> Render
-    Complete --> Inline
     Complete --> Resume
 ```
 
