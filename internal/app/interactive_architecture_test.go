@@ -8,13 +8,13 @@ import (
 	"testing"
 )
 
-func TestFullscreenInteractiveArchitectureHasNoLegacyControlChain(t *testing.T) {
+func TestTUIArchitectureHasNoLegacyControlChain(t *testing.T) {
 	root := repositoryRoot(t)
 	paths := []string{
-		filepath.Join(root, "internal", "interface", "tui", "run.go"),
-		filepath.Join(root, "internal", "interface", "tui", "application.go"),
-		filepath.Join(root, "internal", "interface", "tui", "application_update.go"),
-		filepath.Join(root, "internal", "interface", "tui", "application_commands.go"),
+		filepath.Join(root, "internal", "tui", "run.go"),
+		filepath.Join(root, "internal", "tui", "application.go"),
+		filepath.Join(root, "internal", "tui", "application_update.go"),
+		filepath.Join(root, "internal", "tui", "application_commands.go"),
 	}
 	forbidden := []string{
 		"fullscreenTaskDoneMsg", "fullscreenCommandDoneMsg", "fullscreenResumeMsg", "fullscreenCompactMsg",
@@ -34,21 +34,21 @@ func TestFullscreenInteractiveArchitectureHasNoLegacyControlChain(t *testing.T) 
 	}
 }
 
-func TestInteractiveApplicationIsOnlyFullscreenSessionIOConsumer(t *testing.T) {
+func TestInteractiveApplicationIsOnlyTUISessionIOConsumer(t *testing.T) {
 	root := repositoryRoot(t)
-	applicationSource, err := os.ReadFile(filepath.Join(root, "internal", "app", "interactive_application.go"))
+	applicationSource, err := os.ReadFile(filepath.Join(root, "internal", "app", "interactive_attachment.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if count := strings.Count(string(applicationSource), "active.Io()"); count != 1 {
 		t.Fatalf("interactive application SessionIo consumers = %d, want 1", count)
 	}
-	entrySource, err := os.ReadFile(filepath.Join(root, "internal", "interface", "tui", "run.go"))
+	entrySource, err := os.ReadFile(filepath.Join(root, "internal", "tui", "run.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(entrySource), ".Io()") {
-		t.Fatal("fullscreen CLI entry consumes SessionIo directly")
+		t.Fatal("TUI entry consumes SessionIo directly")
 	}
 }
 

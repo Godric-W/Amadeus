@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/agent/modelclient"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/mcp"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/skill"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
@@ -20,19 +20,19 @@ func (services *SessionServices) resolveCollabAgentRef(id protocol.ThreadID) pro
 	return protocol.CollabAgentRef{ThreadID: id, AgentNickname: snapshot.Nickname, AgentRole: snapshot.Role}
 }
 
-func (services *SessionServices) NewModelClientSession() (*engine.ModelClientSession, error) {
+func (services *SessionServices) NewModelClientSession() (*modelclient.ModelClientSession, error) {
 	if services == nil || services.modelClient == nil {
 		return nil, errors.New("session model client is unavailable")
 	}
-	return engine.NewModelClientSession(services.modelClient, engine.ModelClientSessionConfig{
+	return modelclient.NewModelClientSession(services.modelClient, modelclient.ModelClientSessionConfig{
 		StreamMaxRetries:  services.provider.StreamMaxRetries,
 		StreamIdleTimeout: services.provider.StreamIdleTimeout,
 	})
 }
 
-func (services *SessionServices) TurnBudget() engine.TurnBudget {
+func (services *SessionServices) TurnBudget() TurnBudget {
 	if services == nil {
-		return engine.TurnBudget{}
+		return TurnBudget{}
 	}
 	return services.budget
 }

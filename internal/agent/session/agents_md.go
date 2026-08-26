@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
-	agentcontext "github.com/Godric-W/Amadeus/internal/context"
+	contextmanager "github.com/Godric-W/Amadeus/internal/contextmanager"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
@@ -20,11 +18,11 @@ func (session *Session) refreshAgentsMd(ctx context.Context, services *SessionSe
 		return fmt.Errorf("refresh AGENTS.md: %w", err)
 	}
 	content := loaded.Render()
-	if session.ContextUpdate(agentcontext.UpdateAgents) == content {
+	if session.ContextUpdate(contextmanager.UpdateAgents) == content {
 		return nil
 	}
 	item, err := rollout.NewEventMsgItem(protocol.ContextUpdateEvent{
-		Key: string(agentcontext.UpdateAgents), Content: content, Revision: loaded.Revision,
+		Key: string(contextmanager.UpdateAgents), Content: content, Revision: loaded.Revision,
 	})
 	if err != nil {
 		return err
@@ -35,9 +33,9 @@ func (session *Session) refreshAgentsMd(ctx context.Context, services *SessionSe
 	return nil
 }
 
-func (session *Session) captureStep(ctx context.Context, services *SessionServices, turnContext turn.TurnContext) (engine.StepContext, error) {
+func (session *Session) captureStep(ctx context.Context, services *SessionServices, turnContext TurnContext) (StepContext, error) {
 	if err := session.refreshAgentsMd(ctx, services, turnContext.TurnID, turnContext.CWD); err != nil {
-		return engine.StepContext{}, err
+		return StepContext{}, err
 	}
 	return services.CaptureStep(session.Snapshot, turnContext)
 }

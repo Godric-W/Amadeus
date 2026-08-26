@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	agentcontext "github.com/Godric-W/Amadeus/internal/context"
+	contextmanager "github.com/Godric-W/Amadeus/internal/contextmanager"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/tool"
@@ -17,7 +17,7 @@ func TestCanonicalToolProjectionPreservesCallOrderAcrossProtocols(t *testing.T) 
 		toolProjectionLine(t, 3, rollout.ResponseItem{Type: rollout.ResponseToolResult, Role: "tool", CallID: "call_1", Name: "first", Status: "succeeded", Result: &tool.ToolResult{CallID: "call_1", ToolName: "first", Text: "one"}}),
 		toolProjectionLine(t, 4, rollout.ResponseItem{Type: rollout.ResponseToolResult, Role: "tool", CallID: "call_2", Name: "second", Status: "succeeded", Result: &tool.ToolResult{CallID: "call_2", ToolName: "second", Text: "two"}}),
 	}
-	projection, err := agentcontext.ProjectRolloutMessages(lines)
+	projection, err := contextmanager.ProjectRolloutMessages(lines)
 	if err != nil {
 		t.Fatalf("project canonical tool messages: %v", err)
 	}

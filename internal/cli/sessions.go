@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/bootstrap"
-	"github.com/Godric-W/Amadeus/internal/state"
+	"github.com/Godric-W/Amadeus/internal/threadstore"
 	"github.com/spf13/cobra"
 )
 
@@ -26,7 +26,7 @@ func newSessionsCommand(projectFlags *projectFlags, options RootOptions) *cobra.
 			if options.Environment.AmadeusRootError != nil {
 				return fmt.Errorf("resolve Amadeus root for thread store: %w", options.Environment.AmadeusRootError)
 			}
-			threads, err := bootstrap.ListThreads(command.Context(), options.Environment.AmadeusRoot, options.Bootstrap, state.ListQuery{CWD: root.Path()})
+			threads, err := bootstrap.ListThreads(command.Context(), options.Environment.AmadeusRoot, options.Bootstrap, threadstore.ListQuery{CWD: root.Path()})
 			if err != nil {
 				return err
 			}
@@ -36,7 +36,7 @@ func newSessionsCommand(projectFlags *projectFlags, options RootOptions) *cobra.
 	return command
 }
 
-func writeSessionList(output io.Writer, threads []state.StoredThread) error {
+func writeSessionList(output io.Writer, threads []threadstore.StoredThread) error {
 	if output == nil {
 		return errors.New("session list output is nil")
 	}

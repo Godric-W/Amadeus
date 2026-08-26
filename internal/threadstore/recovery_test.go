@@ -1,0 +1,35 @@
+package threadstore
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/Godric-W/Amadeus/internal/protocol"
+	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/testutil"
+)
+
+func TestIncompleteTurnFindsLatestStillOpenTurn(t *testing.T) {
+	lines := []rollout.Line{
+		{Item: rollout.EventMsgItem{Msg: protocol.TurnStartedEvent{ThreadID: testutil.ThreadID(1), TurnID: "turn-1", StartedAt: time.Now().UTC()}}},
+		{Item: rollout.EventMsgItem{Msg: protocol.TurnStartedEvent{ThreadID: testutil.ThreadID(1), TurnID: "turn-2", StartedAt: time.Now().UTC()}}},
+		{Item: rollout.EventMsgItem{Msg: protocol.TurnCompleteEvent{ThreadID: testutil.ThreadID(1), TurnID: "turn-2", Status: protocol.TurnStatusCompleted, Outcome: protocol.TurnOutcomeCompleted, FinishedAt: time.Now().UTC()}}},
+	}
+	if got := incompleteTurn(lines); got != "turn-1" {
+		t.Fatalf("incomplete turn = %q, want turn-1", got)
+	}
+}
+
+func TestPendingToolCallsDeduplicatesCallIDs(t *testing.T) {
+	call, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-1", Name: "read", Arguments: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call = rollout.ScopeItem(call, testutil.ThreadID(1), "turn-1").(rollout.ResponseItem)
+	lines := []rollout.Line{{Item: call}, {Item: call}}
+	pending := pendingToolCalls(lines, "turn-1")
+	if len(pending) != 1 || pending[0].ID != "call-1" {
+		t.Fatalf("pending calls = %#v", pending)
+	}
+}

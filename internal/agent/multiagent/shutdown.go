@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
 func (control *Control) closeAgent(ctx context.Context, id protocol.ThreadID) error {

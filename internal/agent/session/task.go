@@ -3,9 +3,8 @@ package session
 import (
 	"context"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/agent/modelclient"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
 type TaskOutput struct {
@@ -17,7 +16,7 @@ type TaskOutput struct {
 
 type SessionTask interface {
 	Kind() TaskKind
-	Run(context.Context, *Session, *turn.TurnContext) (TaskOutput, error)
+	Run(context.Context, *Session, *TurnContext) (TaskOutput, error)
 }
 
 type regularTask struct {
@@ -25,11 +24,11 @@ type regularTask struct {
 	goal         string
 	events       protocol.EventSink
 	turnState    *TurnState
-	modelSession *engine.ModelClientSession
+	modelSession *modelclient.ModelClientSession
 	initialized  bool
 }
 
-func (sessionTask *regularTask) Run(ctx context.Context, session *Session, turnContext *turn.TurnContext) (TaskOutput, error) {
+func (sessionTask *regularTask) Run(ctx context.Context, session *Session, turnContext *TurnContext) (TaskOutput, error) {
 	return sessionTask.run(ctx, session, turnContext)
 }
 

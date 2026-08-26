@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
 func NewControl(sessionID protocol.SessionID, rootID protocol.ThreadID, host AgentHost, options Options) (*Control, error) {

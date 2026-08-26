@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
 type userMessageAdmissionResult struct {

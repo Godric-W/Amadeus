@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
-	"github.com/Godric-W/Amadeus/internal/thread"
+	"github.com/Godric-W/Amadeus/internal/threadstore"
 )
 
 func validateSpawnIdentity(args SpawnArgs) error {
@@ -29,7 +29,7 @@ func validateSpawnIdentity(args SpawnArgs) error {
 			return errors.New("root session ID does not match root thread ID")
 		}
 	}
-	if args.History.Kind != thread.InitialHistoryResumed {
+	if args.History.Kind != threadstore.InitialHistoryResumed {
 		return nil
 	}
 	meta, ok := args.History.Lines[0].Item.(rollout.SessionMetaItem)

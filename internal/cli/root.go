@@ -6,7 +6,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/bootstrap"
 	"github.com/Godric-W/Amadeus/internal/buildinfo"
-	"github.com/Godric-W/Amadeus/internal/interface/tui"
+	"github.com/Godric-W/Amadeus/internal/tui"
 	"github.com/spf13/cobra"
 )
 

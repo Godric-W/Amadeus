@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
-	statesqlite "github.com/Godric-W/Amadeus/internal/state/sqlite"
-	"github.com/Godric-W/Amadeus/internal/thread/local"
-	threadmanager "github.com/Godric-W/Amadeus/internal/thread/manager"
+	"github.com/Godric-W/Amadeus/internal/protocol"
+	threadmanager "github.com/Godric-W/Amadeus/internal/threadmanager"
+	"github.com/Godric-W/Amadeus/internal/threadstore/local"
+	statesqlite "github.com/Godric-W/Amadeus/internal/threadstore/local/sqlite"
 )
 
 func TestThreadWorkspaceOwnsCurrentThreadLifecycle(t *testing.T) {

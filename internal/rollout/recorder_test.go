@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 

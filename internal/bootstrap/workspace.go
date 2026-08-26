@@ -8,11 +8,11 @@ import (
 	"time"
 
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/app"
 	"github.com/Godric-W/Amadeus/internal/config"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
-	threadmanager "github.com/Godric-W/Amadeus/internal/thread/manager"
+	"github.com/Godric-W/Amadeus/internal/protocol"
+	threadmanager "github.com/Godric-W/Amadeus/internal/threadmanager"
 )
 
 type WorkspaceOptions struct {
@@ -20,7 +20,7 @@ type WorkspaceOptions struct {
 	Configuration  config.Config
 	CWD            string
 	WorkspaceRoots []string
-	Mode           turn.ModeKind
+	Mode           protocol.ModeKind
 	Dependencies   Dependencies
 }
 
@@ -88,9 +88,9 @@ func OpenWorkspace(ctx context.Context, options WorkspaceOptions) (WorkspaceResu
 
 	mode := options.Mode
 	if mode == "" {
-		mode = turn.ModeKindDefault
+		mode = protocol.ModeKindDefault
 	}
-	if mode != turn.ModeKindDefault && mode != turn.ModeKindPlan {
+	if mode != protocol.ModeKindDefault && mode != protocol.ModeKindPlan {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		_ = workspace.Close(cleanupCtx)

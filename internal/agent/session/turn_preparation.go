@@ -7,23 +7,21 @@ import (
 	"html"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
 	"github.com/Godric-W/Amadeus/internal/agent/multiagent"
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
-	agentcontext "github.com/Godric-W/Amadeus/internal/context"
+	contextmanager "github.com/Godric-W/Amadeus/internal/contextmanager"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/skill"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type preparedContextUpdate struct {
-	key     agentcontext.UpdateKey
+	key     contextmanager.UpdateKey
 	content string
 }
 
-func (session *Session) prepareTurn(ctx context.Context, services *SessionServices, goal string, turnContext *turn.TurnContext) error {
+func (session *Session) prepareTurn(ctx context.Context, services *SessionServices, goal string, turnContext *TurnContext) error {
 	if session == nil || services == nil || turnContext == nil {
 		return fmt.Errorf("turn context preparation is incomplete")
 	}
@@ -36,12 +34,12 @@ func (session *Session) prepareTurn(ctx context.Context, services *SessionServic
 	return services.prepareInputContext(ctx, goal, turnContext, session.ContextUpdate, session.AppendItems)
 }
 
-func (services *SessionServices) prepareStaticTurnContext(ctx context.Context, turnContext *turn.TurnContext, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error) error {
+func (services *SessionServices) prepareStaticTurnContext(ctx context.Context, turnContext *TurnContext, contextUpdate func(contextmanager.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error) error {
 	if services == nil || turnContext == nil || contextUpdate == nil || appendItems == nil {
 		return fmt.Errorf("static turn context preparation is incomplete")
 	}
 	include := func(spec tool.ToolSpec) bool {
-		return turnContext.Mode != turn.ModeKindPlan || engine.PlanModeToolAllowed(spec)
+		return turnContext.Mode != ModeKindPlan || planModeToolAllowed(spec)
 	}
 	tools := services.tools.SnapshotRouter(services.visibility, tool.RequestSnapshot{}, composeToolFilters(include, services.source)).Specs()
 	toolNames := make([]string, len(tools))
@@ -89,10 +87,10 @@ func (services *SessionServices) prepareStaticTurnContext(ctx context.Context, t
 		}
 	}
 	return persistPreparedContextUpdates(ctx, turnContext.TurnID, contextUpdate, appendItems,
-		preparedContextUpdate{key: agentcontext.UpdateCollaborationMode, content: developer},
-		preparedContextUpdate{key: agentcontext.UpdateEnvironment, content: environmentContext},
-		preparedContextUpdate{key: agentcontext.UpdatePermissionMode, content: "## Permission And Isolation Context\n\nPermission context (enforced by runtime, not by this text): " + string(encodedPermission)},
-		preparedContextUpdate{key: agentcontext.UpdateMCP, content: mcpContext},
+		preparedContextUpdate{key: contextmanager.UpdateCollaborationMode, content: developer},
+		preparedContextUpdate{key: contextmanager.UpdateEnvironment, content: environmentContext},
+		preparedContextUpdate{key: contextmanager.UpdatePermissionMode, content: "## Permission And Isolation Context\n\nPermission context (enforced by runtime, not by this text): " + string(encodedPermission)},
+		preparedContextUpdate{key: contextmanager.UpdateMCP, content: mcpContext},
 	)
 }
 
@@ -116,7 +114,7 @@ func renderSubagents(records []multiagent.AgentRecord) string {
 	return builder.String()
 }
 
-func (services *SessionServices) prepareInputContext(ctx context.Context, input string, turnContext *turn.TurnContext, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error) error {
+func (services *SessionServices) prepareInputContext(ctx context.Context, input string, turnContext *TurnContext, contextUpdate func(contextmanager.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error) error {
 	if services == nil || turnContext == nil || contextUpdate == nil || appendItems == nil {
 		return fmt.Errorf("input-dependent context preparation is incomplete")
 	}
@@ -125,7 +123,7 @@ func (services *SessionServices) prepareInputContext(ctx context.Context, input 
 		return err
 	}
 	return persistPreparedContextUpdates(ctx, turnContext.TurnID, contextUpdate, appendItems,
-		preparedContextUpdate{key: agentcontext.UpdateSkills, content: skillContext},
+		preparedContextUpdate{key: contextmanager.UpdateSkills, content: skillContext},
 	)
 }
 
@@ -173,10 +171,10 @@ func (services *SessionServices) renderInputSkillContext(input string) (string, 
 	return strings.Join(skillParts, "\n\n"), nil
 }
 
-func persistPreparedContextUpdates(ctx context.Context, turnID protocol.TurnID, contextUpdate func(agentcontext.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error, updates ...preparedContextUpdate) error {
+func persistPreparedContextUpdates(ctx context.Context, turnID protocol.TurnID, contextUpdate func(contextmanager.UpdateKey) string, appendItems func(context.Context, protocol.TurnID, ...rollout.RolloutItem) error, updates ...preparedContextUpdate) error {
 	items := make([]rollout.RolloutItem, 0, len(updates))
 	for _, update := range updates {
-		worldState := agentcontext.NewWorldState()
+		worldState := contextmanager.NewWorldState()
 		if err := worldState.Set(update.key, update.content); err != nil {
 			return err
 		}

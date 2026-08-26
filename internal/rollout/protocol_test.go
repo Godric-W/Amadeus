@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/testutil"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )

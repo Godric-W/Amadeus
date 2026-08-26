@@ -68,13 +68,14 @@ Amadeus 当前处于未发布开发阶段，不承诺自身旧实现的任何兼
 | P. Model Reasoning Effort + Provider Thinking Contract | ReasoningEffort、Turn freeze、Provider Dialect 与 wire mapping |
 | Q. Web + View Image Tool Contract Closure | pinned Web transport、typed Web result、image preparation、modality budget 与 ViewImageCell |
 | R. Basic Multi-Agent Alignment | Codex V1 风格 AgentControl、SubAgent Thread、协作 Tool、Prompt、Event/Rollout 与 TUI projection |
-| S. Codex-style Fullscreen TUI Architecture Alignment | Session snapshot、fixed statusline、Footer state、workspace metadata 与 exit lifecycle |
+| S. Codex-style TUI Architecture Alignment | Session snapshot、fixed statusline、Footer state、workspace metadata 与 exit lifecycle |
 | T. Thread + Session UUID Identity Alignment | UUIDv7 ThreadID、SessionID/ThreadID 语义、创建/恢复生命周期、Persistence 与 Resume boundary |
 | U. Next-Turn User Input Queue Alignment | Codex 风格 Composer queue、下一 Turn FIFO、terminal drain、失败恢复、attachment isolation 与 pre-enqueue Footer hint |
 | V. Versionless Config Schema + Example Naming | 删除顶层 version gate、严格当前 schema、`config.yaml.example` 模板与旧配置零兼容 |
 | W. Context Accounting + Compaction Realignment | TokenUsageInfo、active context、结构化 TokenEstimator、手动/自动 Compaction、atomic install 与 live/Resume 等价 |
 | X. CLI + Bootstrap Package Architecture | thin process entry、multitool dispatch、bootstrap composition 与外层 package 拆分 |
 | Y. Initial Prompt + Single TUI Frontend Alignment | Codex `PROMPT → initial_user_message → normal user-message submission`、单一 TUI frontend 与 startup/replay gating |
+| Z. Internal Package + Source Layout Alignment | Codex-aligned Protocol、Session、ContextManager、ThreadStore、ThreadManager、TUI 与 Tool package ownership；Go 文件按内聚行为拆分 |
 
 ## 2. 产品目标
 
@@ -88,7 +89,7 @@ Amadeus 的目标是成为一个真正可用于日常软件开发的通用 Codin
 - `/plan` 进入与 Codex 对齐的显式 Plan Mode，用于分析和规划，不实施文件或命令副作用。
 - Default 与 Plan Mode 都可以通过 `request_user_input` 在当前 Turn 内请求结构化用户输入并继续执行；用户提问是独立交互能力，不属于 Approval。
 - 用户可以在 Regular Turn 运行期间继续提交普通消息；Runtime 将其作为 steer input 接纳到同一 Turn，并在当前 Model Step 后继续，而不是静默排队成下一 Turn。
-- Fullscreen TUI 运行期间，用户也可以用显式 Tab queue 动作把普通文字暂存为后续新 Turn；该输入在当前 Turn terminal 前不提交 Runtime，也不进入 canonical history。
+- TUI 运行期间，用户也可以用显式 Tab queue 动作把普通文字暂存为后续新 Turn；该输入在当前 Turn terminal 前不提交 Runtime，也不进入 canonical history。
 - Root Agent 可以把边界清晰、可独立推进的探索任务交给 SubAgent；SubAgent 使用完整 Thread/Session/runtime 主链并与 Root 共享工作区，但拥有独立 Context、Turn、Tool 状态和 canonical Rollout。
 - `/compact` 调用正式的上下文压缩服务，而不是仅清空 TUI 文本。
 - 文件修改默认对能力较弱或不稳定的模型保持安全：先生成 Diff，再由用户确认，最后写入。
@@ -111,7 +112,7 @@ Amadeus 的目标是成为一个真正可用于日常软件开发的通用 Codin
 | Codex-style Runtime Tool | Codex | `update_plan`、`write_stdin` 和命令续接提示以 Codex 对应 Tool Prompt/Contract 为准 |
 | 用户输入 Tool | Codex 为架构、Claude Code 为 UX 参考 | `request_user_input` 使用独立 Request Event/Answer Op/Session waiter；稳定 Question ID、Default/Plan 通用，并选择性吸收多选与 Other 体验，不复用 Approval `updatedInput` |
 | Turn Steer | Codex | 普通 `UserInputOp` 通过 Started/Steered admission 接纳；ActiveTurn 持有 TurnInputQueue，`run_turn` 在 Model Step 边界 drain 并继续同一 Turn |
-| Next-Turn Queue | Codex | Tab queue 是 Fullscreen TUI/ChatWidget 等价层的 transient FIFO；terminal 后才通过普通 `UserInputOp` 启动下一 Turn，不新增 Core queue Op 或 durable history |
+| Next-Turn Queue | Codex | Tab queue 是 TUI/ChatWidget 等价层的 transient FIFO；terminal 后才通过普通 `UserInputOp` 启动下一 Turn，不新增 Core queue Op 或 durable history |
 | Command Tool | Codex + Amadeus | `execute_command`、ProcessManager、Approval 复用和宿主执行边界遵循 Amadeus 已有 Contract 与 Codex unified exec 语义 |
 | Approval TUI | Claude Code | 展示操作和结构化 Diff，使用范围明确的动态选项与键盘交互；不直接修改权限状态 |
 | Event Protocol | Codex | Submission、UserMessageAdmission request/response、Event、EventMsg、TurnItem 生命周期、Approval/User Input request 与 Delta |
@@ -255,29 +256,44 @@ cmd/amadeus/                 仅包含可执行程序进程入口
 internal/cli/                Cobra 参数模型、顶层命令分发、CLI 输出与退出语义
 internal/bootstrap/          环境/路径解析及 concrete Adapter、ThreadManager、ThreadWorkspace 装配
 internal/app/                Application Services
-internal/thread/             LiveThread、ThreadStore、InitialHistory 与恢复逻辑
-internal/thread/local/       LocalThreadStore 组合与本地路径布局
-internal/thread/manager/     ThreadManager 与 AmadeusThread
-internal/agent/session/      Session、SessionState、SessionServices、ActiveTurn、RunningTask、SessionTask、StepContext、context-window policy 与 run_turn
+internal/protocol/           Identity、Submission、Event、EventMsg、TurnItem DTO 与稳定 lifecycle enums
+internal/protocol/identity/  SessionID、ThreadID、TurnID、SubmissionID、RequestID 与 ItemID
+internal/threadstore/        ThreadStore、LiveThread、InitialHistory、StoredThread metadata 与恢复逻辑
+internal/threadstore/local/  LocalThreadStore、JSONL writer、metadata projection 与 index coordination
+internal/threadstore/local/sqlite/ 当前 schema 的 SQLite metadata index adapter
+internal/threadmanager/      ThreadManager、AmadeusThread、child restore 与 capability query
+internal/agent/session/      Session、SessionState、SessionServices、TurnContext、StepContext、ActiveTurn、RunningTask、SessionTask 与 run_turn
 internal/agent/compact/      Compaction domain、Prompt request builder 与无状态摘要生成服务
-internal/agent/turn/         TurnContext、ModeKind 与 Personality
-internal/agent/protocol/     Identity、Submission、Event、EventMsg、TurnItem DTO 与稳定 Compaction lifecycle enums
-internal/context/            ContextManager、Token Accounting、Prompt estimate、Projection 与 replacement validation
+internal/agent/modelclient/  Turn-scoped ModelClientSession、sampling、stream consume 与 reconnect policy
+internal/agent/multiagent/   Root-scoped AgentControl、reservation、status、wait、send 与 shutdown
+internal/contextmanager/     ContextManager、Token Accounting、Prompt estimate、Projection 与 replacement validation
 internal/prompt/             BaseInstructions、Prompt 与内置 Prompt 资产
 internal/llm/                LLM Domain Port
 internal/llm/openai/         OpenAI-compatible Adapter
 internal/tool/               ToolDefinition、ToolRegistry、ToolRouter、ToolUseContext、ToolExecutionService 与 PermissionService
 internal/policy/             ApprovalPort、ApprovalCoordinator、SessionPermissionContext 与静态策略
 internal/tool/builtin/       Read、Edit、Write、Glob、Grep、Command 等内置 Tool
+internal/tool/textdiff/      unified text diff 与 changed-line statistics
 internal/process/            Host Process Runner
 internal/rollout/            typed RolloutItem、JSONL 编解码与当前格式加载
-internal/state/              StoredThread、Metadata Update 与 State DB Port
-internal/state/sqlite/       当前 schema 的 SQLite State DB 与可重建 index
-internal/interface/tui/      Codex 风格单一 Rich TUI、pending initial UserMessage、active attachment、交互与 renderer 生命周期
+internal/tui/                Codex 风格单一 Rich TUI、pending initial UserMessage、active attachment、交互与 renderer 生命周期
 internal/agentsmd/           AgentsMdManager、LoadedAgentsMd、发现与作用域合并
 internal/mcp/                MCP Config、MCPRuntime、Binding 与 Tool/Resource Catalog
 internal/skill/              Skill Catalog、Metadata、Injection 与 Resource Boundary
 internal/config/             配置加载、校验、脱敏
+internal/prompt/builtin/     embedded Prompt assets、revision 与 validation
+internal/audit/              Tool/command audit domain port 与本地 sink
+internal/buildinfo/          build/version metadata
+internal/filechange/         structured file change preview/result DTO
+internal/imageprep/          bounded image decode、resize、re-encode 与 prepared image model
+internal/logging/            slog 初始化与配置映射
+internal/project/            Project Root、PathResolver 与 FileSystemPolicy
+internal/workspace/          bounded file read、enumeration、ignore/glob 与 text detection
+internal/webfetch/           URL safety、pinned transport、redirect 与 Markdown projection
+internal/websearch/          Provider-neutral search service 与 provider adapters
+internal/architecture/       package dependency 与 ownership contract tests
+internal/integration/        test-only end-to-end harness；不提供生产 runner
+internal/testutil/           跨 package 测试 identity/helper；生产代码不得依赖
 ```
 
 ### 7.1 Package 内源码组织规则
@@ -289,23 +305,57 @@ internal/config/             配置加载、校验、脱敏
 - 同一 package 内优先按行为拆文件，文件名直接表达职责，例如 `approval_request.go`、`approval_decision.go`、`application_events.go`。
 - 文件名不重复 package 已经表达的无效上下文：`internal/cli/config.go`、`sessions.go`、`tools.go` 优于统一追加 `_command.go`；只有 `config_flags.go`、`event_processor.go`、`config_output.go` 这类后缀确实区分同 package 内职责时才保留。
 - Tool 实现按用户可见 Tool 拆分；多个 Tool 共用的安全写入、Diff、Approval 与 revalidate 流水线放入明确命名的共享文件。
+- Tool 外层目录同时遵循 Codex 与 Claude Code：`internal/tool` 只拥有 schema normalization、registry/router、request-scoped snapshot、并发 orchestration 和 Validate/Prepare/Permission/Approval/Execute lifecycle；`internal/tool/builtin` 按用户可见 Tool 分文件；`internal/policy` 独立拥有权限与 Approval。generic Tool package 不枚举 `read`、MCP、Multi-Agent 等具体产品工具名，具体 presentation 归 builtin、Session Tool Event 或 TUI HistoryCell owner。
+- 不照搬 Claude Code 的一 Tool 一目录布局。只有单个 Tool 已形成独立依赖、多个实现文件或可替换 adapter boundary 时才拆 subpackage；当前 `read_file.go`、`edit_file.go`、`write_file.go` 等 Go 文件是等价的内聚单元。
 - TUI Application 的状态与生命周期、Bubble Tea 更新、Runtime Event 投影和 View 渲染分别组织，不把业务事件归约与字符串渲染重新合并。
+- `application.go`、`manager.go`、`service.go`、`state.go`、`types.go` 等通用文件名只在内容确实覆盖 package 核心模型时使用；混合 constructor、event pump、query、render、persistence 或 adapter 行为时必须拆为责任名文件。
 - 测试与被测 package 共置；架构约束测试必须扫描同一主链的全部拆分文件，不能只检查历史入口文件。
+- 架构约束测试按 Runtime、Protocol/Persistence、Tool/Approval、TUI 和 CLI/Bootstrap 分文件；不得让单个 guard 文件成为记录历次迁移 symbol 的第二份进度文档。
 - 约 400–500 行是需要重新审视职责的软阈值，不作为机械拆分标准；Runtime 状态机或协议编解码在保持单一职责时可以超过该阈值。
+
+#### 7.1.1 Codex/Claude Code 目录对齐规则
+
+目录对齐以参考源码的 owner 和依赖方向为准，不按 Rust crate 或 TypeScript workspace 逐字翻译：
+
+| 参考边界 | Amadeus 目标边界 | 约束 |
+|---|---|---|
+| Codex `codex-protocol` | `internal/protocol` | 是 CLI、TUI、Runtime、Rollout 和 Adapter 共同使用的低层 contract，不嵌套在 `agent` 下 |
+| Codex core `session` + private `state` | `internal/agent/session` | Go 使用同一 owner package 的责任文件表达 SessionState、Services、TurnContext、StepContext、ActiveTurn 和 RunningTask，不建立会反向依赖 Session 的 `agent/state` package |
+| Codex core `client`/ModelClientSession | `internal/agent/modelclient` + `internal/llm` | modelclient 只拥有 Turn-scoped sampling/stream/reconnect；Provider-neutral request/response 留在 `llm`，Provider wire adapter 留在 `llm/openai` |
+| Codex core `context_manager` | `internal/contextmanager` | package path 与 package name 一致；唯一拥有 canonical history projection、Prompt snapshot、token estimate 和 replacement install validation |
+| Codex `thread-store` | `internal/threadstore` | Thread persistence port、LiveThread、StoredThread metadata、local writer 和 SQLite index 属于同一 store 边界 |
+| Codex core `ThreadManager`/`CodexThread` | `internal/threadmanager` | 创建/恢复 internal Session 和 live registry，不嵌套在 persistence package 下 |
+| Codex `tui` 的 App/ChatWidget/history_cell modules | `internal/tui` | 保持一个 Go package 共享 Bubble Tea model；用责任文件表达私有 module，不为缩短文件制造 renderer/widget 小 package |
+| Codex core `tools` + Claude Code `Tool`/tool orchestration/permissions/builtin tools | `internal/tool` + `internal/policy` + `internal/tool/builtin` | Codex 决定 StepContext/ToolRouter/Event owner，Claude Code 决定 Validate/Prepare/Permission/Approval/Execute 与文件 Tool 行为 |
+| Codex `rollout` | `internal/rollout` | 只拥有 canonical typed item 与 JSONL codec/recorder，不重新拥有 Protocol identity 或 Thread metadata query |
+
+以下目录不属于目标架构：含义混杂的 `internal/agent/engine`、单类型 `internal/agent/turn`、嵌套公共协议 `internal/agent/protocol`、含义过宽的 `internal/state`、只有一个 frontend 的 `internal/interface`、无生产调用方的 `internal/sandbox`，以及空的 `internal/agent/plan`/`internal/agent/task`。迁移必须切换全部生产与测试调用方后直接删除旧目录，不保留 alias、wrapper 或 import-forwarding compatibility package。
+
+`internal/app/transcript` 也不作为 Application domain：live Event reducer、active cell bookkeeping 和 replay-to-HistoryCell state 归 `internal/tui`。`internal/app` 只拥有界面无关的 ThreadWorkspace、attachment/event pump 和 Application use case orchestration。
 
 生产依赖方向固定为：
 
 ```text
 cmd/amadeus
 └─→ internal/cli
-    ├─→ internal/interface/tui
+    ├─→ internal/tui
     └─→ internal/bootstrap（sessions 等 command-only query）
 
-internal/interface/tui
-└─→ internal/bootstrap
-    ├─→ internal/app + internal/thread/manager + internal/agent/session
-    └─→ infrastructure adapters
-        → internal/thread + internal/state + internal/tool + internal/llm domain ports
+internal/tui
+└─→ internal/bootstrap + internal/app + internal/protocol
+
+internal/bootstrap
+├─→ internal/app + internal/threadmanager
+└─→ infrastructure adapters
+    → internal/threadstore + internal/llm/openai + internal/mcp
+
+internal/threadmanager
+├─→ internal/agent/session
+└─→ internal/threadstore
+
+internal/agent/session
+→ internal/protocol + internal/contextmanager + internal/agent/modelclient
+  + internal/tool + internal/policy + internal/threadstore + capability domain ports
 ```
 
 Domain/Runtime 不依赖 infrastructure adapter 或上层具体 controller/model；adapter 依赖并实现 domain port，再由 `internal/bootstrap` 的窄构造函数装配。`bootstrap` 可以引用 concrete adapter，但不能成为通用 Service Locator 或执行 owner：不暴露 `Get/Resolve(kind)`、任意 callback map 或包含所有测试注入点的万能 Runtime bag。若 Runtime 只能通过回调 `internal/cli` 或 TUI 才能完成 Turn，即使类型位于目标目录，也视为架构未迁移完成。
@@ -341,31 +391,84 @@ internal/bootstrap/
   thread_catalog.go          Session catalog 查询和临时 Manager 关闭
 
 internal/app/
-  interactive_application.go Fullscreen active attachment、唯一 SessionIo event pump 与 typed command API
+  interactive_application.go Application 类型、constructor、Start 与公共 port
+  interactive_commands.go    Submit/Interrupt/Approval/UserInput 等 typed command API
+  interactive_threads.go     Resume、Clear、Rename、Delete 与 transactional switch
+  interactive_attachment.go  唯一 SessionIo event pump、snapshot install 与 generation gate
+  interactive_capabilities.go Session/Status/MCP/Skill query orchestration
   interactive_history.go     persisted ResponseItem/EventMsgItem 的 canonical replay 投影
   thread_workspace.go        当前 Thread 选择、切换、恢复、重命名和删除生命周期
 
 internal/agent/session/
-  session.go                 Session 状态机、submission loop 与 Turn 生命周期
-  host.go                    canonical append、ContextManager 增量 record 与 Session host API
+  session.go                 Session、SessionIo、SessionState 与 constructor
+  session_loop.go            submission/request/completion serial loop
+  submission.go              Op validation、admission 与 dispatch
+  turn_start.go              ActiveTurn 创建、RunningTask 启动与 watch
+  turn_context.go            TurnContext、ModeKind 与 Personality
+  step_context.go            request-scoped Context/Model/ToolRouter snapshot capture
+  services.go                SessionServices 类型、capability fields 与 close state
+  service_builder.go         Session capability construction 与失败逆序清理
+  persistence.go             canonical append、durability receipt 与 ContextManager record
+  context_snapshot.go        Prompt/Context/Token snapshot query
   interaction.go             Event/EventMsg 发布与 correlated Approval/User Input waiter
   context_window.go          active/preflight Token status、auto-compact policy 与 typed limit failure
   compaction.go              trigger/reason/phase、source capture、durable install 与 token recompute
 
+internal/agent/modelclient/
+  session.go                 ModelClientSession、Sample/Complete request 与 result
+  response_stream.go         stream consume、idle timeout 与 chunk aggregation
+  response_retry.go          reconnect classification、backoff 与 typed transient Event
+
+internal/contextmanager/
+  manager.go                 ContextManager state、constructor 与 public mutation boundary
+  history.go                 canonical Rollout record、validation 与 projection state
+  prompt_snapshot.go         model-visible Prompt snapshot 与 revision
+  output_projection.go       modality filtering、Tool output bounds 与 token truncation
+  world_state.go             ContextualUserFragment 与 WorldState revision
+
+internal/threadmanager/
+  manager.go                 ThreadManager registry、start/resume/shutdown 与 close
+  amadeus_thread.go          AmadeusThread handle、Submission/Event/History API
+  capabilities.go            Skill/MCP/Permission capability query
+  child_resume.go            persisted child restore 与 parent notification
+
+internal/threadstore/local/
+  store.go                   LocalThreadStore type、constructor 与 close
+  writer.go                  materialize/open/append/flush/close writer lifecycle
+  metadata.go                metadata projection、query、rename 与 archive
+  index.go                   SQLite index reconciliation/rebuild
+
 internal/agent/compact/
-  types.go                   CompactionSource/Request/Output，复用 Protocol trigger/reason/phase
+  contract.go                CompactionSource/Request/Output，复用 Protocol trigger/reason/phase
   service.go                 Codex compact Prompt request 和 typed summary/replacement 生成
 
-internal/interface/tui/
-  run.go                     terminal preflight、Prompt→UserMessage、InteractiveApplication/FullscreenApplication 启停与 AppExitInfo
+internal/tui/
+  run.go                     terminal preflight、Prompt→UserMessage、InteractiveApplication/TUI Application 启停与 AppExitInfo
   user_message.go            TUI UserMessage、initial message 构造与 submission DTO
-  application.go             Fullscreen Application/model、pending initialUserMessage 与生命周期装配
+  application.go             TUI Application、Bubble Tea model、pending initialUserMessage 与生命周期装配
   input_queue.go             QueuedUserMessage FIFO、in-flight admission 与 attachment scope
   application_update.go      Bubble Tea Update 与输入状态转换
-  application_events.go      EventMsg / TurnItem 投影与历史状态更新
-  application_view.go        View、状态栏、输入框与终端内容清理
+  application_events.go      EventMsg/TurnItem reducer 与 Turn lifecycle
+  history_state.go           active/completed HistoryCell、draft 与 recall state
+  application_view.go        top-level View composition 与 terminal content cleanup
+  composer_view.go           input box、textarea window、popup 与 Footer
+  transcript_view.go         transcript viewport、active draft/cell 与 history flush
   application_commands.go    Slash Command 分发
   application_selection.go   Session / Skill 选择流程
+  history_cell.go            HistoryCell/ActiveHistoryCell contracts
+  history_messages.go        User/Assistant/Plan message cells
+  history_notices.go         Notice/Info/Warning/Error cells
+  history_render.go          Rich/Raw line projection 与 semantic style
+  history_cell_tools.go           Tool activity reducer 与 generic fallback
+  history_exec.go            execute_command projection
+  history_explore.go         read/glob/grep projection
+
+internal/architecture/
+  runtime_guard_test.go      Session/Context/Compaction/ModelClient dependency guards
+  protocol_guard_test.go     Protocol/Rollout/Identity/Persistence guards
+  tool_guard_test.go         Tool/Approval/Permission lifecycle guards
+  tui_guard_test.go          TUI/History/Queue/Status/initial Prompt guards
+  legacy_guard_test.go        CLI/Bootstrap/thin main guards
 
 internal/policy/
   approval_types.go          Approval 公共枚举、Cause 与 Presentation 类型
@@ -385,7 +488,7 @@ internal/tool/builtin/
 
 `internal/cli` 对齐 Codex `cli` 的 multitool dispatcher，拥有顶层 command tree、共享 flags 和 command dispatch。根命令的可选 positional 参数命名为 `PROMPT`；无 Agent 子命令时，不论 Prompt 是否存在都只进入同一个 TUI frontend。Amadeus 当前基础范围没有独立的非交互 Agent frontend；未来若增加该产品形态，必须使用显式命令并单独定义输入、Approval、`request_user_input`、事件消费和完成 Contract。
 
-`internal/interface/tui` 对齐 Codex TUI/ChatWidget 边界，拥有 terminal preflight、active Thread attachment、pending initial `UserMessage`、Approval/UserInput overlay、normal user-message submission、renderer drain 和 `AppExitInfo`。`internal/app.InteractiveApplication` 继续拥有界面无关的 active Thread attachment 与唯一 SessionIo event pump；它不保存尚未提交的 initial message。CLI、bootstrap、Application、Session 和 Rollout 都不得并列保存 pending Prompt mirror。
+`internal/tui` 对齐 Codex TUI/ChatWidget 边界，拥有 terminal preflight、active Thread attachment、pending initial `UserMessage`、Approval/UserInput overlay、normal user-message submission、renderer drain 和 `AppExitInfo`。`internal/app.InteractiveApplication` 继续拥有界面无关的 active Thread attachment 与唯一 SessionIo event pump；它不保存尚未提交的 initial message。CLI、bootstrap、Application、Session 和 Rollout 都不得并列保存 pending Prompt mirror。
 
 外层数据模型固定为：
 
@@ -405,7 +508,7 @@ main process context/streams
 → bootstrap resolve config/environment + open Store/Manager/Workspace
 → new/latest/explicit-resume configured barrier
 → InteractiveApplication.Start: canonical history projection + active attachment
-→ Fullscreen model installs snapshot/replay + pending initial UserMessage
+→ TUI appModel installs snapshot/replay + pending initial UserMessage
 → startup-ready → normal submitUserMessage/admission lifecycle
 → typed terminal/AppExitInfo
 → stop event pump/Application
@@ -414,9 +517,9 @@ main process context/streams
 → process exit
 ```
 
-启动中任何一步失败都按已经取得资源的逆序关闭；不得把关闭责任留给 `main` 猜测。Fullscreen 由 TUI/Application 完成 renderer drain、terminal restore 和 shutdown，再把 `AppExitInfo` 交给 CLI 呈现；CLI 不在 Runtime 关闭后重新查询状态。初始 Prompt 尚未提交时属于 TUI transient intent，不写入 Rollout；提交成功后与 Composer 消息共享唯一 UserInputOp、admission、canonical UserMessage 和 terminal lifecycle。
+启动中任何一步失败都按已经取得资源的逆序关闭；不得把关闭责任留给 `main` 猜测。TUI Application 完成 renderer drain、terminal restore 和 shutdown，再把 `AppExitInfo` 交给 CLI 呈现；CLI 不在 Runtime 关闭后重新查询状态。初始 Prompt 尚未提交时属于 TUI transient intent，不写入 Rollout；提交成功后与 Composer 消息共享唯一 UserInputOp、admission、canonical UserMessage 和 terminal lifecycle。
 
-测试随 owner 迁移：command/flag/output 单元测试位于 `internal/cli`，composition failure 和资源关闭测试位于 `internal/bootstrap`，initial UserMessage、optimistic/admission、picker、Resume replay 和 Approval/UserInput 测试位于 `internal/interface/tui`。Provider/Tool 跨层 E2E 使用明确的 test-only integration fixture，通过 `InteractiveApplication` 驱动真实 Runtime，不访问 `package main` 私有 symbol，也不建立第二个生产 frontend。architecture guard 必须验证 `cmd/amadeus` 只有 thin entry、Domain 不反向依赖外层 package、生产代码只有一个 SessionIo event consumer 和一套交互完成协议。
+测试随 owner 迁移：command/flag/output 单元测试位于 `internal/cli`，composition failure 和资源关闭测试位于 `internal/bootstrap`，initial UserMessage、optimistic/admission、picker、Resume replay 和 Approval/UserInput 测试位于 `internal/tui`。Provider/Tool 跨层 E2E 使用明确的 test-only integration fixture，通过 `InteractiveApplication` 驱动真实 Runtime，不访问 `package main` 私有 symbol，也不建立第二个生产 frontend。architecture guard 必须验证 `cmd/amadeus` 只有 thin entry、Domain 不反向依赖外层 package、生产代码只有一个 SessionIo event consumer 和一套交互完成协议。
 
 ### 7.2 Initial Prompt 与 TUI UserMessage
 
@@ -434,7 +537,7 @@ type UserMessage struct {
 type UserMessageSubmission struct {
     Message             UserMessage
     ClientUserMessageID string
-    Mode                turn.ModeKind
+    Mode                protocol.ModeKind
     OverrideMode        bool
     FromNextTurnQueue   bool
     OriginThreadID      protocol.ThreadID
@@ -446,14 +549,14 @@ type RunOptions struct {
     // Bootstrap、Target、OpenSessions、streams 等现有字段
 }
 
-type FullscreenOptions struct {
+type ApplicationOptions struct {
     InitialUserMessage *UserMessage
     // Snapshot、Application、terminal options 等现有字段
 }
 ```
 
 - CLI 只拥有原始 `Prompt string` 并在 TUI dispatch 前规范化换行；`tui.Run` 只负责 `Prompt → *UserMessage` 转换。与 Codex `create_initial_user_message` 一样，exact empty Prompt 转换为 nil，非空内容除已完成的换行规范化外保持原样。当前不为尚未支持的 CLI image、TextElement 或 mention binding 增加占位字段。
-- `fullscreenModel` 是 Amadeus 中与 Codex ChatWidget 对应的 owner，保存唯一 `initialUserMessage *UserMessage`。`FullscreenStartup` 继续只保存 Version 等静态展示信息；Prompt 不进入 Startup、`InteractiveApplication`、ThreadWorkspace、SessionState、Protocol Event 或 Rollout。
+- TUI `appModel` 是 Amadeus 中与 Codex ChatWidget 对应的 owner，保存唯一 `initialUserMessage *UserMessage`。TUI startup state 继续只保存 Version 等静态展示信息；Prompt 不进入 Startup、`InteractiveApplication`、ThreadWorkspace、SessionState、Protocol Event 或 Rollout。
 - `InteractiveApplication.SubmitUser` 和 `Session.admitUserMessage` 不能再次 trim/rewrite 已由 TUI 构造的非空 UserMessage；它们只校验 exact empty、bounded bytes、active attachment 和 Runtime admission，再转换/接纳 Protocol UserInputOp。canonical ResponseUserMessage 与 completed UserMessage Item 保存同一 Text。Composer 是否 trim 属于 Composer parse policy，不得反向改变 CLI initial Prompt 的数据。
 - 当前名为 `TaskSubmission` 的 TUI DTO 实际表示用户消息提交，必须直接替换为 `UserMessageSubmission`；`prepareTaskSubmission`/`submitTask` 对应改为 `prepareUserMessageSubmission`/`submitUserMessage`。不能保留旧类型 alias 或 wrapper。
 - TUI pending queue 与 Codex 的用户消息术语统一：`QueuedUserInput` 改为 `QueuedUserMessage`，内部持有 `UserMessage`；Runtime boundary 继续使用 `UserInputOp`，因为它是跨 Interface/Session 的 Protocol operation。UI message 与 Protocol input 不使用同一个类型伪装 ownership。
@@ -468,15 +571,15 @@ ThreadManager.Start/Resume
 → InteractiveApplication.Start
 → 读取 canonical History 并构造 ThreadViewSnapshot
 → 安装唯一 active attachment/event pump
-→ Fullscreen model 恢复 snapshot Items
+→ TUI appModel 恢复 snapshot Items
 → startup-ready lifecycle message
 → submitInitialUserMessageIfPending
 → normal submitUserMessage
 ```
 
-`ThreadManager.spawn` 已在返回 AmadeusThread 前等待 `SessionIo.Configured`，`InteractiveApplication.Start` 已在构造 Fullscreen model 前完成 history projection 和 attachment install。因此 Amadeus 不复制 Codex 为异步 app-server 准备的第二份 `queue_submissions_until_session_configured` 状态；configured barrier 和 snapshot/replay barrier 是 Go 中的等价实现。若这些 barrier 将来改为异步，必须重新引入 typed readiness state，不能靠 timeout 或 goroutine sleep 猜测。
+`ThreadManager.spawn` 已在返回 AmadeusThread 前等待 `SessionIo.Configured`，`InteractiveApplication.Start` 已在构造 TUI appModel 前完成 history projection 和 attachment install。因此 Amadeus 不复制 Codex 为异步 app-server 准备的第二份 `queue_submissions_until_session_configured` 状态；configured barrier 和 snapshot/replay barrier 是 Go 中的等价实现。若这些 barrier 将来改为异步，必须重新引入 typed readiness state，不能靠 timeout 或 goroutine sleep 猜测。
 
-Bubble Tea 的 `Init` 不能直接修改后续 model，因此 startup 使用无 payload 的 typed lifecycle message通知 `Update`“初始 frame 已建立”；Prompt 数据始终留在 `fullscreenModel.initialUserMessage`。`submitInitialUserMessageIfPending` 使用 take-once 语义并复用普通 Composer 提交链：
+Bubble Tea 的 `Init` 不能直接修改后续 model，因此 startup 使用无 payload 的 typed lifecycle message通知 `Update`“初始 frame 已建立”；Prompt 数据始终留在 `appModel.initialUserMessage`。`submitInitialUserMessageIfPending` 使用 take-once 语义并复用普通 Composer 提交链：
 
 ```text
 pending initial UserMessage
@@ -617,7 +720,7 @@ type ThreadManager struct {
 
 CLI/TUI 只通过 ThreadManager 和 AmadeusThread 使用 Runtime，不直接装配 Session 级依赖或 Rollout Writer。
 
-Go 为避免 `thread → agent/session → thread` 包循环，将持久化边界放在 `internal/thread`，将需要 spawn internal Session 的管理层放在 `internal/thread/manager`。这是同一个 Thread Runtime 边界的无环包拆分，不建立第二套 ThreadManager。
+Go 为避免 `threadmanager → agent/session → threadmanager` 包循环，将持久化 port 与 LiveThread 放在 `internal/threadstore`，将需要 spawn internal Session 的管理层放在 `internal/threadmanager`。这对应 Codex 的 `thread-store` crate 与 core `ThreadManager/CodexThread` 边界，不建立第二套 ThreadManager，也不使用 `internal/state` 作为含义过宽的 metadata owner。
 
 #### Application ThreadWorkspace
 
@@ -700,7 +803,7 @@ type ThreadSettingsOp struct {
 
 `UserInputOp.ThreadSettings` 在接纳用户消息前原子应用；因此 `/plan <task>` 不需要 TUI 保存 `pendingModeTask`、等待 settings acknowledgement 后再提交第二个业务请求。若消息启动新 Turn，更新后的 settings 用于冻结新 TurnContext；若消息 steer 当前 Turn，当前已冻结 TurnContext 保持不变，更新后的 SessionConfiguration 只影响后续 Turn。独立 `ThreadSettingsOp` 只用于不提交用户消息的 `/plan` 和快捷模式切换，不能在 ActiveTurn 运行期间原地改变已冻结的 TurnContext。
 
-提交到 Runtime 的普通用户消息只有一个 `UserInputOp`；steer 是该消息被 Runtime 接纳到当前 Turn 的方式，不是第二种 Core Op，也不新增 `SteerOp`。Fullscreen Tab queue 在提交前只是 Interface 持有的未来输入，不改变这一 Protocol Contract。Session 必须为已提交的用户消息返回 typed admission：
+提交到 Runtime 的普通用户消息只有一个 `UserInputOp`；steer 是该消息被 Runtime 接纳到当前 Turn 的方式，不是第二种 Core Op，也不新增 `SteerOp`。TUI Tab queue 在提交前只是 Interface 持有的未来输入，不改变这一 Protocol Contract。Session 必须为已提交的用户消息返回 typed admission：
 
 ```go
 type UserMessageAdmissionKind string
@@ -745,7 +848,7 @@ type Session struct {
 - 路由 Approval Decision、User Input Answer 与 Interrupt。
 - 对 `UserInputOp` 执行 Started/Steered admission，并完成按 SubmissionID 注册的 user message admission waiter。
 - 将 steer input 放入当前 Turn 的 `TurnInputQueue`，而不是 Session deferred submission queue。
-- 不拥有 Fullscreen Tab queue；下一 Turn 输入只有在 Interface 从队列正式提交后才进入 Session。
+- 不拥有 TUI Tab queue；下一 Turn 输入只有在 Interface 从队列正式提交后才进入 Session。
 - 决定需要记录的 Runtime 事实，通过 LiveThread 追加 canonical RolloutItem；瞬时 Delta、Working 和未决交互请求不进入 canonical Rollout。
 - 使用 InitialHistory 重建 SessionState 与 ContextManager 投影。
 - 在持久化和 flush 后发布 Turn 终态事件。
@@ -820,7 +923,7 @@ type SessionServices struct {
 - CompactionService 只接收 immutable CompactionRequest 并返回 typed CompactionOutput；它不读取或修改 Session、ContextManager、Rollout、TUI、TokenUsageInfo 或 ActiveTurn，也不构造 canonical RolloutItem。
 - Session 根据 Op 和 Turn 类型直接创建 `RegularTask`、`CompactTask` 或后续 ReviewTask。
 - `RegularTask` 持有从 `UserInputOp` 接纳的目标、scoped EventSink 和 SessionServices 引用，并以 Session、TurnContext 和 cancellation 调用 Session 模块内 `run_turn`；Task 不持有或关闭 SessionServices。
-- SessionTask 不反向调用 Application/TUI 的 `execute*Turn` 方法，也不持有 CLI controller、Cobra command、TUI model 或完整 CLI invocation。
+- SessionTask 不反向调用 Application/TUI 的 `execute*Turn` 方法，也不持有 CLI controller、Cobra command、TUI appModel 或完整 CLI invocation。
 - AmadeusThread/Application 需要的查询由 Session/Thread 提供明确的 typed API。
 
 SessionServices 不直接持有 SQLite Repository、JSONL 文件句柄或 Rollout Path；这些细节封装在 LiveThread → ThreadStore → LocalThreadStore 中。
@@ -1112,7 +1215,7 @@ Steer 默认不取消正在进行的普通模型 stream、Tool、Approval wait �
 
 ### 8.17 Next-Turn User Input Queue
 
-Next-turn queue 表示用户在 Fullscreen TUI 的一个 Turn 运行期间显式按 Tab，把普通文字保留为后续独立 Turn。它与 same-turn steer 是两个不同的输入意图：Enter 立即提交 `UserInputOp` 并由 Runtime 返回 Started/Steered；Tab 在本地排队，当前 Turn terminal 前不得调用 Runtime。
+Next-turn queue 表示用户在 TUI 的一个 Turn 运行期间显式按 Tab，把普通文字保留为后续独立 Turn。它与 same-turn steer 是两个不同的输入意图：Enter 立即提交 `UserInputOp` 并由 Runtime 返回 Started/Steered；Tab 在本地排队，当前 Turn terminal 前不得调用 Runtime。
 
 该能力对齐 Codex `ChatComposer.InputResult::Queued`、`ChatWidget.InputQueueState` 与 terminal 后 `maybe_send_next_queued_input` 的职责关系，但只实现 Amadeus 当前需要的普通文字队列，不提前复制 queued Slash/Shell、图片附件、paste placeholder 或跨产品 thread-tab state。
 
@@ -1132,7 +1235,7 @@ type NextTurnQueue struct {
 }
 ```
 
-`NextTurnQueue` 由 `fullscreenModel` 对应的 Input/ChatWidget 层拥有，并放在独立的 `internal/interface/tui/input_queue.go`；它不是 `SessionState`、`Session.inputQueue`、Application Thread registry、Context history 或新的业务 Event reducer。队列只保存尚未提交的用户意图，因此：
+`NextTurnQueue` 由 TUI `appModel` 对应的 Input/ChatWidget 层拥有，并放在独立的 `internal/tui/input_queue.go`；它不是 `SessionState`、`Session.inputQueue`、Application Thread registry、Context history 或新的业务 Event reducer。队列只保存尚未提交的用户意图，因此：
 
 - enqueue 不创建 Submission、UserMessageAdmission、TurnItem、EventMsg、RolloutItem、Context message 或 SQLite record。
 - enqueue 不插入普通 `UserMessageCell`，只更新本地 input recall 与有界 queued preview；真正出队并提交时才生成 ClientUserMessageID 和 optimistic UserMessage projection。
@@ -1158,7 +1261,7 @@ Tab while Slash Popup has a selected item
 → do not enqueue
 ```
 
-在用户已经输入可排队的普通文字、但尚未按 Tab 时，Fullscreen Footer 必须对齐 Codex 显示 transient queue hint。`HasQueueableDraft` 或等价派生值只在以下条件全部成立时为 true：当前 Turn 正在运行、Composer trim 后非空、`ParseInput` 结果为普通 `Text`、没有活动 Slash/Selection/Approval/User Input overlay。Slash Command 或 invalid slash 不得显示会误导用户的 queue hint。
+在用户已经输入可排队的普通文字、但尚未按 Tab 时，TUI Footer 必须对齐 Codex 显示 transient queue hint。`HasQueueableDraft` 或等价派生值只在以下条件全部成立时为 true：当前 Turn 正在运行、Composer trim 后非空、`ParseInput` 结果为普通 `Text`、没有活动 Slash/Selection/Approval/User Input overlay。Slash Command 或 invalid slash 不得显示会误导用户的 queue hint。
 
 ```text
 Running + queueable ordinary draft
@@ -1271,12 +1374,12 @@ Same-turn steer 的关键不变量：
 
 ```text
 Ordinary composer text + Tab while Turn is running
-→ Fullscreen Input layer validates active attachment and non-empty text
+→ TUI Input layer validates active attachment and non-empty text
 → enqueue QueuedUserMessage(UserMessage, ThreadID, generation, Mode)
 → clear composer and refresh queued preview
 → current Turn continues unchanged
 → Session persists terminal and clears ActiveTurn
-→ matching terminal Event reaches Fullscreen reducer
+→ matching terminal Event reaches TUI reducer
 → finalize current Turn UI
 → move FIFO head to InFlight and synchronously close the local drain gate
 → submit through the normal UserInputOp/admission path
@@ -1786,7 +1889,7 @@ Model Function Call(request_user_input)
 - Session 是 pending waiter 的唯一 owner；Application/TUI 只展示 Event 并提交 Answer Op，不持有 Tool future。
 - 用户拒绝回答或取消 Dialog 时，Session 以 typed cancellation/decline 结束 waiter，Tool 返回模型可见错误；不得转换成 Approval decline、Permission deny 或 grant。
 - `RequestUserInputEvent` 和未决 waiter 是 transient runtime 状态，不写入 canonical Rollout；模型 Function Call 与最终 ResponseToolResult 按普通 Tool lifecycle 持久化，回答因此进入后续 Context。
-- 当前基础产品只有 Fullscreen TUI frontend，`request_user_input` 始终由 TUI overlay 完成。未来若新增显式非交互或 SDK frontend，必须先定义独立 UserInputRequester capability 和 typed unavailable response；没有交互能力时不得永久等待输入或静默选择默认项。
+- 当前基础产品只有单一 TUI frontend，`request_user_input` 始终由 TUI overlay 完成。未来若新增显式非交互或 SDK frontend，必须先定义独立 UserInputRequester capability 和 typed unavailable response；没有交互能力时不得永久等待输入或静默选择默认项。
 
 ## 12. Prompt 与 Context
 
@@ -2365,6 +2468,16 @@ Model Tool Call
 
 该固定链描述普通 Permission/Approval Tool。`request_user_input` 的 Permission 结果始终为 Allow，并在 `Execute` 内通过窄 `UserInputRequester` 发起独立 interactive request；用户回答不是 ApprovalDecision，也不允许 Permission 阶段通过 `updatedInput` 重写模型原始参数。
 
+目录与所有权同时遵循两套参考：Codex 决定外层 `StepContext → ToolRouter → handler/event/rollout` 关系，Claude Code 决定内层 `ToolUseContext → ValidateInput → Prepare → Permission/Approval → Execute` 关系。对应到 Go：
+
+- `internal/agent/session` capture StepContext、冻结 ToolRouter、创建 Tool lifecycle observer，并把 Tool Call/Result 转成 Protocol/Rollout；不再通过含义模糊的 `agent/engine` 中转。
+- `internal/tool` 只定义通用 Tool contract、Registry/Router、argument normalization、batch concurrency、PermissionService 和执行结果；不得 import `tool/builtin`，也不得用工具名 switch 认识完整产品 catalog。
+- `internal/tool/builtin` 拥有具体 Tool schema、Validate/Prepare/Execute 和具体调用摘要；文件修改共享链保留在同 package 的 `file_change.go`，不复制到 `edit`/`write`。
+- `internal/policy` 拥有 Approval request/decision/port/coordinator、Session grant 和 command/file/network policy presentation，不执行 Tool。
+- `internal/tui` 拥有 HistoryCell、Approval overlay 和用户可见完成态；TUI 可以按 typed ItemKind/ToolName 选择专用 renderer，但不得把展示判断反向写入 Tool 执行协议。
+
+Claude Code 为每个 Tool 建独立目录，是因为对应实现同时包含大型 Tool、Prompt、UI、types 和 helpers。Amadeus 的 Prompt/TUI 已有独立 owner，基础 Tool 规模也更小，因此目标布局是一 Tool 一责任文件，而不是一 Tool 一 Go package。只有 `execute_command`、`grep` 等单文件出现可独立测试的 parser/executor/renderer 子职责时，才先在 `internal/tool/builtin` 内拆文件；不能为形式相似创建人工 subpackage。
+
 每个 Tool 必须表达同一组概念：
 
 ```go
@@ -2441,6 +2554,8 @@ Audit record 至少携带 SessionID、ThreadID、TurnID、RequestID 和 ToolName
 `execute_command`/`write_stdin` Tool schema 中为兼容模型语料而存在的进程 `session_id` 表示 ProcessManager 分配的 process session/process ID，与 Agent SessionID 属于不同命名空间；内部必须保持 process ID 类型，不参与 Thread/Session UUID parsing。
 
 `ToolRouter` snapshot 同时保存模型可见 ToolSpec、确切 ToolDefinition handler、MCP binding、visibility 和 parallel flag；模型看到的 spec 与随后 dispatch 的 handler 必须来自同一 snapshot。执行阶段不得按工具名重新查询当前 mutable registry，也不得只用 `AllowedTools`/revision 字符串假装冻结 handler identity。
+
+Tool call presentation 不是 generic Router 事实。通用 fallback 可以按 SideEffect 生成安全摘要；`read`、`web_fetch`、`spawn_agent`、MCP 等具体 action summary 必须由 builtin registration、Session Tool Event policy 或 typed TUI projection 拥有，不保留 generic `internal/tool/presentation.go` 中枚举全部产品工具的反向依赖。
 
 `ToolExecutionService` 固定执行以下顺序：
 
@@ -3082,19 +3197,19 @@ Popup 只负责过滤和选择 `BuiltinSlashCommands`；Enter 后返回普通提
 
 ### 18.3 单一分发中心
 
-Fullscreen TUI 的活动模型承担类似 Codex `ChatWidget` 的统一分发职责：
+TUI 的活动 model 承担类似 Codex `ChatWidget` 的统一分发职责：
 
 ```text
 Composer
 → InputResult
-→ fullscreenModel.dispatchCommand
+→ model.dispatchCommand
 → TUI Local Action / AppEvent / Session Op
 → Application 或 Runtime owner
 → Event/EventMsg / typed AppEvent result
 → HistoryCell / TUI Projection
 ```
 
-`internal/cli` 只负责 CLI 参数和顶层分发，`internal/bootstrap` 只负责依赖装配，`internal/interface/tui` 负责交互启动；三者都不在 TUI 外维护 Slash Command `switch`。不保留 Plain Controller、`CommandHandler`、`TaskHandler` 或第二套 Slash Command 执行路径；`--plain` 删除，不作为另一套交互运行时维护。
+`internal/cli` 只负责 CLI 参数和顶层分发，`internal/bootstrap` 只负责依赖装配，`internal/tui` 负责交互启动；三者都不在 TUI 外维护 Slash Command `switch`。不保留 Plain Controller、`CommandHandler`、`TaskHandler` 或第二套 Slash Command 执行路径；`--plain` 删除，不作为另一套交互运行时维护。
 
 命令按最终动作分为三类，但分类只服务于分发实现，不引入额外的路由抽象：
 
@@ -3104,7 +3219,7 @@ Composer
 | Application Command/Query | `/resume`、`/skills`、`/rename`、`/delete`、`/status`、`/mcp`、`/clear`、`/exit` | 转换为 typed AppEvent，由 Application/Thread owner 执行并返回结构化结果 |
 | Session/Turn Operation | `/compact`、`/plan` | `/compact` 提交 `CompactOp`；`/plan` 提交独立 settings update；`/plan <task>` 提交携带 Plan mode override 的单个 `UserInputOp` |
 
-`/plan` 不直接修改 TUI 的本地模式变量，也不通过 callback 返回模拟 Session 已接受设置。Fullscreen TUI 通过 active Thread attachment 提交 `ThreadSettingsOp{CollaborationMode: Plan}`；Session 发布 typed `ThreadSettingsAppliedEvent` 后，TUI 才更新模式投影。带参数的 `/plan <task>` 不使用 `pendingModeTask`，严格遵循：
+`/plan` 不直接修改 TUI 的本地模式变量，也不通过 callback 返回模拟 Session 已接受设置。TUI 通过 active Thread attachment 提交 `ThreadSettingsOp{CollaborationMode: Plan}`；Session 发布 typed `ThreadSettingsAppliedEvent` 后，TUI 才更新模式投影。带参数的 `/plan <task>` 不使用 `pendingModeTask`，严格遵循：
 
 ```text
 SlashCommand::Plan(task)
@@ -3124,13 +3239,13 @@ Slash Command 不是 EventMsg。命令执行引发的状态变化才通过 Event
 
 Slash Command 分发后的异步工作使用 Codex 同构的 typed AppEvent，不使用 `func(context.Context) (string, error)` 作为通用命令边界。字符串只允许存在于最终 HistoryCell 的展示字段中，不能承担 Thread attach、history replay、running state、empty state 或 typed inventory 的业务语义。
 
-Fullscreen interactive mode 必须像 Codex `App` 一样持续拥有当前 Thread attachment 和事件路由，而不是让每次 `runTask` 或 Slash Command callback 临时调用 `waitTurn` 消费 `SessionIo`：
+TUI Application 必须像 Codex `App` 一样持续拥有当前 Thread attachment 和事件路由，而不是让每次 `runTask` 或 Slash Command callback 临时调用 `waitTurn` 消费 `SessionIo`：
 
 - 同一时刻只有一个 active Thread attachment；它是 `SessionIo.Events` 和 termination 的唯一消费者，并在内部从 EventMsg 派生 transcript/status read model。
 - 普通用户输入与 `/compact` 只负责向 active `AmadeusThread` 提交 typed Op；Turn running、approval、completion 和 history 更新全部由 attachment event pump 送回 Bubble Tea AppEvent。
-- Fullscreen Tab queue 在提交前属于 TUI input state；它只消费 matching attachment 的 terminal Event 来触发下一次普通提交，不创建第二个 SessionIo consumer 或 TUI terminal truth。
+- Tab queue 在提交前属于 TUI input state；它只消费 matching attachment 的 terminal Event 来触发下一次普通提交，不创建第二个 SessionIo consumer 或 TUI terminal truth。
 - Resume 成功后先停止旧 attachment 的转发，再原子安装新 attachment；带旧 ThreadID 或旧 attachment generation 的迟到消息必须被丢弃。
-- 生产代码只保留 Fullscreen attachment event pump 这一套 SessionIo consumer；CLI 和其他外层 package 不得建立并行事件循环或第二套 Turn 完成协议。
+- 生产代码只保留 TUI attachment event pump 这一套 SessionIo consumer；CLI 和其他外层 package 不得建立并行事件循环或第二套 Turn 完成协议。
 - Bubble Tea 后台 command 的完成只表示 Application request goroutine 已返回，不能表示 Turn 已完成；Turn 终态仍唯一来自 `TurnCompleteEvent`/`TurnAbortedEvent`。
 
 目标 AppEvent 至少覆盖：
@@ -3186,7 +3301,7 @@ type ThreadViewSnapshot struct {
 
 TUI attachment、迟到 Event、MCP inventory、Git branch lookup 和 overlay matching 继续只使用 `attachment generation + ThreadID`；SessionID 不替代具体 Thread 路由。`SessionOption.ID`、`AppExitInfo.ThreadID`、resume picker 和 exit resume hint 始终保存 ThreadID。状态面板可以持有 SessionID 供诊断，但 Codex 风格用户可见 “session/thread id” 项仍显示当前可恢复的 ThreadID。
 
-`FullscreenStartup` 只允许携带 Version 等真正属于进程启动且不会随 Thread attach 改变的静态展示信息。NoColor、初始终端尺寸等 TUI options 继续属于界面启动参数，不并入 Session 状态。CWD、Provider、Model、ReasoningEffort、Mode、Thread title、TokenUsageInfo 和 ActiveContextTokens 都属于 active Session/Thread read model，必须来自 `ThreadViewSnapshot` 或 live typed Event；不得在 Startup、Application Status 和 TUI model 中建立三份并列 owner。
+TUI startup state 只允许携带 Version 等真正属于进程启动且不会随 Thread attach 改变的静态展示信息。NoColor、初始终端尺寸等 TUI options 继续属于界面启动参数，不并入 Session 状态。CWD、Provider、Model、ReasoningEffort、Mode、Thread title、TokenUsageInfo 和 ActiveContextTokens 都属于 active Session/Thread read model，必须来自 `ThreadViewSnapshot` 或 live typed Event；不得在 Startup、Application Status 和 TUI appModel 中建立三份并列 owner。
 
 #### `/resume`
 
@@ -3381,7 +3496,7 @@ SlashCommand::Exit
 → 清除 active Composer/Footer frame
 → Application Exit(UserRequested, AppExitInfo)
 → tea.Quit
-→ 恢复终端并从 FullscreenApplication.Run 返回 AppExitInfo
+→ 恢复终端并从 tui.Application.Run 返回 AppExitInfo
 → internal/cli exit presenter 在 TUI 结束后打印 token usage / resume hint
 ```
 
@@ -3418,13 +3533,13 @@ type AppExitInfo struct {
 }
 ```
 
-`AppExitInfo` 对齐 Codex 同名概念，是 Fullscreen App 的最终返回值，不是 EventMsg、HistoryCell 或 persisted RolloutItem。字段规则如下：
+`AppExitInfo` 对齐 Codex 同名概念，是 TUI Application 的最终返回值，不是 EventMsg、HistoryCell 或 persisted RolloutItem。字段规则如下：
 
-- `TokenUsage` 来自退出时最终 `fullscreenSessionState.TokenInfo.TotalTokenUsage`；不能在 CLI 侧重新打开 Session、累加 TokenCountEvent 或解析 Rollout 统计。
+- `TokenUsage` 来自退出时最终 `sessionViewState.TokenInfo.TotalTokenUsage`；不能在 CLI 侧重新打开 Session、累加 TokenCountEvent 或解析 Rollout 统计。
 - `ThreadID`/`ThreadName` 来自 active Thread attachment；没有已建立 Thread 时允许为空。
 - `ResumeHint` 只在目标 Thread 已可恢复时生成。基础命令形式为 `amadeus --resume <thread-id>`；若后续 picker/name UX 与 Codex 对齐，可使用名称作为辅助展示，但 ThreadID 仍是稳定 identity。
 - 正常 `/exit` 使用 `ExitReasonUserRequested`。Fatal shutdown、renderer 或 Application 错误使用 `ExitReasonFatal` 并携带 `Error`；不能把 fatal error 降级成普通 usage summary。
-- `FullscreenApplication.Run` 的目标签名为 `Run(context.Context) (AppExitInfo, error)`；`internal/cli` 的 exit presenter 只在 Run 返回、Bubble Tea renderer 停止且终端恢复后格式化输出，`cmd/amadeus` 不参与呈现。
+- `tui.Application.Run` 的目标签名为 `Run(context.Context) (AppExitInfo, error)`；`internal/cli` 的 exit presenter 只在 Run 返回、Bubble Tea renderer 停止且终端恢复后格式化输出，`cmd/amadeus` 不参与呈现。
 
 Codex 的 token usage 和 resume hint 不属于 TUI 最后一帧，也不进入 History。CLI exit presentation 固定为：
 
@@ -3617,7 +3732,7 @@ type footerProps struct {
 }
 ```
 
-- `statusLineValueForItem()` 只从 TUI 已持有的 `fullscreenSessionState` 和派生 cache 读取值；item 当前不可用时返回 unavailable 并临时省略，不显示 `unknown`、`-` 或 Application status fallback。
+- `statusLineValueForItem()` 只从 TUI 已持有的 `sessionViewState` 和派生 cache 读取值；item 当前不可用时返回 unavailable 并临时省略，不显示 `unknown`、`-` 或 Application status fallback。
 - `refreshStatusLine()` 只在 canonical session state、title、usage/context 或 CurrentDir 对应 branch cache 改变时重建 `statusLineState`。Window resize 只重新计算 `footerProps` 布局，不重复业务 projection。
 - `statusLineSegment` 不提前持有 Lip Gloss style。`statusLineAccentForItem()` 在 Footer render 边界集中映射 TerminalPalette accent，保证颜色策略与数据模型解耦，并在 `NO_COLOR` 下自然降级。
 - Statusline 颜色解析采用 Codex 的 theme-first/fallback 分层：TrueColor 与 ANSI256 根据终端明暗背景选择 Catppuccin Mocha/Latte Chroma style，以 type、string、function、number、keyword、heading token 对应 Codex 的 Model、Path、Branch、Usage、Mode、Thread scope family，之后执行同样的 85% saturation softening；ANSI16 保留 cyan/green/magenta fallback。该基础版不引入 `/theme` 或自定义 tmTheme owner。
@@ -3638,7 +3753,7 @@ Session.Configuration
 ├─ ThreadSettingsAppliedEvent.Configuration
 └─ ThreadViewSnapshot.Configuration
           ↓
-fullscreenSessionState
+sessionViewState
           ↓
 refreshStatusLine()
           ↓
@@ -3647,15 +3762,15 @@ statusLineState{Segments}
 renderFooter(footerProps)
 ```
 
-Thread title、TokenUsageInfo/ActiveContextTokens 和 Git branch 分别通过 typed Application event、`TokenCountEvent` 与 CurrentDir-keyed derived cache 合入同一个 `fullscreenSessionState`，不塞入 `SessionConfiguration` 扩大其职责。TokenCountEvent 和 ThreadViewSnapshot 都携带完整 snapshot，Reducer 只替换、不累加。`ThreadSettingsAppliedEvent` 携带实际生效的完整 `SessionConfiguration`，并与 `SessionConfiguredEvent`、snapshot attach 共用 `applySessionConfiguration()`。该函数原子替换 CurrentDir、Provider、Model、ReasoningEffort 和 CollaborationMode；不能只更新 Mode 后继续从 Startup 或 Application Status 读取其他字段。Resume、new thread 和 attach 必须先清理旧 Thread 的 session/footer 派生状态，再安装新 snapshot，避免旧目录、branch、title 或 context 泄漏。
+Thread title、TokenUsageInfo/ActiveContextTokens 和 Git branch 分别通过 typed Application event、`TokenCountEvent` 与 CurrentDir-keyed derived cache 合入同一个 `sessionViewState`，不塞入 `SessionConfiguration` 扩大其职责。TokenCountEvent 和 ThreadViewSnapshot 都携带完整 snapshot，Reducer 只替换、不累加。`ThreadSettingsAppliedEvent` 携带实际生效的完整 `SessionConfiguration`，并与 `SessionConfiguredEvent`、snapshot attach 共用 `applySessionConfiguration()`。该函数原子替换 CurrentDir、Provider、Model、ReasoningEffort 和 CollaborationMode；不能只更新 Mode 后继续从 Startup 或 Application Status 读取其他字段。Resume、new thread 和 attach 必须先清理旧 Thread 的 session/footer 派生状态，再安装新 snapshot，避免旧目录、branch、title 或 context 泄漏。
 
-`ThreadSettingsAppliedEvent` 同时驱动两条相互独立的 UI 路径。第一条通过 `fullscreenSessionState → footerState.CollaborationIndicator → renderFooter()` 更新 Footer 右列模式标签。第二条对齐 Codex 的 settings acknowledgement/info-history 生命周期，但消息必须描述 Amadeus 实际发生的业务事实：基础版 Mode 切换不改变 Model 或 ReasoningEffort，因此插入 `• Mode changed to <Mode>.`，而不是伪造 `Model changed`。该消息不得使用普通 dim notice，也不得把 Composer、Popup 或 Footer 内容拼进 history；`tea.Println` 只提交 HistoryCell，随后由 Bubble Tea 原生 renderer 重绘单份活动 frame。
+`ThreadSettingsAppliedEvent` 同时驱动两条相互独立的 UI 路径。第一条通过 `sessionViewState → footerState.CollaborationIndicator → renderFooter()` 更新 Footer 右列模式标签。第二条对齐 Codex 的 settings acknowledgement/info-history 生命周期，但消息必须描述 Amadeus 实际发生的业务事实：基础版 Mode 切换不改变 Model 或 ReasoningEffort，因此插入 `• Mode changed to <Mode>.`，而不是伪造 `Model changed`。该消息不得使用普通 dim notice，也不得把 Composer、Popup 或 Footer 内容拼进 history；`tea.Println` 只提交 HistoryCell，随后由 Bubble Tea 原生 renderer 重绘单份活动 frame。
 
 生命周期固定为：
 
 | 触发 | 状态变化 | Footer 动作 |
 |---|---|---|
-| constructor / initial snapshot | 初始化 active `fullscreenSessionState` | projection 一次 |
+| constructor / initial snapshot | 初始化 active `sessionViewState` | projection 一次 |
 | `SessionConfiguredEvent` | 应用完整 Configuration | refresh |
 | `ThreadSettingsAppliedEvent` | 应用完整已生效 Configuration，Mode 变化时插入 settings acknowledgement info row | refresh projection + right-aligned mode |
 | `ThreadAttached` | 替换 Thread、Configuration、title、usage/context | 清空旧 cache 后 refresh |
@@ -3674,7 +3789,7 @@ Git branch 查询必须在 CurrentDir 改变时清空旧值并异步刷新；请
 
 - **Working/status indicator**：表示当前 Turn 的 Working、retry 或其他短期活动状态，生命周期来自 Event。
 - **Statusline**：表示固定的 Session/Thread metadata 投影，不展示瞬时运行状态。
-- **Collaboration mode indicator**：表示 Plan mode，并在 Footer 右侧独立布局；它读取 `fullscreenSessionState.Configuration.Mode`，但不是 `StatusLineItem`。
+- **Collaboration mode indicator**：表示 Plan mode，并在 Footer 右侧独立布局；它读取 `sessionViewState.Configuration.Mode`，但不是 `StatusLineItem`。
 - **Queue hint**：表示当前 Composer draft 可用 Tab 排入下一 Turn，是纯 TUI transient guidance；它临时取代 passive statusline，但不表示已经 enqueue，也不进入 footerState/canonical state。
 
 ### 19.5 Interactive Request 与 Diff
@@ -3946,7 +4061,7 @@ AgentControl 可以保存尚未加载 Runtime 的 persisted AgentRecord，但不
 
 禁止：
 
-- 在 CLI、exec、TUI model 或 Application 中维护第二份 `map[AgentID]AgentStatus` 作为事实源。
+- 在 CLI、exec、TUI appModel 或 Application 中维护第二份 `map[AgentID]AgentStatus` 作为事实源。
 - 让 ToolDefinition 直接构造 Session、ModelClient、ThreadStore writer 或 goroutine。
 - 让 child Session 回调父 `regularTask` 或共享父 ActiveTurn/TurnState。
 - 为 SubAgent 新建与 `run_turn` 平行的 simplified agent loop。
@@ -4963,7 +5078,7 @@ Compaction error 至少区分：
 - Rollout append/flush 和 ActiveTurn 清理先于终态 Event。
 - Resume 后 Rollout 顺序稳定。
 - crash/fault injection 验证 SQLite 永不超过 JSONL durable watermark，Buffered Append 不提前 upsert metadata。
-- architecture test 验证 production SessionTask 不引用 CLI/TUI controller、TUI model、Cobra command 或完整 invocation，并直接通过 Session/SessionServices 完成运行。
+- architecture test 验证 production SessionTask 不引用 CLI/TUI controller、TUI appModel、Cobra command 或完整 invocation，并直接通过 Session/SessionServices 完成运行。
 - Root/child 创建验证共享 SessionID 与独立 ThreadID；Root Resume 验证 requested ID、StoredThread、Rollout filename、SessionMeta.ID/SessionID 一致，并恢复 parent relation 合法的 persisted child metadata。
 - persisted/unloaded child 通过 child ThreadID 触发 internal resume；错误 SessionID、ParentThreadID 或 Rollout identity 不进入 AgentControl registry，也不留下 live writer/runtime。
 
@@ -5118,6 +5233,10 @@ Amadeus 至少通过以下真实场景：
 34. 多步 Tool Turn 的 TotalTokenUsage 持续累计而 LastTokenUsage 只反映最近 request；大 Tool Result 进入 active suffix，auto compact 后 active context 明显下降，Resume 与 live 显示相同 context occupancy，SQLite `tokens_used` 不重复累计 snapshot。
 35. 当前 Turn 的大 Tool Result 导致 mid-turn compact 时，replacement 覆盖 exact source 并继续原 model/tool continuation；compaction 无法降低 active context、source 在等待期间变化或 Provider 返回 context length error 时产生 typed failure，不重复 compact 或覆盖新事实。
 36. `amadeus "inspect this project"` 启动与空 Prompt 相同的 TUI，先建立 configured active Thread 和恢复历史，再以 pending UserMessage 显示并通过正常 admission 提交；Turn 完成后 TUI 继续运行。latest/explicit Resume 时旧历史先于 initial message，Prompt 只提交一次；非 TTY 由 TUI terminal preflight 明确拒绝。
+37. `go list ./internal/...` 只暴露目标 package；不存在 `agent/engine`、`agent/turn`、`agent/protocol`、`context`/`agentcontext` 路径不一致、`state`、`interface/tui`、`sandbox` 或空 `agent/plan`/`agent/task` 目录，生产与测试代码也不通过 alias/wrapper 回引旧路径。
+38. Protocol、Session、ContextManager、ThreadStore、ThreadManager 和 TUI 的依赖方向与第 7 章一致：Protocol 不嵌套在 Runtime，ThreadStore 不 import Session，ThreadManager 是唯一 Session spawn owner，TUI reducer 不位于 Application domain。
+39. Tool 调用仍严格保持 Normalize→Validate→Prepare→Permission/Approval→Execute；package 收敛后相同 Tool batch 顺序、read-before-write、stale check、Diff、grant、Event/Rollout 和 Resume 行为不变，generic `internal/tool` 不包含具体 Tool 名 catalog switch。
+40. 责任文件拆分后 architecture guards、focused tests、全仓 functional/race tests、Provider/Core Tool E2E 和构建均通过；测试 owner 跟随新 package，单一 guard 文件不再承担跨全部架构域的检查。
 
 ## 30. 最终架构结论
 
@@ -5152,7 +5271,11 @@ Amadeus 至少通过以下真实场景：
 29. Multi-Agent Prompt 由 ToolSpec delegation guidance、SubagentDeveloperInstructions、WorldState `<subagents>` 和 canonical `<subagent_notification>` 分层拥有；CollabAgentToolCallItem 是 live TUI 与 Resume 的唯一协作展示协议。
 30. SessionID 是 Root/child tree-level correlation/ownership，ThreadID 是具体 Thread 的 registry、routing、Rollout 和 Resume identity；SQLite StoredThread 不复制 SessionID，canonical SessionID 只来自 Rollout SessionMeta。
 31. Root Resume 必须恢复并校验 persisted child metadata；Tool Invocation、Audit 和 Provider request metadata 同时携带真实 SessionID/ThreadID，而 Multi-Agent target、Event scope、Application attachment 和 CLI/TUI resume 始终使用 ThreadID。
-32. Fullscreen Enter steer 与 Tab next-turn queue 是不同输入意图：前者立即进入唯一 UserInputOp/admission 主链，后者由 attachment-scoped TUI FIFO 暂存并在 terminal 后逐条重新使用该主链；Core 不拥有第二个用户输入 queue 或 `Queued` admission。
+32. TUI Enter steer 与 Tab next-turn queue 是不同输入意图：前者立即进入唯一 UserInputOp/admission 主链，后者由 attachment-scoped TUI FIFO 暂存并在 terminal 后逐条重新使用该主链；Core 不拥有第二个用户输入 queue 或 `Queued` admission。
 33. Queue hint 是 queueable Composer draft 的 transient Footer guidance，不是 StatusLineItem、footerState、HistoryCell 或 Runtime Event；它在 running draft 时优先于 passive statusline，并通过纯 footerProps layout 实现 Codex 风格完整/短文案降级。
 34. Amadeus 用户配置使用唯一 versionless strict schema；代码和输出不包含顶层 Config version，旧 `version:` 文件直接拒绝且不迁移，仓库模板唯一命名为 `configs/config.yaml.example`。
-35. 根 positional 参数是 Codex 风格可选 `PROMPT`；CLI 统一启动 TUI，Fullscreen model 独占 pending initialUserMessage，并在 configured/snapshot/replay barrier 后复用普通 UserMessage submission/admission。当前基础范围只有 Fullscreen Approval/UserInput overlay 和一个 SessionIo consumer。
+35. 根 positional 参数是 Codex 风格可选 `PROMPT`；CLI 统一启动 TUI，TUI appModel 独占 pending initialUserMessage，并在 configured/snapshot/replay barrier 后复用普通 UserMessage submission/admission。当前基础范围只有 TUI Approval/UserInput overlay 和一个 SessionIo consumer。
+36. 顶层 package 边界对齐 Codex：`protocol`、`contextmanager`、`threadstore`、`threadmanager` 和 `tui` 分别拥有公共 contract、模型历史、持久化、Thread runtime registry 和界面状态；不使用含义混杂的 `engine`、`state` 或 `interface` namespace。
+37. TurnContext、StepContext、SessionState、SessionServices、ActiveTurn 和 RunningTask 都属于 `agent/session` owner；Go 通过同 package 责任文件表达 Codex private `session/state` module，不为类型名对齐建立人工小 package。
+38. ModelClientSession 的 sampling/stream/reconnect 由窄 `agent/modelclient` package 拥有；Tool Runtime construction、Tool Event、model completion persistence 和 Plan stream lifecycle 回归 Session/Tool owner，不存在泛化 Agent Engine facade。
+39. Tool package 同时对齐 Codex 外层 Router/Event 架构与 Claude Code 内层执行协议：generic `tool`、权限 `policy`、具体 `tool/builtin` 和 TUI projection 各有单一职责，基础版不复制 Claude Code 的一 Tool 一 package 目录结构。

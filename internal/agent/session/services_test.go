@@ -7,10 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
-	agentcontext "github.com/Godric-W/Amadeus/internal/context"
+	contextmanager "github.com/Godric-W/Amadeus/internal/contextmanager"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/testutil"
@@ -63,8 +62,8 @@ func TestSessionServicesAreConstructedOnceAndReusedAcrossTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
-	session := newTestSession(nil, agentcontext.NewManager(nil))
-	session.state.Configuration = Configuration{Runtime: configured, CWD: root, AmadeusRoot: t.TempDir(), Mode: turn.ModeKindDefault}
+	session := newTestSession(nil, contextmanager.NewManager(nil))
+	session.state.Configuration = Configuration{Runtime: configured, CWD: root, AmadeusRoot: t.TempDir(), Mode: ModeKindDefault}
 	session.services.Clock = func() time.Time { return time.Date(2026, 8, 14, 12, 0, 0, 0, location) }
 	services, err := buildSessionServices(context.Background(), session, session.services, ServiceAdapters{
 		ModelMessages: modelMessages,
@@ -85,9 +84,9 @@ func TestSessionServicesAreConstructedOnceAndReusedAcrossTasks(t *testing.T) {
 	if _, ok := session.services.tools.LookupVisible("view_image", session.services.visibility); !ok {
 		t.Fatal("image-capable Session did not expose view_image")
 	}
-	requestContext := turn.TurnContext{
+	requestContext := TurnContext{
 		SubmissionID: "submission-1", SessionID: testutil.SessionID(1), ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Provider: configured.ModelProvider,
-		Model: configured.Model, CWD: root, Mode: turn.ModeKindDefault,
+		Model: configured.Model, CWD: root, Mode: ModeKindDefault,
 	}
 	preparedTask, preparedContext, err := session.createTask(context.Background(), "inspect project", requestContext, TaskKindRegular, newTurnState())
 	if err != nil {

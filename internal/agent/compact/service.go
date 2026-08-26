@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
-	agentcontext "github.com/Godric-W/Amadeus/internal/context"
+	"github.com/Godric-W/Amadeus/internal/agent/modelclient"
+	contextmanager "github.com/Godric-W/Amadeus/internal/contextmanager"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 )
@@ -50,7 +50,7 @@ func (service *Service) Generate(ctx context.Context, request Request) (Output, 
 	for {
 		attemptPrompt := prompt
 		attemptPrompt.Input = append(cloneItems(prompt.Input), llm.UserMessage(compactionPrompt.Text))
-		response, err = request.ModelSession.Complete(ctx, engine.CompleteRequest{
+		response, err = request.ModelSession.Complete(ctx, modelclient.CompleteRequest{
 			Request: llm.Request{
 				Model: model.Name, InputModalities: append([]llm.InputModality(nil), model.InputModalities...),
 				Prompt: attemptPrompt, Reasoning: request.Reasoning.Clone(), Metadata: request.Metadata,
@@ -72,7 +72,7 @@ func (service *Service) Generate(ctx context.Context, request Request) (Output, 
 	}
 	estimator := request.Estimator
 	if estimator == nil {
-		estimator = agentcontext.ApproxTokenEstimator{}
+		estimator = contextmanager.ApproxTokenEstimator{}
 	}
 	replacement := buildReplacement(request.Source.UserMessages, summaryPrefix, response.Message.Content, estimator)
 	return Output{
@@ -113,7 +113,7 @@ func trimOldestCompleteGroup(items []llm.ResponseItem) ([]llm.ResponseItem, bool
 	return trimmed, true
 }
 
-func buildReplacement(userMessages []llm.ResponseItem, summaryPrefix, summary string, estimator agentcontext.Estimator) []llm.ResponseItem {
+func buildReplacement(userMessages []llm.ResponseItem, summaryPrefix, summary string, estimator contextmanager.Estimator) []llm.ResponseItem {
 	users := make([]llm.ResponseItem, 0, len(userMessages))
 	for _, item := range userMessages {
 		if strings.HasPrefix(strings.TrimSpace(item.Content), strings.TrimSpace(summaryPrefix)) {
@@ -125,14 +125,14 @@ func buildReplacement(userMessages []llm.ResponseItem, summaryPrefix, summary st
 	remaining := retainedUserMessageTokenBudget
 	for index := len(users) - 1; index >= 0 && remaining > 0; index-- {
 		item := users[index]
-		cost := agentcontext.EstimateResponseItem(item, estimator)
+		cost := contextmanager.EstimateResponseItem(item, estimator)
 		if cost > remaining {
 			if len(item.Parts) > 0 {
 				item.Parts = nil
 				item.Content = strings.TrimSpace(item.Content) + "\n[Earlier user media omitted during compaction]"
 			}
 			item.Content = truncateText(item.Content, remaining, estimator)
-			cost = agentcontext.EstimateResponseItem(item, estimator)
+			cost = contextmanager.EstimateResponseItem(item, estimator)
 		}
 		if strings.TrimSpace(item.Content) != "" {
 			selected = append(selected, item)
@@ -146,7 +146,7 @@ func buildReplacement(userMessages []llm.ResponseItem, summaryPrefix, summary st
 	return append(selected, llm.UserMessage(summaryText))
 }
 
-func truncateText(value string, budget int64, estimator agentcontext.Estimator) string {
+func truncateText(value string, budget int64, estimator contextmanager.Estimator) string {
 	runes := []rune(value)
 	low, high := 0, len(runes)
 	for low < high {

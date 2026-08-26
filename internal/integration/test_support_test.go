@@ -11,13 +11,13 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	application "github.com/Godric-W/Amadeus/internal/app"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/bootstrap"
 	"github.com/Godric-W/Amadeus/internal/cli"
-	"github.com/Godric-W/Amadeus/internal/interface/tui"
 	"github.com/Godric-W/Amadeus/internal/policy"
+	"github.com/Godric-W/Amadeus/internal/protocol"
+	"github.com/Godric-W/Amadeus/internal/tui"
 )
 
 func testAgentRootOptions(amadeusRoot, workingDirectory string, terminal bool) cli.RootOptions {
@@ -65,7 +65,7 @@ func testNextID(turnID string) func(string) string {
 }
 
 // runInteractiveTestTUI is a cross-layer test fixture, not a production
-// frontend. It drives the same InteractiveApplication port used by Fullscreen
+// frontend. It drives the same InteractiveApplication port used by TUI
 // and returns after one terminal event so Provider/Tool E2E tests stay bounded.
 func runInteractiveTestTUI(ctx context.Context, options tui.RunOptions) (result tui.RunResult, runErr error) {
 	bootstrapped, err := bootstrap.OpenWorkspace(ctx, options.Bootstrap)

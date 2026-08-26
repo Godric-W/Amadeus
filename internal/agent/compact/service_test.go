@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/agent/modelclient"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
@@ -121,20 +121,20 @@ func TestServiceRetainsOnlyTypedRealUserMessages(t *testing.T) {
 	}
 }
 
-func newCompactTestService(t *testing.T, client *compactTestClient) (*Service, *engine.ModelClientSession) {
+func newCompactTestService(t *testing.T, client *compactTestClient) (*Service, *modelclient.ModelClientSession) {
 	t.Helper()
 	messages, err := internalprompt.LoadModelMessages()
 	if err != nil {
 		t.Fatal(err)
 	}
-	modelSession, err := engine.NewModelClientSession(client, engine.ModelClientSessionConfig{StreamIdleTimeout: time.Second})
+	modelSession, err := modelclient.NewModelClientSession(client, modelclient.ModelClientSessionConfig{StreamIdleTimeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &Service{ModelInfo: client.Model(), ModelMessages: messages}, modelSession
 }
 
-func compactRequest(modelSession *engine.ModelClientSession) Request {
+func compactRequest(modelSession *modelclient.ModelClientSession) Request {
 	history := []llm.ResponseItem{llm.UserMessage("first objective"), llm.AssistantMessage("work completed"), llm.UserMessage("latest request")}
 	return Request{
 		Trigger: protocol.CompactionTriggerManual, Reason: protocol.CompactionReasonUserRequested, Phase: protocol.CompactionPhaseStandaloneTurn,

@@ -11,18 +11,16 @@ import (
 	"time"
 
 	agentcompact "github.com/Godric-W/Amadeus/internal/agent/compact"
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/config"
-	agentcontext "github.com/Godric-W/Amadeus/internal/context"
+	contextmanager "github.com/Godric-W/Amadeus/internal/contextmanager"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
-	statesqlite "github.com/Godric-W/Amadeus/internal/state/sqlite"
 	"github.com/Godric-W/Amadeus/internal/testutil"
-	"github.com/Godric-W/Amadeus/internal/thread"
-	"github.com/Godric-W/Amadeus/internal/thread/local"
+	"github.com/Godric-W/Amadeus/internal/threadstore"
+	"github.com/Godric-W/Amadeus/internal/threadstore/local"
+	statesqlite "github.com/Godric-W/Amadeus/internal/threadstore/local/sqlite"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -201,7 +199,7 @@ func TestContinueTurnPersistsAndContinuesAfterToolFailure(t *testing.T) {
 		continuationStream(llm.StreamChunk{ToolCalls: []llm.ToolCall{{ID: "call-1", Name: "unstable", Arguments: json.RawMessage(`{}`)}}, FinishReason: llm.FinishReasonToolCalls, TokenUsage: &llm.TokenUsage{TotalTokens: 10}}),
 		continuationStream(llm.StreamChunk{ContentDelta: "recovered"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop, TokenUsage: &llm.TokenUsage{TotalTokens: 5}}),
 	}}
-	session := newContinuationTestSession(t, client, []tool.ToolDefinition{&continuationFailingTool{}}, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), engine.DefaultTurnBudget())
+	session := newContinuationTestSession(t, client, []tool.ToolDefinition{&continuationFailingTool{}}, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), DefaultTurnBudget())
 	appendContinuationUser(t, session, "turn-1", "do work")
 	events := &continuationEventSink{session: session}
 	result, err := runContinuationTestTurn(session, "turn-1", events)
@@ -229,7 +227,7 @@ func TestContinueTurnKeepsFrozenReasoningEffortAcrossContinuations(t *testing.T)
 	high := llm.ReasoningEffortHigh
 	low := llm.ReasoningEffortLow
 	changingTool := &continuationLargeTool{name: "change_config", text: "changed"}
-	session := newContinuationTestSession(t, client, []tool.ToolDefinition{changingTool}, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), engine.DefaultTurnBudget())
+	session := newContinuationTestSession(t, client, []tool.ToolDefinition{changingTool}, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), DefaultTurnBudget())
 	session.state.Configuration.Runtime.ModelReasoningEffort = &high
 	changingTool.after = func() { session.state.Configuration.Runtime.ModelReasoningEffort = &low }
 	appendContinuationUser(t, session, "turn-effort", "do work")
@@ -254,15 +252,15 @@ func TestCaptureStepUsesOneFrozenRouterForModeAndRegistryRevision(t *testing.T) 
 		&continuationNamedTool{name: "update_plan", effect: tool.SideEffectNone},
 		&continuationNamedTool{name: "web_search", effect: tool.SideEffectNetwork},
 	}
-	session := newContinuationTestSession(t, client, definitions, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), engine.DefaultTurnBudget())
-	regular, err := session.services.CaptureStep(session.Snapshot, continuationTurnContext(session, "turn-regular", turn.ModeKindDefault))
+	session := newContinuationTestSession(t, client, definitions, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), DefaultTurnBudget())
+	regular, err := session.services.CaptureStep(session.Snapshot, continuationTurnContext(session, "turn-regular", ModeKindDefault))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !containsContinuationName(regular.ToolRouter.Names(), "update_plan") || !containsContinuationName(regular.ToolRouter.Names(), "write") {
 		t.Fatalf("regular tool mask = %v", regular.ToolRouter.Names())
 	}
-	planStep, err := session.services.CaptureStep(session.Snapshot, continuationTurnContext(session, "turn-plan", turn.ModeKindPlan))
+	planStep, err := session.services.CaptureStep(session.Snapshot, continuationTurnContext(session, "turn-plan", ModeKindPlan))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +271,7 @@ func TestCaptureStepUsesOneFrozenRouterForModeAndRegistryRevision(t *testing.T) 
 	if err := session.services.tools.RegisterDefinition(&continuationNamedTool{name: "new_read", effect: tool.SideEffectRead}); err != nil {
 		t.Fatal(err)
 	}
-	changed, err := session.services.CaptureStep(session.Snapshot, continuationTurnContext(session, "turn-changed", turn.ModeKindDefault))
+	changed, err := session.services.CaptureStep(session.Snapshot, continuationTurnContext(session, "turn-changed", ModeKindDefault))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +288,7 @@ func TestContinueTurnWarnsThenReturnsBlockedAtSafetyBudget(t *testing.T) {
 		return continuationStream(llm.StreamChunk{ToolCalls: []llm.ToolCall{{ID: id, Name: "unstable", Arguments: json.RawMessage(`{}`)}}, FinishReason: llm.FinishReasonToolCalls})
 	}
 	client := &continuationTestClient{streams: []llm.Stream{toolResponse("call-1"), toolResponse("call-2")}}
-	budget := engine.TurnBudget{MaxSamples: 2, MaxToolCalls: 100, MaxDuration: time.Hour, WarnRatio: 0.5}
+	budget := TurnBudget{MaxSamples: 2, MaxToolCalls: 100, MaxDuration: time.Hour, WarnRatio: 0.5}
 	session := newContinuationTestSession(t, client, []tool.ToolDefinition{&continuationFailingTool{}}, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), budget)
 	appendContinuationUser(t, session, "turn-budget", "keep trying")
 	result, err := runContinuationTestTurn(session, "turn-budget", &continuationEventSink{session: session})
@@ -313,7 +311,7 @@ func TestContinueTurnRetryPersistsOnlySuccessfulAttempt(t *testing.T) {
 		}},
 		continuationStream(llm.StreamChunk{ContentDelta: "recovered"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
 	}}
-	session := newContinuationTestSession(t, client, nil, continuationModelInfo(llm.ModelMessages{}), continuationProvider(1), engine.DefaultTurnBudget())
+	session := newContinuationTestSession(t, client, nil, continuationModelInfo(llm.ModelMessages{}), continuationProvider(1), DefaultTurnBudget())
 	appendContinuationUser(t, session, "turn-retry", "continue")
 	result, err := runContinuationTestTurn(session, "turn-retry", &continuationEventSink{session: session})
 	if err != nil || result.Outcome != protocol.TurnOutcomeCompleted {
@@ -323,7 +321,7 @@ func TestContinueTurnRetryPersistsOnlySuccessfulAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	projection, err := agentcontext.ProjectRolloutMessages(history.Lines)
+	projection, err := contextmanager.ProjectRolloutMessages(history.Lines)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +341,7 @@ func TestFailedSampleCountsConsumptionButExcludesDiscardedOutputFromActiveContex
 	client := &continuationTestClient{streams: []llm.Stream{
 		continuationStream(llm.StreamChunk{ContentDelta: "discarded"}, llm.StreamChunk{FinishReason: llm.FinishReasonLength, TokenUsage: &usage}),
 	}}
-	session := newContinuationTestSession(t, client, nil, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), engine.DefaultTurnBudget())
+	session := newContinuationTestSession(t, client, nil, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), DefaultTurnBudget())
 	appendContinuationUser(t, session, "turn-length", "generate")
 	if _, err := runContinuationTestTurn(session, "turn-length", &continuationEventSink{session: session}); err == nil {
 		t.Fatal("length-limited sample unexpectedly completed")
@@ -379,7 +377,7 @@ func TestContinueTurnAutoCompactsExactPromptBeforeSampling(t *testing.T) {
 	}}
 	model := continuationModelInfo(messages)
 	model.AutoCompactTokenLimit = 5_000
-	session := newContinuationTestSession(t, client, nil, model, continuationProvider(0), engine.DefaultTurnBudget())
+	session := newContinuationTestSession(t, client, nil, model, continuationProvider(0), DefaultTurnBudget())
 	appendContinuationUser(t, session, "turn-old", "original objective")
 	appendContinuationAssistant(t, session, "turn-old", strings.Repeat("old assistant detail ", 1_500))
 	appendContinuationUser(t, session, "turn-current", "continue the task")
@@ -424,7 +422,7 @@ func TestMidTurnCompactionResumesModelBeforeDrainingSteer(t *testing.T) {
 	}}
 	model := continuationModelInfo(messages)
 	largeTool := &continuationLargeTool{text: strings.Repeat("tool output ", 2_000)}
-	session := newContinuationTestSession(t, client, []tool.ToolDefinition{largeTool}, model, continuationProvider(0), engine.DefaultTurnBudget())
+	session := newContinuationTestSession(t, client, []tool.ToolDefinition{largeTool}, model, continuationProvider(0), DefaultTurnBudget())
 	largeTool.after = func() { session.services.modelInfo.AutoCompactTokenLimit = 5_000 }
 	appendContinuationUser(t, session, "turn-mid", "inspect and continue")
 	state := newTurnState()
@@ -446,11 +444,11 @@ func TestMidTurnCompactionResumesModelBeforeDrainingSteer(t *testing.T) {
 	}
 }
 
-func newContinuationTestSession(t *testing.T, client llm.Client, definitions []tool.ToolDefinition, model llm.ModelInfo, provider config.ModelProviderInfo, budget engine.TurnBudget) *Session {
+func newContinuationTestSession(t *testing.T, client llm.Client, definitions []tool.ToolDefinition, model llm.ModelInfo, provider config.ModelProviderInfo, budget TurnBudget) *Session {
 	return newContinuationTestSessionWithStore(t, client, definitions, model, provider, budget, nil)
 }
 
-func newContinuationTestSessionWithStore(t *testing.T, client llm.Client, definitions []tool.ToolDefinition, model llm.ModelInfo, provider config.ModelProviderInfo, budget engine.TurnBudget, wrap func(thread.ThreadStore) thread.ThreadStore) *Session {
+func newContinuationTestSessionWithStore(t *testing.T, client llm.Client, definitions []tool.ToolDefinition, model llm.ModelInfo, provider config.ModelProviderInfo, budget TurnBudget, wrap func(threadstore.ThreadStore) threadstore.ThreadStore) *Session {
 	t.Helper()
 	ctx := context.Background()
 	home := t.TempDir()
@@ -467,22 +465,22 @@ func newContinuationTestSessionWithStore(t *testing.T, client llm.Client, defini
 	if err != nil {
 		t.Fatal(err)
 	}
-	var liveStore thread.ThreadStore = threadStore
+	var liveStore threadstore.ThreadStore = threadStore
 	if wrap != nil {
 		liveStore = wrap(threadStore)
 	}
-	live, err := thread.NewDraftLiveThread(testutil.ThreadID(1), liveStore)
+	live, err := threadstore.NewDraftLiveThread(testutil.ThreadID(1), liveStore)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := live.Materialize(ctx, thread.CreateInput{SessionID: testutil.SessionID(1), CWD: t.TempDir(), Title: "continuation test", ModelProvider: model.Provider, Model: model.Name, CreatedAt: now}); err != nil {
+	if _, err := live.Materialize(ctx, threadstore.CreateInput{SessionID: testutil.SessionID(1), CWD: t.TempDir(), Title: "continuation test", ModelProvider: model.Provider, Model: model.Name, CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	history, err := live.History(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager, err := agentcontext.NewManagerFromRollout(history.Lines, nil)
+	manager, err := contextmanager.NewManagerFromRollout(history.Lines, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +546,7 @@ func runContinuationWithState(session *Session, turnID protocol.TurnID, state *T
 	if err != nil {
 		return TaskOutput{}, err
 	}
-	return session.continueTurn(context.Background(), &session.services, modelSession, continuationTurnContext(session, turnID, turn.ModeKindDefault), state, events, canDrainPendingInput)
+	return session.continueTurn(context.Background(), &session.services, modelSession, continuationTurnContext(session, turnID, ModeKindDefault), state, events, canDrainPendingInput)
 }
 
 func contextProjectionText(messages []llm.ResponseItem) string {
@@ -559,8 +557,8 @@ func contextProjectionText(messages []llm.ResponseItem) string {
 	return strings.Join(parts, "\n")
 }
 
-func continuationTurnContext(session *Session, turnID protocol.TurnID, mode turn.ModeKind) turn.TurnContext {
-	return turn.TurnContext{
+func continuationTurnContext(session *Session, turnID protocol.TurnID, mode ModeKind) TurnContext {
+	return TurnContext{
 		SessionID: session.sessionID, ThreadID: session.threadID, TurnID: turnID,
 		Provider: session.services.modelInfo.Provider, Model: session.services.modelInfo.Name,
 		ReasoningEffort: llm.CloneReasoningEffort(session.state.Configuration.Runtime.ModelReasoningEffort),

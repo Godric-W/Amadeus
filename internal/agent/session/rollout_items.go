@@ -1,13 +1,12 @@
 package session
 
 import (
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/rollout"
-	"github.com/Godric-W/Amadeus/internal/thread"
+	"github.com/Godric-W/Amadeus/internal/threadstore"
 )
 
-func sessionMetaItem(input thread.CreateInput) rollout.SessionMetaItem {
+func sessionMetaItem(input threadstore.CreateInput) rollout.SessionMetaItem {
 	item := rollout.SessionMetaItem{
 		SessionID: input.SessionID, ID: input.ID, Source: input.Source.Clone(), CWD: input.CWD, Title: input.Title,
 		ModelProvider: input.ModelProvider, Model: input.Model,
@@ -21,7 +20,7 @@ func sessionMetaItem(input thread.CreateInput) rollout.SessionMetaItem {
 	return item
 }
 
-func turnContextItem(value turn.TurnContext) rollout.TurnContextItem {
+func turnContextItem(value TurnContext) rollout.TurnContextItem {
 	return rollout.TurnContextItem{
 		ThreadID: value.ThreadID, TurnID: value.TurnID,
 		Provider: value.Provider, Model: value.Model, ReasoningEffort: llm.CloneReasoningEffort(value.ReasoningEffort), CWD: value.CWD, Shell: value.Shell,

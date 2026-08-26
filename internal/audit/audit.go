@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol/identity"
+	"github.com/Godric-W/Amadeus/internal/protocol/identity"
 )
 
 type Outcome string

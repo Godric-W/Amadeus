@@ -8,6 +8,7 @@ import (
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	openaiadapter "github.com/Godric-W/Amadeus/internal/llm/openai"
 	"github.com/Godric-W/Amadeus/internal/mcp"
 	"github.com/Godric-W/Amadeus/internal/webfetch"
 	"github.com/Godric-W/Amadeus/internal/websearch"
@@ -28,6 +29,9 @@ type Dependencies struct {
 
 func DefaultDependencies(environment Environment) Dependencies {
 	return Dependencies{
+		ClientFactory: func(providerName, model string, provider config.ModelProviderInfo) (llm.Client, error) {
+			return openaiadapter.NewAdapter(providerName, model, provider)
+		},
 		AuditFactory: defaultAuditFactory(environment.LookupEnv),
 		ThreadStore:  DefaultThreadStoreFactory,
 		Clock:        time.Now,
@@ -44,9 +48,7 @@ func (dependencies Dependencies) sessionAdapters(modelMessages llm.ModelMessages
 		ModelMessages:    modelMessages,
 	}
 	if dependencies.ClientFactory != nil {
-		adapters.ClientFactory = func(providerName, model string, provider config.ModelProviderInfo) (llm.Client, error) {
-			return dependencies.ClientFactory(providerName, model, provider)
-		}
+		adapters.ClientFactory = agentsession.ClientFactory(dependencies.ClientFactory)
 	}
 	return adapters
 }

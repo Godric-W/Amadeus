@@ -5,17 +5,17 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/prompt/builtin"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
-func RenderCollaborationInstructions(messages llm.ModelMessages, mode turn.ModeKind, toolNames []string) (string, error) {
+func RenderCollaborationInstructions(messages llm.ModelMessages, mode protocol.ModeKind, toolNames []string) (string, error) {
 	var content string
 	switch mode {
-	case turn.ModeKindDefault:
+	case protocol.ModeKindDefault:
 		content = messages.CollaborationModes.Default
-	case turn.ModeKindPlan:
+	case protocol.ModeKindPlan:
 		content = strings.TrimSpace(messages.CollaborationModes.Plan) + `
 
 ## Plan Mode

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
 func TestLoadModelMessagesSeparatesModelModesAndCompaction(t *testing.T) {
@@ -13,7 +13,7 @@ func TestLoadModelMessagesSeparatesModelModesAndCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base, err := messages.ResolveBaseInstructions(string(turn.Personality("")))
+	base, err := messages.ResolveBaseInstructions("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestSubagentInstructionsOnlyIncludeVisibleReadToolGuidance(t *testing.T) {
 }
 
 func TestCollaborationInstructionsOnlyExposeVisibleToolGuidance(t *testing.T) {
-	text, err := RenderCollaborationInstructions(mustModelMessages(t), turn.ModeKindDefault, []string{"update_plan", "execute_command"})
+	text, err := RenderCollaborationInstructions(mustModelMessages(t), protocol.ModeKindDefault, []string{"update_plan", "execute_command"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestCollaborationInstructionsOnlyExposeVisibleToolGuidance(t *testing.T) {
 	if strings.Contains(text, "## `read`") || strings.Contains(text, "## `edit`") {
 		t.Fatalf("hidden Tool guidance leaked: %q", text)
 	}
-	plan, err := RenderCollaborationInstructions(mustModelMessages(t), turn.ModeKindPlan, []string{"read"})
+	plan, err := RenderCollaborationInstructions(mustModelMessages(t), protocol.ModeKindPlan, []string{"read"})
 	if err != nil {
 		t.Fatal(err)
 	}

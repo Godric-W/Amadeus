@@ -5,11 +5,11 @@ import (
 	"errors"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/state"
-	threadmanager "github.com/Godric-W/Amadeus/internal/thread/manager"
+	threadmanager "github.com/Godric-W/Amadeus/internal/threadmanager"
+	"github.com/Godric-W/Amadeus/internal/threadstore"
 )
 
-func ListThreads(ctx context.Context, amadeusRoot string, dependencies Dependencies, query state.ListQuery) (threads []state.StoredThread, listErr error) {
+func ListThreads(ctx context.Context, amadeusRoot string, dependencies Dependencies, query threadstore.ListQuery) (threads []threadstore.StoredThread, listErr error) {
 	factory := dependencies.ThreadStore
 	if factory == nil {
 		factory = DefaultThreadStoreFactory

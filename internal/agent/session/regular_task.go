@@ -4,28 +4,27 @@ import (
 	"context"
 	"errors"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
-func (session *Session) prepareRegular(_ context.Context, snapshot turn.TurnContext, goal string, state *TurnState) (SessionTask, turn.TurnContext, error) {
+func (session *Session) prepareRegular(_ context.Context, snapshot TurnContext, goal string, state *TurnState) (SessionTask, TurnContext, error) {
 	if session == nil || session.services.modelClient == nil {
-		return nil, turn.TurnContext{}, errors.New("session services are unavailable")
+		return nil, TurnContext{}, errors.New("session services are unavailable")
 	}
 	events, err := protocol.NewScopedSink(session, snapshot.SubmissionID, snapshot.ThreadID, snapshot.TurnID)
 	if err != nil {
-		return nil, turn.TurnContext{}, err
+		return nil, TurnContext{}, err
 	}
 	if err := snapshot.Validate(); err != nil {
-		return nil, turn.TurnContext{}, err
+		return nil, TurnContext{}, err
 	}
 	if state == nil {
-		return nil, turn.TurnContext{}, errors.New("regular task turn state is nil")
+		return nil, TurnContext{}, errors.New("regular task turn state is nil")
 	}
 	return &regularTask{runtime: &session.services, goal: goal, events: events, turnState: state}, snapshot, nil
 }
 
-func (sessionTask *regularTask) run(ctx context.Context, session *Session, turnContext *turn.TurnContext) (TaskOutput, error) {
+func (sessionTask *regularTask) run(ctx context.Context, session *Session, turnContext *TurnContext) (TaskOutput, error) {
 	if sessionTask == nil || sessionTask.runtime == nil || sessionTask.events == nil {
 		return TaskOutput{}, errors.New("regular task is nil")
 	}

@@ -3,13 +3,13 @@ package session
 import (
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	agentcontext "github.com/Godric-W/Amadeus/internal/context"
+	contextmanager "github.com/Godric-W/Amadeus/internal/contextmanager"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/testutil"
 )
 
-func newTestSession(history []rollout.Line, manager *agentcontext.Manager) *Session {
+func newTestSession(history []rollout.Line, manager *contextmanager.Manager) *Session {
 	_ = history
 	return &Session{
 		sessionID: testutil.SessionID(1), threadID: testutil.ThreadID(1),

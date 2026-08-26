@@ -1,6 +1,6 @@
 package session
 
-import "github.com/Godric-W/Amadeus/internal/agent/protocol"
+import "github.com/Godric-W/Amadeus/internal/protocol"
 
 type TurnState struct {
 	pendingRequests map[protocol.RequestID]interactiveWaiter

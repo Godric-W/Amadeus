@@ -6,14 +6,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/agent/modelclient"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
-func (session *Session) continueTurn(ctx context.Context, runtime *SessionServices, modelSession *engine.ModelClientSession, turnContext turn.TurnContext, state *TurnState, events protocol.EventSink, canDrainPendingInput bool) (TaskOutput, error) {
+func (session *Session) continueTurn(ctx context.Context, runtime *SessionServices, modelSession *modelclient.ModelClientSession, turnContext TurnContext, state *TurnState, events protocol.EventSink, canDrainPendingInput bool) (TaskOutput, error) {
 	if runtime == nil || modelSession == nil || state == nil || events == nil {
 		return TaskOutput{}, errors.New("session continuation is incomplete")
 	}
@@ -103,15 +102,15 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 			SessionID: turnContext.SessionID, ThreadID: turnContext.ThreadID, TurnID: turnContext.TurnID, Source: tool.ToolCallSourceModel,
 		})
 		sampleEvents := events
-		var proposedPlan *engine.ProposedPlanEventSink
-		if turnContext.Mode == turn.ModeKindPlan {
-			proposedPlan, err = engine.NewProposedPlanEventSink(events, protocol.ItemID(sampleID+":plan"))
+		var proposedPlan *ProposedPlanEventSink
+		if turnContext.Mode == ModeKindPlan {
+			proposedPlan, err = NewProposedPlanEventSink(events, protocol.ItemID(sampleID+":plan"))
 			if err != nil {
 				return taskProgress(toolCallCount), err
 			}
 			sampleEvents = proposedPlan
 		}
-		sample, sampleErr := modelSession.Sample(stepCtx, engine.SampleRequest{
+		sample, sampleErr := modelSession.Sample(stepCtx, modelclient.SampleRequest{
 			ID: sampleID, Metadata: requestMetadata(turnContext), Messages: step.Prompt.Items, BaseInstructions: step.BaseInstructions,
 			Tools: step.ToolRouter.Specs(), OutputSchema: llm.OutputSchema(turnContext.OutputSchema), OutputSchemaStrict: turnContext.OutputSchemaStrict,
 			Reasoning: llm.ReasoningConfigForEffort(turnContext.ReasoningEffort),
@@ -124,15 +123,15 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 			}
 			return taskProgress(toolCallCount), sampleErr
 		}
-		if sample.Kind == engine.SampleFinal {
+		if sample.Kind == modelclient.SampleFinal {
 			if proposedPlan != nil {
 				if err := proposedPlan.Flush(stepCtx); err != nil {
 					return taskProgress(toolCallCount), err
 				}
-				if err := engine.PersistAssistantResponse(stepCtx, session.AppendItems, turnContext.TurnID, sample.Response.Message, nil); err != nil {
+				if err := persistAssistantResponse(stepCtx, session.AppendItems, turnContext.TurnID, sample.Response.Message, nil); err != nil {
 					return taskProgress(toolCallCount), err
 				}
-				if err := engine.PublishPlanModeCompletions(stepCtx, session.AppendItems, turnContext.TurnID, events, sampleID, sample.Response.Message, proposedPlan.AssistantText(), proposedPlan.PlanText()); err != nil {
+				if err := publishPlanModeCompletions(stepCtx, session.AppendItems, turnContext.TurnID, events, sampleID, sample.Response.Message, proposedPlan.AssistantText(), proposedPlan.PlanText()); err != nil {
 					return taskProgress(toolCallCount), err
 				}
 				if err := session.recordTokenUsage(stepCtx, turnContext.TurnID, sample.Response.TokenUsage, sample.Response.TokenUsage.TotalTokens, step.Model.ContextWindow, step.Prompt.HistoryVersion, events); err != nil {
@@ -145,10 +144,10 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 				}
 				return TaskOutput{ToolCallCount: toolCallCount, Summary: "result: completed", Outcome: protocol.TurnOutcomeCompleted}, nil
 			}
-			if err := engine.PersistAssistantResponse(stepCtx, session.AppendItems, turnContext.TurnID, sample.Response.Message, nil); err != nil {
+			if err := persistAssistantResponse(stepCtx, session.AppendItems, turnContext.TurnID, sample.Response.Message, nil); err != nil {
 				return taskProgress(toolCallCount), err
 			}
-			if err := engine.PublishModelCompletions(stepCtx, session.AppendItems, turnContext.TurnID, events, sampleID, sample.Response.Message); err != nil {
+			if err := publishModelCompletions(stepCtx, session.AppendItems, turnContext.TurnID, events, sampleID, sample.Response.Message); err != nil {
 				return taskProgress(toolCallCount), err
 			}
 			if err := session.recordTokenUsage(stepCtx, turnContext.TurnID, sample.Response.TokenUsage, sample.Response.TokenUsage.TotalTokens, step.Model.ContextWindow, step.Prompt.HistoryVersion, events); err != nil {
@@ -162,14 +161,14 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 			return TaskOutput{ToolCallCount: toolCallCount, Summary: "result: completed", Outcome: protocol.TurnOutcomeCompleted}, nil
 		}
 		toolCallCount += len(sample.ToolCalls)
-		observer := engine.NewToolEventObserver(session.AppendItems, turnContext.ThreadID, turnContext.TurnID, events, runtime.resolveCollabAgentRef)
+		observer := NewToolEventObserver(session.AppendItems, turnContext.ThreadID, turnContext.TurnID, events, runtime.resolveCollabAgentRef)
 		recorded := false
 		recorder := func(recordCtx context.Context, normalized []tool.ToolCall) error {
 			recorded = true
-			if err := engine.PersistAssistantResponse(recordCtx, session.AppendItems, turnContext.TurnID, sample.Response.Message, normalized); err != nil {
+			if err := persistAssistantResponse(recordCtx, session.AppendItems, turnContext.TurnID, sample.Response.Message, normalized); err != nil {
 				return err
 			}
-			if err := engine.PublishModelCompletions(recordCtx, session.AppendItems, turnContext.TurnID, events, sampleID, sample.Response.Message); err != nil {
+			if err := publishModelCompletions(recordCtx, session.AppendItems, turnContext.TurnID, events, sampleID, sample.Response.Message); err != nil {
 				return err
 			}
 			return session.recordTokenUsage(recordCtx, turnContext.TurnID, sample.Response.TokenUsage, sample.Response.TokenUsage.TotalTokens, step.Model.ContextWindow, step.Prompt.HistoryVersion, events)

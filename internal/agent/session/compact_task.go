@@ -4,11 +4,10 @@ import (
 	"context"
 	"errors"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
-func (sessionTask *compactTask) Run(ctx context.Context, session *Session, turnContext *turn.TurnContext) (TaskOutput, error) {
+func (sessionTask *compactTask) Run(ctx context.Context, session *Session, turnContext *TurnContext) (TaskOutput, error) {
 	if sessionTask == nil || sessionTask.runtime == nil || sessionTask.events == nil || session == nil || turnContext == nil {
 		return TaskOutput{}, errors.New("compact task is nil")
 	}

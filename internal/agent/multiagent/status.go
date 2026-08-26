@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
 func (control *Control) consume(id protocol.ThreadID, runtime AgentRuntime) {

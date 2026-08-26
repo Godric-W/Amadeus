@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/policy"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
 type sessionApprovalPort struct{ requester *Session }

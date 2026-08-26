@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/testutil"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )

@@ -4,9 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
@@ -19,7 +18,7 @@ type ContextWindowTokenStatus struct {
 	TokenLimitReached         bool
 }
 
-func (session *Session) contextWindowTokenStatus(step engine.StepContext) ContextWindowTokenStatus {
+func (session *Session) contextWindowTokenStatus(step StepContext) ContextWindowTokenStatus {
 	model := step.Model.Normalized()
 	estimated := step.Prompt.EstimatedInputTokens
 	active, _ := session.state.Context.ActiveContextTokens(model)
@@ -83,7 +82,7 @@ func (session *Session) recordTokenUsage(ctx context.Context, turnID protocol.Tu
 	return nil
 }
 
-func (session *Session) refreshContextWindowStatus(ctx context.Context, turnID protocol.TurnID, step engine.StepContext, events protocol.EventSink) (ContextWindowTokenStatus, error) {
+func (session *Session) refreshContextWindowStatus(ctx context.Context, turnID protocol.TurnID, step StepContext, events protocol.EventSink) (ContextWindowTokenStatus, error) {
 	status := session.contextWindowTokenStatus(step)
 	snapshot := session.state.Context.TokenSnapshot()
 	_, estimated := session.state.Context.ActiveContextTokens(step.Model)

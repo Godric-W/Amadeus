@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/multiagent"
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 

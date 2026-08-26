@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/Godric-W/Amadeus/internal/interface/tui"
+	"github.com/Godric-W/Amadeus/internal/tui"
 )
 
 const (
@@ -13,12 +13,12 @@ const (
 	exitCommandForegroundReset = "\x1b[39m"
 )
 
-func presentFullscreenExit(info tui.AppExitInfo, output, errorOutput io.Writer, colorEnabled bool) error {
+func presentTUIExit(info tui.AppExitInfo, output, errorOutput io.Writer, colorEnabled bool) error {
 	var presentationErr error
 	fatalErr := info.Error
 	if info.ExitReason == tui.ExitReasonFatal {
 		if fatalErr == nil {
-			fatalErr = errors.New("fullscreen application exited fatally")
+			fatalErr = errors.New("TUI application exited fatally")
 		}
 		if _, err := fmt.Fprintf(errorOutput, "ERROR: %v\n", fatalErr); err != nil {
 			presentationErr = errors.Join(presentationErr, err)

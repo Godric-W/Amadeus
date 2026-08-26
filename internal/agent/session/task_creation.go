@@ -4,11 +4,10 @@ import (
 	"context"
 	"errors"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
-func (session *Session) createTask(ctx context.Context, input string, snapshot turn.TurnContext, kind TaskKind, state *TurnState) (SessionTask, turn.TurnContext, error) {
+func (session *Session) createTask(ctx context.Context, input string, snapshot TurnContext, kind TaskKind, state *TurnState) (SessionTask, TurnContext, error) {
 	now := session.services.Clock()
 	if snapshot.CurrentDate == "" {
 		snapshot.CurrentDate = now.Format("2006-01-02")
@@ -17,22 +16,22 @@ func (session *Session) createTask(ctx context.Context, input string, snapshot t
 		snapshot.Timezone = now.Location().String()
 	}
 	if err := snapshot.Validate(); err != nil {
-		return nil, turn.TurnContext{}, err
+		return nil, TurnContext{}, err
 	}
 	switch kind {
 	case TaskKindCompact:
 		events, err := protocol.NewScopedSink(session, snapshot.SubmissionID, snapshot.ThreadID, snapshot.TurnID)
 		if err != nil {
-			return nil, turn.TurnContext{}, err
+			return nil, TurnContext{}, err
 		}
 		return &compactTask{runtime: &session.services, events: events}, snapshot, nil
 	case TaskKindRegular:
 	default:
-		return nil, turn.TurnContext{}, errors.New("session task kind is invalid")
+		return nil, TurnContext{}, errors.New("session task kind is invalid")
 	}
 	goal := input
 	if goal == "" {
-		return nil, turn.TurnContext{}, errors.New("regular task goal is empty")
+		return nil, TurnContext{}, errors.New("regular task goal is empty")
 	}
 	return session.prepareRegular(ctx, snapshot, goal, state)
 }

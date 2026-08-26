@@ -6,16 +6,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Godric-W/Amadeus/internal/interface/tui"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/testutil"
+	"github.com/Godric-W/Amadeus/internal/tui"
 )
 
-func TestPresentFullscreenExitPrintsUsageAndResumeHint(t *testing.T) {
+func TestPresentTUIExitPrintsUsageAndResumeHint(t *testing.T) {
 	var output bytes.Buffer
 	var errorOutput bytes.Buffer
 	threadID := testutil.ThreadID(1)
-	err := presentFullscreenExit(tui.AppExitInfo{
+	err := presentTUIExit(tui.AppExitInfo{
 		TokenUsage: llm.TokenUsage{InputTokens: 8, OutputTokens: 5, TotalTokens: 13},
 		ThreadID:   threadID,
 		ResumeHint: "amadeus --resume " + threadID.String(),
@@ -30,10 +30,10 @@ func TestPresentFullscreenExitPrintsUsageAndResumeHint(t *testing.T) {
 	}
 }
 
-func TestPresentFullscreenExitOmitsZeroUsageAndUnavailableResume(t *testing.T) {
+func TestPresentTUIExitOmitsZeroUsageAndUnavailableResume(t *testing.T) {
 	var output bytes.Buffer
 	var errorOutput bytes.Buffer
-	if err := presentFullscreenExit(tui.AppExitInfo{ExitReason: tui.ExitReasonUserRequested}, &output, &errorOutput, false); err != nil {
+	if err := presentTUIExit(tui.AppExitInfo{ExitReason: tui.ExitReasonUserRequested}, &output, &errorOutput, false); err != nil {
 		t.Fatal(err)
 	}
 	if output.Len() != 0 || errorOutput.Len() != 0 {
@@ -41,11 +41,11 @@ func TestPresentFullscreenExitOmitsZeroUsageAndUnavailableResume(t *testing.T) {
 	}
 }
 
-func TestPresentFullscreenExitReportsWarningWithoutFailure(t *testing.T) {
+func TestPresentTUIExitReportsWarningWithoutFailure(t *testing.T) {
 	var output bytes.Buffer
 	var errorOutput bytes.Buffer
 	warning := errors.New("shutdown timed out")
-	if err := presentFullscreenExit(tui.AppExitInfo{ExitReason: tui.ExitReasonUserRequested, Error: warning}, &output, &errorOutput, false); err != nil {
+	if err := presentTUIExit(tui.AppExitInfo{ExitReason: tui.ExitReasonUserRequested, Error: warning}, &output, &errorOutput, false); err != nil {
 		t.Fatal(err)
 	}
 	if output.Len() != 0 || !strings.Contains(errorOutput.String(), "WARNING: shutdown timed out") {
@@ -53,12 +53,12 @@ func TestPresentFullscreenExitReportsWarningWithoutFailure(t *testing.T) {
 	}
 }
 
-func TestPresentFullscreenExitReportsFatalAndSessionID(t *testing.T) {
+func TestPresentTUIExitReportsFatalAndSessionID(t *testing.T) {
 	var output bytes.Buffer
 	var errorOutput bytes.Buffer
 	fatalErr := errors.New("renderer failed")
 	threadID := testutil.ThreadID(1)
-	err := presentFullscreenExit(tui.AppExitInfo{
+	err := presentTUIExit(tui.AppExitInfo{
 		ThreadID: threadID, ExitReason: tui.ExitReasonFatal, Error: fatalErr,
 	}, &output, &errorOutput, false)
 	if !errors.Is(err, fatalErr) || !errorAlreadyReported(err) || exitCode(err) != exitCodeFailure {
@@ -69,11 +69,11 @@ func TestPresentFullscreenExitReportsFatalAndSessionID(t *testing.T) {
 	}
 }
 
-func TestPresentFullscreenExitHighlightsOnlyResumeCommand(t *testing.T) {
+func TestPresentTUIExitHighlightsOnlyResumeCommand(t *testing.T) {
 	var output bytes.Buffer
 	var errorOutput bytes.Buffer
 	threadID := testutil.ThreadID(1)
-	err := presentFullscreenExit(tui.AppExitInfo{
+	err := presentTUIExit(tui.AppExitInfo{
 		ResumeHint: "amadeus --resume " + threadID.String(),
 		ExitReason: tui.ExitReasonUserRequested,
 	}, &output, &errorOutput, true)

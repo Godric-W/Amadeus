@@ -3,7 +3,7 @@ package testutil
 import (
 	"fmt"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol/identity"
+	"github.com/Godric-W/Amadeus/internal/protocol/identity"
 )
 
 func ThreadID(index uint64) identity.ThreadID {

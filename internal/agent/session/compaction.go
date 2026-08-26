@@ -11,11 +11,10 @@ import (
 	"time"
 
 	agentcompact "github.com/Godric-W/Amadeus/internal/agent/compact"
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
-	agentcontext "github.com/Godric-W/Amadeus/internal/context"
+	"github.com/Godric-W/Amadeus/internal/agent/modelclient"
+	contextmanager "github.com/Godric-W/Amadeus/internal/contextmanager"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
@@ -28,9 +27,9 @@ type compactionInvocation struct {
 func (session *Session) runCompaction(
 	ctx context.Context,
 	runtime *SessionServices,
-	modelSession *engine.ModelClientSession,
-	turnContext turn.TurnContext,
-	step *engine.StepContext,
+	modelSession *modelclient.ModelClientSession,
+	turnContext TurnContext,
+	step *StepContext,
 	events protocol.EventSink,
 	invocation compactionInvocation,
 ) (bool, error) {
@@ -62,7 +61,7 @@ func (session *Session) runCompaction(
 		Source: source,
 		Prompt: llm.Prompt{BaseInstructions: step.BaseInstructions}, Model: step.Model,
 		ModelSession: modelSession, Reasoning: llm.ReasoningConfigForEffort(turnContext.ReasoningEffort),
-		Metadata: requestMetadata(turnContext), Events: events, Estimator: agentcontext.ApproxTokenEstimator{},
+		Metadata: requestMetadata(turnContext), Events: events, Estimator: contextmanager.ApproxTokenEstimator{},
 	})
 	if output.TokenUsage.TotalTokens > 0 {
 		activeTokens := output.TokenUsage.InputTokens
@@ -91,7 +90,7 @@ func (session *Session) runCompaction(
 	return true, nil
 }
 
-func (session *Session) compactionSource(step engine.StepContext) (agentcompact.Source, error) {
+func (session *Session) compactionSource(step StepContext) (agentcompact.Source, error) {
 	projection := session.ContextProjection()
 	if len(projection.Messages) == 0 || len(projection.SourceSequences) != len(projection.Messages) {
 		return agentcompact.Source{}, &agentcompact.Error{Kind: agentcompact.ErrorNoHistory, Err: errors.New("conversation has no model-visible history")}
@@ -104,7 +103,7 @@ func (session *Session) compactionSource(step engine.StepContext) (agentcompact.
 	covered := projection.SourceSequences[len(projection.SourceSequences)-1]
 	users := make([]llm.ResponseItem, 0)
 	for index, origin := range projection.Origins {
-		if origin == agentcontext.MessageOriginUser {
+		if origin == contextmanager.MessageOriginUser {
 			users = append(users, projection.Messages[index])
 		}
 	}
@@ -117,8 +116,8 @@ func (session *Session) compactionSource(step engine.StepContext) (agentcompact.
 
 func (session *Session) installCompaction(
 	ctx context.Context,
-	turnContext turn.TurnContext,
-	step engine.StepContext,
+	turnContext TurnContext,
+	step StepContext,
 	source agentcompact.Source,
 	output agentcompact.Output,
 	invocation compactionInvocation,
@@ -163,7 +162,7 @@ func (session *Session) installCompaction(
 	return nil
 }
 
-func promptShapeForStep(step engine.StepContext, turnContext turn.TurnContext) llm.Prompt {
+func promptShapeForStep(step StepContext, turnContext TurnContext) llm.Prompt {
 	specs := step.ToolRouter.Specs()
 	tools := make([]llm.ToolSpec, len(specs))
 	for index, spec := range specs {

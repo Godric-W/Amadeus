@@ -3,7 +3,7 @@ package llm
 import (
 	"errors"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol/identity"
+	"github.com/Godric-W/Amadeus/internal/protocol/identity"
 )
 
 type RequestMetadata struct {

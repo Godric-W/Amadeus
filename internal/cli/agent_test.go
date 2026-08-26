@@ -13,8 +13,8 @@ import (
 	"github.com/Godric-W/Amadeus/internal/app"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/bootstrap"
-	"github.com/Godric-W/Amadeus/internal/interface/tui"
 	"github.com/Godric-W/Amadeus/internal/testutil"
+	"github.com/Godric-W/Amadeus/internal/tui"
 )
 
 type recordingTUIRunner struct {
@@ -116,7 +116,7 @@ func TestRootCommandMapsSessionFlagsAndPromptToTUI(t *testing.T) {
 	}
 }
 
-func TestRootCommandUsesFullscreenPickerOnlyWithoutPrompt(t *testing.T) {
+func TestRootCommandUsesTUIPickerOnlyWithoutPrompt(t *testing.T) {
 	projectDirectory := t.TempDir()
 	runner := &recordingTUIRunner{}
 	command := newRootCommandWithOptions(&configFlags{}, testAgentCommandOptions(t, projectDirectory, runner, true))

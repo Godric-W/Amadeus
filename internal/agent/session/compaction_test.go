@@ -8,20 +8,18 @@ import (
 	"testing"
 
 	agentcompact "github.com/Godric-W/Amadeus/internal/agent/compact"
-	"github.com/Godric-W/Amadeus/internal/agent/engine"
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
-	"github.com/Godric-W/Amadeus/internal/thread"
+	"github.com/Godric-W/Amadeus/internal/threadstore"
 )
 
-type failCompactionStore struct{ thread.ThreadStore }
+type failCompactionStore struct{ threadstore.ThreadStore }
 
-func (store failCompactionStore) AppendItems(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.RolloutItem) (thread.AppendResult, error) {
+func (store failCompactionStore) AppendItems(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.RolloutItem) (threadstore.AppendResult, error) {
 	for _, item := range items {
 		if _, ok := item.(rollout.CompactedItem); ok {
-			return thread.AppendResult{}, errors.New("compaction append failed")
+			return threadstore.AppendResult{}, errors.New("compaction append failed")
 		}
 	}
 	return store.ThreadStore.AppendItems(ctx, id, turnID, items...)
@@ -34,13 +32,13 @@ func TestCompactionPersistenceFailureKeepsOriginalHistoryAndPublishesFailedItem(
 		continuationStream(llm.StreamChunk{ContentDelta: "checkpoint"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop, TokenUsage: &usage}),
 	}}
 	model := continuationModelInfo(messages)
-	session := newContinuationTestSessionWithStore(t, client, nil, model, continuationProvider(0), engine.DefaultTurnBudget(), func(store thread.ThreadStore) thread.ThreadStore {
+	session := newContinuationTestSessionWithStore(t, client, nil, model, continuationProvider(0), DefaultTurnBudget(), func(store threadstore.ThreadStore) threadstore.ThreadStore {
 		return failCompactionStore{ThreadStore: store}
 	})
 	appendContinuationUser(t, session, "turn-1", "original objective")
 	appendContinuationAssistant(t, session, "turn-1", strings.Repeat("details ", 1_000))
 	before := session.ContextProjection()
-	turnContext := continuationTurnContext(session, "turn-2", turn.ModeKindDefault)
+	turnContext := continuationTurnContext(session, "turn-2", ModeKindDefault)
 	step, err := session.captureStep(context.Background(), &session.services, turnContext)
 	if err != nil {
 		t.Fatal(err)
@@ -78,10 +76,10 @@ func TestCompactionRejectsReplacementThatDoesNotReduceContext(t *testing.T) {
 		continuationStream(llm.StreamChunk{ContentDelta: "a longer checkpoint than the original response"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
 	}}
 	model := continuationModelInfo(messages)
-	session := newContinuationTestSession(t, client, nil, model, continuationProvider(0), engine.DefaultTurnBudget())
+	session := newContinuationTestSession(t, client, nil, model, continuationProvider(0), DefaultTurnBudget())
 	appendContinuationUser(t, session, "turn-1", "short objective")
 	appendContinuationAssistant(t, session, "turn-1", "done")
-	turnContext := continuationTurnContext(session, "turn-2", turn.ModeKindDefault)
+	turnContext := continuationTurnContext(session, "turn-2", ModeKindDefault)
 	step, err := session.captureStep(context.Background(), &session.services, turnContext)
 	if err != nil {
 		t.Fatal(err)

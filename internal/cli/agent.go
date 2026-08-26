@@ -6,12 +6,11 @@ import (
 	"io"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/app"
 	"github.com/Godric-W/Amadeus/internal/bootstrap"
-	"github.com/Godric-W/Amadeus/internal/interface/tui"
 	"github.com/Godric-W/Amadeus/internal/project"
+	"github.com/Godric-W/Amadeus/internal/protocol"
+	"github.com/Godric-W/Amadeus/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -57,7 +56,7 @@ func runRootAgent(command *cobra.Command, arguments []string, configFlags *confi
 		AmadeusRoot:   options.Environment.AmadeusRoot,
 		Configuration: configured,
 		CWD:           launch.Project.Path(), WorkspaceRoots: launch.ExtraRoots,
-		Mode: turn.ModeKindDefault, Dependencies: options.Bootstrap,
+		Mode: protocol.ModeKindDefault, Dependencies: options.Bootstrap,
 	}
 
 	result, runErr := options.TUI(command.Context(), tui.RunOptions{
@@ -66,7 +65,7 @@ func runRootAgent(command *cobra.Command, arguments []string, configFlags *confi
 		Input: launch.Input, Output: launch.Output, ErrorOutput: launch.ErrorOutput,
 		IsTerminal: options.IsTerminal,
 	})
-	exitErr := presentFullscreenExit(result.ExitInfo, launch.Output, launch.ErrorOutput, result.Color)
+	exitErr := presentTUIExit(result.ExitInfo, launch.Output, launch.ErrorOutput, result.Color)
 	return errors.Join(runErr, exitErr)
 }
 

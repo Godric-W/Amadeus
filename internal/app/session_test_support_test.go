@@ -10,11 +10,11 @@ import (
 	"time"
 
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
 type appTestClient struct {
@@ -106,5 +106,5 @@ func appSessionConfiguration(t *testing.T, cwd string) agentsession.Configuratio
 	configured.ModelProviders = map[string]config.ModelProviderInfo{
 		"mock": {WireAPI: config.WireAPIResponses, Dialect: config.DialectStandard, APIKey: "test", BaseURL: "https://example.invalid/v1", Timeout: time.Second, StreamIdleTimeout: time.Minute},
 	}
-	return agentsession.Configuration{Runtime: configured, CWD: cwd, AmadeusRoot: t.TempDir(), Mode: turn.ModeKindDefault}
+	return agentsession.Configuration{Runtime: configured, CWD: cwd, AmadeusRoot: t.TempDir(), Mode: protocol.ModeKindDefault}
 }

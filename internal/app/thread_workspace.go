@@ -5,10 +5,10 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
-	"github.com/Godric-W/Amadeus/internal/state"
-	threadmanager "github.com/Godric-W/Amadeus/internal/thread/manager"
+	"github.com/Godric-W/Amadeus/internal/protocol"
+	threadmanager "github.com/Godric-W/Amadeus/internal/threadmanager"
+	"github.com/Godric-W/Amadeus/internal/threadstore"
 )
 
 var ErrNoActiveThread = errors.New("no active thread")
@@ -223,7 +223,7 @@ func (workspace *ThreadWorkspace) DeleteCurrent(ctx context.Context) (protocol.T
 	return current.ID(), nil
 }
 
-func (workspace *ThreadWorkspace) List(ctx context.Context, query state.ListQuery) ([]state.StoredThread, error) {
+func (workspace *ThreadWorkspace) List(ctx context.Context, query threadstore.ListQuery) ([]threadstore.StoredThread, error) {
 	manager := workspace.managerSnapshot()
 	if manager == nil {
 		return nil, errors.New("thread workspace is closed")
@@ -231,21 +231,21 @@ func (workspace *ThreadWorkspace) List(ctx context.Context, query state.ListQuer
 	return manager.ListThreads(ctx, query)
 }
 
-func (workspace *ThreadWorkspace) CurrentMetadata(ctx context.Context) (state.StoredThread, error) {
+func (workspace *ThreadWorkspace) CurrentMetadata(ctx context.Context) (threadstore.StoredThread, error) {
 	current, ok := workspace.Current()
 	if !ok {
-		return state.StoredThread{}, state.ErrNotFound
+		return threadstore.StoredThread{}, threadstore.ErrNotFound
 	}
-	threads, err := workspace.List(ctx, state.ListQuery{IncludeArchived: true})
+	threads, err := workspace.List(ctx, threadstore.ListQuery{IncludeArchived: true})
 	if err != nil {
-		return state.StoredThread{}, err
+		return threadstore.StoredThread{}, err
 	}
 	for _, metadata := range threads {
 		if metadata.ID == current.ID() {
 			return metadata, nil
 		}
 	}
-	return state.StoredThread{}, state.ErrNotFound
+	return threadstore.StoredThread{}, threadstore.ErrNotFound
 }
 
 func (workspace *ThreadWorkspace) Close(ctx context.Context) error {

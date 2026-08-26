@@ -2,12 +2,12 @@
 
 > 最近更新：2026-08-26
 > 主要架构与 Contract 工作文档：`docs/design.md`
-> 当前阶段：Y. Initial Prompt + Single TUI Frontend Alignment（DONE）
+> 当前阶段：Z. Codex-aligned Internal Package + Source Layout（DONE）
 > 下一任务：下一阶段待规划
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
-A-Y 的条目保留为历史与当前阶段记录；其中与当前 `docs/design.md` 冲突的 token/compaction 结论由 W 取代，外层 package 归属由 X 收敛，根 Prompt 与交互 frontend 生命周期由 Y 最终确定。历史 DONE 只记录迁移事实，不构成恢复旧 owner 或已删除路径的依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
+A-Z 的条目保留为历史与当前阶段记录；其中与当前 `docs/design.md` 冲突的 token/compaction 结论由 W 取代，第一轮外层 package 归属由 X/Y 收敛，最终 internal package、目录和责任文件布局由 Z 取代。历史 DONE 只记录迁移事实，不构成恢复旧 owner、旧路径或已删除中间 frontend 的依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
 
 ## 1. 状态与完成标准
 
@@ -50,6 +50,7 @@ A Runtime + Persistence
 → W Context Accounting + Compaction Realignment
 → X CLI + Bootstrap Package Architecture
 → Y Initial Prompt + Single TUI Frontend Alignment
+→ Z Codex-aligned Internal Package + Source Layout
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先分析对应参考源码，再同步更新 `docs/design.md` 与本文。
@@ -1897,3 +1898,94 @@ Y 不改变 `run_turn`、Tool/Approval 内层、steer/admission、NextTurnQueue 
 - 删除被取代的非交互 frontend、独立 renderer、独立 Approval/UserInput adapter 和第二 SessionIo consumer；Fullscreen Approval/UserInput overlay 成为唯一人工交互 frontend。
 - Provider/Core Tools/Skill/MCP/Web/Resume E2E 迁到 `internal/integration`，通过 test-only InteractiveApplication harness 驱动真实 Runtime；不存在为测试保留的生产 single-turn runner。
 - initial take-once、replay ordering、literal Slash、rejection restore、picker exclusion、文本保持、CLI dispatch 和 Unix PTY startup/continued-interactive smoke 已覆盖；`make check`、全仓 `go test -race ./... -count=1` 和 `git diff --check` 通过。
+
+## 31. Z. Codex-aligned Internal Package + Source Layout — `DONE`
+
+### 目标
+
+按 `docs/design.md` 第 7 章和当前 Codex/Claude Code 源码重新收敛 `internal`：Codex 的 `protocol`、core `session/state/tools/context_manager`、`thread-store`、`rollout`、`tui` 和 `cli` 决定外层 owner 与依赖方向；Claude Code 的 `Tool`、tool orchestration、permissions 和 builtin tools 决定 Tool 内层 Validate/Prepare/Permission/Approval/Execute 与文件工具职责。迁移以 Go 的无环 package、同 package 责任文件和当前基础产品规模实现，不逐字复制 Rust crate 或 TypeScript 一 Tool 一目录。
+
+Z 只改变 package/file ownership、命名、依赖方向和测试归属，不改变 Protocol wire shape、Rollout schema、SQLite schema、配置、Prompt、Tool schema、Approval 文案、TUI 交互或 Runtime 行为。任一行为 Contract 问题若在迁移中暴露，必须先回查参考源码、更新 `docs/design.md` 并在同一阶段明确纳入，不能借目录整理静默修改。
+
+Z-01～Z-09 是同一次 Architecture Closure 的顺序分解，不是兼容阶段。迁移可以在工作分支中分步编译，但 Z 完成时生产与测试代码只能引用目标路径；禁止建立旧 import path forwarding package、type alias facade、双注册表、双 event reducer 或旧/新 ThreadStore adapter 链。
+
+### Z-01：Protocol + Identity Package Boundary
+
+- [x] 将 `internal/agent/protocol` 迁为顶层 `internal/protocol`，保留 `protocol/identity` 的无环低层 identity boundary，并迁移全部 production/test import。
+- [x] 按 submission、session events、turn events、approval/input events、item lifecycle、scope/codec 拆分当前泛化 `protocol.go`；Protocol 只保留 identity、DTO 和 contract，不吸收 TUI reducer、Context projection 或 Runtime service。
+- [x] 审计 `TurnItem`/ToolResult 等跨边界类型的依赖方向，保持现有 wire DTO 单一 owner且未把 builtin/runtime implementation 搬入 Protocol；更深的 Tool payload 解耦不属于本次无行为 schema 迁移。
+- [x] 删除旧 `internal/agent/protocol` 目录和 architecture path exceptions，不保留 alias/import forwarding。
+
+### Z-02：Session State + ContextManager Ownership
+
+- [x] 将 `internal/agent/turn` 的 TurnContext、ModeKind、Personality 迁入 `internal/agent/session`；TUI/Application 只需要 Collaboration Mode 时直接使用 Protocol 类型，不依赖单类型 Turn package。
+- [x] 将 StepContext、TurnBudget、model completion persistence、Proposed Plan stream 和 Tool lifecycle observer 从 `internal/agent/engine` 迁回 Session-owned 责任文件；对齐 Codex `session/step_context.rs`、`session/turn.rs` 和 `tools/events.rs` 的 owner。
+- [x] 将 `internal/context`/`package agentcontext` 统一为 `internal/contextmanager`，按 manager/prompt snapshot/projection/world state 责任文件组织；Session 仍是唯一 mutation caller，Resume 与 compaction 语义不变。
+- [x] 拆分 Session 聚合文件：`session.go` 只保留核心模型/constructor，serial loop、submission、request dispatch、turn start、service builder、persistence/context query 分别进入责任名文件；未创建会反向依赖 Session 的 `agent/state` package。
+
+### Z-03：ModelClientSession + Agent Engine Removal
+
+- [x] 新建窄 `internal/agent/modelclient`，只迁入 ModelClientSession、Sample/Complete、response stream consume、idle timeout、retry/reconnect 和 typed transient StreamError 发布。
+- [x] `internal/llm` 继续拥有 Provider-neutral request/response/stream port，`internal/llm/openai` 继续拥有 wire adapter；modelclient 不接管 Provider configuration 或 Prompt/Tool ownership。
+- [x] 将 Session service builder 中 concrete OpenAI adapter fallback 移到 `internal/bootstrap` ClientFactory composition；Runtime 只消费注入的 Provider-neutral factory，不反向依赖 `internal/llm/openai`。
+- [x] 将 Tool runtime construction 移入 Session service builder，将 Tool Event/Plan completion/persistence 移入对应 Session/Tool owner后删除整个 `internal/agent/engine`。
+- [x] 删除无调用的 `PlanModeTools`、ToolExecutionService convenience method 等 dead API；没有为旧 engine tests 建 wrapper。
+
+### Z-04：ThreadStore + ThreadManager Boundary
+
+- [x] 将 `internal/thread`、`internal/thread/local`、`internal/state` 和 `internal/state/sqlite` 收敛为 `internal/threadstore`、`threadstore/local` 与 `threadstore/local/sqlite`；StoredThread、ListQuery 和 metadata DB port 归 ThreadStore domain。
+- [x] 将 `internal/thread/manager` 提升为 `internal/threadmanager`，对齐 Codex core ThreadManager/CodexThread 与独立 thread-store crate；ThreadManager 是唯一 Session spawn/live registry owner。
+- [x] 将原 `manager.go` 拆为 manager registry 与 `amadeus_thread.go`，将 LocalThreadStore 拆为 store/writer/metadata/index；保持 JSONL durability、SQLite watermark/rebuild、child restore 和 shutdown failure order。
+- [x] 删除含义过宽的 `internal/state` 和旧 nested manager/local 路径，不保留第二套 metadata port。
+
+### Z-05：TUI Package + Projection Ownership
+
+- [x] 将唯一 frontend 从 `internal/interface/tui` 迁为顶层 `internal/tui`，删除空 namespace `internal/interface`；CLI/bootstrap/import guards 同步迁移。
+- [x] 将 `FullscreenApplication`/`fullscreenModel`/`fullscreenSessionState` 收敛为 package-local `Application`/`appModel`/`sessionViewState`；TTY preflight、AppExitInfo、renderer drain 和 single frontend Contract 不变。
+- [x] 将只被 TUI 使用的 `internal/app/transcript` reducer 迁入 TUI projection，区分 `protocolEventState` 与视觉 active-cell state；`internal/app` 不保存 HistoryCell/TUI reducer。
+- [x] 按 Codex App/ChatWidget/history_cell module 责任拆分 event reducer、history state、composer/transcript view、History render、Explore/Exec/Web tool cells；保持一个 Go package 共享 Bubble Tea model，未建立人工 widget subpackage。
+
+### Z-06：Codex + Claude Code Tool Boundary
+
+- [x] 保留 `internal/tool` + `internal/policy` + `internal/tool/builtin` 三层：generic Tool contract/router/execution、Permission/Approval、具体 builtin Tool；不复制 Claude Code 的一 Tool 一 Go package。
+- [x] 移除 generic `internal/tool/presentation.go` 对 read/web/MCP/Multi-Agent 等完整工具名的枚举；具体 presentation 归 Session Tool Event policy，generic Tool 不再认识产品 catalog。
+- [x] 将 `execution_service.go` 按 single-call lifecycle、batch concurrency、outcome mapping 拆为 `execution_service.go`、`execution_batch.go`、`execution_outcome.go`，保护 Normalize→Validate→Prepare→Permission/Approval→Execute 顺序和 deterministic completion order。
+- [x] 将 `core.go`/`catalog.go` 改为 `core_registry.go`/`target_catalog.go`；`grep`、`execute_command` 仅在存在独立 parser/executor 等真实职责时在同 package 拆文件。
+
+### Z-07：Capability File Cohesion
+
+- [x] `mcp/runtime.go` 按 orchestration、connection lifecycle、binding snapshot 拆分；未拆第二 MCP runtime package。
+- [x] `skill/catalog.go` 按 catalog、discovery、parser、revision 拆分；Skill metadata/resource/settings owner 不变。
+- [x] `websearch/providers.go` 拆为 provider factory 与 DuckDuckGo/Tavily/SearXNG/Brave 文件；共享 HTTP/result contract 未复制。
+- [x] `app/interactive_application.go` 按 application、commands、thread switching、attachment pump、capability queries 拆分；唯一 SessionIo consumer 不变。
+- [x] 将 `rollout/items.go` 的 scope/clone helper 拆到 `item_scope.go`，将 `project/filesystem_policy.go` 的 canonical root/path helper 拆到 `filesystem_paths.go`；其余文件经职责审计后未机械按行数切割。
+
+### Z-08：Dead Boundaries + Naming Cleanup
+
+- [x] 删除空 `internal/agent/plan`、`internal/agent/task`；删除无生产调用方且已属明确非目标的 `internal/sandbox`。
+- [x] 审计 package path 与 declared package name，消除 `context → agentcontext`、nested `manager → threadmanager` 等错位。
+- [x] 审计通用文件名并将模糊 DTO 文件改为 `contract.go`、`domain.go`、`document.go`、`binding.go`、`change.go` 等责任名；`manager.go`、`runtime.go`、`service.go`、`store.go` 仅在确实表达 package 核心 owner 时保留，未制造一类型 package。
+- [x] `go list ./internal/...` 只包含 `docs/design.md` 目标目录；production/test imports 零旧路径，architecture whitepaper 已同步新 owner，设计/进度文档中的旧路径仅保留为明确迁移历史。
+
+### Z-09：Architecture Guards + Acceptance
+
+- [x] 将单个 `internal/architecture/guard_test.go` 按 legacy、Runtime、Protocol/Persistence、Tool/Provider、TUI 和 shared helper 拆分；旧路径检查改为新 owner，避免单文件成为第二份进度文档。
+- [x] 增加 AST package dependency guards：Protocol 为低层 contract；ThreadStore 不依赖 Session；ThreadManager 唯一 spawn Session；generic Tool 不依赖 builtin/TUI；TUI projection 不位于 App；Runtime 不依赖 CLI/bootstrap/TUI。
+- [x] 迁移测试到 Protocol、ContextManager、ModelClient、ThreadStore/Manager、TUI、Tool 等新 owner，并通过 live/Resume、compaction、stream retry、same-turn steer、next-turn queue、Approval/request_user_input、Multi-Agent、Tool batch order 和 Thread durability 现有 contract tests。
+- [x] 运行 focused tests、`go test ./... -count=1`、`go test -race ./... -count=1`、Provider/Core Tools mock E2E、`make check`、`go build ./cmd/amadeus`、`git diff --check`；同步 design/progress/whitepaper 后将 Z 标记 DONE。
+
+### Z 出口
+
+- 顶层 package 与 Codex owner 对齐，Tool 内层同时保持 Claude Code contract；不存在仅靠名字相似的 facade 或旧路径兼容层。
+- Session/ContextManager/ModelClient、ThreadManager/ThreadStore、Protocol/Rollout、Application/TUI 各有单一 owner 和无环依赖方向。
+- 大 package 通过同 package 责任文件表达 Codex private modules；目录只表示稳定 domain/runtime/adapter boundary，不按行数或参考语言语法机械拆分。
+- 所有现有基础 Agent 行为、Protocol/Rollout/SQLite schema 和用户界面保持等价，旧目录、dead package、重复 projection 和宽泛文件 owner 全部清理。
+
+### Z 完成记录
+
+- 2026-08-26 将公共协议提升为 `internal/protocol` 并按 submission/event/session/turn/approval/scope 拆分；ContextManager、ModelClientSession、ThreadStore/ThreadManager 和 TUI 分别迁入目标顶层 owner，旧 `agent/engine`、`agent/turn`、`state`、`interface`、dead sandbox 与空 package 物理删除。
+- Session 吸收 Codex 风格 TurnContext/StepContext/Tool Event/Plan completion owner，模型 stream/reconnect 收敛到窄 `agent/modelclient`；OpenAI concrete factory 回到 bootstrap，Runtime 不依赖 adapter。
+- Thread persistence 收敛为 `threadstore` + `threadstore/local/sqlite`，Thread runtime registry 收敛为 `threadmanager`；Manager/AmadeusThread、Store/writer/metadata/index 各按职责拆分并保持 durability/shutdown/child restore ordering。
+- TUI 迁为单一顶层 package，删除 Fullscreen 分支命名和 Application-owned transcript；event reducer、history state、composer/transcript view、History render 与 Explore/Exec/Web cells 分文件共享同一 Bubble Tea model。
+- Tool 保持 Codex Router/Event 外层和 Claude Code Validate/Prepare/Permission/Approval/Execute 内层；generic presentation 的具体工具名枚举迁回 Session Tool Event，ExecutionService 拆为 single-call/batch/outcome，文件 Tool/Approval 行为与 E2E 保持不变。
+- MCP、Skill、WebSearch、Application、ContextManager、Rollout 和 FileSystemPolicy 聚合文件按真实职责拆分；architecture guards 分域并新增 AST import dependency checks。最终 `make check`、全仓 functional/race tests、Responses/Chat Provider/Core Tools E2E 与 `git diff --check` 全部通过。

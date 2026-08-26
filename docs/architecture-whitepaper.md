@@ -14,7 +14,7 @@ Amadeus 是一个使用 Go 实现的终端 Coding Agent。它不是简单的“�
 - Prompt、Context、ToolRouter 和 Provider Request 在每次模型采样时形成一致快照。
 - MCP、Skill、Web、图片和 Multi-Agent 都进入同一 Session/Tool/Event 主链，不建立第二套 Agent Runtime。
 - Root Agent 可以创建由 Amadeus 自己驱动的只读 explorer SubAgent；SubAgent 本身仍是完整 Thread/Session。
-- Fullscreen TUI 将 Enter same-turn steer 与 Tab next-turn queue 分开；未提交 queue state 不进入 Runtime 或 canonical persistence。
+- TUI 将 Enter same-turn steer 与 Tab next-turn queue 分开；未提交 queue state 不进入 Runtime 或 canonical persistence。
 
 本文面向以下读者：
 
@@ -129,12 +129,12 @@ flowchart TB
 
 | 层 | 主要 package | 职责 | 不拥有的内容 |
 |---|---|---|---|
-| Interface | `internal/cli`、`internal/interface/tui` | multitool 参数与分发、initial UserMessage、终端输入、TUI 渲染、Approval 交互 | Session 状态、Thread map、Tool truth |
+| Interface | `internal/cli`、`internal/tui` | multitool 参数与分发、initial UserMessage、终端输入、TUI 渲染、Approval 交互 | Session 状态、Thread map、Tool truth |
 | Application | `internal/app` | 当前 Thread 选择、UI generation、事件泵、Slash Command 应用生命周期 | Provider、Rollout writer、Tool executor |
-| Thread | `internal/thread/*` | Thread identity、live registry、writer、Resume、metadata 操作 | Active Turn、模型循环 |
+| Thread | `internal/threadmanager`、`internal/threadstore/*` | live registry、writer、Resume、metadata 操作 | Active Turn、模型循环 |
 | Agent Runtime | `internal/agent/*` | Session loop、Turn、Task、Step、模型 continuation、Multi-Agent control | SQLite 实现、TUI cell |
-| Capabilities | `internal/context`、`tool`、`policy`、`mcp`、`skill` 等 | Prompt/context、工具、权限、外部能力 | 顶层 Thread 生命周期 |
-| Infrastructure | `internal/state`、`thread/local`、`audit`、Provider adapter | JSONL、SQLite、日志、网络与进程适配 | 产品级运行状态决策 |
+| Capabilities | `internal/contextmanager`、`tool`、`policy`、`mcp`、`skill` 等 | Prompt/context、工具、权限、外部能力 | 顶层 Thread 生命周期 |
+| Infrastructure | `internal/threadstore/local`、`audit`、Provider adapter | JSONL、SQLite、日志、网络与进程适配 | 产品级运行状态决策 |
 
 ## 4. 所有权与生命周期
 
@@ -180,7 +180,7 @@ flowchart TD
 - 一个 `SessionServices` 在 Session 生命周期内复用 Provider client、Context、Tool、Approval、MCP、Skill、Process 和无状态 CompactionService；Session 自身拥有 compaction lifecycle 与 durable install。
 - 一个 `StepContext` 只对应一次模型采样及其紧随的 Tool dispatch；下一次采样必须重新捕获。
 - `AgentControl` 只由 Root Thread 拥有；child 共享引用但不能关闭它。
-- `NextTurnQueue` 由 Bubble Tea `fullscreenModel` 串行拥有，按 active Thread attachment 隔离；它不是 Session deferred submission 或 TurnInputQueue。
+- `NextTurnQueue` 由 Bubble Tea `appModel` 串行拥有，按 active Thread attachment 隔离；它不是 Session deferred submission 或 TurnInputQueue。
 
 ## 5. Canonical Turn 数据流
 
@@ -254,7 +254,7 @@ flowchart LR
     CFG[Effective Config]
     CLI[internal/cli dispatch]
     COMP[internal/bootstrap composition]
-    TUI[internal/interface/tui]
+    TUI[internal/tui]
     SS[Session Configuration / ServiceAdapters]
 
     D --> L
@@ -350,7 +350,7 @@ flowchart TD
 | `SessionsLoaded` | Resume picker 异步加载结果。 |
 | `SkillsLoaded` / `SkillEnabledSet` | Skill 浏览和启停结果。 |
 | `MCPInventoryLoaded` | MCP inventory 异步查询结果。 |
-| `fullscreenExitState` | Fullscreen TUI 的 shutdown-first、bounded timeout、空 active-frame drain 与最终 quit 状态机；不进入 Application Event 或 History。 |
+| `exitState` | TUI 的 shutdown-first、bounded timeout、空 active-frame drain 与最终 quit 状态机；不进入 Application Event 或 History。 |
 | `AppExitInfo` | renderer 停止且终端恢复后返回 CLI 的 token usage、Thread identity、resume hint 与退出原因。 |
 | `HistoryCell` | TUI 中一个可重放、可渲染的历史单元接口。 |
 | `ActiveHistoryCell` | 尚未完成的流式或工具活动投影。 |
@@ -484,7 +484,7 @@ flowchart LR
 | `ThreadSettingsOp` | 在没有 active Turn 时更新 Mode。 |
 | `ThreadSettingsOverrides` | 用户消息附带的 request-scoped collaboration mode override。 |
 
-Tab queue 不增加新的 `Op`：输入在 Fullscreen TUI 中 enqueue 时尚未跨越 Submission boundary，只有 terminal 后 dequeue 才创建普通 `UserInputOp`。因此 Protocol 仍只有 Started/Steered admission，不存在 Queued admission。
+Tab queue 不增加新的 `Op`：输入在 TUI 中 enqueue 时尚未跨越 Submission boundary，只有 terminal 后 dequeue 才创建普通 `UserInputOp`。因此 Protocol 仍只有 Started/Steered admission，不存在 Queued admission。
 
 ### 9.2 输出事件模型
 
@@ -917,30 +917,9 @@ flowchart LR
 | `ExecRequest` | `execute_command` 的 normalized command request。 |
 | `ProcessResult` | ToolResult 中返回 process ID、state、output、exit code、耗时和输出截断状态。 |
 
-### 16.2 Sandbox Runner 边界
+### 16.2 Host Execution 边界
 
-```mermaid
-flowchart LR
-    Policy[FileSystemPolicy]
-    Runner[sandbox.Runner]
-    Probe[bubblewrap Probe]
-    Launch[sandbox.Launch]
-    Future[Command Composition]
-
-    Policy --> Runner
-    Probe --> Runner
-    Runner --> Launch
-    Launch -. 尚未接入 .-> Future
-```
-
-`internal/sandbox` 已实现 Linux bubblewrap 探测和 launch 参数生成，但当前 bootstrap 与 `execute_command` 尚未使用该 Runner；命令执行的强制边界目前主要是 CommandGuard、Approval、CWD/FileSystemPolicy 检查和 ProcessManager。白皮书把 Sandbox 标记为“可用基础设施、待接入主链”，避免把目标架构误写成现状。
-
-| 模型 | 职责 |
-|---|---|
-| `sandbox.IsolationMode` | `sandboxed` 与 `unsandboxed` 探测结果。 |
-| `sandbox.Runner` | 探测 bubblewrap，并根据 PermissionProfile 生成隔离 launch。 |
-| `sandbox.Launch` | executable、arguments、directory 和最终 isolation mode。 |
-| `sandbox.Options` | 注入 LookPath、Probe 和 GOOS，支持平台适配与测试。 |
+当前基础产品不实现 OS sandbox。`execute_command` 的强制边界由 CommandGuard、Approval、canonical CWD/FileSystemPolicy、exact Session grant 和 ProcessManager 共同构成；未接入主链的 bubblewrap prototype 已删除，不作为未来能力占位。若后续新增 sandbox，必须作为明确的 Command execution adapter 与独立跨平台 Contract 设计，不能恢复未使用的旧 package。
 
 ## 17. MCP 与 Skill 架构
 
@@ -1176,7 +1155,7 @@ flowchart LR
 | `CollabAgentHistoryCell` | spawn/send/wait/close 的 Codex 风格展示。 |
 | `WarningHistoryCell` / `ErrorHistoryCell` | 非普通对话的 warning/error。 |
 | `approvalDialog` | `ApprovalPresentation` 的 TUI 私有交互状态。 |
-| `NextTurnQueue` / `QueuedUserMessage` | Fullscreen pending FIFO、InFlight/start-pending gate、ThreadID/generation/Mode isolation 和 bounded preview source。 |
+| `NextTurnQueue` / `QueuedUserMessage` | TUI pending FIFO、InFlight/start-pending gate、ThreadID/generation/Mode isolation 和 bounded preview source。 |
 | `footerProps.HasQueueableDraft` | 从 running + Composer ParseInput + overlay state 纯派生的 transient queue guidance input；不持久化。 |
 
 ## 21. Audit、Logging 与诊断
@@ -1266,7 +1245,7 @@ flowchart TD
 13. Root/child 共享 SessionID 但使用不同 ThreadID；registry、Event、Resume 和 Agent target 始终按 ThreadID 路由。
 14. Tool Invocation、Audit 和 Provider request metadata 同时携带 SessionID、ThreadID 与 TurnID。
 15. SessionMeta 是 SessionID 的 durable source；SQLite StoredThread 不保存 SessionID。
-16. Enter steer 与 Tab queue 是不同输入意图；NextTurnQueue 只存在于 Fullscreen input layer，Core/Protocol/Rollout/Context 不保存 Queued Op、admission 或 durable item。
+16. Enter steer 与 Tab queue 是不同输入意图；NextTurnQueue 只存在于 TUI input layer，Core/Protocol/Rollout/Context 不保存 Queued Op、admission 或 durable item。
 17. matching TurnComplete 每次最多 drain 一条 queued input 且 admission 必须为 Started；aborted/blocked/rejection 和旧 attachment 结果不能把输入发送到错误 Turn。
 18. queue hint 只由 footerProps 的 queueable-draft 派生值驱动；running draft 时优先于 passive statusline 并按 full/short 降级，不能成为 footerState、StatusLineItem、HistoryCell 或 Runtime/canonical fact。
 19. Config/patch/default/validation/provenance/output 不保存 schema version；`version:` 被 strict decoder 拒绝，`configs/config.yaml.example` 是仓库唯一完整模板且不是自动发现位置。
@@ -1320,18 +1299,17 @@ flowchart TD
 | `internal/bootstrap` | 环境/路径、外部 Adapter、ThreadStore/ThreadManager/ThreadWorkspace concrete composition。 |
 | `internal/config` | 配置模型、分层加载、覆盖、来源追踪、校验和脱敏。 |
 | `internal/app` | 交互应用、ThreadWorkspace、Application events。 |
-| `internal/interface/tui` | pending initial UserMessage、Fullscreen TUI startup/reducer、NextTurnQueue、HistoryCell、Slash Command 和 overlays。 |
-| `internal/thread/manager` | live Thread registry、Root/child Thread 生命周期。 |
-| `internal/thread` | LiveThread 和 ThreadStore port。 |
-| `internal/thread/local` | JSONL + SQLite 本地 ThreadStore。 |
-| `internal/state/sqlite` | Thread metadata index。 |
-| `internal/agent/protocol` | Submission、Op、EventMsg、TurnItem、Multi-Agent protocol。 |
+| `internal/tui` | pending initial UserMessage、TUI startup/reducer、NextTurnQueue、HistoryCell、Slash Command 和 overlays。 |
+| `internal/threadmanager` | live Thread registry、AmadeusThread、Root/child Thread 生命周期。 |
+| `internal/threadstore` | LiveThread、ThreadStore port 与 Thread metadata domain。 |
+| `internal/threadstore/local` | JSONL writer、metadata projection 与 index rebuild。 |
+| `internal/threadstore/local/sqlite` | Thread metadata SQLite index adapter。 |
+| `internal/protocol` | Identity、Submission、Op、EventMsg、TurnItem、Multi-Agent protocol。 |
 | `internal/agent/session` | Session loop、Task、Turn completion、Step capture。 |
-| `internal/agent/engine` | ModelClientSession、continuation primitives 与 Tool events。 |
+| `internal/agent/modelclient` | ModelClientSession、stream consume 与 reconnect policy。 |
 | `internal/agent/compact` | Compaction Source/Request/Output 与无状态生成服务。 |
-| `internal/agent/turn` | TurnContext、Mode 和 Personality。 |
 | `internal/agent/multiagent` | AgentControl、reservation、status、wait、shutdown。 |
-| `internal/context` | `Manager`、WorldState、PromptSnapshot、Rollout projection。 |
+| `internal/contextmanager` | `Manager`、WorldState、PromptSnapshot、Rollout projection。 |
 | `internal/prompt` | ModelMessages 的 Prompt assembly helper。 |
 | `internal/llm` | Provider-neutral model domain。 |
 | `internal/llm/openai` | Responses/Chat adapter。 |
@@ -1343,7 +1321,6 @@ flowchart TD
 | `internal/workspace` | 文件读取、枚举、ignore/glob、文本检测和输出限制。 |
 | `internal/filechange` | edit/write preview 与 apply result DTO。 |
 | `internal/process` | ProcessManager 和 PTY/stdio lifecycle。 |
-| `internal/sandbox` | bubblewrap 探测与隔离 launch 生成；当前尚未接入命令主链。 |
 | `internal/agentsmd` | AGENTS.md discovery 与 revision。 |
 | `internal/skill` | Skill Catalog、settings、resources、script attribution。 |
 | `internal/mcp` | MCP config、runtime、catalog、Tool/Resource adapters。 |

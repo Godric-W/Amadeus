@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol/identity"
+	"github.com/Godric-W/Amadeus/internal/protocol/identity"
 )
 
 type Clock func() time.Time

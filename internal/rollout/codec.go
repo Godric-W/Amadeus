@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
 const CurrentVersion = 4

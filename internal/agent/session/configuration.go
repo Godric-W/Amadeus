@@ -1,10 +1,9 @@
 package session
 
 import (
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
 func (session *Session) Configuration() Configuration {
@@ -28,7 +27,7 @@ func (session *Session) ProtocolConfiguration() protocol.SessionConfiguration {
 	}
 }
 
-func (session *Session) setMode(mode turn.ModeKind) {
+func (session *Session) setMode(mode ModeKind) {
 	session.configMu.Lock()
 	session.state.Configuration.Mode = mode
 	session.configMu.Unlock()

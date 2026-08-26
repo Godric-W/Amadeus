@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
-	"github.com/Godric-W/Amadeus/internal/state"
-	threadmanager "github.com/Godric-W/Amadeus/internal/thread/manager"
+	"github.com/Godric-W/Amadeus/internal/protocol"
+	threadmanager "github.com/Godric-W/Amadeus/internal/threadmanager"
+	"github.com/Godric-W/Amadeus/internal/threadstore"
 )
 
 type ThreadTargetKind string
@@ -44,7 +44,7 @@ func (target ThreadTarget) Validate() error {
 
 type ThreadStartResult struct {
 	Active   *threadmanager.AmadeusThread
-	Metadata *state.StoredThread
+	Metadata *threadstore.StoredThread
 	Draft    bool
 }
 
@@ -69,7 +69,7 @@ func (workspace *ThreadWorkspace) PrepareStart(
 	case "", ThreadTargetNew:
 		return ThreadStartResult{Draft: true}, nil
 	case ThreadTargetLatest:
-		threads, err := workspace.List(ctx, state.ListQuery{CWD: configuration.CWD, Limit: 1})
+		threads, err := workspace.List(ctx, threadstore.ListQuery{CWD: configuration.CWD, Limit: 1})
 		if err != nil {
 			return ThreadStartResult{}, err
 		}
@@ -84,7 +84,7 @@ func (workspace *ThreadWorkspace) PrepareStart(
 		return ThreadStartResult{Active: active, Metadata: &metadata}, nil
 	case ThreadTargetResume:
 		metadata, err := workspace.threadMetadata(ctx, target.ThreadID, configuration.CWD)
-		if err != nil && !errors.Is(err, state.ErrNotFound) {
+		if err != nil && !errors.Is(err, threadstore.ErrNotFound) {
 			return ThreadStartResult{}, err
 		}
 		active, err := workspace.Resume(ctx, target.ThreadID, configuration)
@@ -101,15 +101,15 @@ func (workspace *ThreadWorkspace) PrepareStart(
 	}
 }
 
-func (workspace *ThreadWorkspace) threadMetadata(ctx context.Context, id protocol.ThreadID, cwd string) (state.StoredThread, error) {
-	threads, err := workspace.List(ctx, state.ListQuery{CWD: strings.TrimSpace(cwd), IncludeArchived: true})
+func (workspace *ThreadWorkspace) threadMetadata(ctx context.Context, id protocol.ThreadID, cwd string) (threadstore.StoredThread, error) {
+	threads, err := workspace.List(ctx, threadstore.ListQuery{CWD: strings.TrimSpace(cwd), IncludeArchived: true})
 	if err != nil {
-		return state.StoredThread{}, err
+		return threadstore.StoredThread{}, err
 	}
 	for _, candidate := range threads {
 		if candidate.ID == id {
 			return candidate, nil
 		}
 	}
-	return state.StoredThread{}, state.ErrNotFound
+	return threadstore.StoredThread{}, threadstore.ErrNotFound
 }

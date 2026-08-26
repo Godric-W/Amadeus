@@ -6,8 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
 type Completion struct {
@@ -21,7 +20,7 @@ type RunningTask struct {
 	mu      sync.Mutex
 	task    SessionTask
 	kind    TaskKind
-	context *turn.TurnContext
+	context *TurnContext
 	session *Session
 	ctx     context.Context
 	cancel  context.CancelCauseFunc
@@ -29,7 +28,7 @@ type RunningTask struct {
 	started bool
 }
 
-func NewRunningTask(parent context.Context, session *Session, sessionTask SessionTask, turnContext *turn.TurnContext) (*RunningTask, error) {
+func NewRunningTask(parent context.Context, session *Session, sessionTask SessionTask, turnContext *TurnContext) (*RunningTask, error) {
 	if parent == nil || session == nil || sessionTask == nil || turnContext == nil {
 		return nil, errors.New("running task is incomplete")
 	}
@@ -80,7 +79,7 @@ func (running *RunningTask) Cancel(cause error) {
 	running.cancel(cause)
 }
 
-func (running *RunningTask) Context() *turn.TurnContext {
+func (running *RunningTask) Context() *TurnContext {
 	if running == nil {
 		return nil
 	}

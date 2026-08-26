@@ -10,11 +10,11 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
-	"github.com/Godric-W/Amadeus/internal/thread"
+	"github.com/Godric-W/Amadeus/internal/threadstore"
 )
 
 type closeTrackingThreadStore struct {
-	thread.ThreadStore
+	threadstore.ThreadStore
 	closes atomic.Int32
 }
 
@@ -34,7 +34,7 @@ func TestOpenWorkspaceClosesStoreWhenCompositionFails(t *testing.T) {
 	_, err = OpenWorkspace(ctx, WorkspaceOptions{
 		AmadeusRoot: home, CWD: t.TempDir(), Configuration: testConfiguration(),
 		Dependencies: Dependencies{
-			ThreadStore: func(context.Context, string) (thread.ThreadStore, error) { return tracking, nil },
+			ThreadStore: func(context.Context, string) (threadstore.ThreadStore, error) { return tracking, nil },
 			NextID:      NextPersistentID,
 		},
 	})
@@ -57,7 +57,7 @@ func TestCloseWorkspaceIsIdempotentAtApplicationBoundary(t *testing.T) {
 	result, err := OpenWorkspace(ctx, WorkspaceOptions{
 		AmadeusRoot: home, CWD: t.TempDir(), Configuration: testConfiguration(),
 		Dependencies: Dependencies{
-			ThreadStore: func(context.Context, string) (thread.ThreadStore, error) { return tracking, nil },
+			ThreadStore: func(context.Context, string) (threadstore.ThreadStore, error) { return tracking, nil },
 			AuditFactory: func() (audit.Sink, io.Closer, error) {
 				return nil, nil, errors.New("not reached without a started session")
 			},

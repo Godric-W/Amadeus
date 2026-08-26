@@ -8,12 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Godric-W/Amadeus/internal/agent/protocol"
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
-	"github.com/Godric-W/Amadeus/internal/agent/turn"
-	statesqlite "github.com/Godric-W/Amadeus/internal/state/sqlite"
-	"github.com/Godric-W/Amadeus/internal/thread/local"
-	threadmanager "github.com/Godric-W/Amadeus/internal/thread/manager"
+	"github.com/Godric-W/Amadeus/internal/protocol"
+	threadmanager "github.com/Godric-W/Amadeus/internal/threadmanager"
+	"github.com/Godric-W/Amadeus/internal/threadstore/local"
+	statesqlite "github.com/Godric-W/Amadeus/internal/threadstore/local/sqlite"
 )
 
 func TestInteractiveApplicationOwnsThreadLifecycleAndReplay(t *testing.T) {
@@ -38,7 +37,7 @@ func TestInteractiveApplicationOwnsThreadLifecycleAndReplay(t *testing.T) {
 	}
 	firstID := initial.ThreadID
 
-	if err := application.SetMode(ctx, turn.ModeKindPlan); err != nil {
+	if err := application.SetMode(ctx, protocol.ModeKindPlan); err != nil {
 		t.Fatal(err)
 	}
 	settings := waitInteractiveEvent[SessionEventObserved](t, application.Events(), func(event SessionEventObserved) bool {
