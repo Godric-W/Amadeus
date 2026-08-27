@@ -4,8 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"sort"
-	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/llm"
 )
@@ -16,28 +14,12 @@ func (manager *Manager) Snapshot(model llm.ModelInfo, prompt llm.Prompt) PromptS
 	}
 	manager.mu.RLock()
 	items := cloneResponseItems(manager.items)
-	updates := make(map[UpdateKey]string, len(manager.updates))
-	worldStateParts := make([]string, 0, len(manager.updates))
-	for key, value := range manager.updates {
-		updates[key] = value.Content
-		worldStateParts = append(worldStateParts, string(key)+":"+value.Revision)
-	}
+	worldStateRevision := manager.worldState.Revision()
 	version := manager.lastSequence
 	estimator := manager.estimator
 	manager.mu.RUnlock()
-	sort.Strings(worldStateParts)
-	worldStateHash := sha256.Sum256([]byte(strings.Join(worldStateParts, "\n")))
-	worldStateRevision := hex.EncodeToString(worldStateHash[:])
-
 	model = model.Normalized()
-	normalized := normalizeHistory(items, model, estimator)
-	result := make([]llm.ResponseItem, 0, len(normalized)+len(updates))
-	for _, key := range updateOrder {
-		if content := strings.TrimSpace(updates[key]); content != "" {
-			result = append(result, llm.DeveloperMessage(content))
-		}
-	}
-	result = append(result, normalized...)
+	result := normalizeHistory(items, model, estimator)
 	estimatedInputTokens := estimateResponseItems(result, estimator) + estimatePromptOverhead(prompt, estimator)
 	revisionInput := struct {
 		Items              []llm.ResponseItem

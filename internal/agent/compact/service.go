@@ -14,8 +14,8 @@ import (
 const retainedUserMessageTokenBudget = int64(20_000)
 
 type Service struct {
-	ModelInfo     llm.ModelInfo
-	ModelMessages llm.ModelMessages
+	ModelInfo llm.ModelInfo
+	Assets    internalprompt.CompactionAssets
 }
 
 func (service *Service) Generate(ctx context.Context, request Request) (Output, error) {
@@ -29,16 +29,8 @@ func (service *Service) Generate(ctx context.Context, request Request) (Output, 
 	if strings.TrimSpace(model.Name) == "" {
 		model = service.ModelInfo.Normalized()
 	}
-	messages := service.ModelMessages
-	if model.ModelMessages.HasCompaction() {
-		messages = model.ModelMessages
-	}
-	if !messages.HasCompaction() {
-		return Output{}, errors.New("compaction model messages are unavailable")
-	}
-	compactionPrompt, summaryPrefix, err := internalprompt.CompactionMessages(messages.Normalized())
-	if err != nil {
-		return Output{}, err
+	if !service.Assets.Valid() {
+		return Output{}, errors.New("compaction prompt assets are unavailable")
 	}
 	prompt := request.Prompt
 	prompt.Input = cloneItems(request.Source.PromptItems)
@@ -46,10 +38,13 @@ func (service *Service) Generate(ctx context.Context, request Request) (Output, 
 	prompt.ParallelToolCalls = false
 	prompt.OutputSchema = nil
 	prompt.OutputSchemaStrict = false
-	var response llm.Response
+	var (
+		response llm.Response
+		err      error
+	)
 	for {
 		attemptPrompt := prompt
-		attemptPrompt.Input = append(cloneItems(prompt.Input), llm.UserMessage(compactionPrompt.Text))
+		attemptPrompt.Input = append(cloneItems(prompt.Input), llm.UserMessage(service.Assets.SummarizationPrompt))
 		response, err = request.ModelSession.Complete(ctx, modelclient.CompleteRequest{
 			Request: llm.Request{
 				Model: model.Name, InputModalities: append([]llm.InputModality(nil), model.InputModalities...),
@@ -74,7 +69,7 @@ func (service *Service) Generate(ctx context.Context, request Request) (Output, 
 	if estimator == nil {
 		estimator = contextmanager.ApproxTokenEstimator{}
 	}
-	replacement := buildReplacement(request.Source.UserMessages, summaryPrefix, response.Message.Content, estimator)
+	replacement := buildReplacement(request.Source.UserMessages, service.Assets.SummaryPrefix, response.Message.Content, estimator)
 	return Output{
 		Message: response.Message, FinishReason: response.FinishReason,
 		ReplacementHistory: replacement, TokenUsage: response.TokenUsage,

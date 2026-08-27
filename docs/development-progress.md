@@ -2,12 +2,12 @@
 
 > 最近更新：2026-08-26
 > 主要架构与 Contract 工作文档：`docs/design.md`
-> 当前阶段：Z. Codex-aligned Internal Package + Source Layout（DONE）
-> 下一任务：下一阶段待规划
+> 当前阶段：AA. Prompt Ownership + Lifecycle Realignment（TODO）
+> 下一任务：AA-01 Reference Pinning + Prompt Source Matrix
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
-A-Z 的条目保留为历史与当前阶段记录；其中与当前 `docs/design.md` 冲突的 token/compaction 结论由 W 取代，第一轮外层 package 归属由 X/Y 收敛，最终 internal package、目录和责任文件布局由 Z 取代。历史 DONE 只记录迁移事实，不构成恢复旧 owner、旧路径或已删除中间 frontend 的依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
+A-AA 的条目保留为历史与当前阶段记录；其中与当前 `docs/design.md` 冲突的 token/compaction 结论由 W 取代，第一轮外层 package 归属由 X/Y 收敛，internal package、目录和责任文件布局由 Z 取代，Prompt ownership/text/WorldState/wire/Resume 结论由 AA 最终收敛。历史 DONE 只记录当时迁移事实，不构成恢复旧 owner、旧路径、旧 Prompt prefix map 或已删除中间 frontend 的依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
 
 ## 1. 状态与完成标准
 
@@ -51,6 +51,7 @@ A Runtime + Persistence
 → X CLI + Bootstrap Package Architecture
 → Y Initial Prompt + Single TUI Frontend Alignment
 → Z Codex-aligned Internal Package + Source Layout
+→ AA Prompt Ownership + Lifecycle Realignment
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先分析对应参考源码，再同步更新 `docs/design.md` 与本文。
@@ -375,10 +376,10 @@ Composer
 - `DONE`：RegularTask 只保存 Runtime、Turn 输入、scoped EventSink 与 target instruction handle，不持有 Factory 或 audit/process/tool 生命周期。
 - `DONE`：contract test 验证连续 Turn 复用同一 Runtime，Turn Abort 不关闭 Session 资源，Factory Close 统一释放 audit/process/MCP/permission 状态。
 
-### F-03：TurnContext 与 StepContext — `DONE`
+### F-03：TurnContext 与 StepContext — `DONE`，Prompt field ownership 由 AA 取代
 
 - `DONE`：生产 TurnContext 删除 ToolNames；Tool 集合只存在于 request-scoped StepContext。
-- `DONE`：每次采样前 capture PromptSnapshot、ModelInfo、Tool Specs/allow-list、Tool/MCP/Skill revision 和 target instruction scope。
+- `DONE`：该阶段建立了每次采样前的 request snapshot；AA 最终收敛为先 capture capability-only StepContext，再记录 WorldState，最后独立构造 PromptSnapshot。
 - `DONE`：Prompt Tool Specs 与 ExecuteBatchScoped allow-list 来自同一 StepContext；MCP binding、文件与 instruction staleness 通过 typed Tool Result 回灌模型。
 
 ### F-04：Turn Continuation Loop — `DONE`
@@ -441,10 +442,10 @@ G 当时完成了 capability 的 Session-scoped 复用；其过渡 `engine.Servi
 
 G 完成了 `TurnContext` 与 `ModeKind` 的第一轮术语迁移；M-05 随后删除未消费的 TurnState、TaskKind、TurnInput 和 pending user-input 模型。该阶段曾通过 TaskOutput 返回 Usage/Tool count；W 已删除 TaskOutput Usage/Items，改为每个 request 立即由 Session 记录 TokenUsageInfo，TaskOutput 只保留 outcome/summary/reason/Tool count。
 
-### G-05：StepContext 与混合 Tool Boundary — `DONE`
+### G-05：StepContext 与混合 Tool Boundary — `DONE`，Prompt/Base fields 由 AA 删除
 
-- StepContext 捕获 Turn、PromptSnapshot、ModelInfo、BaseInstructions 与 immutable ToolRouter；MCP/Skill/AgentsMd revision 和 exact handler binding 由 ToolRouter 的 RequestSnapshot 冻结。
-- Prompt 由 ContextManager、TurnContext 与 StepContext 在 sampling request 构建阶段统一生成；同一 ToolRouter 同时提供模型可见 Specs 和执行路由。
+- G 当时让 StepContext 捕获 PromptSnapshot 与 BaseInstructions；AA 已删除这两个字段。当前 StepContext只冻结Model、ToolRouter、LoadedAgentsMd、Skill/Permission/SubAgent snapshots和capability revisions，Session在WorldState记录后独立构造PromptSnapshot。
+- Prompt 由 Session-owned Base、ContextManager、TurnContext 与当前 StepContext ToolRouter在 sampling request边界生成；同一ToolRouter同时提供模型可见Specs和执行路由。
 - 保留 ToolExecutionService、Validate/Prepare/Permission/Approval/Execute、PreparedToolUse、RequestSnapshot、ApprovalCoordinator 与 ApprovalPort；明确它们是 Claude-style Tool 内层，不承担 Session、Turn terminal 或 Tool catalog owner。
 - stale registry/MCP/Skill/AgentsMd snapshot 继续返回 typed ToolResult，不把 Codex 对齐误解为删除现有安全检查。
 
@@ -501,9 +502,9 @@ H 的 MCP、Skill 和 Web 行为能力仍保留；其中 `ExtensionAssembly` 作
 - `H-05 Release Cleanup`：`SUPERSEDED BY M-07`。当时删除旧 MCP Manager/Tool Adapter、旧 Skill 混合对象和泛化 Extension Runtime，但仍保留 `ExtensionAssembly`；M-07 将直接删除该聚合。
 - `H-06 Release Validation`：`DONE`。Linux/Windows/Darwin 目标构建、全量测试、全量 race、`go vet ./...`、架构 guard、文档同步和 `git diff --check` 已完成；当前沙箱偶发的 httptest loopback 监听失败不属于代码失败，独立重跑全量测试已通过。
 
-## 11. I. Prompt Construction + Optimization — `DONE`
+## 11. I. Prompt Construction + Optimization — `DONE`，Prompt lifecycle 结论由 AA 取代
 
-I 阶段专门完成 Prompt 构造架构、数据模型、命名、职责和 Prompt 资产迁移。I 不接受在旧 Prompt 主链外再包一层新接口；必须按照 `docs/design.md` 的 Codex 同构目标完成 ownership 迁移、调用方切换和旧实现删除。
+I 阶段完成了当时的 Prompt 类型、内置资产、StepContext/ToolRouter 和 Compact synthetic User 基础链，但 2026-08-26 对当前 Codex 源码的复查确认：Session Base provenance、Responses `instructions` wire、typed WorldState full/diff、fragment role/order、mode/tool owner、Prompt 文本完整度和 compact/resume baseline 仍未对齐。I 的完成记录保留为历史，I-02/I-03/I-05/I-08 的最终架构出口由 AA 取代。
 
 ### I-01：Codex Prompt 数据模型与所有权 — `DONE`
 
@@ -512,35 +513,35 @@ I 阶段专门完成 Prompt 构造架构、数据模型、命名、职责和 Pro
 - [x] 将 `llm.Message`、`llm.ToolDefinition`、`prompt.Assets` 等旧 owner 迁移并删除，不保留 type alias、wrapper、fallback 或双写兼容路径。
 - [x] 增加 architecture guard，禁止 `RegularTask`、`CompactTask`、Provider adapter、TUI 或 CLI 私自拼装 Prompt。
 
-### I-02：ModelMessages 与 BaseInstructions — `DONE`
+### I-02：ModelMessages 与 BaseInstructions — `SUPERSEDED BY AA`
 
 - [x] 引入模型级 `ModelMessages`/instruction template 解析，支持 Codex 风格 personality 模板变量。
 - [x] 将 Codex 模型 Base Instructions 迁入对应内置 Prompt 资产或模型配置来源，明确 revision、来源和覆盖优先级。
 - [x] 删除旧 Prompt asset owner 作为生产 BaseInstructions owner 的路径；BaseInstructions 只在当前 ModelInfo/StepContext 解析。
 - [x] 验证不同 ModelInfo、Personality 和 Provider 下 BaseInstructions 稳定、可追踪且不混入动态 Workspace/Permission/Tool 事实。
 
-### I-03：WorldState 与 Collaboration Mode — `DONE`
+### I-03：WorldState 与 Collaboration Mode — `SUPERSEDED BY AA`
 
 - [x] 建立 Codex 风格 WorldState/ContextualUserFragment owner，覆盖 collaboration mode、permissions、environment、AGENTS.md、skills 和 MCP。
 - [x] 以 `CollaborationModeMessages` 选择 Default 与 Plan Developer Instructions；Plan 文本从 collaboration mode 资产迁移，不新增独立 Plan Task Prompt。
 - [x] 以 Codex 风格稳定 marker、replace key 和 revision 生成 `ContextualUserFragment`/ContextUpdate，并通过 ContextManager canonical history 投影。
 - [x] 删除 `DeveloperInstructions(mode, toolNames)` 字符串拼接主链，不将动态事实继续写入静态 Base Prompt。
 
-### I-04：统一 Prompt Assembly 与 StepContext — `DONE`
+### I-04：统一 Prompt Assembly 与 StepContext — `DONE`，记录顺序与 lifecycle 由 AA 取代
 
 - [x] 将 Prompt 主链固定为 `ModelMessages/BaseInstructions + Dynamic Context + ContextManager ResponseItems + StepContext ToolSpecs + TurnContext OutputSchema → Prompt`。
 - [x] 确保普通 Turn 没有独立 `RegularTaskPrompt`；`RegularTask` 只创建任务并调用 Session 内唯一 `run_turn`。
 - [x] 确保每个 Model Step 重新 capture immutable StepContext、ToolRouter snapshot、PromptSnapshot 和 capability revisions。
 - [x] 删除旧 Prompt 资产组合器和调用方，保证 Live/Resume 使用同一 projector 和 Prompt Snapshot 语义。
 
-### I-05：Codex 普通、Plan 与 Compact Prompt — `DONE`
+### I-05：Codex 普通、Plan 与 Compact Prompt — `SUPERSEDED BY AA`
 
 - [x] 按 Codex 模型指令模板迁移普通 Agent 工作指引和最终交付规则，不混入 Claude Code 的系统提示词。
 - [x] 按 Codex Collaboration Mode 迁移 Plan Prompt；复用同一 RegularTask、Context、Tool Mask、Event 和 Rollout 主链。
 - [x] 迁移 Codex `SUMMARIZATION_PROMPT` 与 `SUMMARY_PREFIX`，使 CompactTask 只执行无 Tool 的 Summary 请求。
 - [x] 保留 Amadeus `rollout.Compaction`、SourceHash、CoveredThroughSequence 和 Replacement History Contract，并删除旧短版 Compaction Prompt owner。
 
-### I-06：Claude Code 文件与搜索 Tool Guidance — `DONE`
+### I-06：Claude Code 文件与搜索 Tool Guidance — `DONE`，装配 owner 由 AA 取代
 
 - [x] 按 Claude Code `FileReadTool` 迁移 `read` Prompt，适配 Amadeus 实际路径、行号和截断能力。
 - [x] 按 Claude Code `FileEditTool` 迁移 `edit` Prompt，覆盖 Read-before-write、唯一匹配、`replace_all`、缩进和文件路径边界。
@@ -548,14 +549,14 @@ I 阶段专门完成 Prompt 构造架构、数据模型、命名、职责和 Pro
 - [x] 按 Claude Code `GlobTool`/`GrepTool` 迁移 `glob`/`grep` Prompt，覆盖文件发现、正则、过滤、输出模式和 Amadeus 实际搜索能力。
 - [x] Tool Guidance 只在对应 Tool 暴露时注入，且不声明 Amadeus 未实现的 PDF、Notebook、任意主机路径或其他能力。
 
-### I-07：Codex Runtime Tool Guidance — `DONE`
+### I-07：Codex Runtime Tool Guidance — `DONE`，装配 owner 由 AA 取代
 
 - [x] 按 Codex Plan Tool 迁移 `update_plan` Prompt，保持 concise `Plan updated`、软计划和非调度语义；其中 Event/Session Plan owner 结论由 N 按当前 Codex lifecycle 取代。
 - [x] 按 Codex unified exec 迁移 `write_stdin` Prompt，保持 `process_id`、`origin_call_id`、轮询、取消、输出预算和 Approval 复用语义。
 - [x] 按 Codex unified exec 与 Amadeus Contract 收敛 `execute_command` Prompt，不引入 Claude Code Bash 的 Commit/PR 或不适用的 Sandbox 规则。
 - [x] 对照 ToolSpec、ToolExecutionService、ProcessManager 和 TUI Projection，删除提示词与真实 Tool Contract 不一致的旧描述。
 
-### I-08：Prompt Cache、Token、Debug 与 Contract 验证 — `DONE`
+### I-08：Prompt Cache、Token、Debug 与 Contract 验证 — `SUPERSEDED BY AA`
 
 - [x] 为 BaseInstructions、WorldState Fragment、ToolSpec、Prompt Snapshot 和 ModelMessages 增加稳定 revision/hash，明确 Prompt cache 的失效边界。
 - [x] Token Accounting 同时计算 BaseInstructions、ContextualUserFragment、ResponseItems、ToolSpecs 和 OutputSchema；Prompt 变更不能绕过 ContextManager 预算判断。
@@ -865,13 +866,15 @@ M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/
 - AgentsMdManager/LoadedAgentsMd、SkillCatalog 和 MCPRuntime 分别直接归 SessionServices 所有，不存在 generic Extension/Instruction assembly。
 - Protocol package 只保留 identity/DTO/contracts，TUI reducer、TranscriptState 和 replay projector 位于各自职责 package。
 
-## 16. N. Runtime Coordination Tools + Plan Mode Codex Lifecycle Alignment — `DONE`
+## 16. N. Runtime Coordination Tools + Plan Mode Codex Lifecycle Alignment — `DONE`，Plan Prompt owner/text 由 AA 取代
 
 ### 目标
 
 按当前 `../codex-main` 的真实实现完成三条相互依赖的收敛主链：先将 `update_plan` 从 Session-owned durable Plan State 收敛为 transient checklist Event；再以全新独立 Contract 引入 Default/Plan 通用的 `request_user_input`，不恢复 C-T-06 删除的 Permission/Approval 复用实现；最后把 `/plan` 重构为 Codex 风格 Collaboration Mode、原子 settings/input lifecycle 和 `<proposed_plan> → PlanDeltaEvent → completed PlanItem` 输出协议。全程保留 Amadeus 现有 `ToolDefinition → ToolExecutionService` 混合调用链，不引入 Handler。
 
 N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPlanMode` Tool 或复杂模式配置。N 只完成 Runtime coordination Tool、Session interactive waiter、Collaboration Mode、Plan Prompt、Proposed Plan Event/TurnItem、Slash/TUI 生命周期和旧链删除。
+
+N 的 `update_plan`、`request_user_input`、settings、Proposed Plan Event/TurnItem 和 TUI lifecycle 继续有效；N-09/N-11 中“Plan Prompt 已完整迁移且只有一个 owner”的判断由 AA 取代。AA 不恢复 Planner/DAG，也不改变 N 的交互协议，只替换 Collaboration Mode 文本来源、WorldState lifecycle 和 Tool guidance owner。
 
 ### N-01：Protocol Contract + Tool Boundary — `DONE`
 
@@ -934,7 +937,7 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 - 为 InteractiveApplication、AmadeusThread 和非 TUI adapter 接通同一 UserInputRequester contract；不得增加第二条 Request channel 或 Application callback side channel。
 - 覆盖键盘导航、单选、多选、Other、取消、窄终端、Default/Plan 两种模式和 approval/request-user-input 并存测试。
 
-### N-09：Request User Input Prompt + Acceptance — `DONE`
+### N-09：Request User Input Prompt + Acceptance — `DONE`，Prompt text/owner 由 AA 取代
 
 - 在 Tool Prompt 和 Collaboration Mode Prompt 中明确 Default/Plan 使用差异：Default 优先探索与合理假设，只有高风险且无法发现时才询问；Plan 在探索后优先询问会实质改变方案的意图和取舍。
 - Default 与 Plan 的每个 StepContext 都从同一 ToolRouter snapshot 暴露 `request_user_input`，不以 Plan Mode 作为 visibility gate；`update_plan` 仍仅在 Default 可见。
@@ -949,7 +952,7 @@ N 不扩展 Planner、DAG、Plan Mode Task、plan file、`EnterPlanMode`/`ExitPl
 - `/plan` 与快捷切换继续使用独立 `ThreadSettingsOp`；ActiveTurn 运行期间 settings update 必须拒绝或进入 Session submission queue，不能改变已冻结 TurnContext。
 - N 阶段的 `ThreadSettingsAppliedEvent` 返回完整生效模式 snapshot；S-02 将其 contract 进一步收敛为完整生效 `SessionConfiguration`。设置校验失败形成 correlated ErrorEvent，原模式保持不变且不得启动 Turn。
 
-### N-11：Plan Prompt + ToolRouter Policy Alignment — `DONE`
+### N-11：Plan Prompt + ToolRouter Policy Alignment — `DONE`，Prompt text/owner 由 AA 取代
 
 - 将 Plan Prompt 替换为 Codex conversational 三阶段语义：Ground in environment、Intent chat、Implementation chat、decision-complete finalization；模式只能由显式 Runtime settings update 结束。
 - Prompt 明确区分 Plan Mode 与 `update_plan`，优先使用 `request_user_input` 询问不可发现且会改变方案的决策，并要求最终方案使用单一 `<proposed_plan>` block。
@@ -1681,13 +1684,15 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - architecture guard 固化 versionless Config 与唯一模板路径，config show/explain/provenance 测试确认不再输出 version。
 - focused config/CLI/architecture tests、`make check`、`go test -race ./... -count=1` 与 `git diff --check` 于 2026-08-24 通过；首次全量 race 的未改动 PTY 测试发生一次时序波动，单包与全仓重跑均通过。
 
-## 25. W. Context Accounting + Compaction Realignment — `DONE`
+## 25. W. Context Accounting + Compaction Realignment — `DONE`，Prompt/baseline 部分由 AA 取代
 
 ### 目标
 
 按 `docs/design.md` 当前 Contract 替换旧 token/context/compaction 主链：区分 Thread 累计 Token 消耗、最近 Provider request usage、当前 active context 和 exact Prompt preflight estimate；将 Compaction 收敛为 Session-owned lifecycle，使 CompactionService 只生成 typed output，手动与自动压缩共享 source validation、真实 request usage record、durable replacement install、ActiveContextTokens recompute、Item lifecycle 和失败顺序。
 
 W 取代 B/L/M/O 中与当前实现一致但与最新 Codex reference 不再一致的 token/compaction 结论；历史阶段状态保持 DONE，但不得通过 alias、wrapper、双写或兼容 decoder 保留旧 `TaskOutput.Usage`、Role/Content replacement、Compactor Rollout writer 或 ContextCompactedEvent 完成协议。
+
+W 的 TokenUsageInfo、typed Compaction domain、source hash、atomic install、failure ordering 和 continuation contract 继续有效；W-03 中 compact assets 属于 ModelMessages/current-prefix Prompt、W-04/W-05 中不区分 pre-turn/manual 与 mid-turn initial-context baseline 的部分由 AA 取代。AA 必须在不回退 W durability/token contract 的前提下完成 Codex compact context placement 与 Resume baseline。
 
 ### W-01：Token Usage Protocol + Context Status Contract — `DONE`
 
@@ -1705,10 +1710,10 @@ W 取代 B/L/M/O 中与当前实现一致但与最新 Codex reference 不再一�
 - [x] 图片按 prepared dimensions/detail/patch cost 或稳定 fallback 估算并排除 Base64 payload；覆盖 ASCII、中文、high/original image、modality omission 和 tool_output_token_limit 交互。
 - [x] 保持当前 total active context scope 和 90% auto limit；不引入 remote compaction、body_after_prefix、fallback compact prompt、window UUID 或 TokenBudget feature。
 
-### W-03：Compaction Domain + Prompt/Replacement Contract — `DONE`
+### W-03：Compaction Domain + Prompt/Replacement Contract — `DONE`，asset/baseline lifecycle 由 AA 取代
 
 - [x] 新建责任独立的 `internal/agent/compact`，定义 CompactionSource/Request/Output 并复用 Protocol 的 Trigger/Reason/Phase；SessionServices 只持有无状态 CompactionService。
-- [x] CompactionService 使用 exact StepContext：保留普通 BaseInstructions，将 Codex `SUMMARIZATION_PROMPT` 追加为最后一个 synthetic User item，Tools 为空，并复用 frozen ModelInfo/Reasoning/ModelClientSession retry policy。
+- [x] CompactionService 使用 exact PromptSnapshot + capability-only StepContext：保留Session BaseInstructions，将Codex `SUMMARIZATION_PROMPT`追加为最后一个synthetic User item，Tools为空，并复用frozen ModelInfo/Reasoning/ModelClientSession retry policy。
 - [x] 摘要请求输入包含模型实际可见的 AGENTS.md、WorldState、Skill、MCP、conversation 和 modality projection；删除只读取裸 ContextProjection 的第二 Prompt 主链。
 - [x] Context projector 增加 typed MessageOrigin，CompactionSource 只传递真实 User messages；ReplacementHistory 改为完整 typed ResponseItem，按 Codex 语义从最新真实 User messages 向前选择有界总预算，并以 `User(SUMMARY_PREFIX + summary)` 结束，不用 role/XML 字符串猜测来源。
 - [x] CompactionService 只返回包含 Message、FinishReason、ReplacementHistory 和 TokenUsage 的 CompactionOutput，不构造 CompactedItem、TokenCountEvent 或其他 RolloutItem，不访问 Session/ContextManager/TUI。
@@ -1762,9 +1767,9 @@ W 取代 B/L/M/O 中与当前实现一致但与最新 Codex reference 不再一�
 
 - 2026-08-25 将 LLM `Usage` 替换为单 request `TokenUsage`，Protocol 引入 `TokenUsageInfo` 与包含 active/estimated/observed-watermark 的完整 TokenCountEvent snapshot；ContextManager、live/Resume、TUI、exit summary 与 SQLite 全部改为 snapshot replace 语义。
 - 新增结构化 `ApproxTokenEstimator` 和 ContextWindowTokenStatus，覆盖 ASCII、中文、Tool/Schema、prepared image/原始 Base64 排除、Provider checkpoint、local suffix、失败响应 input baseline 与 Compaction replacement estimate。
-- 新建 `internal/agent/compact`，使用普通 BaseInstructions + synthetic Codex summarization User prompt、exact StepContext PromptItems、typed MessageOrigin/真实 User selection、有界 typed ReplacementHistory 和 context-window oldest-group retry。
+- 新建 `internal/agent/compact`，使用普通 BaseInstructions + synthetic Codex summarization User prompt、exact PromptSnapshot items、typed MessageOrigin/真实 User selection、有界 typed ReplacementHistory 和 context-window oldest-group retry。
 - Session 现在唯一拥有 manual/auto pre-turn/mid-turn compaction、真实 request usage、source hash/watermark、atomic `CompactedItem + TokenCountEvent` install、before/after reduction、Item lifecycle 和 Warning/terminal ordering；删除 engine Compactor、callback、TaskOutput Usage/Items 和 ContextCompactedEvent。
-- Rollout 当前格式与 SQLite schema 均提升到 `4`，旧开发格式直接拒绝且不保留 decoder/migration；architecture guard 固化新依赖方向与 legacy 禁止项。
+- W 阶段当时将 Rollout 与 SQLite schema 均提升到 `4`；AA 后续将 Rollout替换为v5而SQLite metadata schema保持v4，旧开发格式继续直接拒绝且不保留decoder/migration。
 - focused functional/race tests、`make check`、全仓 `go test -race ./... -count=1`、Responses/Chat Provider mock E2E、core-tools Provider mock E2E 与 `git diff --check` 于 2026-08-25 通过。
 
 ## 26. 当前保留能力
@@ -1777,6 +1782,7 @@ W 取代 B/L/M/O 中与当前实现一致但与最新 Codex reference 不再一�
 - U 已补齐 Fullscreen next-turn queue 与 Codex-style pre-enqueue footer hint：运行中 Enter steer 当前 Turn，Tab queue 后续独立 Turn，terminal 后按 FIFO 逐条提交，aborted/blocked 路径恢复 composer；queueable draft 期间 fixed statusline 让位给完整/短 Tab hint。
 - V 已将用户配置收敛为唯一 versionless strict schema，并将仓库模板统一为 `configs/config.yaml.example`；旧 `version:` 配置直接拒绝且不迁移。
 - W 已完成 Context Accounting + Compaction Realignment：TokenUsageInfo/active context/estimate 各有单一语义，manual/auto compaction 共享 Session-owned lifecycle，无状态 CompactionService 不拥有 Rollout、Event terminal 或 Context mutation。
+- Prompt 当前仍保留全局 builtin ModelMessages、Base-as-system input、ContextUpdate replace map、短版 Default/Plan 和按 toolNames 拼接 guidance；这些已确认为 AA 范围内的当前架构缺口，不得把 I/N/W 的历史 DONE 解读为已满足 `docs/design.md` 最新 Prompt contract。
 - P 已完成 Model Reasoning Effort 与 Provider Thinking Contract；当前生产主链可从配置冻结到 Turn，并贯通普通 sampling、Compaction 与 Provider wire request。
 - Q 已完成 Web Search/Fetch 与 `view_image` Contract Closure：Web 保持 pinned network、重定向 Approval、readable Markdown 与证据层级；图片主链完成 model-aware visibility、bounded preparation、Provider/Context projection、单份持久化和 `ViewImageCell`。
 
@@ -1989,3 +1995,101 @@ Z-01～Z-09 是同一次 Architecture Closure 的顺序分解，不是兼容阶�
 - TUI 迁为单一顶层 package，删除 Fullscreen 分支命名和 Application-owned transcript；event reducer、history state、composer/transcript view、History render 与 Explore/Exec/Web cells 分文件共享同一 Bubble Tea model。
 - Tool 保持 Codex Router/Event 外层和 Claude Code Validate/Prepare/Permission/Approval/Execute 内层；generic presentation 的具体工具名枚举迁回 Session Tool Event，ExecutionService 拆为 single-call/batch/outcome，文件 Tool/Approval 行为与 E2E 保持不变。
 - MCP、Skill、WebSearch、Application、ContextManager、Rollout 和 FileSystemPolicy 聚合文件按真实职责拆分；architecture guards 分域并新增 AST import dependency checks。最终 `make check`、全仓 functional/race tests、Responses/Chat Provider/Core Tools E2E 与 `git diff --check` 全部通过。
+
+## 32. AA. Prompt Ownership + Lifecycle Realignment — `DONE`
+
+### 目标
+
+按 `docs/design.md` 第 12 章、当前 `../codex-main` Prompt/ToolSpec/WorldState/Compaction 源码和 `../claude-code-main` FileRead/FileEdit/FileWrite/Glob/Grep Tool 源码，替换 Amadeus 当前“全局 builtin ModelMessages + ContextUpdate replace map + Snapshot 前置 developer strings + short ToolSpec/额外 Tool Markdown”的 Prompt 主链。AA 同时收敛 Prompt 来源、角色、顺序、wire mapping、ToolSpec、persistence、compaction 和 Resume；不保留旧 ContextUpdateEvent、按 toolNames 拼接 guidance、短版 Plan suffix 或 Base-as-system input compatibility。
+
+AA 不复制 Codex Remote ModelsManager、Apps/Plugins/Realtime、Remote Compaction、TokenBudget window identity 或未实现 Tool。文件/搜索 Tool 以 Claude Code 为主要行为参考；Runtime/Image/Multi-Agent/MCP Resource Tool 以 Codex ToolSpec 为骨架；Web、Skill 和 lazy MCP wrapper 以 Amadeus 已实现 Contract 为权威。所有 Tool guidance 必须归入对应 ToolSpec owner；外层 Prompt 生命周期、ModelMessages、WorldState、Default/Plan、Compact 和 Provider wire 以 Codex 为准。
+
+AA-01～AA-09 是同一次 Architecture Closure 的依赖顺序，不是可长期共存的兼容阶段。若 WorldState/Rollout 当前格式无法表达目标 contract，直接替换 schema、codec、fixture 和本地开发数据，不新增双读、migration、alias 或 fallback decoder。
+
+### AA-01：Reference Pinning + Prompt Source Matrix — `DONE`
+
+- [x] 本地参考仓库不含 `.git` metadata，因此不虚构 commit；使用 snapshot date + source path + SHA-256 固定 model instructions、Default/Plan、compact prompt/prefix、Multi-Agent role 及内置 Tool Prompt/ToolSpec source。
+- [x] 建立 source matrix：Claude Code file/search、Codex runtime/image/multi-agent/MCP resource、Amadeus-specific web/skill/lazy MCP；每个 Tool 明确权威行为、允许差异和禁止复制的未实现能力。
+- [x] 审计当前每个内置 Tool 的 description、input property semantics、required/optional、visibility、parallel behavior、Permission/Approval 和 output shape，记录 Prompt 与 Runtime 不一致项并关闭 `edit/write` complete-read gap。
+- [x] 建立“pinned source + explicit patch manifest + generated/golden fixture”规则；Base、Collaboration Mode、ToolSpec、Compaction 和 Multi-Agent role 分别 revision，不使用全局复合 hash。
+
+### AA-02：Session BaseInstructions + Provider Wire Contract — `DONE`
+
+- [x] 将 `BaseInstructions` 扩展为 exact text + `custom|model{slug}` provenance；Session 创建优先级固定为 optional explicit custom override > resumed SessionMeta > selected ModelInfo template，不为 AA 单独增加无调用方的公开配置。
+- [x] 将 resolved Base 归 SessionState/SessionMeta 所有，Resume 恢复 exact text/provenance；StepContext 不再每个 request 重新解析 Base，模型/Personality 更新不得静默改写已有 Thread。
+- [x] 修正 Provider wire：Responses 使用独立 `instructions` 字段且 input 不含 synthetic system Base；Chat Completions 由 Dialect 生成唯一 Base 前缀。删除通用 `InputMessages()` Base 注入语义。
+- [x] 提供按 model profile 选择的 pinned Base catalog；neutral fallback 只描述通用 coding agent，不错误声称 GPT/Go 实现身份。
+- [x] 增加 Responses/Chat/兼容 Dialect golden tests、new/resume Base precedence tests 和 unknown-model neutral fallback tests。
+
+### AA-03：ModelMessages + Base Layer + Default/Plan Assets — `DONE`
+
+- [x] 将 `ModelMessages` 收敛到 Codex 对应字段：instructions template/variables、approvals、permissions、collaboration modes、multi-agent；Approval/Permission 文案仍服从 Claude Code 内层 Contract；移除 `SummarizationPrompt`、`SummaryPrefix` 和平行 `SubagentDeveloperInstructions` owner。
+- [x] 明确 Amadeus 只有 Default/Plan 两个 Collaboration Mode；BaseInstructions 是二者共享的稳定层而不是第三种模式。跨模式规则归 Base，执行/规划差异分别归 Default/Plan。
+- [x] 用 pinned Codex Default template 替换 `Execute Mode/Think→Analyze→Act→Observe`，用 pinned conversational Plan template 替换五行 asset 和 Go hard-coded suffix；每个 Step 只注入当前模式的一份完整文本。
+- [x] 通过 manifest 记录 Amadeus Plan Tool mask 差异；Default/Plan 不描述 Tool 参数或拼接 Tool guidance，也不宣称未暴露的 command capability。
+- [x] 对 Base、Default、Plan 建 exact source/manifest snapshot tests，禁止退回 `strings.Contains` 级完整性检查。
+
+### AA-04：ToolSpec Model Contract + Tool Prompt Migration — `DONE`
+
+- [x] 将 Tool 模型合同收敛为 name +完整 description + property descriptions/required semantics + optional OutputSchema/Strict + request-scoped visibility；Strict/OutputSchema逐 Tool、逐 Provider 验证，不全局开启。
+- [x] 将 Claude Code `FileRead/FileEdit/FileWrite/Glob/Grep` guidance按 Amadeus真实能力迁入对应 ToolSpec；删除图片/PDF/Notebook、mtime排序、multiline/output modes等虚假能力，并明确 `edit/write` 需要 complete non-truncated read。
+- [x] 将 Codex `update_plan/request_user_input/exec/write_stdin/view_image`、Multi-Agent和MCP Resource guidance迁入对应 ToolSpec，但保留 Amadeus实际字段、process identity、Approval和single-environment边界，不机械复制 schema。
+- [x] 为 `web_search/web_fetch/read_skill/mcp_list_tools/mcp_call` 建立 Amadeus-specific ToolSpec fixture，保持 evidence、bounded resource、lazy discovery、catalog revision和untrusted result语义。
+- [x] 删除 `ToolPromptOrder`/`toolGuidance(toolNames)`及独立 Tool Markdown→Collaboration Mode装配链；同一工具不得保留短 ToolSpec + 第二份developer guidance。
+- [x] 增加逐 Tool golden/behavior tests，验证description、schema、visibility variant、Validate/Prepare/Execute、Permission/Approval和ToolResult shape一致。
+
+### AA-05：Typed WorldState + Context Fragment Model — `DONE`
+
+- [x] 用 stable section ID + typed snapshot + `Absent/Unknown/Known` diff contract 替换 `UpdateKey/contextUpdateState` 和 universal marker switch。
+- [x] 实现基础 section：model、可变 personality、collaboration mode、AGENTS.md、environment、permissions、skills catalog、multi-agent role/mode；每个 fragment 自有 role、markers、content kind 和 separate-message policy。
+- [x] 增加 `WorldStateItem{full|patch}` durable contract 和 ContextManager baseline；模型可见 fragment 先 canonical append，随后 persistence snapshot/patch，失败时 baseline 不前移。
+- [x] 删除 `ContextUpdateEvent` codec/scope/projector、Snapshot 前置 updates map、`ContextUpdate()` query 和旧 revision/hash 兼容路径。
+- [x] 覆盖 full/diff/no-change/replacement/removal、retained-history fallback、fragment merge/order、CRLF-stable hash 和 persistence failure ordering。
+
+### AA-06：Turn/Step Assembly + AGENTS.md/Skill Lifecycle — `DONE`
+
+- [x] 调整首次 Turn 顺序为 full initial context → WorldState full → TurnContext reference → real User input → input-scoped explicit Skill/context items → sample；不得让 User input 先于其生效的 instruction/environment context。
+- [x] 每个 Model Step 先 capture exact StepContext，再从同一 snapshot build WorldState、record diff，最后构造 PromptSnapshot；Prompt/ToolSpecs/dispatch 共用 frozen ToolRouter。
+- [x] 将 AGENTS.md 改为 Codex contextual user fragment并实现 replacement/removal；available Skill catalog归 developer WorldState，显式 Skill正文归 canonical user `<skill>` item。
+- [x] 删除 `prepareStaticTurnContext`、第二次 mutable Registry/Tool list、`prepareInputContext` replace-state 和 request-only budget developer append；runtime reminder改为 typed canonical fragment。
+- [x] Prompt revision/preflight覆盖 exact Session Base、normalized history、ToolSpecs、OutputSchema和WorldState/TurnContext baseline；contextual AGENTS.md/Skill/SubAgent notification不进入真实User compaction selection。
+- [x] 覆盖首轮/第二轮/mid-turn continuation/steer、mode change、permission grant、nested AGENTS、explicit Skill和 failure-before-baseline tests。
+
+### AA-07：Multi-Agent Prompt Ownership — `DONE`
+
+- [x] 将 child role instructions 迁入 `ModelMessages.MultiAgent.Role.Subagent` 或等价 Codex-shaped field，通过独立 developer fragment注入，删除平行 `SubagentDeveloperInstructions` 字段和 tool-name guidance append。
+- [x] 将 active subagents 保持为 environment WorldState diff，将 mode/role instruction 与 transient status列表分离；状态不变不重复注入。
+- [x] 保持 read-only explorer ToolRouter/policy、fresh child context、Root/child权限隔离与 bounded notification，不扩大到 Codex V2/fork/write-capable worker。
+- [x] 覆盖 root/child initial context role/order、status transition、Resume、ToolSpec一致性和禁止 nested/interactive Tool。
+
+### AA-08：Compaction Phase + Resume Baseline Alignment — `DONE`
+
+- [x] 将 `SUMMARIZATION_PROMPT`/`SUMMARY_PREFIX` 移出 ModelMessages，使用独立 exact assets；`CompactionMessages` 不再用 `BaseInstructions` 类型包装 synthetic User文本。
+- [x] 保持 W 的 source hash、真实 User selection、TokenUsage、atomic install和 failure ordering；compact request继续使用 Session Base、exact PromptSnapshot、Tools none。
+- [x] manual/pre-turn install summary replacement并清空 WorldState/TurnContext reference，使下一正常 Turn full reinject；mid-turn将重新渲染的 full initial context插在最后真实 User/summary之前并安装新 baseline。
+- [x] Rollout reconstruction恢复 Session Base、Compacted replacement、WorldState baseline和TurnContext reference；live/Resume下一 request byte/semantic equivalent。
+- [x] 覆盖 manual、auto pre-turn、auto mid-turn、summary-last placement、context change during compact、install failure、asset update after Resume和truncated-tail recovery。
+
+### AA-09：Cleanup、Guards + Acceptance — `DONE`
+
+- [x] 删除旧 builtin agent/execution/handoff短版组合器、Mode Go suffix、global prompt revision、ContextUpdateEvent/update map、tool guidance append、已迁入 ToolSpec 的独立 Tool Markdown、request-only developer injection和相关 compatibility tests。
+- [x] 更新 design/progress/README/architecture whitepaper与debug输出，明确 source revision、Base provenance、WorldState baseline和Prompt wire shape。
+- [x] 增加 architecture guards，禁止 Base-as-input-system、Step-time Base resolution、`ContextUpdateEvent`、`ToolPromptOrder`、`toolGuidance`、ToolSpec之外的第二份Tool guidance、`SubagentDeveloperInstructions`、`SummarizationPrompt` in ModelMessages和生产 `strings.Contains` Prompt完整性测试回归。
+- [x] 运行 focused prompt/tool/context/session/compact/provider/multi-agent/persistence tests、Responses/Chat/Core Tools provider mock E2E、`make check`、`go test ./... -count=1`、`go test -race ./... -count=1`、`go build ./cmd/amadeus`和`git diff --check`后才标记 AA DONE。
+
+### AA 出口
+
+- BaseInstructions 在 Thread 生命周期内有唯一 exact owner/provenance，Provider wire、Resume和模型切换语义与 Codex一致。
+- WorldState current state、model-visible fragments、durable full/patch baseline和ContextManager history使用同一 typed lifecycle；没有 replace-prefix side map。
+- BaseInstructions 稳定层、Default/Plan 两个模式、Compact request、Summary Prefix、三类 ToolSpec guidance和Multi-Agent role有明确上游source、允许差异和独立revision，不存在重复文本owner或第三种模式。
+- Default、Plan、Tool continuation、Compaction和Resume共享同一Prompt assembly/ordering contract；现有Tool/Approval、W token/durability和N Plan interaction协议不回退。
+
+### AA 完成记录
+
+- 2026-08-27 完成 Prompt source manifest及其与全部可用内置 Tool 的集合等价守卫、Session-owned exact Base/provenance、Responses `instructions`/Chat single-prefix wire、Codex Default/Plan/compact assets及独立职责 revision；summarization prompt与summary prefix不再共享聚合revision，基础身份不再声明 GPT 或 Go 实现身份，Amadeus 仅有 Default 与 Plan 两个 Collaboration Mode。
+- Tool guidance 收敛到 source-specific ToolSpec：Claude Code file/search、Codex runtime/image/multi-agent/MCP resource、Amadeus web/skill/lazy MCP；删除第二份 Tool Markdown/guidance owner并接通 `OutputSchema/Strict` transport。FileReadState按同一内容指纹累积无gap分页coverage，只有全部非截断行被模型观察后才允许edit/write，关闭大文件永远无法满足complete-read的死循环。
+- WorldState 使用 typed section + canonical fragment + durable `ContextKind` 与 Absent/Unknown/Known full/patch baseline；换行在 owner入口规范化，首次输入、truncated-tail recovery、后续 diff、explicit Skill、SubAgent role/status、manual/pre-turn/mid-turn compaction 与 Resume 使用同一 ContextManager lifecycle。
+- StepContext 只冻结 Model、ToolRouter、LoadedAgentsMd、atomic Skill metadata/revision、Permission profile/grants、active SubAgents和capability revisions；Session 在 WorldState 持久化后独立构造本次 PromptSnapshot，sampling、preflight、token watermark和compaction显式消费同一快照。Runtime budget reminder以带marker和durable ContextKind的canonical developer context在preflight前记录，不再做request-only append。
+- `/status` 增加只读 Prompt diagnostics，展示 Base provenance、WorldState baseline/revision、Provider wire和各职责资产的短revision，不建立第二份Prompt状态。
+- Rollout 当前格式提升为 v5并拒绝旧格式 decoder；SQLite metadata index schema仍独立保持v4。两者版本域不同，不要求同步递增，也不提供开发期兼容 migration。
+- 验收通过：`make check`、全仓 `go test -race ./... -count=1`、Responses/Chat Coding Agent与Core Tools Provider mock E2E、architecture guards及`git diff --check`。

@@ -65,8 +65,8 @@ func (updatePlan *UpdatePlan) Execute(toolContext tool.ToolUseContext, prepared 
 
 func updatePlanSpec() tool.ToolSpec {
 	return tool.ToolSpec{
-		Name: "update_plan", Description: "Create or replace the visible execution checklist for a complex task. Keep exactly one item in_progress while work remains; this is soft guidance and does not schedule tools.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"explanation":{"type":"string"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string","minLength":1},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["step","status"],"additionalProperties":false}}},"required":["plan"],"additionalProperties":false}`),
+		Name: "update_plan", Description: "Updates the visible task checklist. Provide an optional explanation and a list of plan items, each with a step and status. At most one step can be in_progress at a time.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"explanation":{"type":"string","description":"Optional explanation for this plan update."},"plan":{"type":"array","description":"The complete replacement list of checklist steps.","items":{"type":"object","properties":{"step":{"type":"string","minLength":1,"description":"Task step text."},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Step status."}},"required":["step","status"],"additionalProperties":false}}},"required":["plan"],"additionalProperties":false}`),
 		SideEffect:  tool.SideEffectNone, Idempotent: false,
 	}
 }

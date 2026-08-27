@@ -123,8 +123,8 @@ func TestCodingAgentExposesAndExecutesUpdatePlan(t *testing.T) {
 	if !requestHasTool(client.requests[0], "update_plan") {
 		t.Fatalf("execute request did not expose update_plan: %#v", client.requests[0].Prompt.Tools)
 	}
-	if prompt := requestPromptText(client.requests[0]); !strings.Contains(prompt, "## `update_plan`") || !strings.Contains(prompt, "multiple files or components") {
-		t.Fatalf("execute request omitted plan guidance: %s", prompt)
+	if toolSpec, ok := requestTool(client.requests[0], "update_plan"); !ok || !strings.Contains(toolSpec.Description, "visible task checklist") || !strings.Contains(string(toolSpec.InputSchema), "in_progress") {
+		t.Fatalf("execute request omitted update_plan ToolSpec guidance: %#v", client.requests[0].Prompt.Tools)
 	}
 	if output := stderr.String(); !strings.Contains(output, "Updated Plan") || !strings.Contains(output, "Inspect implementation") || strings.Contains(output, "Running update_plan") {
 		t.Fatalf("update_plan was not rendered as a dedicated plan update: %q", output)
@@ -141,6 +141,15 @@ func requestHasTool(request llm.Request, name string) bool {
 		}
 	}
 	return false
+}
+
+func requestTool(request llm.Request, name string) (llm.ToolSpec, bool) {
+	for _, definition := range request.Prompt.Tools {
+		if definition.Name == name {
+			return definition, true
+		}
+	}
+	return llm.ToolSpec{}, false
 }
 
 func requestPromptText(request llm.Request) string {
@@ -361,7 +370,7 @@ func TestCodingAgentSkillWorkflowUsesProjectOverrideAndNextRequestContext(t *tes
 		t.Fatalf("unexpected request count: %d", len(client.requests))
 	}
 	first, second := client.requests[0], client.requests[1]
-	if !requestContains(first, "amadeus.skill_index.v2") || !requestContains(first, "Project review guidance") || requestContains(first, "PROJECT-SKILL-BODY") {
+	if !requestContains(first, "<skills_instructions>") || !requestContains(first, "Project review guidance") || requestContains(first, "PROJECT-SKILL-BODY") {
 		t.Fatalf("initial request did not contain disclosure-safe project Skill index: %#v", first.Prompt.Input)
 	}
 	if !requestContains(second, "PROJECT-SKILL-BODY") || requestContains(second, "USER-SKILL-BODY") {

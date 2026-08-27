@@ -1,6 +1,6 @@
 # Amadeus 架构白皮书
 
-> 文档日期：2026-08-26
+> 文档日期：2026-08-27
 > 适用版本：当前 `main` 分支基础能力、Basic Multi-Agent、Next-Turn Queue 与单一 TUI frontend 实现
 > 规范来源：`docs/design.md` 是主要 Contract 工作文档；本文负责解释架构、所有权、运行流程与核心数据模型。两份文档都可能过期，遇到不确定处必须回查 Codex/Claude Code 源码并同步修正。
 
@@ -35,7 +35,7 @@ Amadeus 是一个使用 Go 实现的终端 Coding Agent。它不是简单的“�
 ## 2. 核心架构原则
 
 1. **唯一 Runtime 主链**：Root Agent、Plan Mode、Compaction 和 SubAgent 都复用 Session、Task、`run_turn`、ToolExecutionService 与 Rollout。
-2. **唯一事实 owner**：ThreadManager 管 live Thread；Session 管 active Turn；`context.Manager` 管模型上下文；ToolRouter 管单次采样工具集合；MCPRuntime 管 MCP 连接；AgentControl 管 root agent tree control plane。
+2. **唯一事实 owner**：ThreadManager 管 live Thread；Session 管 active Turn；`contextmanager.Manager` 管模型上下文；ToolRouter 管单次采样工具集合；MCPRuntime 管 MCP 连接；AgentControl 管 root agent tree control plane。
 3. **Protocol first**：跨 goroutine、跨层和需要恢复的事实使用 typed `Submission`、`EventMsg`、`TurnItem` 或 `RolloutItem` 表达。
 4. **Canonical persistence**：JSONL Rollout 是完整历史事实源；SQLite 不保存第二份对话历史。
 5. **Prompt 与能力一致**：模型看到的 ToolSpec、Prompt guidance 和实际 dispatch 必须来自同一个 StepContext/ToolRouter snapshot。
@@ -205,8 +205,9 @@ sequenceDiagram
     S->>L: append user + turn context facts
     S->>R: start RunningTask
     loop Model continuation
-        R->>C: build PromptSnapshot
         R->>R: Capture StepContext + ToolRouter
+        R->>C: append WorldState full/patch
+        R->>C: build PromptSnapshot
         R->>M: Sample(request)
         M-->>R: stream deltas / tool calls / final
         R->>L: persist canonical response items
@@ -237,8 +238,8 @@ sequenceDiagram
 | `Event` | `agent/protocol` | 输出 envelope，由关联 `ID + EventMsg` 组成，离开 Session loop。 |
 | `RolloutItem` | `rollout` | JSONL canonical history 的 tagged domain item。 |
 | `TurnItem` | `agent/protocol` | live TUI 与 Resume 共用的稳定 UI replay unit。 |
-| `PromptSnapshot` | `context` | 一次模型请求看到的消息、usage、history revision 和 world-state revision。 |
-| `StepContext` | `agent/engine` | 一次模型采样的不可变能力快照，绑定 Prompt、Model、ToolRouter 和 revisions。 |
+| `PromptSnapshot` | `contextmanager` | WorldState 已记录后，一次模型请求看到的 immutable messages、token estimate、history revision 和 world-state revision。 |
+| `StepContext` | `agent/session` | 一次模型采样的不可变能力快照，绑定 Model、ToolRouter、LoadedAgentsMd、Skill/Permission/SubAgent snapshots 和 capability revisions；不持有 assembled Prompt 或 BaseInstructions。 |
 | `NextTurnQueue` | `interface/tui` | 尚未提交的下一 Turn 输入 FIFO 与 InFlight gate；terminal 后才通过普通 UserInputOp 启动新 Turn。 |
 
 ## 6. 配置与 Bootstrap
@@ -439,7 +440,7 @@ flowchart LR
 | `rollout.Line` | JSONL 单行 envelope：schema version、sequence、timestamp 和 item。 |
 | `RolloutItem` | canonical item interface。 |
 | `SessionMetaItem` | Thread 创建事实：SessionID、ID、可选 ParentThreadID、source、CWD、title、model、git metadata、created time。 |
-| `ResponseItem` | 用户、Assistant、ToolCall、ToolResult 的 provider-neutral canonical item。 |
+| `ResponseItem` | 用户、typed context、Assistant、ToolCall、ToolResult 的 provider-neutral canonical item；context message 以 `ContextKind` 区分 WorldState、explicit Skill 与 runtime reminder。 |
 | `CompactedItem` | Compaction summary、replacement history、覆盖 sequence 和 source hash。 |
 | `TurnContextItem` | TurnContext 的 durable DTO。 |
 | `EventMsgItem` | 需要持久化和 Resume replay 的 typed EventMsg。 |
@@ -559,7 +560,7 @@ Session 不保存 next-turn user queue。运行中 Enter 已提交输入仍由 S
 
 | 模型 | 职责 |
 |---|---|
-| `SessionState` | Session 的可恢复状态，目前由冻结 `Configuration` 和 `context.Manager` 组成。 |
+| `SessionState` | Session 的可恢复状态，目前由冻结 `Configuration` 和 `contextmanager.Manager` 组成。 |
 | `SessionIo` | Thread/Application 使用的输入输出端口：Submissions、Events、Terminated、admission/steer helper。 |
 | `SpawnArgs` | 创建 Session 所需 SessionID、ThreadID、可选 ParentThreadID、InitialHistory、State、Services 和 Adapters。 |
 | `Session` | 单线程 select loop 的 owner；管理 active Turn、deferred submissions、waiters 和 lifecycle channels。 |
@@ -583,8 +584,9 @@ Session 不保存 next-turn user queue。运行中 Enter 已提交输入仍由 S
 ```mermaid
 flowchart TD
     Start[Turn Goal]
-    Prepare[Prepare Context Updates]
     Capture[Capture StepContext]
+    World[Build and persist WorldState full/patch]
+    Prompt[Build PromptSnapshot]
     Sample[ModelClientSession.Sample]
     Final{Final response?}
     Calls[Tool Calls]
@@ -594,9 +596,10 @@ flowchart TD
     Compact{Auto compact?}
     Done[TaskOutput]
 
-    Start --> Prepare
-    Prepare --> Capture
-    Capture --> Compact
+    Start --> Capture
+    Capture --> World
+    World --> Prompt
+    Prompt --> Compact
     Compact -- yes --> Capture
     Compact -- no --> Sample
     Sample --> Final
@@ -605,7 +608,7 @@ flowchart TD
     Calls --> Execute
     Execute --> Persist
     Persist --> Pending
-    Pending -- yes --> Prepare
+    Pending -- yes --> Capture
     Pending -- no --> Done
 ```
 
@@ -613,7 +616,8 @@ flowchart TD
 
 | 模型 | 职责 |
 |---|---|
-| `StepContext` | 单次 sample 的 Prompt、Model、BaseInstructions、ToolRouter 和 revision 集合。 |
+| `StepContext` | 单次 sample 的 Model、ToolRouter、LoadedAgentsMd、Skill metadata、Permission profile/grants、active SubAgents 与 MCP/Skill/AGENTS.md revisions；不拥有 Prompt 或 Session Base。 |
+| `PromptSnapshot` | WorldState 持久化后，由 ContextManager history、Session Base、Step ToolRouter 和 Turn OutputSchema 组装的单次 request 快照。 |
 | `SampleRequest` | Engine 到 ModelClientSession 的 provider-neutral sampling 输入。 |
 | `SampleResult` | `final` 或 `tool_calls` 二选一的采样结果。 |
 | `SampleKind` | continuation loop 分支判定。 |
@@ -631,6 +635,8 @@ Continuation loop 只维护 sample、Tool call 和 elapsed safety budget；每�
 ```mermaid
 flowchart LR
     Base[BaseInstructions]
+    Tools[StepContext ToolRouter]
+    Turn[Turn OutputSchema]
     Mode[Collaboration Mode]
     Agents[AGENTS.md]
     Env[Environment / Permission]
@@ -640,9 +646,12 @@ flowchart LR
     WS[WorldState]
     CM[ContextManager]
     Snap[PromptSnapshot]
-    Prompt[llm.Prompt]
+    Shape[llm.Prompt shape]
+    Request[SampleRequest]
 
-    Base --> Prompt
+    Base --> Shape
+    Tools --> Shape
+    Turn --> Shape
     Mode --> WS
     Agents --> WS
     Env --> WS
@@ -650,13 +659,14 @@ flowchart LR
     MCP --> WS
     WS --> CM
     History --> CM
+    Shape --> CM
     CM --> Snap
-    Snap --> Prompt
+    Snap --> Request
 ```
 
 ### 12.1 Prompt 分层
 
-1. `BaseInstructions`：模型/人格级稳定基础指令。
+1. `BaseInstructions`：Session/Thread 生命周期内解析一次并持久化 exact text 与 `custom|model{slug}` provenance 的稳定基础指令。
 2. Collaboration Mode：Default 或 Plan developer guidance。
 3. WorldState：AGENTS.md、环境、权限、Skills、MCP、active SubAgents。
 4. Canonical history：用户、Assistant、ToolCall、ToolResult、Compaction replacement。
@@ -666,14 +676,18 @@ flowchart LR
 
 | 模型 | 职责 |
 |---|---|
-| `ModelMessages` | 模型消息资产聚合：instructions template、personality variables、modes、subagent instructions、compaction prompt。 |
+| `ModelMessages` | 模型消息资产聚合：instructions template/variables、approval、permission、Default/Plan collaboration modes 与 multi-agent role；不拥有 compaction assets。 |
 | `ModelInstructionsVariables` | personality 文本变量。 |
 | `CollaborationModeMessages` | Default/Plan developer instructions。 |
-| `BaseInstructions` | 已解析 personality 的系统基础指令。 |
-| `context.Manager` | canonical model-visible history、WorldState updates、TokenUsageInfo/active checkpoint 和 revision 的唯一 owner。 |
-| `UpdateKey` | collaboration、agents、environment、permission、skills、MCP 的稳定更新槽位。 |
-| `WorldState` | 有序 contextual fragments 集合及 revision。 |
-| `ContextualUserFragment` | 运行时注入模型、但不代表真实用户意图的上下文片段。 |
+| `MultiAgentMessages` | multi-agent mode/role instruction assets，SubAgent role 从该层选择。 |
+| `CompactionAssets` | 独立的 exact summarization prompt 与 summary prefix，分别拥有 revision，不随 ModelMessages 聚合。 |
+| `BaseInstructions` | Session-owned exact instructions 与 provenance；Responses 映射到 wire `instructions`，Chat 只生成一个 system prefix。 |
+| `contextmanager.Manager` | canonical model-visible history、typed WorldState Absent/Unknown/Known baseline、TurnContext reference、TokenUsageInfo/active checkpoint 和 revision 的唯一 owner。 |
+| `WorldStateSection` | stable section ID、typed snapshot、role、marker 和 separate-message policy。 |
+| `WorldStateItem` | durable full/patch baseline；先追加模型可见 fragment，再推进 baseline。 |
+| `WorldState` | 有序 typed contextual sections、full/diff fragments 与 revision。 |
+| `ContextFragment` | WorldState section 生成的 role-aware 模型上下文片段；可按 separate policy 合并，但不伪装成真实用户意图。 |
+| `ContextKind` | durable context message 的来源类别：WorldState、explicit Skill 或 Turn budget；只有 WorldState fragment 能把 baseline 推进到 Unknown。 |
 | `SkillInjection` | 用户通过 `$skill-name` 显式选择后注入的 Skill 正文事实。 |
 | `TokenUsageInfo` | Thread 累计 TotalTokenUsage 与最近 request LastTokenUsage。 |
 | `PromptSnapshot` | 一次 sample 的模型消息、EstimatedInputTokens 及 history/world-state revision。 |
@@ -863,7 +877,7 @@ flowchart LR
 - `SessionPermissionContext` 只保存当前 Session 的可复用授权，不改变底层文件系统边界。
 - ApprovalPort 由 CLI/TUI 实现；Tool 和 Policy 不依赖具体终端。
 - SubAgent 使用 deny-only ApprovalPort，因此不会产生无人消费的 UI waiter。
-- `edit`/`write` 使用 read-before-write、preview、Approval 后 revalidation 和 atomic apply。
+- `edit`/`write` 使用 complete read-before-write、preview、Approval 后 revalidation 和 atomic apply。大文件的分页 read只在同一content hash下累积无gap、非截断line coverage；`complete_snapshot=true`后才能修改，内容变化立即使旧coverage失效。
 
 ### 15.2 数据模型职责
 
@@ -872,6 +886,7 @@ flowchart LR
 | `PermissionEvaluation` | Allow、Deny 或 Ask 的 Tool Prepare 结果。 |
 | `PermissionGrant` | read directory、edit directory、exact command 或 external key 的可复用授权。 |
 | `SessionPermissionContext` | 一个 Session 的 in-memory grant store。 |
+| `FileReadState` | 当前文件指纹、分页line coverage和FullRead事实；Edit/Write Prepare与Execute都用它做stale/complete-read校验。 |
 | `ApprovalRequest` | Tool、风险、cause、permission key、presentation 和 raw arguments。 |
 | `ApprovalPresentation` | UI title、description、details、options 和 optional diff。 |
 | `ApprovalDecision` | allow/deny、once/session、source 和 reason。 |
@@ -1189,6 +1204,8 @@ flowchart LR
 
 敏感信息必须在进入普通日志、`config show`、MCP inventory 或 Tool display 前脱敏。完整 Provider payload 只在显式 `trace_llm` 等受控路径中记录。
 
+`/status` 同时投影当前 Base provenance、WorldState Absent/Unknown/Known baseline/revision、Provider wire API，以及 instructions、modes、multi-agent role、summarization prompt 和 summary prefix 的独立短 revision。它只读取 Session/ContextManager/Prompt asset owner，不保存第二份 Prompt 状态。
+
 ## 22. 并发与取消模型
 
 ```mermaid
@@ -1234,7 +1251,7 @@ flowchart TD
 2. Session 是 ActiveTurn 和 pending interactive waiter 的唯一 owner。
 3. JSONL 是完整历史事实源，SQLite 只保存 metadata index。
 4. Event 必须由 typed EventMsg 表达，TUI 不解析日志字符串获取状态。
-5. 同一次模型采样的 Prompt、ToolSpec 和 Tool dispatch 使用同一个 StepContext。
+5. 同一次模型采样先冻结 StepContext，再持久化其 WorldState full/patch，随后构造 PromptSnapshot；Prompt ToolSpec 与 Tool dispatch 使用该 StepContext 的同一个 ToolRouter。
 6. Tool 必须经过 Validate、Prepare、Permission/Approval、Execute 主链。
 7. Session Grant 不跨 Session，也不从 Root 泄漏给 SubAgent。
 8. Prompt 不宣称 ToolRouter 中不存在的能力。
@@ -1287,7 +1304,7 @@ flowchart TD
 1. 保持 child 为完整 Thread/Session。
 2. 通过 SessionSource/AgentMetadata 表达身份。
 3. 在 StepContext 捕获时应用 Tool policy。
-4. Prompt 资产放入 ModelMessages，不在 Tool handler 拼接。
+4. Base/Default/Plan/Multi-Agent 资产由 ModelMessages 选择，compact prompt/prefix 由独立 CompactionAssets 选择；Tool guidance 只存在于对应 ToolSpec，不在 Tool handler 或 mode 文本中拼接。
 5. AgentControl 只扩展 control plane，不复制 ThreadManager registry。
 
 ## 25. Package 导航
@@ -1310,7 +1327,7 @@ flowchart TD
 | `internal/agent/compact` | Compaction Source/Request/Output 与无状态生成服务。 |
 | `internal/agent/multiagent` | AgentControl、reservation、status、wait、shutdown。 |
 | `internal/contextmanager` | `Manager`、WorldState、PromptSnapshot、Rollout projection。 |
-| `internal/prompt` | ModelMessages 的 Prompt assembly helper。 |
+| `internal/prompt` | ModelMessages/CompactionAssets 的 pinned source manifest、加载与渲染 helper。 |
 | `internal/llm` | Provider-neutral model domain。 |
 | `internal/llm/openai` | Responses/Chat adapter。 |
 | `internal/tool` | Tool contract、Registry、Router、ExecutionService。 |

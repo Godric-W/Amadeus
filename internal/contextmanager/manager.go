@@ -9,26 +9,6 @@ import (
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
-type UpdateKey string
-
-const (
-	UpdateCollaborationMode UpdateKey = "collaboration_mode"
-	UpdateAgents            UpdateKey = "agents"
-	UpdateEnvironment       UpdateKey = "environment"
-	UpdatePermissionMode    UpdateKey = "permission_mode"
-	UpdateSkills            UpdateKey = "skills"
-	UpdateMCP               UpdateKey = "mcp"
-)
-
-var updateOrder = [...]UpdateKey{
-	UpdateCollaborationMode,
-	UpdateAgents,
-	UpdateEnvironment,
-	UpdatePermissionMode,
-	UpdateSkills,
-	UpdateMCP,
-}
-
 type PromptSnapshot struct {
 	Items                []llm.ResponseItem
 	EstimatedInputTokens int64
@@ -44,41 +24,27 @@ type TokenSnapshot struct {
 	Sequence               uint64
 }
 
-type contextUpdateState struct {
-	Content  string
-	Revision string
-	Sequence uint64
-}
-
-// SkillInjection is the explicitly requested portion of a Skill that becomes
-// part of the turn's developer context.
-type SkillInjection struct {
-	Name     string
-	Path     string
-	Revision string
-	Content  string
-	Source   string
-}
-
 type Manager struct {
-	mu              sync.RWMutex
-	items           []llm.ResponseItem
-	sourceSequences []int64
-	origins         []MessageOrigin
-	updates         map[UpdateKey]contextUpdateState
-	lastSequence    uint64
-	tokenInfo       *protocol.TokenUsageInfo
-	activeTokens    int64
-	activeEstimated bool
-	tokenSequence   uint64
-	estimator       Estimator
+	mu               sync.RWMutex
+	items            []llm.ResponseItem
+	sourceSequences  []int64
+	origins          []MessageOrigin
+	worldState       WorldStateSnapshot
+	worldStateKind   PreviousSectionKind
+	referenceContext *rollout.TurnContextItem
+	lastSequence     uint64
+	tokenInfo        *protocol.TokenUsageInfo
+	activeTokens     int64
+	activeEstimated  bool
+	tokenSequence    uint64
+	estimator        Estimator
 }
 
 func NewManager(estimator Estimator) *Manager {
 	if estimator == nil {
 		estimator = ApproxTokenEstimator{}
 	}
-	return &Manager{updates: make(map[UpdateKey]contextUpdateState), estimator: estimator}
+	return &Manager{worldState: make(WorldStateSnapshot), worldStateKind: PreviousSectionAbsent, estimator: estimator}
 }
 
 func NewManagerFromRollout(lines []rollout.Line, estimator Estimator) (*Manager, error) {
@@ -149,7 +115,7 @@ func (manager *Manager) PreviewRecord(firstSequence uint64, model llm.ModelInfo,
 			return PromptSnapshot{}, err
 		}
 	}
-	preview := &Manager{updates: make(map[UpdateKey]contextUpdateState), estimator: estimator}
+	preview := &Manager{worldState: make(WorldStateSnapshot), estimator: estimator}
 	preview.applyRecordState(state)
 	return preview.Snapshot(model, prompt), nil
 }
@@ -200,10 +166,6 @@ func (manager *Manager) ActiveContextTokens(model llm.ModelInfo) (int64, bool) {
 	manager.mu.RLock()
 	items := cloneResponseItems(manager.items)
 	sequences := append([]int64(nil), manager.sourceSequences...)
-	updates := make([]contextUpdateState, 0, len(manager.updates))
-	for _, update := range manager.updates {
-		updates = append(updates, update)
-	}
 	tokenInfo := cloneTokenUsageInfo(manager.tokenInfo)
 	checkpoint := manager.activeTokens
 	estimatedCheckpoint := manager.activeEstimated
@@ -235,31 +197,37 @@ func (manager *Manager) ActiveContextTokens(model llm.ModelInfo) (int64, bool) {
 	}
 	active += max(int64(0), suffixTokens)
 	estimated := estimatedCheckpoint || len(suffix) > 0
-	for _, update := range updates {
-		if update.Sequence > tokenSequence {
-			active += estimateResponseItem(llm.DeveloperMessage(update.Content), estimator)
-			estimated = true
-		}
-	}
 	return active, estimated
 }
 
-func (manager *Manager) Update(key UpdateKey) string {
-	if manager == nil || !validUpdateKey(key) {
-		return ""
+func (manager *Manager) WorldStateBaseline() (WorldStateSnapshot, bool) {
+	if manager == nil {
+		return nil, false
 	}
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	return manager.updates[key].Content
+	return manager.worldState.Clone(), manager.worldStateKind == PreviousSectionKnown
 }
 
-func (manager *Manager) UpdateRevision(key UpdateKey) string {
-	if manager == nil || !validUpdateKey(key) {
-		return ""
+func (manager *Manager) WorldStateBaselineKind() PreviousSectionKind {
+	if manager == nil {
+		return PreviousSectionAbsent
 	}
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	return manager.updates[key].Revision
+	if manager.worldStateKind == "" {
+		return PreviousSectionAbsent
+	}
+	return manager.worldStateKind
+}
+
+func (manager *Manager) ReferenceTurnContext() *rollout.TurnContextItem {
+	if manager == nil {
+		return nil
+	}
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return cloneTurnContextItem(manager.referenceContext)
 }
 
 func cloneTokenUsageInfo(info *protocol.TokenUsageInfo) *protocol.TokenUsageInfo {
@@ -268,13 +236,4 @@ func cloneTokenUsageInfo(info *protocol.TokenUsageInfo) *protocol.TokenUsageInfo
 	}
 	cloned := info.Clone()
 	return &cloned
-}
-
-func validUpdateKey(key UpdateKey) bool {
-	for _, candidate := range updateOrder {
-		if key == candidate {
-			return true
-		}
-	}
-	return false
 }

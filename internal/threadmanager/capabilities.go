@@ -4,9 +4,17 @@ import (
 	"context"
 	"errors"
 
+	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
 	"github.com/Godric-W/Amadeus/internal/mcp"
 	"github.com/Godric-W/Amadeus/internal/skill"
 )
+
+func (threadRuntime *AmadeusThread) PromptDiagnostics() agentsession.PromptDiagnostics {
+	if threadRuntime == nil || threadRuntime.session == nil {
+		return agentsession.PromptDiagnostics{}
+	}
+	return threadRuntime.session.PromptDiagnostics()
+}
 
 func (threadRuntime *AmadeusThread) PermissionGrantCount() int {
 	if threadRuntime == nil || threadRuntime.session == nil {

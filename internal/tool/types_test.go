@@ -6,11 +6,12 @@ import (
 )
 
 func TestToolCallAndSpecCloneIsolateMutableFields(t *testing.T) {
-	spec := ToolSpec{Name: "read", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object"}`), SideEffect: SideEffectRead}
+	spec := ToolSpec{Name: "read", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object"}`), OutputSchema: json.RawMessage(`{"type":"object"}`), SideEffect: SideEffectRead}
 	clonedSpec := spec.Clone()
 	clonedSpec.InputSchema[0] = '['
-	if spec.InputSchema[0] == '[' {
-		t.Fatal("spec clone shares input schema")
+	clonedSpec.OutputSchema[0] = '['
+	if spec.InputSchema[0] == '[' || spec.OutputSchema[0] == '[' {
+		t.Fatal("spec clone shares schema storage")
 	}
 	call := NewCall("call-1", "read", json.RawMessage(`{"path":"a"}`))
 	clonedCall := call.Clone()

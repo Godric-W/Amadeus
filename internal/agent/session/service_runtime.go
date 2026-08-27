@@ -48,7 +48,9 @@ func (services *SessionServices) ModelInfo() llm.ModelInfo {
 	if services == nil {
 		return llm.ModelInfo{}
 	}
-	return services.modelInfo
+	model := services.modelInfo
+	model.InputModalities = append([]llm.InputModality(nil), services.modelInfo.InputModalities...)
+	return model
 }
 
 func (services *SessionServices) ModelMessages(model llm.ModelInfo) (llm.ModelMessages, error) {
@@ -64,19 +66,7 @@ func (services *SessionServices) ModelMessages(model llm.ModelInfo) (llm.ModelMe
 	return llm.ModelMessages{}, errors.New("model messages are unavailable")
 }
 
-func (services *SessionServices) AvailableTools() []tool.ToolSpec {
-	if services == nil || services.tools == nil {
-		return nil
-	}
-	entries := services.tools.VisibleSnapshot(services.visibility)
-	result := make([]tool.ToolSpec, 0, len(entries))
-	for _, entry := range entries {
-		result = append(result, entry.Spec.Clone())
-	}
-	return result
-}
-
-func (services *SessionServices) SkillIndex() []skill.SkillMetadata {
+func (services *SessionServices) Skills() []skill.SkillMetadata {
 	if services == nil || services.skills == nil {
 		return nil
 	}
@@ -104,8 +94,6 @@ func (services *SessionServices) MCPRevision() string {
 	}
 	return services.mcp.Revision()
 }
-
-func (services *SessionServices) Skills() []skill.SkillMetadata { return services.SkillIndex() }
 
 func (services *SessionServices) SetSkillEnabled(name string, enabled bool) error {
 	if services == nil || services.skills == nil {

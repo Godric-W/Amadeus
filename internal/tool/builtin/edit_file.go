@@ -20,6 +20,9 @@ func (toolImpl editTool) ValidateInput(_ tool.ToolUseContext, invocation tool.In
 	if err := decodeArguments(invocation.Call.Payload, &args); err != nil {
 		return err
 	}
+	if args.OldString == "" {
+		return errors.New("edit old_string is empty")
+	}
 	if args.OldString == args.NewString {
 		return errors.New("edit old_string and new_string are identical")
 	}

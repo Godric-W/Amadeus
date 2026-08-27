@@ -2,11 +2,68 @@ package llm
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
+type BaseInstructionsProvenanceType string
+
+const (
+	BaseInstructionsCustom BaseInstructionsProvenanceType = "custom"
+	BaseInstructionsModel  BaseInstructionsProvenanceType = "model"
+)
+
+type BaseInstructionsProvenance struct {
+	Type  BaseInstructionsProvenanceType `json:"type"`
+	Model string                         `json:"model,omitempty"`
+}
+
+func (provenance BaseInstructionsProvenance) Validate() error {
+	switch provenance.Type {
+	case BaseInstructionsCustom:
+		if strings.TrimSpace(provenance.Model) != "" {
+			return errors.New("custom base instructions provenance cannot name a model")
+		}
+	case BaseInstructionsModel:
+		if strings.TrimSpace(provenance.Model) == "" {
+			return errors.New("model base instructions provenance has no model")
+		}
+	default:
+		return errors.New("base instructions provenance is invalid")
+	}
+	return nil
+}
+
 type BaseInstructions struct {
-	Text string
+	Text       string                     `json:"text"`
+	Provenance BaseInstructionsProvenance `json:"provenance"`
+}
+
+func NewModelBaseInstructions(text, model string) BaseInstructions {
+	return BaseInstructions{Text: strings.TrimSpace(text), Provenance: BaseInstructionsProvenance{Type: BaseInstructionsModel, Model: strings.TrimSpace(model)}}
+}
+
+func NewCustomBaseInstructions(text string) BaseInstructions {
+	return BaseInstructions{Text: strings.TrimSpace(text), Provenance: BaseInstructionsProvenance{Type: BaseInstructionsCustom}}
+}
+
+func (instructions BaseInstructions) Clone() BaseInstructions { return instructions }
+
+func (instructions BaseInstructions) Validate() error {
+	if strings.TrimSpace(instructions.Text) == "" {
+		return errors.New("base instructions are empty")
+	}
+	if instructions.Provenance.Type == "" {
+		return nil
+	}
+	return instructions.Provenance.Validate()
+}
+
+func (instructions BaseInstructions) ValidatePersisted() error {
+	if err := instructions.Validate(); err != nil {
+		return err
+	}
+	return instructions.Provenance.Validate()
 }
 
 type OutputSchema json.RawMessage
@@ -21,10 +78,11 @@ type Prompt struct {
 }
 
 type ToolSpec struct {
-	Name        string
-	Description string
-	InputSchema json.RawMessage
-	Strict      bool
+	Name         string
+	Description  string
+	InputSchema  json.RawMessage
+	OutputSchema json.RawMessage
+	Strict       bool
 }
 
 type Request struct {
@@ -46,13 +104,8 @@ func (request Request) SupportsInput(modality InputModality) bool {
 	return ModelInfo{InputModalities: request.InputModalities}.SupportsInput(modality)
 }
 
-func (request Request) InputMessages() []ResponseItem {
-	messages := make([]ResponseItem, 0, len(request.Prompt.Input)+1)
-	if text := strings.TrimSpace(request.Prompt.BaseInstructions.Text); text != "" {
-		messages = append(messages, SystemMessage(text))
-	}
-	messages = append(messages, cloneResponseItems(request.Prompt.Input)...)
-	return messages
+func (request Request) ConversationItems() []ResponseItem {
+	return cloneResponseItems(request.Prompt.Input)
 }
 
 func (request Request) ToolSpecs() []ToolSpec {
@@ -81,6 +134,7 @@ func cloneToolSpecs(definitions []ToolSpec) []ToolSpec {
 	for index, definition := range definitions {
 		cloned[index] = definition
 		cloned[index].InputSchema = append(json.RawMessage(nil), definition.InputSchema...)
+		cloned[index].OutputSchema = append(json.RawMessage(nil), definition.OutputSchema...)
 	}
 	return cloned
 }

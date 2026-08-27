@@ -253,14 +253,14 @@ func TestCaptureStepUsesOneFrozenRouterForModeAndRegistryRevision(t *testing.T) 
 		&continuationNamedTool{name: "web_search", effect: tool.SideEffectNetwork},
 	}
 	session := newContinuationTestSession(t, client, definitions, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), DefaultTurnBudget())
-	regular, err := session.services.CaptureStep(session.Snapshot, continuationTurnContext(session, "turn-regular", ModeKindDefault))
+	regular, err := session.services.CaptureStep(context.Background(), continuationTurnContext(session, "turn-regular", ModeKindDefault))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !containsContinuationName(regular.ToolRouter.Names(), "update_plan") || !containsContinuationName(regular.ToolRouter.Names(), "write") {
 		t.Fatalf("regular tool mask = %v", regular.ToolRouter.Names())
 	}
-	planStep, err := session.services.CaptureStep(session.Snapshot, continuationTurnContext(session, "turn-plan", ModeKindPlan))
+	planStep, err := session.services.CaptureStep(context.Background(), continuationTurnContext(session, "turn-plan", ModeKindPlan))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestCaptureStepUsesOneFrozenRouterForModeAndRegistryRevision(t *testing.T) 
 	if err := session.services.tools.RegisterDefinition(&continuationNamedTool{name: "new_read", effect: tool.SideEffectRead}); err != nil {
 		t.Fatal(err)
 	}
-	changed, err := session.services.CaptureStep(session.Snapshot, continuationTurnContext(session, "turn-changed", ModeKindDefault))
+	changed, err := session.services.CaptureStep(context.Background(), continuationTurnContext(session, "turn-changed", ModeKindDefault))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,6 +300,16 @@ func TestContinueTurnWarnsThenReturnsBlockedAtSafetyBudget(t *testing.T) {
 	}
 	if len(client.requests) != 2 || !strings.Contains(continuationRequestText(client.requests[1]), "approaching its internal safety budget") {
 		t.Fatalf("completion reminder missing: %#v", client.requests)
+	}
+	canonical := false
+	for _, item := range session.ContextProjection().Messages {
+		if item.Role == llm.RoleDeveloper && item.Content == completionReminder {
+			canonical = true
+			break
+		}
+	}
+	if !canonical {
+		t.Fatal("completion reminder was not recorded as canonical developer context")
 	}
 }
 
@@ -356,13 +366,13 @@ func TestSessionServicesPreferModelMessagesFromCurrentModel(t *testing.T) {
 	catalog := continuationModelMessages(t)
 	modelMessages := catalog
 	modelMessages.InstructionsTemplate = "model-specific {{ personality }}"
-	modelMessages.Revision = "model-specific-revision"
+	modelMessages.InstructionsRevision = "model-specific-revision"
 	services := SessionServices{modelInfo: continuationModelInfo(modelMessages), modelMessages: catalog}
 	resolved, err := services.ModelMessages(services.ModelInfo())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.Revision != "model-specific-revision" || !strings.HasPrefix(resolved.InstructionsTemplate, "model-specific") {
+	if resolved.InstructionsRevision != "model-specific-revision" || !strings.HasPrefix(resolved.InstructionsTemplate, "model-specific") {
 		t.Fatalf("current model messages were not selected: %#v", resolved)
 	}
 }
@@ -405,6 +415,47 @@ func TestContinueTurnAutoCompactsExactPromptBeforeSampling(t *testing.T) {
 	tokenSnapshot := session.state.Context.TokenSnapshot()
 	if tokenSnapshot.Info == nil || tokenSnapshot.Info.TotalTokenUsage.TotalTokens != compactUsage.TotalTokens+finalUsage.TotalTokens || tokenSnapshot.Info.LastTokenUsage != finalUsage {
 		t.Fatalf("token snapshot = %#v", tokenSnapshot)
+	}
+}
+
+func TestPrepareInitialUserInputCompactsOldHistoryBeforeRecordingNewUser(t *testing.T) {
+	messages := continuationModelMessages(t)
+	client := &continuationTestClient{messages: messages, streams: []llm.Stream{
+		continuationStream(llm.StreamChunk{ContentDelta: "pre-turn checkpoint"}, llm.StreamChunk{FinishReason: llm.FinishReasonStop}),
+	}}
+	model := continuationModelInfo(messages)
+	model.AutoCompactTokenLimit = 5_000
+	session := newContinuationTestSession(t, client, nil, model, continuationProvider(0), DefaultTurnBudget())
+	appendContinuationUser(t, session, "turn-old", "old objective")
+	appendContinuationAssistant(t, session, "turn-old", strings.Repeat("old details ", 1_500))
+	turnContext := continuationTurnContext(session, "turn-new", ModeKindDefault)
+	modelSession, err := session.services.NewModelClientSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := &regularTask{
+		runtime: &session.services, goal: "new user objective", clientUserID: "client-new",
+		startedAt: session.services.Clock(), events: &continuationEventSink{session: session}, modelSession: modelSession,
+	}
+	if err := session.prepareInitialUserInput(context.Background(), task, turnContext); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 1 || !strings.Contains(continuationRequestText(client.requests[0]), "CONTEXT CHECKPOINT COMPACTION") || strings.Contains(continuationRequestText(client.requests[0]), "new user objective") {
+		t.Fatalf("pre-turn compact request = %#v", client.requests)
+	}
+	projection := session.ContextProjection()
+	last := len(projection.Messages) - 1
+	if last < 2 || projection.Messages[last].Content != "new user objective" {
+		t.Fatalf("new user was not recorded last: %#v", projection.Messages)
+	}
+	contextBeforeUser := false
+	for _, item := range projection.Messages[:last] {
+		if strings.Contains(item.Content, "<collaboration_mode>") || strings.Contains(item.Content, "<environment_context>") {
+			contextBeforeUser = true
+		}
+	}
+	if !contextBeforeUser {
+		t.Fatalf("full context was not reinjected before new user: %#v", projection.Messages)
 	}
 }
 
@@ -473,7 +524,16 @@ func newContinuationTestSessionWithStore(t *testing.T, client llm.Client, defini
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := live.Materialize(ctx, threadstore.CreateInput{SessionID: testutil.SessionID(1), CWD: t.TempDir(), Title: "continuation test", ModelProvider: model.Provider, Model: model.Name, CreatedAt: now}); err != nil {
+	modelMessages := continuationModelMessages(t)
+	effectiveMessages := modelMessages
+	if model.ModelMessages.HasInstructions() {
+		effectiveMessages = model.ModelMessages
+	}
+	base, err := effectiveMessages.ResolveBaseInstructions("", model.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := live.Materialize(ctx, threadstore.CreateInput{SessionID: testutil.SessionID(1), CWD: t.TempDir(), Title: "continuation test", ModelProvider: model.Provider, Model: model.Name, BaseInstructions: base, CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	history, err := live.History(ctx)
@@ -498,14 +558,19 @@ func newContinuationTestSessionWithStore(t *testing.T, client llm.Client, defini
 	session := newTestSession(history.Lines, manager)
 	session.sessionID = testutil.SessionID(1)
 	session.threadID = testutil.ThreadID(1)
+	session.state.Base = base
 	session.ctx = parent
 	session.cancel = cancel
 	session.services = SessionServices{
 		LiveThread: live, Clock: func() time.Time { return now }, NextID: func(kind string) string { return kind + "-test" },
-		modelClient: client, provider: provider, modelInfo: model, modelMessages: continuationModelMessages(t),
+		modelClient: client, provider: provider, modelInfo: model, modelMessages: modelMessages,
 		tools: registry, toolExecutor: executor, visibility: map[string]bool{}, budget: budget,
 	}
-	session.services.compaction = &agentcompact.Service{ModelInfo: model, ModelMessages: session.services.modelMessages}
+	assets, err := internalprompt.LoadCompactionAssets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.services.compaction = &agentcompact.Service{ModelInfo: model, Assets: assets}
 	t.Cleanup(func() {
 		cancel(errors.New("test cleanup"))
 		_ = live.Shutdown(context.Background())

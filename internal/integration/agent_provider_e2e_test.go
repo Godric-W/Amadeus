@@ -115,6 +115,13 @@ func assertProviderPromptContract(t *testing.T, api config.WireAPI, body map[str
 		t.Fatalf("%s Provider request omitted Prompt messages: %#v", api, body[key])
 	}
 	var contents []string
+	if api == config.WireAPIResponses {
+		instructions, _ := body["instructions"].(string)
+		if !strings.Contains(instructions, "You are Amadeus") {
+			t.Fatalf("Responses request omitted instructions: %#v", body["instructions"])
+		}
+		contents = append(contents, instructions)
+	}
 	seenUser := false
 	for index, item := range items {
 		message, ok := item.(map[string]any)
@@ -126,7 +133,7 @@ func assertProviderPromptContract(t *testing.T, api config.WireAPI, body map[str
 		if content == "" {
 			continue
 		}
-		if index == 0 && role != "system" {
+		if api != config.WireAPIResponses && index == 0 && role != "system" {
 			t.Fatalf("%s Provider request does not start with System Prompt: %#v", api, message)
 		}
 		if role == "user" {
@@ -138,12 +145,16 @@ func assertProviderPromptContract(t *testing.T, api config.WireAPI, body map[str
 	}
 	combined := strings.Join(contents, "\n")
 	for _, required := range []string{
-		"You are Amadeus", "## Execute Mode", "<collaboration_mode>", "<environment_context>", "<permission_context>",
-		"## AGENTS.md Instructions", "## Skills", "## `execute_command`", "amadeus.agents_md.v1", "Read README and report",
+		"You are Amadeus", "Collaboration Mode: Default", "<collaboration_mode>", "<environment_context>", "<permission_context>",
+		"# AGENTS.md instructions", "<skills_instructions>", "Read README and report",
 	} {
 		if !strings.Contains(combined, required) {
 			t.Fatalf("%s Provider request omitted Prompt contract %q: %s", api, required, combined)
 		}
+	}
+	tools, err := json.Marshal(body["tools"])
+	if err != nil || !strings.Contains(string(tools), "ongoing interaction") || strings.Contains(combined, "## `execute_command`") {
+		t.Fatalf("%s Provider request ToolSpec ownership is invalid: tools=%s combined=%s err=%v", api, tools, combined, err)
 	}
 }
 

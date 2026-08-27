@@ -71,7 +71,8 @@ func TestIncrementalRecordMatchesResumeAcrossTerminalAndCompactionFacts(t *testi
 		mustContextResponseItem(t, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"main.go"}`)}),
 		mustContextResponseItem(t, rollout.ResponseItem{Type: rollout.ResponseToolResult, Role: "tool", CallID: "call-1", Name: "read", Status: "succeeded", Result: &toolResult}),
 		rollout.EventMsgItem{Msg: tokenCountEvent(llm.TokenUsage{InputTokens: 12, OutputTokens: 3, TotalTokens: 15}, llm.TokenUsage{InputTokens: 12, OutputTokens: 3, TotalTokens: 15}, 15)},
-		rollout.EventMsgItem{Msg: protocol.ContextUpdateEvent{Key: string(UpdateAgents), Content: "project agents", Revision: "agents-r1"}},
+		mustContextResponseItem(t, rollout.ResponseItem{Type: rollout.ResponseContextMessage, Role: "user", ContextKind: rollout.ContextKindWorldState, Content: "project agents"}),
+		rollout.WorldStateItem{Full: true, Sections: map[string]json.RawMessage{"agents_md": json.RawMessage(`{"text":"project agents"}`)}},
 		rollout.EventMsgItem{Msg: protocol.TurnAbortedEvent{Reason: "interrupted", FinishedAt: time.Unix(7, 0).UTC()}},
 	}
 	for index := range items {
@@ -98,11 +99,12 @@ func TestIncrementalRecordMatchesResumeAcrossTerminalAndCompactionFacts(t *testi
 			llm.UserMessage("inspect main.go"),
 			llm.UserMessage("Inspection was interrupted after reading main.go."),
 		},
-		CoveredThroughSequence: 7,
+		ReplacementOrigins:     []rollout.ReplacementOrigin{rollout.ReplacementOriginUser, rollout.ReplacementOriginCompaction},
+		CoveredThroughSequence: 8,
 		SourceHash:             hex.EncodeToString(digest[:]),
 	}, testutil.ThreadID(1), "turn-2")
 	trailing := rollout.ScopeItem(rollout.EventMsgItem{Msg: tokenCountEvent(llm.TokenUsage{InputTokens: 14, OutputTokens: 4, TotalTokens: 18}, llm.TokenUsage{InputTokens: 2, OutputTokens: 1, TotalTokens: 3}, 3)}, testutil.ThreadID(1), "turn-2")
-	if err := live.Record(8, compacted, trailing); err != nil {
+	if err := live.Record(9, compacted, trailing); err != nil {
 		t.Fatal(err)
 	}
 
@@ -126,8 +128,10 @@ func TestIncrementalRecordMatchesResumeAcrossTerminalAndCompactionFacts(t *testi
 	if !reflect.DeepEqual(live.Snapshot(model, llm.Prompt{}), resumed.Snapshot(model, llm.Prompt{})) {
 		t.Fatalf("prompt snapshot differs: live=%#v resume=%#v", live.Snapshot(model, llm.Prompt{}), resumed.Snapshot(model, llm.Prompt{}))
 	}
-	if live.Update(UpdateAgents) != "project agents" || resumed.Update(UpdateAgents) != "project agents" {
-		t.Fatalf("context update differs: live=%q resume=%q", live.Update(UpdateAgents), resumed.Update(UpdateAgents))
+	liveWorld, liveKnown := live.WorldStateBaseline()
+	resumeWorld, resumeKnown := resumed.WorldStateBaseline()
+	if !liveKnown || !resumeKnown || !reflect.DeepEqual(liveWorld, resumeWorld) {
+		t.Fatalf("world state differs: live=%#v resume=%#v", liveWorld, resumeWorld)
 	}
 	if tokenSnapshot := live.TokenSnapshot(); tokenSnapshot.Info == nil || tokenSnapshot.Info.TotalTokenUsage.TotalTokens != 18 {
 		t.Fatalf("token snapshot = %#v", tokenSnapshot)

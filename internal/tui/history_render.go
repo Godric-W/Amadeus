@@ -81,7 +81,7 @@ func styleForSemantic(ctx HistoryRenderContext, style semanticStyle) lipgloss.St
 		}
 		return result
 	case styleSeparator:
-		return ctx.Palette.separator()
+		return ctx.Palette.turnSeparator()
 	default:
 		return ctx.Palette.plain()
 	}

@@ -56,15 +56,18 @@ func DirectRegistration() Registration {
 }
 
 type ToolSpec struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
-	SideEffect  SideEffect      `json:"side_effect"`
-	Idempotent  bool            `json:"idempotent"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	InputSchema  json.RawMessage `json:"input_schema"`
+	OutputSchema json.RawMessage `json:"output_schema,omitempty"`
+	Strict       bool            `json:"strict,omitempty"`
+	SideEffect   SideEffect      `json:"side_effect"`
+	Idempotent   bool            `json:"idempotent"`
 }
 
 func (spec ToolSpec) Clone() ToolSpec {
 	spec.InputSchema = append(json.RawMessage(nil), spec.InputSchema...)
+	spec.OutputSchema = append(json.RawMessage(nil), spec.OutputSchema...)
 	return spec
 }
 

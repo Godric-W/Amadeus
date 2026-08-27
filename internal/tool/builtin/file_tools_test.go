@@ -78,6 +78,53 @@ func TestFileEditRequiresApprovalAndReturnsDiff(t *testing.T) {
 	}
 }
 
+func TestFileEditAcceptsCompletePagedReadOnlyAfterCoverageHasNoGaps(t *testing.T) {
+	files, _, coordinator, permissions, rootPath := newFileToolsTest(t, policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "approved"})
+	path := filepath.Join(rootPath, "paged.txt")
+	if err := os.WriteFile(path, []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	readState := tool.NewFileReadStateStore()
+	ctx := withTestPermissions(withTestFileReadState(withTestApprovalCoordinator(context.Background(), coordinator), readState), permissions)
+	for _, payload := range []string{`{"path":"paged.txt","line":1,"limit":1}`, `{"path":"paged.txt","line":3,"limit":1}`} {
+		if _, err := executePreparedTool(t, ctx, files.ReadTool(), json.RawMessage(payload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := executePreparedTool(t, ctx, files.EditTool(), json.RawMessage(`{"path":"paged.txt","old_string":"two","new_string":"changed"}`)); err == nil {
+		t.Fatal("paged read with a gap authorized edit")
+	}
+	lastPage, err := executePreparedTool(t, ctx, files.ReadTool(), json.RawMessage(`{"path":"paged.txt","line":2,"limit":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, ok := readState.Get(path)
+	if !ok || !state.FullRead || lastPage.Metadata["complete_snapshot"] != true {
+		t.Fatalf("paged reads did not establish a complete snapshot: %#v", state)
+	}
+	if _, err := executePreparedTool(t, ctx, files.EditTool(), json.RawMessage(`{"path":"paged.txt","old_string":"two","new_string":"changed"}`)); err != nil {
+		t.Fatalf("complete paged read did not authorize edit: %v", err)
+	}
+}
+
+func TestTruncatedLineDoesNotEstablishCompleteRead(t *testing.T) {
+	files, _, coordinator, permissions, rootPath := newFileToolsTest(t, policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "approved"})
+	files.maxLineBytes = 8
+	path := filepath.Join(rootPath, "long.txt")
+	if err := os.WriteFile(path, []byte("a very long line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	readState := tool.NewFileReadStateStore()
+	ctx := withTestPermissions(withTestFileReadState(withTestApprovalCoordinator(context.Background(), coordinator), readState), permissions)
+	result, err := executePreparedTool(t, ctx, files.ReadTool(), json.RawMessage(`{"path":"long.txt"}`))
+	if err != nil || !result.Partial || result.Metadata["lines_truncated"] != 1 {
+		t.Fatalf("truncated line read = %#v err=%v", result, err)
+	}
+	if state, ok := readState.Get(path); ok && state.FullRead {
+		t.Fatalf("truncated line established complete state: %#v", state)
+	}
+}
+
 func TestFileEditRejectsStaleTargetAfterApproval(t *testing.T) {
 	files, stub, _, permissions, rootPath := newFileToolsTest(t, policy.ApprovalDecision{Outcome: policy.ApprovalAllow, Scope: policy.ApprovalOnce, Source: policy.ApprovalSourceUser, Reason: "approved"})
 	path := filepath.Join(rootPath, "main.go")

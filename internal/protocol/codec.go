@@ -73,8 +73,6 @@ func DecodeEventMsg(encoded EncodedEventMsg) (EventMsg, error) {
 		message = &PlanDeltaEvent{}
 	case "token_count":
 		message = &TokenCountEvent{}
-	case "context_update":
-		message = &ContextUpdateEvent{}
 	case "subagent_notification":
 		message = &SubagentNotificationEvent{}
 	default:
@@ -139,8 +137,6 @@ func eventMsgType(message EventMsg) (string, error) {
 		return "plan_delta", nil
 	case TokenCountEvent:
 		return "token_count", nil
-	case ContextUpdateEvent:
-		return "context_update", nil
 	case SubagentNotificationEvent:
 		return "subagent_notification", nil
 	default:
@@ -191,8 +187,6 @@ func eventMsgValue(message EventMsg) EventMsg {
 	case *PlanDeltaEvent:
 		return *value
 	case *TokenCountEvent:
-		return *value
-	case *ContextUpdateEvent:
 		return *value
 	case *SubagentNotificationEvent:
 		return *value

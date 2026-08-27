@@ -78,6 +78,15 @@ type StatusSnapshot struct {
 	PermissionGrantCount   int
 	SkillRevision          string
 	MCPRevision            string
+	BaseProvenance         string
+	WorldStateKind         string
+	WorldStateRevision     string
+	InstructionsRevision   string
+	CollaborationRevision  string
+	MultiAgentRevision     string
+	CompactionRevision     string
+	SummaryPrefixRevision  string
+	ProviderWireAPI        string
 }
 
 type InteractiveEvent interface{ isInteractiveEvent() }

@@ -28,6 +28,7 @@ type Document struct {
 }
 
 func newDocument(source Source, path, root, directory, content string) (Document, error) {
+	content = normalizeLineEndings(content)
 	document := Document{
 		Source: source, Path: filepath.Clean(path), Root: filepath.Clean(root),
 		Directory: filepath.ToSlash(filepath.Clean(directory)), Content: content,
@@ -42,6 +43,11 @@ func newDocument(source Source, path, root, directory, content string) (Document
 		return Document{}, err
 	}
 	return document, nil
+}
+
+func normalizeLineEndings(value string) string {
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	return strings.ReplaceAll(value, "\r", "\n")
 }
 
 func (document Document) Validate() error {
@@ -117,14 +123,22 @@ func (loaded LoadedAgentsMd) Render() string {
 	if len(loaded.Documents) == 0 {
 		return ""
 	}
-	metadata, _ := json.Marshal(struct {
-		Type      string     `json:"type"`
-		Revision  string     `json:"revision"`
-		Documents []Document `json:"documents"`
-	}{Type: "amadeus.agents_md.v1", Revision: loaded.Revision, Documents: loaded.Documents})
-	parts := []string{"## AGENTS.md Instructions", string(metadata)}
+	directory := ""
+	parts := make([]string, 0, len(loaded.Documents))
+	projectStarted := false
 	for _, document := range loaded.Documents {
-		parts = append(parts, "Instructions from "+document.Path+":\n"+strings.TrimSpace(document.Content))
+		if document.Source == SourceProject {
+			if !projectStarted && len(parts) > 0 {
+				parts = append(parts, "--- project-doc ---")
+			}
+			projectStarted = true
+			directory = filepath.Dir(document.Path)
+		}
+		parts = append(parts, strings.TrimSpace(document.Content))
 	}
-	return strings.Join(parts, "\n\n")
+	header := "# AGENTS.md instructions"
+	if directory != "" {
+		header += " for " + directory
+	}
+	return header + "\n\n<INSTRUCTIONS>\n" + strings.Join(parts, "\n\n") + "\n</INSTRUCTIONS>"
 }

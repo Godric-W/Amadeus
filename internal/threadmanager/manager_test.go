@@ -256,8 +256,9 @@ func TestThreadManagerMaterializesOnFirstInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantKinds := []string{
-		"session_meta", "turn_context", "response:user_message",
-		"event:turn_started", "response:assistant_message", "event:item_completed", "event:turn_complete",
+		"session_meta", "event:turn_started", "response:context_message", "world_state",
+		"turn_context", "response:user_message", "event:item_completed",
+		"response:assistant_message", "event:item_completed", "event:turn_complete",
 	}
 	actualKinds := make([]string, len(history.Lines))
 	for index, line := range history.Lines {
@@ -457,8 +458,10 @@ func TestRootAndChildProviderRequestsShareSessionIdentity(t *testing.T) {
 		t.Fatalf("provider requests = %d, want root and child", len(requests))
 	}
 	byThread := make(map[protocol.ThreadID]llm.RequestMetadata, len(requests))
+	requestByThread := make(map[protocol.ThreadID]llm.Request, len(requests))
 	for _, request := range requests {
 		byThread[request.Metadata.ThreadID] = request.Metadata
+		requestByThread[request.Metadata.ThreadID] = request
 	}
 	rootMetadata, rootOK := byThread[root.ID()]
 	childMetadata, childOK := byThread[spawned.AgentID]
@@ -468,6 +471,26 @@ func TestRootAndChildProviderRequestsShareSessionIdentity(t *testing.T) {
 	if rootMetadata.ParentThreadID != nil || childMetadata.ParentThreadID == nil || *childMetadata.ParentThreadID != root.ID() || rootMetadata.TurnID == "" || childMetadata.TurnID == "" {
 		t.Fatalf("provider parent/turn metadata = root %#v child %#v", rootMetadata, childMetadata)
 	}
+	rootRequest, childRequest := requestByThread[root.ID()], requestByThread[spawned.AgentID]
+	rootText, childText := requestPromptText(rootRequest), requestPromptText(childRequest)
+	if strings.Contains(rootText, "<multi_agent_role>") || !strings.Contains(childText, "<multi_agent_role>") || !strings.Contains(childText, "child request") {
+		t.Fatalf("root/child Prompt role or delegated input is invalid: root=%q child=%q", rootText, childText)
+	}
+	for _, spec := range childRequest.Prompt.Tools {
+		switch spec.Name {
+		case "read", "glob", "grep", "read_skill", "web_search":
+		default:
+			t.Fatalf("child Prompt exposed non-explorer Tool %q", spec.Name)
+		}
+	}
+}
+
+func requestPromptText(request llm.Request) string {
+	parts := make([]string, 0, len(request.Prompt.Input))
+	for _, item := range request.Prompt.Input {
+		parts = append(parts, item.Content)
+	}
+	return strings.Join(parts, "\n")
 }
 
 func TestThreadUserInputAdmissionContinuesSameTurn(t *testing.T) {
@@ -877,7 +900,7 @@ func TestResumeRecoversIncompleteToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := live.Materialize(ctx, threadstore.CreateInput{SessionID: protocol.SessionIDFromThreadID(threadID), CWD: testConfiguration(t).CWD, Title: "recover", CreatedAt: now}); err != nil {
+	if _, err := live.Materialize(ctx, threadstore.CreateInput{SessionID: protocol.SessionIDFromThreadID(threadID), CWD: testConfiguration(t).CWD, Title: "recover", BaseInstructions: testutil.BaseInstructions("test-model"), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	turnContext := testTurnContext(t, threadID, "turn-old")
@@ -938,6 +961,8 @@ func rolloutItemKind(item rollout.RolloutItem) string {
 		return "response:" + string(item.Type)
 	case rollout.CompactedItem:
 		return "compacted"
+	case rollout.WorldStateItem:
+		return "world_state"
 	case rollout.EventMsgItem:
 		switch item.Msg.(type) {
 		case protocol.TurnStartedEvent:
@@ -983,9 +1008,13 @@ func newTestManagerWithClient(t *testing.T, ctx context.Context, client llm.Clie
 	if err != nil {
 		t.Fatal(err)
 	}
+	compactionAssets, err := internalprompt.LoadCompactionAssets()
+	if err != nil {
+		t.Fatal(err)
+	}
 	manager, err := New(ctx, localStore, SharedServices{
 		SessionAdapters: session.ServiceAdapters{
-			ModelMessages: modelMessages,
+			ModelMessages: modelMessages, CompactionAssets: compactionAssets,
 			ClientFactory: func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 			AuditFactory:  func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
 		},

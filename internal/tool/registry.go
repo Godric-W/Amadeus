@@ -215,6 +215,12 @@ func validateSpec(spec ToolSpec) error {
 	if strings.TrimSpace(spec.Description) == "" {
 		return fmt.Errorf("%w: description is empty", ErrInvalidSpec)
 	}
+	if len(spec.InputSchema) == 0 || !json.Valid(spec.InputSchema) {
+		return fmt.Errorf("%w: input schema is invalid", ErrInvalidSpec)
+	}
+	if len(spec.OutputSchema) > 0 && !json.Valid(spec.OutputSchema) {
+		return fmt.Errorf("%w: output schema is invalid", ErrInvalidSpec)
+	}
 	if !spec.SideEffect.Valid() {
 		return fmt.Errorf("%w: side effect %q is unsupported", ErrInvalidSpec, spec.SideEffect)
 	}

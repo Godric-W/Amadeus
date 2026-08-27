@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/modelclient"
 	"github.com/Godric-W/Amadeus/internal/protocol"
@@ -22,6 +23,8 @@ type SessionTask interface {
 type regularTask struct {
 	runtime      *SessionServices
 	goal         string
+	clientUserID string
+	startedAt    time.Time
 	events       protocol.EventSink
 	turnState    *TurnState
 	modelSession *modelclient.ModelClientSession

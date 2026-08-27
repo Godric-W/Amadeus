@@ -52,6 +52,10 @@ func (cell StatusHistoryCell) values() []string {
 	if strings.TrimSpace(snapshot.SkillRevision) != "" || strings.TrimSpace(snapshot.MCPRevision) != "" {
 		values = append(values, fmt.Sprintf("Capabilities: skills %s · MCP %s", displayValue(snapshot.SkillRevision), displayValue(snapshot.MCPRevision)))
 	}
+	values = append(values,
+		fmt.Sprintf("Prompt: base %s · world %s/%s · wire %s", displayValue(snapshot.BaseProvenance), displayValue(snapshot.WorldStateKind), displayValue(snapshot.WorldStateRevision), displayValue(snapshot.ProviderWireAPI)),
+		fmt.Sprintf("Prompt assets: base %s · modes %s · multi-agent %s · compact %s/%s", displayValue(snapshot.InstructionsRevision), displayValue(snapshot.CollaborationRevision), displayValue(snapshot.MultiAgentRevision), displayValue(snapshot.CompactionRevision), displayValue(snapshot.SummaryPrefixRevision)),
+	)
 	return values
 }
 

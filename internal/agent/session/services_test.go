@@ -56,6 +56,10 @@ func TestSessionServicesAreConstructedOnceAndReusedAcrossTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	compactionAssets, err := internalprompt.LoadCompactionAssets()
+	if err != nil {
+		t.Fatal(err)
+	}
 	closer := &servicesTestCloser{}
 	modelMessages, err := internalprompt.LoadModelMessages()
 	if err != nil {
@@ -66,7 +70,7 @@ func TestSessionServicesAreConstructedOnceAndReusedAcrossTasks(t *testing.T) {
 	session.state.Configuration = Configuration{Runtime: configured, CWD: root, AmadeusRoot: t.TempDir(), Mode: ModeKindDefault}
 	session.services.Clock = func() time.Time { return time.Date(2026, 8, 14, 12, 0, 0, 0, location) }
 	services, err := buildSessionServices(context.Background(), session, session.services, ServiceAdapters{
-		ModelMessages: modelMessages,
+		ModelMessages: modelMessages, CompactionAssets: compactionAssets,
 		ClientFactory: func(providerName, model string, _ config.ModelProviderInfo) (llm.Client, error) {
 			return &servicesTestClient{model: llm.ModelInfo{Provider: providerName, Name: model}}, nil
 		},

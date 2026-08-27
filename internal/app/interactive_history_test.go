@@ -24,7 +24,7 @@ func TestProjectRolloutItemsPreservesCanonicalSequenceWithoutResponseFallback(t 
 		projectorLine(8, rollout.EventMsgItem{Msg: protocol.TokenCountEvent{ThreadID: testutil.ThreadID(1), TurnID: "turn-2", Info: &protocol.TokenUsageInfo{
 			TotalTokenUsage: llm.TokenUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}, LastTokenUsage: llm.TokenUsage{OutputTokens: 5, TotalTokens: 5}, ModelContextWindow: 128_000,
 		}, ActiveContextTokens: 5}}),
-		projectorLine(9, rollout.CompactedItem{ThreadID: testutil.ThreadID(1), TurnID: "turn-2", Trigger: protocol.CompactionTriggerManual, Reason: protocol.CompactionReasonUserRequested, Phase: protocol.CompactionPhaseStandaloneTurn, Summary: "summary", ReplacementHistory: []llm.ResponseItem{llm.UserMessage("summary")}, CoveredThroughSequence: 3, SourceHash: "hash"}),
+		projectorLine(9, rollout.CompactedItem{ThreadID: testutil.ThreadID(1), TurnID: "turn-2", Trigger: protocol.CompactionTriggerManual, Reason: protocol.CompactionReasonUserRequested, Phase: protocol.CompactionPhaseStandaloneTurn, Summary: "summary", ReplacementHistory: []llm.ResponseItem{llm.UserMessage("summary")}, ReplacementOrigins: []rollout.ReplacementOrigin{rollout.ReplacementOriginCompaction}, CoveredThroughSequence: 3, SourceHash: "hash"}),
 	}
 	projection, err := ProjectRolloutItems(lines)
 	if err != nil {

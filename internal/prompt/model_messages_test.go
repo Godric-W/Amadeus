@@ -13,54 +13,56 @@ func TestLoadModelMessagesSeparatesModelModesAndCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base, err := messages.ResolveBaseInstructions("")
+	base, err := messages.ResolveBaseInstructions("", "test-model")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(base.Text, "You are Amadeus") {
-		t.Fatalf("base instructions are incomplete: %q", base.Text)
+	if strings.TrimSpace(base.Text) == "" || base.Provenance.Type != llm.BaseInstructionsModel || base.Provenance.Model != "test-model" {
+		t.Fatalf("base instructions are incomplete: %#v", base)
 	}
-	if !strings.Contains(messages.CollaborationModes.Default, "Execute Mode") || !strings.Contains(messages.CollaborationModes.Plan, "Plan Mode") {
+	if strings.TrimSpace(messages.CollaborationModes.Default) == "" || strings.TrimSpace(messages.CollaborationModes.Plan) == "" {
 		t.Fatalf("collaboration mode instructions are incomplete: %#v", messages.CollaborationModes)
 	}
-	if !strings.Contains(messages.SubagentDeveloperInstructions, "sub-agent spawned by another Amadeus agent") || !strings.Contains(messages.SubagentDeveloperInstructions, "Do not modify files") {
-		t.Fatalf("sub-agent developer instructions are incomplete: %q", messages.SubagentDeveloperInstructions)
+	if strings.TrimSpace(messages.MultiAgent.Role.Subagent) == "" {
+		t.Fatalf("sub-agent developer instructions are incomplete: %q", messages.MultiAgent.Role.Subagent)
 	}
-	compaction, prefix, err := CompactionMessages(messages)
+	compaction, err := LoadCompactionAssets()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(compaction.Text, "CONTEXT CHECKPOINT COMPACTION") || strings.TrimSpace(prefix) == "" {
-		t.Fatalf("compaction assets are incomplete: %q / %q", compaction.Text, prefix)
+	if !compaction.Valid() {
+		t.Fatalf("compaction assets are incomplete: %#v", compaction)
+	}
+	if compaction.SummarizationRevision == compaction.SummaryPrefixRevision {
+		t.Fatal("compaction prompt and summary prefix share one revision")
 	}
 }
 
-func TestSubagentInstructionsOnlyIncludeVisibleReadToolGuidance(t *testing.T) {
-	text, err := RenderSubagentDeveloperInstructions(mustModelMessages(t), []string{"read", "grep"})
+func TestSubagentInstructionsDoNotAppendToolGuidance(t *testing.T) {
+	messages := mustModelMessages(t)
+	text, err := RenderSubagentRoleInstructions(messages)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(text, "## `read`") || !strings.Contains(text, "## `grep`") || strings.Contains(text, "## `edit`") {
-		t.Fatalf("sub-agent tool guidance is incorrect: %q", text)
+	if text != strings.TrimSpace(messages.MultiAgent.Role.Subagent) || strings.Contains(text, "## `read`") {
+		t.Fatalf("sub-agent instructions have a second Tool guidance owner: %q", text)
 	}
 }
 
-func TestCollaborationInstructionsOnlyExposeVisibleToolGuidance(t *testing.T) {
-	text, err := RenderCollaborationInstructions(mustModelMessages(t), protocol.ModeKindDefault, []string{"update_plan", "execute_command"})
+func TestCollaborationInstructionsDoNotAppendToolGuidance(t *testing.T) {
+	messages := mustModelMessages(t)
+	text, err := RenderCollaborationInstructions(messages, protocol.ModeKindDefault)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(text, "## `update_plan`") || !strings.Contains(text, "## `execute_command`") {
-		t.Fatalf("visible Tool guidance is missing: %q", text)
+	if text != strings.TrimSpace(messages.CollaborationModes.Default) || strings.Contains(text, "## `update_plan`") {
+		t.Fatalf("Default collaboration instructions have a second Tool guidance owner: %q", text)
 	}
-	if strings.Contains(text, "## `read`") || strings.Contains(text, "## `edit`") {
-		t.Fatalf("hidden Tool guidance leaked: %q", text)
-	}
-	plan, err := RenderCollaborationInstructions(mustModelMessages(t), protocol.ModeKindPlan, []string{"read"})
+	plan, err := RenderCollaborationInstructions(messages, protocol.ModeKindPlan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(plan, "## Plan Mode") || !strings.Contains(plan, "## `read`") || strings.Contains(plan, "## `update_plan`") {
+	if plan != strings.TrimSpace(messages.CollaborationModes.Plan) || strings.Count(plan, "# Plan Mode (Conversational)") != 1 || strings.Contains(plan, "## `read`") {
 		t.Fatalf("Plan collaboration instructions are incorrect: %q", plan)
 	}
 }

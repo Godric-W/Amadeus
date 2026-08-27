@@ -188,6 +188,12 @@ func (p terminalPalette) separator() lipgloss.Style {
 	}
 	return p.muted()
 }
+func (p terminalPalette) turnSeparator() lipgloss.Style {
+	if p.NoColor || p.Level == colorLevelNone {
+		return p.plain()
+	}
+	return p.plain().Faint(true)
+}
 func (p terminalPalette) border() lipgloss.Style {
 	if p.Level == colorLevelTrueColor || p.Level == colorLevelANSI256 {
 		return p.plain().Foreground(p.bestColor(blendRGB(p.Background, p.Foreground, 0.32)))

@@ -1,22 +1,22 @@
 package llm
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"strings"
 )
 
 type ModelMessages struct {
-	InstructionsTemplate          string                     `json:"instructions_template,omitempty"`
-	InstructionsVariables         ModelInstructionsVariables `json:"instructions_variables,omitempty"`
-	CollaborationModes            CollaborationModeMessages  `json:"collaboration_modes,omitempty"`
-	SubagentDeveloperInstructions string                     `json:"subagent_developer_instructions,omitempty"`
-	SummarizationPrompt           string                     `json:"summarization_prompt,omitempty"`
-	SummaryPrefix                 string                     `json:"summary_prefix,omitempty"`
-	Revision                      string                     `json:"revision,omitempty"`
-	Source                        string                     `json:"source,omitempty"`
+	InstructionsTemplate  string                     `json:"instructions_template,omitempty"`
+	InstructionsVariables ModelInstructionsVariables `json:"instructions_variables,omitempty"`
+	Approvals             ApprovalMessages           `json:"approvals,omitempty"`
+	Permissions           PermissionMessages         `json:"permissions,omitempty"`
+	CollaborationModes    CollaborationModeMessages  `json:"collaboration_modes,omitempty"`
+	MultiAgent            MultiAgentMessages         `json:"multi_agent,omitempty"`
+
+	InstructionsRevision  string `json:"instructions_revision,omitempty"`
+	CollaborationRevision string `json:"collaboration_revision,omitempty"`
+	MultiAgentRevision    string `json:"multi_agent_revision,omitempty"`
+	Source                string `json:"source,omitempty"`
 }
 
 type ModelInstructionsVariables struct {
@@ -30,10 +30,30 @@ type CollaborationModeMessages struct {
 	Plan    string `json:"plan,omitempty"`
 }
 
-func (messages ModelMessages) ResolveBaseInstructions(personality string) (BaseInstructions, error) {
+type ApprovalMessages struct {
+	OnRequest string `json:"on_request,omitempty"`
+}
+
+type PermissionMessages struct {
+	WorkspaceWrite string `json:"workspace_write,omitempty"`
+}
+
+type MultiAgentMessages struct {
+	Role MultiAgentRoleMessages `json:"role,omitempty"`
+}
+
+type MultiAgentRoleMessages struct {
+	Subagent string `json:"subagent,omitempty"`
+}
+
+func (messages ModelMessages) ResolveBaseInstructions(personality, model string) (BaseInstructions, error) {
 	template := strings.TrimSpace(messages.InstructionsTemplate)
 	if template == "" {
 		return BaseInstructions{}, errors.New("model instructions template is empty")
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return BaseInstructions{}, errors.New("model instructions provenance model is empty")
 	}
 	personalityText := messages.InstructionsVariables.PersonalityDefault
 	switch strings.TrimSpace(personality) {
@@ -45,30 +65,14 @@ func (messages ModelMessages) ResolveBaseInstructions(personality string) (BaseI
 	default:
 		return BaseInstructions{}, errors.New("unsupported model personality")
 	}
-	return BaseInstructions{Text: strings.ReplaceAll(template, "{{ personality }}", personalityText)}, nil
+	return NewModelBaseInstructions(strings.ReplaceAll(template, "{{ personality }}", personalityText), model), nil
 }
 
 func (messages ModelMessages) HasInstructions() bool {
 	return strings.TrimSpace(messages.InstructionsTemplate) != ""
 }
 
-func (messages ModelMessages) HasCompaction() bool {
-	return strings.TrimSpace(messages.SummarizationPrompt) != "" && strings.TrimSpace(messages.SummaryPrefix) != ""
-}
-
-func (messages ModelMessages) RevisionID() string {
-	if strings.TrimSpace(messages.Revision) != "" {
-		return messages.Revision
-	}
-	encoded, _ := json.Marshal(messages)
-	hash := sha256.Sum256(encoded)
-	return hex.EncodeToString(hash[:])
-}
-
 func (messages ModelMessages) Normalized() ModelMessages {
-	if strings.TrimSpace(messages.Revision) == "" {
-		messages.Revision = messages.RevisionID()
-	}
 	if strings.TrimSpace(messages.Source) == "" {
 		messages.Source = "model"
 	}

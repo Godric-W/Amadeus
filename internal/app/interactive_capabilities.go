@@ -36,6 +36,16 @@ func (application *InteractiveApplication) Status() StatusSnapshot {
 	result.PermissionGrantCount = active.PermissionGrantCount()
 	result.SkillRevision = shortRevision(active.SkillRevision())
 	result.MCPRevision = shortRevision(active.MCPRevision())
+	prompt := active.PromptDiagnostics()
+	result.BaseProvenance = prompt.BaseProvenance
+	result.WorldStateKind = prompt.WorldStateKind
+	result.WorldStateRevision = shortRevision(prompt.WorldStateRevision)
+	result.InstructionsRevision = shortRevision(prompt.InstructionsRevision)
+	result.CollaborationRevision = shortRevision(prompt.CollaborationRevision)
+	result.MultiAgentRevision = shortRevision(prompt.MultiAgentRevision)
+	result.CompactionRevision = shortRevision(prompt.CompactionRevision)
+	result.SummaryPrefixRevision = shortRevision(prompt.SummaryPrefixRevision)
+	result.ProviderWireAPI = prompt.ProviderWireAPI
 	return result
 }
 

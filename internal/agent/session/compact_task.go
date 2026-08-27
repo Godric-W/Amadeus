@@ -15,7 +15,7 @@ func (sessionTask *compactTask) Run(ctx context.Context, session *Session, turnC
 	if err != nil {
 		return TaskOutput{}, err
 	}
-	_, err = session.runCompaction(ctx, sessionTask.runtime, modelSession, *turnContext, nil, sessionTask.events, compactionInvocation{
+	_, err = session.runCompaction(ctx, sessionTask.runtime, modelSession, *turnContext, nil, nil, sessionTask.events, compactionInvocation{
 		Trigger: protocol.CompactionTriggerManual, Reason: protocol.CompactionReasonUserRequested, Phase: protocol.CompactionPhaseStandaloneTurn,
 	})
 	if err != nil {

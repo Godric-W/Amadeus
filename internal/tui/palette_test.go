@@ -47,6 +47,16 @@ func TestCommandPaletteUsesCodexMagenta(t *testing.T) {
 	}
 }
 
+func TestTurnSeparatorUsesCodexDimModifier(t *testing.T) {
+	original := lipgloss.ColorProfile()
+	t.Cleanup(func() { lipgloss.SetColorProfile(original) })
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	rendered := terminalPalette{Level: colorLevelTrueColor, Dark: true}.turnSeparator().Render("Worked for 1m 22s")
+	if !strings.Contains(rendered, "\x1b[2m") || strings.Contains(rendered, "38;") {
+		t.Fatalf("turn separator style = %q, want Codex-style dim modifier without custom foreground", rendered)
+	}
+}
+
 func TestBlendRGBUsesBackgroundToForegroundDirection(t *testing.T) {
 	background := terminalRGB{10, 20, 30}
 	foreground := terminalRGB{210, 220, 230}

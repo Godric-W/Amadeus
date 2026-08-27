@@ -17,7 +17,7 @@ Amadeus is a Codex-like terminal coding agent written in Go. It can inspect and 
 - Stdio and Streamable HTTP MCP servers.
 - Read-only explorer SubAgents for parallel investigation.
 - Optional web search and web fetch tools.
-- Plan mode, approvals, session-scoped permission grants, and tool output limits.
+- Default and Plan collaboration modes, approvals, session-scoped permission grants, and tool output limits.
 
 ## Quick Start
 
@@ -27,7 +27,6 @@ Amadeus currently requires Go 1.26 or later.
 git clone https://github.com/Godric-W/Amadeus.git
 cd Amadeus
 
-go mod tidy
 make build
 ```
 
@@ -240,6 +239,23 @@ Useful environment overrides include:
 
 Run `amadeus --help` for the authoritative option list.
 
+## CLI Subcommands
+
+Amadeus also provides non-interactive commands for inspecting the local setup:
+
+| Command | Description |
+|---|---|
+| `amadeus config check` | Load and validate the effective configuration. |
+| `amadeus config show` | Print the effective configuration with secrets redacted. |
+| `amadeus config explain` | Print the effective configuration and the source of each field. |
+| `amadeus sessions list` | List sessions associated with the current working root. |
+| `amadeus tools list` | List the target built-in Tool surface, exposure, conditions, and side effects. |
+| `amadeus web check` | Check enabled web configuration, authentication, connectivity, and response format. |
+| `amadeus version` | Print version and build metadata. |
+| `amadeus completion <shell>` | Generate completion scripts for `bash`, `zsh`, `fish`, or `powershell`. |
+
+`amadeus web check` accepts `--query <text>` for the search probe and `--url <url>` to exercise web fetch. Global configuration and working-directory flags can also be used with these subcommands.
+
 ## Slash Commands
 
 Slash Commands are available in the interactive TUI. Type `/` to open the command list.
@@ -253,7 +269,7 @@ Slash Commands are available in the interactive TUI. Type `/` to open the comman
 | `/compact` | Compact the current conversation context. |
 | `/plan [task]` | Enter Plan mode. With a task, submits it after changing mode. |
 | `/copy` | Copy the latest agent Markdown response. |
-| `/status` | Show session, model, reasoning, permission, and token information. |
+| `/status` | Show session, model, reasoning, permission, token, and Prompt provenance/revision diagnostics. |
 | `/mcp` | Show configured MCP servers, tools, and resource counts. |
 | `/mcp verbose` | Show the detailed MCP inventory. |
 | `/clear` | Clear the UI and start a new session. |

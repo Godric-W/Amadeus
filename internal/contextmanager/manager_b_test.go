@@ -45,28 +45,30 @@ func TestManagerNormalizesToolProtocolAndProjectsLargeResults(t *testing.T) {
 	}
 }
 
-func TestManagerDynamicUpdatesAreStableAndOrdered(t *testing.T) {
+func TestManagerContextFragmentsRemainInCanonicalOrder(t *testing.T) {
 	manager := NewManager(nil)
 	lines := []rollout.Line{
-		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "hello"}),
-		contextEventLine(t, 2, protocol.ContextUpdateEvent{Key: string(UpdateMCP), Content: "mcp"}),
-		contextEventLine(t, 3, protocol.ContextUpdateEvent{Key: string(UpdateCollaborationMode), Content: "developer"}),
-		contextEventLine(t, 4, protocol.ContextUpdateEvent{Key: string(UpdateAgents), Content: "agents"}),
+		contextContextLine(t, 1, llm.DeveloperMessage("developer")),
+		contextContextLine(t, 2, llm.UserMessage("agents")),
+		contextResponseLine(t, 3, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "hello"}),
+		contextWorldStateLine(t, 4, true, map[string]json.RawMessage{"collaboration_mode": json.RawMessage(`{"text":"developer"}`), "agents_md": json.RawMessage(`{"text":"agents"}`)}),
 	}
 	if err := manager.Rebuild(lines); err != nil {
 		t.Fatal(err)
 	}
 	first := manager.Snapshot(llm.ModelInfo{ContextWindow: 1000}, llm.Prompt{})
-	if first.Items[0].Content != "developer" || first.Items[1].Content != "agents" || first.Items[2].Content != "mcp" {
+	if len(first.Items) != 3 || first.Items[0].Content != "developer" || first.Items[1].Content != "agents" || first.Items[2].Content != "hello" {
 		t.Fatalf("dynamic context order is unstable: %#v", first.Items)
 	}
 }
 
 func TestManagerWorldStateRevisionPreservesLiveResumePromptIdentity(t *testing.T) {
 	lines := []rollout.Line{
-		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "hello"}),
-		contextEventLine(t, 2, protocol.ContextUpdateEvent{Key: string(UpdateEnvironment), Content: "<environment_context>\nworkspace\n</environment_context>", Revision: "environment-r1"}),
-		contextEventLine(t, 3, protocol.ContextUpdateEvent{Key: string(UpdatePermissionMode), Content: "<permission_context>\npermission\n</permission_context>", Revision: "permission-r1"}),
+		contextContextLine(t, 1, llm.UserMessage("<environment_context>\nworkspace\n</environment_context>")),
+		contextContextLine(t, 2, llm.DeveloperMessage("<permission_context>\npermission\n</permission_context>")),
+		contextWorldStateLine(t, 3, true, map[string]json.RawMessage{"environment": json.RawMessage(`{"text":"workspace"}`), "permissions": json.RawMessage(`{"text":"permission"}`)}),
+		contextItemLine(t, 4, rollout.TurnContextItem{Provider: "mock", Model: "model", CWD: "/workspace", Mode: "default"}),
+		contextResponseLine(t, 5, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "hello"}),
 	}
 	live := NewManager(nil)
 	for index := range lines {
@@ -86,6 +88,9 @@ func TestManagerWorldStateRevisionPreservesLiveResumePromptIdentity(t *testing.T
 	}
 	if liveSnapshot.WorldStateRevision != resumeSnapshot.WorldStateRevision || liveSnapshot.Revision != resumeSnapshot.Revision {
 		t.Fatalf("live/resume prompt identity differs: live=%#v resume=%#v", liveSnapshot, resumeSnapshot)
+	}
+	if !reflect.DeepEqual(live.ReferenceTurnContext(), resumed.ReferenceTurnContext()) || live.ReferenceTurnContext() == nil {
+		t.Fatalf("live/resume TurnContext reference differs: live=%#v resume=%#v", live.ReferenceTurnContext(), resumed.ReferenceTurnContext())
 	}
 }
 
@@ -116,8 +121,9 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 	manager := NewManager(nil)
 	if err := manager.Rebuild([]rollout.Line{
 		contextResponseLine(t, 1, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "stale history"}),
-		contextEventLine(t, 2, protocol.ContextUpdateEvent{Key: string(UpdateMCP), Content: "stale mcp"}),
-		contextEventLine(t, 3, tokenCountEvent(llm.TokenUsage{TotalTokens: 999}, llm.TokenUsage{TotalTokens: 999}, 999)),
+		contextContextLine(t, 2, llm.DeveloperMessage("stale context")),
+		contextWorldStateLine(t, 3, true, map[string]json.RawMessage{"stale": json.RawMessage(`{"text":"stale"}`)}),
+		contextEventLine(t, 4, tokenCountEvent(llm.TokenUsage{TotalTokens: 999}, llm.TokenUsage{TotalTokens: 999}, 999)),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -138,8 +144,9 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 	}
 	digest := sha256.Sum256(encoded)
 	lines := append(coveredLines,
-		contextEventLine(t, 5, protocol.ContextUpdateEvent{Key: string(UpdateAgents), Content: "project agents"}),
-		contextItemLine(t, 6, rollout.CompactedItem{
+		contextContextLine(t, 5, llm.UserMessage("project agents")),
+		contextWorldStateLine(t, 6, true, map[string]json.RawMessage{"agents_md": json.RawMessage(`{"text":"project agents"}`)}),
+		contextItemLine(t, 7, rollout.CompactedItem{
 			Trigger: protocol.CompactionTriggerManual, Reason: protocol.CompactionReasonUserRequested, Phase: protocol.CompactionPhaseStandaloneTurn,
 			Summary: "inspection complete", CoveredThroughSequence: 4,
 			SourceHash: hex.EncodeToString(digest[:]),
@@ -147,11 +154,12 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 				llm.UserMessage("initial objective"),
 				llm.UserMessage("## Compaction Checkpoint\n\ninspection complete"),
 			},
+			ReplacementOrigins: []rollout.ReplacementOrigin{rollout.ReplacementOriginUser, rollout.ReplacementOriginCompaction},
 		}),
-		contextResponseLine(t, 7, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "now run tests"}),
-		contextResponseLine(t, 8, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-2", Name: "execute_command", Arguments: json.RawMessage(`{"command":"go test ./..."}`)}),
-		contextEventLine(t, 9, protocol.TurnAbortedEvent{Reason: "interrupted", FinishedAt: time.Unix(9, 0).UTC()}),
-		contextEventLine(t, 10, tokenCountEvent(llm.TokenUsage{InputTokens: 40, OutputTokens: 8, TotalTokens: 48}, llm.TokenUsage{InputTokens: 40, OutputTokens: 8, TotalTokens: 48}, 48)),
+		contextResponseLine(t, 8, rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "now run tests"}),
+		contextResponseLine(t, 9, rollout.ResponseItem{Type: rollout.ResponseToolCall, Role: "assistant", CallID: "call-2", Name: "execute_command", Arguments: json.RawMessage(`{"command":"go test ./..."}`)}),
+		contextEventLine(t, 10, protocol.TurnAbortedEvent{Reason: "interrupted", FinishedAt: time.Unix(9, 0).UTC()}),
+		contextEventLine(t, 11, tokenCountEvent(llm.TokenUsage{InputTokens: 40, OutputTokens: 8, TotalTokens: 48}, llm.TokenUsage{InputTokens: 40, OutputTokens: 8, TotalTokens: 48}, 48)),
 	)
 	if err := manager.Rebuild(lines); err != nil {
 		t.Fatal(err)
@@ -160,10 +168,7 @@ func TestManagerRebuildRestoresCanonicalProjectionAndClearsStaleState(t *testing
 	if len(snapshot.Items) != 7 {
 		t.Fatalf("unexpected rebuilt Prompt: %#v", snapshot.Items)
 	}
-	if snapshot.Items[0].Role != llm.RoleDeveloper || snapshot.Items[0].Content != "project agents" {
-		t.Fatalf("dynamic Context Update was not restored: %#v", snapshot.Items[0])
-	}
-	if snapshot.Items[1].Content != "initial objective" || !strings.Contains(snapshot.Items[2].Content, "Compaction Checkpoint") || snapshot.Items[3].Content != "now run tests" {
+	if snapshot.Items[0].Content != "initial objective" || !strings.Contains(snapshot.Items[1].Content, "Compaction Checkpoint") || snapshot.Items[2].Content != "project agents" || snapshot.Items[3].Content != "now run tests" {
 		t.Fatalf("replacement history was not restored: %#v", snapshot.Items)
 	}
 	if snapshot.Items[5].Role != llm.RoleTool || snapshot.Items[5].ToolCallID != "call-2" || !strings.Contains(snapshot.Items[5].Content, "did not complete") {
@@ -296,6 +301,7 @@ func TestManagerPreviewRejectsStaleCompactionSourceWithoutMutation(t *testing.T)
 	compacted := rollout.ScopeItem(rollout.CompactedItem{
 		Trigger: protocol.CompactionTriggerManual, Reason: protocol.CompactionReasonUserRequested, Phase: protocol.CompactionPhaseStandaloneTurn,
 		Summary: "stale summary", ReplacementHistory: []llm.ResponseItem{llm.UserMessage("summary")},
+		ReplacementOrigins:     []rollout.ReplacementOrigin{rollout.ReplacementOriginCompaction},
 		CoveredThroughSequence: 1, SourceHash: "stale-hash",
 	}, testutil.ThreadID(1), "turn-2")
 	if _, err := manager.PreviewRecord(manager.NextSequence(), llm.ModelInfo{ContextWindow: 10_000}, llm.Prompt{}, compacted); err == nil {
@@ -358,4 +364,18 @@ func contextResponseLine(t *testing.T, sequence uint64, payload rollout.Response
 		t.Fatal(err)
 	}
 	return contextItemLine(t, sequence, item)
+}
+
+func contextContextLine(t *testing.T, sequence uint64, message llm.ResponseItem) rollout.Line {
+	t.Helper()
+	item, err := rollout.NewContextResponseItem(message, rollout.ContextKindWorldState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return contextItemLine(t, sequence, item)
+}
+
+func contextWorldStateLine(t *testing.T, sequence uint64, full bool, sections map[string]json.RawMessage) rollout.Line {
+	t.Helper()
+	return contextItemLine(t, sequence, rollout.WorldStateItem{Full: full, Sections: sections})
 }

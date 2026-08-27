@@ -24,13 +24,13 @@ func TestSessionsListShowsOnlyCurrentProject(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	firstID, secondID := testutil.ThreadID(1), testutil.ThreadID(2)
-	if _, err := store.Materialize(context.Background(), threadstore.CreateInput{SessionID: protocol.SessionIDFromThreadID(firstID), ID: firstID, CWD: projectOne, Title: "one", CreatedAt: now}); err != nil {
+	if _, err := store.Materialize(context.Background(), threadstore.CreateInput{SessionID: protocol.SessionIDFromThreadID(firstID), ID: firstID, CWD: projectOne, Title: "one", BaseInstructions: testutil.BaseInstructions("test-model"), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CloseWriter(context.Background(), firstID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Materialize(context.Background(), threadstore.CreateInput{SessionID: protocol.SessionIDFromThreadID(secondID), ID: secondID, CWD: projectTwo, Title: "two", CreatedAt: now}); err != nil {
+	if _, err := store.Materialize(context.Background(), threadstore.CreateInput{SessionID: protocol.SessionIDFromThreadID(secondID), ID: secondID, CWD: projectTwo, Title: "two", BaseInstructions: testutil.BaseInstructions("test-model"), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {

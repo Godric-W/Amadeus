@@ -9,12 +9,13 @@ import (
 	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
-const CurrentVersion = 4
+const CurrentVersion = 5
 
 const (
 	itemTypeSessionMeta = "session_meta"
 	itemTypeResponse    = "response_item"
 	itemTypeCompacted   = "compacted"
+	itemTypeWorldState  = "world_state"
 	itemTypeTurnContext = "turn_context"
 	itemTypeEventMsg    = "event_msg"
 )
@@ -109,6 +110,8 @@ func encodeItem(item RolloutItem) (string, json.RawMessage, error) {
 		kind, payload = itemTypeResponse, value
 	case CompactedItem:
 		kind, payload = itemTypeCompacted, value
+	case WorldStateItem:
+		kind, payload = itemTypeWorldState, value
 	case TurnContextItem:
 		kind, payload = itemTypeTurnContext, value
 	case EventMsgItem:
@@ -135,6 +138,8 @@ func decodeItem(kind string, payload json.RawMessage) (RolloutItem, error) {
 		return decodeTypedItem[ResponseItem](kind, payload)
 	case itemTypeCompacted:
 		return decodeTypedItem[CompactedItem](kind, payload)
+	case itemTypeWorldState:
+		return decodeTypedItem[WorldStateItem](kind, payload)
 	case itemTypeTurnContext:
 		return decodeTypedItem[TurnContextItem](kind, payload)
 	case itemTypeEventMsg:

@@ -1,69 +1,80 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"strings"
 
-	contextmanager "github.com/Godric-W/Amadeus/internal/contextmanager"
+	"github.com/Godric-W/Amadeus/internal/agent/multiagent"
+	"github.com/Godric-W/Amadeus/internal/agentsmd"
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/protocol"
+	"github.com/Godric-W/Amadeus/internal/skill"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 type StepContext struct {
-	Turn                  TurnContext
-	Prompt                contextmanager.PromptSnapshot
-	Model                 llm.ModelInfo
-	BaseInstructions      llm.BaseInstructions
-	ToolRouter            tool.ToolRouter
-	ModelMessagesRevision string
-	WorldStateRevision    string
+	Turn               TurnContext
+	Model              llm.ModelInfo
+	ToolRouter         tool.ToolRouter
+	LoadedAgentsMd     agentsmd.LoadedAgentsMd
+	Skills             []skill.SkillMetadata
+	PermissionProfile  project.PermissionProfile
+	PermissionGrants   int
+	Subagents          []multiagent.AgentRecord
+	MCPBindingRevision string
+	SkillRevision      string
 }
 
-func (services *SessionServices) CaptureStep(snapshot func(llm.ModelInfo, llm.Prompt) contextmanager.PromptSnapshot, turnContext TurnContext) (StepContext, error) {
-	if services == nil || snapshot == nil {
+func (services *SessionServices) CaptureStep(ctx context.Context, turnContext TurnContext) (StepContext, error) {
+	if services == nil {
 		return StepContext{}, errors.New("step context capture is incomplete")
 	}
+	loadedAgentsMd := agentsmd.LoadedAgentsMd{}
+	if services.agentsMd != nil {
+		loaded, _, err := services.agentsMd.Refresh(ctx, turnContext.CWD)
+		if err != nil {
+			return StepContext{}, err
+		}
+		loadedAgentsMd = loaded
+	}
 	requestSnapshot := tool.RequestSnapshot{}
+	var loadedSkills []skill.SkillMetadata
 	if services.skills != nil {
-		requestSnapshot.SkillRevision, _ = services.skills.Revision()
+		var err error
+		loadedSkills, requestSnapshot.SkillRevision, err = services.skills.Snapshot()
+		if err != nil {
+			return StepContext{}, err
+		}
 	}
 	if services.mcp != nil {
 		requestSnapshot.MCPBindingRevision = services.mcp.Binding().Revision
 	}
-	if services.agentsMd != nil {
-		requestSnapshot.AgentsMdRevision = services.agentsMd.Current().Revision
-	}
+	requestSnapshot.AgentsMdRevision = loadedAgentsMd.Revision
 	var include tool.ToolRouteFilter
 	if turnContext.Mode == ModeKindPlan {
 		include = planModeToolAllowed
 	}
 	include = composeToolFilters(include, services.source)
 	router := services.tools.SnapshotRouter(services.visibility, requestSnapshot, include)
-	tools := router.Specs()
-	definitions := make([]llm.ToolSpec, len(tools))
-	for index, spec := range tools {
-		definitions[index] = llm.ToolSpec{Name: spec.Name, Description: spec.Description, InputSchema: append([]byte(nil), spec.InputSchema...)}
-	}
 	model := services.ModelInfo()
-	modelMessages, err := services.ModelMessages(model)
-	if err != nil {
-		return StepContext{}, err
+	permissionProfile := project.PermissionProfile{}
+	if services.fileSystem != nil {
+		permissionProfile = services.fileSystem.EffectiveProfile()
 	}
-	baseInstructions, err := modelMessages.ResolveBaseInstructions(string(turnContext.Personality))
-	if err != nil {
-		return StepContext{}, err
+	permissionGrants := 0
+	if services.permissions != nil {
+		permissionGrants = services.permissions.GrantCount()
 	}
-	promptShape := llm.Prompt{
-		BaseInstructions: baseInstructions, Tools: definitions,
-		ParallelToolCalls: model.SupportsParallelToolCalls,
-		OutputSchema:      append(llm.OutputSchema(nil), turnContext.OutputSchema...), OutputSchemaStrict: turnContext.OutputSchemaStrict,
+	var subagents []multiagent.AgentRecord
+	if !services.source.IsSubAgent() && services.AgentControl != nil {
+		subagents = services.AgentControl.SnapshotAll()
 	}
-	promptSnapshot := snapshot(model, promptShape)
 	return StepContext{
-		Turn: turnContext, Prompt: promptSnapshot, Model: model, BaseInstructions: baseInstructions,
-		ToolRouter: router, ModelMessagesRevision: modelMessages.Revision,
-		WorldStateRevision: promptSnapshot.WorldStateRevision,
+		Turn: turnContext, Model: model, ToolRouter: router, LoadedAgentsMd: loadedAgentsMd,
+		Skills: loadedSkills, PermissionProfile: permissionProfile, PermissionGrants: permissionGrants, Subagents: subagents,
+		MCPBindingRevision: requestSnapshot.MCPBindingRevision, SkillRevision: requestSnapshot.SkillRevision,
 	}, nil
 }
 

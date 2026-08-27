@@ -36,6 +36,7 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input, cli
 	createInput := threadstore.CreateInput{
 		SessionID: session.sessionID, ID: session.threadID, Source: configuration.Source.Clone(), CWD: configuration.CWD, Title: titleFromInput(input),
 		ModelProvider: configuration.Runtime.ModelProvider, Model: configuration.Runtime.Model, CreatedAt: now,
+		BaseInstructions: session.BaseInstructions(),
 	}
 	materialized, err := session.materialize(session.ctx, createInput)
 	if err != nil {
@@ -58,22 +59,18 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input, cli
 	}
 	turnContext := &turnValue
 	startedEvent := protocol.TurnStartedEvent{ThreadID: session.threadID, TurnID: turnID, StartedAt: now}
-	items := []rollout.RolloutItem{turnContextItem(*turnContext)}
-	var userItem protocol.TurnItem
-	if kind == TaskKindRegular {
-		responseItem, responseErr := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: string(llm.RoleUser), Content: input})
-		if responseErr != nil {
-			session.rejectTurn(submissionID, turnID, responseErr, false)
-			return turnID, responseErr
-		}
-		items = append(items, responseItem)
-		userItem = completedUserMessageItem(protocol.ItemID(session.services.NextID("item")), input, clientUserMessageID, now)
-		items = append(items, rollout.EventMsgItem{Msg: protocol.ItemCompletedEvent{ThreadID: session.threadID, TurnID: turnID, Item: userItem}})
+	items := make([]rollout.RolloutItem, 0, 2)
+	if kind == TaskKindCompact {
+		items = append(items, turnContextItem(*turnContext))
 	}
 	items = append(items, rollout.EventMsgItem{Msg: startedEvent})
 	if err := session.appendItemsDurable(session.ctx, turnID, items...); err != nil {
 		session.rejectTurn(submissionID, turnID, err, true)
 		return turnID, err
+	}
+	if regular, ok := taskValue.(*regularTask); ok {
+		regular.clientUserID = clientUserMessageID
+		regular.startedAt = now
 	}
 	running, err := NewRunningTask(session.ctx, session, taskValue, turnContext)
 	if err != nil {
@@ -82,9 +79,6 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input, cli
 	}
 	session.active = &ActiveTurn{SubmissionID: submissionID, Task: running, State: turnState}
 	session.publish(protocol.Event{ID: submissionID, Msg: startedEvent})
-	if kind == TaskKindRegular {
-		session.publish(protocol.Event{ID: submissionID, Msg: protocol.ItemCompletedEvent{ThreadID: session.threadID, TurnID: turnID, Item: userItem}})
-	}
 	session.watchRunningTask(running)
 	return turnID, nil
 }

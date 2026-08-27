@@ -86,7 +86,7 @@ func (adapter *Adapter) Stream(ctx context.Context, request llm.Request) (llm.St
 }
 
 func requestHasImages(request llm.Request) bool {
-	for _, message := range request.InputMessages() {
+	for _, message := range request.ConversationItems() {
 		for _, part := range message.Parts {
 			if part.Kind == llm.ContentImage {
 				return true

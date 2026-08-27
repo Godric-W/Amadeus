@@ -31,6 +31,9 @@ func (files *FileTools) prepareEditChange(toolContext tool.ToolUseContext, invoc
 	if err := decodeArguments(invocation.Call.Payload, &args); err != nil {
 		return tool.PreparedToolUse{}, err
 	}
+	if args.OldString == "" {
+		return tool.PreparedToolUse{}, errors.New("edit old_string is empty")
+	}
 	if args.OldString == args.NewString {
 		return tool.PreparedToolUse{}, errors.New("edit old_string and new_string are identical")
 	}

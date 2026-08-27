@@ -40,7 +40,7 @@ func (store *Store) Materialize(ctx context.Context, input threadstore.CreateInp
 	store.recorders[input.ID] = recorder
 	store.mu.Unlock()
 	meta := rollout.SessionMetaItem{
-		SessionID: input.SessionID, ID: input.ID, Source: input.Source.Clone(), CWD: input.CWD, Title: input.Title, ModelProvider: input.ModelProvider, Model: input.Model,
+		SessionID: input.SessionID, ID: input.ID, Source: input.Source.Clone(), CWD: input.CWD, Title: input.Title, ModelProvider: input.ModelProvider, Model: input.Model, BaseInstructions: input.BaseInstructions.Clone(),
 		GitSHA: input.GitSHA, GitBranch: input.GitBranch, GitOriginURL: input.GitOriginURL, CreatedAt: input.CreatedAt.UTC(),
 	}
 	if input.Source.IsSubAgent() {

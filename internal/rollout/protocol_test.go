@@ -23,18 +23,24 @@ func TestRolloutItemVariantsRoundTrip(t *testing.T) {
 		name string
 		item RolloutItem
 	}{
-		{name: "session meta", item: SessionMetaItem{SessionID: protocol.SessionIDFromThreadID(threadID), ID: threadID, Source: protocol.RootSessionSource(), CWD: "/workspace", Title: "Inspect", ModelProvider: "mock", Model: "model", CreatedAt: now}},
+		{name: "session meta", item: SessionMetaItem{SessionID: protocol.SessionIDFromThreadID(threadID), ID: threadID, Source: protocol.RootSessionSource(), CWD: "/workspace", Title: "Inspect", ModelProvider: "mock", Model: "model", BaseInstructions: testutil.BaseInstructions("model"), CreatedAt: now}},
 		{name: "response", item: ResponseItem{
 			ThreadID: threadID, TurnID: "turn-1", Type: ResponseToolResult, Role: "tool",
 			CallID: "call-1", Name: "read", Status: "succeeded", Content: "contents", Result: &result,
 			Metadata: map[string]any{"path": "README.md"}, Partial: true, Duration: int64(time.Second),
 		}},
+		{name: "context response", item: ResponseItem{
+			ThreadID: threadID, TurnID: "turn-1", Type: ResponseContextMessage, Role: "developer",
+			ContextKind: ContextKindWorldState, Content: "runtime context",
+		}},
 		{name: "compacted", item: CompactedItem{
 			ThreadID: threadID, TurnID: "turn-1", Trigger: protocol.CompactionTriggerManual,
 			Reason: protocol.CompactionReasonUserRequested, Phase: protocol.CompactionPhaseStandaloneTurn, Summary: "inspection completed",
 			ReplacementHistory:     []llm.ResponseItem{llm.UserMessage("inspect"), llm.UserMessage("summary")},
+			ReplacementOrigins:     []ReplacementOrigin{ReplacementOriginUser, ReplacementOriginCompaction},
 			CoveredThroughSequence: 12, SourceHash: "source-hash", Provider: "mock", Model: "model",
 		}},
+		{name: "world state", item: WorldStateItem{ThreadID: threadID, TurnID: "turn-1", Full: true, Sections: map[string]json.RawMessage{"environment": json.RawMessage(`{"text":"workspace"}`)}}},
 		{name: "turn context", item: TurnContextItem{
 			ThreadID: threadID, TurnID: "turn-1", Provider: "mock", Model: "model", CWD: "/workspace",
 			ReasoningEffort: &effort, Shell: "bash", CurrentDate: "2026-08-20", Timezone: "Asia/Shanghai", Mode: "default",
@@ -109,9 +115,9 @@ func TestLineRejectsInvalidCurrentFormats(t *testing.T) {
 		content string
 		want    string
 	}{
-		{name: "old W-incompatible version", content: `{"version":3,"sequence":1,"timestamp":"` + now + `","type":"event_msg","payload":{}}`, want: "unsupported rollout format version 3"},
-		{name: "unknown type", content: `{"version":4,"sequence":1,"timestamp":"` + now + `","type":"future_item","payload":{}}`, want: `unsupported rollout item type "future_item"`},
-		{name: "missing payload", content: `{"version":4,"sequence":1,"timestamp":"` + now + `","type":"response_item"}`, want: "unsupported rollout item format"},
+		{name: "old AA-incompatible version", content: `{"version":4,"sequence":1,"timestamp":"` + now + `","type":"event_msg","payload":{}}`, want: "unsupported rollout format version 4"},
+		{name: "unknown type", content: `{"version":5,"sequence":1,"timestamp":"` + now + `","type":"future_item","payload":{}}`, want: `unsupported rollout item type "future_item"`},
+		{name: "missing payload", content: `{"version":5,"sequence":1,"timestamp":"` + now + `","type":"response_item"}`, want: "unsupported rollout item format"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/contextmanager"
+	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/threadstore"
 )
@@ -31,6 +32,7 @@ type Configuration struct {
 
 type SessionState struct {
 	Configuration Configuration
+	Base          llm.BaseInstructions
 	Context       *contextmanager.Manager
 }
 
@@ -135,6 +137,13 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 		return nil, SessionIo{}, fmt.Errorf("build session services: %w", buildErr)
 	}
 	value.services = capabilities
+	base, err := resolveSessionBase(args.History, value.state.Base, &value.services, value.state.Configuration.Personality)
+	if err != nil {
+		cancel(err)
+		closeSpawnServices()
+		return nil, SessionIo{}, fmt.Errorf("resolve session base instructions: %w", err)
+	}
+	value.state.Base = base
 	io := SessionIo{
 		Submissions: value.submissions, Events: value.events, Terminated: value.terminated, Configured: value.configured,
 		admissions: value.admissions, steerRequests: value.steerRequests,

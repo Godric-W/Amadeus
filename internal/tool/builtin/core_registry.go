@@ -1,7 +1,6 @@
 package builtin
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -94,28 +93,4 @@ func RegisterCoreTools(registry *tool.Registry, root project.Root, options CoreT
 		}
 	}
 	return nil
-}
-
-func readSpec() tool.ToolSpec {
-	return tool.ToolSpec{Name: "read", Description: "Read a UTF-8 text file with bounded line output.", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1},"line":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1}},"required":["path"],"additionalProperties":false}`), SideEffect: tool.SideEffectRead, Idempotent: true}
-}
-
-func editSpec() tool.ToolSpec {
-	return tool.ToolSpec{Name: "edit", Description: "Make an approved, uniquely matched edit to an existing file and return a structured diff.", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"}},"required":["path","old_string","new_string"],"additionalProperties":false}`), SideEffect: tool.SideEffectWrite, Idempotent: false}
-}
-
-func writeSpec() tool.ToolSpec {
-	return tool.ToolSpec{Name: "write", Description: "Create or overwrite a file after approval and return a structured diff.", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`), SideEffect: tool.SideEffectWrite, Idempotent: false}
-}
-
-func globSpec() tool.ToolSpec {
-	return tool.ToolSpec{Name: "glob", Description: "Find files below a directory using bounded glob matching.", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"pattern":{"type":"string","minLength":1},"include_hidden":{"type":"boolean"},"limit":{"type":"integer","minimum":1}},"required":["pattern"],"additionalProperties":false}`), SideEffect: tool.SideEffectRead, Idempotent: true}
-}
-
-func grepSpec() tool.ToolSpec {
-	return tool.ToolSpec{Name: "grep", Description: "Search project text with bounded matching and stable file/line output.", InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","minLength":1},"path":{"type":"string"},"glob":{"type":"string"},"type":{"type":"string"},"regex":{"type":"boolean"},"case_sensitive":{"type":"boolean"},"context":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}},"required":["query"],"additionalProperties":false}`), SideEffect: tool.SideEffectRead, Idempotent: true}
-}
-
-func executeCommandSpec() tool.ToolSpec {
-	return tool.ToolSpec{Name: "execute_command", Description: "Run a shell command in the requested working directory after safety checks and approval.", InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","minLength":1},"description":{"type":"string","description":"Clear, concise description of what the command does in active voice."},"cwd":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1},"yield_time_ms":{"type":"integer","minimum":0},"max_output_tokens":{"type":"integer","minimum":1},"tty":{"type":"boolean"}},"required":["command"],"additionalProperties":false}`), SideEffect: tool.SideEffectExecute, Idempotent: false}
 }

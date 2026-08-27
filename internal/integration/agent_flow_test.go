@@ -241,7 +241,7 @@ func TestCodingAgentInjectsExplicitSkillIntoFirstRequestContext(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatalf("execute explicit Skill task: %v\nstderr=%s", err, stderr.String())
 	}
-	if len(client.streamRequests) != 1 || !requestContains(client.streamRequests[0], "amadeus.skill_injection.v2") || !requestContains(client.streamRequests[0], "PROJECT-EXPLICIT-SKILL") {
+	if len(client.streamRequests) != 1 || !requestContains(client.streamRequests[0], "<skill>") || !requestContains(client.streamRequests[0], "PROJECT-EXPLICIT-SKILL") {
 		t.Fatalf("explicit Skill was not frozen into the first RequestContext: %#v", client.streamRequests)
 	}
 }
@@ -317,10 +317,13 @@ func TestInteractiveApplicationProviderWorkflowUsesCanonicalToolLifecycle(t *tes
 		}
 	}
 	firstPrompt := messageContents(first.Prompt.Input)
-	for _, fragment := range []string{"## Execute Mode", "<collaboration_mode>", "<environment_context>", "<permission_context>", "## `read`", "user instruction", "project instruction"} {
+	for _, fragment := range []string{"Collaboration Mode: Default", "<collaboration_mode>", "<environment_context>", "<permission_context>", "# AGENTS.md instructions", "user instruction", "project instruction"} {
 		if !strings.Contains(firstPrompt, fragment) {
 			t.Fatalf("first Agent request omitted Prompt fragment %q: %s", fragment, firstPrompt)
 		}
+	}
+	if readSpec, ok := promptTool(first.Prompt.Tools, "read"); !ok || !strings.Contains(readSpec.Description, "cat -n style") {
+		t.Fatalf("first Agent request omitted read ToolSpec guidance: %#v", first.Prompt.Tools)
 	}
 	second := client.streamRequests[1]
 	if len(second.Prompt.Input) < len(first.Prompt.Input)+2 || second.Prompt.Input[len(second.Prompt.Input)-2].Role != llm.RoleAssistant || second.Prompt.Input[len(second.Prompt.Input)-1].Role != llm.RoleTool || !strings.Contains(second.Prompt.Input[len(second.Prompt.Input)-1].Content, "project readme") {
@@ -341,6 +344,15 @@ func promptHasTool(tools []llm.ToolSpec, name string) bool {
 	return false
 }
 
+func promptTool(tools []llm.ToolSpec, name string) (llm.ToolSpec, bool) {
+	for _, spec := range tools {
+		if spec.Name == name {
+			return spec, true
+		}
+	}
+	return llm.ToolSpec{}, false
+}
+
 func messageContents(messages []llm.ResponseItem) string {
 	parts := make([]string, len(messages))
 	for index, message := range messages {
@@ -353,7 +365,7 @@ func writeCodingCommandConfig(t *testing.T, directory string) {
 	t.Helper()
 	content := `model: mock-model
 model_provider: openai
-model_context_window: 8192
+model_context_window: 32768
 tool_output_token_limit: 10000
 model_providers:
   openai:

@@ -3,6 +3,7 @@ package workspace
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -37,6 +38,7 @@ type ReadRangeResult struct {
 	Partial         bool
 	OutputTruncated bool
 	LinesTruncated  int
+	ContentSHA256   [32]byte
 }
 
 func NewReader(root project.Root) (*Reader, error) {
@@ -107,6 +109,7 @@ func (reader *Reader) ReadRangePrepared(ctx context.Context, path, displayPath s
 	detector := TextDetector{}
 	limiter := OutputLimiter{MaxBytes: options.MaxBytes}
 	var output strings.Builder
+	contentHash := sha256.New()
 	result := ReadRangeResult{StartLine: options.StartLine, FileBytes: info.Size()}
 	lineNumber := 0
 	selectionEnded := false
@@ -116,6 +119,7 @@ func (reader *Reader) ReadRangePrepared(ctx context.Context, path, displayPath s
 		}
 		line, readErr := buffered.ReadString('\n')
 		if line != "" {
+			_, _ = contentHash.Write([]byte(line))
 			lineNumber++
 			if !detector.Valid([]byte(line)) {
 				return ReadRangeResult{}, fmt.Errorf("workspace file is binary or non-UTF-8: %q", displayPath)
@@ -148,12 +152,13 @@ func (reader *Reader) ReadRangePrepared(ctx context.Context, path, displayPath s
 		}
 	}
 	result.TotalLines = lineNumber
+	copy(result.ContentSHA256[:], contentHash.Sum(nil))
 	result.Text = output.String()
 	result.BytesReturned = len(result.Text)
 	if result.EndLine > 0 && result.EndLine < result.TotalLines {
 		result.NextLine = result.EndLine + 1
 	}
-	result.Partial = options.StartLine > 1 || result.EndLine < result.TotalLines || result.OutputTruncated
+	result.Partial = options.StartLine > 1 || result.EndLine < result.TotalLines || result.OutputTruncated || result.LinesTruncated > 0
 	return result, nil
 }
 

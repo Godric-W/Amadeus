@@ -83,7 +83,7 @@ func webSearchSpec() tool.ToolSpec {
 	return tool.ToolSpec{
 		Name:        "web_search",
 		Description: "Search the public web and return untrusted title, URL, and snippet evidence. Search snippets are not verified full-page content. If the evidence is sufficient, answer directly; use web_fetch only for exact pages that require full-page verification.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","minLength":1},"limit":{"type":"integer","minimum":1,"maximum":10}},"required":["query"],"additionalProperties":false}`),
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"Public web search query."},"limit":{"type":"integer","minimum":1,"maximum":10,"description":"Maximum number of search-summary results. Defaults to the configured provider limit."}},"required":["query"],"additionalProperties":false}`),
 		SideEffect:  tool.SideEffectNetwork,
 		Idempotent:  true,
 	}

@@ -47,8 +47,8 @@ func NewLazyTools(runtime *MCPRuntime) (*LazyListTool, *LazyCallTool, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("encode MCP server names: %w", err)
 	}
-	listSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s}},"required":["server"],"additionalProperties":false}`, serverValues))
-	callSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s},"name":{"type":"string","minLength":1},"arguments":{"type":"object","additionalProperties":true}},"required":["server","name"],"additionalProperties":false}`, serverValues))
+	listSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s,"description":"Configured MCP server to start and inspect."}},"required":["server"],"additionalProperties":false}`, serverValues))
+	callSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s,"description":"Configured MCP server whose catalog was previously listed."},"name":{"type":"string","minLength":1,"description":"Exact tool name from mcp_list_tools."},"arguments":{"type":"object","description":"Arguments conforming to the sanitized schema returned by mcp_list_tools.","additionalProperties":true}},"required":["server","name"],"additionalProperties":false}`, serverValues))
 	list := &LazyListTool{runtime: runtime, spec: tool.ToolSpec{
 		Name: "mcp_list_tools", Description: "Start one configured MCP server on demand and list its available tools and sanitized input schemas.",
 		InputSchema: listSchema, SideEffect: tool.SideEffectNetwork, Idempotent: true,

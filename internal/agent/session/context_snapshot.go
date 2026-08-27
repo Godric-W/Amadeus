@@ -13,13 +13,6 @@ func (session *Session) Snapshot(model llm.ModelInfo, prompt llm.Prompt) context
 	return session.state.Context.Snapshot(model, prompt)
 }
 
-func (session *Session) ContextUpdate(key contextmanager.UpdateKey) string {
-	if session == nil || session.state.Context == nil {
-		return ""
-	}
-	return session.state.Context.Update(key)
-}
-
 func (session *Session) ContextProjection() contextmanager.RolloutMessageProjection {
 	if session == nil || session.state.Context == nil {
 		return contextmanager.RolloutMessageProjection{}

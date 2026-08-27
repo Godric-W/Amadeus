@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/Godric-W/Amadeus/internal/contextmanager"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
@@ -18,9 +19,9 @@ type ContextWindowTokenStatus struct {
 	TokenLimitReached         bool
 }
 
-func (session *Session) contextWindowTokenStatus(step StepContext) ContextWindowTokenStatus {
+func (session *Session) contextWindowTokenStatus(step StepContext, prompt contextmanager.PromptSnapshot) ContextWindowTokenStatus {
 	model := step.Model.Normalized()
-	estimated := step.Prompt.EstimatedInputTokens
+	estimated := prompt.EstimatedInputTokens
 	active, _ := session.state.Context.ActiveContextTokens(model)
 	if active <= 0 {
 		active = estimated
@@ -82,8 +83,8 @@ func (session *Session) recordTokenUsage(ctx context.Context, turnID protocol.Tu
 	return nil
 }
 
-func (session *Session) refreshContextWindowStatus(ctx context.Context, turnID protocol.TurnID, step StepContext, events protocol.EventSink) (ContextWindowTokenStatus, error) {
-	status := session.contextWindowTokenStatus(step)
+func (session *Session) refreshContextWindowStatus(ctx context.Context, turnID protocol.TurnID, step StepContext, prompt contextmanager.PromptSnapshot, events protocol.EventSink) (ContextWindowTokenStatus, error) {
+	status := session.contextWindowTokenStatus(step, prompt)
 	snapshot := session.state.Context.TokenSnapshot()
 	_, estimated := session.state.Context.ActiveContextTokens(step.Model)
 	if snapshot.ActiveContextTokens == status.ActiveContextTokens && snapshot.ActiveContextEstimated == estimated {
@@ -91,7 +92,7 @@ func (session *Session) refreshContextWindowStatus(ctx context.Context, turnID p
 	}
 	event := protocol.TokenCountEvent{
 		Info: cloneProtocolTokenUsageInfo(snapshot.Info), ActiveContextTokens: status.ActiveContextTokens,
-		ActiveContextEstimated: estimated, ObservedThroughSequence: step.Prompt.HistoryVersion,
+		ActiveContextEstimated: estimated, ObservedThroughSequence: prompt.HistoryVersion,
 	}
 	item, err := rollout.NewEventMsgItem(event)
 	if err != nil {

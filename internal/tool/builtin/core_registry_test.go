@@ -1,12 +1,15 @@
 package builtin
 
 import (
+	"encoding/json"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/protocol"
+	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
 func TestCoreRegistryContainsOnlyPublicCoreTools(t *testing.T) {
@@ -50,5 +53,35 @@ func TestCoreSpecsReturnIndependentCopies(t *testing.T) {
 	first[0].Description = "changed"
 	if string(second[0].InputSchema[:1]) != "{" || second[0].Description == "changed" {
 		t.Fatal("core specs share mutable storage")
+	}
+}
+
+func TestCoreSpecsExposeSourceSpecificModelContracts(t *testing.T) {
+	specs := make(map[string]tool.ToolSpec)
+	for _, spec := range CoreSpecs() {
+		specs[spec.Name] = spec
+	}
+	for name, phrase := range map[string]string{
+		"read":               "complete_snapshot",
+		"edit":               "complete, non-truncated snapshot",
+		"write":              "complete, non-truncated snapshot",
+		"glob":               "path-sorted",
+		"grep":               "literal by default",
+		"execute_command":    "process ID",
+		"write_stdin":        "originating command Approval",
+		"update_plan":        "At most one step",
+		"request_user_input": "Default or Plan mode",
+	} {
+		if !strings.Contains(specs[name].Description, phrase) {
+			t.Fatalf("%s description does not contain %q: %q", name, phrase, specs[name].Description)
+		}
+	}
+	var readSchema map[string]any
+	if err := json.Unmarshal(specs["read"].InputSchema, &readSchema); err != nil {
+		t.Fatal(err)
+	}
+	properties := readSchema["properties"].(map[string]any)
+	if properties["path"].(map[string]any)["description"] == nil || properties["line"].(map[string]any)["description"] == nil {
+		t.Fatalf("read property descriptions are incomplete: %#v", readSchema)
 	}
 }

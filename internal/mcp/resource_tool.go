@@ -44,10 +44,10 @@ func NewResourceTools(runtime *MCPRuntime) (*ListResourcesTool, *ReadResourceToo
 	if err != nil {
 		return nil, nil, err
 	}
-	listSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s}},"required":["server"],"additionalProperties":false}`, encoded))
-	readSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s},"uri":{"type":"string","minLength":1}},"required":["server","uri"],"additionalProperties":false}`, encoded))
-	list := &ListResourcesTool{runtime: runtime, spec: tool.ToolSpec{Name: "mcp_list_resources", Description: "List untrusted resources exposed by one configured MCP server.", InputSchema: listSchema, SideEffect: tool.SideEffectNetwork, Idempotent: true}}
-	read := &ReadResourceTool{runtime: runtime, maxBytes: defaultResultBytes, spec: tool.ToolSpec{Name: "mcp_read_resource", Description: "Read one previously discovered MCP resource. Text and image blobs are returned as bounded untrusted content.", InputSchema: readSchema, SideEffect: tool.SideEffectNetwork, Idempotent: true}}
+	listSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s,"description":"Configured MCP server whose resources should be listed."}},"required":["server"],"additionalProperties":false}`, encoded))
+	readSchema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"server":{"type":"string","enum":%s,"description":"Configured MCP server exactly as used with mcp_list_resources."},"uri":{"type":"string","minLength":1,"description":"Exact resource URI returned by mcp_list_resources."}},"required":["server","uri"],"additionalProperties":false}`, encoded))
+	list := &ListResourcesTool{runtime: runtime, spec: tool.ToolSpec{Name: "mcp_list_resources", Description: "List bounded untrusted resources exposed by one configured MCP server. Resources may provide files, schemas, or application context; inspect them instead of using web search when they are the authoritative source.", InputSchema: listSchema, SideEffect: tool.SideEffectNetwork, Idempotent: true}}
+	read := &ReadResourceTool{runtime: runtime, maxBytes: defaultResultBytes, spec: tool.ToolSpec{Name: "mcp_read_resource", Description: "Read one resource URI previously discovered from the same MCP server. Text and image blobs are returned as bounded untrusted content.", InputSchema: readSchema, SideEffect: tool.SideEffectNetwork, Idempotent: true}}
 	return list, read, nil
 }
 

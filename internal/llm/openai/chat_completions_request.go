@@ -23,7 +23,10 @@ func newChatCompletionsRequestForDialect(request llm.Request, dialect Dialect) (
 	if strings.TrimSpace(request.Model) == "" {
 		return openaisdk.ChatCompletionNewParams{}, errors.New("chat completions request model is empty")
 	}
-	inputMessages := request.InputMessages()
+	inputMessages := request.ConversationItems()
+	if text := strings.TrimSpace(request.Prompt.BaseInstructions.Text); text != "" {
+		inputMessages = append([]llm.ResponseItem{llm.SystemMessage(text)}, inputMessages...)
+	}
 	if len(inputMessages) == 0 {
 		return openaisdk.ChatCompletionNewParams{}, errors.New("chat completions request messages are empty")
 	}

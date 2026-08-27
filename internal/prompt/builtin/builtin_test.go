@@ -40,7 +40,7 @@ func TestCatalogIsCompleteReadableAndImmutable(t *testing.T) {
 }
 
 func TestAgentSystemLayerOrderIsStable(t *testing.T) {
-	want := []ID{AgentBase, AgentExecution, AgentHandoff}
+	want := []ID{AgentBase}
 	if got := AgentSystemLayers(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected Agent System layer order: got %v, want %v", got, want)
 	}

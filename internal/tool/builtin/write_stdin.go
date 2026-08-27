@@ -109,8 +109,8 @@ func (writeStdin *WriteStdin) Execute(toolContext tool.ToolUseContext, prepared 
 
 func writeStdinSpec() tool.ToolSpec {
 	return tool.ToolSpec{
-		Name: "write_stdin", Description: "Continue or poll a running process created by execute_command in the current Run; optionally write characters, Enter, or EOF.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"process_id":{"type":"string","minLength":1},"origin_call_id":{"type":"string","minLength":1},"chars":{"type":"string"},"enter":{"type":"boolean"},"eof":{"type":"boolean"},"yield_time_ms":{"type":"integer","minimum":0}},"required":["process_id","origin_call_id"],"additionalProperties":false}`),
+		Name: "write_stdin", Description: "Writes characters to, sends Enter or EOF to, or polls a running process created by execute_command in the current Turn. The process must match both identifiers and reuses the originating command Approval.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"process_id":{"type":"string","minLength":1,"description":"Process identifier returned by execute_command."},"origin_call_id":{"type":"string","minLength":1,"description":"Tool call identifier that originally created the process."},"chars":{"type":"string","description":"Characters to write. Omit or use an empty string to poll without writing."},"enter":{"type":"boolean","description":"Append a newline after chars."},"eof":{"type":"boolean","description":"Close standard input after writing any chars."},"yield_time_ms":{"type":"integer","minimum":0,"description":"Time to wait for recent output, capped by runtime policy."}},"required":["process_id","origin_call_id"],"additionalProperties":false}`),
 		SideEffect:  tool.SideEffectExecute, Idempotent: false,
 	}
 }

@@ -129,7 +129,7 @@ func (model appModel) renderApprovalDialog(width int) string {
 	if question == "" {
 		question = "Do you want to proceed?"
 	}
-	rows = append(rows, "", " "+model.palette.dim().Render(question))
+	rows = append(rows, "", " "+model.palette.plain().Render(question))
 	lines := approvalDiffLines(request)
 	if len(lines) > 0 {
 		viewportHeight := model.approvalDiffHeight()
@@ -153,7 +153,6 @@ func (model appModel) renderApprovalDialog(width int) string {
 			rows = append(rows, model.palette.dim().Render(fmt.Sprintf("Diff lines %d-%d of %d · PgUp/PgDn scroll", dialog.diffTop+1, end, len(lines))))
 		}
 	}
-	rows = append(rows, "")
 	for index, choice := range dialog.choices {
 		prefix := "   "
 		style := model.palette.plain()

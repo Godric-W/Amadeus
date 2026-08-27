@@ -14,40 +14,20 @@ type ID string
 
 const (
 	AgentBase               ID = "templates/agent/base.md"
-	AgentExecution          ID = "templates/agent/execution.md"
-	AgentHandoff            ID = "templates/agent/handoff.md"
 	AgentSubagent           ID = "templates/agent/subagent.md"
 	ModeExecute             ID = "templates/modes/execute.md"
 	ModePlan                ID = "templates/modes/plan.md"
-	ToolUpdatePlan          ID = "templates/tools/update_plan.md"
-	ToolExecuteCommand      ID = "templates/tools/execute_command.md"
-	ToolRead                ID = "templates/tools/read.md"
-	ToolEdit                ID = "templates/tools/edit.md"
-	ToolWrite               ID = "templates/tools/write.md"
-	ToolGlob                ID = "templates/tools/glob.md"
-	ToolGrep                ID = "templates/tools/grep.md"
-	ToolWriteStdin          ID = "templates/tools/write_stdin.md"
 	ContextCompaction       ID = "templates/context/compaction.md"
 	ContextCompactionPrefix ID = "templates/context/compaction_prefix.md"
 )
 
-var agentSystemLayers = []ID{AgentBase, AgentExecution, AgentHandoff}
+var agentSystemLayers = []ID{AgentBase}
 
 var all = []ID{
 	AgentBase,
-	AgentExecution,
-	AgentHandoff,
 	AgentSubagent,
 	ModeExecute,
 	ModePlan,
-	ToolUpdatePlan,
-	ToolExecuteCommand,
-	ToolRead,
-	ToolEdit,
-	ToolWrite,
-	ToolGlob,
-	ToolGrep,
-	ToolWriteStdin,
 	ContextCompaction,
 	ContextCompactionPrefix,
 }
@@ -65,24 +45,6 @@ var embedded embed.FS
 
 func AgentSystemLayers() []ID { return append([]ID(nil), agentSystemLayers...) }
 func All() []ID               { return append([]ID(nil), all...) }
-
-type ToolPrompt struct {
-	Name   string
-	Prompt ID
-}
-
-func ToolPromptOrder() []ToolPrompt {
-	return []ToolPrompt{
-		{Name: "read", Prompt: ToolRead},
-		{Name: "edit", Prompt: ToolEdit},
-		{Name: "write", Prompt: ToolWrite},
-		{Name: "glob", Prompt: ToolGlob},
-		{Name: "grep", Prompt: ToolGrep},
-		{Name: "execute_command", Prompt: ToolExecuteCommand},
-		{Name: "write_stdin", Prompt: ToolWriteStdin},
-		{Name: "update_plan", Prompt: ToolUpdatePlan},
-	}
-}
 
 func Paths(ids []ID) []string {
 	result := make([]string, len(ids))
@@ -109,9 +71,9 @@ func Read(id ID) (string, error) {
 
 func Embedded() fs.FS { return embedded }
 
-func Revision() string {
+func RevisionFor(ids []ID) string {
 	hash := sha256.New()
-	for _, id := range all {
+	for _, id := range ids {
 		content, err := embedded.ReadFile(string(id))
 		if err != nil {
 			continue

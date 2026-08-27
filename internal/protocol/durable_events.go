@@ -13,13 +13,3 @@ type ThreadArchivedEvent struct {
 }
 
 func (ThreadArchivedEvent) isEventMsg() {}
-
-type ContextUpdateEvent struct {
-	ThreadID ThreadID `json:"thread_id"`
-	TurnID   TurnID   `json:"turn_id,omitempty"`
-	Key      string   `json:"key"`
-	Content  string   `json:"content,omitempty"`
-	Revision string   `json:"revision,omitempty"`
-}
-
-func (ContextUpdateEvent) isEventMsg() {}

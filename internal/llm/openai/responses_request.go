@@ -9,6 +9,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/llm"
 	openaisdk "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
 )
@@ -17,7 +18,7 @@ func newResponsesRequest(request llm.Request) (responses.ResponseNewParams, erro
 	if strings.TrimSpace(request.Model) == "" {
 		return responses.ResponseNewParams{}, errors.New("responses request model is empty")
 	}
-	messages := request.InputMessages()
+	messages := request.ConversationItems()
 	if len(messages) == 0 {
 		return responses.ResponseNewParams{}, errors.New("responses request messages are empty")
 	}
@@ -36,7 +37,8 @@ func newResponsesRequest(request llm.Request) (responses.ResponseNewParams, erro
 	}
 
 	params := responses.ResponseNewParams{
-		Model: shared.ResponsesModel(request.Model),
+		Model:        shared.ResponsesModel(request.Model),
+		Instructions: param.NewOpt(strings.TrimSpace(request.Prompt.BaseInstructions.Text)),
 		Input: responses.ResponseNewParamsInputUnion{
 			OfInputItemList: input,
 		},
@@ -185,6 +187,16 @@ func responsesTools(definitions []llm.ToolSpec) ([]responses.ToolUnionParam, err
 			return nil, fmt.Errorf("responses request tools[%d]: %w", index, err)
 		}
 		tool := responses.ToolParamOfFunction(definition.Name, schema, definition.Strict)
+		if len(definition.OutputSchema) > 0 {
+			var outputSchema map[string]any
+			if err := json.Unmarshal(definition.OutputSchema, &outputSchema); err != nil || outputSchema == nil {
+				if err == nil {
+					err = errors.New("output schema must be a JSON object")
+				}
+				return nil, fmt.Errorf("responses request tools[%d] output schema: %w", index, err)
+			}
+			tool.OfFunction.OutputSchema = outputSchema
+		}
 		if definition.Description != "" {
 			tool.OfFunction.Description = openaisdk.String(definition.Description)
 		}

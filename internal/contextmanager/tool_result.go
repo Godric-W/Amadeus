@@ -267,6 +267,7 @@ var modelMetadataKeys = map[string]struct{}{
 	"detail": {}, "source_media_type": {}, "prepared_media_type": {},
 	"source_width": {}, "source_height": {}, "prepared_width": {}, "prepared_height": {},
 	"source_bytes": {}, "prepared_bytes": {},
+	"start_line": {}, "end_line": {}, "total_lines": {}, "lines_truncated": {}, "complete_snapshot": {},
 }
 
 func projectToolMetadata(values ...map[string]any) map[string]any {

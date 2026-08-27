@@ -78,6 +78,12 @@ func (projection *RolloutMessageProjection) appendResponse(sequence uint64, item
 	switch item.Type {
 	case rollout.ResponseUserMessage:
 		projection.append(llm.UserMessage(item.Content), sequence, MessageOriginUser)
+	case rollout.ResponseContextMessage:
+		role := llm.Role(item.Role)
+		if role != llm.RoleDeveloper && role != llm.RoleUser {
+			return errors.New("context response role is invalid")
+		}
+		projection.append(llm.ResponseItem{Role: role, Content: item.Content}, sequence, MessageOriginRuntime)
 	case rollout.ResponseAssistantMessage:
 		projection.append(llm.ResponseItem{Role: llm.RoleAssistant, Content: item.Content, Reasoning: item.Reasoning}, sequence, MessageOriginAssistant)
 	case rollout.ResponseToolCall:
@@ -169,9 +175,16 @@ func (projection *RolloutMessageProjection) applyCompaction(payload rollout.Comp
 	for index, replacement := range payload.ReplacementHistory {
 		replacements = append(replacements, cloneResponseItems([]llm.ResponseItem{replacement})[0])
 		sequences = append(sequences, payload.CoveredThroughSequence)
-		origin := MessageOriginUser
-		if index == len(payload.ReplacementHistory)-1 {
+		var origin MessageOrigin
+		switch payload.ReplacementOrigins[index] {
+		case rollout.ReplacementOriginUser:
+			origin = MessageOriginUser
+		case rollout.ReplacementOriginRuntime:
+			origin = MessageOriginRuntime
+		case rollout.ReplacementOriginCompaction:
 			origin = MessageOriginCompaction
+		default:
+			return errors.New("compaction replacement origin is invalid")
 		}
 		origins = append(origins, origin)
 	}

@@ -25,29 +25,21 @@ func LoadModelMessages() (llm.ModelMessages, error) {
 	if err != nil {
 		return llm.ModelMessages{}, err
 	}
-	compaction, err := builtin.Read(builtin.ContextCompaction)
-	if err != nil {
-		return llm.ModelMessages{}, err
-	}
-	prefix, err := builtin.Read(builtin.ContextCompactionPrefix)
-	if err != nil {
-		return llm.ModelMessages{}, err
-	}
 	subagent, err := builtin.Read(builtin.AgentSubagent)
 	if err != nil {
 		return llm.ModelMessages{}, err
 	}
 	return llm.ModelMessages{
-		InstructionsTemplate:          base,
-		SubagentDeveloperInstructions: strings.TrimSpace(subagent),
+		InstructionsTemplate: base,
 		CollaborationModes: llm.CollaborationModeMessages{
 			Default: defaultInstructions,
 			Plan:    planInstructions,
 		},
-		SummarizationPrompt: strings.TrimSpace(compaction),
-		SummaryPrefix:       strings.TrimSpace(prefix),
-		Revision:            builtin.Revision(),
-		Source:              "amadeus.builtin",
+		MultiAgent:            llm.MultiAgentMessages{Role: llm.MultiAgentRoleMessages{Subagent: strings.TrimSpace(subagent)}},
+		InstructionsRevision:  builtin.RevisionFor(builtin.AgentSystemLayers()),
+		CollaborationRevision: builtin.RevisionFor([]builtin.ID{builtin.ModeExecute, builtin.ModePlan}),
+		MultiAgentRevision:    builtin.RevisionFor([]builtin.ID{builtin.AgentSubagent}),
+		Source:                "amadeus.builtin",
 	}, nil
 }
 

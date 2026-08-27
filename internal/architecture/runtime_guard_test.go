@@ -1,12 +1,49 @@
 package architecture_test
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 )
+
+func TestStepContextContainsCapabilitiesNotAssembledPrompt(t *testing.T) {
+	root := repositoryRoot(t)
+	path := filepath.Join(root, "internal", "agent", "session", "step_context.go")
+	parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forbidden := map[string]struct{}{"Prompt": {}, "BaseInstructions": {}, "WorldStateRevision": {}}
+	found := false
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		typeSpec, ok := node.(*ast.TypeSpec)
+		if !ok || typeSpec.Name.Name != "StepContext" {
+			return true
+		}
+		found = true
+		structure, ok := typeSpec.Type.(*ast.StructType)
+		if !ok {
+			t.Errorf("StepContext is %T, want struct", typeSpec.Type)
+			return false
+		}
+		for _, field := range structure.Fields.List {
+			for _, name := range field.Names {
+				if _, blocked := forbidden[name.Name]; blocked {
+					t.Errorf("StepContext must not own assembled request field %s", name.Name)
+				}
+			}
+		}
+		return false
+	})
+	if !found {
+		t.Fatal("StepContext declaration is missing")
+	}
+}
 
 func TestSessionTaskDependencyDirection(t *testing.T) {
 	root := repositoryRoot(t)
@@ -234,6 +271,72 @@ func TestPromptConstructionHasCodexOwnershipBoundaries(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("scan %s: %v", check.relative, err)
+		}
+	}
+}
+
+func TestAAPromptAndWorldStateOwnershipGuards(t *testing.T) {
+	root := repositoryRoot(t)
+	read := func(relative string) string {
+		content, err := os.ReadFile(filepath.Join(root, relative))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(content)
+	}
+	stepContext := read("internal/agent/session/step_context.go")
+	if strings.Contains(stepContext, "ResolveBaseInstructions") {
+		t.Fatal("StepContext still resolves mutable model BaseInstructions")
+	}
+	for _, required := range []string{"LoadedAgentsMd", "Skills", "PermissionProfile", "PermissionGrants", "Subagents", "ToolRouter"} {
+		if !strings.Contains(stepContext, required) {
+			t.Fatalf("StepContext does not freeze request capability %q", required)
+		}
+	}
+	worldState := read("internal/agent/session/world_state.go")
+	for _, forbidden := range []string{"services.skills", "services.permissions", "services.AgentControl", "services.fileSystem", "services.agentsMd"} {
+		if strings.Contains(worldState, forbidden) {
+			t.Fatalf("WorldState build rereads mutable Session service through %q", forbidden)
+		}
+	}
+	responses := read("internal/llm/openai/responses_request.go")
+	for _, required := range []string{"Instructions:", "ConversationItems()"} {
+		if !strings.Contains(responses, required) {
+			t.Fatalf("Responses wire is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"InputMessages()", "SystemMessage("} {
+		if strings.Contains(responses, forbidden) {
+			t.Fatalf("Responses wire retains Base-as-input path %q", forbidden)
+		}
+	}
+	for _, relative := range []string{
+		"internal/prompt/builtin/templates/agent/execution.md",
+		"internal/prompt/builtin/templates/agent/handoff.md",
+		"internal/prompt/builtin/templates/tools",
+	} {
+		if _, err := os.Stat(filepath.Join(root, relative)); err == nil {
+			t.Fatalf("legacy Prompt owner still exists: %s", relative)
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	modelMessages := read("internal/llm/model_messages.go")
+	for _, forbidden := range []string{"SubagentDeveloperInstructions", "SummarizationPrompt", "SummaryPrefix"} {
+		if strings.Contains(modelMessages, forbidden) {
+			t.Fatalf("ModelMessages retains superseded field %q", forbidden)
+		}
+	}
+	compactionAssets := read("internal/prompt/compaction.go")
+	for _, required := range []string{"SummarizationRevision", "SummaryPrefixRevision"} {
+		if !strings.Contains(compactionAssets, required) {
+			t.Fatalf("Compaction assets lack independent revision %q", required)
+		}
+	}
+	rolloutItems := read("internal/rollout/items.go")
+	for _, required := range []string{"type ContextKind string", "ContextKindWorldState", "ContextKindExplicitSkill", "ContextKindTurnBudget"} {
+		if !strings.Contains(rolloutItems, required) {
+			t.Fatalf("durable context kind contract lacks %q", required)
 		}
 	}
 }

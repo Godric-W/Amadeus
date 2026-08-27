@@ -7,7 +7,9 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/filechange"
 	"github.com/Godric-W/Amadeus/internal/policy"
+	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 )
 
 func TestApprovalDialogBoundsDiffViewportAndSelection(t *testing.T) {
@@ -97,4 +99,43 @@ func TestApprovalDialogRendersClaudeStyleCommandPrompt(t *testing.T) {
 	if count := strings.Count(rendered, "›"); count != 1 {
 		t.Fatalf("approval prompt selection pointer count = %d:\n%s", count, rendered)
 	}
+	questionLine := -1
+	for index, line := range lines {
+		if strings.Contains(line, "Do you want to proceed?") {
+			questionLine = index
+			break
+		}
+	}
+	if questionLine < 0 || questionLine+1 >= len(lines) || !strings.Contains(lines[questionLine+1], "› 1. Yes") {
+		t.Fatalf("approval question and options are not adjacent:\n%s", rendered)
+	}
+}
+
+func TestApprovalQuestionUsesPlainBodyColor(t *testing.T) {
+	original := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(original) })
+	_, model := newTestModel(t, nil)
+	model.palette = terminalPalette{Level: colorLevelTrueColor, Dark: true, Foreground: terminalRGB{225, 225, 225}, Background: terminalRGB{18, 18, 18}}
+	request, err := policy.NewApprovalRequestForPurpose(
+		"approval-plain", "execute_command", json.RawMessage(`{"command":"go test ./..."}`),
+		policy.ApprovalPurposeCommand, policy.CommandRiskModerate,
+		policy.ApprovalCause{Kind: policy.ApprovalCauseCommand, Code: "host_command"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Command = "go test ./..."
+	request.Presentation = policy.CommandApprovalPresentation(request.Command, "Run tests", "/workspace")
+	model.approval = &approvalState{requestID: request.ID, request: request}
+	model.approvalDialog = newApprovalDialog(request)
+	for _, line := range strings.Split(model.renderApprovalDialog(72), "\n") {
+		if strings.Contains(line, "Do you want to proceed?") {
+			if strings.Contains(line, "\x1b[") {
+				t.Fatalf("approval question is not plain body text: %q", line)
+			}
+			return
+		}
+	}
+	t.Fatal("approval question was not rendered")
 }

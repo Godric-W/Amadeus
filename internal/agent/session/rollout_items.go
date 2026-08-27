@@ -9,7 +9,7 @@ import (
 func sessionMetaItem(input threadstore.CreateInput) rollout.SessionMetaItem {
 	item := rollout.SessionMetaItem{
 		SessionID: input.SessionID, ID: input.ID, Source: input.Source.Clone(), CWD: input.CWD, Title: input.Title,
-		ModelProvider: input.ModelProvider, Model: input.Model,
+		ModelProvider: input.ModelProvider, Model: input.Model, BaseInstructions: input.BaseInstructions.Clone(),
 		GitSHA: input.GitSHA, GitBranch: input.GitBranch, GitOriginURL: input.GitOriginURL,
 		CreatedAt: input.CreatedAt.UTC(),
 	}

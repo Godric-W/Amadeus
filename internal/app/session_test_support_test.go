@@ -88,8 +88,12 @@ func appSessionAdapters(t *testing.T, client llm.Client) agentsession.ServiceAda
 	if err != nil {
 		t.Fatal(err)
 	}
+	assets, err := internalprompt.LoadCompactionAssets()
+	if err != nil {
+		t.Fatal(err)
+	}
 	return agentsession.ServiceAdapters{
-		ModelMessages: messages,
+		ModelMessages: messages, CompactionAssets: assets,
 		ClientFactory: func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },
 		AuditFactory:  func() (audit.Sink, io.Closer, error) { return audit.NewMemorySink(), nil, nil },
 	}

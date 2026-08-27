@@ -30,6 +30,7 @@ func (session *Session) runCompaction(
 	modelSession *modelclient.ModelClientSession,
 	turnContext TurnContext,
 	step *StepContext,
+	prompt *contextmanager.PromptSnapshot,
 	events protocol.EventSink,
 	invocation compactionInvocation,
 ) (bool, error) {
@@ -46,7 +47,11 @@ func (session *Session) runCompaction(
 		}
 		step = &captured
 	}
-	source, err := session.compactionSource(*step)
+	if prompt == nil {
+		captured := session.promptSnapshot(*step)
+		prompt = &captured
+	}
+	source, err := session.compactionSource(*prompt)
 	if err != nil {
 		return false, err
 	}
@@ -59,13 +64,13 @@ func (session *Session) runCompaction(
 	output, generateErr := runtime.compaction.Generate(ctx, agentcompact.Request{
 		Trigger: invocation.Trigger, Reason: invocation.Reason, Phase: invocation.Phase,
 		Source: source,
-		Prompt: llm.Prompt{BaseInstructions: step.BaseInstructions}, Model: step.Model,
+		Prompt: llm.Prompt{BaseInstructions: session.BaseInstructions()}, Model: step.Model,
 		ModelSession: modelSession, Reasoning: llm.ReasoningConfigForEffort(turnContext.ReasoningEffort),
 		Metadata: requestMetadata(turnContext), Events: events, Estimator: contextmanager.ApproxTokenEstimator{},
 	})
 	if output.TokenUsage.TotalTokens > 0 {
 		activeTokens := output.TokenUsage.InputTokens
-		if err := session.recordTokenUsage(context.WithoutCancel(ctx), turnContext.TurnID, output.TokenUsage, activeTokens, step.Model.ContextWindow, step.Prompt.HistoryVersion, events); err != nil {
+		if err := session.recordTokenUsage(context.WithoutCancel(ctx), turnContext.TurnID, output.TokenUsage, activeTokens, step.Model.ContextWindow, prompt.HistoryVersion, events); err != nil {
 			return false, session.finishCompactionFailure(events, itemID, startedAt, invocation, errors.Join(generateErr, err))
 		}
 	}
@@ -75,7 +80,7 @@ func (session *Session) runCompaction(
 	if err := output.Validate(); err != nil {
 		return false, session.finishCompactionFailure(events, itemID, startedAt, invocation, err)
 	}
-	before := session.contextWindowTokenStatus(*step).ActiveContextTokens
+	before := session.contextWindowTokenStatus(*step, *prompt).ActiveContextTokens
 	if err := session.installCompaction(ctx, turnContext, *step, source, output, invocation, before, events); err != nil {
 		return false, session.finishCompactionFailure(events, itemID, startedAt, invocation, err)
 	}
@@ -90,7 +95,7 @@ func (session *Session) runCompaction(
 	return true, nil
 }
 
-func (session *Session) compactionSource(step StepContext) (agentcompact.Source, error) {
+func (session *Session) compactionSource(prompt contextmanager.PromptSnapshot) (agentcompact.Source, error) {
 	projection := session.ContextProjection()
 	if len(projection.Messages) == 0 || len(projection.SourceSequences) != len(projection.Messages) {
 		return agentcompact.Source{}, &agentcompact.Error{Kind: agentcompact.ErrorNoHistory, Err: errors.New("conversation has no model-visible history")}
@@ -108,9 +113,9 @@ func (session *Session) compactionSource(step StepContext) (agentcompact.Source,
 		}
 	}
 	return agentcompact.Source{
-		HistoryVersion: step.Prompt.HistoryVersion, CoveredThroughSequence: covered,
+		HistoryVersion: prompt.HistoryVersion, CoveredThroughSequence: covered,
 		SourceHash: hex.EncodeToString(digest[:]), CanonicalHistory: projection.Messages, UserMessages: users,
-		PromptItems: step.Prompt.Items,
+		PromptItems: prompt.Items,
 	}, nil
 }
 
@@ -124,16 +129,24 @@ func (session *Session) installCompaction(
 	before int64,
 	events protocol.EventSink,
 ) error {
+	replacement, origins, worldStateItem, err := session.compactionReplacement(step, invocation.Phase, output.ReplacementHistory)
+	if err != nil {
+		return err
+	}
 	compacted := rollout.CompactedItem{
 		Trigger: invocation.Trigger, Reason: invocation.Reason, Phase: invocation.Phase,
-		Summary: strings.TrimSpace(output.Message.Content), ReplacementHistory: output.ReplacementHistory,
+		Summary: strings.TrimSpace(output.Message.Content), ReplacementHistory: replacement, ReplacementOrigins: origins,
 		CoveredThroughSequence: source.CoveredThroughSequence, SourceHash: source.SourceHash,
-		Provider: step.Model.Provider, Model: step.Model.Name,
+		Provider: step.Model.Provider, Model: step.Model.Name, ResetWorldState: worldStateItem == nil, ResetTurnContext: worldStateItem == nil,
 	}
-	scopedCompacted := rollout.ScopeItem(compacted, session.threadID, turnContext.TurnID)
-	promptShape := promptShapeForStep(step, turnContext)
+	promptShape := session.promptShapeForStep(step)
 	firstSequence := session.state.Context.NextSequence()
-	preview, err := session.state.Context.PreviewRecord(firstSequence, step.Model, promptShape, scopedCompacted)
+	installItems := []rollout.RolloutItem{rollout.ScopeItem(compacted, session.threadID, turnContext.TurnID)}
+	if worldStateItem != nil {
+		installItems = append(installItems, rollout.ScopeItem(*worldStateItem, session.threadID, turnContext.TurnID))
+		installItems = append(installItems, rollout.ScopeItem(turnContextItem(turnContext), session.threadID, turnContext.TurnID))
+	}
+	preview, err := session.state.Context.PreviewRecord(firstSequence, step.Model, promptShape, installItems...)
 	if err != nil {
 		return &agentcompact.Error{Kind: agentcompact.ErrorStale, Err: err}
 	}
@@ -151,9 +164,10 @@ func (session *Session) installCompaction(
 	tokenSnapshot := session.state.Context.TokenSnapshot()
 	tokenEvent := protocol.TokenCountEvent{
 		Info: cloneProtocolTokenUsageInfo(tokenSnapshot.Info), ActiveContextTokens: after, ActiveContextEstimated: true,
-		ObservedThroughSequence: firstSequence,
+		ObservedThroughSequence: firstSequence + uint64(len(installItems)) - 1,
 	}
-	if err := session.appendItemsDurable(ctx, turnContext.TurnID, compacted, rollout.EventMsgItem{Msg: tokenEvent}); err != nil {
+	installItems = append(installItems, rollout.EventMsgItem{Msg: tokenEvent})
+	if err := session.appendItemsDurable(ctx, turnContext.TurnID, installItems...); err != nil {
 		return &agentcompact.Error{Kind: agentcompact.ErrorPersistence, Err: err}
 	}
 	if err := events.Publish(context.WithoutCancel(ctx), protocol.Event{Msg: tokenEvent}); err != nil {
@@ -162,17 +176,61 @@ func (session *Session) installCompaction(
 	return nil
 }
 
-func promptShapeForStep(step StepContext, turnContext TurnContext) llm.Prompt {
-	specs := step.ToolRouter.Specs()
-	tools := make([]llm.ToolSpec, len(specs))
-	for index, spec := range specs {
-		tools[index] = llm.ToolSpec{Name: spec.Name, Description: spec.Description, InputSchema: append([]byte(nil), spec.InputSchema...)}
+func (session *Session) compactionReplacement(step StepContext, phase protocol.CompactionPhase, replacement []llm.ResponseItem) ([]llm.ResponseItem, []rollout.ReplacementOrigin, *rollout.WorldStateItem, error) {
+	replacement = cloneLLMItems(replacement)
+	origins := make([]rollout.ReplacementOrigin, len(replacement))
+	for index := range origins {
+		origins[index] = rollout.ReplacementOriginUser
 	}
-	return llm.Prompt{
-		BaseInstructions: step.BaseInstructions, Tools: tools,
-		ParallelToolCalls: step.Model.SupportsParallelToolCalls,
-		OutputSchema:      append(llm.OutputSchema(nil), turnContext.OutputSchema...), OutputSchemaStrict: turnContext.OutputSchemaStrict,
+	if len(origins) > 0 {
+		origins[len(origins)-1] = rollout.ReplacementOriginCompaction
 	}
+	if phase != protocol.CompactionPhaseMidTurn {
+		return replacement, origins, nil, nil
+	}
+	state, err := buildStepWorldState(&session.services, step)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	fragments, snapshot, err := state.Render(nil, contextmanager.PreviousSectionAbsent)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	contextItems, err := mergeContextFragments(fragments)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	insertion := len(replacement) - 1
+	for index := len(origins) - 1; index >= 0; index-- {
+		if origins[index] == rollout.ReplacementOriginUser {
+			insertion = index
+			break
+		}
+	}
+	if insertion < 0 {
+		insertion = 0
+	}
+	replacement = append(replacement, make([]llm.ResponseItem, len(contextItems))...)
+	copy(replacement[insertion+len(contextItems):], replacement[insertion:len(replacement)-len(contextItems)])
+	copy(replacement[insertion:], contextItems)
+	contextOrigins := make([]rollout.ReplacementOrigin, len(contextItems))
+	for index := range contextOrigins {
+		contextOrigins[index] = rollout.ReplacementOriginRuntime
+	}
+	origins = append(origins, make([]rollout.ReplacementOrigin, len(contextOrigins))...)
+	copy(origins[insertion+len(contextOrigins):], origins[insertion:len(origins)-len(contextOrigins)])
+	copy(origins[insertion:], contextOrigins)
+	return replacement, origins, &rollout.WorldStateItem{Full: true, Sections: snapshot.Clone()}, nil
+}
+
+func cloneLLMItems(items []llm.ResponseItem) []llm.ResponseItem {
+	cloned := make([]llm.ResponseItem, len(items))
+	for index, item := range items {
+		cloned[index] = item
+		cloned[index].Parts = append([]llm.ContentPart(nil), item.Parts...)
+		cloned[index].ToolCalls = append([]llm.ToolCall(nil), item.ToolCalls...)
+	}
+	return cloned
 }
 
 func (session *Session) finishCompactionFailure(events protocol.EventSink, itemID protocol.ItemID, startedAt time.Time, invocation compactionInvocation, cause error) error {

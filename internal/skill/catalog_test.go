@@ -162,6 +162,10 @@ func TestSkillRevisionTracksPolicyAndDisabledResourceChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	snapshot, snapshotRevision, err := catalog.Snapshot()
+	if err != nil || snapshotRevision != first || len(snapshot) != 1 || snapshot[0].Revision == "" {
+		t.Fatalf("atomic Skill snapshot = entries %#v revision=%s err=%v", snapshot, snapshotRevision, err)
+	}
 	if err := catalog.SetEnabled("review", false); err != nil {
 		t.Fatal(err)
 	}

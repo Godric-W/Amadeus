@@ -203,14 +203,14 @@ func viewImageMetadata(displayPath, canonicalPath string, image imageprep.Prepar
 }
 
 func viewImageSpec(supportsOriginal bool) tool.ToolSpec {
-	detail := `{"type":"string","enum":["high"],"default":"high"}`
+	detail := `{"type":"string","enum":["high"],"default":"high","description":"Image detail level. This model supports the bounded high-detail representation."}`
 	if supportsOriginal {
-		detail = `{"type":"string","enum":["high","original"],"default":"high"}`
+		detail = `{"type":"string","enum":["high","original"],"default":"high","description":"Image detail level. Defaults to high; use original only when exact source resolution is required."}`
 	}
 	return tool.ToolSpec{
 		Name:        "view_image",
-		Description: "Read and prepare a bounded PNG, JPEG, WebP, or static GIF from the local filesystem for image-capable model input.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1},"detail":` + detail + `},"required":["path"],"additionalProperties":false}`),
+		Description: "View an image already available on the local filesystem when visual inspection is needed. Amadeus prepares a bounded PNG, JPEG, WebP, or static GIF for image-capable model input.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"description":"Local filesystem path to an existing image file."},"detail":` + detail + `},"required":["path"],"additionalProperties":false}`),
 		SideEffect:  tool.SideEffectRead,
 		Idempotent:  true,
 	}

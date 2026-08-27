@@ -54,6 +54,9 @@ func TestResponsesRequestSerializesDomainTextFields(t *testing.T) {
 	if requestBody["model"] != "test-model" {
 		t.Fatalf("unexpected model: %#v", requestBody["model"])
 	}
+	if requestBody["instructions"] != "system prompt" {
+		t.Fatalf("unexpected Responses instructions: %#v", requestBody["instructions"])
+	}
 	if _, exists := requestBody["temperature"]; exists {
 		t.Fatalf("Responses request unexpectedly set temperature: %#v", requestBody)
 	}
@@ -62,14 +65,13 @@ func TestResponsesRequestSerializesDomainTextFields(t *testing.T) {
 	}
 
 	messages, ok := requestBody["input"].([]any)
-	if !ok || len(messages) != 4 {
+	if !ok || len(messages) != 3 {
 		t.Fatalf("unexpected input messages: %#v", requestBody["input"])
 	}
 	expected := []struct {
 		role    string
 		content string
 	}{
-		{role: "system", content: "system prompt"},
 		{role: "developer", content: "developer prompt"},
 		{role: "user", content: "hello"},
 		{role: "assistant", content: "previous answer"},
@@ -85,6 +87,63 @@ func TestResponsesRequestSerializesDomainTextFields(t *testing.T) {
 		if _, exists := message["reasoning_content"]; exists {
 			t.Fatalf("provider reasoning leaked into Responses input: %#v", message)
 		}
+	}
+}
+
+func TestResponsesRequestKeepsBaseOutOfConversationInput(t *testing.T) {
+	params, err := newResponsesRequest(llm.Request{Model: "test-model", Prompt: llm.Prompt{
+		BaseInstructions: llm.NewModelBaseInstructions("base instructions", "test-model"),
+		Input:            []llm.ResponseItem{llm.UserMessage("hello")},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["instructions"] != "base instructions" {
+		t.Fatalf("instructions = %#v", body["instructions"])
+	}
+	input, ok := body["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("input = %#v", body["input"])
+	}
+	message, ok := input[0].(map[string]any)
+	if !ok || message["role"] != "user" || message["content"] != "hello" {
+		t.Fatalf("input message = %#v", input[0])
+	}
+}
+
+func TestResponsesRequestSerializesToolOutputSchema(t *testing.T) {
+	params, err := newResponsesRequest(llm.Request{Model: "test-model", Prompt: llm.Prompt{
+		BaseInstructions: llm.NewModelBaseInstructions("base", "test-model"),
+		Input:            []llm.ResponseItem{llm.UserMessage("run")},
+		Tools: []llm.ToolSpec{{
+			Name: "demo", Description: "Demo tool", Strict: true,
+			InputSchema:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+			OutputSchema: json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}`),
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		t.Fatal(err)
+	}
+	tools := body["tools"].([]any)
+	function := tools[0].(map[string]any)
+	if function["strict"] != true || function["output_schema"] == nil {
+		t.Fatalf("serialized ToolSpec = %#v", function)
 	}
 }
 

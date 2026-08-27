@@ -10,6 +10,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/llm"
 	openaiadapter "github.com/Godric-W/Amadeus/internal/llm/openai"
 	"github.com/Godric-W/Amadeus/internal/mcp"
+	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/webfetch"
 	"github.com/Godric-W/Amadeus/internal/websearch"
 )
@@ -39,13 +40,14 @@ func DefaultDependencies(environment Environment) Dependencies {
 	}
 }
 
-func (dependencies Dependencies) sessionAdapters(modelMessages llm.ModelMessages) agentsession.ServiceAdapters {
+func (dependencies Dependencies) sessionAdapters(modelMessages llm.ModelMessages, compactionAssets internalprompt.CompactionAssets) agentsession.ServiceAdapters {
 	adapters := agentsession.ServiceAdapters{
 		MCPClientFactory: dependencies.MCPClientFactory,
 		WebFetcher:       dependencies.WebFetcher,
 		WebSearch:        dependencies.WebSearch,
 		AuditFactory:     agentsession.AuditFactory(dependencies.AuditFactory),
 		ModelMessages:    modelMessages,
+		CompactionAssets: compactionAssets,
 	}
 	if dependencies.ClientFactory != nil {
 		adapters.ClientFactory = agentsession.ClientFactory(dependencies.ClientFactory)

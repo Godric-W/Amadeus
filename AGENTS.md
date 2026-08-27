@@ -2,9 +2,10 @@
 
 ## Project Direction
 
-Amadeus is a Go coding agent inspired by Codex and Claude Code. It is not a
-complete reimplementation of either project. Use the reference repositories to
-learn their architecture, data models, ownership boundaries, responsibility
+This repository implements Amadeus, a coding agent, in Go. Amadeus is inspired
+by Codex and Claude Code, but is not a complete reimplementation of either
+project. Use the reference repositories to learn their architecture, data
+models, ownership boundaries, responsibility
 splits, lifecycle rules, event and failure ordering, and underlying design
 ideas. Adapt those ideas to Amadeus's product scope and to idiomatic Go.
 

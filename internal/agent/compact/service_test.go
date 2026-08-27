@@ -123,7 +123,7 @@ func TestServiceRetainsOnlyTypedRealUserMessages(t *testing.T) {
 
 func newCompactTestService(t *testing.T, client *compactTestClient) (*Service, *modelclient.ModelClientSession) {
 	t.Helper()
-	messages, err := internalprompt.LoadModelMessages()
+	assets, err := internalprompt.LoadCompactionAssets()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func newCompactTestService(t *testing.T, client *compactTestClient) (*Service, *
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Service{ModelInfo: client.Model(), ModelMessages: messages}, modelSession
+	return &Service{ModelInfo: client.Model(), Assets: assets}, modelSession
 }
 
 func compactRequest(modelSession *modelclient.ModelClientSession) Request {

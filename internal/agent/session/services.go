@@ -16,6 +16,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/policy"
 	processdomain "github.com/Godric-W/Amadeus/internal/process"
 	"github.com/Godric-W/Amadeus/internal/project"
+	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/skill"
 	"github.com/Godric-W/Amadeus/internal/threadstore"
@@ -35,10 +36,11 @@ type ServiceAdapters struct {
 	WebSearch        websearch.Provider
 	AuditFactory     AuditFactory
 	ModelMessages    llm.ModelMessages
+	CompactionAssets internalprompt.CompactionAssets
 }
 
 func (adapters ServiceAdapters) configured() bool {
-	return adapters.ClientFactory != nil && adapters.AuditFactory != nil && adapters.ModelMessages.HasInstructions()
+	return adapters.ClientFactory != nil && adapters.AuditFactory != nil && adapters.ModelMessages.HasInstructions() && adapters.CompactionAssets.Valid()
 }
 
 type SessionServices struct {

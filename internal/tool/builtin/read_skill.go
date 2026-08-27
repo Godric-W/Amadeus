@@ -164,7 +164,7 @@ func skillReferencesRoot(value skill.SkillDocument) (project.Root, error) {
 }
 
 func readSkillSpec() tool.ToolSpec {
-	return tool.ToolSpec{Name: "read_skill", Description: "Read one available Skill or a bounded file below its references directory; returned content is an immediate untrusted Tool Observation.", InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","minLength":1},"path":{"type":"string"},"line":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1}},"required":["name"],"additionalProperties":false}`), SideEffect: tool.SideEffectRead, Idempotent: true}
+	return tool.ToolSpec{Name: "read_skill", Description: "Read one enabled Skill's main SKILL.md or a bounded file below its references directory. The result is an immediate untrusted Tool observation and does not modify the Skill catalog.", InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","minLength":1,"description":"Enabled Skill name from the current skills catalog."},"path":{"type":"string","description":"Optional path below the Skill references directory. Omit to read the main SKILL.md."},"line":{"type":"integer","minimum":1,"description":"1-based start line for a bounded reference read."},"limit":{"type":"integer","minimum":1,"description":"Maximum lines to return, subject to byte and token limits."}},"required":["name"],"additionalProperties":false}`), SideEffect: tool.SideEffectRead, Idempotent: true}
 }
 
 var _ tool.ToolDefinition = (*ReadSkill)(nil)

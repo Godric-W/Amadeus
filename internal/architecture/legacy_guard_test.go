@@ -33,6 +33,9 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 		"PlanUpdater", "SessionState.Plan", "pendingModeTask", "CollaborationExecute", "CollaborationPlan", "ModeState",
 		"InstructionResolution", "migrateConfigDocument", "SteerOp", "compact bool",
 		"NewApplyPatch", "ApplyPatchOptions", "applyPatchSpec", "type ApplyPatch struct",
+		"ContextUpdateEvent", "contextUpdateState", "ToolPromptOrder", "toolGuidance(",
+		"SubagentDeveloperInstructions", "SummarizationPrompt           string", "SummaryPrefix                 string",
+		"step.Prompt",
 		"schema_migrations", "func migrate(",
 	}
 	for _, relative := range []string{"cmd", "internal"} {
@@ -65,6 +68,7 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 		"internal/agent/react", "internal/agent/runtime", "internal/agent/reflect", "internal/session", "internal/snapshot",
 		"internal/agent/engine", "internal/agent/turn",
 		"internal/instruction", "internal/extension", "internal/tool/patch", "internal/diff",
+		"internal/prompt/builtin/templates/tools",
 	} {
 		if _, err := os.Stat(filepath.Join(root, relative)); err == nil {
 			t.Errorf("removed production package still exists: %s", relative)

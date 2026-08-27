@@ -19,6 +19,9 @@ func ScopeItem(item RolloutItem, threadID protocol.ThreadID, turnID protocol.Tur
 	case CompactedItem:
 		value.ThreadID, value.TurnID = threadID, turnID
 		return value
+	case WorldStateItem:
+		value.ThreadID, value.TurnID = threadID, turnID
+		return value
 	case TurnContextItem:
 		value.ThreadID, value.TurnID = threadID, turnID
 		return value
@@ -38,6 +41,8 @@ func ThreadIDOf(item RolloutItem) protocol.ThreadID {
 		return value.ThreadID
 	case CompactedItem:
 		return value.ThreadID
+	case WorldStateItem:
+		return value.ThreadID
 	case TurnContextItem:
 		return value.ThreadID
 	case EventMsgItem:
@@ -52,6 +57,8 @@ func TurnIDOf(item RolloutItem) protocol.TurnID {
 	case ResponseItem:
 		return value.TurnID
 	case CompactedItem:
+		return value.TurnID
+	case WorldStateItem:
 		return value.TurnID
 	case TurnContextItem:
 		return value.TurnID
@@ -81,6 +88,10 @@ func CloneItem(item RolloutItem) RolloutItem {
 		return value
 	case CompactedItem:
 		value.ReplacementHistory = cloneLLMResponseItems(value.ReplacementHistory)
+		value.ReplacementOrigins = append([]ReplacementOrigin(nil), value.ReplacementOrigins...)
+		return value
+	case WorldStateItem:
+		value.Sections = cloneRawMessageMap(value.Sections)
 		return value
 	case TurnContextItem:
 		value.OutputSchema = append(json.RawMessage(nil), value.OutputSchema...)
@@ -98,6 +109,17 @@ func CloneItem(item RolloutItem) RolloutItem {
 	default:
 		return item
 	}
+}
+
+func cloneRawMessageMap(source map[string]json.RawMessage) map[string]json.RawMessage {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string]json.RawMessage, len(source))
+	for key, value := range source {
+		cloned[key] = append(json.RawMessage(nil), value...)
+	}
+	return cloned
 }
 
 func cloneLLMResponseItems(items []llm.ResponseItem) []llm.ResponseItem {

@@ -58,6 +58,10 @@ func OpenWorkspace(ctx context.Context, options WorkspaceOptions) (WorkspaceResu
 	if err != nil {
 		return WorkspaceResult{}, err
 	}
+	compactionAssets, err := internalprompt.LoadCompactionAssets()
+	if err != nil {
+		return WorkspaceResult{}, err
+	}
 	auditFactory := options.Dependencies.AuditFactory
 	if auditFactory == nil {
 		return WorkspaceResult{}, errors.New("bootstrap audit factory is nil")
@@ -72,7 +76,7 @@ func OpenWorkspace(ctx context.Context, options WorkspaceOptions) (WorkspaceResu
 	}
 	manager, err := threadmanager.New(context.WithoutCancel(ctx), store, threadmanager.SharedServices{
 		Clock: clock, NextID: nextID,
-		SessionAdapters: options.Dependencies.sessionAdapters(modelMessages),
+		SessionAdapters: options.Dependencies.sessionAdapters(modelMessages, compactionAssets),
 	})
 	if err != nil {
 		return WorkspaceResult{}, err

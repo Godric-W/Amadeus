@@ -94,7 +94,7 @@ func (session *ModelClientSession) Sample(ctx context.Context, request SampleReq
 	}
 	definitions := make([]llm.ToolSpec, len(request.Tools))
 	for index, spec := range request.Tools {
-		definitions[index] = llm.ToolSpec{Name: spec.Name, Description: spec.Description, InputSchema: append([]byte(nil), spec.InputSchema...)}
+		definitions[index] = llm.ToolSpec{Name: spec.Name, Description: spec.Description, InputSchema: append([]byte(nil), spec.InputSchema...), OutputSchema: append([]byte(nil), spec.OutputSchema...), Strict: spec.Strict}
 	}
 	modelInfo := session.client.Model()
 	modelRequest := llm.Request{

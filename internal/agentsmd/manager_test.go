@@ -38,6 +38,9 @@ func TestAgentsMdManagerLoadsUserAndScopedProjectDocuments(t *testing.T) {
 		t.Fatalf("loaded AGENTS.md = %#v changed=%v", loaded, changed)
 	}
 	rendered := loaded.Render()
+	if !strings.HasPrefix(rendered, "# AGENTS.md instructions for ") || !strings.Contains(rendered, "<INSTRUCTIONS>") || !strings.HasSuffix(rendered, "</INSTRUCTIONS>") || strings.Contains(rendered, "amadeus.agents_md") {
+		t.Fatalf("AGENTS.md model fragment has the wrong contract: %s", rendered)
+	}
 	userIndex := strings.Index(rendered, "user rules")
 	rootIndex := strings.Index(rendered, "root rules")
 	packageIndex := strings.Index(rendered, "package rules")

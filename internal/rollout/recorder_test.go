@@ -179,7 +179,7 @@ func TestRecorderRejectsUnsupportedAndCorruptLines(t *testing.T) {
 	}
 
 	unsupported := filepath.Join(t.TempDir(), "unsupported.jsonl")
-	content := `{"version":4,"sequence":1,"timestamp":"2026-08-20T01:02:03Z","type":"future_item","payload":{}}` + "\n"
+	content := `{"version":5,"sequence":1,"timestamp":"2026-08-20T01:02:03Z","type":"future_item","payload":{}}` + "\n"
 	if err := os.WriteFile(unsupported, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}

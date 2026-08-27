@@ -160,7 +160,7 @@ func buildSessionServices(ctx context.Context, owner *Session, base SessionServi
 	base.webSearch = toolRuntime.WebSearch
 	base.approvals = approvalPort
 	base.permissions = permissions
-	base.compaction = &agentcompact.Service{ModelInfo: modelInfo, ModelMessages: base.modelMessages}
+	base.compaction = &agentcompact.Service{ModelInfo: modelInfo, Assets: adapters.CompactionAssets}
 	base.fileSystem = fileSystem
 	base.visibility = toolRuntime.Visibility
 	base.source = configuration.Source.Clone()

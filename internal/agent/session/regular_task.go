@@ -37,14 +37,14 @@ func (sessionTask *regularTask) run(ctx context.Context, session *Session, turnC
 				}
 			}
 		}
-		if err := session.prepareTurn(ctx, sessionTask.runtime, sessionTask.goal, turnContext); err != nil {
-			return TaskOutput{}, err
-		}
 		modelSession, err := sessionTask.runtime.NewModelClientSession()
 		if err != nil {
 			return TaskOutput{}, err
 		}
 		sessionTask.modelSession = modelSession
+		if err := session.prepareInitialUserInput(ctx, sessionTask, *turnContext); err != nil {
+			return TaskOutput{}, err
+		}
 		sessionTask.initialized = true
 	}
 	if sessionTask.modelSession == nil {

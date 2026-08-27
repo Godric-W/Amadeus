@@ -31,7 +31,7 @@ func TestStoreDurableHistoryAndRebuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := store.Materialize(ctx, threadstore.CreateInput{
-		SessionID: testutil.SessionID(1), ID: testutil.ThreadID(1), CWD: "/workspace", Title: "Thread", CreatedAt: now,
+		SessionID: testutil.SessionID(1), ID: testutil.ThreadID(1), CWD: "/workspace", Title: "Thread", BaseInstructions: testutil.BaseInstructions("test-model"), CreatedAt: now,
 		GitSHA: "abc123", GitBranch: "main", GitOriginURL: "git@example.com:amadeus.git",
 	})
 	if err != nil {
@@ -94,6 +94,10 @@ func TestStoreDurableHistoryAndRebuild(t *testing.T) {
 	if history.Kind != threadstore.InitialHistoryResumed || len(history.Lines) != 5 {
 		t.Fatalf("history = %#v", history)
 	}
+	meta := history.Lines[0].Item.(rollout.SessionMetaItem)
+	if meta.BaseInstructions != testutil.BaseInstructions("test-model") {
+		t.Fatalf("session metadata base instructions = %#v", meta.BaseInstructions)
+	}
 	if err := stateStore.ReplaceThreads(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +132,7 @@ func TestStoreRejectsSecondActiveWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.Materialize(ctx, threadstore.CreateInput{SessionID: testutil.SessionID(1), ID: testutil.ThreadID(1), CWD: "/workspace", Title: "Thread", CreatedAt: time.Now().UTC()}); err != nil {
+	if _, err := store.Materialize(ctx, threadstore.CreateInput{SessionID: testutil.SessionID(1), ID: testutil.ThreadID(1), CWD: "/workspace", Title: "Thread", BaseInstructions: testutil.BaseInstructions("test-model"), CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.OpenWriter(ctx, testutil.ThreadID(1)); err == nil {
@@ -155,10 +159,10 @@ func TestRebuildIndexRestoresChildParentRelationWithoutSessionColumn(t *testing.
 	now := time.Now().UTC()
 	rootID, childID := testutil.ThreadID(10), testutil.ThreadID(11)
 	sessionID := protocol.SessionIDFromThreadID(rootID)
-	if _, err := store.Materialize(ctx, threadstore.CreateInput{SessionID: sessionID, ID: rootID, Source: protocol.RootSessionSource(), CWD: "/workspace", Title: "Root", CreatedAt: now}); err != nil {
+	if _, err := store.Materialize(ctx, threadstore.CreateInput{SessionID: sessionID, ID: rootID, Source: protocol.RootSessionSource(), CWD: "/workspace", Title: "Root", BaseInstructions: testutil.BaseInstructions("test-model"), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Materialize(ctx, threadstore.CreateInput{SessionID: sessionID, ID: childID, Source: protocol.NewSubAgentSessionSource(rootID, 1, "atlas", "explorer"), CWD: "/workspace", Title: "Child", CreatedAt: now}); err != nil {
+	if _, err := store.Materialize(ctx, threadstore.CreateInput{SessionID: sessionID, ID: childID, Source: protocol.NewSubAgentSessionSource(rootID, 1, "atlas", "explorer"), CWD: "/workspace", Title: "Child", BaseInstructions: testutil.BaseInstructions("test-model"), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CloseWriter(ctx, rootID); err != nil {
@@ -203,7 +207,7 @@ func TestBufferedAppendDoesNotAdvanceSQLiteBeforeDurableAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.Materialize(ctx, threadstore.CreateInput{SessionID: testutil.SessionID(2), ID: testutil.ThreadID(2), CWD: "/workspace", Title: "Thread", CreatedAt: time.Now().UTC()}); err != nil {
+	if _, err := store.Materialize(ctx, threadstore.CreateInput{SessionID: testutil.SessionID(2), ID: testutil.ThreadID(2), CWD: "/workspace", Title: "Thread", BaseInstructions: testutil.BaseInstructions("test-model"), CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	response, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "buffered preview"})
@@ -287,7 +291,7 @@ func TestDurableAppendOrdersAppendFlushAndMetadataSync(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.Materialize(ctx, threadstore.CreateInput{SessionID: testutil.SessionID(3), ID: testutil.ThreadID(3), CWD: "/workspace", Title: "Thread", CreatedAt: time.Now().UTC()}); err != nil {
+	if _, err := store.Materialize(ctx, threadstore.CreateInput{SessionID: testutil.SessionID(3), ID: testutil.ThreadID(3), CWD: "/workspace", Title: "Thread", BaseInstructions: testutil.BaseInstructions("test-model"), CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	response, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "durable preview"})

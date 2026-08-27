@@ -18,19 +18,20 @@ type RolloutItem interface {
 }
 
 type SessionMetaItem struct {
-	SessionID      protocol.SessionID     `json:"session_id"`
-	ID             protocol.ThreadID      `json:"id"`
-	ParentThreadID *protocol.ThreadID     `json:"parent_thread_id,omitempty"`
-	Source         protocol.SessionSource `json:"source"`
-	CWD            string                 `json:"cwd"`
-	Title          string                 `json:"title"`
-	ModelProvider  string                 `json:"model_provider,omitempty"`
-	Model          string                 `json:"model,omitempty"`
-	GitSHA         string                 `json:"git_sha,omitempty"`
-	GitBranch      string                 `json:"git_branch,omitempty"`
-	GitOriginURL   string                 `json:"git_origin_url,omitempty"`
-	Archived       bool                   `json:"archived,omitempty"`
-	CreatedAt      time.Time              `json:"created_at"`
+	SessionID        protocol.SessionID     `json:"session_id"`
+	ID               protocol.ThreadID      `json:"id"`
+	ParentThreadID   *protocol.ThreadID     `json:"parent_thread_id,omitempty"`
+	Source           protocol.SessionSource `json:"source"`
+	CWD              string                 `json:"cwd"`
+	Title            string                 `json:"title"`
+	ModelProvider    string                 `json:"model_provider,omitempty"`
+	Model            string                 `json:"model,omitempty"`
+	BaseInstructions llm.BaseInstructions   `json:"base_instructions"`
+	GitSHA           string                 `json:"git_sha,omitempty"`
+	GitBranch        string                 `json:"git_branch,omitempty"`
+	GitOriginURL     string                 `json:"git_origin_url,omitempty"`
+	Archived         bool                   `json:"archived,omitempty"`
+	CreatedAt        time.Time              `json:"created_at"`
 }
 
 func (SessionMetaItem) isRolloutItem() {}
@@ -41,6 +42,9 @@ func (item SessionMetaItem) Validate() error {
 	}
 	if strings.TrimSpace(item.CWD) == "" || strings.TrimSpace(item.Title) == "" || item.CreatedAt.IsZero() {
 		return errors.New("session meta item is incomplete")
+	}
+	if err := item.BaseInstructions.ValidatePersisted(); err != nil {
+		return fmt.Errorf("session meta base instructions: %w", err)
 	}
 	if err := item.Source.Validate(); err != nil {
 		return fmt.Errorf("session meta source: %w", err)
@@ -67,10 +71,23 @@ type ResponseItemType string
 
 const (
 	ResponseUserMessage      ResponseItemType = "user_message"
+	ResponseContextMessage   ResponseItemType = "context_message"
 	ResponseAssistantMessage ResponseItemType = "assistant_message"
 	ResponseToolCall         ResponseItemType = "tool_call"
 	ResponseToolResult       ResponseItemType = "tool_result"
 )
+
+type ContextKind string
+
+const (
+	ContextKindWorldState    ContextKind = "world_state"
+	ContextKindExplicitSkill ContextKind = "explicit_skill"
+	ContextKindTurnBudget    ContextKind = "turn_budget"
+)
+
+func (kind ContextKind) Valid() bool {
+	return kind == ContextKindWorldState || kind == ContextKindExplicitSkill || kind == ContextKindTurnBudget
+}
 
 type ResponseError struct {
 	Kind    string `json:"kind,omitempty"`
@@ -81,20 +98,21 @@ type ResponseItem struct {
 	ThreadID protocol.ThreadID `json:"thread_id"`
 	TurnID   protocol.TurnID   `json:"turn_id"`
 
-	Type      ResponseItemType   `json:"response_type"`
-	Role      string             `json:"role,omitempty"`
-	Content   string             `json:"content,omitempty"`
-	Reasoning string             `json:"reasoning_content,omitempty"`
-	CallID    string             `json:"call_id,omitempty"`
-	Name      string             `json:"name,omitempty"`
-	Arguments json.RawMessage    `json:"arguments,omitempty"`
-	Status    string             `json:"status,omitempty"`
-	Result    *tool.ToolResult   `json:"result,omitempty"`
-	Error     *ResponseError     `json:"error,omitempty"`
-	Metadata  map[string]any     `json:"metadata,omitempty"`
-	Partial   bool               `json:"partial,omitempty"`
-	Duration  int64              `json:"duration_nanos,omitempty"`
-	Parts     []tool.ContentPart `json:"parts,omitempty"`
+	Type        ResponseItemType   `json:"response_type"`
+	Role        string             `json:"role,omitempty"`
+	ContextKind ContextKind        `json:"context_kind,omitempty"`
+	Content     string             `json:"content,omitempty"`
+	Reasoning   string             `json:"reasoning_content,omitempty"`
+	CallID      string             `json:"call_id,omitempty"`
+	Name        string             `json:"name,omitempty"`
+	Arguments   json.RawMessage    `json:"arguments,omitempty"`
+	Status      string             `json:"status,omitempty"`
+	Result      *tool.ToolResult   `json:"result,omitempty"`
+	Error       *ResponseError     `json:"error,omitempty"`
+	Metadata    map[string]any     `json:"metadata,omitempty"`
+	Partial     bool               `json:"partial,omitempty"`
+	Duration    int64              `json:"duration_nanos,omitempty"`
+	Parts       []tool.ContentPart `json:"parts,omitempty"`
 }
 
 func (ResponseItem) isRolloutItem() {}
@@ -122,6 +140,16 @@ func validateResponseItem(item ResponseItem, requireScope bool) error {
 		if item.Content == "" {
 			return errors.New("user response item content is empty")
 		}
+	case ResponseContextMessage:
+		if !item.ContextKind.Valid() {
+			return errors.New("context response item kind is invalid")
+		}
+		if item.Role != string(llm.RoleDeveloper) && item.Role != string(llm.RoleUser) {
+			return errors.New("context response item role is invalid")
+		}
+		if strings.TrimSpace(item.Content) == "" {
+			return errors.New("context response item content is empty")
+		}
 	case ResponseAssistantMessage:
 		if strings.TrimSpace(item.Content) == "" && strings.TrimSpace(item.Reasoning) == "" {
 			return errors.New("assistant response item is empty")
@@ -143,6 +171,38 @@ func validateResponseItem(item ResponseItem, requireScope bool) error {
 	return nil
 }
 
+func NewContextResponseItem(message llm.ResponseItem, kind ContextKind) (ResponseItem, error) {
+	item := ResponseItem{Type: ResponseContextMessage, Role: string(message.Role), ContextKind: kind, Content: message.Content}
+	if err := validateResponseItem(item, false); err != nil {
+		return ResponseItem{}, err
+	}
+	return item, nil
+}
+
+type WorldStateItem struct {
+	ThreadID protocol.ThreadID          `json:"thread_id"`
+	TurnID   protocol.TurnID            `json:"turn_id,omitempty"`
+	Full     bool                       `json:"full,omitempty"`
+	Sections map[string]json.RawMessage `json:"sections"`
+}
+
+func (WorldStateItem) isRolloutItem() {}
+
+func (item WorldStateItem) Validate() error {
+	if item.ThreadID.IsZero() {
+		return errors.New("world state item thread ID is empty")
+	}
+	if len(item.Sections) == 0 {
+		return errors.New("world state item has no sections")
+	}
+	for id, snapshot := range item.Sections {
+		if strings.TrimSpace(id) == "" || len(snapshot) == 0 || !json.Valid(snapshot) {
+			return errors.New("world state item section is invalid")
+		}
+	}
+	return nil
+}
+
 type CompactedItem struct {
 	ThreadID               protocol.ThreadID          `json:"thread_id"`
 	TurnID                 protocol.TurnID            `json:"turn_id"`
@@ -151,10 +211,25 @@ type CompactedItem struct {
 	Phase                  protocol.CompactionPhase   `json:"phase"`
 	Summary                string                     `json:"summary"`
 	ReplacementHistory     []llm.ResponseItem         `json:"replacement_history"`
+	ReplacementOrigins     []ReplacementOrigin        `json:"replacement_origins"`
 	CoveredThroughSequence int64                      `json:"covered_through_sequence"`
 	SourceHash             string                     `json:"source_hash"`
+	ResetWorldState        bool                       `json:"reset_world_state,omitempty"`
+	ResetTurnContext       bool                       `json:"reset_turn_context,omitempty"`
 	Provider               string                     `json:"provider,omitempty"`
 	Model                  string                     `json:"model,omitempty"`
+}
+
+type ReplacementOrigin string
+
+const (
+	ReplacementOriginUser       ReplacementOrigin = "user"
+	ReplacementOriginRuntime    ReplacementOrigin = "runtime"
+	ReplacementOriginCompaction ReplacementOrigin = "compaction"
+)
+
+func (origin ReplacementOrigin) Valid() bool {
+	return origin == ReplacementOriginUser || origin == ReplacementOriginRuntime || origin == ReplacementOriginCompaction
 }
 
 func (CompactedItem) isRolloutItem() {}
@@ -169,13 +244,20 @@ func (item CompactedItem) Validate() error {
 	if !item.Trigger.Valid() || !item.Reason.Valid() || !item.Phase.Valid() {
 		return errors.New("compacted item lifecycle is invalid")
 	}
-	if strings.TrimSpace(item.Summary) == "" || len(item.ReplacementHistory) == 0 || item.CoveredThroughSequence <= 0 || strings.TrimSpace(item.SourceHash) == "" {
+	if strings.TrimSpace(item.Summary) == "" || len(item.ReplacementHistory) == 0 || len(item.ReplacementOrigins) != len(item.ReplacementHistory) || item.CoveredThroughSequence <= 0 || strings.TrimSpace(item.SourceHash) == "" {
 		return errors.New("compacted item is incomplete")
 	}
-	for _, replacement := range item.ReplacementHistory {
-		if replacement.Role != llm.RoleUser || strings.TrimSpace(replacement.Content) == "" || len(replacement.ToolCalls) > 0 || replacement.ToolCallID != "" {
+	for index, replacement := range item.ReplacementHistory {
+		origin := item.ReplacementOrigins[index]
+		if !origin.Valid() || (replacement.Role != llm.RoleUser && replacement.Role != llm.RoleDeveloper) || strings.TrimSpace(replacement.Content) == "" || len(replacement.ToolCalls) > 0 || replacement.ToolCallID != "" {
 			return errors.New("compacted replacement history is invalid")
 		}
+		if origin == ReplacementOriginUser && replacement.Role != llm.RoleUser || origin == ReplacementOriginRuntime && replacement.Role != llm.RoleUser && replacement.Role != llm.RoleDeveloper || origin == ReplacementOriginCompaction && replacement.Role != llm.RoleUser {
+			return errors.New("compacted replacement origin does not match role")
+		}
+	}
+	if item.ReplacementOrigins[len(item.ReplacementOrigins)-1] != ReplacementOriginCompaction {
+		return errors.New("compacted replacement history does not end with compaction summary")
 	}
 	return nil
 }

@@ -20,19 +20,22 @@ func TestModelMessagesResolveBaseInstructionsUsesPersonalityVariables(t *testing
 		{name: "pragmatic", personality: "pragmatic", want: "pragmatic style"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			base, err := messages.ResolveBaseInstructions(test.personality)
+			base, err := messages.ResolveBaseInstructions(test.personality, "test-model")
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !strings.Contains(base.Text, test.want) || strings.Contains(base.Text, "{{ personality }}") {
 				t.Fatalf("resolved base instructions = %q", base.Text)
 			}
+			if base.Provenance.Type != BaseInstructionsModel || base.Provenance.Model != "test-model" {
+				t.Fatalf("resolved base provenance = %#v", base.Provenance)
+			}
 		})
 	}
 }
 
 func TestModelMessagesRejectsUnknownPersonality(t *testing.T) {
-	_, err := (ModelMessages{InstructionsTemplate: "base"}).ResolveBaseInstructions("unknown")
+	_, err := (ModelMessages{InstructionsTemplate: "base"}).ResolveBaseInstructions("unknown", "test-model")
 	if err == nil {
 		t.Fatal("unknown personality was accepted")
 	}
@@ -50,5 +53,17 @@ func TestPromptDomainRevisionsChangeWhenToolSpecChanges(t *testing.T) {
 	changed.Tools = []ToolSpec{second}
 	if prompt.RevisionID() == changed.RevisionID() {
 		t.Fatal("Prompt revision did not change after a ToolSpec change")
+	}
+}
+
+func TestRequestToolSpecsCloneInputAndOutputSchemas(t *testing.T) {
+	request := Request{Prompt: Prompt{Tools: []ToolSpec{{
+		Name: "read", InputSchema: []byte(`{"type":"object"}`), OutputSchema: []byte(`{"type":"object"}`),
+	}}}}
+	cloned := request.ToolSpecs()
+	cloned[0].InputSchema[0] = '['
+	cloned[0].OutputSchema[0] = '['
+	if request.Prompt.Tools[0].InputSchema[0] == '[' || request.Prompt.Tools[0].OutputSchema[0] == '[' {
+		t.Fatal("request ToolSpec clone shares schema storage")
 	}
 }
