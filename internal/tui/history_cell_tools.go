@@ -159,7 +159,8 @@ func (cell *ToolHistoryCell) DisplayLines(ctx HistoryRenderContext) []styledLine
 	}
 	return cell.linesForMode(HistoryRenderRich, ctx)
 }
-func (*ToolHistoryCell) IsStreamContinuation() bool { return false }
+func (*ToolHistoryCell) IsStreamContinuation() bool    { return false }
+func (*ToolHistoryCell) HistoryBoundaryBlankRows() int { return 1 }
 
 func (cell *ToolHistoryCell) projections() []HistoryCell {
 	activities := append([]*toolActivity(nil), cell.activities...)

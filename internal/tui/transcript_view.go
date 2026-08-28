@@ -9,91 +9,72 @@ import (
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
-func (model appModel) transcriptContent() string {
-	cells := append([]HistoryCell(nil), model.historyCells...)
-	if model.draft != "" {
-		cells = append(cells, NewAgentMessageCell(model.draft))
-	}
-	if model.transcript.ActiveCell != nil {
-		cells = append(cells, model.transcript.ActiveCell)
-	}
-	return renderHistoryCells(cells, model.historyMode, model.historyRenderContext())
+func (model appModel) transcriptCells() []HistoryCell {
+	return model.TranscriptSurface.unprintedCells(model.transcript.ActiveCell)
 }
 
-func (model *appModel) displayLinesForHistoryInsert(cell HistoryCell) []styledLine {
-	if model == nil || cell == nil {
-		return nil
+func (model appModel) transcriptContent(height int) string {
+	return model.TranscriptSurface.render(model.transcriptCells(), model.historyMode, model.historyRenderContext(), height)
+}
+
+func (model appModel) transcriptViewportHeight(composer, working string) int {
+	if len(model.transcriptCells()) == 0 {
+		return 0
 	}
-	lines := historyLinesForMode(cell, model.historyMode, model.historyRenderContext())
-	if len(lines) == 0 {
-		return nil
+	height := model.height - lipgloss.Height(composer) - 2
+	if working != "" {
+		height -= lipgloss.Height(working) + 2
 	}
-	if model.hasEmittedHistoryLines && !cell.IsStreamContinuation() {
-		lines = append([]styledLine{{}}, lines...)
+	return maxInt(0, height)
+}
+
+func (model *appModel) scrollTranscriptPage(direction int) bool {
+	if model == nil || direction == 0 {
+		return false
 	}
-	model.hasEmittedHistoryLines = true
-	return lines
+	composer := model.composerView()
+	working := model.workingLine()
+	height := model.transcriptViewportHeight(composer, working)
+	if height <= 0 {
+		return false
+	}
+	return model.TranscriptSurface.scroll(
+		model.transcriptCells(),
+		model.historyMode,
+		model.historyRenderContext(),
+		height,
+		direction*height,
+	)
 }
 
 func (model *appModel) flushHistory() tea.Cmd {
-	if model == nil || len(model.pendingHistoryCells) == 0 {
+	if model == nil {
 		return nil
 	}
-	pending := append([]HistoryCell(nil), model.pendingHistoryCells...)
-	model.pendingHistoryCells = nil
-	var lines []styledLine
-	for _, cell := range pending {
-		lines = append(lines, model.displayLinesForHistoryInsert(cell)...)
+	prints := model.TranscriptSurface.takePrintableCells()
+	commands := make([]tea.Cmd, 0, len(prints))
+	ctx := model.historyRenderContext()
+	for _, printCell := range prints {
+		lines := historyLinesForMode(printCell.cell, model.historyMode, ctx)
+		if printCell.leadingBlankRows > 0 {
+			lines = append(make([]styledLine, printCell.leadingBlankRows), lines...)
+		}
+		output := boundHistoryPrintWidth(renderStyledLines(lines, ctx), model.width)
+		if output != "" {
+			commands = append(commands, tea.Println(output))
+		}
 	}
-	output := renderStyledLines(lines, model.historyRenderContext())
-	if output == "" {
-		return nil
-	}
-	return tea.Println(output)
+	return tea.Sequence(commands...)
 }
 
-func (model appModel) renderActiveDraft() string {
-	if strings.TrimSpace(model.draft) == "" {
-		return ""
+func boundHistoryPrintWidth(rendered string, width int) string {
+	if rendered == "" || width <= 0 {
+		return rendered
 	}
-	available := maxInt(1, model.height-lipgloss.Height(model.composerView())-2)
-	sourceLines := strings.Split(model.draft, "\n")
-	if len(sourceLines) > available {
-		sourceLines = sourceLines[len(sourceLines)-available:]
-	}
-	rendered := model.renderHistoryCell(NewAgentMessageCell(strings.Join(sourceLines, "\n")))
 	lines := strings.Split(rendered, "\n")
-	if len(lines) > available {
-		lines = lines[len(lines)-available:]
+	for index := range lines {
+		lines[index] = xansi.Truncate(lines[index], width, "")
 	}
-	return strings.Join(lines, "\n")
-}
-
-func (model appModel) renderActiveCell() string {
-	if model.transcript.ActiveCell == nil {
-		return ""
-	}
-	rendered := model.renderHistoryCell(model.transcript.ActiveCell)
-	available := maxInt(1, model.height-lipgloss.Height(model.composerView())-4)
-	lines := strings.Split(rendered, "\n")
-	if len(lines) > available {
-		lines = lines[len(lines)-available:]
-	}
-	return strings.Join(lines, "\n")
-}
-
-func prefixRenderedBlock(value, prefix string) string {
-	lines := strings.Split(strings.TrimRight(value, "\n"), "\n")
-	for len(lines) > 0 && strings.TrimSpace(xansi.Strip(lines[0])) == "" {
-		lines = lines[1:]
-	}
-	for len(lines) > 0 && strings.TrimSpace(xansi.Strip(lines[len(lines)-1])) == "" {
-		lines = lines[:len(lines)-1]
-	}
-	if len(lines) == 0 {
-		return strings.TrimSpace(prefix)
-	}
-	lines[0] = prefix + lines[0]
 	return strings.Join(lines, "\n")
 }
 

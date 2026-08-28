@@ -31,62 +31,86 @@ func (cell UserMessageCell) RawLines() []string {
 
 func (UserMessageCell) IsStreamContinuation() bool { return false }
 
-type AgentMessageCell struct{ Markdown string }
-
-func NewAgentMessageCell(markdown string) HistoryCell {
-	return AgentMessageCell{Markdown: strings.TrimSpace(markdown)}
+type AgentMarkdownCell struct {
+	Source MarkdownSource
+	Cache  markdownRenderCache
 }
 
-func (cell AgentMessageCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
-	content := sanitizeContent(cell.Markdown)
-	if content == "" {
+func NewAgentMarkdownCell(source MarkdownSource) HistoryCell {
+	return &AgentMarkdownCell{Source: source}
+}
+
+func (cell *AgentMarkdownCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
+	return renderMarkdownCell(cell.Source, &cell.Cache, ctx, "• ")
+}
+
+func (cell *AgentMarkdownCell) RawLines() []string {
+	return rawLinesFromMarkdownSource(cell.Source.Text)
+}
+func (*AgentMarkdownCell) IsStreamContinuation() bool { return false }
+
+type ProposedPlanCell struct {
+	Source MarkdownSource
+	Cache  markdownRenderCache
+}
+
+func NewProposedPlanCell(source MarkdownSource) HistoryCell { return &ProposedPlanCell{Source: source} }
+
+func (cell *ProposedPlanCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
+	lines := []styledLine{{{Text: "• ", Style: styleDim}, {Text: "Proposed Plan", Style: styleBold}}}
+	body := renderMarkdownCell(cell.Source, &cell.Cache, ctx, "  ")
+	return append(lines, body...)
+}
+
+func (cell *ProposedPlanCell) RawLines() []string {
+	return append([]string{"Proposed Plan"}, rawLinesFromMarkdownSource(cell.Source.Text)...)
+}
+func (*ProposedPlanCell) IsStreamContinuation() bool { return false }
+
+func renderMarkdownCell(source MarkdownSource, cache *markdownRenderCache, ctx HistoryRenderContext, firstPrefix string) []styledLine {
+	if source.Text == "" {
 		return nil
 	}
-	rendered := prefixRenderedBlock(content, "• ")
-	if ctx.Markdown != nil {
-		if markdown, err := ctx.Markdown.Render(content); err == nil {
-			rendered = prefixRenderedBlock(markdown, "• ")
+	key := MarkdownRenderKey{Width: ctx.Width, Mode: HistoryRenderRich, Palette: ctx.Palette}
+	lines := cache.Render(key, func() []MarkdownLine {
+		return wrapMarkdownLines(newMarkdownRenderer().Render(source, HistoryRenderRich), maxInt(12, ctx.Width-2))
+	})
+	styled := styledLinesFromMarkdown(lines)
+	if len(styled) == 0 {
+		return nil
+	}
+	styled[0] = append(styledLine{{Text: firstPrefix, Style: styleDim}}, styled[0]...)
+	for index := 1; index < len(styled); index++ {
+		styled[index] = append(styledLine{{Text: "  ", Style: styleDim}}, styled[index]...)
+	}
+	return styled
+}
+
+func styledLinesFromMarkdown(lines []MarkdownLine) []styledLine {
+	result := make([]styledLine, 0, len(lines))
+	for _, line := range lines {
+		spans := append(append([]MarkdownSpan(nil), line.InitialIndent...), line.Spans...)
+		styled := make(styledLine, 0, len(spans))
+		for _, span := range spans {
+			if span.Text != "" {
+				styled = append(styled, styledSpan{Text: span.Text, Style: span.Style, Markdown: span.Markdown, Syntax: span.Syntax, Destination: span.Destination})
+			}
 		}
+		result = append(result, styled)
 	}
-	return styledLinesFromText(rendered, styleRendered)
+	return result
 }
 
-func (cell AgentMessageCell) RawLines() []string {
-	if strings.TrimSpace(cell.Markdown) == "" {
+func rawLinesFromMarkdownSource(source string) []string {
+	if source == "" {
 		return nil
 	}
-	return strings.Split(cell.Markdown, "\n")
-}
-
-func (AgentMessageCell) IsStreamContinuation() bool { return false }
-
-type ProposedPlanCell struct{ Markdown string }
-
-func NewProposedPlanCell(markdown string) HistoryCell {
-	return ProposedPlanCell{Markdown: strings.TrimSpace(markdown)}
-}
-
-func (cell ProposedPlanCell) DisplayLines(ctx HistoryRenderContext) []styledLine {
-	content := sanitizeContent(cell.Markdown)
-	if content == "" {
-		return nil
+	lines := strings.Split(source, "\n")
+	if len(lines) > 1 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
 	}
-	body := content
-	if ctx.Markdown != nil {
-		if rendered, err := ctx.Markdown.Render(content); err == nil {
-			body = rendered
-		}
-	}
-	return append([]styledLine{{{Text: "• ", Style: styleDim}, {Text: "Proposed Plan", Style: styleBold}}}, styledLinesFromText(prefixRenderedBlock(body, "  "), styleRendered)...)
+	return lines
 }
-
-func (cell ProposedPlanCell) RawLines() []string {
-	if cell.Markdown == "" {
-		return nil
-	}
-	return append([]string{"Proposed Plan"}, strings.Split(cell.Markdown, "\n")...)
-}
-func (ProposedPlanCell) IsStreamContinuation() bool { return false }
 
 type PlanUpdateCell struct {
 	Explanation string

@@ -108,6 +108,47 @@ func TestToolHistoryCellExecLifecycleAndOutputBounds(t *testing.T) {
 	}
 }
 
+func TestExploredAndRanTreesUseOneBlankRowInsideAndAcrossToolCells(t *testing.T) {
+	newExplore := func() *ToolHistoryCell {
+		cell := newToolHistoryCell()
+		started := toolStartedMessage("read-spacing", "read", "read", "Read docs/design.md", "")
+		cell.Apply(started)
+		cell.Apply(toolCompletedMessage(started, protocol.ItemStatusCompleted, "", "0s", false))
+		return cell
+	}
+	newExec := func() *ToolHistoryCell {
+		cell := newToolHistoryCell()
+		started := toolStartedMessage("exec-spacing", "execute_command", "write", "Run tests", "go test ./...")
+		cell.Apply(started)
+		cell.Apply(toolCompletedMessage(started, protocol.ItemStatusCompleted, "ok", "1s", false))
+		return cell
+	}
+	assertOneBlankBeforeRan := func(name, rendered string) {
+		t.Helper()
+		lines := strings.Split(xansi.Strip(rendered), "\n")
+		ran := -1
+		for index, line := range lines {
+			if strings.Contains(line, "Ran") {
+				ran = index
+				break
+			}
+		}
+		if ran < 2 || lines[ran-1] != "" || lines[ran-2] == "" {
+			t.Fatalf("%s Explored/Ran spacing = %#v", name, lines)
+		}
+	}
+
+	combined := newToolHistoryCell()
+	read := toolStartedMessage("read-combined", "read", "read", "Read docs/design.md", "")
+	exec := toolStartedMessage("exec-combined", "execute_command", "write", "Run tests", "go test ./...")
+	for _, started := range []protocol.ItemStartedEvent{read, exec} {
+		combined.Apply(started)
+		combined.Apply(toolCompletedMessage(started, protocol.ItemStatusCompleted, "ok", "1s", false))
+	}
+	assertOneBlankBeforeRan("within cell", renderHistoryCellForTest(combined, noColorRenderContext()))
+	assertOneBlankBeforeRan("across cells", renderHistoryCells([]HistoryCell{newExplore(), newExec()}, HistoryRenderRich, noColorRenderContext()))
+}
+
 func TestToolHistoryCellPreservesCallSequenceAndFailure(t *testing.T) {
 	cell := newToolHistoryCell()
 	second := toolStartedMessage("second", "execute_command", "write", "Second", "")

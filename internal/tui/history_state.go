@@ -27,34 +27,6 @@ func (model *appModel) shouldRenderRuntimeUserMessage(item protocol.TurnItem) bo
 	return true
 }
 
-func (model *appModel) recoverDeltaStart(event protocol.Event) bool {
-	var itemID protocol.ItemID
-	var kind protocol.ItemKind
-	switch message := event.Msg.(type) {
-	case protocol.AgentMessageContentDeltaEvent:
-		itemID, kind = message.ItemID, protocol.ItemAssistantMessage
-	case protocol.ReasoningContentDeltaEvent:
-		itemID, kind = message.ItemID, protocol.ItemReasoning
-	case protocol.CommandOutputDeltaEvent:
-		itemID, kind = message.ItemID, protocol.ItemCommandExecution
-	case protocol.PlanDeltaEvent:
-		itemID, kind = message.ItemID, protocol.ItemPlan
-	default:
-		return false
-	}
-	if strings.TrimSpace(string(itemID)) == "" {
-		return false
-	}
-	now := time.Now().UTC()
-	return model.protocolEvents.Apply(protocol.Event{
-		ID: event.ID,
-		Msg: protocol.ItemStartedEvent{
-			ThreadID: protocol.ThreadIDOf(event.Msg), TurnID: protocol.TurnIDOf(event.Msg),
-			Item: protocol.TurnItem{ID: itemID, Kind: kind, Status: protocol.ItemInProgress, CreatedAt: now},
-		},
-	}) == nil
-}
-
 func (model *appModel) restoreCompletedItems(items []protocol.TurnItem) {
 	if model == nil {
 		return
@@ -70,12 +42,11 @@ func (model *appModel) restoreCompletedItems(items []protocol.TurnItem) {
 			model.insertHistoryCell(NewUserMessageCell(item.Text))
 		case protocol.ItemAssistantMessage:
 			model.flushCompletedActivityBeforeBoundary()
-			model.transcript.LastAgentMarkdown = item.Text
-			model.insertHistoryCell(NewAgentMessageCell(item.Text))
+			model.insertHistoryCell(NewAgentMarkdownCell(newMarkdownSource(item.Text, model.session.Configuration.CWD)))
 		case protocol.ItemReasoning:
 		case protocol.ItemPlan:
 			model.flushCompletedActivityBeforeBoundary()
-			model.insertHistoryCell(NewProposedPlanCell(item.Text))
+			model.insertHistoryCell(NewProposedPlanCell(newMarkdownSource(item.Text, model.session.Configuration.CWD)))
 		case protocol.ItemContextCompaction:
 			model.flushCompletedActivityBeforeBoundary()
 			model.insertHistoryCell(NewContextCompactedCell())
@@ -114,26 +85,26 @@ func collaborationModeChangedMessage(mode protocol.ModeKind) string {
 }
 
 func (model *appModel) beginFinalMessage() {
-	if model.draft != "" || !model.transcript.HadWorkActivity || !model.transcript.NeedsFinalMessageSeparator {
+	if !model.transcript.HadWorkActivity || !model.transcript.NeedsFinalMessageSeparator {
 		return
 	}
 	model.flushActiveHistoryCell()
-	model.insertHistoryCell(FinalMessageSeparator{})
+	model.insertHistoryCellNow(FinalMessageSeparator{})
 	model.transcript.NeedsFinalMessageSeparator = false
 }
 
-func (model *appModel) finishDraft() {
-	if strings.TrimSpace(model.draft) != "" {
-		model.transcript.LastAgentMarkdown = model.draft
-		model.insertHistoryCell(NewAgentMessageCell(model.draft))
-		if model.transcript.HadWorkActivity {
-			model.transcript.NeedsFinalMessageSeparator = true
-		}
+func (model *appModel) insertHistoryCell(cell HistoryCell) {
+	if model == nil || cell == nil {
+		return
 	}
-	model.draft = ""
+	if model.markdownStreams.protectingTranscript() {
+		model.markdownStreams.deferHistoryCell(cell)
+		return
+	}
+	model.insertHistoryCellNow(cell)
 }
 
-func (model *appModel) insertHistoryCell(cell HistoryCell) {
+func (model *appModel) insertHistoryCellNow(cell HistoryCell) {
 	if model == nil || cell == nil {
 		return
 	}
@@ -141,7 +112,16 @@ func (model *appModel) insertHistoryCell(cell HistoryCell) {
 		return
 	}
 	model.historyCells = append(model.historyCells, cell)
-	model.pendingHistoryCells = append(model.pendingHistoryCells, cell)
+}
+
+func (model *appModel) insertStreamHistoryCell(cell HistoryCell) {
+	if model == nil || cell == nil {
+		return
+	}
+	if len(cell.RawLines()) == 0 && len(cell.DisplayLines(model.historyRenderContext())) == 0 {
+		return
+	}
+	model.historyCells = append(model.historyCells, cell)
 }
 
 func (model *appModel) flushActiveHistoryCell() {
@@ -157,10 +137,19 @@ func (model *appModel) resetHistory() {
 	if model == nil {
 		return
 	}
+	model.clearMarkdownStreams()
+	model.markdownStreams.deferred = nil
 	model.transcript.reset()
-	model.historyCells = nil
-	model.pendingHistoryCells = nil
-	model.hasEmittedHistoryLines = false
+	model.TranscriptSurface.reset()
+}
+
+func (model appModel) latestAgentMarkdown() string {
+	for index := len(model.historyCells) - 1; index >= 0; index-- {
+		if cell, ok := model.historyCells[index].(*AgentMarkdownCell); ok {
+			return cell.Source.Text
+		}
+	}
+	return ""
 }
 
 func (model appModel) historyRenderContext() HistoryRenderContext {
@@ -169,7 +158,7 @@ func (model appModel) historyRenderContext() HistoryRenderContext {
 		now = model.clock.Now()
 	}
 	return HistoryRenderContext{
-		Width: maxInt(36, model.width-3), Palette: model.palette, Markdown: model.renderer,
+		Width: maxInt(36, model.width-3), Palette: model.palette, Hyperlinks: model.hyperlinks && !model.palette.NoColor,
 		Now: now, MotionStart: model.motionStartedAt, Motion: model.motion,
 	}
 }

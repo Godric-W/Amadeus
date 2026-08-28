@@ -1,13 +1,13 @@
 # Amadeus 开发进度
 
-> 最近更新：2026-08-26
+> 最近更新：2026-08-28
 > 主要架构与 Contract 工作文档：`docs/design.md`
-> 当前阶段：AA. Prompt Ownership + Lifecycle Realignment（TODO）
-> 下一任务：AA-01 Reference Pinning + Prompt Source Matrix
+> 当前阶段：AB. Source-backed Markdown Streaming + TUI Render Lifecycle（DONE，2026-08-28 reopened and completed）
+> 下一任务：未排定
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
-A-AA 的条目保留为历史与当前阶段记录；其中与当前 `docs/design.md` 冲突的 token/compaction 结论由 W 取代，第一轮外层 package 归属由 X/Y 收敛，internal package、目录和责任文件布局由 Z 取代，Prompt ownership/text/WorldState/wire/Resume 结论由 AA 最终收敛。历史 DONE 只记录当时迁移事实，不构成恢复旧 owner、旧路径、旧 Prompt prefix map 或已删除中间 frontend 的依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
+A-AB 的条目保留为历史与当前阶段记录；其中与当前 `docs/design.md` 冲突的 token/compaction 结论由 W 取代，第一轮外层 package 归属由 X/Y 收敛，internal package、目录和责任文件布局由 Z 取代，Prompt ownership/text/WorldState/wire/Resume 结论由 AA 最终收敛。AB 在 2026-08-28 的真实 renderer/contract 审计后重新开启；此前 AB `DONE` 只记录第一轮迁移事实，不证明 transcript viewport、completion ordering、parser boundary 或 layout contract 已闭环。历史 DONE 不构成恢复旧 owner、旧路径、旧 Prompt prefix map 或已删除中间 frontend 的依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
 
 ## 1. 状态与完成标准
 
@@ -52,6 +52,7 @@ A Runtime + Persistence
 → Y Initial Prompt + Single TUI Frontend Alignment
 → Z Codex-aligned Internal Package + Source Layout
 → AA Prompt Ownership + Lifecycle Realignment
+→ AB Source-backed Markdown Streaming + TUI Render Lifecycle
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先分析对应参考源码，再同步更新 `docs/design.md` 与本文。
@@ -2093,3 +2094,112 @@ AA-01～AA-09 是同一次 Architecture Closure 的依赖顺序，不是可长�
 - `/status` 增加只读 Prompt diagnostics，展示 Base provenance、WorldState baseline/revision、Provider wire和各职责资产的短revision，不建立第二份Prompt状态。
 - Rollout 当前格式提升为 v5并拒绝旧格式 decoder；SQLite metadata index schema仍独立保持v4。两者版本域不同，不要求同步递增，也不提供开发期兼容 migration。
 - 验收通过：`make check`、全仓 `go test -race ./... -count=1`、Responses/Chat Coding Agent与Core Tools Provider mock E2E、architecture guards及`git diff --check`。
+
+## 33. AB. Source-backed Markdown Streaming + TUI Render Lifecycle — `DONE`（2026-08-28 reopened and completed）
+
+### 目标
+
+按`docs/design.md`第19.3节和当前`../codex-main/codex-rs/tui/src/{insert_history.rs,tui.rs,markdown_render.rs,markdown_stream.rs,streaming/*,history_cell/messages.rs,chatwidget/streaming.rs}`，完成适合Amadeus基础Agent的source-backed Markdown/TUI主链。Codex决定source/stream/final-cell与native history lifecycle；Goldmark决定grammar/AST/source offset；Chroma决定code highlighting；Bubble Tea以immutable native scrollback + bounded mutable frame适配，不复制Ratatui terminal engine。
+
+第一轮AB已经移除Glamour opaque ANSI和全局draft主链，但2026-08-28审计确认其把stock Bubble Tea超高`View()`误当成native scrollback、用空行扫描代替Goldmark top-level boundary、用trailing cell scan代替stream attachment，并缺失文档声明的indent/table/link/wrap行为。因此此前`DONE`撤销；保留已完成的迁移基础，按以下依赖顺序重新闭环。
+
+### 已完成的迁移基础
+
+- [x] 删除Glamour生产渲染、`appModel.draft`、`proposedPlanDraft`、`LastAgentMarkdown`、`recoverDeltaStart`和opaque `styleRendered` Markdown主链；Goldmark成为直接grammar依赖，Chroma承担syntax tokenization。
+- [x] 建立exact `MarkdownSource`、newline-gated collector、Item-scoped Assistant/Plan controller、stable queue/tail类型、source-backed final cell和render cache；raw source、临时parse source与derived render不再混存。
+- [x] Completed Assistant/Plan Text覆盖live preview并成为final authority；`AgentMarkdownCell`保存exact text和冻结CWD，`/copy`读取completed source而不是ANSI或active tail。
+- [x] Protocol、Session、Application和Rollout不依赖Goldmark node、terminal width、Chroma theme或TUI render cache。
+
+### AB-01：Reference Pin + Reopen Audit — `DONE`
+
+- [x] Codex reference pin：`markdown_stream.rs` `e488482e601ec6558fcd15702ee4fa2e729a82c6cebaea27c3d15e29b714e71f`；`streaming/controller.rs` `85b7e0b5ebeab1483df382051b831121625806c308f0fcd30080709ffdc1041e`；`streaming/render.rs` `7661640d0b6adfd0417acb93458d083ab3343c1aa65b4b0f9a9eeff0e5178621`；`history_cell/messages.rs` `9a100cb23f3749ba63980c321ce7ea5a10dde3a7248272a79dba14dfc20b5a1f`；`chatwidget/streaming.rs` `cfa52d2f78cd2e7c411de162e538aabe97ea3b29d299fb054a6d325b3cf8e7e6`。
+- [x] 通过Bubble Tea `standardRenderer`源码确认：超过terminal height的frame顶部行会被丢弃，不会自动进入native scrollback；原“surface返回完整超高history即可自然滚动”的结论和对应`View()`单测无效。
+- [x] 初次选择model-owned bounded transcript viewport；该结论在真实长final输出测试后由AB-10取代。仍不复制Codex custom terminal reflow、inline visualization、theme picker、remote image或raw reasoning transcript。
+- [x] 记录completion/reset尾部扫描、非stream event interleave、空行stable boundary、中宽table截断、fragment不flush、indent metadata缺失、local/web link contract和控制字符投影问题，并同步修订`docs/design.md`。
+
+### AB-02：Bounded Transcript Surface + Real Renderer Contract — `SUPERSEDED` by AB-10
+
+- [x] `TranscriptSurface`成为全部HistoryCell、active tail、viewport offset和follow-bottom的唯一owner；`appModel.View()`只组合surface viewport、working state、overlay和composer，不返回超过terminal height的frame。
+- [x] 依据composer/footer/overlay实际高度计算transcript可用区域；`PgUp/PgDown`、回到底部、新内容到达和follow-bottom切换具有确定行为，用户查看旧历史时不被强制拉回底部。
+- [x] Resize从source-backed cells重新投影并clamp offset；follow-bottom保持底部，非follow状态以visual-line anchor尽量保持同一位置，不保存旧width ANSI rows。
+- [x] 增加真实12行PTY/Bubble Tea renderer contract test，证明超过一屏的早期history仍可导航、主frame不被standard renderer静默裁顶；删除“`View()`越高越正确”的旧测试。
+
+### AB-03：Stream Attachment + Deferred Projection Ordering — `DONE`
+
+- [x] `TranscriptSurface`在首个非空Assistant/Plan delta时冻结`StreamAttachment{ItemID, Kind, RunStart}`；stable cells和tail只能追加到该attachment，completion/reset/interrupt按精确range替换或删除，不使用`trailingStreamRun`猜测owner。
+- [x] `markdownStreamHost`实现Codex-style defer-or-apply FIFO。Active visible stream期间会插入、完成或删除HistoryCell的Warning、Tool、Approval、UserInput、diagnostic和application projection先延迟；stream replacement完成后按原Event顺序flush。
+- [x] `Reset=true`原子删除旧attempt range并清空collector/render/queue/tail；completed authoritative Text无delta、匹配delta和修正delta三条路径都只产生一个final cell。
+- [x] 覆盖warning/diagnostic interleave、Approval、retry reset、wrong/late ItemID、completion mismatch、terminal error、Clear和attachment cleanup；Protocol state仍按到达顺序验证，只有UI projection延迟。
+
+### AB-04：Goldmark-backed Stable Boundary + Incremental Cost — `DONE`
+
+- [x] Collector保存exact attempt source，并仅在最后newline推进committed watermark；finalize处理无newline尾行。
+- [x] `StreamingRender`只解析`stable_source_len`后的pending source，以Goldmark最后一个top-level node source start决定mutable boundary；fence、loose list、blockquote和HTML block内部空行不得推进stable prefix。
+- [x] 使用Goldmark `parser.Context.References()`识别reference definitions；source-wide table-fence transform无法保持offset时full recompute且不推进stable boundary。删除`lastMarkdownBlockBoundary`和字符串`hasMarkdownReferenceDefinition`。
+- [x] Collector只在新增delta查找newline，table holdback只扫描mutable suffix，incremental render复用stable prefix；增加100段stable-source推进测试和200段stream benchmark。
+
+### AB-05：Structured Writer + Block/Indent Semantics — `DONE`
+
+- [x] Goldmark AST直接生成typed spans，composable strong/emphasis/strikethrough/link style与Chroma token已经进入生产路径。
+- [x] `MarkdownLine`实现`InitialIndent`、`SubsequentIndent`、`BlockKind`和`NoWrap`；Writer按paragraph/heading/list/item/blockquote/code/table生命周期维护indent/style/link stack，删除从dim prefix文本猜continuation的逻辑。
+- [x] Goldmark soft break、hard break和soft wrap分别投影；nested/loose list、blockquote continuation、list内code/table和indented code保留正确gutter与结构化空行。
+- [x] Fenced/indented code默认no-wrap并保留exact source；unknown explicit language plain fallback、highlight bytes/lines/line-length和NoColor降级不改变source。
+- [x] Renderer panic/超限使用UTF-8 safe bounded plain projection；live下一delta从exact pending source重试，final source、`/copy`和Resume不受fallback影响。
+
+### AB-06：Width Layout、Tables + Links — `DONE`
+
+- [x] Wrap先跨完整logical line计算word/grapheme ranges，再remap原span/style/syntax/destination；普通词不拆，只有URL/path/hash token-heavy fallback可拆，每个fragment达到宽度后实际flush。
+- [x] Table group按共享intrinsic widths布局；收缩列宽时真实wrap cell并生成等高physical rows，低于最小可读宽度或超过row/column/cell bounds时整表降级key/value records，禁止输出超宽row交给Bubble Tea截断。
+- [x] Local link覆盖`file://`、Unix、`~/`、Windows drive/UNC及line/column/hash suffix；Web link提供label和可读destination fallback，OSC-8只接受安全`http/https`。
+- [x] Wrap、table reconstruction、cache clone和stream clone完整保留indent、table prefix、syntax和destination；local-link display transform递归处理typed table cells。
+- [x] Rich parse source和terminal span projection双层移除CSI/OSC与非法控制字符，但不改写`MarkdownSource`、`/copy`或Resume source。
+
+### AB-07：Production Integration + Legacy Guard Closure — `DONE`
+
+- [x] 新surface viewport、stream attachment、deferred projection和structured layout接入Assistant与Proposed Plan同一生产主链；Tool/Approval/UserInput/Queue/Footer/Composer仍使用单一Bubble Tea frontend。
+- [x] 删除`trailingStreamRun`、超高full-frame/natural-scrollback假设、空行block scanner、prefix heuristic、fake table shrink和不完整link transform；不保留新旧双路径或target-shaped adapter。
+- [x] Architecture guards验证bounded mutable View调用链、stream host owner及legacy禁止项，并由AB-10增加immutable native-history watermark contract。
+- [x] 同步`docs/design.md`、`docs/architecture-whitepaper.md`和`docs/tui-visual-contract.md`的native finalized history、bounded mutable frame、attachment replacement、parser boundary与layout contract。
+
+### AB-08：Contract Fixtures + Acceptance — `DONE`
+
+- [x] 从Codex移植基础fixture：partial link/fence、fence内空行、setext、reference definition、nested/loose list、blockquote/code、wide glyph、styled long token、local/web/Windows link和table逐行stream。
+- [x] 增加真实12行PTY renderer、interleaved Warning/Approval、retry/final mismatch、terminal error、Clear、Raw/Rich/NoColor、Resume、`/copy`、large source/code/table bounds和cache invalidation测试；AB-10进一步覆盖native history与live long-final completion。
+- [x] 增加stable-prefix推进测试与200段stream benchmark；单次`BenchmarkStreamingRenderStableParagraphs`约23.8ms，普通append不重新解析stable prefix。
+- [x] 验收通过：focused TUI/architecture tests、`make check`、`go test ./... -count=1`、`go test -race ./... -count=1`、`go build ./cmd/amadeus`与`git diff --check`。
+- [x] 当前owner下的Provider mock E2E通过：`internal/integration`中的Core Tools/Coding Agent均覆盖Responses与Chat Completions；`internal/llm/openai` Reasoning E2E覆盖Qwen/DeepSeek/GLM/standard dialect。
+- [x] 逐条核对本节出口和`docs/design.md`第19.3节；代码、真实renderer行为、failure ordering、性能边界和文档一致后标记AB DONE。
+
+### AB-09：Session Header + First Stream Spacing Repair — `DONE`
+
+- [x] 对照Codex `new_session_info → SessionHeaderHistoryCell`，将Logo/Version/Model/CWD建模为`TranscriptSurface`固定首HistoryCell，删除“只有transcript为空才由View追加banner”的生产分支。
+- [x] 对照Codex `AgentMessageCell`与`StreamingAgentTailCell`的`is_stream_continuation = !is_first_line`，使首个stream cell从第一帧就拥有与final cell相同的前置spacing，后续run保持continuation。
+- [x] 增加“首条hello后Session Header仍保留”“stream/final spacing完全相同”回归测试；AB-10进一步以真实PTY证明header和首条历史进入native scrollback。
+
+### AB-10：Native Finalized History + Bounded Mutable Frame — `DONE`
+
+- [x] 对照Codex `insert_history_lines`与inline viewport确认根因：stock Bubble Tea会裁掉超高`View()`顶部rows，全部history留在model viewport会让terminal scrollback只剩启动shell命令，并截断超过一屏的final output。
+- [x] `TranscriptSurface`新增SessionHeader/history print watermark；immutable SessionHeader/User/Tool/final Assistant cells经有序`tea.Println`只提交一次并从active frame排除，transient `AgentMessageCell`/tail永不打印。
+- [x] completion继续先按attachment range consolidation authoritative final source，再打印final cell；provisional stream rows可替换且不会与native final重复。printed history与首个active cell的leading spacing继续由`IsStreamContinuation`决定。
+- [x] User/initial/Plan提交改用`tea.Sequence(history flush, runtime submit)`恢复确定性event order；native print每行按terminal width约束，避免queued output autowrap破坏cursor。
+- [x] 新增真实PTY live测试：先提交早期User history，再流式完成超过一屏的Markdown，native输出同时包含SessionHeader、User、final首行和末行；活动frame不重复immutable history。
+
+### AB-11：Native History / Working / Composer Spacing — `DONE`
+
+- [x] 以Codex `single_line_final_answer_hides_working_status`和Working snapshots逐行核对：User/Assistant、Assistant/Composer、Working/Composer之间均为两条blank rows，而不是一条。
+- [x] 引入统一`transcriptRegionBlankRows=2`，同时驱动HistoryCell间距、native print leading rows、TranscriptSurface leading boundary和View section separator，删除四处独立spacing数字。
+- [x] 固化`printed history → blank×2 → Working → blank×2 → Composer`、`printed final → blank×2 → Composer`和`stream → blank×2 → Working → blank×2 → Composer`三个精确行布局测试。
+
+### AB-12：Final Message Separator Spacing Override — `DONE`
+
+- [x] 对照Codex `final_worked_for_uses_cumulative_turn_duration.snap`逐行确认：final response与`─ Worked for ...`之间只有一条blank row，不能套用普通HistoryCell的两条。
+- [x] 增加previous/current `historySpacingCell` boundary contract；默认非continuation为2、stream continuation为0、`FinalMessageSeparator`与`ToolHistoryCell`为1。
+- [x] 同一spacing policy驱动`renderHistoryCells`、native print watermark和active surface boundary，并以精确行索引测试防止两条路径漂移。
+- [x] 对齐Codex `binary_size_ideal_response.snap`：Assistant↔Explored/Ran及相邻Tool trees统一为一条blank row；同一ToolHistoryCell内部和跨ToolHistoryCell边界不再出现1/2行差异。
+
+### AB 出口
+
+- Assistant Markdown在live、retry、completion、resize、Raw/Rich、Resume和`/copy`中有唯一authoritative source owner与一个attachment-based completion protocol；不存在全局draft、trailing-run owner推断、fabricated item lifecycle或ANSI反向解析。
+- `TranscriptSurface`保留canonical history并以print watermark提交immutable native scrollback；主frame只显示bounded mutable cells。SessionHeader、早期输出和长final可由终端原生滚轮访问，provisional stream replacement不依赖撤回已打印rows。
+- Goldmark source offset决定stable/mutable boundary；incomplete Markdown不污染stable run，completed item能修复stream缺失/不一致，writer/wrap/table/link/code在宽窄终端与NoColor下有界、可读地降级。
+- Protocol、Session、Application、Rollout不依赖TUI Markdown实现；单一TUI及现有Tool/Approval/Plan/Queue生命周期不回退。

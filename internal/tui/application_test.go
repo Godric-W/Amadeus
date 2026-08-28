@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -167,14 +167,28 @@ func executeCommand(t *testing.T, command tea.Cmd) tea.Msg {
 
 func executeMessage(t *testing.T, message tea.Msg) {
 	t.Helper()
-	switch message := message.(type) {
-	case tea.BatchMsg:
-		for _, command := range message {
-			if command != nil {
-				executeMessage(t, command())
-			}
+	for _, command := range teaCommandChildren(message) {
+		if command != nil {
+			executeMessage(t, command())
 		}
 	}
+}
+
+func teaCommandChildren(message tea.Msg) []tea.Cmd {
+	if batch, ok := message.(tea.BatchMsg); ok {
+		return []tea.Cmd(batch)
+	}
+	value := reflect.ValueOf(message)
+	if !value.IsValid() || value.Kind() != reflect.Slice {
+		return nil
+	}
+	commands := make([]tea.Cmd, 0, value.Len())
+	for index := 0; index < value.Len(); index++ {
+		if command, ok := value.Index(index).Interface().(tea.Cmd); ok {
+			commands = append(commands, command)
+		}
+	}
+	return commands
 }
 
 func TestTUITextareaPreservesChineseAndBackspace(t *testing.T) {
@@ -301,19 +315,19 @@ func TestTUIShiftTabShowsPlanModeAtBottomRight(t *testing.T) {
 	if model.pendingMode.Valid() {
 		t.Fatalf("pending mode was not cleared after acknowledgement: %q", model.pendingMode)
 	}
-	if len(model.historyCells) != 1 || len(model.pendingHistoryCells) != 0 {
-		t.Fatalf("settings acknowledgement history=%d pending=%d", len(model.historyCells), len(model.pendingHistoryCells))
+	if len(model.historyCells) != 1 {
+		t.Fatalf("settings acknowledgement history=%d", len(model.historyCells))
 	}
 	wantNotice := "• Mode changed to Plan."
 	if got := lastCellContent(model); got != wantNotice {
 		t.Fatalf("mode switch notice = %q, want %q", got, wantNotice)
 	}
-	if output := fmt.Sprint(command()); !strings.Contains(output, wantNotice) {
-		t.Fatalf("mode switch flush = %q", output)
-	}
 	view := xansi.Strip(model.View())
-	if lipgloss.Height(view) >= model.height {
-		t.Fatalf("view height = %d, want intrinsic frame below terminal height %d", lipgloss.Height(view), model.height)
+	if strings.Contains(view, wantNotice) {
+		t.Fatalf("printed mode notice remained duplicated in active frame: %q", view)
+	}
+	if lipgloss.Height(view) > model.height {
+		t.Fatalf("view height = %d, want surface to fit terminal height %d", lipgloss.Height(view), model.height)
 	}
 	lines := strings.Split(view, "\n")
 	footer := lines[len(lines)-1]
@@ -355,8 +369,8 @@ func TestTUIRepeatedModeChangesEmitOnlyCodexInfoRows(t *testing.T) {
 		if command == nil {
 			t.Fatalf("mode change %d did not flush info history", index)
 		}
-		if len(model.historyCells) != index+1 || len(model.pendingHistoryCells) != 0 {
-			t.Fatalf("mode change %d history=%d pending=%d", index, len(model.historyCells), len(model.pendingHistoryCells))
+		if len(model.historyCells) != index+1 {
+			t.Fatalf("mode change %d history=%d", index, len(model.historyCells))
 		}
 		wantNotice := "• Mode changed to " + collaborationModeName(mode) + "."
 		if got := lastCellContent(model); got != wantNotice {
@@ -378,7 +392,9 @@ func TestTUIFinalReplyPrecedesWorkedForSeparator(t *testing.T) {
 	started := toolStartedMessage("read-1", "read", "read", "Read docs/design.md", "")
 	model.applyEvent(testProtocolEvent(testThreadID(1), "turn-1", started))
 	model.applyEvent(testProtocolEvent(testThreadID(1), "turn-1", toolCompletedMessage(started, protocol.ItemStatusCompleted, "done", "1s", false)))
+	model.applyEvent(testProtocolEvent(testThreadID(1), "turn-1", protocol.ItemStartedEvent{Item: protocol.TurnItem{ID: "assistant-1", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemInProgress, CreatedAt: time.Now()}}))
 	model.applyEvent(testProtocolEvent(testThreadID(1), "turn-1", protocol.AgentMessageContentDeltaEvent{ItemID: "assistant-1", Delta: "最终回复", Reset: true}))
+	model.applyEvent(testProtocolEvent(testThreadID(1), "turn-1", protocol.ItemCompletedEvent{Item: protocol.TurnItem{ID: "assistant-1", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemStatusCompleted, CreatedAt: time.Now(), CompletedAt: time.Now(), Text: "最终回复"}}))
 	model.applyEvent(testProtocolEvent(testThreadID(1), "turn-1", protocol.TurnCompleteEvent{Status: protocol.TurnStatusCompleted, FinishedAt: time.Now()}))
 
 	if len(model.historyCells) != 4 {
@@ -391,8 +407,8 @@ func TestTUIFinalReplyPrecedesWorkedForSeparator(t *testing.T) {
 	if !ok || short.Elapsed != 0 {
 		t.Fatalf("cell 1 = %#v, want short FinalMessageSeparator", model.historyCells[1])
 	}
-	if _, ok := model.historyCells[2].(AgentMessageCell); !ok {
-		t.Fatalf("cell 2 = %T, want AgentMessageCell", model.historyCells[2])
+	if _, ok := model.historyCells[2].(*AgentMarkdownCell); !ok {
+		t.Fatalf("cell 2 = %T, want *AgentMarkdownCell", model.historyCells[2])
 	}
 	worked, ok := model.historyCells[3].(FinalMessageSeparator)
 	if !ok || worked.Elapsed <= time.Minute {
@@ -563,7 +579,7 @@ func TestTUIResumeFlushesCompletedToolBeforeFinalAssistant(t *testing.T) {
 	if _, ok := model.historyCells[0].(*ToolHistoryCell); !ok {
 		t.Fatalf("first replayed cell = %T, want tool activity", model.historyCells[0])
 	}
-	if _, ok := model.historyCells[1].(AgentMessageCell); !ok {
+	if _, ok := model.historyCells[1].(*AgentMarkdownCell); !ok {
 		t.Fatalf("second replayed cell = %T, want final assistant", model.historyCells[1])
 	}
 }
@@ -620,7 +636,7 @@ func TestTUIEmptyMCPInventoryIsVisibleAndStaleResultIgnored(t *testing.T) {
 	executeCommand(t, command)
 	updated, _ = model.Update(appEventMsg{event: application.MCPInventoryLoaded{RequestID: 1, Generation: 1, ThreadID: testThreadID(1)}})
 	model = updated.(appModel)
-	if got, want := renderHistoryCells(model.historyCells, HistoryRenderRaw, noColorRenderContext()), "/mcp\n\n🔌  MCP Tools\n\n  • No MCP servers configured."; got != want {
+	if got, want := renderHistoryCells(model.historyCells, HistoryRenderRaw, noColorRenderContext()), "/mcp\n\n\n🔌  MCP Tools\n\n  • No MCP servers configured."; got != want {
 		t.Fatalf("MCP output\n got: %q\nwant: %q", got, want)
 	}
 	before := len(model.historyCells)
@@ -653,7 +669,7 @@ func TestTUICopyRemainsTUILocal(t *testing.T) {
 			return nil
 		}
 	})
-	model.transcript.LastAgentMarkdown = "**raw**"
+	model.insertHistoryCell(NewAgentMarkdownCell(newMarkdownSource("**raw**", "")))
 	updated, command := model.dispatchCommand(SlashInvocation{Command: SlashCopy})
 	model = updated.(appModel)
 	if command == nil || copied != "**raw**" || len(fakeApplication(t, model).submitted) != 0 {
@@ -744,13 +760,16 @@ func TestTUIFlushCommitsCellsOnce(t *testing.T) {
 	_, model := newTestModel(t, nil)
 	model.insertHistoryCell(NewUserMessageCell("检查项目"))
 	command := model.flushHistory()
-	if command == nil || len(model.pendingHistoryCells) != 0 || !model.hasEmittedHistoryLines {
+	if command == nil {
 		t.Fatal("first flush failed")
 	}
-	if output := command(); output == nil || !strings.Contains(strings.TrimSpace(fmt.Sprint(output)), "检查项目") {
-		t.Fatalf("flush output = %#v", output)
+	if message := command(); message == nil {
+		t.Fatal("flush did not produce a Bubble Tea print message")
 	}
-	if model.flushHistory() != nil {
-		t.Fatal("second flush duplicated output")
+	if view := xansi.Strip(model.View()); strings.Contains(view, "检查项目") {
+		t.Fatalf("printed history cell remained in active frame: %q", view)
+	}
+	if second := model.flushHistory(); second != nil {
+		t.Fatalf("second flush scheduled duplicate output: %v", second)
 	}
 }

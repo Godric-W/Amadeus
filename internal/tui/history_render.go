@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 
+	"github.com/alecthomas/chroma/v2"
+	chromastyles "github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -28,16 +30,18 @@ func historyLinesForMode(cell HistoryCell, mode HistoryRenderMode, ctx HistoryRe
 func renderHistoryCells(cells []HistoryCell, mode HistoryRenderMode, ctx HistoryRenderContext) string {
 	lines := make([]styledLine, 0)
 	hasVisible := false
+	var previous HistoryCell
 	for _, cell := range cells {
 		cellLines := historyLinesForMode(cell, mode, ctx)
 		if len(cellLines) == 0 {
 			continue
 		}
-		if hasVisible && !cell.IsStreamContinuation() {
-			lines = append(lines, styledLine{})
+		if hasVisible {
+			lines = append(lines, make([]styledLine, historyBoundaryBlankRows(previous, cell))...)
 		}
 		lines = append(lines, cellLines...)
 		hasVisible = true
+		previous = cell
 	}
 	return renderStyledLines(lines, ctx)
 }
@@ -47,15 +51,47 @@ func renderStyledLines(lines []styledLine, ctx HistoryRenderContext) string {
 	for _, line := range lines {
 		var rendered strings.Builder
 		for _, span := range line {
-			if span.Style == styleRendered {
-				rendered.WriteString(span.Text)
-				continue
+			style := styleForSemantic(ctx, span.Style)
+			if span.Markdown.Bold {
+				style = style.Bold(true)
 			}
-			rendered.WriteString(styleForSemantic(ctx, span.Style).Render(span.Text))
+			if span.Markdown.Italic {
+				style = style.Italic(true)
+			}
+			if span.Markdown.Strikethrough {
+				style = style.Strikethrough(true)
+			}
+			if span.Markdown.Underline {
+				style = style.Underline(true)
+			}
+			if span.Syntax != chroma.EOFType && !ctx.Palette.NoColor && ctx.Palette.Level != colorLevelNone {
+				entry := markdownSyntaxStyle(ctx.Palette).Get(span.Syntax)
+				if entry.Colour.IsSet() {
+					style = style.Foreground(lipgloss.Color(entry.Colour.String()))
+				}
+				if entry.Bold == chroma.Yes {
+					style = style.Bold(true)
+				}
+				if entry.Italic == chroma.Yes {
+					style = style.Italic(true)
+				}
+			}
+			text := style.Render(sanitizeContent(span.Text))
+			if ctx.Hyperlinks {
+				text = osc8WebHyperlink(span.Destination, text)
+			}
+			rendered.WriteString(text)
 		}
 		renderedLines = append(renderedLines, rendered.String())
 	}
 	return strings.Join(renderedLines, "\n")
+}
+
+func markdownSyntaxStyle(palette terminalPalette) *chroma.Style {
+	if palette.Dark {
+		return chromastyles.Get("dracula")
+	}
+	return chromastyles.Get("github")
 }
 
 func styleForSemantic(ctx HistoryRenderContext, style semanticStyle) lipgloss.Style {
@@ -82,6 +118,12 @@ func styleForSemantic(ctx HistoryRenderContext, style semanticStyle) lipgloss.St
 		return result
 	case styleSeparator:
 		return ctx.Palette.turnSeparator()
+	case styleStrike:
+		return ctx.Palette.plain().Strikethrough(true)
+	case styleQuote:
+		return ctx.Palette.quote()
+	case styleOrderedListMarker:
+		return ctx.Palette.orderedListMarker()
 	default:
 		return ctx.Palette.plain()
 	}

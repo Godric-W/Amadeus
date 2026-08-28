@@ -78,7 +78,7 @@ func Run(ctx context.Context, options RunOptions) (result RunResult, runErr erro
 		Input: options.Input, Output: options.Output,
 		OpenSessions:       options.OpenSessions,
 		InitialUserMessage: createInitialUserMessage(options.Prompt),
-		NoColor:            !capabilities.Color, Width: capabilities.Width,
+		NoColor:            !capabilities.Color, Hyperlinks: capabilities.Hyperlinks, Width: capabilities.Width,
 		Snapshot: snapshot, Application: interactive,
 		Startup: Startup{Version: buildinfo.Current().Version},
 	})

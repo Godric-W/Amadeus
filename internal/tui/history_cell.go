@@ -5,12 +5,16 @@ import (
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/protocol"
-	"github.com/charmbracelet/glamour"
+	"github.com/alecthomas/chroma/v2"
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
 type HistoryRenderMode uint8
+
+const transcriptRegionBlankRows = 2
+
+var transcriptRegionSeparator = strings.Repeat("\n", transcriptRegionBlankRows+1)
 
 const (
 	HistoryRenderRich HistoryRenderMode = iota
@@ -30,12 +34,17 @@ const (
 	styleWarning
 	styleUser
 	styleSeparator
-	styleRendered
+	styleStrike
+	styleQuote
+	styleOrderedListMarker
 )
 
 type styledSpan struct {
-	Text  string
-	Style semanticStyle
+	Text        string
+	Style       semanticStyle
+	Markdown    MarkdownStyle
+	Syntax      chroma.TokenType
+	Destination string
 }
 
 type styledLine []styledSpan
@@ -43,7 +52,7 @@ type styledLine []styledSpan
 type HistoryRenderContext struct {
 	Width       int
 	Palette     terminalPalette
-	Markdown    *glamour.TermRenderer
+	Hyperlinks  bool
 	Now         time.Time
 	MotionStart time.Time
 	Motion      motionMode
@@ -53,6 +62,27 @@ type HistoryCell interface {
 	DisplayLines(HistoryRenderContext) []styledLine
 	RawLines() []string
 	IsStreamContinuation() bool
+}
+
+type historySpacingCell interface {
+	HistoryBoundaryBlankRows() int
+}
+
+func historyLeadingBlankRows(cell HistoryCell) int {
+	return historyBoundaryBlankRows(nil, cell)
+}
+
+func historyBoundaryBlankRows(previous, current HistoryCell) int {
+	if current == nil || current.IsStreamContinuation() {
+		return 0
+	}
+	rows := transcriptRegionBlankRows
+	for _, cell := range []HistoryCell{previous, current} {
+		if spacing, ok := cell.(historySpacingCell); ok {
+			rows = minInt(rows, maxInt(0, spacing.HistoryBoundaryBlankRows()))
+		}
+	}
+	return rows
 }
 
 type ActiveHistoryCell interface {
@@ -67,7 +97,6 @@ type TranscriptState struct {
 	ActiveCellRevision         uint64
 	NeedsFinalMessageSeparator bool
 	HadWorkActivity            bool
-	LastAgentMarkdown          string
 }
 
 func (state *TranscriptState) bumpActiveCellRevision() { state.ActiveCellRevision++ }
@@ -95,4 +124,5 @@ func (cell FinalMessageSeparator) RawLines() []string {
 	return []string{"Worked for " + formatElapsedCompact(cell.Elapsed)}
 }
 
-func (FinalMessageSeparator) IsStreamContinuation() bool { return false }
+func (FinalMessageSeparator) IsStreamContinuation() bool    { return false }
+func (FinalMessageSeparator) HistoryBoundaryBlankRows() int { return 1 }

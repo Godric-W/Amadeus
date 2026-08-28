@@ -16,18 +16,17 @@ func (model *appModel) applyEvent(event protocol.Event) tea.Cmd {
 		model.protocolEvents = newProtocolEventState(protocol.ThreadIDOf(event.Msg))
 	}
 	if err := model.protocolEvents.Apply(event); err != nil {
-		// A live provider may emit a delta before the UI observes its start
-		// marker (for example when an adapter is attached mid-stream). Keep the
-		// strict reducer diagnostic, but recover the projection locally so text
-		// is not lost. Canonical replay never takes this path.
-		if recovered := model.recoverDeltaStart(event); recovered {
-			_ = model.protocolEvents.Apply(event)
-		} else {
-			model.insertHistoryCell(NewDiagnosticHistoryCell("event projection: " + err.Error()))
-			return nil
-		}
+		model.insertHistoryCell(NewDiagnosticHistoryCell("event projection: " + err.Error()))
+		return nil
 	}
-	message := event.Msg
+	if model.shouldDeferProtocolProjection(event.Msg) {
+		model.markdownStreams.deferProtocol(event.Msg)
+		return nil
+	}
+	return model.projectProtocolEvent(event.Msg)
+}
+
+func (model *appModel) projectProtocolEvent(message protocol.EventMsg) tea.Cmd {
 	switch item := message.(type) {
 	case protocol.SessionConfiguredEvent:
 		return model.applySessionConfigured(item)
@@ -60,12 +59,26 @@ func (model *appModel) applyEvent(event protocol.Event) tea.Cmd {
 		}
 		return command
 	case protocol.AgentMessageContentDeltaEvent:
-		model.beginFinalMessage()
-		if item.Reset {
-			model.draft = item.Delta
-			break
+		if model.markdownStreams.assistant == nil {
+			model.insertHistoryCell(NewDiagnosticHistoryCell("assistant delta without active stream"))
+			return nil
 		}
-		model.draft += item.Delta
+		if model.markdownStreams.assistant.Source.Source() == "" && item.Delta != "" {
+			model.beginFinalMessage()
+			if err := model.TranscriptSurface.beginStream(item.ItemID, protocol.ItemAssistantMessage); err != nil {
+				model.insertHistoryCell(NewDiagnosticHistoryCell("assistant stream attachment: " + err.Error()))
+				return nil
+			}
+			model.markdownStreams.transcriptProtected = true
+		}
+		if item.Reset {
+			model.TranscriptSurface.rewindStream(item.ItemID)
+		}
+		if _, err := model.markdownStreams.assistant.Push(item.ItemID, item.Delta, item.Reset); err != nil {
+			model.insertHistoryCell(NewDiagnosticHistoryCell("assistant stream: " + err.Error()))
+		} else {
+			model.commitMarkdownStream(model.markdownStreams.assistant)
+		}
 	case protocol.ReasoningContentDeltaEvent:
 		if !item.Reset && strings.TrimSpace(item.Delta) != "" {
 			model.status = "thinking"
@@ -74,15 +87,29 @@ func (model *appModel) applyEvent(event protocol.Event) tea.Cmd {
 		model.session.applyTokenCount(item)
 		model.refreshStatusLine()
 	case protocol.PlanUpdateEvent:
-		model.finishDraft()
 		model.insertHistoryCell(NewPlanUpdateCell(item))
 		model.status = "planning"
 	case protocol.PlanDeltaEvent:
-		model.proposedPlanDraft += item.Delta
+		if model.markdownStreams.plan == nil {
+			model.insertHistoryCell(NewDiagnosticHistoryCell("plan delta without active stream"))
+			return nil
+		}
+		if model.markdownStreams.plan.Source.Source() == "" && item.Delta != "" {
+			if err := model.TranscriptSurface.beginStream(item.ItemID, protocol.ItemPlan); err != nil {
+				model.insertHistoryCell(NewDiagnosticHistoryCell("plan stream attachment: " + err.Error()))
+				return nil
+			}
+			model.markdownStreams.transcriptProtected = true
+		}
+		if _, err := model.markdownStreams.plan.Push(item.ItemID, item.Delta, false); err != nil {
+			model.insertHistoryCell(NewDiagnosticHistoryCell("plan stream: " + err.Error()))
+		} else {
+			model.commitMarkdownStream(model.markdownStreams.plan.StreamController)
+		}
 		model.status = "planning"
 	case protocol.ItemStartedEvent:
 		if item.Item.Kind == protocol.ItemCollabAgentToolCall {
-			model.finishDraft()
+			model.clearMarkdownStreams()
 			if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
 				model.flushActiveHistoryCell()
 			}
@@ -102,15 +129,22 @@ func (model *appModel) applyEvent(event protocol.Event) tea.Cmd {
 		}
 		switch item.Item.Kind {
 		case protocol.ItemPlan:
-			model.proposedPlanDraft = ""
+			if err := model.startPlanStream(item.Item); err != nil {
+				model.insertHistoryCell(NewDiagnosticHistoryCell("start plan stream: " + err.Error()))
+			}
 			return nil
 		case protocol.ItemContextCompaction:
 			model.status = "compacting context"
 			return nil
-		case protocol.ItemAssistantMessage, protocol.ItemReasoning, protocol.ItemUserMessage:
+		case protocol.ItemAssistantMessage:
+			if err := model.startAssistantStream(item.Item); err != nil {
+				model.insertHistoryCell(NewDiagnosticHistoryCell("start assistant stream: " + err.Error()))
+			}
+			return nil
+		case protocol.ItemReasoning, protocol.ItemUserMessage:
 			return nil
 		}
-		model.finishDraft()
+		model.clearMarkdownStreams()
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
 			model.flushActiveHistoryCell()
 		}
@@ -125,7 +159,7 @@ func (model *appModel) applyEvent(event protocol.Event) tea.Cmd {
 		model.status = "working"
 	case protocol.ItemCompletedEvent:
 		if item.Item.Kind == protocol.ItemCollabAgentToolCall {
-			model.finishDraft()
+			model.clearMarkdownStreams()
 			if _, ok := model.transcript.ActiveCell.(*CollabAgentHistoryCell); !ok {
 				if model.transcript.ActiveCell != nil {
 					model.flushActiveHistoryCell()
@@ -151,25 +185,33 @@ func (model *appModel) applyEvent(event protocol.Event) tea.Cmd {
 			return nil
 		case protocol.ItemAssistantMessage:
 			model.flushCompletedActivityBeforeBoundary()
-			if strings.TrimSpace(model.draft) != "" {
-				model.finishDraft()
-			} else if strings.TrimSpace(item.Item.Text) != "" {
-				model.beginFinalMessage()
-				model.transcript.LastAgentMarkdown = item.Item.Text
-				model.insertHistoryCell(NewAgentMessageCell(item.Item.Text))
-				if model.transcript.HadWorkActivity {
-					model.transcript.NeedsFinalMessageSeparator = true
-				}
+			source := newMarkdownSource(item.Item.Text, model.session.Configuration.CWD)
+			if model.markdownStreams.assistant != nil && model.markdownStreams.assistant.ItemID == item.Item.ID {
+				source = model.markdownStreams.assistant.Finalize(item.Item.Text)
 			}
-			return nil
+			if model.markdownStreams.assistant == nil || model.markdownStreams.assistant.ItemID != item.Item.ID {
+				model.beginFinalMessage()
+			}
+			model.TranscriptSurface.consolidateStream(item.Item.ID, NewAgentMarkdownCell(source))
+			model.markdownStreams.assistant = nil
+			model.markdownStreams.transcriptProtected = false
+			if model.transcript.HadWorkActivity {
+				model.transcript.NeedsFinalMessageSeparator = true
+			}
+			return model.flushDeferredTranscriptProjections()
 		case protocol.ItemReasoning:
 			return nil
 		case protocol.ItemPlan:
 			model.flushCompletedActivityBeforeBoundary()
-			model.proposedPlanDraft = ""
+			source := newMarkdownSource(item.Item.Text, model.session.Configuration.CWD)
+			if model.markdownStreams.plan != nil && model.markdownStreams.plan.ItemID == item.Item.ID {
+				source = model.markdownStreams.plan.Finalize(item.Item.Text)
+			}
+			model.TranscriptSurface.consolidateStream(item.Item.ID, NewProposedPlanCell(source))
+			model.markdownStreams.plan = nil
+			model.markdownStreams.transcriptProtected = false
 			model.completedProposedPlan = true
-			model.insertHistoryCell(NewProposedPlanCell(item.Item.Text))
-			return nil
+			return model.flushDeferredTranscriptProjections()
 		case protocol.ItemContextCompaction:
 			model.flushCompletedActivityBeforeBoundary()
 			if item.Item.Status == protocol.ItemStatusCompleted {
@@ -179,7 +221,7 @@ func (model *appModel) applyEvent(event protocol.Event) tea.Cmd {
 			}
 			return nil
 		}
-		model.finishDraft()
+		model.clearMarkdownStreams()
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
 			model.flushActiveHistoryCell()
 		}
@@ -208,59 +250,66 @@ func (model *appModel) applyEvent(event protocol.Event) tea.Cmd {
 			}
 		}
 	case protocol.WarningEvent:
-		model.finishDraft()
 		model.insertHistoryCell(NewWarningHistoryCell(item.Message))
 	case protocol.StreamErrorEvent:
 		if item.WillRetry {
 			model.showRetryStatus(item)
 			return model.workingTick()
 		}
-		model.finishDraft()
+		model.clearMarkdownStreams()
+		deferred := model.flushDeferredTranscriptProjections()
 		if strings.TrimSpace(item.Message) != "" {
 			model.insertHistoryCell(NewErrorHistoryCell(item.Message))
 		}
+		return deferred
 	case protocol.TurnCompleteEvent:
 		model.clearRetryStatus()
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
 			model.flushActiveHistoryCell()
 		}
-		model.finishDraft()
+		model.clearMarkdownStreams()
+		deferred := model.flushDeferredTranscriptProjections()
 		model.finishTurn(model.runElapsed())
 		model.running = false
 		model.status = "completed"
 		if item.Outcome == protocol.TurnOutcomeBlocked || model.nextTurnQueue.Halted() {
 			model.restoreQueuedInputsToComposer()
 			model.completedProposedPlan = false
-			return nil
+			return deferred
 		}
 		if model.nextTurnQueue.HasPending() {
 			model.completedProposedPlan = false
-			return model.maybeSubmitNextQueuedInput()
+			return tea.Sequence(deferred, model.maybeSubmitNextQueuedInput())
 		}
 		if !model.nextTurnQueue.HasQueuedFollowUp() && model.session.mode() == protocol.ModeKindPlan && model.completedProposedPlan && model.approval == nil && model.userInputDialog == nil {
 			model.selection = &selectionOverlay{Title: "Implement this plan?", Items: []selectionItem{{Name: "Implement this plan", Description: "Switch to Default mode and start implementation"}, {Name: "Stay in Plan mode", Description: "Keep planning without starting implementation"}}}
 			model.selectionKind = "implement-plan"
 			model.completedProposedPlan = false
 		}
+		return deferred
 	case protocol.TurnAbortedEvent:
 		model.clearRetryStatus()
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
 			model.flushActiveHistoryCell()
 		}
-		model.finishDraft()
+		model.clearMarkdownStreams()
+		deferred := model.flushDeferredTranscriptProjections()
 		model.finishTurn(model.runElapsed())
 		model.running = false
 		model.status = "aborted"
 		model.restoreQueuedInputsToComposer()
+		return deferred
 	case protocol.ErrorEvent:
 		model.clearRetryStatus()
-		model.finishDraft()
+		model.clearMarkdownStreams()
+		deferred := model.flushDeferredTranscriptProjections()
 		if !model.running {
 			model.status = "idle"
 		}
 		if strings.TrimSpace(item.Message) != "" {
 			model.insertHistoryCell(NewErrorHistoryCell(item.Message))
 		}
+		return deferred
 	case protocol.ShutdownCompleteEvent:
 		model.status = "shutting down"
 	}

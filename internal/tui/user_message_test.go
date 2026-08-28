@@ -105,22 +105,25 @@ func commandMessageOfType[T tea.Msg](t *testing.T, command tea.Cmd) T {
 	if command == nil {
 		t.Fatal("command is nil")
 	}
-	message := command()
-	if typed, ok := message.(T); ok {
+	if typed, ok := findCommandMessage[T](command()); ok {
 		return typed
 	}
-	batch, ok := message.(tea.BatchMsg)
-	if !ok {
-		t.Fatalf("command message = %T, want %T", message, zero)
+	t.Fatalf("command has no %T", zero)
+	return zero
+}
+
+func findCommandMessage[T tea.Msg](message tea.Msg) (T, bool) {
+	var zero T
+	if typed, ok := message.(T); ok {
+		return typed, true
 	}
-	for _, child := range batch {
+	for _, child := range teaCommandChildren(message) {
 		if child == nil {
 			continue
 		}
-		if typed, ok := child().(T); ok {
-			return typed
+		if typed, ok := findCommandMessage[T](child()); ok {
+			return typed, true
 		}
 	}
-	t.Fatalf("batch has no %T", zero)
-	return zero
+	return zero, false
 }

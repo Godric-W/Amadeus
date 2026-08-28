@@ -14,16 +14,27 @@ func TestHistoryLayoutOwnsCellSpacing(t *testing.T) {
 	ctx := noColorRenderContext()
 	cells := []HistoryCell{
 		NewUserMessageCell("你好"),
-		NewAgentMessageCell("回答"),
+		NewAgentMarkdownCell(newMarkdownSource("回答", "")),
 		FinalMessageSeparator{},
 		NewUserMessageCell("继续"),
 	}
 	rendered := xansi.Strip(renderHistoryCells(cells, HistoryRenderRich, ctx))
-	if strings.Contains(rendered, "\n\n\n") {
-		t.Fatalf("layout introduced multiple blank lines: %q", rendered)
+	lines := strings.Split(rendered, "\n")
+	indices := map[string]int{"user": -1, "agent": -1, "separator": -1, "next": -1}
+	for index, line := range lines {
+		switch {
+		case strings.Contains(line, "你好"):
+			indices["user"] = index
+		case strings.Contains(line, "回答"):
+			indices["agent"] = index
+		case strings.HasPrefix(line, "──"):
+			indices["separator"] = index
+		case strings.Contains(line, "继续"):
+			indices["next"] = index
+		}
 	}
-	if strings.Count(rendered, "\n\n") != 3 {
-		t.Fatalf("cell spacing = %q", rendered)
+	if indices["agent"] != indices["user"]+3 || indices["separator"] != indices["agent"]+2 || indices["next"] != indices["separator"]+2 {
+		t.Fatalf("cell spacing indices=%v rendered=%q", indices, rendered)
 	}
 	for _, cell := range cells {
 		for _, line := range cell.RawLines() {
@@ -34,12 +45,42 @@ func TestHistoryLayoutOwnsCellSpacing(t *testing.T) {
 	}
 }
 
+func TestFinalMessageSeparatorOverridesDefaultTwoBlankRows(t *testing.T) {
+	if got := historyLeadingBlankRows(NewAgentMarkdownCell(newMarkdownSource("answer", ""))); got != 2 {
+		t.Fatalf("agent leading blank rows = %d", got)
+	}
+	if got := historyLeadingBlankRows(FinalMessageSeparator{}); got != 1 {
+		t.Fatalf("separator leading blank rows = %d", got)
+	}
+	if got := historyLeadingBlankRows(AgentMessageCell{First: false}); got != 0 {
+		t.Fatalf("stream continuation leading blank rows = %d", got)
+	}
+	agent := NewAgentMarkdownCell(newMarkdownSource("answer", ""))
+	separator := FinalMessageSeparator{}
+	toolCell := newToolHistoryCell()
+	for name, test := range map[string]struct {
+		previous HistoryCell
+		current  HistoryCell
+		want     int
+	}{
+		"separator to agent": {previous: separator, current: agent, want: 1},
+		"agent to separator": {previous: agent, current: separator, want: 1},
+		"agent to tool":      {previous: agent, current: toolCell, want: 1},
+		"tool to agent":      {previous: toolCell, current: agent, want: 1},
+		"tool to tool":       {previous: toolCell, current: toolCell, want: 1},
+	} {
+		if got := historyBoundaryBlankRows(test.previous, test.current); got != test.want {
+			t.Fatalf("%s blank rows = %d, want %d", name, got, test.want)
+		}
+	}
+}
+
 func TestHistoryRenderModeSeparatesRichAndRaw(t *testing.T) {
 	ctx := noColorRenderContext()
-	cell := NewAgentMessageCell("**strong**")
+	cell := NewAgentMarkdownCell(newMarkdownSource("**strong**", ""))
 	rich := xansi.Strip(renderHistoryCells([]HistoryCell{cell}, HistoryRenderRich, ctx))
 	raw := xansi.Strip(renderHistoryCells([]HistoryCell{cell}, HistoryRenderRaw, ctx))
-	if rich != "• **strong**" {
+	if rich != "• strong" {
 		t.Fatalf("rich output = %q", rich)
 	}
 	if raw != "**strong**" {
@@ -52,7 +93,7 @@ func TestHistoryRawModeNeverCarriesANSI(t *testing.T) {
 	ctx.Palette = terminalPalette{Level: colorLevelTrueColor, Dark: true}
 	cells := []HistoryCell{
 		NewUserMessageCell("hello"),
-		NewAgentMessageCell("**answer**"),
+		NewAgentMarkdownCell(newMarkdownSource("**answer**", "")),
 		NewErrorHistoryCell("boom"),
 	}
 	raw := renderHistoryCells(cells, HistoryRenderRaw, ctx)
@@ -121,7 +162,7 @@ func TestHistoryStreamContinuationDoesNotInsertBlankLine(t *testing.T) {
 		continuationHistoryCell{text: "third"},
 	}
 	rendered := renderHistoryCells(cells, HistoryRenderRaw, ctx)
-	if rendered != "first\nsecond\n\nthird" {
+	if rendered != "first\nsecond\n\n\nthird" {
 		t.Fatalf("continuation spacing = %q", rendered)
 	}
 }

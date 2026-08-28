@@ -161,7 +161,7 @@ func (model appModel) handleSelectionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return model, model.input.Focus()
 			}
 			submission := model.prepareUserMessageSubmission(UserMessage{Text: "Implement the plan."}, protocol.ModeKindDefault, true)
-			return model, tea.Batch(model.flushHistory(), model.submitUserMessage(submission))
+			return model, tea.Sequence(model.flushHistory(), model.submitUserMessage(submission))
 		}
 	}
 	return model, nil

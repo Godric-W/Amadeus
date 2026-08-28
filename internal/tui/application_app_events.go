@@ -11,6 +11,14 @@ import (
 )
 
 func (model *appModel) handleAppEvent(event application.InteractiveEvent) tea.Cmd {
+	if model.shouldDeferApplicationProjection(event) {
+		model.markdownStreams.deferApplication(event)
+		return nil
+	}
+	return model.handleAppEventNow(event)
+}
+
+func (model *appModel) handleAppEventNow(event application.InteractiveEvent) tea.Cmd {
 	switch event := event.(type) {
 	case application.SessionEventObserved:
 		if event.Generation != model.session.Generation || protocol.ThreadIDOf(event.Event.Msg) != model.session.ThreadID {
@@ -83,7 +91,7 @@ func (model *appModel) handleAppEvent(event application.InteractiveEvent) tea.Cm
 		model.clearInteractiveState()
 		model.clearing = true
 		model.status = "starting new chat"
-		return tea.Sequence(func() tea.Msg { return tea.ClearScreen() }, tea.Println(model.banner()))
+		return tea.ClearScreen
 	case application.MCPInventoryLoaded:
 		if event.RequestID != model.mcpRequestID || event.Generation != model.session.Generation || event.ThreadID != model.session.ThreadID {
 			return nil
@@ -138,15 +146,13 @@ func (model *appModel) attachSnapshot(snapshot application.ThreadViewSnapshot) t
 	branchLookup := model.applyThreadViewSnapshot(snapshot)
 	model.protocolEvents = newProtocolEventState(snapshot.ThreadID)
 	model.restoreCompletedItems(snapshot.Items)
-	model.pendingHistoryCells = append([]HistoryCell(nil), model.historyCells...)
-	model.hasEmittedHistoryLines = false
+	historyFlush := model.flushHistory()
 	model.clearing = false
 	model.status = "idle"
 	focus := model.input.Focus()
 	return tea.Sequence(
 		func() tea.Msg { return tea.ClearScreen() },
-		tea.Println(model.banner()),
-		model.flushHistory(),
+		historyFlush,
 		focus,
 		branchLookup,
 		func() tea.Msg { return startupReadyMsg{} },
@@ -158,7 +164,6 @@ func (model *appModel) clearInteractiveState() {
 	model.nextTurnQueue.Clear()
 	model.resetHistory()
 	model.details = newTranscriptDetailStore(0, 0)
-	model.draft = ""
 	model.running = false
 	model.runStartedAt = time.Time{}
 	model.approval = nil

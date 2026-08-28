@@ -118,6 +118,12 @@ func (p terminalPalette) selection() lipgloss.Style { return p.accent().Bold(tru
 func (p terminalPalette) success() lipgloss.Style {
 	return p.statusColor(terminalRGB{72, 187, 120}, "2", "2").Bold(true)
 }
+func (p terminalPalette) quote() lipgloss.Style {
+	return p.statusColor(terminalRGB{72, 187, 120}, "2", "2").Bold(false)
+}
+func (p terminalPalette) orderedListMarker() lipgloss.Style {
+	return p.statusColor(terminalRGB{102, 204, 255}, "6", "6").Bold(false)
+}
 func (p terminalPalette) failure() lipgloss.Style {
 	return p.statusColor(terminalRGB{235, 107, 107}, "1", "1").Bold(true)
 }

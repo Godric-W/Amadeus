@@ -355,7 +355,11 @@ flowchart TD
 | `AppExitInfo` | renderer 停止且终端恢复后返回 CLI 的 token usage、Thread identity、resume hint 与退出原因。 |
 | `HistoryCell` | TUI 中一个可重放、可渲染的历史单元接口。 |
 | `ActiveHistoryCell` | 尚未完成的流式或工具活动投影。 |
-| `AgentMessageCell` | 最终/流式 Assistant Markdown 投影。 |
+| `SessionHeaderCell` | TranscriptSurface首个结构化cell；冻结Version/Model/CWD并渲染Logo/信息框，不由空history View分支临时拥有。 |
+| `TranscriptSurface` | canonical cell、stream attachment/final replacement与native-print watermark owner；immutable history进入terminal scrollback，mutable tail进入bounded frame。 |
+| `markdownStreamHost` | Assistant/Plan controller与deferred transcript projection FIFO owner；首个delta后保护surface range，completion/reset replacement后恢复Event顺序。 |
+| `AgentMessageCell` / `StreamingAgentTailCell` | transient stable Assistant/Plan stream run 与 mutable tail；`First`决定首cell spacing和continuation，只存在于live TranscriptSurface。 |
+| `AgentMarkdownCell` | completed Assistant Markdown 的 source-backed final cell，保存 exact source、冻结 CWD 和 derived render cache。 |
 | `ToolHistoryCell` 与具体 Tool Cell | `ToolHistoryCell` 聚合 live Tool activity；渲染时按类型投影为 `ExecCell`、`ExploreCell`、`FileChangeCell`、Web/Image Cell 或 `GenericToolCell`。 |
 | `ProposedPlanCell` / `CollabAgentHistoryCell` | 分别展示 Plan Mode 最终计划和 Multi-Agent 控制操作。 |
 
@@ -1160,7 +1164,10 @@ flowchart LR
 |---|---|
 | `HistoryCell` | `DisplayLines`、`RawLines`、stream continuation contract。 |
 | `ActiveHistoryCell` | 当前流式 item 或工具 activity。 |
-| `AgentMessageCell` | Assistant Markdown。 |
+| `TranscriptSurface` | 统一拥有canonical transcript、immutable native-history cursor、mutable viewport和attachment-based completion replacement。 |
+| `markdownStreamHost` | 统一拥有Assistant/Plan controller和stream期间的defer-or-apply projection ordering。 |
+| `AgentMessageCell` / `StreamingAgentTailCell` | Assistant/Plan live stream 的 stable run 与 mutable tail。 |
+| `AgentMarkdownCell` | Assistant Markdown final source/cache owner。 |
 | `ProposedPlanCell` | Plan Mode 最终计划。 |
 | `ToolHistoryCell` | 聚合一个或多个 live Tool activity，并消费 started/completed Event。 |
 | `ExecCell` / `ExploreCell` | 分别展示命令进程，以及 read/glob/grep 等探索活动。 |

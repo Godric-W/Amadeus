@@ -61,6 +61,13 @@ func TestStatusLineArchitectureUsesTypedSessionStateAndPureFooter(t *testing.T) 
 			t.Errorf("View/render path owns forbidden statusline concern %q", forbidden)
 		}
 	}
+	historyCellSource := mustReadArchitectureFile(t, root, "internal/tui/history_cell.go")
+	if !strings.Contains(historyCellSource, "const transcriptRegionBlankRows = 2") || !strings.Contains(viewSource, "transcriptRegionSeparator") {
+		t.Error("TUI regions do not share the Codex two-blank-row spacing contract")
+	}
+	if !strings.Contains(historyCellSource, "func (FinalMessageSeparator) HistoryBoundaryBlankRows() int") || !strings.Contains(historyCellSource, "historyBoundaryBlankRows(previous, current HistoryCell)") {
+		t.Error("FinalMessageSeparator does not override spacing to one blank row")
+	}
 	applicationSource := mustReadArchitectureFile(t, root, "internal/tui/application.go")
 	if !strings.Contains(applicationSource, "tea.WithOutput(app.options.Output)") {
 		t.Error("Bubble Tea output is not wired directly to the configured writer")

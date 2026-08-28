@@ -77,6 +77,7 @@ Amadeus 当前处于未发布开发阶段，不承诺自身旧实现的任何兼
 | Y. Initial Prompt + Single TUI Frontend Alignment | Codex `PROMPT → initial_user_message → normal user-message submission`、单一 TUI frontend 与 startup/replay gating |
 | Z. Internal Package + Source Layout Alignment | Codex-aligned Protocol、Session、ContextManager、ThreadStore、ThreadManager、TUI 与 Tool package ownership；Go 文件按内聚行为拆分 |
 | AA. Prompt Ownership + Lifecycle Realignment | Codex model instructions、Session Base provenance、Default/Plan、source-specific ToolSpec、typed WorldState full/diff、Prompt wire mapping、Compact 与 Resume lifecycle |
+| AB. Source-backed Markdown Streaming + TUI Render Lifecycle | Codex `MarkdownStreamCollector/StreamingRender/StreamController/AgentMarkdownCell` ownership、authoritative completion、Goldmark/Chroma structured render 与 Bubble Tea model-owned transcript viewport 适配 |
 
 ## 2. 产品目标
 
@@ -456,16 +457,30 @@ internal/tui/
   input_queue.go             QueuedUserMessage FIFO、in-flight admission 与 attachment scope
   application_update.go      Bubble Tea Update 与输入状态转换
   application_events.go      EventMsg/TurnItem reducer 与 Turn lifecycle
-  history_state.go           active/completed HistoryCell、draft 与 recall state
+  history_state.go           active/completed HistoryCell、source-backed stream 与 recall state
   application_view.go        top-level View composition 与 terminal content cleanup
   composer_view.go           input box、textarea window、popup 与 Footer
-  transcript_view.go         transcript viewport、active draft/cell 与 history flush
+  transcript_view.go         transcript viewport、active stream/cell 与 completed history flush
   application_commands.go    Slash Command 分发
   application_selection.go   Session / Skill 选择流程
   history_cell.go            HistoryCell/ActiveHistoryCell contracts
-  history_messages.go        User/Assistant/Plan message cells
+  history_messages.go        User、streaming Assistant、source-backed Assistant/Plan cells
+  history_cell_session.go    source-backed SessionHeader/Logo/metadata HistoryCell
   history_notices.go         Notice/Info/Warning/Error cells
   history_render.go          Rich/Raw line projection 与 semantic style
+  markdown_source.go         exact source、frozen CWD与临时parse source
+  markdown_parse.go          Goldmark top-level source offset/reference analysis
+  markdown_render.go         Goldmark AST writer、Chroma projection与typed lines/spans
+  markdown_wrap.go           display-width word/grapheme wrap与span/link remap
+  markdown_stream.go         newline-gated raw source collector
+  markdown_stream_host.go    Assistant/Plan controller与deferred projection FIFO owner
+  streaming_render.go        stable top-level blocks 与 mutable final block render state
+  stream_controller.go       per-Item Assistant/Plan controller、StreamCore stable queue/tail、reset/finalize
+  transcript_surface.go      HistoryCell、stream attachment range与final replacement
+  transcript_viewport.go     mutable active-frame viewport、page scroll与anchor
+  markdown_render_cache.go   finalized source render cache key 与失效边界
+  markdown_tables.go         Goldmark table projection 与 output bounds
+  markdown_links.go          CWD-aware local/web link typed span projection
   history_cell_tools.go           Tool activity reducer 与 generic fallback
   history_exec.go            execute_command projection
   history_explore.go         read/glob/grep projection
@@ -1663,16 +1678,16 @@ Sample Model Stream
 
 #### 10.4.2 Partial Delta 与恢复边界
 
-Stream 在已发布部分 Delta 后断开时，不能简单重新请求并把新 Delta 继续追加到旧 draft。实现必须明确 attempt-local aggregation 与用户可见 draft 的关系，并满足：
+Stream 在已发布部分 Delta 后断开时，不能简单重新请求并把新 Delta 继续追加到旧 attempt source。实现必须明确 attempt-local aggregation 与 Item-scoped StreamController/TranscriptSurface stable run/tail 的关系，并满足：
 
 - 未形成 completed ResponseItem 的 Delta 不是 canonical fact，不写入 Rollout，也不参与 Resume replay。
 - 每次 retry attempt 使用独立 aggregation state；只有成功完成的 ResponseItem 才进入 canonical append 与 ItemCompletedEvent 顺序。
-- 新 attempt 如果从头返回内容，TUI/stream projector 必须替换或按稳定 item identity 去重旧 attempt 的未完成 draft，不能产生重复文本、重复 Tool Call 或重复 reasoning。
-- `ItemStartedEvent.Item.Kind` 是 live projector 的稳定分流依据：Assistant/Reasoning start 只建立 draft identity，不得创建 Tool/Explored HistoryCell；只有 Tool/Command/File activity 才进入 Tool activity projector。TUI 不得用空 `ToolName`、事件到达顺序或展示字符串猜测 item 类型。
+- 新 attempt 如果从头返回内容，TUI/stream projector 必须通过`Reset=true`原子替换同一ItemID的旧attempt source/render/frame，不能产生重复文本、重复 Tool Call 或重复 reasoning。
+- `ItemStartedEvent.Item.Kind` 是 live projector 的稳定分流依据：Assistant start只建立Item-scoped StreamController，Reasoning start只建立status/reasoning identity，不得创建Tool/Explored HistoryCell；只有Tool/Command/File activity才进入Tool activity projector。TUI不得用空`ToolName`、事件到达顺序或展示字符串猜测item类型。
 - 已完成并 canonical append 的 ResponseItem 不因后续 sampling request 重试而回滚；retry 只作用于当前未完成 sampling request。
 - cancellation 在 stream read 和 backoff 期间都必须立即生效，并最终走 `TurnAbortedEvent` 或既定 interruption contract，不能被下一次 retry 吞掉。
 
-Response stream retry Event 是 live、transient、non-canonical notification。Resume/replay 不重放历史上的 `Reconnecting...` 状态，也不尝试恢复旧 Provider stream、retry counter、backoff timer 或 attempt-local draft。
+Response stream retry Event 是 live、transient、non-canonical notification。Resume/replay 不重放历史上的 `Reconnecting...` 状态，也不尝试恢复旧 Provider stream、retry counter、backoff timer、StreamController或attempt-local source。
 
 ### 10.5 Progress、Budget 与停止条件
 
@@ -3498,7 +3513,7 @@ SlashCommand::MCP
 SlashCommand::Clear
 → ClearUI(name?)
 → 清除 pending history insertion
-→ 清空 terminal viewport/scrollback
+→ reset TranscriptSurface canonical cells / native-print watermark / active frame
 → reset Transcript/App UI state
 → detach/shutdown 当前 live Thread attachment
 → StartFreshThread(source=clear)
@@ -3617,7 +3632,7 @@ SlashCommand::Exit
 - `ShutdownFirst` 是用户主动退出的默认模式；pending shutdown target 用于阻止正常 Thread termination/failover 逻辑把退出误判为异常切换。
 - shutdown 必须有 UI escape-hatch timeout，避免损坏的 Runtime 让退出永久卡住；超时可以记录 warning 后退出，但不能把 `Immediate` 当常规路径。
 - `Immediate` 只用于 fatal error、shutdown 已完成后的最终跳出或明确的紧急逃生路径，允许跳过 flush 的风险必须在类型命名中可见。
-- `Shutting down…` 是 BottomPane/Composer 区域的 transient presentation，不是 HistoryCell。退出过程不得向永久 transcript 插入 `Shutting down…`，也不得把 Composer、placeholder、Footer 或 Popup 提交到 scrollback。
+- `Shutting down…` 是 BottomPane/Composer 区域的 transient presentation，不是 HistoryCell。退出过程不得向永久 transcript 插入 `Shutting down…`，也不得把 Composer、placeholder、Footer 或 Popup 留在最终 active frame。
 - 旧 `/exit → tea.Quit` 和 `ShutdownFinished → tea.Quit` 的单阶段路径必须删除；最终 `tea.Quit` 只能由 Application shutdown lifecycle 的终态及 renderer drain 完成后触发。
 
 退出结果使用 typed model，而不是让 CLI 在 TUI 结束后重新查询已关闭的 Runtime：
@@ -3684,7 +3699,7 @@ ShutdownFinished
 
 - `/exit`、空输入时双击退出快捷键及其他 user-requested exit 复用同一个 `ShutdownFirst` lifecycle。
 - shutdown 等待期间最多存在一份 transient `Shutting down…`，Composer 不接受新输入，重复 `/exit` 不重复提交 shutdown。
-- 正常退出后 terminal scrollback 不残留 Composer placeholder、Popup 或 Footer。
+- 正常退出后最终 active frame 不残留 Composer placeholder、Popup 或 Footer。
 - Token usage/resume hint 只在 TUI 完全退出后各打印一次；零 usage、不可恢复、fatal 与 timeout 路径均有独立测试。
 - renderer drain、Application shutdown 和 CLI summary 必须分别可测试，不能依赖真实终端中的人工观察或时间竞争作为唯一验收。
 
@@ -3703,7 +3718,7 @@ ShutdownFinished
 默认使用 Bubble Tea + Lip Gloss 实现 Codex 风格 Rich TUI：
 
 - 保留 Amadeus Logo 和 `>_` 启动视觉。
-- 历史内容尽量进入终端原生 scrollback。
+- 已完成HistoryCell经`TranscriptSurface` print watermark只提交一次到终端原生scrollback；mutable stream/tool tail留在有界active frame。禁止把完整历史塞进超高`View()`后依赖stock Bubble Tea裁顶。
 - 鼠标默认保留终端选择文本能力。
 - 输入运行期间仍可编辑；普通文本 Enter 始终提交 `UserInputOp`，由 Runtime admission 决定 Started、Steered 或 typed rejection，TUI 不依据 `running bool` 自行改写为下一 Turn。
 - 运行中普通文本 Tab 显式进入 attachment-scoped `NextTurnQueue`；它与 Enter steer 分开展示、分开恢复，并只在 matching terminal 后逐条提交。
@@ -3726,8 +3741,9 @@ Event/EventMsg
 首批 Cell：
 
 - UserMessageCell
-- AssistantMessageCell
-- ReasoningCell
+- AgentMessageCell（transient stable Assistant/Plan stream run）
+- StreamingAgentTailCell（transient mutable Assistant/Plan stream tail）
+- AgentMarkdownCell（final source-backed Assistant）
 - ExecCell
 - ExploreCell
 - WebSearchCell
@@ -3758,14 +3774,247 @@ Replay: EventMsgItem(ItemCompletedEvent)               → HistoryCell
 
 Replay Mode 不播放 Working、Shimmer 或流式动画，但必须产生与实时完成态一致的历史结构。
 
-### 19.3 Visual Runtime
+### 19.3 Assistant Markdown 与 Streaming Transcript
+
+Assistant Markdown 的外层生命周期以当前 Codex TUI 的 `MarkdownStreamCollector → StreamingRender → StreamController → AgentMarkdownCell` 为主要参考。这里的“对齐”指 raw source owner、Item identity、增量边界、completion authority、resize/cache 和 final HistoryCell 职责同构，不要求把 Rust、Ratatui、pulldown-cmark 或 Syntect 逐字翻译为 Go。
+
+Amadeus保留成熟Go组件：Goldmark是Markdown grammar/AST的唯一parser authority，Chroma是fenced code syntax highlighting authority。现有Glamour只能在迁移期辅助对照样式；由于它向当前调用方返回opaque ANSI string，AB完成后的Assistant/Plan生产renderer必须直接消费Goldmark AST/source offsets，不能把Glamour包在target-shaped adapter中继续作为HistoryCell数据模型，也不能手写CommonMark parser或从ANSI输出反向解析结构。若迁移后Glamour无其他真实调用方则删除依赖。
+
+目标主链固定为：
+
+```text
+AgentMessageContentDeltaEvent{ItemID, Delta, Reset}
+→ TUI EventReducer validates ItemID/lifecycle
+→ ChatWidget-equivalent MarkdownStreamHost owns StreamController
+→ StreamCore / MarkdownStreamCollector stores raw attempt source
+→ newline-gated committed source → StreamingRender
+→ StreamState commit queue emits stable AgentMessageCell run
+→ mutable StreamingAgentTailCell stays in active transcript slot
+→ ItemCompletedEvent{AssistantMessage, authoritative Text}
+→ finalize source / reconcile authoritative Text
+→ TranscriptSurface replaces the exact active attachment range
+→ AgentMarkdownCell{MarkdownSource, RenderCache}
+→ finalized cell prints once to native scrollback
+→ mutable cells remain in bounded active frame
+
+Resume:
+completed Assistant TurnItem
+→ AgentMarkdownCell directly
+```
+
+#### 19.3.1 Codex Reference Chain And Amadeus Target
+
+Codex 的完整链路有明确、不可混淆的 owner：
+
+```text
+App-server delta / completed ThreadItem
+→ ChatWidget (stream lifecycle, status, interrupt ordering)
+→ StreamController / PlanStreamController
+→ StreamCore { MarkdownStreamCollector, StreamingRender, StreamState }
+→ transient AgentMessageCell stable run + StreamingAgentTailCell
+→ App TranscriptSurface consolidation / resize reflow
+→ final AgentMarkdownCell source + render cache
+```
+
+- **Protocol/UI reducer**：只验证 event/thread/item identity 并把 Assistant/Plan delta 交给当前 stream host；不得解析 Markdown、决定 wrap 或写 terminal rows。
+- **MarkdownStreamHost**：是 Amadeus 对应 Codex ChatWidget 的 owner，拥有当前 Assistant/Plan controller、commit tick、active tail、status restore、completion reconciliation，以及 active stream 期间会改变 transcript 顺序的 deferred projection FIFO；它不是 Markdown parser，也不保存 final transcript source 副本。
+- **StreamCore**：共享 Assistant/Plan 的 source accumulation、newline commit watermark、incremental render、stable/mutable partition、commit queue、tail 和 resize rebuild。两个 controller 只添加各自 presentation/header/final cell 类型。
+- **Markdown writer**：消费 Goldmark AST/event，拥有 style stack、block lifecycle、indent stack、link/table state、syntax highlighting 与 typed line/hyperlink ranges；它不拥有 delta、retry、HistoryCell 或 terminal redraw。
+- **TranscriptSurface**：是单一 Bubble Tea frontend 内model-owned的canonical transcript owner，拥有全部HistoryCell、active stream attachment range、active tail、final-cell replacement，以及session-header/history native-print watermark。不可变SessionHeader/User/Tool/final Assistant cells通过`tea.Println`按顺序只提交一次到native scrollback；transient `AgentMessageCell`/tail绝不打印，只在bounded active frame显示。
+- **Final cell**：`AgentMarkdownCell`/`ProposedPlanCell` 是 completed item source 的唯一 owner；cache 只保存 derived layout。Rollout/Protocol 永远不保存 AST、wrap rows、style stack、tail 或 cache。
+
+Amadeus不复制Ratatui类型或Rust动画实现，但必须保留上述owner、状态转换和completion protocol。仅在completion渲染且没有live controller/tail的旧路径不是目标；当前适配必须同时具备source-backed live frame、authoritative consolidation和finalized native-history sink。
+
+#### 19.3.2 数据模型与 Owner
+
+```go
+type MarkdownSource struct {
+    Text string
+    CWD  string
+}
+
+type MarkdownRenderKey struct {
+    Width               int
+    RenderMode          HistoryRenderMode
+    PaletteRevision     string
+    SyntaxThemeRevision string
+    ColorLevel          colorLevel
+}
+
+type MarkdownStyle struct {
+    Bold          bool
+    Italic        bool
+    Strikethrough bool
+    Underline     bool
+    Foreground    *ColorToken
+}
+
+type MarkdownSpan struct {
+    Text        string
+    Style       MarkdownStyle
+    Destination *LinkDestination
+    Syntax      *SyntaxToken
+}
+
+type MarkdownLine struct {
+    Spans            []MarkdownSpan
+    InitialIndent    []MarkdownSpan
+    SubsequentIndent []MarkdownSpan
+    Hyperlinks       []HyperlinkRange
+    BlockKind        MarkdownBlockKind
+    NoWrap           bool
+}
+
+type HyperlinkRange struct {
+    Columns     Range
+    Destination LinkDestination
+}
+
+type MarkdownWriter struct {
+    Styles       MarkdownStyles
+    InlineStack  []MarkdownStyle
+    Indents      []IndentContext
+    Link         *LinkState
+    Table        *TableState
+    NeedsNewline bool
+}
+
+type MarkdownStreamCollector struct {
+    source             strings.Builder
+    committedSourceLen int
+}
+
+type StreamingRender struct {
+    Lines             []MarkdownLine
+    StableSourceLen   int
+    StableRenderedLen int
+    HasReferences     bool
+}
+
+type StreamState struct {
+    CommitQueue      []MarkdownLine
+    EmittedStableLen int
+    HasSeenDelta     bool
+}
+
+type StreamCore struct {
+    Collector MarkdownStreamCollector
+    Render    StreamingRender
+    State     StreamState
+    Width     int
+    CWD       string
+    Mode      HistoryRenderMode
+}
+
+type StreamController struct {
+    ItemID    protocol.ItemID
+    Source    MarkdownStreamCollector
+    Render    StreamingRender
+    CWD       string
+    Mode      HistoryRenderMode
+}
+
+type StreamAttachment struct {
+    ItemID   protocol.ItemID
+    Kind     protocol.ItemKind
+    RunStart int
+}
+
+type TranscriptViewportState struct {
+    Top          int
+    FollowBottom bool
+    Anchor       string
+}
+
+type TranscriptSurface struct {
+    SessionHeader HistoryCell
+    Cells        []HistoryCell
+    ActiveStream *StreamAttachment
+    ActiveTail   HistoryCell
+    Viewport     TranscriptViewportState
+    HeaderPrinted bool
+    PrintCursor   int
+}
+
+type MarkdownStreamHost struct {
+    Assistant           *StreamController
+    Plan                *PlanStreamController
+    TranscriptProtected bool
+    Deferred            []DeferredTranscriptProjection
+}
+
+type AgentMarkdownCell struct {
+    Source MarkdownSource
+    Cache  MarkdownRenderCache
+}
+```
+
+- 每个 attachment 同时最多有一个 Assistant 和一个 Plan active controller；controller 绑定当前 ItemID，所有 Delta、Reset 和 Completed 必须匹配该绑定。不得把 ItemID 发展为无约束的 controller map，也不得继续用与 ItemID 无关的全局 `draft string` 作为 transcript truth。Plan 使用共享 `StreamCore` 和独立 `PlanStreamController`/presentation wrapper，不复制 parser、source buffer、queue 或 tail state。
+- `MarkdownStreamCollector` 只保存 raw source 和 newline commit watermark，不解析 Markdown、不保存 rendered terminal rows。`Reset=true` 表示 Provider retry 的新 attempt，必须清空当前 attempt source、render、stable queue 与 tail，不能提交旧 attempt HistoryCell。
+- `StreamingRender` 只拥有当前 width/render mode 下的 derived lines 及增量缓存边界。Goldmark parse result 必须提供最后一个 top-level block 的 source start 和 reference-definition presence；已经完成的 top-level blocks 可以保留，最后一个 block必须允许随着后续 list tightness、setext heading、fence 或 reference link 变化而重渲染。不得用空行扫描、正则或字符串特征代替 parser block boundary。`StreamState` 是 stable line queue 的唯一 owner；queued、emitted 与 tail range 必须分离，不能复制 source。
+- Goldmark AST 只负责 grammar；生产 Markdown writer 必须以 block/inline event 流持有 `MarkdownStyle` stack、list/blockquote indent stack、link state、hard/soft break 和 table state。Strong、emphasis、strikethrough、heading 与 link 是可组合 style patch，不得压缩为互相覆盖的单个 `semanticStyle` enum。
+- `AgentMessageCell` 是从 `StreamState.CommitQueue` 取出的 stable rendered line run，只属于 live `TranscriptSurface`；`StreamingAgentTailCell` 是 enqueued boundary 之后的 mutable region。`TranscriptSurface.ActiveStream` 在 start 时冻结 `ItemID/Kind/RunStart`，completion/reset 按该 attachment range 精确替换或删除，不能通过扫描“当前尾部连续 cell”猜测范围。二者绝不是 Rollout item 或 Resume source。
+- `SessionHeaderCell`是`TranscriptSurface`的固定首个HistoryCell，冻结当前attachment的Version/Model/CWD并结构化渲染Logo与信息框。它不是`View()`中“仅history为空时显示”的装饰分支；初始化/attach时与replay history按顺序提交native scrollback，首条UserMessage不会删除它。
+- `TranscriptSurface`保留全部canonical cells，但`View()`只投影print cursor之后的transient stream/tool cells；immutable cell一旦进入native print queue就立即从active frame排除，不能同时显示两份。active frame按可用高度有界，用户通过终端原生scrollback查看finalized history。禁止先截取最后N条raw source再解析Markdown。
+- `AgentMarkdownCell` 是唯一 final Assistant Markdown cell，保存 authoritative completed source 和当时 Session CWD；它按 render key 缓存 derived lines。当前 `AgentMessageCell{Markdown string}` 直接删除，不保留 alias、wrapper 或“stream cell 与 final cell 共用一个模糊类型”的路径。
+- `/copy` 从 completed `AgentMarkdownCell.Source.Text` 派生，不保留 `LastAgentMarkdown` 或其他 source 副本，也不读取 active stream、ANSI输出或trim后的文本。
+
+#### 19.3.3 Streaming、Completion 与 Bubble Tea 适配
+
+- 与Codex一致，未结束的source line不进入committed render。半个inline code、link、list marker、fence或table row不能先以错误形状显示再跳变；没有newline的最终尾行只在completion/finalize时提交。
+- Rich streaming 解析 `stable_source_len` 之后的 pending source，并以 Goldmark 顶层节点 source offset 缓存 stable prefix 和 mutable final block。fenced code、loose list、blockquote、HTML block 内部的空行不是稳定边界。Goldmark `parser.Context.References()` 等 source-wide parse state 出现时允许 full recompute；普通 Delta 不得每个 frame 重新扫描或解析全部 source。任何会改变 parser input 字节位置的 source transform 必须提供 offset map，否则该次 render 禁止推进 stable boundary。
+- 每个 block 的 writer 生命周期负责视觉呼吸和结构：paragraph、heading、blockquote、list、code 和 table 之间按 Codex `needs_newline`/block boundary 产生结构化空行；list marker、initial indent 与 subsequent indent 必须保留到 wrap 之后，不能把所有 block 紧贴成连续文本。
+- stable region 进入 `StreamState.CommitQueue`，由 Bubble Tea tick 按确定顺序转为 transient `AgentMessageCell` 并写入 `TranscriptSurface`；mutable tail 只存在 active slot。table header/delimiter 出现后，`TableHoldbackState{PendingHeader|Confirmed}` 必须把候选 table 起点之后保持 mutable，避免新增 row 改写已经 committed 的列宽。queued 与 emitted boundary 必须分离，queued row 不得同时出现在 tail。
+- `AgentMessageCell`和`StreamingAgentTailCell`的`IsStreamContinuation`必须返回`!First`：stream首个cell与前一User/Tool cell之间从第一帧就产生正常cell spacing，后续stable/tail run不重复插空行。completion替换成final `AgentMarkdownCell`前后spacing必须完全相同，不能在finalize时闪现空行。
+- `ItemCompletedEvent` 中的 Assistant Text 是权威完成事实。即使 stream source 非空，只要与 completed Text 不同，final cell 必须使用 completed Text；stream 只负责 live preview，不能覆盖 canonical completion。无 Delta 但有 completed Text 时直接建立 final cell。`ItemPlan` Text 也采用相同覆盖规则；这是 Amadeus 的 canonical protocol 决定，不宣称为 Codex 当前 Plan 路径的既有行为。
+- Active Assistant/Plan stream 期间，所有会插入、完成或删除 HistoryCell 的 Warning、Tool、Approval、UserInput、diagnostic 和 attachment-boundary projection 必须由 `MarkdownStreamHost` defer-or-apply。deferred projection 保持原 Event 顺序；先 finalize/reset 精确 stream attachment，再 FIFO flush。不能允许非-stream cell 插入 stream run 后再依赖 trailing-run scan consolidation。
+- Retry reset、interrupt 和 terminal error 必须按冻结的 attachment range 释放 controller、stable run 与 tail。已完成 cell 只能由 completed item创建一次；live 与 Resume 使用同一个 `completed item → AgentMarkdownCell`（或 Plan final cell）projector。
+- Bubble Tea保持单一frontend。stock standard renderer会丢弃超高`View()`顶部rows，因此完整history不得留在frame；`flushHistory`用有序`tea.Println`把immutable cells提交native scrollback，mutable stream/tail使用bounded active viewport。Mouse capture保持关闭，终端原生滚轮/选择继续工作。
+- completion先清除active tail、finalize controller并比较streamed source与authoritative Text；有stream时按`ActiveStream.RunStart`原子替换为单个final cell。transient stable/tail从未进入native history，因此无需撤回；replacement完成后final cell一次性print，不能把provisional rows和final rows重复打印。
+- terminal resize 或 Rich/Raw mode change 必须以 complete source重建controller queue/tail和final cell derived layout，再 clamp viewport offset；不能保留旧width ANSI rows。用户处于 follow-bottom 时 resize 后仍跟随底部，用户正在查看旧历史时尽量保持同一逻辑 cell/line anchor。
+
+#### 19.3.4 Markdown Render Contract
+
+Markdown parser和terminal projection必须保持分层：
+
+```text
+exact MarkdownSource
+→ Goldmark AST + source offsets
+→ block/inline semantic nodes
+→ width-aware []MarkdownLine/[]MarkdownSpan
+→ TerminalPalette + Chroma styles
+→ Bubble Tea output
+```
+
+- Renderer输出typed lines/spans，不把整块Glamour ANSI string塞入`styleRendered`后失去结构。`MarkdownStyle` 是 composable patch，`MarkdownSpan` 保留可选 syntax token 与 typed link destination；`MarkdownLine` 同时保存 initial/subsequent indent、block kind 与 wrap policy，使 wrapping、prefix、code no-wrap 和 Raw projection不从ANSI文本反推。
+- Assistant source不得`strings.TrimSpace`。`MarkdownSource.Text` 保留 authoritative completed Text 的原始字节序列；若 parser 需要末尾换行，只能为本次 render 构造临时 `parseSource`，不得把该虚拟换行写回 source、cache、`/copy` 或 Resume。leading spaces、trailing newline、indented code 和 fence 边界属于 Markdown 语义。UI 可在 derived render 阶段规范化纯空白 display line，但不能改写 source。
+- Rich和Raw是两种独立projection：Rich在`NO_COLOR`下仍解析Markdown并移除语法marker，只是不发颜色/修饰ANSI；Raw保留原始Markdown。不得把“NoColor”退化为显示`**bold**`等raw marker。
+- Assistant/Plan首行使用dim `• `，所有后续视觉行使用等宽`  ` gutter；soft wrap也必须保留subsequent indent，不能只给渲染字符串第一行加prefix。
+- Goldmark soft break 表示 source 中明确存在的逻辑换行，在普通 paragraph/list/blockquote 中投影为新的 structured line；hard break也换行但保留其明确语义。table cell 可按 table layout policy把 soft break规范为空格。两者都必须复用当前 subsequent indent，不能统一替换成普通空格。
+- wrapping 必须先基于整条 logical line 计算 display-width aware word/grapheme ranges，再把输出 range remap 回原 `MarkdownSpan`/style/link destination；不能逐 span 分词或按 rune 重拼。默认 `break_words=false`，普通单词不得被拆为两行；只有明确的 token-heavy URL/path/hash fallback 才可在可解释边界拆分，且每个 fragment 达到宽度后必须实际 flush output line。fenced/indented code block设置`NoWrap`，Bubble Tea只投影当前viewport可见列，完整code仍保留在`MarkdownSource`并可通过`/copy`取得；基础版不增加水平滚动frontend。
+- Heading、emphasis、strong、strikethrough、inline code、list、blockquote和horizontal rule语义与Codex对应；具体颜色通过TerminalPalette semantic token选择，不在Markdown AST writer硬编码truecolor值。
+- Fenced code继续使用Chroma，不复制Codex Syntect/Two Face实现。语言alias、unknown-language plain fallback、输入大小/行数/单行长度上限和light/dark/ANSI/no-color行为必须有明确contract；不要求与Codex支持完全相同的语法集合。
+- GFM table由 Goldmark table events 驱动的 typed table group/cell rows。基础 renderer 先计算共享 intrinsic widths；需要收缩时必须真实 wrap 每个 cell 并生成等高 physical rows，不能只减小 width 数字后继续输出完整 cell。任何列低于最小可读宽度、列数/行数/总cell bytes超限或 grid仍无法放入viewport时，整个body确定性降级为key/value records。Codex 的 spillover filtering 与 Narrative/TokenHeavy/Compact 启发式不属于基础范围。完整 `md`/`markdown` fence table若做source transform，必须保守识别并遵守前述offset-map/full-recompute规则。
+- 本地和Web link的typed span必须保留destination。local destination覆盖`file://`、Unix absolute/relative、`~/`、Windows drive/UNC，并规范化`:line[:column]`/`#Lline[Ccolumn]`后按cell冻结CWD缩短；web link默认显示label，并在label不等于destination时提供可读` (destination)` fallback，同时保留完整OSC-8 target。wrap/table/clone后visible range必须继续指向完整destination，不能漏拷贝table prefix或只转换table外层row。
+- Terminal projection在不改写`MarkdownSource`的前提下移除span text中的CSI/OSC和非换行/Tab控制字符；只有经过scheme、host和control-byte校验的`http/https`destination可以生成OSC-8。
+- Inline visualization、Codex theme picker/custom `.tmTheme`、远程图片Markdown和raw reasoning body不属于AB基础范围。Reasoning delta只用于Codex风格status header；只有未来产品明确展示reasoning summary时才复用Markdown renderer建立独立cell。
+
+#### 19.3.5 Cache、失败与可观测性
+
+- `MarkdownRenderCache`按width、Rich/Raw mode和当前固定 palette/color level失效；本阶段 Chroma theme 由 `terminalPalette.Dark` 静态选择，不存在独立 runtime syntax revision。CWD属于immutable source/cell identity，不从当前process cwd动态读取。cache只保存derived render，不成为第二份source。
+- Markdown parse/render失败不得使Turn失败。Goldmark/Chroma的可恢复失败直接降级plain token；unexpected parser/render panic在统一recover boundary生成bounded plain-text projection，下一次live delta从exact pending source重新尝试structured render。fallback始终保留raw source供`/copy`、Resume和后续修复，且不得把正文写入普通diagnostic日志。
+- Streaming render必须有CPU/内存边界：TUI在进入Goldmark前独立限制structured-render source bytes，syntax highlighting单独限制bytes/lines/line length，table layout限制rows/columns/cell width；超限只把相关presentation降级为bounded plain projection，`MarkdownSource`、Rollout、Resume和`/copy`不丢Assistant文本。
+- Debug/trace可以记录source bytes、committed watermark、stable/mutable line counts、full recompute reason、render duration和cache hit；不得记录完整敏感Assistant正文到普通日志。
+- Markdown source、stream controller和render cache只属于TUI。Protocol继续只发布typedDelta/completed item，Session、ModelClient、Rollout和Application不得了解Goldmark node、terminal width、Chroma theme或HistoryCell。
+
+### 19.4 Visual Runtime
 
 与 Codex 对齐的关键行为：
 
 - `◦ Working (1m 32s • esc to interrupt)` 使用单调时钟。
 - Working shimmer 使用终端主题感知的 foreground/dim，而不是固定彩虹色。
 - Tool 工作与最终 Assistant 回复之间显示不带耗时的 dim rule；完成后在最终回复下方显示 `─ Worked for 7m 18s ─────`。
-- User、Working、Assistant、Separator 和 Composer 的空行由结构化布局决定。
+- User、Working、Assistant、Tool、Separator和Composer的空行由previous/current boundary共同决定。普通主要区域使用两条blank rows；任一侧是`FinalMessageSeparator`或Tool activity tree时使用一条；stream continuation为0。`historyBoundaryBlankRows(previous,current)`同时驱动内存layout、native print和active leading boundary，避免同一个Explored/Ran组合因是否落在同一`ToolHistoryCell`而出现1/2行随机变化。
 - Composer 按终端显示宽度软换行；`› ` 只属于第一条视觉行，后续软换行与显式换行使用等宽空白 gutter。五行上限是可见 viewport 高度而不是输入长度限制；超过上限后，展示投影截取包含当前 cursor 的五条视觉行，Home/End/方向移动必须同步滚动可见窗口。输入使用 Bubble Tea textarea 的软件光标；当前 Bubble Tea renderer 不暴露 model hardware-cursor position，基础版不通过 output writer 或手写 cursor reposition 强行实现 IME 候选窗口锚定。
 - Footer 左侧通常显示 Model、CurrentDir、GitBranch、ThreadTitle 与 Context 等固定会话元数据；running Turn 中存在 queueable draft 时临时替换为 queue hint。Plan collaboration indicator 使用 magenta 独立右对齐，空闲时附带 `shift+tab to cycle`，Default mode 不显示模式标签。
 - Tool Start/Delta/Complete 原位更新，不重复打印多个树枝。
@@ -3790,7 +4039,7 @@ Response stream reconnect 复用同一个 status indicator、activity marker、s
 - Replay/Resume initial history 忽略 retrying StreamErrorEvent，不能恢复旧 retry status 或在历史底部生成永久 `Reconnecting...` Cell。
 - `WillRetry=false` 使用最终错误投影，并等待唯一 `TurnCompleteEvent`/`TurnAbortedEvent` 结束 Working；TUI 不自行合成 Turn terminal。
 
-### 19.4 Statusline 与 Footer State
+### 19.5 Statusline 与 Footer State
 
 Amadeus 不复制 Codex 的 `/statusline` 命令、picker、持久化配置或任意 item 排序能力；基础版只展示产品指定的固定信息。但内部架构、数据模型、概念术语、命名与生命周期按 Codex 的 statusline/footer 分层对齐：
 
@@ -3857,7 +4106,7 @@ type footerProps struct {
 - `HasQueueableDraft=true` 时 Footer 进入 transient queue-hint layout：左侧优先显示 dim `tab to queue message`，宽度不足时收缩为 `tab to queue`；固定 statusline 暂停渲染。Plan indicator 只有与 hint 同行可容纳时才保留，空间不足时先删除 Plan indicator，queue hint 是该状态的最后保留信息。Composer 清空或 Turn terminal 后恢复普通 statusline layout。
 - Slash/File/Skill 等 Composer popup 激活时占用 Codex 的 popup/footer 区域并替换普通 Footer；不得在 popup 下方继续渲染 statusline、queue hint 或 mode indicator。Popup 关闭后 Footer 才恢复。Slash Command Popup 的 selection 只通过 command name/description style 表达，不显示 Modal picker 使用的 `›` cursor glyph。
 - Selection overlay 对齐 Codex `SelectionViewParams`：footer hint 默认为空，不由公共 renderer 合成按键说明；确有必要时由调用方显式提供。非空 subtitle 与列表/搜索输入之间统一保留一行，不允许按命令增加视觉特例开关。`/skills` 顶层菜单与 `/resume` picker 不显示 footer hint。
-- Collaboration indicator 的“右对齐”只表示 Footer 当前布局行内的独立右列，不要求 Amadeus 复制 Codex/Ratatui 的全屏 surface 或把 Bubble Tea inline frame 人工扩展到 terminal height。`View()` 返回活动 frame 的真实内容高度，不能通过顶部补空行、额外 output writer 或 cursor up/down 转义序列模拟另一个 terminal layout engine。永久 transcript row 由 `tea.Println` 提交，Composer、Popup 与 Footer 只存在于随后重绘的活动 frame。
+- Collaboration indicator 的“右对齐”只表示 Footer 当前布局行内的独立右列，不要求复制 Ratatui 类型或 cursor protocol。`View()`通过同一个Bubble Tea model渲染mutable TranscriptSurface、Composer、Popup与Footer；不能使用顶部补空行、额外output writer或手写cursor up/down协议。只有immutable finalized transcript cells经Bubble Tea自身`tea.Println`提交。
 
 Session 配置部分使用单一应用路径：
 
@@ -3878,7 +4127,7 @@ renderFooter(footerProps)
 
 Thread title、TokenUsageInfo/ActiveContextTokens 和 Git branch 分别通过 typed Application event、`TokenCountEvent` 与 CurrentDir-keyed derived cache 合入同一个 `sessionViewState`，不塞入 `SessionConfiguration` 扩大其职责。TokenCountEvent 和 ThreadViewSnapshot 都携带完整 snapshot，Reducer 只替换、不累加。`ThreadSettingsAppliedEvent` 携带实际生效的完整 `SessionConfiguration`，并与 `SessionConfiguredEvent`、snapshot attach 共用 `applySessionConfiguration()`。该函数原子替换 CurrentDir、Provider、Model、ReasoningEffort 和 CollaborationMode；不能只更新 Mode 后继续从 Startup 或 Application Status 读取其他字段。Resume、new thread 和 attach 必须先清理旧 Thread 的 session/footer 派生状态，再安装新 snapshot，避免旧目录、branch、title 或 context 泄漏。
 
-`ThreadSettingsAppliedEvent` 同时驱动两条相互独立的 UI 路径。第一条通过 `sessionViewState → footerState.CollaborationIndicator → renderFooter()` 更新 Footer 右列模式标签。第二条对齐 Codex 的 settings acknowledgement/info-history 生命周期，但消息必须描述 Amadeus 实际发生的业务事实：基础版 Mode 切换不改变 Model 或 ReasoningEffort，因此插入 `• Mode changed to <Mode>.`，而不是伪造 `Model changed`。该消息不得使用普通 dim notice，也不得把 Composer、Popup 或 Footer 内容拼进 history；`tea.Println` 只提交 HistoryCell，随后由 Bubble Tea 原生 renderer 重绘单份活动 frame。
+`ThreadSettingsAppliedEvent` 同时驱动两条相互独立的 UI 路径。第一条通过 `sessionViewState → footerState.CollaborationIndicator → renderFooter()` 更新 Footer 右列模式标签。第二条对齐 Codex 的 settings acknowledgement/info-history 生命周期，但消息必须描述 Amadeus 实际发生的业务事实：基础版 Mode 切换不改变 Model 或 ReasoningEffort，因此插入 `• Mode changed to <Mode>.`，而不是伪造 `Model changed`。该消息不得使用普通 dim notice，也不得把 Composer、Popup 或 Footer 内容拼进 history；它与其他 HistoryCell 都由 `TranscriptSurface` 投影，随后 Bubble Tea 渲染单份活动 frame。
 
 生命周期固定为：
 
@@ -3906,7 +4155,7 @@ Git branch 查询必须在 CurrentDir 改变时清空旧值并异步刷新；请
 - **Collaboration mode indicator**：表示 Plan mode，并在 Footer 右侧独立布局；它读取 `sessionViewState.Configuration.Mode`，但不是 `StatusLineItem`。
 - **Queue hint**：表示当前 Composer draft 可用 Tab 排入下一 Turn，是纯 TUI transient guidance；它临时取代 passive statusline，但不表示已经 enqueue，也不进入 footerState/canonical state。
 
-### 19.5 Interactive Request 与 Diff
+### 19.6 Interactive Request 与 Diff
 
 Approval Dialog 是 Rich TUI 的专用交互状态，不复用只显示文字的通用 selection overlay：
 
@@ -3954,7 +4203,7 @@ Plan Mode 的正式方案使用独立 `ProposedPlanCell`，不复用 `UpdatedPla
 - 基础选项为 `Implement this plan` 与 `Stay in Plan mode`。前者提交携带 Default mode override 的新 `UserInputOp("Implement the plan.")`；后者只关闭 Popup，不改变模式或创建 Turn。
 - implementation Popup 是 transient UI state，Replay/Resume 不恢复旧 Popup；Resume 只恢复 completed `ProposedPlanCell`。清空上下文后实施属于后续产品能力，不阻塞基础生命周期对齐。
 
-### 19.6 Tool Projection 与展示 Contract
+### 19.7 Tool Projection 与展示 Contract
 
 TUI 的 Tool 展示必须同时吸收 Codex 的 HistoryCell/树状 activity 表现和 Claude Code 的 Tool-specific UI projection。TUI 不根据模型生成的自然语言标题、`action_summary` 或 Tool Result 文本反推工具身份；`TurnItem.ToolName` 是唯一的工具身份来源，结构化 `ToolDisplayResult` 是结果展示来源。
 
@@ -5169,7 +5418,7 @@ Compaction error 至少区分：
 - 在 Turn 终态中可恢复或可诊断。
 
 禁止出现“Working 动画停止但没有 Error/Completed Event”的静默失败。
-禁止把 transient retrying error 插入永久 ErrorHistoryCell、提前 finish draft 或停止 Turn；也禁止重试耗尽后只清除 `Reconnecting...` 状态而没有最终错误和 Turn 终态。
+禁止把 transient retrying error 插入永久 ErrorHistoryCell、提前finalize Assistant stream或停止Turn；也禁止重试耗尽后只清除`Reconnecting...`状态而没有最终错误和Turn终态。
 
 ## 28. 测试策略
 
@@ -5267,13 +5516,26 @@ Compaction error 至少区分：
 
 ### 28.5 TUI
 
+- Assistant Markdown stream按ItemID隔离；retry `Reset=true`清除旧attempt source/stable run/tail，迟到或错误ItemID delta不污染当前stream，也不伪造ItemStarted。
+- `MarkdownStreamCollector`在newline前不commit；半个inline code/link/list marker、未闭合fence和table row不会提前形成永久HistoryCell，completion会提交最后一个无newline尾行。
+- Goldmark顶层节点source offset只保留completed stable prefix，mutable final block随setext heading、list tightness、reference link和后续delta正确重渲染；fence/list/quote内空行不成为边界，普通append不反复解析或扫描全部stable source。
+- Table、fence和reference link从完整source重投影；table holdback保护未完成table不进入stable run；收缩列宽必须真实wrap cell，否则整个table降级key/value records。
+- `ItemCompletedEvent`的Assistant Text为权威：无delta、delta完整、delta缺失、delta与final不一致、retry后final和interrupt各只有一个completed `AgentMarkdownCell`，live与Resume输出一致。
+- `AgentMarkdownCell`保存exact source与冻结CWD，不TrimSpace；resize、Raw/Rich切换、attachment replay和`/copy`均从source派生，不从ANSI或当前process cwd反推。
+- Active stream 的 stable run 与 mutable tail 都在 `TranscriptSurface` 中显示；surface以冻结的attachment range完成completion/reset replacement，stream期间的其他transcript projection延迟到replacement之后FIFO应用。
+- `TranscriptSurface`用print watermark把immutable HistoryCell只提交一次到native scrollback，并用有界viewport投影mutable cells；`View()`不超过terminal height，active frame与printed history不重复。
+- Rich `NO_COLOR`仍解析Markdown并移除语法marker，Raw mode保留原source；两者都不携带非法ANSI，且wide glyph、中文、halfwidth sound mark和超窄终端wrap稳定。
+- Heading、emphasis、strong、strikethrough、inline code、nested list、blockquote、horizontal rule和fenced code有Goldmark AST fixture；Chroma覆盖language alias、unknown fallback、大小边界、light/dark与ANSI family。
+- Assistant每条视觉行保持`• `/`  ` gutter；soft wrap、Goldmark soft/hard break、nested list continuation与代码/表格边界不会丢indent或重复prefix，code block按独立no-wrap policy投影。
+- Local file link按cell CWD显示并保留line/column suffix；web/local typed destination在wrap/resize后仍对应正确visible range，终端使用可读underlined/plain fallback。
+- Markdown render cache按width、render mode、palette/syntax revision和color level失效；cache hit不改变source，parse/highlight/table降级不使Turn失败。
 - Slash Popup 键盘交互。
 - Approval 上下键与 Enter。
 - 中文输入和 Backspace。
 - Working/Worked 计时和间距。
 - ActiveHistoryCell 只提交一次。
 - Working 只由 TurnStartedEvent/TurnCompleteEvent/TurnAbortedEvent 控制。
-- retrying StreamErrorEvent 复用 status indicator 显示 `Reconnecting... n/m` 与 details，不生成 HistoryCell、不结束 draft；下一条非 retry live Event 恢复此前 status header。
+- retrying StreamErrorEvent复用status indicator显示`Reconnecting... n/m`与details，不生成HistoryCell、不finalize Assistant stream；下一条非retry live Event恢复此前status header。
 - Replay/Resume 忽略 transient retry status；无颜色、窄终端和隐藏 status indicator 场景仍有稳定降级。
 - Bubble Tea Task 返回不作为第二套 Turn 终态。
 - Enter 与 Tab 在运行期间保持不同语义：Enter 提交并 steer，Tab 只 enqueue；enqueue 不调用 Runtime、不插入 UserMessageCell、不改变当前 Working/elapsed/activity。
@@ -5345,7 +5607,7 @@ Amadeus 至少通过以下真实场景：
 25. 相同只读调用或相同可恢复错误出现两次不会被 `run_turn` 强制终止；模型仍可调整方案并继续。
 26. 进程在 ItemCompletedEvent 后、TurnCompleteEvent 前退出，Resume 仍能从 canonical ResponseItem 与 EventMsgItem 恢复已完成工作。
 27. 模型 response stream 在 Turn 中断开时，TUI 显示可取消的 `Reconnecting... n/m` 和安全 details，不写入永久错误历史；恢复后继续同一 Turn，重试耗尽后产生明确最终错误和唯一 Turn 终态。
-28. response stream 在部分 Assistant/Reasoning/Tool Call/Plan Delta 后断开并恢复时，transcript、canonical Rollout 和后续 Resume 均不出现重复文本、重复 Tool Call、重复 Proposed Plan 或 attempt-local draft。
+28. response stream在部分Assistant/Reasoning/Tool Call/Plan Delta后断开并恢复时，transcript、canonical Rollout和后续Resume均不出现重复文本、重复Tool Call、重复Proposed Plan或旧attempt source/frame。
 29. Root Agent 在同一 Turn 中并行 spawn 多个 read-only explorer；child 使用独立 Thread/Session/Context 和同一 workspace，完成后只注入一次 bounded notification，wait/send/close 状态与 TUI/Resume projection 一致。
 30. Root Turn 被中断时 open child 继续运行；Root shutdown 或 close_agent 后 child writer、event consumer、watcher、slot 和 nickname 全部释放，默认 `/resume` 列表不显示 child Thread。
 31. Regular Turn 运行期间按 Enter 提交补充信息时仍进入当前 Turn；相同状态下按 Tab 只进入 NextTurnQueue，当前 Turn 的 Session/Context/Rollout 不出现该输入。
@@ -5365,6 +5627,12 @@ Amadeus 至少通过以下真实场景：
 45. manual/pre-turn compact 后下一普通 Turn full reinject current context；mid-turn compact 的 summary 保持最后一项，full initial context 位于最后真实 User/summary 之前，安装的 WorldState/TurnContext baseline 在 live 与 Resume 中一致。
 46. `read/edit/write/glob/grep` 的最终 ToolSpec 与 Claude Code source/manifest 及 Amadeus Runtime 同时一致；不会向模型声明图片/PDF/Notebook、mtime排序、multiline/output modes 等未实现能力，partial read 后 Edit/Write 的错误与 guidance一致。
 47. Codex Runtime Tool 和 Amadeus-specific Tool 分别使用自己的 source matrix/schema fixture；Provider request只包含冻结 ToolSpecs，不包含第二份 Tool Markdown developer block，ToolSpec property/output/strict/visibility 与实际 handler一致。
+48. Assistant response以多个delta交付时，半个Markdown token不会污染stable run；Goldmark top-level offset而非空行扫描决定stable/mutable边界，completed item最终只产生一个source-backed AgentMarkdownCell。
+49. Provider重连在partial Assistant delta后发送reset并重新输出时，surface按冻结attachment range删除旧attempt source、derived render、stable run和tail；final transcript、`/copy`、Rollout replay与Resume只包含成功attempt的authoritative text。
+50. Stream期间插入Warning/Tool/Approval/UserInput/diagnostic projection时保持FIFO但不切断stream run；delta缺失、乱序或与completed Text不一致时，completed item精确替换active range且不重复Assistant cell。
+51. Markdown表格逐行到达、代码fence内部含空行、reference link后置定义和终端resize时，TranscriptSurface从完整source稳定重投影；中宽表格不会因“只缩width不wrap cell”被terminal截断。
+52. Final Assistant cell保存原始Markdown和当时Session CWD；切换目录、attachment、Raw/Rich/NoColor或窗口宽度后重新投影不会改变link语义、丢失initial/subsequent indent或从ANSI反解source。
+53. 真实Bubble Tea renderer下主frame高度始终不超过terminal height；SessionHeader、早期User/Tool和超过一屏的final Assistant全部进入native scrollback，鼠标上滚不会直接跳回启动shell命令，active frame不重复printed rows。
 
 ## 30. 最终架构结论
 
@@ -5407,3 +5675,4 @@ Amadeus 至少通过以下真实场景：
 37. TurnContext、StepContext、SessionState、SessionServices、ActiveTurn 和 RunningTask 都属于 `agent/session` owner；Go 通过同 package 责任文件表达 Codex private `session/state` module，不为类型名对齐建立人工小 package。
 38. ModelClientSession 的 sampling/stream/reconnect 由窄 `agent/modelclient` package 拥有；Tool Runtime construction、Tool Event、model completion persistence 和 Plan stream lifecycle 回归 Session/Tool owner，不存在泛化 Agent Engine facade。
 39. Tool package 同时对齐 Codex 外层 Router/Event 架构与 Claude Code 内层执行协议：generic `tool`、权限 `policy`、具体 `tool/builtin` 和 TUI projection 各有单一职责，基础版不复制 Claude Code 的一 Tool 一 package 目录结构。
+40. Assistant Markdown TUI对齐Codex的source-backed collector/writer/render/stream-core/controller/transcript-surface/final-cell职责：每个active Assistant/Plan Item绑定controller和surface attachment range，StreamState管理stable queue/tail，Goldmark/Chroma拥有解析与高亮，completed item拥有最终文本权威。Bubble Tea适配以bounded mutable frame显示live content，以native print watermark提交immutable final history；不打印provisional stream rows，不复制Ratatui或手写Markdown parser。

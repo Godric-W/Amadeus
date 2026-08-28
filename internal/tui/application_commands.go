@@ -39,15 +39,16 @@ func (model appModel) dispatchCommand(invocation SlashInvocation) (tea.Model, te
 			return model, model.setMode(protocol.ModeKindPlan)
 		}
 		submission := model.prepareUserMessageSubmission(UserMessage{Text: task}, protocol.ModeKindPlan, true)
-		return model, tea.Batch(model.flushHistory(), model.submitUserMessage(submission))
+		return model, tea.Sequence(model.flushHistory(), model.submitUserMessage(submission))
 	case SlashExit:
 		return model, model.requestExit(ExitModeShutdownFirst, ExitReasonUserRequested, nil)
 	case SlashCopy:
-		if strings.TrimSpace(model.transcript.LastAgentMarkdown) == "" {
+		message := model.latestAgentMarkdown()
+		if strings.TrimSpace(message) == "" {
 			model.insertHistoryCell(NewErrorHistoryCell("No agent response to copy"))
 			return model, model.flushHistory()
 		}
-		if err := model.app.options.ClipboardWrite(model.transcript.LastAgentMarkdown); err != nil {
+		if err := model.app.options.ClipboardWrite(message); err != nil {
 			model.insertHistoryCell(NewErrorHistoryCell("Copy failed: " + err.Error()))
 		} else {
 			model.insertHistoryCell(NewNoticeHistoryCell("Copied last message to clipboard"))

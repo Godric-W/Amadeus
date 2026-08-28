@@ -8,11 +8,12 @@ import (
 )
 
 type TerminalCapabilities struct {
-	TTY       bool
-	Color     bool
-	Width     int
-	Alternate bool
-	Mouse     bool
+	TTY        bool
+	Color      bool
+	Hyperlinks bool
+	Width      int
+	Alternate  bool
+	Mouse      bool
 }
 
 type TerminalCapabilityOptions struct {
@@ -40,7 +41,20 @@ func DetectTerminalCapabilitiesWithOptions(input io.Reader, output io.Writer, op
 	if term == "" {
 		capabilities.Color = false
 	}
+	capabilities.Hyperlinks = terminalSupportsHyperlinks(term, lookupEnv)
 	return capabilities
+}
+
+func terminalSupportsHyperlinks(term string, lookupEnv func(string) (string, bool)) bool {
+	if term == "" || term == "dumb" || term == "linux" {
+		return false
+	}
+	for _, name := range []string{"TERM_PROGRAM", "VTE_VERSION", "WT_SESSION"} {
+		if value, ok := lookupEnv(name); ok && strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return strings.Contains(term, "xterm") || strings.Contains(term, "screen") || strings.Contains(term, "tmux") || strings.Contains(term, "kitty") || strings.Contains(term, "wezterm") || strings.Contains(term, "foot")
 }
 
 func isTerminalPair(input io.Reader, output io.Writer) bool {

@@ -69,5 +69,5 @@ func (model *appModel) submitInitialUserMessageIfPending() tea.Cmd {
 	model.initialUserMessage = nil
 	model.recordUserMessageHistory(message)
 	submission := model.prepareUserMessageSubmission(message, model.session.mode(), false)
-	return tea.Batch(model.flushHistory(), model.submitUserMessage(submission))
+	return tea.Sequence(model.flushHistory(), model.submitUserMessage(submission))
 }

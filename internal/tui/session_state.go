@@ -81,6 +81,11 @@ func (state sessionViewState) mode() protocol.ModeKind {
 
 func (model *appModel) applySessionConfiguration(configuration protocol.SessionConfiguration) tea.Cmd {
 	currentDirChanged := model.session.applyConfiguration(configuration)
+	model.TranscriptSurface.setSessionHeader(NewSessionHeaderCell(
+		model.startup.Version,
+		model.session.Configuration.Model,
+		model.session.Configuration.CWD,
+	))
 	model.refreshStatusLine()
 	if currentDirChanged {
 		return model.resetStatusLineWorkspace()

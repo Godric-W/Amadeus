@@ -17,8 +17,8 @@ func (model appModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.width = maxInt(40, message.Width)
 		model.height = maxInt(10, message.Height)
 		model.updateInputLayout()
-		model.renderer, _ = newMarkdownRenderer(maxInt(20, model.width-6), model.palette)
 		model.resizeTranscriptViewport()
+		model.refreshActiveMarkdownFrames()
 		return model, nil
 	case appEventMsg:
 		if model.exit.active() {
@@ -29,7 +29,7 @@ func (model appModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if model.viewingDetails && model.details != nil && !model.details.Empty() {
 			model.refreshTranscriptViewport()
 		}
-		return model, tea.Batch(command, model.flushHistory())
+		return model, tea.Sequence(model.flushHistory(), command)
 	case operationFailedMsg:
 		model.handleOperationFailure(message)
 		return model, model.flushHistory()
@@ -158,6 +158,11 @@ func (model appModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		model.updateInputLayout()
 		return model, nil
 	case "pgup", "pgdown":
+		direction := 1
+		if key.String() == "pgup" {
+			direction = -1
+		}
+		model.scrollTranscriptPage(direction)
 		return model, nil
 	case "up":
 		if model.slashPopup.active() {
@@ -235,7 +240,7 @@ func (model appModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		message := UserMessage{Text: text}
 		model.recordUserMessageHistory(message)
 		submission := model.prepareUserMessageSubmission(message, model.session.mode(), false)
-		return model, tea.Batch(model.flushHistory(), model.submitUserMessage(submission))
+		return model, tea.Sequence(model.flushHistory(), model.submitUserMessage(submission))
 	}
 	var command tea.Cmd
 	model.input, command = model.input.Update(key)

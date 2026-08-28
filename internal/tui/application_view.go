@@ -13,6 +13,7 @@ import (
 
 func (model appModel) View() (rendered string) {
 	defer func() {
+		rendered = clampViewHeight(rendered, model.height)
 		if model.app != nil && model.app.options.NoColor {
 			rendered = xansi.Strip(rendered)
 		}
@@ -27,24 +28,22 @@ func (model appModel) View() (rendered string) {
 		return model.renderTranscriptViewer()
 	}
 	composer := model.composerView()
+	working := model.workingLine()
+	viewportHeight := model.transcriptViewportHeight(composer, working)
+	transcript := model.transcriptContent(viewportHeight)
 	parts := make([]string, 0, 3)
-	if active := model.renderActiveCell(); active != "" {
-		parts = append(parts, active)
+	if transcript != "" {
+		parts = append(parts, transcript)
 	}
-	if draft := model.renderActiveDraft(); draft != "" {
-		parts = append(parts, draft)
-	}
-	if working := model.workingLine(); working != "" {
+	if working != "" {
 		parts = append(parts, working)
 	}
-	activity := strings.Join(parts, "\n\n")
-	if activity == "" {
-		return "\n\n" + composer
+	parts = append(parts, composer)
+	body := strings.Join(parts, transcriptRegionSeparator)
+	if transcript == "" && model.TranscriptSurface.printedVisible && body != "" {
+		body = strings.Repeat("\n", transcriptRegionBlankRows) + body
 	}
-	if model.hasEmittedHistoryLines {
-		activity = "\n" + activity
-	}
-	return activity + "\n\n\n" + composer
+	return body
 }
 
 func newTranscriptViewport(width, height int) viewport.Model {
@@ -90,41 +89,10 @@ func (model appModel) renderTranscriptViewer() string {
 	return strings.Join([]string{header, model.detailViewport.View(), footer}, "\n")
 }
 
-func (model appModel) banner() (rendered string) {
-	defer func() {
-		if model.app != nil && model.app.options.NoColor {
-			rendered = xansi.Strip(rendered)
-		}
-	}()
-	width := maxInt(4, model.width)
-	logo := model.palette.plain().Render(strings.Trim(terminalLogo(width), "\r\n"))
-	version := strings.TrimSpace(model.startup.Version)
-	if version != "" {
-		version = " (" + version + ")"
-	}
-	title := model.palette.dim().Render(">_ ") + model.palette.bold().Render("Amadeus") + model.palette.dim().Render(version)
-	modelName := strings.TrimSpace(model.session.Configuration.Model)
-	currentDir := strings.TrimSpace(model.session.Configuration.CWD)
-	rows := []string{title, ""}
-	innerWidth := minInt(maxInt(0, width-4), 56)
-	rowWidth := maxInt(12, innerWidth-2)
-	if modelName != "" {
-		rows = append(rows, bannerMetadataRow("model:", modelName, rowWidth))
-	}
-	if currentDir != "" {
-		rows = append(rows, bannerMetadataRow("directory:", currentDir, rowWidth))
-	}
-	panelWidth := maxInt(4, innerWidth)
-	panel := panelStyle.BorderForeground(model.palette.border().GetForeground()).Width(panelWidth).Render(strings.Join(rows, "\n"))
-	return logo + "\n\n" + panel
-}
-
-func bannerMetadataRow(label, value string, width int) string {
-	const labelWidth = 11
-	if width <= labelWidth {
-		return truncateLine(strings.TrimSpace(label)+strings.TrimSpace(value), width)
-	}
-	return fmt.Sprintf("%-*s%s", labelWidth, label, truncateLine(strings.TrimSpace(value), width-labelWidth))
+func (model appModel) banner() string {
+	ctx := model.historyRenderContext()
+	header := NewSessionHeaderCell(model.startup.Version, model.session.Configuration.Model, model.session.Configuration.CWD)
+	return renderStyledLines(header.DisplayLines(ctx), ctx)
 }
 
 func isTerminalControlResponse(message tea.KeyMsg) bool {

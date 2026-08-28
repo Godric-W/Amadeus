@@ -256,83 +256,113 @@ func TestToolHistoryUsesStrongTitlePlainCommandAndMutedOutput(t *testing.T) {
 }
 
 func TestMarkdownStyleMatchesVisualContract(t *testing.T) {
-	palette := terminalPalette{Level: colorLevelTrueColor, Dark: true, Foreground: terminalRGB{225, 225, 225}, Background: terminalRGB{18, 18, 18}}
-	renderer, err := newMarkdownRenderer(100, palette)
-	if err != nil {
-		t.Fatal(err)
-	}
 	markdown := "# Heading\n\n`inline` and [link](https://example.com)\n\n> quote\n\n```go\npackage main\nfunc main() { println(\"hello\") }\n```\n\n```bash\necho \"hello\"\n```\n\n```json\n{\"value\": 1}\n```\n"
-	rendered, err := renderer.Render(markdown)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plain := xansi.Strip(rendered)
+	lines := newMarkdownRenderer().Render(newMarkdownSource(markdown, "/workspace"), HistoryRenderRich)
+	plain := strings.Join(rawStyledLines(styledLinesFromMarkdown(lines)), "\n")
 	for _, expected := range []string{"Heading", "inline", "link", "│ quote", "package main", "println", "echo", `{"value": 1}`} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("markdown output omitted %q: %q", expected, plain)
 		}
 	}
-	if strings.Contains(rendered, "48;2;") || strings.Contains(rendered, "48;5;") {
-		t.Fatalf("markdown unexpectedly uses a fixed background: %q", rendered)
-	}
-	if strings.Count(rendered, "\x1b[") < 6 {
-		t.Fatalf("markdown lacks semantic/syntax highlighting: %q", rendered)
-	}
+}
 
-	unknown, err := renderer.Render("```amadeus-unknown-language\nvalue = 1\n```\n")
-	if err != nil {
-		t.Fatalf("unknown language must degrade deterministically: %v", err)
+func TestMarkdownHeadingQuoteAndListMarkerSemantics(t *testing.T) {
+	renderer := newMarkdownRenderer()
+	headings := renderer.Render(newMarkdownSource("# H1\n\n### H3\n", ""), HistoryRenderRich)
+	if len(headings) < 3 || len(headings[0].Spans) == 0 || !headings[0].Spans[0].Markdown.Bold || !headings[0].Spans[0].Markdown.Underline {
+		t.Fatalf("H1 semantics = %#v", headings)
 	}
-	if !strings.Contains(xansi.Strip(unknown), "value = 1") {
-		t.Fatalf("unknown language content missing: %q", unknown)
+	if len(headings[2].Spans) == 0 || !headings[2].Spans[0].Markdown.Bold || !headings[2].Spans[0].Markdown.Italic {
+		t.Fatalf("H3 semantics = %#v", headings)
 	}
-
-	lightPalette := terminalPalette{Level: colorLevelTrueColor, Dark: false, Foreground: terminalRGB{30, 30, 30}, Background: terminalRGB{245, 245, 245}}
-	lightRenderer, err := newMarkdownRenderer(100, lightPalette)
-	if err != nil {
-		t.Fatal(err)
+	quote := renderer.Render(newMarkdownSource("> quoted\n", ""), HistoryRenderRich)
+	if len(quote) != 1 || len(quote[0].InitialIndent) == 0 || quote[0].InitialIndent[0].Style != styleQuote || quote[0].Spans[0].Style != styleQuote {
+		t.Fatalf("quote semantics = %#v", quote)
 	}
-	lightCode, err := lightRenderer.Render("```go\npackage main\nvar value = 1\n```\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	darkCode, err := renderer.Render("```go\npackage main\nvar value = 1\n```\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if lightCode == darkCode {
-		t.Fatalf("light and dark code themes are identical: %q", lightCode)
-	}
-	if strings.Contains(lightCode, "48;2;") || strings.Contains(lightCode, "48;5;") {
-		t.Fatalf("light code theme unexpectedly uses a background: %q", lightCode)
+	ordered := renderer.Render(newMarkdownSource("1. first\n", ""), HistoryRenderRich)
+	if len(ordered) != 1 || len(ordered[0].InitialIndent) == 0 || ordered[0].InitialIndent[0].Style != styleOrderedListMarker {
+		t.Fatalf("ordered marker semantics = %#v", ordered)
 	}
 }
 
 func TestMarkdownNoColorHasNoANSI(t *testing.T) {
-	renderer, err := newMarkdownRenderer(80, terminalPalette{Level: colorLevelNone, NoColor: true, Dark: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	rendered, err := renderer.Render("**strong** and `code`\n\n```go\nvar value = 1\n```\n")
-	if err != nil {
-		t.Fatal(err)
-	}
+	rendered := renderStyledLines(styledLinesFromMarkdown(newMarkdownRenderer().Render(newMarkdownSource("**strong** and `code`\n\n```go\nvar value = 1\n```\n", ""), HistoryRenderRich)), noColorRenderContext())
 	if strings.Contains(rendered, "\x1b[") {
 		t.Fatalf("no-color markdown emitted ANSI: %q", rendered)
 	}
 }
 
 func TestMarkdownANSI16DoesNotEmitHigherColorSequences(t *testing.T) {
-	renderer, err := newMarkdownRenderer(80, terminalPalette{Level: colorLevelANSI16, Dark: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	rendered, err := renderer.Render("`code`\n\n```go\nvar value = 1\n```\n")
-	if err != nil {
-		t.Fatal(err)
-	}
+	ctx := noColorRenderContext()
+	ctx.Palette = terminalPalette{Level: colorLevelANSI16, Dark: true}
+	rendered := renderStyledLines(styledLinesFromMarkdown(newMarkdownRenderer().Render(newMarkdownSource("`code`\n\n```go\nvar value = 1\n```\n", ""), HistoryRenderRich)), ctx)
 	if strings.Contains(rendered, "38;5;") || strings.Contains(rendered, "38;2;") || strings.Contains(rendered, "48;5;") || strings.Contains(rendered, "48;2;") {
 		t.Fatalf("ANSI16 markdown emitted higher color sequence: %q", rendered)
+	}
+}
+
+func TestMarkdownCodeUsesChromaTokenStyles(t *testing.T) {
+	original := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(original) })
+	ctx := noColorRenderContext()
+	ctx.Palette = terminalPalette{Level: colorLevelTrueColor, Dark: true}
+	lines := styledLinesFromMarkdown(newMarkdownRenderer().Render(newMarkdownSource("```go\nfunc main() {}\n```\n", ""), HistoryRenderRich))
+	rendered := renderStyledLines(lines, ctx)
+	if !strings.Contains(rendered, "\x1b[") {
+		t.Fatalf("Chroma code rendering has no terminal style: %q", rendered)
+	}
+}
+
+func TestMarkdownStrongRendersBoldInRichColorSurface(t *testing.T) {
+	original := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(original) })
+	ctx := HistoryRenderContext{Width: 80, Palette: terminalPalette{Level: colorLevelTrueColor, Dark: true}}
+	cell := NewAgentMarkdownCell(newMarkdownSource("**Interface**", ""))
+	rendered := renderStyledLines(cell.DisplayLines(ctx), ctx)
+	if !strings.Contains(rendered, "\x1b[1m") && !strings.Contains(rendered, "\x1b[1;") {
+		t.Fatalf("strong markdown did not render bold: %q", rendered)
+	}
+}
+
+func TestMarkdownRenderProjectsOSC8OnlyWhenEnabled(t *testing.T) {
+	ctx := noColorRenderContext()
+	ctx.Hyperlinks = true
+	line := styledLine{{Text: "docs", Style: styleAccent, Destination: "https://example.com/docs"}}
+	if rendered := renderStyledLines([]styledLine{line}, ctx); !strings.Contains(rendered, "\x1b]8;;https://example.com/docs\x1b\\") {
+		t.Fatalf("OSC-8 projection missing: %q", rendered)
+	}
+	ctx.Hyperlinks = false
+	if rendered := renderStyledLines([]styledLine{line}, ctx); strings.Contains(rendered, "\x1b]8;;") {
+		t.Fatalf("OSC-8 projection ignored capability: %q", rendered)
+	}
+}
+
+func TestMarkdownTerminalProjectionStripsSourceControlSequences(t *testing.T) {
+	source := "before \x1b[31mred\x1b[0m \x1b]8;;https://evil.example\x1b\\link\x1b]8;;\x1b\\ after"
+	lines := newMarkdownRenderer().Render(newMarkdownSource(source, ""), HistoryRenderRich)
+	rendered := renderStyledLines(styledLinesFromMarkdown(lines), noColorRenderContext())
+	if strings.Contains(rendered, "\x1b") || !strings.Contains(rendered, "before red link after") {
+		t.Fatalf("unsafe markdown terminal projection = %q", rendered)
+	}
+}
+
+func TestMarkdownRichLayoutKeepsReadableBlockSpacingAndWords(t *testing.T) {
+	ctx := noColorRenderContext()
+	ctx.Width = 24
+	cell := NewAgentMarkdownCell(newMarkdownSource("# Interface\n\n**Interface** provides a stable contract.\n\n- first item\n- second item\n", ""))
+	rendered := xansi.Strip(renderStyledLines(cell.DisplayLines(ctx), ctx))
+	for _, expected := range []string{"• # Interface", "Interface provides", "• first item", "• second item"} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("rich layout omitted %q: %q", expected, rendered)
+		}
+	}
+	if strings.Contains(rendered, "Inter\n  face") {
+		t.Fatalf("ordinary word split across lines: %q", rendered)
+	}
+	if strings.Count(rendered, "\n  \n") < 2 {
+		t.Fatalf("block spacing is missing: %q", rendered)
 	}
 }
 

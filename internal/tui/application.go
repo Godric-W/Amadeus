@@ -15,7 +15,6 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -55,6 +54,7 @@ type ApplicationOptions struct {
 	ClipboardWrite     ClipboardWriter
 	OpenSessions       bool
 	NoColor            bool
+	Hyperlinks         bool
 	DisableAnimations  bool
 	Width              int
 }
@@ -68,22 +68,18 @@ type Application struct {
 }
 
 type appModel struct {
-	app                     *Application
-	ctx                     context.Context
-	startup                 Startup
-	input                   textarea.Model
-	renderer                *glamour.TermRenderer
-	lastMouseEvent          time.Time
-	width                   int
-	height                  int
-	transcript              TranscriptState
-	protocolEvents          *protocolEventState
-	historyCells            []HistoryCell
-	pendingHistoryCells     []HistoryCell
-	hasEmittedHistoryLines  bool
+	app            *Application
+	ctx            context.Context
+	startup        Startup
+	input          textarea.Model
+	lastMouseEvent time.Time
+	width          int
+	height         int
+	transcript     TranscriptState
+	protocolEvents *protocolEventState
+	TranscriptSurface
 	historyMode             HistoryRenderMode
-	draft                   string
-	proposedPlanDraft       string
+	markdownStreams         markdownStreamHost
 	completedProposedPlan   bool
 	running                 bool
 	status                  string
@@ -96,6 +92,7 @@ type appModel struct {
 	historyPos              int
 	runStartedAt            time.Time
 	palette                 terminalPalette
+	hyperlinks              bool
 	clock                   motionClock
 	motion                  motionMode
 	motionStartedAt         time.Time
@@ -120,6 +117,7 @@ type appModel struct {
 	optimisticUserMessages  map[string]string
 	seenRuntimeUserMessages map[string]struct{}
 	initialUserMessage      *UserMessage
+	initialHistoryFlush     tea.Cmd
 	nextTurnQueue           NextTurnQueue
 }
 
@@ -190,7 +188,6 @@ const (
 )
 
 var (
-	panelStyle     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
 	inputFillStyle = lipgloss.NewStyle()
 )
 
@@ -331,7 +328,6 @@ func newModel(ctx context.Context, app *Application) appModel {
 	input.SetHeight(1)
 	input.Focus()
 	_ = input.Cursor.SetMode(cursor.CursorStatic)
-	renderer, _ := newMarkdownRenderer(94, palette)
 	startup := app.options.Startup
 	snapshot := app.options.Snapshot
 	initialWidth := app.options.Width
@@ -339,9 +335,9 @@ func newModel(ctx context.Context, app *Application) appModel {
 		initialWidth = 100
 	}
 	model := appModel{
-		app: app, ctx: ctx, startup: startup, input: input, renderer: renderer,
+		app: app, ctx: ctx, startup: startup, input: input,
 		width: initialWidth, height: 30, status: "idle", historyPos: -1,
-		palette: palette, clock: systemMotionClock{}, motion: motionAnimated, motionStartedAt: time.Now(),
+		palette: palette, hyperlinks: app.options.Hyperlinks, clock: systemMotionClock{}, motion: motionAnimated, motionStartedAt: time.Now(),
 		details: newTranscriptDetailStore(0, 0), detailViewport: newTranscriptViewport(initialWidth, 30),
 		protocolEvents:         newProtocolEventState(snapshot.ThreadID),
 		optimisticUserMessages: make(map[string]string), seenRuntimeUserMessages: make(map[string]struct{}),
@@ -352,19 +348,16 @@ func newModel(ctx context.Context, app *Application) appModel {
 		model.motion = motionReduced
 	}
 	model.updateInputLayout()
-	model.renderer, _ = newMarkdownRenderer(maxInt(20, initialWidth-6), palette)
 	model.restoreCompletedItems(snapshot.Items)
-	model.pendingHistoryCells = nil
-	model.hasEmittedHistoryLines = len(model.historyCells) > 0
+	model.initialHistoryFlush = model.flushHistory()
 	return model
 }
 
 func (model appModel) Init() tea.Cmd {
-	header := model.banner()
-	if len(model.historyCells) > 0 {
-		header += "\n\n" + renderHistoryCells(model.historyCells, model.historyMode, model.historyRenderContext())
+	commands := []tea.Cmd{tea.HideCursor, model.input.Focus(), model.statusLineBranchLookupCommand()}
+	if model.initialHistoryFlush != nil {
+		commands = append(commands, model.initialHistoryFlush)
 	}
-	commands := []tea.Cmd{tea.Println(header), tea.HideCursor, model.input.Focus(), model.statusLineBranchLookupCommand()}
 	if model.app.options.OpenSessions {
 		commands = append(commands, model.loadSessions())
 	}
