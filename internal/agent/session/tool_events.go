@@ -208,24 +208,27 @@ func completeCollabAgentItem(item protocol.CollabAgentToolCallItem, execution to
 		}
 	case protocol.CollabAgentCloseAgent:
 		var value struct {
-			AgentID        protocol.ThreadID    `json:"agent_id"`
-			Nickname       string               `json:"nickname"`
-			PreviousStatus protocol.AgentStatus `json:"previous_status"`
+			AgentID          protocol.ThreadID         `json:"agent_id"`
+			Nickname         string                    `json:"nickname"`
+			PreviousStatus   protocol.AgentStatus      `json:"previous_status"`
+			PreviousLastTurn *protocol.AgentTurnResult `json:"previous_last_turn"`
 		}
 		_ = json.Unmarshal(encoded, &value)
 		if !value.AgentID.IsZero() {
 			item.ReceiverAgents = []protocol.CollabAgentRef{{ThreadID: value.AgentID, AgentNickname: value.Nickname, AgentRole: "explorer"}}
 			item.AgentsStates = map[protocol.ThreadID]protocol.CollabAgentState{
-				value.AgentID: {Status: value.PreviousStatus},
+				value.AgentID: {Status: value.PreviousStatus, LastTurn: value.PreviousLastTurn},
 			}
 		}
 	case protocol.CollabAgentWait:
 		var value struct {
 			Statuses []struct {
-				AgentID  protocol.ThreadID    `json:"agent_id"`
-				Nickname string               `json:"nickname"`
-				Role     string               `json:"role"`
-				Status   protocol.AgentStatus `json:"status"`
+				AgentID           protocol.ThreadID         `json:"agent_id"`
+				Nickname          string                    `json:"nickname"`
+				Role              string                    `json:"role"`
+				Status            protocol.AgentStatus      `json:"status"`
+				LastTurn          *protocol.AgentTurnResult `json:"last_turn"`
+				NotificationError string                    `json:"notification_error"`
 			} `json:"statuses"`
 		}
 		_ = json.Unmarshal(encoded, &value)
@@ -233,7 +236,7 @@ func completeCollabAgentItem(item protocol.CollabAgentToolCallItem, execution to
 		item.AgentsStates = make(map[protocol.ThreadID]protocol.CollabAgentState, len(value.Statuses))
 		for _, status := range value.Statuses {
 			item.ReceiverAgents = append(item.ReceiverAgents, protocol.CollabAgentRef{ThreadID: status.AgentID, AgentNickname: status.Nickname, AgentRole: status.Role})
-			item.AgentsStates[status.AgentID] = protocol.CollabAgentState{Status: status.Status}
+			item.AgentsStates[status.AgentID] = protocol.CollabAgentState{Status: status.Status, LastTurn: status.LastTurn, NotificationError: status.NotificationError}
 		}
 	}
 	return item

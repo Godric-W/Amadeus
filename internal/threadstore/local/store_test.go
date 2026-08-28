@@ -165,6 +165,9 @@ func TestRebuildIndexRestoresChildParentRelationWithoutSessionColumn(t *testing.
 	if _, err := store.Materialize(ctx, threadstore.CreateInput{SessionID: sessionID, ID: childID, Source: protocol.NewSubAgentSessionSource(rootID, 1, "atlas", "explorer"), CWD: "/workspace", Title: "Child", BaseInstructions: testutil.BaseInstructions("test-model"), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.AppendItems(ctx, rootID, "", rollout.AgentSpawnEdgeItem{AgentID: childID, State: protocol.AgentSpawnEdgeOpen, UpdatedAt: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.CloseWriter(ctx, rootID); err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +180,7 @@ func TestRebuildIndexRestoresChildParentRelationWithoutSessionColumn(t *testing.
 	if err := store.RebuildIndex(ctx); err != nil {
 		t.Fatal(err)
 	}
-	children, err := store.ListChildren(ctx, rootID)
+	children, err := store.ListOpenChildren(ctx, rootID)
 	if err != nil || len(children) != 1 || children[0].ID != childID || children[0].Source.SubAgent.ParentThreadID != rootID {
 		t.Fatalf("rebuilt children = %#v, err=%v", children, err)
 	}
@@ -188,6 +191,60 @@ func TestRebuildIndexRestoresChildParentRelationWithoutSessionColumn(t *testing.
 	meta := history.Lines[0].Item.(rollout.SessionMetaItem)
 	if meta.SessionID != sessionID || meta.ID != childID || meta.ParentThreadID == nil || *meta.ParentThreadID != rootID {
 		t.Fatalf("rebuilt child session metadata = %#v", meta)
+	}
+}
+
+func TestRebuildIndexKeepsExplicitlyClosedChildOutOfOpenChildren(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	database, err := statesqlite.Open(ctx, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateStore, err := statesqlite.NewStore(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(home, stateStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	rootID, childID := testutil.ThreadID(20), testutil.ThreadID(21)
+	sessionID := protocol.SessionIDFromThreadID(rootID)
+	for _, input := range []threadstore.CreateInput{
+		{SessionID: sessionID, ID: rootID, Source: protocol.RootSessionSource(), CWD: "/workspace", Title: "Root", BaseInstructions: testutil.BaseInstructions("test-model"), CreatedAt: now},
+		{SessionID: sessionID, ID: childID, Source: protocol.NewSubAgentSessionSource(rootID, 1, "atlas", "explorer"), CWD: "/workspace", Title: "Child", BaseInstructions: testutil.BaseInstructions("test-model"), CreatedAt: now},
+	} {
+		if _, err := store.Materialize(ctx, input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index, state := range []protocol.AgentSpawnEdgeState{protocol.AgentSpawnEdgeOpen, protocol.AgentSpawnEdgeClosed} {
+		if _, err := store.AppendItems(ctx, rootID, "", rollout.AgentSpawnEdgeItem{AgentID: childID, State: state, UpdatedAt: now.Add(time.Duration(index+1) * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.CloseWriter(ctx, rootID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CloseWriter(ctx, childID); err != nil {
+		t.Fatal(err)
+	}
+	if err := stateStore.ReplaceThreads(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RebuildIndex(ctx); err != nil {
+		t.Fatal(err)
+	}
+	children, err := store.ListOpenChildren(ctx, rootID)
+	if err != nil || len(children) != 0 {
+		t.Fatalf("rebuilt open children = %#v, err=%v", children, err)
+	}
+	child, err := store.GetThread(ctx, childID)
+	if err != nil || child.AgentEdgeState != protocol.AgentSpawnEdgeClosed {
+		t.Fatalf("rebuilt closed child = %#v, err=%v", child, err)
 	}
 }
 

@@ -28,16 +28,17 @@ func (store *Store) UpsertThread(ctx context.Context, thread threadstore.StoredT
 		return err
 	}
 	_, err := store.database.db.ExecContext(ctx, `INSERT INTO threads (
-        id, source_kind, parent_thread_id, agent_depth, agent_nickname, agent_role,
-        rollout_path, cwd, title, preview, model_provider, model, tokens_used,
-        created_at, updated_at, archived, git_sha, git_branch, git_origin_url
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	        id, source_kind, parent_thread_id, agent_depth, agent_nickname, agent_role, agent_edge_state,
+	        rollout_path, cwd, title, preview, model_provider, model, tokens_used,
+	        created_at, updated_at, archived, git_sha, git_branch, git_origin_url
+	    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
         source_kind = excluded.source_kind,
         parent_thread_id = excluded.parent_thread_id,
         agent_depth = excluded.agent_depth,
-        agent_nickname = excluded.agent_nickname,
-        agent_role = excluded.agent_role,
+	        agent_nickname = excluded.agent_nickname,
+	        agent_role = excluded.agent_role,
+	        agent_edge_state = CASE WHEN excluded.agent_edge_state = '' THEN threads.agent_edge_state ELSE excluded.agent_edge_state END,
         rollout_path = excluded.rollout_path,
         cwd = excluded.cwd,
         title = excluded.title,
@@ -51,7 +52,7 @@ func (store *Store) UpsertThread(ctx context.Context, thread threadstore.StoredT
         git_sha = excluded.git_sha,
         git_branch = excluded.git_branch,
         git_origin_url = excluded.git_origin_url`,
-		thread.ID.String(), string(thread.Source.Kind), sourceParentThreadID(thread.Source).String(), sourceDepth(thread.Source), sourceNickname(thread.Source), sourceRole(thread.Source),
+		thread.ID.String(), string(thread.Source.Kind), sourceParentThreadID(thread.Source).String(), sourceDepth(thread.Source), sourceNickname(thread.Source), sourceRole(thread.Source), string(thread.AgentEdgeState),
 		thread.RolloutPath, thread.CWD, thread.Title, thread.Preview,
 		thread.ModelProvider, thread.Model, thread.TokensUsed,
 		formatTime(thread.CreatedAt), formatTime(thread.UpdatedAt), thread.Archived,
@@ -64,7 +65,7 @@ func (store *Store) UpsertThread(ctx context.Context, thread threadstore.StoredT
 }
 
 func (store *Store) GetThread(ctx context.Context, id protocol.ThreadID) (threadstore.StoredThread, error) {
-	row := store.database.db.QueryRowContext(ctx, `SELECT id, source_kind, parent_thread_id, agent_depth, agent_nickname, agent_role,
+	row := store.database.db.QueryRowContext(ctx, `SELECT id, source_kind, parent_thread_id, agent_depth, agent_nickname, agent_role, agent_edge_state,
         rollout_path, cwd, title, preview,
         model_provider, model, tokens_used, created_at, updated_at, archived,
 	        git_sha, git_branch, git_origin_url FROM threads WHERE id = ?`, id.String())
@@ -88,7 +89,7 @@ func (store *Store) ListThreads(ctx context.Context, query threadstore.ListQuery
 	if !query.IncludeSubAgents {
 		clauses = append(clauses, "source_kind = 'root'")
 	}
-	statement := `SELECT id, source_kind, parent_thread_id, agent_depth, agent_nickname, agent_role,
+	statement := `SELECT id, source_kind, parent_thread_id, agent_depth, agent_nickname, agent_role, agent_edge_state,
         rollout_path, cwd, title, preview,
         model_provider, model, tokens_used, created_at, updated_at, archived,
         git_sha, git_branch, git_origin_url FROM threads WHERE ` + strings.Join(clauses, " AND ") + ` ORDER BY updated_at DESC, id`
@@ -115,15 +116,15 @@ func (store *Store) ListThreads(ctx context.Context, query threadstore.ListQuery
 	return threads, nil
 }
 
-func (store *Store) ListChildren(ctx context.Context, parentID protocol.ThreadID) ([]threadstore.StoredThread, error) {
+func (store *Store) ListOpenChildren(ctx context.Context, parentID protocol.ThreadID) ([]threadstore.StoredThread, error) {
 	if parentID.IsZero() {
 		return nil, errors.New("parent thread ID is empty")
 	}
-	rows, err := store.database.db.QueryContext(ctx, `SELECT id, source_kind, parent_thread_id, agent_depth, agent_nickname, agent_role,
+	rows, err := store.database.db.QueryContext(ctx, `SELECT id, source_kind, parent_thread_id, agent_depth, agent_nickname, agent_role, agent_edge_state,
 		rollout_path, cwd, title, preview,
 		model_provider, model, tokens_used, created_at, updated_at, archived,
 		git_sha, git_branch, git_origin_url
-		FROM threads WHERE source_kind = 'subagent' AND parent_thread_id = ? ORDER BY created_at, id`, parentID.String())
+		FROM threads WHERE source_kind = 'subagent' AND parent_thread_id = ? AND agent_edge_state = 'open' AND archived = 0 ORDER BY created_at, id`, parentID.String())
 	if err != nil {
 		return nil, fmt.Errorf("list child thread metadata: %w", err)
 	}
@@ -165,6 +166,17 @@ func (store *Store) ArchiveThread(ctx context.Context, id protocol.ThreadID, upd
 	return requireAffected(result)
 }
 
+func (store *Store) UpdateAgentEdgeState(ctx context.Context, id protocol.ThreadID, state protocol.AgentSpawnEdgeState, updatedAt time.Time) error {
+	if id.IsZero() || !state.Valid() || updatedAt.IsZero() {
+		return errors.New("agent edge state update is incomplete")
+	}
+	result, err := store.database.db.ExecContext(ctx, `UPDATE threads SET agent_edge_state = ?, updated_at = ? WHERE id = ? AND source_kind = 'subagent'`, string(state), formatTime(updatedAt), id.String())
+	if err != nil {
+		return fmt.Errorf("update agent edge state: %w", err)
+	}
+	return requireAffected(result)
+}
+
 func (store *Store) ReplaceThreads(ctx context.Context, threads []threadstore.StoredThread) error {
 	tx, err := store.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -179,11 +191,11 @@ func (store *Store) ReplaceThreads(ctx context.Context, threads []threadstore.St
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO threads (
-            id, source_kind, parent_thread_id, agent_depth, agent_nickname, agent_role,
-            rollout_path, cwd, title, preview, model_provider, model, tokens_used,
-            created_at, updated_at, archived, git_sha, git_branch, git_origin_url
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			thread.ID.String(), string(thread.Source.Kind), sourceParentThreadID(thread.Source).String(), sourceDepth(thread.Source), sourceNickname(thread.Source), sourceRole(thread.Source),
+	            id, source_kind, parent_thread_id, agent_depth, agent_nickname, agent_role, agent_edge_state,
+	            rollout_path, cwd, title, preview, model_provider, model, tokens_used,
+	            created_at, updated_at, archived, git_sha, git_branch, git_origin_url
+	        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			thread.ID.String(), string(thread.Source.Kind), sourceParentThreadID(thread.Source).String(), sourceDepth(thread.Source), sourceNickname(thread.Source), sourceRole(thread.Source), string(thread.AgentEdgeState),
 			thread.RolloutPath, thread.CWD, thread.Title, thread.Preview,
 			thread.ModelProvider, thread.Model, thread.TokensUsed,
 			formatTime(thread.CreatedAt), formatTime(thread.UpdatedAt), thread.Archived,
@@ -217,10 +229,11 @@ func scanThread(scanner rowScanner) (threadstore.StoredThread, error) {
 	var agentDepth int
 	var agentNickname string
 	var agentRole string
+	var agentEdgeState string
 	var createdAt string
 	var updatedAt string
 	if err := scanner.Scan(
-		&threadID, &sourceKind, &parentThreadIDValue, &agentDepth, &agentNickname, &agentRole,
+		&threadID, &sourceKind, &parentThreadIDValue, &agentDepth, &agentNickname, &agentRole, &agentEdgeState,
 		&thread.RolloutPath, &thread.CWD, &thread.Title, &thread.Preview,
 		&thread.ModelProvider, &thread.Model, &thread.TokensUsed, &createdAt, &updatedAt,
 		&thread.Archived, &thread.GitSHA, &thread.GitBranch, &thread.GitOriginURL,
@@ -232,6 +245,7 @@ func scanThread(scanner rowScanner) (threadstore.StoredThread, error) {
 		return threadstore.StoredThread{}, fmt.Errorf("parse stored thread ID: %w", err)
 	}
 	thread.ID = parsedThreadID
+	thread.AgentEdgeState = protocol.AgentSpawnEdgeState(agentEdgeState)
 	thread.Source = protocol.SessionSource{Kind: protocol.SessionSourceKind(sourceKind)}
 	if thread.Source.Kind == protocol.SessionSourceSubAgent {
 		parentThreadID, parseErr := protocol.ParseThreadID(parentThreadIDValue)

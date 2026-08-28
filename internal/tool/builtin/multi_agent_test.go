@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/Godric-W/Amadeus/internal/testutil"
@@ -12,6 +13,13 @@ import (
 
 func TestWaitAgentSpecAndValidationShareTimeoutBounds(t *testing.T) {
 	spec := multiAgentSpec("wait_agent")
+	if !strings.Contains(spec.Description, "any target") || !strings.Contains(spec.Description, "Interrupted is not final") || !strings.Contains(spec.Description, "last_turn") {
+		t.Fatalf("wait_agent guidance = %q", spec.Description)
+	}
+	spawn := multiAgentSpec("spawn_agent")
+	if !strings.Contains(spawn.Description, "continues if your current turn ends") || !strings.Contains(spawn.Description, "typed status") {
+		t.Fatalf("spawn_agent lifecycle guidance = %q", spawn.Description)
+	}
 	var schema struct {
 		Properties map[string]struct {
 			Minimum int `json:"minimum"`

@@ -45,6 +45,13 @@ func TestRolloutItemVariantsRoundTrip(t *testing.T) {
 			ThreadID: threadID, TurnID: "turn-1", Provider: "mock", Model: "model", CWD: "/workspace",
 			ReasoningEffort: &effort, Shell: "bash", CurrentDate: "2026-08-20", Timezone: "Asia/Shanghai", Mode: "default",
 		}},
+		{name: "agent spawn edge", item: AgentSpawnEdgeItem{
+			AgentID: childID, ParentThreadID: threadID, State: protocol.AgentSpawnEdgeOpen, UpdatedAt: now,
+		}},
+		{name: "turn complete with final message", item: EventMsgItem{Msg: protocol.TurnCompleteEvent{
+			ThreadID: threadID, TurnID: "turn-1", Status: protocol.TurnStatusCompleted, Outcome: protocol.TurnOutcomeCompleted,
+			LastAgentMessage: rolloutStringPointer("final report"), FinishedAt: now,
+		}}},
 		{name: "event message", item: EventMsgItem{Msg: protocol.ScopeEventMsg(
 			protocol.NewTokenCountEvent(llm.TokenUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}, 128_000, 1), threadID, "turn-1",
 		)}},
@@ -73,6 +80,8 @@ func TestRolloutItemVariantsRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func rolloutStringPointer(value string) *string { return &value }
 
 func TestResponseItemValidationRejectsInvalidContracts(t *testing.T) {
 	threadID := testutil.ThreadID(1)
@@ -115,9 +124,9 @@ func TestLineRejectsInvalidCurrentFormats(t *testing.T) {
 		content string
 		want    string
 	}{
-		{name: "old AA-incompatible version", content: `{"version":4,"sequence":1,"timestamp":"` + now + `","type":"event_msg","payload":{}}`, want: "unsupported rollout format version 4"},
-		{name: "unknown type", content: `{"version":5,"sequence":1,"timestamp":"` + now + `","type":"future_item","payload":{}}`, want: `unsupported rollout item type "future_item"`},
-		{name: "missing payload", content: `{"version":5,"sequence":1,"timestamp":"` + now + `","type":"response_item"}`, want: "unsupported rollout item format"},
+		{name: "old AC-incompatible version", content: `{"version":5,"sequence":1,"timestamp":"` + now + `","type":"event_msg","payload":{}}`, want: "unsupported rollout format version 5"},
+		{name: "unknown type", content: `{"version":6,"sequence":1,"timestamp":"` + now + `","type":"future_item","payload":{}}`, want: `unsupported rollout item type "future_item"`},
+		{name: "missing payload", content: `{"version":6,"sequence":1,"timestamp":"` + now + `","type":"response_item"}`, want: "unsupported rollout item format"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

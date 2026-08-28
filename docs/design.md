@@ -1,7 +1,7 @@
 # Amadeus 架构设计
 
 > 状态：Target Architecture v2
-> 最近修订：2026-08-26
+> 最近修订：2026-08-28
 > 目标语言：Go
 > 产品形态：面向真实软件工程任务的本地 Coding Agent CLI
 > 架构骨架：`../codex-main`
@@ -78,6 +78,7 @@ Amadeus 当前处于未发布开发阶段，不承诺自身旧实现的任何兼
 | Z. Internal Package + Source Layout Alignment | Codex-aligned Protocol、Session、ContextManager、ThreadStore、ThreadManager、TUI 与 Tool package ownership；Go 文件按内聚行为拆分 |
 | AA. Prompt Ownership + Lifecycle Realignment | Codex model instructions、Session Base provenance、Default/Plan、source-specific ToolSpec、typed WorldState full/diff、Prompt wire mapping、Compact 与 Resume lifecycle |
 | AB. Source-backed Markdown Streaming + TUI Render Lifecycle | Codex `MarkdownStreamCollector/StreamingRender/StreamController/AgentMarkdownCell` ownership、authoritative completion、Goldmark/Chroma structured render 与 Bubble Tea model-owned transcript viewport 适配 |
+| AC. Basic Multi-Agent Terminal + Persistence Lifecycle Realignment | Codex V1 `last_agent_message`、AgentStatus/Wait、root-tree lifetime、durable spawn edge、budget finalization 与 live/Resume 等价 |
 
 ## 2. 产品目标
 
@@ -103,7 +104,7 @@ Amadeus 的目标是成为一个真正可用于日常软件开发的通用 Codin
 |---|---|---|
 | Thread、Session、Turn | Codex | AmadeusThread、internal Session、ActiveTurn 与 SessionTask 使用同构生命周期 |
 | Agent Runtime | Codex | Session、SessionState、SessionServices、TurnContext、StepContext、SessionTask 与单一 `run_turn` continuation loop |
-| Multi-Agent | Codex 为骨架、Claude Code 为能力过滤参考 | SubAgent 是完整 AmadeusThread/Session；同一 Root tree 共享 AgentControl，首版采用 Codex V1 生命周期和协作 Tool，并使用 Claude Code 风格 child Tool allowlist、独立上下文与权限不升级原则 |
+| Multi-Agent | Codex 为骨架、Claude Code 为能力过滤参考 | SubAgent 是完整 AmadeusThread/Session；同一Root tree共享AgentControl，Basic实现采用Codex V1的`last_agent_message`、AgentStatus、wait、completion watcher与显式close edge lifecycle，并使用Claude Code风格child Tool allowlist、独立后台取消域、独立上下文与权限不升级原则 |
 | Plan | Codex | `update_plan` 是 transient 软 checklist Event；`/plan` 是 Collaboration Mode；最终方案使用 `<proposed_plan>`、`PlanDeltaEvent` 与 completed Plan TurnItem |
 | Context Manager | Codex 为骨架 | 统一历史投影；区分 Thread 累计 Token 消耗、最近请求 Usage、当前 active context 与 preflight estimate |
 | Compaction | Codex | Session 拥有 trigger/reason/phase、Item lifecycle、durable replacement install 与 token recompute；CompactionService 只生成 typed output |
@@ -135,6 +136,7 @@ Amadeus 不引入以下主链：
 - 企业策略下发、遥测平台、Feature Flag 平台或 IDE 专属协议。
 - 为所有 Tool 强行设计完全相同的权限算法。
 - 从任意 Shell 字符串中推断所有文件读写路径。
+- Codex Multi-Agent V2及其AgentPath、task-name tree、mailbox、`send_message`/`followup_task`、residency/eviction和通用AgentGraphStore；Claude Code team/teammate、worktree/remote/background task体系；history fork、write-capable worker、child Approval/用户输入和完整agent picker。Amadeus只实现第21章的depth-one read-only Basic Multi-Agent闭环，这些能力不是后续路线图。
 
 ## 5. 核心架构原则
 
@@ -267,7 +269,7 @@ internal/threadmanager/      ThreadManager、AmadeusThread、child restore 与 c
 internal/agent/session/      Session、SessionState、SessionServices、TurnContext、StepContext、ActiveTurn、RunningTask、SessionTask 与 run_turn
 internal/agent/compact/      Compaction domain、Prompt request builder 与无状态摘要生成服务
 internal/agent/modelclient/  Turn-scoped ModelClientSession、sampling、stream consume 与 reconnect policy
-internal/agent/multiagent/   Root-scoped AgentControl、reservation、status、wait、send 与 shutdown
+internal/agent/multiagent/   Root-scoped AgentControl、reservation、terminal reducer、wait、send、notification delivery 与 shutdown
 internal/contextmanager/     ContextManager、Token Accounting、Prompt estimate、Projection 与 replacement validation
 internal/prompt/             模型消息 profile、Collaboration Mode、Compaction 与内置 Prompt 资产
 internal/llm/                LLM Domain Port
@@ -327,6 +329,7 @@ internal/testutil/           跨 package 测试 identity/helper；生产代码�
 | Codex core `context_manager` | `internal/contextmanager` | package path 与 package name 一致；唯一拥有 canonical history projection、Prompt snapshot、token estimate 和 replacement install validation |
 | Codex `thread-store` | `internal/threadstore` | Thread persistence port、LiveThread、StoredThread metadata、local writer 和 SQLite index 属于同一 store 边界 |
 | Codex core `ThreadManager`/`CodexThread` | `internal/threadmanager` | 创建/恢复 internal Session 和 live registry，不嵌套在 persistence package 下 |
+| Codex core `agent/control`、`agent/status`、V1 handlers | `internal/agent/multiagent` + `internal/protocol` + `internal/rollout` | AgentControl拥有root-tree control plane，Protocol拥有AgentStatus/LastTurn DTO，Root rollout拥有flat spawn-edge lifecycle；ThreadManager仍是runtime spawn/resume owner |
 | Codex `tui` 的 App/ChatWidget/history_cell modules | `internal/tui` | 保持一个 Go package 共享 Bubble Tea model；用责任文件表达私有 module，不为缩短文件制造 renderer/widget 小 package |
 | Codex core `tools` + Claude Code `Tool`/tool orchestration/permissions/builtin tools | `internal/tool` + `internal/policy` + `internal/tool/builtin` | Codex 决定 StepContext/ToolRouter/Event owner，Claude Code 决定 Validate/Prepare/Permission/Approval/Execute 与文件 Tool 行为 |
 | Codex `rollout` | `internal/rollout` | 只拥有 canonical typed item 与 JSONL codec/recorder，不重新拥有 Protocol identity 或 Thread metadata query |
@@ -734,7 +737,7 @@ type ThreadManager struct {
 - `StartThread`、`ResumeThread`、`GetThread` 和 `ShutdownThread`。
 - 对 New history 生成 UUIDv7 ThreadID，对 Resumed history 复用并校验 Rollout 中的 ThreadID；Root/child 创建都不得调用 `NextID("thread")`。
 - Root 创建时由 Root ThreadID 派生 SessionID；Root Resume 从 canonical SessionMeta 恢复并校验 SessionID。Child 创建时从共享 AgentControl 取得 SessionID，不能从 child ThreadID 派生。
-- Root Resume 后按 SQLite 中的 parent/source relation 查找 persisted descendants，再读取各 child Rollout 的 canonical SessionMeta 校验 `SessionID == AgentControl.SessionID`、ID 和 ParentThreadID；SQLite 不以 SessionID 查询或重建 agent tree。
+- Root Resume后从Root canonical AgentSpawnEdge projection选择state=open的persisted descendants，再用可重建SQLite parent/source/edge index定位child Rollout，并校验`SessionID == AgentControl.SessionID`、ID和ParentThreadID；SQLite不以SessionID查询tree，也不把任意存在的child metadata视为open membership。
 - 对已持久化但尚未加载的 child 提供 ThreadManager 内部 child resume 路径；公开 `/resume`/`--resume` 仍只恢复 Root Thread，AgentControl 的 send/input lifecycle 按 child ThreadID 触发内部加载。
 - 创建 `SessionSpawnArgs` 并调用 internal Session 的 spawn 流程。
 - 在 Session configured 成功后将 `Session + SessionIo` 包装为 AmadeusThread 并注册进 live Thread registry；失败路径必须关闭 writer/runtime，不留下半注册实例。
@@ -1111,7 +1114,7 @@ const (
 )
 ```
 
-SessionTask 直接使用 Session 提供的 typed 方法。ContextManager 的 mutation 只能由 Session 对已接纳的 canonical facts 执行。`TaskOutput` 只表达 Turn outcome、summary/reason 和 Tool Call count，不携带跨 Model Step 聚合 Usage，也不返回待 Session 在 Turn 尾部安装的 CompactedItem。TurnCompleteEvent、TurnAbortedEvent、ErrorEvent、TokenUsageInfo、canonical append 和 Event 发布由 Session 统一创建。`RunningTask` 是 Session 保存的运行记录，持有具体 Task、TaskKind、TurnContext、cancellation、execution handle 和 completion notification；启动 goroutine、取消、清理 ActiveTurn 与终态收尾属于 Session。基础版只有 Regular 可 steer，Compact 明确返回 `ActiveTurnNotSteerable`；不得继续使用 `compact bool` 作为 Task identity 或 steerability 判断。
+SessionTask 直接使用 Session 提供的 typed 方法。ContextManager 的 mutation 只能由 Session 对已接纳的 canonical facts 执行。`TaskOutput` 只表达 Turn outcome、summary/reason、Tool Call count 和由 `run_turn` 明确返回的 optional final agent message，不携带跨 Model Step 聚合 Usage，也不返回待 Session 在 Turn 尾部安装的 CompactedItem。Session 将该 final message 原样写入 `TurnCompleteEvent.last_agent_message`；普通 Assistant Item、stream tail、Tool Call 前导语和 TUI cell 都不得反向推断 Turn 的最终交付。TurnCompleteEvent、TurnAbortedEvent、ErrorEvent、TokenUsageInfo、canonical append 和 Event 发布由 Session 统一创建。`RunningTask` 是 Session 保存的运行记录，持有具体 Task、TaskKind、TurnContext、cancellation、execution handle 和 completion notification；启动 goroutine、取消、清理 ActiveTurn 与终态收尾属于 Session。基础版只有 Regular 可 steer，Compact 明确返回 `ActiveTurnNotSteerable`；不得继续使用 `compact bool` 作为 Task identity 或 steerability 判断。
 
 首批 SessionTask：
 
@@ -1143,9 +1146,10 @@ type RolloutItem interface {
 - `ResponseItem`
 - `CompactedItem`
 - `TurnContextItem`
+- `AgentSpawnEdgeItem`
 - `EventMsgItem`
 
-`ResponseItem` 保存模型可见的 User/Assistant/Reasoning/Tool Call/Tool Result 事实；需要恢复的 Turn/Item 生命周期、Plan、Token、Context、Approval 结果和终态使用对应的 typed `EventMsg` 原样持久化。
+`ResponseItem` 保存模型可见的 User/Assistant/Reasoning/Tool Call/Tool Result 事实；`AgentSpawnEdgeItem`只保存在Root rollout，拥有Basic Multi-Agent flat root→child open/closed membership；需要恢复的 Turn/Item 生命周期、Plan、Token、Context、Approval 结果和终态使用对应的 typed `EventMsg` 原样持久化。
 
 `CompactedItem` 是 replacement install 的 canonical checkpoint，而不是摘要字符串 wrapper：
 
@@ -1211,7 +1215,7 @@ type InputQueue struct {
 }
 ```
 
-基础版只实现文字 `UserTurnInput`；未来在真实需要 additional context、multi-agent mailbox 或多模态输入时再增加新的 TurnInput variant，不提前复制 Codex 的完整 InputQueue 功能。`TurnInputQueue` 是 Turn-scoped storage，随 ActiveTurn 创建和销毁；`InputQueue` 是 Session-scoped coordinator，本身不得成为第二份 conversation history。
+基础版只实现文字 `UserTurnInput`；未来只有在真实产品需要additional context或多模态输入时才增加相应TurnInput variant，Multi-Agent mailbox仍是明确非目标。`TurnInputQueue`是Turn-scoped storage，随ActiveTurn创建和销毁；`InputQueue`是Session-scoped coordinator，本身不得成为第二份conversation history。
 
 普通用户消息接纳顺序固定为：
 
@@ -1700,7 +1704,7 @@ Response stream retry Event 是 live、transient、non-canonical notification。
 - 最大 Turn wall-clock；
 - Model context/token limit。
 
-这些限制是 Amadeus 明确保留的高阈值 runaway safety，并非声称与 Codex 一比一同构。它们不再暴露旧 `agent.max_iterations`、`agent.max_tool_calls` 或 `agent.max_duration` 配置，避免形成低阈值且行为不稳定的产品契约。接近预算时只向模型注入一次明确的完成提醒，使其总结当前结果；真正耗尽后返回 typed blocked outcome，而不是伪装成 Provider 或 Tool infrastructure error。模型采样、Tool Call 和 elapsed time 在 Turn 执行期间累计；Tool count 进入 TaskOutput，每个 request 的 TokenUsage 则即时进入 Session-owned TokenUsageInfo/canonical TokenCountEvent，不在 Turn terminal 再生成第二份聚合 usage。
+这些限制是 Amadeus 明确保留的高阈值 runaway safety，并非声称与 Codex 一比一同构。它们不再暴露旧 `agent.max_iterations`、`agent.max_tool_calls` 或 `agent.max_duration` 配置，避免形成低阈值且行为不稳定的产品契约。普通 Root Turn 接近预算时只注入一次明确的完成提醒；read-only SubAgent 还必须在 child budget 的 soft boundary 进入一次有界、Tools 为空的 finalization sample，使其停止探索并交付已验证事实、未决问题和限制。只有在 hard boundary 已被跨越、finalization request 失败或无法产生合法最终文本时才返回 typed blocked outcome，而不是伪装成 Provider 或 Tool infrastructure error。模型采样、Tool Call 和 elapsed time 在 Turn 执行期间累计；Tool count 和 optional final agent message进入 TaskOutput，每个 request 的 TokenUsage 则即时进入 Session-owned TokenUsageInfo/canonical TokenCountEvent，不在 Turn terminal 再生成第二份聚合 usage。
 
 ### 10.6 默认执行与软计划
 
@@ -1755,12 +1759,12 @@ assistant output in Plan Mode
 
 canonical terminal 映射固定为：
 
-- `TaskOutcomeCompleted` → `TurnCompleteEvent{status: completed, outcome: completed}`。
-- `TaskOutcomeBlocked` → `TurnCompleteEvent{status: completed, outcome: blocked, summary/reason}`。
+- `TaskOutcomeCompleted` → `TurnCompleteEvent{status: completed, outcome: completed, last_agent_message}`。
+- `TaskOutcomeBlocked` → `TurnCompleteEvent{status: completed, outcome: blocked, summary/reason, optional last_agent_message}`。
 - `run_turn` error → `TurnCompleteEvent{status: failed, outcome: failed, error}`。
 - Turn Context cancellation with abort cause → `TurnAbortedEvent`。
 
-`TurnCompleteEvent` 的 typed payload 包含 `outcome` 与可选 `reason`；不得再用自定义 `OutcomeError` 把 blocked、limit 或正常 partial completion 伪装成 failed。
+`TurnCompleteEvent` 的 typed payload 包含 `outcome`、可选 `reason` 与可选 `last_agent_message`；`last_agent_message` 只能来自 `run_turn` 的最终模型完成，blocked 的 finalization sample 可以提供明确标注限制的 partial report。不得再用自定义 `OutcomeError` 把 blocked、limit 或正常 partial completion 伪装成 failed，也不得扫描普通 Assistant Item 猜测最终消息。
 
 ## 11. Runtime Coordination Tools
 
@@ -4298,9 +4302,9 @@ type ToolDisplaySpec struct {
 
 ### 21.1 目标与取舍
 
-Amadeus 的第一版 Multi-Agent 以当前 `../codex-main` 的 Multi-Agent V1 为主要架构参考，并选择性吸收 `../claude-code-main` 的 child context 隔离、Tool allowlist 和权限不升级原则。这里的“对齐”要求对齐 Thread/Session 所有权、数据模型、概念术语、命名、状态生命周期、Prompt owner、Event/Rollout 顺序和 TUI projection，不要求复制 Codex V2 的 agent graph、mailbox、residency 或 Claude Code 的 team/worktree/remote/background task 全套能力。
+Amadeus Basic Multi-Agent以当前`../codex-main`的Multi-Agent V1为主要架构参考：`agent/control`与`thread_manager`决定root-tree ownership和spawn/close边界，`agent/status`与`TurnCompleteEvent.last_agent_message`决定status/final answer，V1 handlers决定spawn/send/wait/close Tool lifecycle，completion watcher与SubagentNotification决定parent交付。`../claude-code-main`只用于吸收background child独立取消域、Tool allowlist、权限不升级和failed/killed partial result等局部经验，不复制其Query/AppState/Task外层。这里的“对齐”要求对齐Thread/Session所有权、数据模型、概念术语、命名、状态生命周期、Prompt owner、Event/Rollout顺序和TUI projection；Codex V2与Claude Code进阶multi-agent体系是永久产品非目标，不以“以后再实现”的方式保留入口。
 
-第一版目标是形成最小但真实可用的闭环：
+目标是形成最小但真实可用的Basic闭环：
 
 ```text
 Root AmadeusThread
@@ -4313,15 +4317,15 @@ Root AmadeusThread
 → wait_agent / send_input / close_agent
 ```
 
-第一版固定取舍：
+固定取舍：
 
 - SubAgent 是完整 `AmadeusThread`，拥有独立 Session、ContextManager、ActiveTurn、RunningTask、SessionServices、ToolExecutionService 和 canonical Rollout；不得实现为父 Session 内的嵌套 `SessionTask`、`run_turn` callback 或一次裸 Provider 请求。
 - 同一 Root Thread 创建的全部 SubAgent 共享一个 root-tree scoped `AgentControl`；`AgentControl` 不是进程级 singleton，也不归 TUI、Application 或 ToolDefinition 所有。
-- 首版采用 Codex V1 风格显式控制工具和 open-agent slot；不实现 V2 `AgentPath` mailbox、`send_message`/`followup_task` 分离、冷加载、LRU residency 或持久化 agent graph。
-- 首版 child 角色固定为 `explorer`，只承担代码搜索、文件阅读、架构分析、证据收集和只读验证；文件编辑、命令执行、MCP Call、`request_user_input` 和继续创建 SubAgent 均不可见。
-- Root 与 child 使用同一 CWD、workspace roots 和宿主文件系统；其他 Agent 或用户产生的文件变化对 child 立即可见。首版不创建 worktree、不做文件锁和冲突合并。
-- 首版 fresh spawn 不继承父 conversation history；父 Agent 必须通过明确 task message 传递必要背景。Full/recent history fork、model/reasoning override、自定义 Agent Definition 和 write-capable worker 留到后续阶段。
-- SubAgent 的 canonical thread history 可以持久化，但第一版不恢复运行中的 agent tree，不提供 `resume_agent`，也不把 child 作为普通顶层会话显示在默认 `/resume` 列表。
+- Basic Multi-Agent采用Codex V1风格显式控制工具和open-agent slot；只持久化depth-one root→child open/closed edge，不实现且不预留V2 `AgentPath` mailbox、`send_message`/`followup_task`、LRU residency或通用持久化agent graph。
+- child角色固定为`explorer`，只承担代码搜索、文件阅读、架构分析、证据收集和只读验证；文件编辑、命令执行、MCP Call、`request_user_input`和继续创建SubAgent均不可见。
+- Root与child使用同一CWD、workspace roots和宿主文件系统；其他Agent或用户产生的文件变化对child立即可见。Basic实现不创建worktree、不做文件锁和冲突合并。
+- fresh spawn不继承父conversation history；父Agent必须通过明确task message传递必要背景。Full/recent history fork、model/reasoning override、自定义Agent Definition和write-capable worker均为产品非目标，不进入后续任务。
+- SubAgent 的 canonical thread history 与 root→child spawn edge 可以持久化；Root Resume 只恢复仍为 open 的 child metadata 作为 unloaded AgentRecord，不自动重启旧 Turn，也不提供公开 `resume_agent`，child 仍不出现在默认 `/resume` 列表。
 
 ### 21.2 SessionSource、Agent Identity 与 Metadata
 
@@ -4350,7 +4354,7 @@ type SubAgentSource struct {
 
 Go 实现使用 tagged struct 表达 Codex 的 enum/sum type 语义，使同一模型可以确定性进入 JSONL 与 SQLite；`Kind=root` 时 `SubAgent=nil`，`Kind=subagent` 时 metadata 必须完整，不保留 interface 实现或旧格式 reader。
 
-首版 `AgentID` 直接使用 child `ThreadID`，不增加与 Thread 平行的第二套 ID。`AgentMetadata` 是 `AgentControl` 的 read model：
+Basic实现的`AgentID`直接使用child `ThreadID`，不增加与Thread平行的第二套ID。`AgentMetadata`是`AgentControl`的read model：
 
 ```go
 type AgentMetadata struct {
@@ -4366,9 +4370,9 @@ type AgentMetadata struct {
 
 - Root Session 使用 `RootSessionSource`；child 使用 `SubAgentSessionSource`。
 - `ParentThreadID`、Depth、Nickname 和 Role 在 spawn 成功后不可变，并写入 child `SessionMetaItem`。
-- 首版最大 Depth 为 1；child 的 ToolRouter 不暴露任何 Multi-Agent Tool。
+- 最大Depth固定为1；child的ToolRouter不暴露任何Multi-Agent Tool。
 - Nickname 由 `AgentControl` 从内置名称池分配，必须在当前 root tree 内唯一；spawn 失败时预留 nickname 和 slot 必须一起回滚。
-- Role 首版固定为 `explorer`，但数据模型保留稳定字段，避免未来引入 worker/reviewer 时替换协议。
+- Role固定为`explorer`；稳定字段用于canonical明确当前角色和Resume校验，不表示未来worker/reviewer扩展点。
 
 ### 21.3 AgentControl 所有权
 
@@ -4387,12 +4391,13 @@ type AgentControl struct {
 type AgentRecord struct {
     Metadata AgentMetadata
     Status   AgentStatus
+    LastTurn *AgentTurnResult
     Runtime  AgentRuntime // persisted/unloaded child 可以为空
     Changed  <-chan struct{}
 }
 ```
 
-`AgentHost` 是由 ThreadManager 实现的窄 runtime port，只允许 AgentControl 创建、查询、提交和关闭 child Thread；它不得暴露 ThreadManager 的完整内部 map、ThreadStore 或 Application callback。
+`AgentHost` 是由 ThreadManager 实现的窄 runtime port，只允许 AgentControl创建/恢复/查询/提交/停止child Thread、向parent Session durable交付notification，并请求root Session记录typed spawn-edge mutation；它不得暴露ThreadManager完整内部map、ThreadStore、ContextManager或Application callback。AgentControl不能直接写Rollout，ThreadManager也不能绕过Session append owner修改root history。
 
 所有权固定为：
 
@@ -4413,14 +4418,14 @@ Root Resume 必须恢复该 root tree 的 persisted child metadata，而不是�
 Resume Root ThreadID
 → 从 Root SessionMeta 恢复并校验 SessionID
 → 创建 AgentControl(SessionID, RootThreadID)
-→ 按 SQLite parent_thread_id/source 查找 descendants
+→ 从 Root Rollout/SQLite projection选择 AgentSpawnEdgeState=open 的 descendants
 → 读取每个 child Rollout 的 canonical SessionMeta
 → 校验 child ID、ParentThreadID 与 SessionID
 → 注册 persisted/unloaded AgentRecord
 → send_input 等操作按 child ThreadID 触发 ThreadManager internal child resume
 ```
 
-AgentControl 可以保存尚未加载 Runtime 的 persisted AgentRecord，但不能自己打开 Rollout 或构造 Session；实际 child resume 仍由 ThreadManager/AgentHost 完成。内部恢复必须使用 child ThreadID 定位 StoredThread/Rollout，并要求 child SessionMeta.SessionID 与 Control.SessionID 相同。公开 `/resume`、`--resume` 和 picker 不直接选择 child Thread；不存在公开 `resume_agent` Tool。
+AgentControl 可以保存尚未加载 Runtime 的 persisted AgentRecord，但不能自己打开 Rollout 或构造 Session；实际 child resume 仍由 ThreadManager/AgentHost 完成。内部恢复必须先从 root canonical spawn-edge projection 选择仍为 open 的 child，再使用 child ThreadID 定位 StoredThread/Rollout，并要求 child SessionMeta.SessionID 与 Control.SessionID 相同。公开 `/resume`、`--resume` 和 picker 不直接选择 child Thread；不存在公开 `resume_agent` Tool。
 
 禁止：
 
@@ -4431,7 +4436,7 @@ AgentControl 可以保存尚未加载 Runtime 的 persisted AgentRecord，但不
 
 ### 21.4 AgentStatus 与生命周期
 
-首版使用 Codex 术语和状态语义：
+Basic实现使用Codex术语和状态语义：
 
 ```go
 type AgentStatusKind string
@@ -4450,9 +4455,22 @@ type AgentStatus struct {
     Kind    AgentStatusKind
     Message string
 }
+
+type AgentTurnResult struct {
+    TurnID           TurnID
+    Outcome          TurnOutcome
+    Reason           string
+    LastAgentMessage *string
+}
 ```
 
-`Message` 只在 Completed/Errored 时承载 bounded FinalMessage 或错误文本；其他 Kind 必须为空。这样保留 Codex enum-with-payload 语义，同时使用稳定、易编码的 Go typed struct。
+`Message` 只在 Completed/Errored 时承载 bounded final agent message 或错误文本；其他 Kind 必须为空。这样保留 Codex enum-with-payload 语义，同时使用稳定、易编码的 Go typed struct。`AgentTurnResult` 是同一 terminal Event 的无损派生 read model，用于保留 Amadeus 已有 `completed|blocked|failed|aborted` outcome 与 reason；它不是第二个完成协议，也不得脱离 canonical `TurnCompleteEvent`/`TurnAbortedEvent` 单独写入。
+
+Codex 的 AgentStatus 表达 child control-plane 的当前可用状态，Amadeus 的 TurnOutcome 表达最近 Turn 是否真正完成目标，两者不得压扁成一个字符串：
+
+- `AgentStatusCompleted` 表示 child 当前 Turn 已结束且 Thread 空闲，可以继续 `send_input`；它不自动断言 `AgentTurnResult.Outcome == completed`。
+- `AgentTurnResult{Outcome: blocked}` 保留预算或外部依赖造成的未完成事实、具体 reason 和可选 partial final report；不得新增与 Codex 状态枚举平行的 `AgentStatusBlocked`。
+- WorldState `<subagents>` 只展示 AgentStatus；`wait_agent`、completion notification 和 TUI collaboration detail 同时携带 optional LastTurn，供父 Agent 区分 completed 与 blocked。
 
 状态转换固定为：
 
@@ -4466,15 +4484,17 @@ unknown/closed ID → NotFound
 
 `Interrupted` 不是终态 Agent；它只表示当前 child Turn 被中断。`Completed` 和 `Errored` 表示当前 Turn 已结束，但 child Thread 仍保持 open、继续占用 agent slot，并可通过 `send_input` 启动后续 Turn。只有 `close_agent` 或 root tree shutdown 才释放 slot。
 
-AgentStatus 由 child 的 typed Session Event 派生：
+AgentStatus 与 LastTurn 由 child 的 typed Session Event 通过同一个纯 reducer 派生：
 
 - `TurnStartedEvent` → Running。
-- completed `TurnCompleteEvent` → Completed，并使用最近一次 completed AssistantMessage 作为 FinalMessage。
-- failed `TurnCompleteEvent` 或 fatal `ErrorEvent` → Errored。
-- `TurnAbortedEvent` → Interrupted。
+- completed `TurnCompleteEvent` → Completed；`Message` 只复制该 Event 的 optional `last_agent_message`，LastTurn 复制 outcome/reason/last_agent_message。
+- failed `TurnCompleteEvent` 或 terminal `ErrorEvent` → Errored；错误文本来自 terminal Event，不从 TUI、ToolResult 或日志重建。
+- `TurnAbortedEvent` → Interrupted，并将 aborted outcome/reason 保存在 LastTurn；Interrupted 不属于 completion watcher 的 final status。
 - `ShutdownCompleteEvent` → Shutdown。
 
-AgentStatus 是 `AgentControl` 内部 watch/read model，不增加公开 `SessionIo.Status` channel，也不替代 child 自身 Event/Rollout 终态。
+`TurnStartedEvent` 必须原子切换到Running并清空上一Turn的LastTurn，避免新Turn运行期间wait/WorldState继续暴露旧completion。ErrorEvent可以更新live Errored诊断，但parent completion notification必须等待该Turn的canonical terminal Event或明确的Session终止，不能在随后还会改变reason/final message的中间错误上抢先提交。
+
+`run_turn → TaskOutput.LastAgentMessage → TurnCompleteEvent.last_agent_message` 是 final answer 的唯一链路。Tool Call 前导语、任意 completed AssistantMessage、Reasoning、stream delta 和“最近一条有文本的消息”都不能作为 fallback。AgentStatus 是 `AgentControl` 内部 watch/read model，不增加公开 `SessionIo.Status` channel，也不替代 child 自身 Event/Rollout 终态。Live event reduction 与 Root Resume rollout reconstruction必须调用同一个 reducer，禁止分别维护 `latestAssistant` 与 `persistedAgentStatus` 两套算法。
 
 ### 21.5 Spawn Reservation、并发与取消树
 
@@ -4487,35 +4507,39 @@ Validate parent/depth/input
 → ThreadManager creates child LiveThread + Session
 → register child event reducer
 → submit initial UserInputOp
+→ durable append root AgentSpawnEdgeItem(open)
 → commit reservation
 → return child ThreadID + nickname
 ```
 
 任何一步失败都必须释放 slot、nickname、child writer 和已创建 runtime。不得先增加计数后依赖后续定时清理。
 
-首版限制：
+Basic限制：
 
 - `max_depth = 1`。
 - `max_agents = 4`，只统计当前 root tree 中未 close 的 spawned child，不包含 root。
 - Completed、Errored 和 Interrupted child 继续占用 slot，直到 `close_agent`。
-- 单个 child 继续使用既有 TurnBudget，但额外覆盖为有界 child budget：最多 20 次 sample、100 次 Tool Call 和 15 分钟 Turn duration。
+- 单个 child 继续使用既有 TurnBudget，但额外覆盖为有界 child budget：最多 20 次 sample、100 次 Tool Call 和 15 分钟 Turn duration；这些值是包含 finalization reserve 的总预算，不允许通过额外无界 request 绕过。
+- child 在任一维度进入 soft boundary 后停止新探索，冻结当前 PromptSnapshot并执行至多一次 Tools 为空的 finalization sample；成功时以权威 `last_agent_message` 交付已验证事实和限制，只有跨过 hard boundary或 finalization 失败时才返回 blocked LastTurn。
 - `spawn_agent` 本身声明为 parallel-safe，使同一次模型响应中的多个独立 spawn 可以由现有 Tool batch 有界并行；AgentControl reservation 仍负责跨 batch 的树级总量限制。
 
 取消关系：
 
 ```text
-Application Context
+Application / ThreadWorkspace lifetime
 └── Root AmadeusThread / Session
     └── AgentControl tree lifetime
         └── Child AmadeusThread / Session
             └── Child Turn Context
 ```
 
-父当前 Turn 的普通 Interrupt 不自动关闭已启动 child；否则 parent 无法在中断后继续利用 child 结果。Root Thread shutdown、Application shutdown 或显式 `close_agent` 必须关闭对应 child。`send_input(interrupt=true)` 只中断目标 child 当前 Turn，再提交新的 input，不销毁 child Thread。
+创建完成后的 child Session 绑定 root tree/ThreadWorkspace lifetime，而不是 spawn Tool、父 Model Step 或父 ActiveTurn context；父 Turn 正常结束、failed、blocked 或普通 Interrupt 都不得取消已启动 child。spawn 调用的 context 只控制“reservation → child configured → initial input admitted → open edge durable → commit”事务，在成功返回前取消必须完整回滚。Root Thread runtime shutdown、Application shutdown 或显式 `close_agent` 必须停止对应 child runtime；其中只有显式 `close_agent` 将 durable spawn edge 标记为 closed。`send_input(interrupt=true)` 只中断目标 child 当前 Turn，再提交新的 input，不销毁 child Thread。
+
+这与 Claude Code background agent 使用独立、未链接父 query 的取消域语义一致；Amadeus 不复制其 Task/AppState 外层，只保留“background child 不随父 Turn finally 自动 abort”的生命周期事实。
 
 ### 21.6 Multi-Agent Tool Contract
 
-首版只向 Root Agent 暴露四个 Codex V1 风格 Tool：
+Basic实现只向Root Agent暴露四个Codex V1风格Tool：
 
 #### `spawn_agent`
 
@@ -4535,7 +4559,7 @@ Application Context
 ```
 
 - `message` 必须非空、边界清晰且可独立执行。
-- child 使用当前 Root 的 model/provider/reasoning、CWD、environment 和基础指令；首版不接受 model、reasoning、role、service tier 或 fork override。
+- child使用当前Root的model/provider/reasoning、CWD、environment和基础指令；Basic实现不接受model、reasoning、role、service tier或fork override。
 - Tool 调用成功表示 child 已创建并接纳初始任务，不表示 child 已完成。
 
 #### `send_input`
@@ -4549,7 +4573,7 @@ Application Context
 ```
 
 - 目标 Running 且 `interrupt=false` 时，通过 child 的现有 UserInput admission/steer 主链投递，在 Model Step 边界进入同一 Turn。
-- 目标 Running 且 `interrupt=true` 时，先提交 `InterruptOp`，等待当前 Turn 离开 Running，再启动新 Turn。
+- 目标 Running 且 `interrupt=true` 时，先提交 `InterruptOp`，通过内部 correlated turn-stop waiter 等待当前 Turn 离开 Running，再启动新 Turn；不得复用面向模型的 `wait_agent` final-status 语义。
 - 目标 Completed、Errored 或 Interrupted 时，直接提交新的 `UserInputOp` 创建后续 Turn。
 - 目标 Shutdown/NotFound 时返回稳定模型可见错误。
 
@@ -4562,10 +4586,11 @@ Application Context
 }
 ```
 
-- 使用 AgentStatus change notification 并发等待，不轮询 Thread map。
-- 任一目标已经处于 Completed、Errored、Interrupted、Shutdown 或 NotFound 时立即返回该快照。
-- 全部目标达到当前 Turn 的非 Running 状态时提前返回；超时返回已知状态，不把 timeout 解释为 Agent failure。
-- Completed 状态包含 FinalMessage；不要要求父 Agent通过读取 child transcript 猜测结果。
+- 使用 AgentStatus watch 并发等待，不轮询 Thread map。
+- Codex V1 final status 固定为 Completed、Errored、Shutdown 或 NotFound；Interrupted 表示 Thread 可继续接收 input，不结束 completion wait。
+- 任一目标已处于 final status 时立即返回全部已 final 的快照；否则任一 watch 首次进入 final 后返回它以及同一时刻已经 final 的其他目标，不等待全部 Agent。
+- timeout 返回 `timed_out=true` 和空 final-status 集合；timeout 不改变 AgentStatus，也不伪装成 Agent failure。TUI 可以在 completed wait item 中继续显示已知 receiver identity，但不能制造 completed status。
+- Completed 快照包含来自 `TurnCompleteEvent.last_agent_message` 的 Message以及 optional LastTurn；blocked outcome/reason必须原样保留，不要求父 Agent读取 child transcript或猜测停止原因。
 
 #### `close_agent`
 
@@ -4576,10 +4601,11 @@ Application Context
 ```
 
 - 返回 shutdown 请求前的 previous status。
-- Running child 先 interrupt，再 shutdown Session、等待 Terminated、移除 live Thread、释放 slot 和 nickname。
-- 首版 Depth 为 1，但 close 实现仍按“目标及 open descendants”定义 Contract，避免以后扩展时改变语义。
+- 先将目标及 open descendants 的 canonical spawn edge durable 标记为 closed，再 interrupt/shutdown Session、等待 Terminated、移除 live Thread、释放 slot 和 nickname；关闭事实不得只存在于 AgentControl map。
+- Root/Application shutdown 只卸载 open child runtime，不写 closed edge；Root Resume 后这些 child 仍作为 unloaded open AgentRecord 恢复。显式 close 后的 child 不得因 Root Resume 再次占用 slot。
+- Depth固定为1；close仍按“目标及open descendants”定义Contract，用统一树关闭算法保证当前父子关系和清理顺序，不表示支持更深层级。
 
-首版不注册 `resume_agent`、`list_agents`、`send_message`、`followup_task` 或独立 `interrupt_agent`。已有 child 通过 `send_input` 继续；当前 active agents 通过 WorldState `<subagents>` 和 TUI read model 展示；中断语义由 `send_input.interrupt` 承载。
+Basic实现不注册`resume_agent`、`list_agents`、`send_message`、`followup_task`或独立`interrupt_agent`。已有child通过`send_input`继续；当前active agents通过WorldState `<subagents>`和TUI read model展示；中断语义由`send_input.interrupt`承载。
 
 ### 21.7 Child Prompt、WorldState 与 Context
 
@@ -4594,8 +4620,9 @@ Multi-Agent Prompt 继续遵循 Codex Prompt 所有权：Tool 使用说明属于
 - 不委派下一步立即依赖的 blocking work；父 Agent 应继续推进本地 critical path，而不是 spawn 后立即反复 wait。
 - 不重复执行已经委派的同一工作，也不对同一 unresolved task 重复 spawn。
 - 多个互不依赖的信息检索任务应在同一次模型响应中并行 spawn。
-- 首版 child 是 explorer；代码修改、命令执行、Approval 相关工作由 Root Agent 自己完成。
+- child固定为explorer；代码修改、命令执行、Approval相关工作由Root Agent自己完成。
 - 调用 `wait_agent` 应当克制，只在确实需要结果才能继续时等待。
+- 成功 spawn 的 child 绑定 root tree 而不是当前父 Turn；父 Agent可以结束当前 Turn并在后续 Turn接收 canonical notification，不得在没有 typed cancellation/LastTurn 证据时声称“父回合结束中断了 child”。
 
 这些 guidance 可以按 Amadeus 能力删减 Codex 中关于 worker patch、model override 和 fork 的段落，但不得改成鼓励无条件 delegation 的简单一句话。
 
@@ -4611,6 +4638,7 @@ You share the same workspace with the parent and may observe concurrent changes.
 Do not modify files, execute commands, request user input, or spawn agents.
 Use the available read-only tools to gather concrete evidence.
 Return a concise final answer with relevant file paths, symbols, findings, and uncertainties.
+If the runtime asks you to finalize because the child budget is nearing its limit, stop exploring and return the best verified partial report immediately.
 Do not fabricate progress or results that you did not verify.
 ```
 
@@ -4618,7 +4646,7 @@ Child 仍接收 canonical environment、AGENTS.md、Skill metadata 和当前日�
 
 #### Fresh context
 
-首版 child Context 由以下内容组成：
+child Context固定由以下内容组成：
 
 ```text
 BaseInstructions
@@ -4644,22 +4672,25 @@ Root WorldState 的 `<environment_context>` 增加 Codex 风格 `<subagents>`：
 
 #### Completion notification
 
-child 进入 Completed、Errored 或 Shutdown 后，AgentControl 向直接 parent 注入一次 Codex 风格 contextual user fragment：
+child 当前 Turn 进入 Completed 或 Errored final status 后，AgentControl 向直接 parent 注入一次 Codex 风格 contextual user fragment；Interrupted 不触发 completion notification，显式 close 由 `close_agent` ToolResult 表达，不在已有 Turn completion 之后追加第二条 Shutdown notification：
 
 ```xml
 <subagent_notification>
-{"agent_id":"thread-id","nickname":"atlas","status":{"completed":"final answer"}}
+{"agent_id":"thread-id","nickname":"atlas","status":{"completed":"final answer"},"turn_result":{"turn_id":"turn-id","outcome":"completed","reason":"","last_agent_message":"final answer"}}
 </subagent_notification>
 ```
 
 - notification 是 model-visible runtime context，不是用户意图，不得投影成普通 UserMessage HistoryCell。
-- 同一 child Turn 的同一终态最多注入一次；`wait_agent` 返回相同状态不再追加第二份 notification。
+- canonical SubagentNotificationEvent显式携带AgentID和被交付的child TurnID；Root Resume用该typed watermark恢复notified state，不解析XML/JSON Content判断是否已交付。
+- 同一 child Turn 的 terminal result 最多注入一次；`wait_agent` 返回相同派生快照不追加第二份 notification，completed 后的显式 close 也不追加 shutdown notification。
+- `turn_result.outcome=blocked` 时必须携带真实 reason 和可选 finalization report；不得把它压成 `status.completed="result: blocked"`，也不得由父模型推断取消来源。
 - notification 必须经过 parent Session 的 canonical append/context owner，不能由 AgentControl 直接修改 ContextManager 内部 slice。
-- child Error 文本和 FinalMessage 必须执行稳定长度限制，防止一个 child 结果无界占用 parent context。
+- child Error 文本、LastAgentMessage 和 envelope 使用统一 token-based truncation，单条 notification 默认不超过 1000 tokens并为结构化 envelope保留预算；不得使用 rune count让中文、代码或 JSON 绕过 Context budget。
+- notification delivery 状态只能在 parent canonical durable append成功后推进；失败必须保留可诊断 pending/error 状态或使 owning Session 明确失败，不能先标记 notified 再静默丢弃写入错误。
 
 ### 21.8 Child Tool 与权限边界
 
-Claude Code 的可取之处是 child 使用明确 Tool allowlist，真正权限仍由统一 Tool pipeline 决定；Amadeus 第一版进一步收窄为无交互 explorer，以避免在基础阶段同时引入跨 Thread Approval UI。
+Claude Code的可取之处是child使用明确Tool allowlist，真正权限仍由统一Tool pipeline决定；Amadeus Basic实现固定为无交互explorer，不引入跨Thread Approval UI。
 
 child 可见 Tool allowlist：
 
@@ -4669,7 +4700,7 @@ child 可见 Tool allowlist：
 - `read_skill`（存在可用 Skill 时）
 - `web_search`（配置启用且不需要 Approval 时）
 
-`view_image` 仅在实现能够保证工作区内读取不产生交互 Approval、且模型支持 image input 时可见；否则首版隐藏。所有 edit/write/command/process/input/MCP/network-fetch/multi-agent Tool 均隐藏。
+`view_image`仅在实现能够保证工作区内读取不产生交互Approval、且模型支持image input时可见；否则隐藏。所有edit/write/command/process/input/MCP/network-fetch/multi-agent Tool均隐藏。
 
 约束：
 
@@ -4679,7 +4710,7 @@ child 可见 Tool allowlist：
 - child Tool 调用仍执行 Validate、Prepare、Permission、Execute 和 typed ToolResult；只读角色不是绕过 ToolExecutionService 的理由。
 - 任何理论上需要 Approval 的 child 调用都必须以 denied/failed ToolResult 返回，不得等待一个没有 TUI owner 的 Approval request。
 
-Write-capable worker、child Approval routing、child `request_user_input` 和 MCP-specific ToolSet 属于后续阶段；开放这些能力前必须先设计按 ThreadID 路由的 interactive request owner 和 TUI pending-request queue。
+Write-capable worker、child Approval routing、child `request_user_input`和MCP-specific ToolSet不属于Amadeus Basic Multi-Agent产品范围；不得为这些能力增加interactive routing、pending-request queue、空接口或配置占位。
 
 ### 21.9 Event、Rollout 与 TurnItem
 
@@ -4710,7 +4741,9 @@ type CollabAgentRef struct {
 }
 
 type CollabAgentState struct {
-    Status AgentStatus
+    Status            AgentStatus
+    LastTurn          *AgentTurnResult
+    NotificationError string
 }
 
 type CollabAgentToolCallItem struct {
@@ -4734,10 +4767,11 @@ type CollabAgentToolCallItem struct {
 - Tool 的模型协议仍保留标准 FunctionCall/FunctionCallOutput；专用 TurnItem 是 UI/Event projection，不取代 Provider Tool Result。
 - Multi-Agent Tool 必须通过 Tool event policy 抑制重复的 generic ToolHistoryCell，不能同时显示一条普通 Tool 和一条 collaboration row。
 - child 自身完整 Tool/Assistant history只属于 child rollout；Root history只保存 collaboration item 与 bounded completion notification，不复制 child 全 transcript。
+- CollabAgentState、`wait_agent` ToolResult、WorldState read model 与 notification只能从同一个 AgentControl snapshot/terminal reducer投影；TUI不得从 ToolResult JSON、`result: blocked` 文本或 child transcript重新解释 outcome。
 
 ### 21.10 TUI Visual Contract
 
-Rich TUI 对齐 Codex multi-agent history presentation，但第一版只实现 root conversation 中的控制操作和状态投影，不实现完整 `/agent` picker、Alt+Left/Right thread navigation 或 child transcript attach。
+Rich TUI对齐Codex multi-agent history presentation，但Basic产品面只实现root conversation中的控制操作和状态投影，不实现完整`/agent` picker、Alt+Left/Right thread navigation或child transcript attach。
 
 `CollabAgentHistoryCell` 使用稳定标题：
 
@@ -4752,21 +4786,40 @@ Rich TUI 对齐 Codex multi-agent history presentation，但第一版只实现 r
 
 - Agent nickname 使用 cyan，主动作使用 bold；状态使用与现有 success/warning/error 一致的颜色语义。
 - spawn/send 展示截断后的 delegated prompt preview，不展开完整 child transcript。
-- wait completed 对每个 Agent 显示 status，并对 Completed 显示 bounded FinalMessage preview；Errored 显示 bounded error。
+- wait completed 对本次返回的 final Agent 显示 status；Completed 显示 bounded `last_agent_message` preview，Errored 显示 bounded error，LastTurn 为 blocked 时额外显示 `blocked: <reason>`，不得把它展示为普通成功完成。
 - InProgress wait 使用 ActiveHistoryCell/working projection，completed 后原位替换或追加 canonical completed cell，不留下重复 spinner。
 - completion notification 不渲染成用户气泡；若 notification 在 Root 没有 active wait 时到达，可追加轻量 `AgentStatusHistoryCell`，例如 `atlas completed`，其事实仍来自 AgentStatus/Event reducer。
 - live TUI 使用相同 CollabAgentToolCallItem reducer 和文本语义，不从 ToolResult 字符串重新解析 agent 状态。
 - Resume 只重放 completed collaboration item，不恢复过去的 wait spinner 或 child streaming delta。
 
-完整 Codex `/agent` picker、root/child history切换、快捷键和非当前 child Approval overlay 在后续 UI 阶段实现；第一版不得为模拟 picker 而让 TUI直接读取 AgentControl mutable map。
+Amadeus不实现完整Codex `/agent` picker、root/child history切换、相关快捷键或非当前child Approval overlay；TUI不得为模拟这些非目标而读取AgentControl mutable map或增加占位导航状态。
 
 ### 21.11 Persistence、Resume 与 Shutdown
 
+```go
+type AgentSpawnEdgeState string
+
+const (
+    AgentSpawnEdgeOpen   AgentSpawnEdgeState = "open"
+    AgentSpawnEdgeClosed AgentSpawnEdgeState = "closed"
+)
+
+type AgentSpawnEdgeItem struct {
+    AgentID        ThreadID
+    ParentThreadID ThreadID
+    State          AgentSpawnEdgeState
+    UpdatedAt      time.Time
+}
+```
+
 - 每个 child 使用正常 LiveThread/ThreadStore writer 和 canonical JSONL；`SessionMetaItem` 记录 `SubAgentSessionSource`。
-- SQLite metadata index 增加 session source/parent thread 信息，使默认顶层 session list 可以排除 SubAgent，而 diagnostics 或未来 agent picker 可以按 root 查询。
-- 第一版 Resume Root Thread 时不恢复旧 AgentControl tree，不自动重新打开 child，也不注入旧 child 的 completion watcher。
-- 已完成的 Root collaboration item 和 completion notification按 canonical history恢复；旧 child thread 仍可作为内部历史被诊断读取，但不成为普通 `/resume` 入口。
+- Root canonical rollout持有最小 typed spawn-edge lifecycle：`AgentSpawnEdgeItem{AgentID, ParentThreadID, State: open|closed}`。spawn 只有在 child configured、初始 UserInput admitted且 open edge durable 后才成功；显式 `close_agent` 在停止 runtime前先 durable记录 closed。该 item 是 root tree恢复的权威，不从 completed CollabAgentToolCall文本、child title或 SQLite存在性猜测 open/closed。
+- SQLite metadata index投影session source、parent Thread与可重建edge state，使默认顶层session list排除SubAgent；只提供语义明确的`ListOpenChildren`，不保留会无条件返回archived/closed历史child的`ListChildren`。SQLite丢失时从Root/child当前格式rollout重建相同projection。
+- Root Resume恢复 open child metadata为 persisted/unloaded AgentRecord，但不自动重启旧 Turn或创建 completion watcher。对 unloaded child执行`send_input`时，由 ThreadManager按 child ThreadID恢复完整 Session；`wait_agent`可以直接返回已恢复的 final snapshot而不加载 runtime。
+- Live child event与Resume child rollout必须通过同一 AgentStatus/AgentTurnResult reducer；SessionMeta-only history恢复为 PendingInit，未闭合 Turn经统一 interrupted-turn recovery后恢复为 Interrupted，completed/blocked/failed恢复 exact LastTurn和`last_agent_message`，不得默认伪造 Completed。
+- 已完成的 Root collaboration item和completion notification按 canonical history恢复；closed child rollout仍可供 diagnostics读取，但不进入 AgentControl、不占 slot，也不成为普通 `/resume`入口。
 - Root shutdown 固定顺序为：停止新 spawn → 对所有 open child 发 Shutdown → 等待 child Terminated → 关闭 Root SessionServices/LiveThread → 释放 AgentControl。
+- Root/Application shutdown只卸载 runtime并保留 open edge；显式 `close_agent`才关闭 edge。二者不得复用一个会丢失关闭意图或错误复活 child的无标记 helper。
 - child shutdown 不得关闭共享 AgentControl；只有 root tree owner 关闭 control。
 - child event consumer、completion watcher 和 status waiter 都必须受 AgentControl/root lifetime 管理，不允许 fire-and-forget 泄漏。
 
@@ -4789,16 +4842,16 @@ agent:
 约束：
 
 - `enabled=false` 时不注册 Multi-Agent Tool，也不注入 delegation guidance 或 `<subagents>` WorldState。
-- 首版 `max_depth` 只接受 1；保留字段是为了使限制成为配置事实，而不是散落常量。
+- `max_depth`只接受1；字段只使固定限制成为配置事实，不作为更深层级扩展点。
 - `max_agents` 必须为正且有安全上限；不能复用 `max_parallel_tools` 表达 agent tree 容量。
-- child budget 是 Root 配置冻结到 child Session 的 runtime snapshot；运行中的 child 不读取 mutable config。
+- child budget 是 Root 配置冻结到 child Session 的 runtime snapshot；运行中的 child 不读取 mutable config。soft finalization boundary从该 snapshot确定并保留至多一次 no-tools sample，不增加另一套可变 budget配置。
 
-### 21.13 第一版非目标
+### 21.13 明确产品非目标
 
-R 阶段明确不实现：
+Amadeus明确不实现、也不为未来预留以下Multi-Agent能力：
 
 - Codex Multi-Agent V2、AgentPath、task name、mailbox、`send_message`、`followup_task`、residency eviction 和通用冷加载调度。
-- 公开 `resume_agent`、用户直接 attach child transcript、任意 detached child 恢复和 agent graph migration；Root Resume 后恢复其 persisted child metadata/内部 runtime 则属于 identity/lifecycle 正确性，不是该非目标。
+- 公开 `resume_agent`、用户直接 attach child transcript、任意 detached child恢复和Codex V2通用AgentGraphStore；基础版为Root Resume持久化flat depth-one spawn edge属于identity/lifecycle正确性，不是V2 graph功能。
 - Parent history full/recent fork、Prompt cache fork 和 compaction-aware fork filtering。
 - 自定义 Agent Definition、Markdown agents、Plugin agents、agent memory、model/reasoning/service-tier override。
 - write-capable worker、并发代码修改、worktree、文件锁或自动 merge。
@@ -4806,11 +4859,11 @@ R 阶段明确不实现：
 - team/teammate、remote agent、daemon task、TaskOutput/TaskStop 第二套任务系统。
 - 完整 `/agent` picker、child transcript切换和跨 Thread interactive overlay。
 
-这些能力不得以空字段、未使用接口或 generic extension point 预埋进第一版生产主链；后续阶段需要时再依据真实 Contract 扩展。
+这些能力不属于后续路线图，不得以空字段、未使用接口、feature flag、generic extension point、兼容DTO或文档TODO预埋进生产主链。未来只有用户重新明确改变产品范围时，才允许重新进行独立源码审计和架构设计；当前实现与AC任务不得为其预付复杂度。
 
 ### 21.14 验收不变量
 
-第一版 Multi-Agent 必须满足：
+Basic Multi-Agent 必须满足：
 
 1. SubAgent 是完整 Thread/Session；代码中不存在 Tool handler 直接调用 `run_turn` 或 Provider 的旁路。
 2. 同一 root tree 只有一个 AgentControl owner；ThreadManager 仍是 live Thread 的唯一 registry。
@@ -4818,15 +4871,18 @@ R 阶段明确不实现：
 4. child ToolRouter 只暴露真实 read-only allowlist，模型 ToolSpec 与执行 route 完全一致。
 5. 多个 spawn reservation 并发安全，失败、取消和 panic 不泄漏 slot、nickname、writer 或 goroutine。
 6. `send_input` 正确区分 steer、interrupt-and-restart 与 idle new Turn。
-7. `wait_agent` 事件驱动且 timeout 不改变 AgentStatus。
+7. `wait_agent` 事件驱动，在任一 Agent进入Codex final status后返回当时全部 final snapshot；timeout不改变AgentStatus且不返回伪造final状态。
 8. Completed/Errored/Interrupted child 在 close 前继续占用 slot，并可再次 `send_input`。
-9. completion notification 对每个 child Turn 终态至多注入一次，且不是普通 UserMessage UI。
+9. completion notification 对每个 child Turn terminal result至多durable注入一次，保留 blocked outcome/reason且不是普通 UserMessage UI；写入失败不推进notified状态。
 10. Root shutdown 必须终止全部 child；父当前 Turn interrupt 不自动关闭 child。
 11. live TUI 与 Resume 对 CollabAgentToolCallItem 使用同一 typed projection。
 12. 默认 session list 不把 child thread 当作顶层用户会话。
 13. TUI 不从 ToolResult 文本解析状态，也不维护第二份 AgentStatus 真相。
-14. Architecture tests 禁止 nested SessionTask、generic agent task bus、child write Tool、未绑定 owner 的 watcher 和旧式字符串 completion message。
-15. Root Resume 恢复同一 SessionID 下且 parent relation 合法的 persisted child metadata；child 的内部恢复、send/wait/close 全部以 child ThreadID 路由，SessionID 不进入 registry key。
+14. `TurnCompleteEvent.last_agent_message` 是唯一final answer authority；AgentControl不存在`latestAssistant`，live/Resume使用同一terminal reducer。
+15. child进入soft budget boundary后至多执行一次Tools为空的finalization sample；hard blocked仍通过LastTurn把真实reason交给parent。
+16. Architecture tests 禁止 nested SessionTask、generic agent task bus、child write Tool、未绑定 owner 的 watcher、Assistant Item final-message推断和旧式字符串 completion message。
+17. Root Resume 只恢复同一SessionID、parent relation合法且spawn edge为open的persisted child metadata；closed/archived child不占slot，child内部恢复、send/wait/close全部以child ThreadID路由，SessionID不进入registry key。
+18. Root Turn正常完成、failed、blocked或Interrupt后，已成功spawn的child仍可完成并向同一Root追加notification；只有root-tree shutdown、Application shutdown或显式close停止child runtime。
 
 ## 22. Persistence
 
@@ -4840,6 +4896,7 @@ $AMADEUS_HOME/
 
 ### 22.1 JSONL Canonical Rollout
 
+- 当前Rollout格式为v6；v5及更早格式直接拒绝，不提供AC migration/decoder。
 - 每个 Thread 一个 Rollout 文件。
 - 每行是独立的 RolloutLine JSON 对象。
 - sequence 从 1 开始严格递增，不重复、不倒退。
@@ -4848,7 +4905,7 @@ $AMADEUS_HOME/
 - 恢复时逐行解析；只有最后一条不完整记录可以被安全忽略或截断，完整但缺少末尾换行的最后一条记录会被补齐后再追加，其他解析错误必须显式报告。
 - append batch 必须先完整编码再写入；部分写失败时回滚到 batch 起始 offset，flush 使用文件同步保证 durable 顺序。
 - ToolCall/ToolResult 使用稳定 CallID 配对。
-- CompactedItem、TurnContextItem、ResponseItem 以及 store policy 选中的 Plan/Token/Approval/Turn EventMsg 均进入 Rollout；未决 ApprovalRequestEvent、未决 RequestUserInputEvent、ApprovalDecisionOp 与 UserInputAnswerOp 不作为独立 canonical history。
+- CompactedItem、TurnContextItem、ResponseItem、Root-only AgentSpawnEdgeItem以及store policy选中的Plan/Token/Approval/Turn EventMsg均进入Rollout；未决ApprovalRequestEvent、未决RequestUserInputEvent、ApprovalDecisionOp与UserInputAnswerOp不作为独立canonical history。
 - Runtime 临时状态、goroutine、进程句柄和 Pending Future 不持久化。
 - SessionMetaItem 保存 canonical SessionID、ThreadID、可选 ParentThreadID，以及重建索引所需的 CWD、标题、模型、Git metadata、归档初态和创建时间；后续标题/归档变化使用对应 typed EventMsg。
 - Rollout 文件名中的 `<thread-id>` 必须是与 SessionMetaItem.ID、SQLite `threads.id` 和 Resume target 完全相同的 canonical UUID，不增加 `thread-` 前缀，也不维护单独 display ID。
@@ -4856,6 +4913,8 @@ $AMADEUS_HOME/
 ### 22.2 SQLite State DB
 
 SQLite 位于 `$AMADEUS_HOME/data/amadeus.db`，核心表保持最小：
+
+当前SQLite metadata schema为v5；v4及更早schema直接拒绝并由当前Rollout重建。
 
 #### `schema_info`
 
@@ -4870,6 +4929,7 @@ SQLite 位于 `$AMADEUS_HOME/data/amadeus.db`，核心表保持最小：
 - agent_depth
 - agent_nickname
 - agent_role
+- agent_edge_state
 - rollout_path
 - cwd
 - title
@@ -4884,7 +4944,7 @@ SQLite 位于 `$AMADEUS_HOME/data/amadeus.db`，核心表保持最小：
 - git_branch
 - git_origin_url
 
-`threads.id` 保存 canonical ThreadID UUID 并作为主键；parent/source/agent metadata 只用于列表过滤、parent/child traversal 和可重建索引。SQLite `StoredThread` 不保存 SessionID，也不以 SessionID 建索引或作为 agent tree 事实源；SessionID 必须从目标 Thread Rollout 的 canonical SessionMeta 恢复。SQLite adapter 必须先扫描 ID string，再通过 Protocol/Identity parser 构造 typed ThreadID；不能让任意数据库文本绕过 Domain validation。
+`threads.id`保存canonical ThreadID UUID并作为主键；parent/source/agent metadata只用于列表过滤、parent/child traversal和可重建索引。SubAgent行的`agent_edge_state`投影Root rollout中该edge的最新open/closed状态，Root行必须为空；它不是独立事实源。SQLite `StoredThread`不保存SessionID，也不以SessionID建索引或作为agent tree事实源；SessionID必须从目标Thread Rollout的canonical SessionMeta恢复。SQLite adapter必须先扫描ID string，再通过Protocol/Identity parser构造typed ThreadID；不能让任意数据库文本绕过Domain validation。
 
 不建立 `projects`、`turns`、`messages`、`summaries` 或 SQLite `rollout_items` 表。Turn、消息、Tool 和 Compaction 历史只存在于 canonical Rollout。
 
@@ -4903,7 +4963,7 @@ LiveThread.AppendItems
 - Recorder 必须维护 durable watermark；MetadataSync 只能读取不超过该 watermark 的 RolloutLine。Buffered Append 不触发 SQLite upsert，显式 Flush 或 Durable Append 成功后才能同步索引。
 - `append → SQLite upsert → flush` 在任何路径都属于非法顺序；进程在 flush 前崩溃时，恢复结果允许缺少 buffered tail，但 SQLite 不能引用该 tail。
 - Metadata 更新失败必须记录警告并保留可重建状态，不能回滚已经 durable 的 canonical history。
-- 当前 schema 的 SQLite index 缺失或漂移时，从当前格式 `SessionMetaItem`、ResponseItem 和 EventMsg 重建 StoredThread；重建过程校验 SessionMeta.SessionID/ID/ParentThreadID contract，但只把 Thread metadata 与 parent relation 投影进 SQLite，不复制 SessionID。活动 Thread 即使索引被清空，下一次 canonical append 也能直接重新 upsert。
+- 当前schema的SQLite index缺失或漂移时，从当前格式`SessionMetaItem`、ResponseItem、AgentSpawnEdgeItem和EventMsg重建StoredThread；重建过程校验SessionMeta.SessionID/ID/ParentThreadID与edge parent contract，但只把Thread metadata、parent relation与edge state投影进SQLite，不复制SessionID。活动Thread即使索引被清空，下一次canonical append也能直接重新upsert。
 - `/resume`、列表和搜索优先查询 SQLite；索引缺失或漂移时可扫描 Rollout 修复。
 - `tokens_used` 投影最后一个 canonical TokenCountEvent.Info.TotalTokenUsage.TotalTokens；TokenCountEvent 是累计 snapshot，因此 Metadata projector 必须替换该值，不能把历次 snapshot 再次求和。
 - Session Permission State（Mode、Additional Working Directories 和 Session Rules）只存在于活动 internal Session，不写入 Thread metadata，也不从历史 Approval Decision 恢复。
@@ -5201,6 +5261,24 @@ ErrorEvent
 StreamErrorEvent
 ```
 
+`TurnCompleteEvent` 是所有 consumer 的 terminal authority，并按 Codex Contract直接携带 `last_agent_message`：
+
+```go
+type TurnCompleteEvent struct {
+    ThreadID         ThreadID
+    TurnID           TurnID
+    Status           TurnTerminalStatus
+    Outcome          TurnOutcome
+    Reason           string
+    Summary          string
+    Error            string
+    LastAgentMessage *string
+    FinishedAt       time.Time
+}
+```
+
+`LastAgentMessage` 只由 `run_turn` 的最终模型完成设置；它与供TUI展示的completed Assistant TurnItem来自同一最终文本，但前者是Turn completion/AgentStatus authority，后者是History projection。Tool continuation preamble、Reasoning和stream delta不能填充该字段。Resume直接读取canonical TurnCompleteEvent，不扫描此前Assistant Item。
+
 `SessionConfiguredEvent` 必须携带 SessionID、ThreadID、可选 ParentThreadID 和真实生效的完整 `SessionConfiguration`，不允许只发送无内容的 configured marker：
 
 ```go
@@ -5357,6 +5435,7 @@ type ApprovalRequestEvent struct {
 持久化策略：
 
 - 持久化 store policy 指定的 TurnStartedEvent、TurnCompleteEvent/TurnAbortedEvent、ItemCompletedEvent（包含 completed Proposed Plan）、TokenCountEvent 和恢复所需 Context facts；Compaction replay 以 CompactedItem 为唯一 checkpoint，不再持久化或发布第二个 ContextCompactedEvent 完成协议。
+- Root rollout还持久化flat basic multi-agent的AgentSpawnEdgeItem；open/closed edge是Root Resume恢复AgentControl成员的权威，不把child metadata存在性等同于open。
 - 不持久化高频 Agent/Reasoning/Command/Plan Delta、Working、未决 ApprovalRequestEvent、未决 `RequestUserInputEvent`、`PlanUpdateEvent`、NextTurnQueue/queued preview、Popup、动画 Tick 和 retrying StreamErrorEvent。`update_plan` 与 `request_user_input` 的 Function Call/Function Call Output 仍作为普通 ResponseItem 持久化。
 - Resume 从 typed ResponseItem 和 EventMsgItem 重建 Context/History，不重放旧 Delta。
 - ResponseItem 与对应 ItemCompletedEvent 必须由 Session 在同一 ordered append 主链中提交；live ItemCompletedEvent 只能在该 append 成功后发布，`run_turn` 不保留等待 Turn 尾部才写入的私有 completed-item queue。
@@ -5394,6 +5473,13 @@ Runtime 正确性不能依赖 TUI 消费速度：
 - process_error
 - persistence_error
 - interrupted
+
+Multi-Agent terminal/persistence error至少区分：
+
+- `agent_budget_blocked`：child hard budget或finalization无法产生合法交付，LastTurn保留具体reason。
+- `agent_notification_persistence_failed`：parent canonical notification未durable，notified状态不得推进。
+- `agent_edge_persistence_failed`：spawn open或explicit close edge未durable；spawn不得对模型报告成功，close不得假装已形成可恢复关闭事实。
+- `agent_resume_inconsistent`：open edge、child SessionMeta、SessionID或ParentThreadID不一致，child不得进入AgentControl。
 
 Provider/stream error 还必须区分：
 
@@ -5437,13 +5523,17 @@ Compaction error 至少区分：
 - Compaction install 将 CompactedItem 与 refreshed TokenCountEvent snapshot 作为同一 durable boundary；flush 失败时 ContextManager、live completed item 和后续 sampling 都不能越过该 checkpoint。
 - Completed/Aborted 终态唯一，失败信息进入唯一终态。
 - completed、blocked、failed 和 aborted 按 TaskOutcome/terminal contract 映射，不使用通用 Go error 表达 blocked 或 budget limit。
+- `run_turn` final text经TaskOutput直接进入TurnCompleteEvent.last_agent_message；Tool continuation Assistant Item不能成为final-message fallback。
 - Interface 只依赖 Event/EventMsg 识别 Turn terminal，不同时等待私有 Task completion。
 - Rollout append/flush 和 ActiveTurn 清理先于终态 Event。
 - Resume 后 Rollout 顺序稳定。
 - crash/fault injection 验证 SQLite 永不超过 JSONL durable watermark，Buffered Append 不提前 upsert metadata。
 - architecture test 验证 production SessionTask 不引用 CLI/TUI controller、TUI appModel、Cobra command 或完整 invocation，并直接通过 Session/SessionServices 完成运行。
-- Root/child 创建验证共享 SessionID 与独立 ThreadID；Root Resume 验证 requested ID、StoredThread、Rollout filename、SessionMeta.ID/SessionID 一致，并恢复 parent relation 合法的 persisted child metadata。
-- persisted/unloaded child 通过 child ThreadID 触发 internal resume；错误 SessionID、ParentThreadID 或 Rollout identity 不进入 AgentControl registry，也不留下 live writer/runtime。
+- Root/child 创建验证共享 SessionID 与独立 ThreadID；Root Resume 验证requested ID、StoredThread、Rollout filename、SessionMeta.ID/SessionID和canonical open edge一致，只恢复parent relation合法且open的persisted child metadata。
+- persisted/unloaded child通过child ThreadID触发internal resume；closed/archived child、错误SessionID、ParentThreadID或Rollout identity不进入AgentControl registry，也不留下live writer/runtime或占用slot。
+- 同一pure reducer分别处理live child Event和Resume rollout；覆盖SessionMeta-only、interrupted tail、completed、blocked、failed及optional LastAgentMessage。
+- Root Turn先terminal而child后terminal的E2E证明parent Turn context不拥有child lifetime；Root shutdown与显式close分别验证“保留open edge”和“durable closed edge”两种不同语义。
+- child soft budget触发至多一次no-tools finalization sample；Tool preamble后final/blocked均只通过TurnCompleteEvent authority交付，hard blocked reason在notification/wait/TUI中无损可见。
 
 ### 28.2 Event Protocol
 
@@ -5608,8 +5698,8 @@ Amadeus 至少通过以下真实场景：
 26. 进程在 ItemCompletedEvent 后、TurnCompleteEvent 前退出，Resume 仍能从 canonical ResponseItem 与 EventMsgItem 恢复已完成工作。
 27. 模型 response stream 在 Turn 中断开时，TUI 显示可取消的 `Reconnecting... n/m` 和安全 details，不写入永久错误历史；恢复后继续同一 Turn，重试耗尽后产生明确最终错误和唯一 Turn 终态。
 28. response stream在部分Assistant/Reasoning/Tool Call/Plan Delta后断开并恢复时，transcript、canonical Rollout和后续Resume均不出现重复文本、重复Tool Call、重复Proposed Plan或旧attempt source/frame。
-29. Root Agent 在同一 Turn 中并行 spawn 多个 read-only explorer；child 使用独立 Thread/Session/Context 和同一 workspace，完成后只注入一次 bounded notification，wait/send/close 状态与 TUI/Resume projection 一致。
-30. Root Turn 被中断时 open child 继续运行；Root shutdown 或 close_agent 后 child writer、event consumer、watcher、slot 和 nickname 全部释放，默认 `/resume` 列表不显示 child Thread。
+29. Root Agent 在同一 Turn 中并行 spawn 多个 read-only explorer；child 使用独立 Thread/Session/Context 和同一 workspace，完成后只注入一次 token-bounded notification，wait/send/close 的AgentStatus+LastTurn与TUI/Resume projection一致。
+30. Root Turn被中断时open child继续运行；Root shutdown或close_agent后child writer、event consumer、watcher、slot和nickname全部释放。Root shutdown保留open edge供Root Resume，explicit close durable关闭edge；两种路径都不让child出现在默认`/resume`列表。
 31. Regular Turn 运行期间按 Enter 提交补充信息时仍进入当前 Turn；相同状态下按 Tab 只进入 NextTurnQueue，当前 Turn 的 Session/Context/Rollout 不出现该输入。
 32. 当前 Turn 正常 terminal 后 queued input 按 FIFO 每次启动一个新 Turn；aborted/blocked、submit rejection 和 attachment replacement 不会把输入静默注入错误 Turn，queued state 不出现在 Resume replay。
 33. Turn 运行期间 Composer 输入可排队普通文字时，Footer 用 `tab to queue message`/`tab to queue` 临时替换固定 statusline；Plan indicator 按宽度让位，Slash/popup/overlay、空输入和 idle draft 不显示错误 hint，Tab enqueue 后固定 statusline 恢复。
@@ -5633,6 +5723,9 @@ Amadeus 至少通过以下真实场景：
 51. Markdown表格逐行到达、代码fence内部含空行、reference link后置定义和终端resize时，TranscriptSurface从完整source稳定重投影；中宽表格不会因“只缩width不wrap cell”被terminal截断。
 52. Final Assistant cell保存原始Markdown和当时Session CWD；切换目录、attachment、Raw/Rich/NoColor或窗口宽度后重新投影不会改变link语义、丢失initial/subsequent indent或从ANSI反解source。
 53. 真实Bubble Tea renderer下主frame高度始终不超过terminal height；SessionHeader、早期User/Tool和超过一屏的final Assistant全部进入native scrollback，鼠标上滚不会直接跳回启动shell命令，active frame不重复printed rows。
+54. Root Turn在child仍运行时先正常completed、failed、blocked或被Interrupt，child runtime仍继续；child完成后向同一Root追加一次canonical notification，只有Root/Application shutdown或显式close停止child。
+55. child先产生Tool Call前导语再在soft budget boundary finalization时，AgentStatus/notification/wait只使用`TurnCompleteEvent.last_agent_message`；hard blocked时保留exact outcome/reason，不把前导语或`result: blocked`伪装成completed交付。
+56. Root依次spawn并显式close超过`max_agents`个child后仍可Resume；closed edge不恢复、不占slot，仍open的unloaded child恢复exact live/Resume status与LastTurn，并可按child ThreadID内部继续。
 
 ## 30. 最终架构结论
 
@@ -5655,7 +5748,7 @@ Amadeus 至少通过以下真实场景：
 17. Slash Command 分为 TUI Local、Application Action 与 Core Op，不直接拥有 Runtime 或持久化状态。
 18. internal Session 是 SessionTask、ActiveTurn、ContextManager、Event Delivery 和终态收尾的唯一所有者；ContextManager 在运行期增量记录，Resume 时仅重建一次。
 19. 生产 SessionTask 由 Session 直接创建和执行，不反向调用 CLI/Application executor；SessionServices 直接拥有全部 capability。
-20. canonical Rollout 使用 SessionMetaItem、ResponseItem、WorldStateItem、CompactedItem、TurnContextItem 和 EventMsgItem 等 typed contract；SessionMeta 持久化 exact BaseInstructions/provenance，WorldStateItem 持久化 full/patch baseline。
+20. canonical Rollout使用SessionMetaItem、ResponseItem、WorldStateItem、CompactedItem、TurnContextItem、AgentSpawnEdgeItem和EventMsgItem等typed contract；SessionMeta持久化exact BaseInstructions/provenance，WorldStateItem持久化full/patch baseline，Root-only AgentSpawnEdgeItem持久化basic multi-agent open/closed membership。
 21. Provider request retry 与 response stream reconnect 是独立生命周期；Turn-scoped ModelClientSession/Core retry helper 拥有 retry 决策，TUI 只投影 typed transient StreamErrorEvent。
 22. `Reconnecting... n/m` 复用 Codex 风格 status indicator，retrying 不进入 History/Rollout、不结束 Turn，下一条非 retry live Event 恢复先前 status，Resume 不重放瞬态状态。
 23. StepContext 持有 immutable ToolRouter；同一 snapshot 同时提供模型 specs 与 exact ToolDefinition/MCP dispatch，不在执行时重新查询 mutable registry。
@@ -5663,10 +5756,10 @@ Amadeus 至少通过以下真实场景：
 25. Amadeus 处于开发阶段，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 兼容；架构替换直接删除旧实现与兼容测试。
 26. 普通用户消息只有一个 UserInputOp；无 ActiveTurn 时 admission 为 Started，Active Regular Turn 时为 Steered，显式 strict steer 使用 ExpectedTurnID 防止错误注入。
 27. Steered input 由 ActiveTurn TurnState 中的 TurnInputQueue 按 FIFO 保存，在当前 Model Step、Tool 和必要 compaction continuation 后进入 canonical history 并触发同一 Turn follow-up；它不创建第二个 Turn lifecycle，也不复用 Approval 或 request_user_input。
-28. Basic Multi-Agent 使用 Codex V1 风格 root-scoped AgentControl 和完整 child AmadeusThread/Session；首版 child 固定为 read-only explorer，结合 Claude Code 风格 Tool allowlist 与权限不升级原则，不引入 nested SessionTask 或第二 agent loop。
-29. Multi-Agent Prompt 由 ToolSpec delegation guidance、`ModelMessages.MultiAgent.Role.Subagent`、WorldState `<subagents>` 和 canonical `<subagent_notification>` 分层拥有；CollabAgentToolCallItem 是 live TUI 与 Resume 的唯一协作展示协议。
+28. Basic Multi-Agent使用Codex V1风格root-scoped AgentControl和完整child AmadeusThread/Session；AgentStatus保持Codex枚举，`run_turn → TurnCompleteEvent.last_agent_message`是final answer唯一权威，AgentTurnResult从同一terminal Event无损保留Amadeus blocked outcome/reason。child固定为read-only explorer，结合Claude Code风格Tool allowlist、独立background取消域与权限不升级原则，不引入nested SessionTask或第二agent loop，也不预留V2产品面。
+29. Multi-Agent Prompt由ToolSpec delegation guidance、`ModelMessages.MultiAgent.Role.Subagent`、WorldState `<subagents>`和canonical `<subagent_notification>`分层拥有；notification/wait/CollabAgentState共享同一AgentStatus/LastTurn projection，CollabAgentToolCallItem是live TUI与Resume的唯一协作展示协议。
 30. SessionID 是 Root/child tree-level correlation/ownership，ThreadID 是具体 Thread 的 registry、routing、Rollout 和 Resume identity；SQLite StoredThread 不复制 SessionID，canonical SessionID 只来自 Rollout SessionMeta。
-31. Root Resume 必须恢复并校验 persisted child metadata；Tool Invocation、Audit 和 Provider request metadata 同时携带真实 SessionID/ThreadID，而 Multi-Agent target、Event scope、Application attachment 和 CLI/TUI resume 始终使用 ThreadID。
+31. Root Resume必须从canonical flat spawn-edge lifecycle只恢复open child，并校验其persisted metadata、SessionID和parent relation；显式close先durable关闭edge，Root shutdown只卸载runtime。Tool Invocation、Audit和Provider request metadata同时携带真实SessionID/ThreadID，而Multi-Agent target、Event scope、Application attachment和CLI/TUI resume始终使用ThreadID。
 32. TUI Enter steer 与 Tab next-turn queue 是不同输入意图：前者立即进入唯一 UserInputOp/admission 主链，后者由 attachment-scoped TUI FIFO 暂存并在 terminal 后逐条重新使用该主链；Core 不拥有第二个用户输入 queue 或 `Queued` admission。
 33. Queue hint 是 queueable Composer draft 的 transient Footer guidance，不是 StatusLineItem、footerState、HistoryCell 或 Runtime Event；它在 running draft 时优先于 passive statusline，并通过纯 footerProps layout 实现 Codex 风格完整/短文案降级。
 34. Amadeus 用户配置使用唯一 versionless strict schema；代码和输出不包含顶层 Config version，旧 `version:` 文件直接拒绝且不迁移，仓库模板唯一命名为 `configs/config.yaml.example`。

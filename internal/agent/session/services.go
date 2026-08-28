@@ -79,6 +79,10 @@ type sessionServicesCloseState struct {
 	err  error
 }
 
+func (services *SessionServices) IsSubAgent() bool {
+	return services != nil && services.source.IsSubAgent()
+}
+
 func (services *SessionServices) Close() error {
 	if services == nil {
 		return nil

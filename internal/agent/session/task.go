@@ -9,10 +9,11 @@ import (
 )
 
 type TaskOutput struct {
-	Summary       string
-	Outcome       protocol.TurnOutcome
-	Reason        string
-	ToolCallCount int
+	Summary          string
+	Outcome          protocol.TurnOutcome
+	Reason           string
+	LastAgentMessage *string
+	ToolCallCount    int
 }
 
 type SessionTask interface {

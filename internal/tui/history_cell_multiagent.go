@@ -99,10 +99,18 @@ func collabAgentLines(item protocol.TurnItem) []string {
 		}
 		name := collabAgentName(agent)
 		detail := name + ": " + string(state.Status.Kind)
-		if state.Status.Message != "" {
+		if state.LastTurn != nil && state.LastTurn.Outcome == protocol.TurnOutcomeBlocked {
+			detail = name + ": blocked"
+			if state.LastTurn.Reason != "" {
+				detail += ": " + boundCollabText(state.LastTurn.Reason, 240)
+			}
+		} else if state.Status.Message != "" {
 			detail += " — " + boundCollabText(state.Status.Message, 240)
 		}
 		lines = append(lines, detail)
+		if state.NotificationError != "" {
+			lines = append(lines, name+": notification delivery failed — "+boundCollabText(state.NotificationError, 240))
+		}
 	}
 	return lines
 }

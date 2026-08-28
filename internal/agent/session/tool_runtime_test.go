@@ -22,6 +22,10 @@ func (runtimeToolsAgentHost) ResumeChild(context.Context, *multiagent.Control, p
 	panic("unexpected child resume")
 }
 
+func (runtimeToolsAgentHost) RecordSpawnEdge(context.Context, protocol.ThreadID, protocol.ThreadID, protocol.AgentSpawnEdgeState) error {
+	panic("unexpected agent edge mutation")
+}
+
 func (runtimeToolsAgentHost) NotifyParent(context.Context, protocol.ThreadID, multiagent.Notification) error {
 	panic("unexpected parent notification")
 }

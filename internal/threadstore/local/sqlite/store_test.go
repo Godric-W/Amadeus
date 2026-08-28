@@ -115,7 +115,7 @@ func TestListThreadsExcludesSubagentsByDefault(t *testing.T) {
 	now := time.Now().UTC()
 	rootID, childID := testutil.ThreadID(1), testutil.ThreadID(2)
 	root := threadstore.StoredThread{ID: rootID, Source: protocol.RootSessionSource(), RolloutPath: filepath.Join(home, "root.jsonl"), CWD: "/workspace", Title: "Root", CreatedAt: now, UpdatedAt: now}
-	child := threadstore.StoredThread{ID: childID, Source: protocol.NewSubAgentSessionSource(rootID, 1, "atlas", "explorer"), RolloutPath: filepath.Join(home, "child.jsonl"), CWD: "/workspace", Title: "Child", CreatedAt: now, UpdatedAt: now}
+	child := threadstore.StoredThread{ID: childID, Source: protocol.NewSubAgentSessionSource(rootID, 1, "atlas", "explorer"), AgentEdgeState: protocol.AgentSpawnEdgeOpen, RolloutPath: filepath.Join(home, "child.jsonl"), CWD: "/workspace", Title: "Child", CreatedAt: now, UpdatedAt: now}
 	if err := store.UpsertThread(ctx, root); err != nil {
 		t.Fatal(err)
 	}
@@ -136,8 +136,19 @@ func TestListThreadsExcludesSubagentsByDefault(t *testing.T) {
 	if len(all) != 2 {
 		t.Fatalf("all threads = %#v", all)
 	}
-	children, err := store.ListChildren(ctx, rootID)
+	children, err := store.ListOpenChildren(ctx, rootID)
 	if err != nil || len(children) != 1 || children[0].ID != childID {
 		t.Fatalf("children = %#v, err=%v", children, err)
+	}
+	if err := store.UpdateAgentEdgeState(ctx, childID, protocol.AgentSpawnEdgeClosed, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	children, err = store.ListOpenChildren(ctx, rootID)
+	if err != nil || len(children) != 0 {
+		t.Fatalf("closed children = %#v, err=%v", children, err)
+	}
+	closed, err := store.GetThread(ctx, childID)
+	if err != nil || closed.AgentEdgeState != protocol.AgentSpawnEdgeClosed {
+		t.Fatalf("closed child metadata = %#v, err=%v", closed, err)
 	}
 }

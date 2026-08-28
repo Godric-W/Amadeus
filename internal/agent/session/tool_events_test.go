@@ -192,6 +192,8 @@ func TestToolEventObserverRollsBackCollaborationStartOnPublishFailure(t *testing
 
 func TestCompleteCloseAgentItemPreservesPreviousStatus(t *testing.T) {
 	now := time.Now().UTC()
+	lastMessage := "done"
+	lastTurn := &protocol.AgentTurnResult{TurnID: "turn-child", Outcome: protocol.TurnOutcomeCompleted, LastAgentMessage: &lastMessage}
 	item := protocol.CollabAgentToolCallItem{
 		ID: "call-close", Tool: protocol.CollabAgentCloseAgent, Status: protocol.CollabAgentToolInProgress,
 		SenderThreadID: testutil.ThreadID(1), ReceiverAgents: []protocol.CollabAgentRef{{ThreadID: testutil.ThreadID(2), AgentNickname: "atlas"}}, CreatedAt: now,
@@ -200,13 +202,38 @@ func TestCompleteCloseAgentItemPreservesPreviousStatus(t *testing.T) {
 		Call: tool.NewCall("call-close", "close_agent", []byte(fmt.Sprintf(`{"id":%q}`, testutil.ThreadID(2).String()))),
 		Output: tool.ToolResult{Data: map[string]any{
 			"agent_id": testutil.ThreadID(2), "nickname": "atlas",
-			"previous_status": protocol.AgentStatus{Kind: protocol.AgentStatusCompleted, Message: "done"},
+			"previous_status":    protocol.AgentStatus{Kind: protocol.AgentStatusCompleted, Message: "done"},
+			"previous_last_turn": lastTurn,
 		}},
 		Outcome: tool.ToolCallOutcome{Status: tool.ToolCallCompleted},
 	}
 	completed := completeCollabAgentItem(item, execution, now.Add(time.Second), protocol.ItemStatusCompleted)
 	state, exists := completed.AgentsStates[testutil.ThreadID(2)]
-	if !exists || state.Status.Kind != protocol.AgentStatusCompleted || state.Status.Message != "done" {
+	if !exists || state.Status.Kind != protocol.AgentStatusCompleted || state.Status.Message != "done" || state.LastTurn == nil || state.LastTurn.TurnID != "turn-child" {
 		t.Fatalf("close state = %#v", completed.AgentsStates)
+	}
+}
+
+func TestCompleteWaitAgentItemPreservesLastTurnAndDeliveryDiagnostic(t *testing.T) {
+	now := time.Now().UTC()
+	childID := testutil.ThreadID(2)
+	item := protocol.CollabAgentToolCallItem{
+		ID: "call-wait", Tool: protocol.CollabAgentWait, Status: protocol.CollabAgentToolInProgress,
+		SenderThreadID: testutil.ThreadID(1), ReceiverAgents: []protocol.CollabAgentRef{{ThreadID: childID, AgentNickname: "atlas"}}, CreatedAt: now,
+	}
+	lastTurn := &protocol.AgentTurnResult{TurnID: "turn-child", Outcome: protocol.TurnOutcomeBlocked, Reason: "budget reached"}
+	execution := tool.ToolExecution{
+		Call: tool.NewCall("call-wait", "wait_agent", []byte(fmt.Sprintf(`{"ids":[%q]}`, childID.String()))),
+		Output: tool.ToolResult{Data: map[string]any{"statuses": []any{map[string]any{
+			"agent_id": childID, "nickname": "atlas", "role": "explorer",
+			"status": protocol.AgentStatus{Kind: protocol.AgentStatusCompleted}, "last_turn": lastTurn,
+			"notification_error": "persistence failed",
+		}}}},
+		Outcome: tool.ToolCallOutcome{Status: tool.ToolCallCompleted},
+	}
+	completed := completeCollabAgentItem(item, execution, now.Add(time.Second), protocol.ItemStatusCompleted)
+	state, exists := completed.AgentsStates[childID]
+	if !exists || state.LastTurn == nil || state.LastTurn.Outcome != protocol.TurnOutcomeBlocked || state.NotificationError != "persistence failed" {
+		t.Fatalf("wait state = %#v", completed.AgentsStates)
 	}
 }

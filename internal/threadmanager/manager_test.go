@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
@@ -46,6 +47,75 @@ type identityCaptureClient struct {
 	mu       sync.Mutex
 	requests []llm.Request
 }
+
+type parentChildLifetimeClient struct {
+	mu           sync.Mutex
+	rootID       protocol.ThreadID
+	rootCalls    int
+	childStarted chan struct{}
+	childGate    chan struct{}
+	startOnce    sync.Once
+}
+
+func (*parentChildLifetimeClient) Complete(context.Context, llm.Request) (llm.Response, error) {
+	return llm.Response{}, errors.New("unexpected Complete call")
+}
+
+func (client *parentChildLifetimeClient) Stream(ctx context.Context, request llm.Request) (llm.Stream, error) {
+	client.mu.Lock()
+	isRoot := request.Metadata.ThreadID == client.rootID
+	if isRoot {
+		client.rootCalls++
+		call := client.rootCalls
+		client.mu.Unlock()
+		if call == 1 {
+			return &managerTestStream{chunks: []llm.StreamChunk{{
+				ToolCalls:    []llm.ToolCall{{ID: "call-spawn", Name: "spawn_agent", Arguments: json.RawMessage(`{"message":"inspect child lifetime"}`)}},
+				FinishReason: llm.FinishReasonToolCalls,
+			}}}, nil
+		}
+		return &managerTestStream{chunks: []llm.StreamChunk{{ContentDelta: "root done"}, {FinishReason: llm.FinishReasonStop}}}, nil
+	}
+	client.mu.Unlock()
+	return &gatedManagerStream{ctx: ctx, started: client.childStarted, gate: client.childGate, once: &client.startOnce}, nil
+}
+
+func (*parentChildLifetimeClient) Model() llm.ModelInfo {
+	return llm.ModelInfo{Provider: "mock", Name: "model", ContextWindow: 100_000, SupportsParallelToolCalls: true}
+}
+
+func (*parentChildLifetimeClient) Capabilities() llm.Capabilities {
+	return llm.Capabilities{SupportsStreaming: true, SupportsParallelToolCalls: true}
+}
+
+type gatedManagerStream struct {
+	ctx     context.Context
+	started chan struct{}
+	gate    <-chan struct{}
+	once    *sync.Once
+	step    int
+}
+
+func (stream *gatedManagerStream) Recv() (llm.StreamChunk, error) {
+	switch stream.step {
+	case 0:
+		stream.step++
+		stream.once.Do(func() { close(stream.started) })
+		select {
+		case <-stream.gate:
+			return llm.StreamChunk{ContentDelta: "child result"}, nil
+		case <-stream.ctx.Done():
+			return llm.StreamChunk{}, stream.ctx.Err()
+		}
+	case 1:
+		stream.step++
+		return llm.StreamChunk{FinishReason: llm.FinishReasonStop}, nil
+	default:
+		return llm.StreamChunk{}, io.EOF
+	}
+}
+
+func (*gatedManagerStream) Close() error { return nil }
 
 func (*identityCaptureClient) Complete(context.Context, llm.Request) (llm.Response, error) {
 	return llm.Response{}, errors.New("unexpected Complete call")
@@ -341,8 +411,11 @@ func TestAgentControlSpawnsFullChildSessionAndPersistsNotification(t *testing.T)
 		notifications := 0
 		for _, line := range history {
 			if event, ok := line.Item.(rollout.EventMsgItem); ok {
-				if _, ok := event.Msg.(protocol.SubagentNotificationEvent); ok {
+				if notification, ok := event.Msg.(protocol.SubagentNotificationEvent); ok {
 					notifications++
+					if !strings.Contains(notification.Content, `"turn_result"`) || !strings.Contains(notification.Content, `"last_agent_message":"done"`) {
+						t.Fatalf("notification content = %q", notification.Content)
+					}
 				}
 			}
 		}
@@ -364,8 +437,85 @@ func TestAgentControlSpawnsFullChildSessionAndPersistsNotification(t *testing.T)
 	if _, exists := manager.GetThread(spawned.AgentID); exists {
 		t.Fatal("closed child remained in live ThreadManager registry")
 	}
+	closedMetadata, err := store.GetThread(ctx, spawned.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closedMetadata.AgentEdgeState != protocol.AgentSpawnEdgeClosed {
+		t.Fatalf("closed child edge state = %q", closedMetadata.AgentEdgeState)
+	}
 	if _, err := manager.ResumeThread(ctx, spawned.AgentID, StartInput{Configuration: testConfiguration(t)}); err == nil || !strings.Contains(err.Error(), "sub-agent threads cannot be resumed directly") {
 		t.Fatalf("direct child resume error = %v", err)
+	}
+	rootID := root.ID()
+	if err := manager.ShutdownThread(ctx, rootID); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := manager.ResumeThread(ctx, rootID, StartInput{Configuration: testConfiguration(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, restored := resumed.agentControl.Record(spawned.AgentID); restored {
+		t.Fatal("explicitly closed child was restored into AgentControl")
+	}
+}
+
+func TestRootTurnCompletionDoesNotCancelRunningChild(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := &parentChildLifetimeClient{childStarted: make(chan struct{}), childGate: make(chan struct{})}
+	manager, _ := newTestManagerWithClient(t, ctx, client)
+	defer manager.Close(context.Background())
+	root, err := manager.StartThread(ctx, StartInput{Configuration: testConfiguration(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.mu.Lock()
+	client.rootID = root.ID()
+	client.mu.Unlock()
+	if err := root.Submit(ctx, protocol.UserInputOp{Content: "delegate and finish"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminal(t, root.Io(), false)
+	select {
+	case <-client.childStarted:
+	case <-ctx.Done():
+		t.Fatal("child model request did not start")
+	}
+	records := root.agentControl.SnapshotAll()
+	if len(records) != 1 || records[0].Status.Kind != protocol.AgentStatusRunning {
+		t.Fatalf("child after root terminal = %#v", records)
+	}
+	childID := records[0].Metadata.ThreadID
+	close(client.childGate)
+	waited, err := root.agentControl.Wait(ctx, []protocol.ThreadID{childID}, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(waited.Statuses) != 1 || waited.Statuses[0].Status.Message != "child result" {
+		t.Fatalf("child completion after root terminal = %#v", waited)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		history, historyErr := root.History(ctx)
+		if historyErr != nil {
+			t.Fatal(historyErr)
+		}
+		found := false
+		for _, line := range history {
+			if event, ok := line.Item.(rollout.EventMsgItem); ok {
+				if notification, ok := event.Msg.(protocol.SubagentNotificationEvent); ok && notification.AgentID == childID && strings.Contains(notification.Content, `"last_agent_message":"child result"`) {
+					found = true
+				}
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("child completion notification was not persisted after root turn completed")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -406,11 +556,26 @@ func TestRootResumeRestoresPersistedChildAndLazilyResumesRuntime(t *testing.T) {
 		t.Fatalf("resumed root identity = session %q thread %q", resumed.SessionID(), resumed.ID())
 	}
 	record, ok := resumed.agentControl.Record(spawned.AgentID)
-	if !ok || record.Metadata.ParentThreadID != rootID || record.Metadata.ThreadID != spawned.AgentID {
+	if !ok || record.Metadata.ParentThreadID != rootID || record.Metadata.ThreadID != spawned.AgentID || record.Status.Kind != protocol.AgentStatusCompleted || record.Status.Message != "done" || record.LastTurn == nil || record.LastTurn.Outcome != protocol.TurnOutcomeCompleted {
 		t.Fatalf("persisted child record = %#v, present=%v", record, ok)
 	}
 	if _, loaded := manager.GetThread(spawned.AgentID); loaded {
 		t.Fatal("persisted child was eagerly loaded during root resume")
+	}
+	beforeHistory, err := resumed.History(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeNotifications := countSubagentNotifications(beforeHistory, spawned.AgentID)
+	if _, err := resumed.agentControl.Wait(ctx, []protocol.ThreadID{spawned.AgentID}, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	afterHistory, err := resumed.History(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after := countSubagentNotifications(afterHistory, spawned.AgentID); after != beforeNotifications {
+		t.Fatalf("restored wait duplicated notification: before=%d after=%d", beforeNotifications, after)
 	}
 	if err := resumed.agentControl.SendInput(ctx, spawned.AgentID, "continue after resume", false); err != nil {
 		t.Fatal(err)
@@ -429,6 +594,74 @@ func TestRootResumeRestoresPersistedChildAndLazilyResumesRuntime(t *testing.T) {
 	meta := history.Lines[0].Item.(rollout.SessionMetaItem)
 	if meta.SessionID != sessionID || meta.ID != spawned.AgentID || meta.ParentThreadID == nil || *meta.ParentThreadID != rootID {
 		t.Fatalf("child session metadata = %#v", meta)
+	}
+}
+
+func countSubagentNotifications(lines []rollout.Line, agentID protocol.ThreadID) int {
+	count := 0
+	for _, line := range lines {
+		event, ok := line.Item.(rollout.EventMsgItem)
+		if !ok {
+			continue
+		}
+		if notification, ok := event.Msg.(protocol.SubagentNotificationEvent); ok && notification.AgentID == agentID {
+			count++
+		}
+	}
+	return count
+}
+
+func TestExplicitlyClosedChildrenDoNotConsumeSlotsAfterRootResume(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	manager, _ := newTestManager(t, ctx, "", nil)
+	defer manager.Close(context.Background())
+	configuration := testConfiguration(t)
+	configuration.Runtime.Agent.MultiAgent.MaxAgents = 2
+	root, err := manager.StartThread(ctx, StartInput{Configuration: configuration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Submit(ctx, protocol.UserInputOp{Content: "materialize root"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminal(t, root.Io(), false)
+	closedIDs := make([]protocol.ThreadID, 0, 3)
+	for index := 0; index < 3; index++ {
+		spawned, err := root.agentControl.Spawn(ctx, root.ID(), fmt.Sprintf("inspect child %d", index))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := root.agentControl.Wait(ctx, []protocol.ThreadID{spawned.AgentID}, 5*time.Second); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := root.agentControl.CloseAgent(ctx, spawned.AgentID); err != nil {
+			t.Fatal(err)
+		}
+		closedIDs = append(closedIDs, spawned.AgentID)
+	}
+	rootID := root.ID()
+	if err := manager.ShutdownThread(ctx, rootID); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := manager.ResumeThread(ctx, rootID, StartInput{Configuration: configuration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records := resumed.agentControl.SnapshotAll(); len(records) != 0 {
+		t.Fatalf("closed children restored after resume = %#v", records)
+	}
+	for _, id := range closedIDs {
+		if _, ok := resumed.agentControl.Record(id); ok {
+			t.Fatalf("closed child %s consumed a slot after resume", id)
+		}
+	}
+	spawned, err := resumed.agentControl.Spawn(ctx, resumed.ID(), "new child after resume")
+	if err != nil {
+		t.Fatalf("spawn after restoring closed history: %v", err)
+	}
+	if spawned.AgentID.IsZero() {
+		t.Fatal("spawn after resume returned zero ID")
 	}
 }
 

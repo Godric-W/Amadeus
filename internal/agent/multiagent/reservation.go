@@ -65,7 +65,7 @@ func (control *Control) rollbackReservation(id string) {
 	control.signalLocked()
 }
 
-func (control *Control) commitReservation(id string, metadata protocol.AgentMetadata, runtime AgentRuntime) error {
+func (control *Control) installReservation(id string, metadata protocol.AgentMetadata, runtime AgentRuntime) error {
 	control.mu.Lock()
 	defer control.mu.Unlock()
 	reservation, exists := control.reservations[id]
@@ -80,23 +80,41 @@ func (control *Control) commitReservation(id string, metadata protocol.AgentMeta
 	}
 	delete(control.reservations, id)
 	control.agents[metadata.ThreadID] = &record{
-		metadata: metadata, status: protocol.AgentStatus{Kind: protocol.AgentStatusPendingInit}, runtime: runtime,
+		metadata: metadata, status: protocol.AgentStatus{Kind: protocol.AgentStatusPendingInit}, runtime: runtime, provisional: true,
 	}
 	control.signalLocked()
 	return nil
 }
 
-func (control *Control) RegisterPersisted(metadata protocol.AgentMetadata, status protocol.AgentStatus) error {
+func (control *Control) commitInstalledAgent(id protocol.ThreadID) (*Notification, error) {
+	control.mu.Lock()
+	defer control.mu.Unlock()
+	agent := control.agents[id]
+	if agent == nil || !agent.provisional || agent.closing {
+		return nil, fmt.Errorf("installed agent %q is unavailable", id)
+	}
+	agent.provisional = false
+	notification := pendingNotificationLocked(agent)
+	control.signalLocked()
+	return notification, nil
+}
+
+func (control *Control) RegisterPersisted(metadata protocol.AgentMetadata, state LifecycleState, notifiedTurnID protocol.TurnID) error {
 	if control == nil {
 		return errors.New("agent control is nil")
 	}
 	if err := metadata.Validate(); err != nil {
 		return err
 	}
-	if err := status.Validate(); err != nil {
+	if err := state.Status.Validate(); err != nil {
 		return err
 	}
-	if status.IsRunning() {
+	if state.LastTurn != nil {
+		if err := state.LastTurn.Validate(); err != nil {
+			return err
+		}
+	}
+	if state.Status.Kind == protocol.AgentStatusRunning {
 		return errors.New("persisted agent cannot have running status")
 	}
 	control.mu.Lock()
@@ -114,7 +132,7 @@ func (control *Control) RegisterPersisted(metadata protocol.AgentMetadata, statu
 		return fmt.Errorf("agent nickname %q is already in use", metadata.AgentNickname)
 	}
 	control.nicknames[metadata.AgentNickname] = struct{}{}
-	control.agents[metadata.ThreadID] = &record{metadata: metadata, status: status}
+	control.agents[metadata.ThreadID] = &record{metadata: metadata, status: state.Status, lastTurn: cloneTurnResult(state.LastTurn), notifiedTurnID: notifiedTurnID}
 	control.signalLocked()
 	return nil
 }

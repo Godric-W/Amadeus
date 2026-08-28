@@ -2,12 +2,12 @@
 
 > 最近更新：2026-08-28
 > 主要架构与 Contract 工作文档：`docs/design.md`
-> 当前阶段：AB. Source-backed Markdown Streaming + TUI Render Lifecycle（DONE，2026-08-28 reopened and completed）
+> 当前阶段：AC. Basic Multi-Agent Terminal + Persistence Lifecycle Realignment（DONE）
 > 下一任务：未排定
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
-A-AB 的条目保留为历史与当前阶段记录；其中与当前 `docs/design.md` 冲突的 token/compaction 结论由 W 取代，第一轮外层 package 归属由 X/Y 收敛，internal package、目录和责任文件布局由 Z 取代，Prompt ownership/text/WorldState/wire/Resume 结论由 AA 最终收敛。AB 在 2026-08-28 的真实 renderer/contract 审计后重新开启；此前 AB `DONE` 只记录第一轮迁移事实，不证明 transcript viewport、completion ordering、parser boundary 或 layout contract 已闭环。历史 DONE 不构成恢复旧 owner、旧路径、旧 Prompt prefix map 或已删除中间 frontend 的依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
+A-AC 的条目保留为历史与当前阶段记录；其中与当前 `docs/design.md` 冲突的 token/compaction 结论由 W 取代，第一轮外层 package 归属由 X/Y 收敛，internal package、目录和责任文件布局由 Z 取代，Prompt ownership/text/WorldState/wire/Resume 结论由 AA 最终收敛，R/T 中的Multi-Agent final-message、wait、notification和persisted child membership结论由AC取代。Codex Multi-Agent V2、AgentPath/mailbox/residency、history fork、write worker、child交互、team/worktree/remote和完整agent picker是明确产品非目标，不安排后续阶段。AB 在 2026-08-28 的真实 renderer/contract 审计后重新开启；此前 AB `DONE` 只记录第一轮迁移事实，不证明 transcript viewport、completion ordering、parser boundary 或 layout contract 已闭环。历史 DONE 不构成恢复旧 owner、旧路径、旧 Prompt prefix map、Assistant Item final-message推断或已删除中间 frontend 的依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
 
 ## 1. 状态与完成标准
 
@@ -53,6 +53,7 @@ A Runtime + Persistence
 → Z Codex-aligned Internal Package + Source Layout
 → AA Prompt Ownership + Lifecycle Realignment
 → AB Source-backed Markdown Streaming + TUI Render Lifecycle
+→ AC Basic Multi-Agent Terminal + Persistence Lifecycle Realignment
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先分析对应参考源码，再同步更新 `docs/design.md` 与本文。
@@ -1260,15 +1261,15 @@ N 的 `update_plan`、`request_user_input`、settings、Proposed Plan Event/Turn
 - Canonical `ResponseToolResult.Parts` 保存唯一 Base64 payload，Response Result 与 completed Event/TUI 使用 display-safe ToolResult；Rich TUI 增加 `ViewImageCell`，Resume 从 canonical payload 恢复模型上下文且不重新读取源文件。
 - PNG/JPEG/WebP/static/animated GIF、伪装格式、大小/尺寸/像素、cancellation、external Approval、动态 Schema、Provider defense、image budget、Compaction、single-payload Rollout、Resume、TUI 与 architecture guard 覆盖完成；`make check`、`go test ./... -count=1`、`go test -race ./... -count=1` 和 `git diff --check` 通过。
 
-## 20. R. Basic Multi-Agent Architecture Alignment — `DONE`
+## 20. R. Basic Multi-Agent Architecture Alignment — `DONE`，terminal/final-message/wait/close-persistence 结论由 AC 取代
 
 ### 目标
 
 按 `docs/design.md` 的 Basic Multi-Agent Contract，实现 Codex V1 风格的最小 Multi-Agent 闭环：SubAgent 是完整 AmadeusThread/Session，同一 Root tree 共享 AgentControl，Root 通过 `spawn_agent`、`send_input`、`wait_agent` 和 `close_agent` 管理 child；child 首版固定为 read-only explorer，并贯通 Prompt、WorldState、completion notification、typed Event/Rollout 和 Codex 风格 TUI projection。
 
-R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code team/worktree/remote/background task、history fork、自定义 agent definition、write-capable worker 或 child interactive Approval。实现期间不得以通用 Task Bus、nested SessionTask、Tool handler 直调 `run_turn` 或字符串 UI wrapper 保留第二套 runtime。
+R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code team/worktree/remote/background task、history fork、自定义 agent definition、write-capable worker 或 child interactive Approval。实现期间不得以通用 Task Bus、nested SessionTask、Tool handler 直调 `run_turn` 或字符串 UI wrapper 保留第二套 runtime。R 建立的Thread/Session/AgentControl/Tool隔离骨架继续有效；其“最近completed AssistantMessage等于FinalMessage”、wait-all、Shutdown重复notification和无durable close edge等结论由AC替换。
 
-### R-01：Protocol Identity + SessionSource Contract — `DONE`
+### R-01：Protocol Identity + SessionSource Contract — `DONE`，terminal projection 由 AC 取代
 
 - [x] 建立 `SessionSource`、`RootSessionSource`、`SubAgentSessionSource`、`AgentMetadata` 和 Codex 语义的 `AgentStatus`；首版 AgentID 直接使用 child ThreadID。
 - [x] 将 parent ThreadID、depth、nickname 和 role 冻结进 child Session/SessionMetaItem；role 固定为 `explorer`，最大 depth 固定为配置值 1。
@@ -1282,7 +1283,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - [x] 实现默认 `max_agents=4`、`max_depth=1` 与 child budget 配置验证；agent tree 容量不得复用 `max_parallel_tools`。
 - [x] 禁止进程级 singleton、TUI/Application agent map、generic event bus 和 capability facade。
 
-### R-03：ThreadManager Child Spawn + Event Ownership — `DONE`
+### R-03：ThreadManager Child Spawn + Event Ownership — `DONE`，final-message reducer 由 AC 取代
 
 - [x] ThreadManager 创建 Root Thread 时创建 AgentControl；spawn child 时向 child SessionServices 传递同一个 control，并写入 SubAgentSessionSource。
 - [x] child 必须走正常 LiveThread、Session::Spawn、RegularTask 和 `run_turn` 主链；不得新增 provider-only runner 或父 Session nested task。
@@ -1297,7 +1298,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - [x] child 使用独立 SessionPermissionContext/FileReadState/ToolExecutionService，不复制 Root Session grant；任何需要 Approval 的调用必须稳定失败为 ToolResult，不能产生无人处理的 request waiter。
 - [x] child 使用同一 CWD/workspace/filesystem 并可观察并发变化；Prompt 明确只读、单一任务、无父 conversation、证据化且简洁的最终报告。
 
-### R-05：Codex V1 Collaboration Tools — `DONE`
+### R-05：Codex V1 Collaboration Tools — `DONE`，wait/close lifecycle 由 AC 取代
 
 - [x] 注册仅 Root 可见的 `spawn_agent`、`send_input`、`wait_agent`、`close_agent` ToolDefinition；schema、命名、返回字段和错误语义以 design Contract 为准。
 - [x] `spawn_agent` 完成 reservation、child spawn、初始 UserInput admission 后立即返回 agent_id/nickname；允许同一模型响应中的独立 spawn 有界并行。
@@ -1305,7 +1306,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - [x] `wait_agent` 使用 status change notification 并发等待多个 ID，支持 timeout snapshot 和 Completed FinalMessage，不轮询 map。
 - [x] `close_agent` 返回 previous status，关闭目标及 open descendants、释放 slot/nickname；首版不注册 resume/list/send_message/followup_task/interrupt_agent。
 
-### R-06：WorldState + Completion Notification — `DONE`
+### R-06：WorldState + Completion Notification — `DONE`，terminal payload/delivery 由 AC 取代
 
 - [x] Root Environment WorldState 增加 Codex 风格 `<subagents>`，由 AgentControl snapshot 和 revision 驱动，列出未 close child 的 ID、nickname、role 和 status。
 - [x] child 每个 Turn 进入 Completed/Errored/Shutdown 后，向直接 parent 注入一次 `<subagent_notification>` contextual user fragment；不得投影为普通 UserMessage。
@@ -1319,17 +1320,17 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - [x] Tool Provider 协议继续使用标准 ToolCall/ToolResult；Tool event policy 对 collaboration Tool 抑制 generic ToolHistoryCell，避免双重展示。
 - [x] Root rollout 只记录 collaboration item 和 bounded notification，不复制 child transcript、Tool delta 或 reasoning。
 
-### R-08：Codex-style Multi-Agent TUI — `DONE`
+### R-08：Codex-style Multi-Agent TUI — `DONE`，blocked/LastTurn projection 由 AC 取代
 
 - [x] 新增 `CollabAgentHistoryCell` 与 active wait projection，使用 `Spawned`、`Sent input to`、`Waiting for`、`Finished waiting`、`Closed` 等 Codex 风格标题。
 - [x] nickname/role、prompt preview、AgentStatus、FinalMessage/error preview 使用专用 typed fields 和稳定截断；不得解析 ToolResult 文本恢复状态。
 - [x] wait in-progress 使用 ActiveHistoryCell，completed 后正确结束 spinner；completion notification 不显示为用户气泡，必要时投影为轻量 AgentStatusHistoryCell。
 - [x] live TUI 与 Resume snapshot 覆盖同一视觉语义；R 不实现完整 `/agent` picker、Alt+Left/Right navigation 或 child transcript attach。
 
-### R-09：Persistence、Listing + Shutdown Boundary — `DONE`
+### R-09：Persistence、Listing + Shutdown Boundary — `DONE`，Root restore 由 T 引入，open/closed edge 由 AC 取代
 
 - [x] JSONL/SQLite metadata 保存 SessionSource 与 parent Thread 信息；默认顶层 session list 和 `/resume` picker 排除 SubAgent Thread。
-- [x] Root Resume 只恢复 canonical collaboration item/notification，不恢复旧 AgentControl tree、不重启 child completion watcher，也不提供 resume_agent。
+- [x] R 当时只恢复 canonical collaboration item/notification，不恢复旧 AgentControl tree；T 后续引入 persisted/unloaded child restore，AC 负责补齐只恢复 open edge、显式 close durable 和 live/Resume terminal 等价。
 - [x] child writer、event consumer、completion watcher、status waiter 和 AgentControl close 都有明确 owner、context 和有限 cleanup timeout。
 - [x] close/shutdown 后立即从 live Thread registry 移除 child，防止 terminated runtime 被错误复用；内部历史仍可供 diagnostics 读取。
 
@@ -1359,7 +1360,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 ### 完成记录
 
 - 2026-08-21 完成 Codex V1 风格 Basic Multi-Agent 主链：Root tree 共享 `AgentControl`，SubAgent 作为完整 `AmadeusThread/Session` 运行，`ThreadManager` 保持唯一 live Thread registry；slot/nickname reservation、状态 reducer、事件驱动 wait、send/interrupt/restart、close 与 bounded shutdown 均已落地。
-- `SessionSource`、`AgentMetadata`、`AgentStatus`、`CollabAgentToolCallItem`、canonical notification 与 SQLite source index 已贯通；默认列表和直接 Resume 排除 child，Root Resume 不恢复旧 agent tree。
+- `SessionSource`、`AgentMetadata`、`AgentStatus`、`CollabAgentToolCallItem`、canonical notification 与 SQLite source index 已贯通；默认列表和直接 Resume 排除 child。R 当时不恢复旧 agent tree，T 已替换该结论，AC 再关闭 open/closed edge 与 terminal reconstruction 缺口。
 - Root-only `spawn_agent`、`send_input`、`wait_agent`、`close_agent` 使用统一 Tool pipeline；child 固定为 read-only `explorer`，拥有 fresh context、独立 permission/execution state、exact ToolRouter allowlist 与 deny-only Approval port。
 - `SubagentDeveloperInstructions`、ToolSpec delegation guidance、`<subagents>` WorldState、`<subagent_notification>` contextual fragment 和 Codex 风格 live/Resume TUI projection 已统一到 typed Event/Rollout 协议。
 - spawn rollback/并发容量/depth、send_input、wait timeout、notification 去重、失败 shutdown 保留 slot、Prompt/Tool isolation、Persistence、完整 Root→child→notification E2E、TUI 与 architecture guards 均有覆盖；`make check`、`go test ./... -count=1`、`go test -race ./... -count=1` 和 `git diff --check` 于 2026-08-21 通过。
@@ -1454,7 +1455,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - `FullscreenApplication.Run` 现返回最终 `AppExitInfo`；CLI 在 Bubble Tea renderer 停止、终端恢复且 InteractiveApplication 关闭后输出非零 token usage、可用 resume hint、timeout warning 或 fatal diagnostics，并复用 `commandExitError.reported` 避免主入口重复报错。Color terminal 对齐 Codex，仅将 resume command 使用 ANSI cyan 高亮并以 foreground reset 收尾；No Color 保持纯文本。
 - `make check` 与 `go test -race ./... -count=1` 于 2026-08-22 全量通过，`git diff --check` 通过。
 
-## 22. T. Thread + Session UUID Identity Alignment — `DONE`
+## 22. T. Thread + Session UUID Identity Alignment — `DONE`，persisted child membership/status 结论由 AC 收紧
 
 ### 目标
 
@@ -1478,7 +1479,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - 所有 child 从 AgentControl 继承同一个 SessionID 并生成独立 ThreadID；child SessionID 不能从 child ThreadID 派生。
 - ThreadManager registry、AgentID、parent/child relation、send/wait/close routing 继续使用 ThreadID；共享 SessionID 只表达 session-level ownership，不能替代 Thread key。
 
-### T-04：Persisted SubAgent Restore + Internal Resume — `DONE`
+### T-04：Persisted SubAgent Restore + Internal Resume — `DONE`，open-edge selection 与 terminal reducer 由 AC 取代
 
 - Root Resume 后按 SQLite parent/source relation 查找 persisted descendants，读取每个 child Rollout SessionMeta，并校验 child ID、ParentThreadID 与 `SessionID == AgentControl.SessionID()`；不通过 SQLite SessionID 查询 tree。
 - AgentControl record 支持 persisted/unloaded child metadata；ThreadManager/AgentHost 提供内部 child resume，`send_input` 等操作按 child ThreadID 加载并恢复 runtime，AgentControl 不直接打开 Rollout 或构造 Session。
@@ -1770,7 +1771,7 @@ W 的 TokenUsageInfo、typed Compaction domain、source hash、atomic install、
 - 新增结构化 `ApproxTokenEstimator` 和 ContextWindowTokenStatus，覆盖 ASCII、中文、Tool/Schema、prepared image/原始 Base64 排除、Provider checkpoint、local suffix、失败响应 input baseline 与 Compaction replacement estimate。
 - 新建 `internal/agent/compact`，使用普通 BaseInstructions + synthetic Codex summarization User prompt、exact PromptSnapshot items、typed MessageOrigin/真实 User selection、有界 typed ReplacementHistory 和 context-window oldest-group retry。
 - Session 现在唯一拥有 manual/auto pre-turn/mid-turn compaction、真实 request usage、source hash/watermark、atomic `CompactedItem + TokenCountEvent` install、before/after reduction、Item lifecycle 和 Warning/terminal ordering；删除 engine Compactor、callback、TaskOutput Usage/Items 和 ContextCompactedEvent。
-- W 阶段当时将 Rollout 与 SQLite schema 均提升到 `4`；AA 后续将 Rollout替换为v5而SQLite metadata schema保持v4，旧开发格式继续直接拒绝且不保留decoder/migration。
+- W 阶段当时将 Rollout 与 SQLite schema 均提升到 `4`；AA 后续将Rollout替换为v5而SQLite metadata schema保持v4，AC再将当前Rollout/SQLite分别重置为v6/v5。旧开发格式继续直接拒绝且不保留decoder/migration。
 - focused functional/race tests、`make check`、全仓 `go test -race ./... -count=1`、Responses/Chat Provider mock E2E、core-tools Provider mock E2E 与 `git diff --check` 于 2026-08-25 通过。
 
 ## 26. 当前保留能力
@@ -2092,7 +2093,7 @@ AA-01～AA-09 是同一次 Architecture Closure 的依赖顺序，不是可长�
 - WorldState 使用 typed section + canonical fragment + durable `ContextKind` 与 Absent/Unknown/Known full/patch baseline；换行在 owner入口规范化，首次输入、truncated-tail recovery、后续 diff、explicit Skill、SubAgent role/status、manual/pre-turn/mid-turn compaction 与 Resume 使用同一 ContextManager lifecycle。
 - StepContext 只冻结 Model、ToolRouter、LoadedAgentsMd、atomic Skill metadata/revision、Permission profile/grants、active SubAgents和capability revisions；Session 在 WorldState 持久化后独立构造本次 PromptSnapshot，sampling、preflight、token watermark和compaction显式消费同一快照。Runtime budget reminder以带marker和durable ContextKind的canonical developer context在preflight前记录，不再做request-only append。
 - `/status` 增加只读 Prompt diagnostics，展示 Base provenance、WorldState baseline/revision、Provider wire和各职责资产的短revision，不建立第二份Prompt状态。
-- Rollout 当前格式提升为 v5并拒绝旧格式 decoder；SQLite metadata index schema仍独立保持v4。两者版本域不同，不要求同步递增，也不提供开发期兼容 migration。
+- AA当时将Rollout提升为v5并拒绝旧格式decoder，SQLite metadata index保持v4；AC因TurnComplete/AgentSpawnEdge contract替换将当前Rollout/SQLite分别提升为v6/v5。两者版本域不同，不要求同步递增，也不提供开发期兼容migration。
 - 验收通过：`make check`、全仓 `go test -race ./... -count=1`、Responses/Chat Coding Agent与Core Tools Provider mock E2E、architecture guards及`git diff --check`。
 
 ## 33. AB. Source-backed Markdown Streaming + TUI Render Lifecycle — `DONE`（2026-08-28 reopened and completed）
@@ -2203,3 +2204,91 @@ AA-01～AA-09 是同一次 Architecture Closure 的依赖顺序，不是可长�
 - `TranscriptSurface`保留canonical history并以print watermark提交immutable native scrollback；主frame只显示bounded mutable cells。SessionHeader、早期输出和长final可由终端原生滚轮访问，provisional stream replacement不依赖撤回已打印rows。
 - Goldmark source offset决定stable/mutable boundary；incomplete Markdown不污染stable run，completed item能修复stream缺失/不一致，writer/wrap/table/link/code在宽窄终端与NoColor下有界、可读地降级。
 - Protocol、Session、Application、Rollout不依赖TUI Markdown实现；单一TUI及现有Tool/Approval/Plan/Queue生命周期不回退。
+
+## 34. AC. Basic Multi-Agent Terminal + Persistence Lifecycle Realignment — `DONE`
+
+### 目标
+
+修复当前Basic Multi-Agent中已确认的terminal与persistence缺口。Codex Multi-Agent V2、AgentPath/mailbox/residency、write-capable worker、child Approval/用户输入、history fork、team/worktree/remote和完整agent picker是永久产品非目标，AC不得实现、预留或安排这些能力。外层以当前`../codex-main/codex-rs/core/src/{agent/control.rs,agent/control/legacy.rs,agent/status.rs,agent/control/spawn.rs,tools/handlers/multi_agents/*,session_prefix.rs}`及`codex-rs/protocol/src/protocol.rs`为权威；Claude Code只提供background child独立取消域、Tool allowlist、权限不升级和failed/killed partial-result经验，不复制其Query/AppState/Task外层。
+
+AC保留R/Z已经正确的完整child Thread/Session、root-scoped AgentControl、ThreadManager唯一live registry、fresh Context、read-only ToolRouter和统一Tool pipeline；替换`latestAssistant`推断、blocked→completed字符串压缩、live/Resume双reducer、wait-all、先标记notified后丢写入错误、显式close无durable edge及raw SQLite child membership。AC-01～AC-08是同一次Architecture Closure，不允许以新增字段包装旧reducer、保留双status projection或从旧ToolResult/Assistant Item补数据。
+
+### AC-01：Reference Contract + Protocol Reset — `DONE`
+
+- [x] 固定Codex V1 `TurnCompleteEvent.last_agent_message`、AgentStatus、`is_final`、spawn/send/wait/close、completion notification和explicit-close edge的source path/hash；记录Claude Code async abort/terminal partial-result的允许借鉴与禁止复制边界。
+- [x] 为Amadeus当前Protocol增加optional `TurnCompleteEvent.LastAgentMessage`，定义由terminal Event派生的`AgentTurnResult{TurnID, Outcome, Reason, LastAgentMessage}`；AgentStatus枚举保持Codex的pending/running/interrupted/completed/errored/shutdown/not_found，不新增`AgentStatusBlocked`。
+- [x] 重置当前Rollout codec/schema/fixture，不保留旧TurnComplete decoder、alias、fallback或双字段；同步`TaskOutput`、Event scope/validation、CollabAgentState、WaitResult和notification DTO。
+
+### AC-02：Session Final Message Authority — `DONE`
+
+- [x] 使RegularTask/`run_turn`只在真实final model completion时返回optional LastAgentMessage，Session将其直接写入canonical TurnCompleteEvent；Plan/steer/continuation保持同一authority和terminal ordering。
+- [x] 删除AgentControl对任意completed AssistantMessage、Tool Call preamble、stream tail或“最近有文本消息”的final fallback；普通Assistant TurnItem仍只负责History/TUI projection。
+- [x] 覆盖无文本final、Tool preamble→final、Tool preamble→blocked、Plan final、failed/aborted和进程在Assistant Item后/TurnComplete前退出的contract tests。
+
+### AC-03：AgentStatus + LastTurn Pure Reducer / Wait Lifecycle — `DONE`
+
+- [x] 建立单一pure reducer同时供live child Event和Resume rollout使用：TurnStarted原子设置Running并清空LastTurn，TurnComplete生成Completed/Errored和exact LastTurn，TurnAborted生成Interrupted+aborted LastTurn，SessionMeta-only恢复PendingInit。
+- [x] `AgentStatusCompleted`只表达Thread当前空闲；`AgentTurnResult.Outcome`无损区分completed/blocked，blocked reason不得进入`status.completed="result: blocked"`字符串或被解释为父Turn取消。
+- [x] 按Codex V1将public `wait_agent`改为任一final status唤醒并返回当时全部final snapshot；Interrupted不属于final，timeout返回空final集合。`send_input(interrupt=true)`使用独立correlated turn-stop waiter，不借用public wait语义。
+- [x] 删除`latestAssistant`、`persistedAgentStatus`和wait-all path，不保留wrapper；覆盖多Agent错峰完成、simultaneous final、Interrupted、timeout、NotFound和live/Resume等价。
+
+### AC-04：Child Budget Finalization — `DONE`
+
+- [x] 将child TurnBudget解释为含finalization reserve的总预算；在sample/tool/time任一soft boundary停止新探索并执行至多一次Tools为空的finalization sample，要求返回已验证事实、路径、未决项和限制。
+- [x] finalization成功时通过LastAgentMessage交付；hard boundary已跨越、Provider失败或final text非法时返回typed blocked LastTurn并保留exact reason，不伪装为completed交付或infrastructure error。
+- [x] 保持Root普通Turn现有budget contract和W token accounting；finalization request的usage正常进入TokenUsageInfo，不新增第二budget owner、额外无界重试或可变配置。
+- [x] 覆盖sample/tool/duration soft/hard boundary、一次性保证、Tools为空、finalization Provider failure、steer/compaction交互和弱模型反复Tool Call场景。
+
+### AC-05：Root-tree Lifetime + Durable Spawn Edge — `DONE`
+
+- [x] 明确child Session绑定ThreadWorkspace/root-tree lifetime；spawn Tool/父Step/父ActiveTurn context只拥有spawn事务。父Turn completed/failed/blocked/Interrupt后child继续，Root/Application shutdown或explicit close才停止runtime。
+- [x] 新增root canonical `AgentSpawnEdgeItem{AgentID, ParentThreadID, State: open|closed}`及可重建SQLite projection；spawn在child configured、initial admission和open edge durable后才commit/返回，任一步取消/失败完整回滚。
+- [x] 显式`close_agent`先durable标记目标/descendant edge closed再shutdown；Root shutdown只卸载open child runtime而不关闭edge。closed/archived child不在Root Resume注册、不占slot，历史rollout仍可供diagnostics。
+- [x] Root Resume只从open edge恢复persisted/unloaded AgentRecord并校验SessionID/ThreadID/ParentThreadID/SessionMeta；删除raw `ListChildren`，只保留`ListOpenChildren` projection，并删除默认Completed恢复。
+
+### AC-06：Completion Notification + Tool/TUI Projection — `DONE`
+
+- [x] notification、wait ToolResult、CollabAgentState和TUI detail共享同一个AgentControl snapshot，携带AgentStatus+optional LastTurn；blocked显示真实reason和optional partial report，TUI不解析ToolResult字符串。
+- [x] notification按child Turn terminal identity去重，canonical SubagentNotificationEvent携带AgentID+TurnID watermark；只有parent durable append成功后才推进notified，Resume不解析Content且不重复旧交付。失败形成typed diagnostic/pending delivery，不静默丢弃，completed后explicit close不再追加重复Shutdown notification。
+- [x] 对notification envelope、error和LastAgentMessage使用统一约1000-token budget并保留结构化envelope空间，替换16,000-rune截断。
+- [x] 更新spawn/wait ToolSpec和Subagent role guidance，明确成功spawn的child不随父Turn结束、wait只在关键路径需要时使用、runtime要求finalize时立即交付；模型不得在无typed evidence时猜测取消原因。
+
+### AC-07：Persistence Failure Order + Shutdown Cleanup — `DONE`
+
+- [x] 固化open-edge append、spawn commit、close-edge append、runtime shutdown、record/slot释放和notification delivery的失败顺序；任一持久化失败不得产生模型可见成功或live/Resume相反事实。
+- [x] 区分explicit close与root-tree unload helper，保证关闭失败、重复close、并发Root shutdown、部分spawn、parent unavailable和manager close均无writer/watcher/slot/nickname泄漏。
+- [x] Root Resume对SessionMeta-only、未闭合Turn、completed、blocked、failed、explicitly closed及超过`max_agents`个历史closed child保持确定行为；SQLite清空后从current rollout重建相同open membership。
+
+### AC-08：Legacy Cleanup、Docs、Guards + Acceptance — `DONE`
+
+- [x] 删除旧Assistant Item final推断、status双reducer、wait-all、rune-bound notification、unconditional shutdown notification、raw child-list restore及close/shutdown共用无标记路径；禁止adapter/facade/兼容decoder回引，并增加guard禁止V2/mailbox/write-worker/child-interaction等非目标占位进入生产代码。
+- [x] 同步design/progress/architecture whitepaper/README、TUI visual contract和Prompt source manifest，修复R/T中已被AC取代的历史结论但保留其完成事实。
+- [x] 增加architecture guards和Root→child provider-mock E2E，覆盖父Turn先terminal、child后terminal、budget finalization/blocked、wait-any、notification failure、explicit close→Root Resume和open unloaded child continue。
+- [x] 运行focused functional/race tests、`make check`、`go test ./... -count=1`、`go test -race ./... -count=1`、Responses/Chat Core Tools与Coding Agent E2E、`git diff --check`后才标记AC DONE。
+
+### AC 出口
+
+- Parent Turn、Tool Call和Model Step不拥有已spawn child lifetime；Root tree拥有唯一取消与shutdown边界。
+- TurnCompleteEvent.last_agent_message是唯一final answer authority；AgentStatus保持Codex枚举，AgentTurnResult无损表达Amadeus blocked outcome/reason，live与Resume使用同一reducer。
+- child在soft budget内获得一次有界no-tools finalization机会；即使hard blocked，parent也得到真实原因而不是无交付completed或推测性解释。
+- wait、notification、WorldState、CollabAgentTurnItem和TUI从同一snapshot投影；任一final唤醒、token bound、去重和delivery failure均确定。
+- Root canonical open/closed edge决定persisted child membership；explicit close不会在Resume复活，Root shutdown不会误关闭可恢复edge，closed历史不会耗尽slot。
+- 生产代码不存在旧final推断、双status truth、无标记close/shutdown或target-shaped compatibility layer；V2/mailbox/history-fork/write-worker/child-interaction/team/worktree/remote/picker既不实现也不预留。
+
+### AC 验收
+
+- Root模型spawn child后立即完成自己的Turn；child在其后完成并注入唯一notification，Root下一Turn可见exact result，child rollout无父Turn取消。
+- child先输出探索前导语并持续调用只读Tool直到soft boundary；最终交付来自no-tools finalization。若hard blocked，wait/notification/TUI显示exact blocked reason而不是前导语或`result: blocked`。
+- 三个child错峰完成时第一次`wait_agent`在首个final后返回，不等待全部；后续notification/wait不重复交付同一Turn result。
+- Root依次spawn/close超过`max_agents`个child并重启；closed child不恢复不占slot，仍open child以相同SessionID、独立ThreadID、exact LastTurn恢复并可继续`send_input`。
+
+### AC 完成记录
+
+- 2026-08-28固定Codex V1参考：`agent/control.rs` `eb7f299030946b0a633b17b768acf0570c84c4ecf5d4a1ecff1396ff3f2fdf9b`、`agent/control/legacy.rs` `1b0400ab99c05373d5abac585b5f56ae26a378b50e06344eadee89b6853bd8cd`、`agent/control/spawn.rs` `a081b645408c83031999c5dab0248b9419ae3046f78d01de8e74da1c404f4aa3`、`agent/status.rs` `3e72128ca9006ae3e100f130af3d5b4fe501ee32753f4175d6d91b3ebe883fa7`、V1 `wait.rs` `7f7ad857197772fd65c18ba510705e521661146c09c42373b408446a9fe841f8`、`session_prefix.rs` `ee14ee878910c87eb45555b5777a56f33afbbf06f878ffdf21c574a3553d0f64`和Protocol `28aa2dc7b5289ede64325c9b67f8df3ada3458db189f5d115e0484ffa4216b4e`。
+- Claude Code局部参考固定为`runAgent.ts` `e36d9478dfbe52c337ac51b143cfd16f9c05daeca3ff5f1f9b4da14d8edc8d62`、`agentToolUtils.ts` `890a724813b6c0abd372f477a382d474d7e537e357ba1600f2af7a9d0c5224f4`和`AgentTool.tsx` `4a1d272651884d43322b2f71ee97cb0308ea9648c155aaa072a15d17c2f8d9ca`；只吸收async child独立取消、权限不升级、bounded partial-result思想，未引入其Task/AppState外层。
+- `TaskOutput.LastAgentMessage → TurnCompleteEvent.LastAgentMessage`成为唯一final authority；新增AgentTurnResult和single live/Resume reducer，删除latestAssistant、persistedAgentStatus和Assistant Item fallback。wait改为任一final唤醒，interrupt-and-restart使用独立内部waiter。
+- child soft budget使用一次Tools为空且受剩余duration约束的finalization sample；成功交付verified report，Tool Call/Provider failure/hard limit形成保留exact reason的blocked LastTurn。Root普通budget、compaction和TokenUsageInfo owner不变。
+- Rollout当前格式重置为v6并新增Root-only AgentSpawnEdgeItem；SQLite当前schema重置为v5并投影agent_edge_state。spawn在initial admission+open edge durable后commit，explicit close先写closed edge，Root shutdown只unload。Root Resume从canonical open edge恢复，`ListChildren`已删除并替换为`ListOpenChildren`。
+- notification渲染迁入contextmanager typed ContextFragment；SubagentNotificationEvent持有AgentID+TurnID delivery watermark，成功durable后才推进notified，失败保留diagnostic并可由wait重试。Status/LastTurn、ToolResult、CollabAgentState和TUI共享同一snapshot，文本按约1000-token envelope预算截断。
+- 新增Root Turn先完成/child后完成、preamble→blocked、wait-any、intermediate Error、notification retry、open/closed edge failure ordering、closed child跨Resume不占slot、open child exact LastTurn lazy resume、SQLite rebuild、no-tools finalization及Provider failure等tests；architecture guards禁止旧final reducer、wait-all、raw child membership和V2非目标占位回归。
+- 验收通过：focused functional/race tests、`make check`（含vet、全仓tests和build）、`go test -race ./... -count=1`、现有Responses/Chat Coding Agent/Core Tools integration E2E与`git diff --check`。

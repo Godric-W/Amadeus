@@ -2,7 +2,6 @@ package threadmanager
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -282,62 +281,4 @@ func (manager *ThreadManager) Close(ctx context.Context) error {
 		result = errors.Join(result, value.Shutdown(ctx))
 	}
 	return errors.Join(result, manager.store.Close())
-}
-
-func (manager *ThreadManager) SpawnChild(ctx context.Context, control *multiagent.Control, request multiagent.SpawnChildRequest) (multiagent.AgentRuntime, error) {
-	manager.lifecycle.RLock()
-	defer manager.lifecycle.RUnlock()
-	if manager.closed {
-		return nil, errors.New("thread manager is closed")
-	}
-	if control == nil || control.SessionID().IsZero() || control.RootThreadID().IsZero() {
-		return nil, errors.New("child agent control is unavailable")
-	}
-	manager.mu.Lock()
-	parent := manager.threads[request.ParentThreadID]
-	manager.mu.Unlock()
-	if parent == nil || parent.agentControl != control {
-		return nil, fmt.Errorf("parent thread %q is unavailable", request.ParentThreadID)
-	}
-	id, err := protocol.NewThreadID()
-	if err != nil {
-		return nil, err
-	}
-	configuration := parent.session.Configuration()
-	configuration.Source = protocol.NewSubAgentSessionSource(request.ParentThreadID, request.Depth, request.Nickname, request.Role)
-	configuration.Mode = protocol.ModeKindDefault
-	live, err := threadstore.NewDraftLiveThread(id, manager.store)
-	if err != nil {
-		return nil, err
-	}
-	parentID := request.ParentThreadID
-	child, err := manager.spawn(ctx, control.SessionID(), id, &parentID, live, threadstore.InitialHistory{Kind: threadstore.InitialHistoryNew}, StartInput{Configuration: configuration}, control, false)
-	if err != nil {
-		_ = live.Shutdown(context.Background())
-		return nil, err
-	}
-	return child, nil
-}
-
-func (manager *ThreadManager) NotifyParent(ctx context.Context, parentID protocol.ThreadID, notification multiagent.Notification) error {
-	manager.mu.Lock()
-	parent := manager.threads[parentID]
-	manager.mu.Unlock()
-	if parent == nil || parent.session == nil {
-		return fmt.Errorf("parent thread %q is unavailable", parentID)
-	}
-	statusPayload := map[string]string{string(notification.Status.Kind): notification.Status.Message}
-	if notification.Status.Message == "" {
-		statusPayload[string(notification.Status.Kind)] = ""
-	}
-	payload, err := json.Marshal(map[string]any{
-		"agent_id": notification.Metadata.ThreadID,
-		"nickname": notification.Metadata.AgentNickname,
-		"status":   statusPayload,
-	})
-	if err != nil {
-		return err
-	}
-	content := "<subagent_notification>\n" + string(payload) + "\n</subagent_notification>"
-	return parent.session.AppendSubagentNotification(ctx, notification.Metadata.ThreadID, content)
 }

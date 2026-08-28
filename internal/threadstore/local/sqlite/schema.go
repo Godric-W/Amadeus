@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const CurrentSchemaVersion = 4
+const CurrentSchemaVersion = 5
 
 var ErrUnsupportedSchema = errors.New("unsupported state schema")
 
@@ -26,6 +26,7 @@ var currentSchemaStatements = []string{
         agent_depth INTEGER NOT NULL DEFAULT 0 CHECK (agent_depth >= 0),
         agent_nickname TEXT NOT NULL DEFAULT '',
         agent_role TEXT NOT NULL DEFAULT '',
+		agent_edge_state TEXT NOT NULL DEFAULT '' CHECK (agent_edge_state IN ('', 'open', 'closed')),
         rollout_path TEXT NOT NULL UNIQUE,
         cwd TEXT NOT NULL,
         title TEXT NOT NULL,
@@ -44,8 +45,8 @@ var currentSchemaStatements = []string{
         CHECK (length(trim(cwd)) > 0),
         CHECK (length(trim(title)) > 0),
         CHECK (
-            (source_kind = 'root' AND parent_thread_id = '' AND agent_depth = 0 AND agent_nickname = '' AND agent_role = '') OR
-            (source_kind = 'subagent' AND length(trim(parent_thread_id)) > 0 AND agent_depth > 0 AND length(trim(agent_nickname)) > 0 AND length(trim(agent_role)) > 0)
+			(source_kind = 'root' AND parent_thread_id = '' AND agent_depth = 0 AND agent_nickname = '' AND agent_role = '' AND agent_edge_state = '') OR
+			(source_kind = 'subagent' AND length(trim(parent_thread_id)) > 0 AND agent_depth > 0 AND length(trim(agent_nickname)) > 0 AND length(trim(agent_role)) > 0)
         )
     )`,
 	`CREATE INDEX threads_cwd_source_updated_idx ON threads(cwd, source_kind, archived, updated_at DESC, id)`,

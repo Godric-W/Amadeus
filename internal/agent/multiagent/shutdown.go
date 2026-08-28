@@ -3,21 +3,30 @@ package multiagent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
-func (control *Control) closeAgent(ctx context.Context, id protocol.ThreadID) error {
+type closeMode uint8
+
+const (
+	closeModeRollback closeMode = iota
+	closeModeUnload
+	closeModeExplicit
+)
+
+func (control *Control) closeAgent(ctx context.Context, id protocol.ThreadID, mode closeMode) error {
 	ids := control.descendantsAndSelf(id)
 	var result error
 	for index := len(ids) - 1; index >= 0; index-- {
-		result = errors.Join(result, control.closeOne(ctx, ids[index]))
+		result = errors.Join(result, control.closeOne(ctx, ids[index], mode))
 	}
 	return result
 }
 
-func (control *Control) closeOne(ctx context.Context, id protocol.ThreadID) error {
+func (control *Control) closeOne(ctx context.Context, id protocol.ThreadID, mode closeMode) error {
 	control.mu.Lock()
 	agent := control.agents[id]
 	if agent == nil {
@@ -41,14 +50,29 @@ func (control *Control) closeOne(ctx context.Context, id protocol.ThreadID) erro
 	agent.closing = true
 	runtime := agent.runtime
 	status := agent.status
+	metadata := agent.metadata
+	control.mu.Unlock()
+	if mode == closeModeExplicit {
+		if err := control.host.RecordSpawnEdge(ctx, metadata.ParentThreadID, metadata.ThreadID, protocol.AgentSpawnEdgeClosed); err != nil {
+			control.mu.Lock()
+			if current := control.agents[id]; current == agent {
+				agent.closing = false
+				control.signalLocked()
+			}
+			control.mu.Unlock()
+			return fmt.Errorf("persist closed agent edge %q: %w", id, err)
+		}
+	}
 	if runtime == nil {
-		delete(control.agents, id)
-		delete(control.nicknames, agent.metadata.AgentNickname)
-		control.signalLocked()
+		control.mu.Lock()
+		if current := control.agents[id]; current == agent {
+			delete(control.agents, id)
+			delete(control.nicknames, agent.metadata.AgentNickname)
+			control.signalLocked()
+		}
 		control.mu.Unlock()
 		return nil
 	}
-	control.mu.Unlock()
 	if status.Kind == protocol.AgentStatusRunning {
 		_ = runtime.Submit(ctx, protocol.InterruptOp{})
 	}

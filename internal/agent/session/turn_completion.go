@@ -108,6 +108,10 @@ func mergeTaskOutput(total, next TaskOutput) TaskOutput {
 	if next.Reason != "" {
 		total.Reason = next.Reason
 	}
+	if next.LastAgentMessage != nil {
+		message := *next.LastAgentMessage
+		total.LastAgentMessage = &message
+	}
 	return total
 }
 
@@ -146,14 +150,15 @@ func (session *Session) finishCompletedTurn(submissionID protocol.SubmissionID, 
 		})
 	}
 	events = append(events, protocol.TurnCompleteEvent{
-		ThreadID:   session.threadID,
-		TurnID:     completion.TurnID,
-		Status:     status,
-		Outcome:    outcome,
-		Reason:     reason,
-		Summary:    summary,
-		Error:      errorText(taskErr),
-		FinishedAt: finishedAt,
+		ThreadID:         session.threadID,
+		TurnID:           completion.TurnID,
+		Status:           status,
+		Outcome:          outcome,
+		Reason:           reason,
+		Summary:          summary,
+		Error:            errorText(taskErr),
+		LastAgentMessage: cloneString(completion.Output.LastAgentMessage),
+		FinishedAt:       finishedAt,
 	})
 	persistErr := session.persistTerminal(completion.TurnID, events...)
 	session.clearActiveTurn()
@@ -256,4 +261,12 @@ func errorText(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func cloneString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }

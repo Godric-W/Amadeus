@@ -17,6 +17,11 @@ func EncodeEventMsg(message EventMsg) (EncodedEventMsg, error) {
 			return EncodedEventMsg{}, err
 		}
 	}
+	if notification, ok := message.(SubagentNotificationEvent); ok {
+		if err := notification.ValidatePayload(); err != nil {
+			return EncodedEventMsg{}, err
+		}
+	}
 	kind, err := eventMsgType(message)
 	if err != nil {
 		return EncodedEventMsg{}, err
@@ -87,6 +92,11 @@ func DecodeEventMsg(encoded EncodedEventMsg) (EventMsg, error) {
 	message = eventMsgValue(message)
 	if tokenCount, ok := message.(TokenCountEvent); ok {
 		if err := tokenCount.Validate(); err != nil {
+			return nil, fmt.Errorf("decode event message %q: %w", encoded.Type, err)
+		}
+	}
+	if notification, ok := message.(SubagentNotificationEvent); ok {
+		if err := notification.ValidatePayload(); err != nil {
 			return nil, fmt.Errorf("decode event message %q: %w", encoded.Type, err)
 		}
 	}

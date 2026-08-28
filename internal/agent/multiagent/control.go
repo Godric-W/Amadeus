@@ -84,16 +84,35 @@ func (control *Control) Spawn(ctx context.Context, parentID protocol.ThreadID, m
 		_ = shutdownRuntime(ctx, runtime)
 		return SpawnResult{}, err
 	}
-	if err := control.commitReservation(reservationID, metadata, runtime); err != nil {
+	if err := control.installReservation(reservationID, metadata, runtime); err != nil {
 		_ = shutdownRuntime(ctx, runtime)
 		return SpawnResult{}, err
 	}
-	committed = true
 	go control.consume(runtime.ID(), runtime)
+	edgeOpen := false
+	defer func() {
+		if !committed {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if edgeOpen {
+				_ = control.host.RecordSpawnEdge(cleanupCtx, parentID, runtime.ID(), protocol.AgentSpawnEdgeClosed)
+			}
+			_ = control.closeAgent(cleanupCtx, runtime.ID(), closeModeRollback)
+		}
+	}()
 	if err := runtime.SubmitUserInput(ctx, protocol.UserInputOp{Content: message}); err != nil {
-		_ = control.closeAgent(ctx, runtime.ID())
 		return SpawnResult{}, fmt.Errorf("submit initial sub-agent input: %w", err)
 	}
+	if err := control.host.RecordSpawnEdge(ctx, parentID, runtime.ID(), protocol.AgentSpawnEdgeOpen); err != nil {
+		return SpawnResult{}, fmt.Errorf("persist open agent edge: %w", err)
+	}
+	edgeOpen = true
+	notification, err := control.commitInstalledAgent(runtime.ID())
+	if err != nil {
+		return SpawnResult{}, err
+	}
+	committed = true
+	control.deliverNotification(notification)
 	return SpawnResult{AgentID: runtime.ID(), Nickname: nickname}, nil
 }
 
@@ -113,11 +132,7 @@ func (control *Control) SendInput(ctx context.Context, id protocol.ThreadID, mes
 		if err := runtime.Submit(ctx, protocol.InterruptOp{}); err != nil {
 			return fmt.Errorf("interrupt agent %q: %w", id, err)
 		}
-		waited, err := control.Wait(ctx, []protocol.ThreadID{id}, 0)
-		if err != nil {
-			return err
-		}
-		if len(waited.Statuses) != 1 || waited.Statuses[0].Status.IsRunning() {
+		if err := control.waitUntilNotRunning(ctx, id); err != nil {
 			return fmt.Errorf("agent %q did not stop its active turn before restart", id)
 		}
 	}
@@ -144,16 +159,48 @@ func (control *Control) Wait(ctx context.Context, ids []protocol.ThreadID, timeo
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	for {
-		snapshots, allReady, changed := control.waitSnapshot(ids)
-		if allReady {
+		control.retryPendingNotifications(ids)
+		snapshots, ready, changed := control.waitSnapshot(ids)
+		if ready {
 			return WaitResult{Statuses: snapshots}, nil
 		}
 		select {
 		case <-changed:
 		case <-timer.C:
-			return WaitResult{Statuses: control.snapshots(ids), TimedOut: true}, nil
+			return WaitResult{TimedOut: true}, nil
 		case <-ctx.Done():
 			return WaitResult{}, ctx.Err()
+		}
+	}
+}
+
+func (control *Control) retryPendingNotifications(ids []protocol.ThreadID) {
+	control.mu.Lock()
+	notifications := make([]*Notification, 0, len(ids))
+	for _, id := range ids {
+		if notification := pendingNotificationLocked(control.agents[id]); notification != nil {
+			notifications = append(notifications, notification)
+		}
+	}
+	control.mu.Unlock()
+	for _, notification := range notifications {
+		control.deliverNotification(notification)
+	}
+}
+
+func (control *Control) waitUntilNotRunning(ctx context.Context, id protocol.ThreadID) error {
+	for {
+		control.mu.Lock()
+		snapshot := control.snapshotLocked(id)
+		changed := control.changed
+		control.mu.Unlock()
+		if !snapshot.Status.IsRunning() {
+			return nil
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 }
@@ -166,7 +213,7 @@ func (control *Control) CloseAgent(ctx context.Context, id protocol.ThreadID) (p
 	if previous.Kind == protocol.AgentStatusNotFound {
 		return previous, nil
 	}
-	return previous, control.closeAgent(ctx, id)
+	return previous, control.closeAgent(ctx, id, closeModeExplicit)
 }
 
 func (control *Control) Close(ctx context.Context) error {
@@ -184,7 +231,7 @@ func (control *Control) Close(ctx context.Context) error {
 		control.signalLocked()
 		control.mu.Unlock()
 		for _, id := range ids {
-			control.closeErr = errors.Join(control.closeErr, control.closeAgent(ctx, id))
+			control.closeErr = errors.Join(control.closeErr, control.closeAgent(ctx, id, closeModeUnload))
 		}
 	})
 	return control.closeErr
@@ -209,7 +256,7 @@ func (control *Control) Record(id protocol.ThreadID) (AgentRecord, bool) {
 	if agent == nil {
 		return AgentRecord{}, false
 	}
-	return AgentRecord{Metadata: agent.metadata, Status: agent.status}, true
+	return AgentRecord{Metadata: agent.metadata, Status: agent.status, LastTurn: cloneTurnResult(agent.lastTurn)}, true
 }
 
 func (control *Control) SnapshotAll() []AgentRecord {
@@ -220,7 +267,7 @@ func (control *Control) SnapshotAll() []AgentRecord {
 	defer control.mu.Unlock()
 	values := make([]AgentRecord, 0, len(control.agents))
 	for _, agent := range control.agents {
-		values = append(values, AgentRecord{Metadata: agent.metadata, Status: agent.status})
+		values = append(values, AgentRecord{Metadata: agent.metadata, Status: agent.status, LastTurn: cloneTurnResult(agent.lastTurn)})
 	}
 	sort.Slice(values, func(left, right int) bool {
 		return values[left].Metadata.ThreadID.String() < values[right].Metadata.ThreadID.String()

@@ -2,7 +2,6 @@ package multiagent
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/protocol"
@@ -34,97 +33,81 @@ func (control *Control) reduceEvent(id protocol.ThreadID, message protocol.Event
 		control.mu.Unlock()
 		return
 	}
-	if completed, ok := message.(protocol.ItemCompletedEvent); ok && completed.Item.Kind == protocol.ItemAssistantMessage {
-		agent.latestAssistant = boundMessage(completed.Item.Text)
+	current := LifecycleState{Status: agent.status, LastTurn: agent.lastTurn}
+	next, changed, terminal := ReduceLifecycleEvent(current, message)
+	if !changed {
 		control.mu.Unlock()
 		return
 	}
-	if _, started := message.(protocol.TurnStartedEvent); started {
-		agent.latestAssistant = ""
-	}
-	status, changed := statusFromEvent(message, agent.latestAssistant)
-	if !changed || status == agent.status {
-		control.mu.Unlock()
-		return
-	}
-	agent.status = status
-	if status.Kind == protocol.AgentStatusRunning {
-		agent.notifiedTurn = false
-	}
+	agent.status = next.Status
+	agent.lastTurn = cloneTurnResult(next.LastTurn)
 	var notification *Notification
-	shouldNotify := false
-	switch status.Kind {
-	case protocol.AgentStatusCompleted, protocol.AgentStatusErrored:
-		shouldNotify = !agent.notifiedTurn
-		agent.notifiedTurn = true
-	case protocol.AgentStatusShutdown:
-		shouldNotify = !agent.notifiedShutdown
-		agent.notifiedShutdown = true
-	}
-	if shouldNotify {
-		value := Notification{Metadata: agent.metadata, Status: status}
-		notification = &value
+	if terminal {
+		notification = pendingNotificationLocked(agent)
 	}
 	control.signalLocked()
 	control.mu.Unlock()
-	if notification != nil {
-		notifyCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = control.host.NotifyParent(notifyCtx, notification.Metadata.ParentThreadID, *notification)
-		cancel()
-	}
+	control.deliverNotification(notification)
 }
 
-func statusFromEvent(message protocol.EventMsg, latestAssistant string) (protocol.AgentStatus, bool) {
-	switch event := message.(type) {
-	case protocol.TurnStartedEvent:
-		return protocol.AgentStatus{Kind: protocol.AgentStatusRunning}, true
-	case protocol.TurnCompleteEvent:
-		if event.Status == protocol.TurnStatusFailed || strings.TrimSpace(event.Error) != "" {
-			text := event.Error
-			if strings.TrimSpace(text) == "" {
-				text = event.Reason
-			}
-			return protocol.AgentStatus{Kind: protocol.AgentStatusErrored, Message: boundMessage(text)}, true
-		}
-		text := latestAssistant
-		if strings.TrimSpace(text) == "" {
-			text = event.Summary
-		}
-		return protocol.AgentStatus{Kind: protocol.AgentStatusCompleted, Message: boundMessage(text)}, true
-	case protocol.TurnAbortedEvent:
-		return protocol.AgentStatus{Kind: protocol.AgentStatusInterrupted}, true
-	case protocol.ErrorEvent:
-		return protocol.AgentStatus{Kind: protocol.AgentStatusErrored, Message: boundMessage(event.Message)}, true
-	case protocol.ShutdownCompleteEvent:
-		return protocol.AgentStatus{Kind: protocol.AgentStatusShutdown}, true
-	default:
-		return protocol.AgentStatus{}, false
+func pendingNotificationLocked(agent *record) *Notification {
+	if agent == nil || agent.provisional || agent.lastTurn == nil || agent.lastTurn.TurnID == "" || !agent.status.IsFinal() || agent.status.Kind != protocol.AgentStatusCompleted && agent.status.Kind != protocol.AgentStatusErrored {
+		return nil
 	}
+	turnID := agent.lastTurn.TurnID
+	if agent.notifiedTurnID == turnID || agent.notifyingTurnID == turnID {
+		return nil
+	}
+	agent.notifyingTurnID = turnID
+	return &Notification{Metadata: agent.metadata, Status: agent.status, LastTurn: cloneTurnResult(agent.lastTurn)}
+}
+
+func (control *Control) deliverNotification(notification *Notification) {
+	if control == nil || notification == nil {
+		return
+	}
+	notifyCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err := control.host.NotifyParent(notifyCtx, notification.Metadata.ParentThreadID, *notification)
+	cancel()
+	control.mu.Lock()
+	agent := control.agents[notification.Metadata.ThreadID]
+	if agent != nil && notification.LastTurn != nil && agent.notifyingTurnID == notification.LastTurn.TurnID {
+		agent.notifyingTurnID = ""
+		if err == nil {
+			agent.notifiedTurnID = notification.LastTurn.TurnID
+			agent.notificationError = ""
+		} else {
+			agent.notificationError = boundMessage(err.Error())
+		}
+		control.signalLocked()
+	}
+	control.mu.Unlock()
 }
 
 func (control *Control) waitSnapshot(ids []protocol.ThreadID) ([]StatusSnapshot, bool, <-chan struct{}) {
 	control.mu.Lock()
 	defer control.mu.Unlock()
 	result := make([]StatusSnapshot, 0, len(ids))
-	ready := true
+	ready := false
 	for _, id := range ids {
 		snapshot := control.snapshotLocked(id)
-		result = append(result, snapshot)
-		if snapshot.Status.IsRunning() {
-			ready = false
+		if isFinalSnapshot(snapshot) {
+			result = append(result, snapshot)
+			ready = true
 		}
 	}
 	return result, ready, control.changed
 }
 
-func (control *Control) snapshots(ids []protocol.ThreadID) []StatusSnapshot {
-	control.mu.Lock()
-	defer control.mu.Unlock()
-	result := make([]StatusSnapshot, 0, len(ids))
-	for _, id := range ids {
-		result = append(result, control.snapshotLocked(id))
+func isFinalSnapshot(snapshot StatusSnapshot) bool {
+	switch snapshot.Status.Kind {
+	case protocol.AgentStatusCompleted, protocol.AgentStatusErrored:
+		return snapshot.LastTurn != nil
+	case protocol.AgentStatusShutdown, protocol.AgentStatusNotFound:
+		return true
+	default:
+		return false
 	}
-	return result
 }
 
 func (control *Control) snapshotLocked(id protocol.ThreadID) StatusSnapshot {
@@ -133,7 +116,8 @@ func (control *Control) snapshotLocked(id protocol.ThreadID) StatusSnapshot {
 		return notFoundSnapshot(id)
 	}
 	return StatusSnapshot{
-		AgentID: id, Nickname: agent.metadata.AgentNickname, Role: agent.metadata.AgentRole, Status: agent.status,
+		AgentID: id, Nickname: agent.metadata.AgentNickname, Role: agent.metadata.AgentRole,
+		Status: agent.status, LastTurn: cloneTurnResult(agent.lastTurn), NotificationError: agent.notificationError,
 	}
 }
 
@@ -168,10 +152,10 @@ func containsID(ids []protocol.ThreadID, id protocol.ThreadID) bool {
 	return false
 }
 
-func boundMessage(message string) string {
-	value := []rune(strings.TrimSpace(message))
-	if len(value) > maxStatusMessageRunes {
-		value = value[:maxStatusMessageRunes]
+func cloneTurnResult(value *protocol.AgentTurnResult) *protocol.AgentTurnResult {
+	if value == nil {
+		return nil
 	}
-	return string(value)
+	cloned := value.Clone()
+	return &cloned
 }

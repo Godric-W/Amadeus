@@ -66,6 +66,7 @@
 - Exec 主界面将 Running/Ran/You ran 与首行命令放在同一行，命令续行使用 `│`；标题使用 strong，命令使用默认前景或 Shell 语法高亮，输出使用 dim。输出仅首行使用唯一的 `└`，后续行对齐缩进。主界面不显示详情 transcript 专用的 `✓/✗ + duration` 尾行，成功或失败由标题点颜色与输出内容表达。
 - Explore 聚合连续只读行为，以 Exploring/Explored 展示；连续相同 Read 去重；第一项使用唯一的 `└` 树形入口，后续同级项只做对齐缩进；Read/List/Search 使用 accent。
 - WebSearch 单独显示 Searching/Searched the web。
+- Multi-Agent控制使用typed `CollabAgentHistoryCell`；`wait_agent`只列出本次返回的final Agent，Completed显示authoritative last_agent_message，blocked LastTurn显示`<name>: blocked: <reason>`而不是completed成功文案，notification delivery error显示独立诊断行。TUI不得解析ToolResult JSON重建这些状态。
 - Tool Started 立即出现活动 Cell；Tool Completed 按 CallID 原位更新；并行调用按首次出现 sequence 保持稳定顺序。
 - 成功、失败和活动状态不能仅依赖颜色：分别保留 `•`、失败说明和动态/静态活动点。
 

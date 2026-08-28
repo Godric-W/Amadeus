@@ -432,6 +432,8 @@ flowchart LR
 
 ### 8.2 数据模型职责
 
+当前canonical Rollout格式为v6，SQLite metadata schema为v5；旧开发格式不迁移。
+
 | 模型 | 职责 |
 |---|---|
 | `ThreadManager` | 生成 UUIDv7 ThreadID，创建、恢复、查询和关闭 live Thread；也是 child spawn/internal resume 的 AgentHost 实现。 |
@@ -447,8 +449,9 @@ flowchart LR
 | `ResponseItem` | 用户、typed context、Assistant、ToolCall、ToolResult 的 provider-neutral canonical item；context message 以 `ContextKind` 区分 WorldState、explicit Skill 与 runtime reminder。 |
 | `CompactedItem` | Compaction summary、replacement history、覆盖 sequence 和 source hash。 |
 | `TurnContextItem` | TurnContext 的 durable DTO。 |
+| `AgentSpawnEdgeItem` | Root rollout中Basic Multi-Agent depth-one open/closed membership。 |
 | `EventMsgItem` | 需要持久化和 Resume replay 的 typed EventMsg。 |
-| `StoredThread` | SQLite 中的 Thread metadata read model。 |
+| `StoredThread` | SQLite中的Thread metadata read model；SubAgent额外投影可重建的agent_edge_state。 |
 | `ListQuery` | Thread list filter；默认排除 archived 和 SubAgent，可显式包含。 |
 | `state.DB` | metadata index port。 |
 | `local.Store` | JSONL recorder 与 SQLite DB 的本地 ThreadStore 实现和协调者。 |
@@ -498,7 +501,7 @@ Tab queue 不增加新的 `Op`：输入在 TUI 中 enqueue 时尚未跨越 Submi
 | `SessionConfiguredEvent` | Session 启动后公布冻结配置摘要。 |
 | `ThreadSettingsAppliedEvent` | Thread settings 已应用完成，并携带实际生效的完整 SessionConfiguration。 |
 | `TurnStartedEvent` | Turn 生命周期开始。 |
-| `TurnCompleteEvent` | completed/blocked/failed 的 terminal fact。 |
+| `TurnCompleteEvent` | completed/blocked/failed的terminal fact，并直接携带optional authoritative last_agent_message。 |
 | `TurnAbortedEvent` | 用户中断或取消导致的 terminal fact。 |
 | `ErrorEvent` | 可持久化的产品错误事实。 |
 | `StreamErrorEvent` | Provider reconnect/retry 状态；区分是否将重试。 |
@@ -512,7 +515,7 @@ Tab queue 不增加新的 `Op`：输入在 TUI 中 enqueue 时尚未跨越 Submi
 | `RequestUserInputEvent` | Agent 需要结构化用户输入。 |
 | `PlanUpdateEvent` / `PlanDeltaEvent` | `update_plan` 和 proposed plan 的 typed lifecycle。 |
 | `ContextCompactionItem` | live 使用 ItemStarted/ItemCompleted；Replay 的唯一完成事实来自 CompactedItem。 |
-| `SubagentNotificationEvent` | child terminal result 注入 parent context 的 durable fact。 |
+| `SubagentNotificationEvent` | child terminal result注入parent context的durable fact；携带AgentID+child TurnID作为delivery watermark。 |
 | `ShutdownCompleteEvent` | Session 完全终止。 |
 
 ### 9.3 TurnItem 模型
@@ -1060,12 +1063,14 @@ flowchart TB
     ChildSession[Child Session]
     ReadOnly[Read-only ToolRouter]
     Events[Child Event Consumer]
-    Status[AgentStatus Reducer]
+    Status[AgentStatus + LastTurn Reducer]
+    Edge[Root AgentSpawnEdge open/closed]
     Notify[subagent_notification]
     ParentContext[Root Context]
 
     Root --> Tools
     Tools --> Control
+    Control --> Edge
     Control --> Host
     Host --> Child
     Child --> ChildSession
@@ -1083,7 +1088,12 @@ flowchart TB
 - child 使用 fresh Context，不复制 parent reasoning、Tool history、Plan 或 compaction history。
 - child 固定 depth 1、role `explorer`，只允许 read/glob/grep 和条件 read_skill/web_search。
 - child Approval 被 policy deny；不会阻塞 Root TUI。
-- completion 通过 parent Session canonical append 成为 `<subagent_notification>`。
+- `run_turn → TaskOutput.LastAgentMessage → TurnCompleteEvent.last_agent_message`是final answer唯一权威；Tool前导语不进入AgentStatus Message。
+- AgentStatus保持Codex V1枚举，AgentTurnResult从同一terminal Event保留completed/blocked/failed/aborted outcome与reason；live和Resume共用同一个pure reducer。
+- 成功spawn的child绑定root tree而不是父Turn；父Turn完成、失败、blocked或Interrupt后child继续运行。
+- completion通过parent Session canonical append成为token-bounded `<subagent_notification>`；wait/notification/TUI共享Status+LastTurn snapshot。
+- Root rollout的`AgentSpawnEdgeItem(open|closed)`拥有flat child membership；explicit close关闭edge，Root shutdown只卸载runtime，Resume只恢复open child。
+- `wait_agent`在任一Codex final status到达时返回；Interrupted不是final，timeout不制造final状态。
 
 ### 19.2 数据模型职责
 
@@ -1093,20 +1103,22 @@ flowchart TB
 | `SubAgentSource` | parent ThreadID、depth、nickname 和 role。 |
 | `AgentMetadata` | AgentControl 的稳定身份 read model。 |
 | `AgentStatus` | pending/running/interrupted/completed/errored/shutdown/not_found。 |
+| `AgentTurnResult` | 最近canonical terminal Event派生的TurnID、outcome、reason和optional last_agent_message。 |
+| `AgentSpawnEdgeItem` | Root rollout中depth-one child的open/closed membership authority。 |
 | `multiagent.Options` | Control 的 max agents/depth。 |
 | `SpawnChildRequest` | AgentControl 到 ThreadManager 的 child 创建请求。 |
 | `AgentRuntime` | AgentControl 操作 child Thread 的窄 runtime port。 |
-| `AgentHost` | ThreadManager 实现的 spawn/notify port。 |
+| `AgentHost` | ThreadManager实现的spawn/resume、typed edge mutation和notification delivery port。 |
 | `Control` | root tree reservation、status、wait、send、close 和 event consumer owner。 |
-| `AgentRecord` | WorldState 所需 metadata + status snapshot。 |
+| `AgentRecord` | WorldState/Control所需metadata + status + optional LastTurn snapshot。 |
 | `SpawnResult` | `spawn_agent` 的 agent ID 和 nickname。 |
-| `StatusSnapshot` | wait/send/close 所需 Agent 状态 read model。 |
+| `StatusSnapshot` | wait/send/close所需AgentStatus、LastTurn和notification delivery diagnostic。 |
 | `WaitResult` | statuses + timed_out。 |
 | `Notification` | child terminal status 到 parent 的内部通知。 |
 | `CollabAgentTool` | spawn/send/wait/close 分类。 |
 | `CollabAgentToolCallStatus` | in-progress/completed/failed。 |
 | `CollabAgentRef` | TUI 需要的 ThreadID、nickname 和 role。 |
-| `CollabAgentState` | AgentStatus wrapper。 |
+| `CollabAgentState` | AgentStatus + LastTurn + notification diagnostic wrapper。 |
 | `CollabAgentToolCallItem` | live TUI 与 Resume 唯一 collaboration 展示协议。 |
 
 ### 19.3 AgentStatus 状态机
@@ -1127,6 +1139,10 @@ stateDiagram-v2
     errored --> shutdown: close/shutdown
     shutdown --> not_found: record removed
 ```
+
+`blocked`不是新的AgentStatus：blocked是`AgentTurnResult.Outcome`，而completed status只表示child当前Turn已结束且Thread空闲。child进入soft budget boundary后执行至多一次Tools为空的finalization sample；hard blocked仍把exact reason交给parent。
+
+Basic Multi-Agent固定为depth-one read-only explorer。Codex V2、AgentPath/mailbox/residency、history fork、write worker、child交互、team/worktree/remote和完整agent picker既不实现也不预留。
 
 ## 20. TUI Projection 架构
 

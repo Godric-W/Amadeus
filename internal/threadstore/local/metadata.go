@@ -21,8 +21,8 @@ func (store *Store) ListThreads(ctx context.Context, query threadstore.ListQuery
 	return store.state.ListThreads(ctx, query)
 }
 
-func (store *Store) ListChildren(ctx context.Context, parentID protocol.ThreadID) ([]threadstore.StoredThread, error) {
-	return store.state.ListChildren(ctx, parentID)
+func (store *Store) ListOpenChildren(ctx context.Context, parentID protocol.ThreadID) ([]threadstore.StoredThread, error) {
+	return store.state.ListOpenChildren(ctx, parentID)
 }
 
 func (store *Store) RenameThread(ctx context.Context, id protocol.ThreadID, title string, at time.Time) error {

@@ -46,14 +46,15 @@ func (outcome TurnOutcome) Valid() bool {
 }
 
 type TurnCompleteEvent struct {
-	ThreadID   ThreadID
-	TurnID     TurnID
-	Status     TurnTerminalStatus
-	Outcome    TurnOutcome
-	Reason     string
-	Summary    string
-	Error      string
-	FinishedAt time.Time
+	ThreadID         ThreadID
+	TurnID           TurnID
+	Status           TurnTerminalStatus
+	Outcome          TurnOutcome
+	Reason           string
+	Summary          string
+	Error            string
+	LastAgentMessage *string
+	FinishedAt       time.Time
 }
 
 func (TurnCompleteEvent) isEventMsg() {}

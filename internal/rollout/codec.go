@@ -9,7 +9,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
-const CurrentVersion = 5
+const CurrentVersion = 6
 
 const (
 	itemTypeSessionMeta = "session_meta"
@@ -17,6 +17,7 @@ const (
 	itemTypeCompacted   = "compacted"
 	itemTypeWorldState  = "world_state"
 	itemTypeTurnContext = "turn_context"
+	itemTypeAgentEdge   = "agent_spawn_edge"
 	itemTypeEventMsg    = "event_msg"
 )
 
@@ -114,6 +115,8 @@ func encodeItem(item RolloutItem) (string, json.RawMessage, error) {
 		kind, payload = itemTypeWorldState, value
 	case TurnContextItem:
 		kind, payload = itemTypeTurnContext, value
+	case AgentSpawnEdgeItem:
+		kind, payload = itemTypeAgentEdge, value
 	case EventMsgItem:
 		encoded, err := protocol.EncodeEventMsg(value.Msg)
 		if err != nil {
@@ -142,6 +145,8 @@ func decodeItem(kind string, payload json.RawMessage) (RolloutItem, error) {
 		return decodeTypedItem[WorldStateItem](kind, payload)
 	case itemTypeTurnContext:
 		return decodeTypedItem[TurnContextItem](kind, payload)
+	case itemTypeAgentEdge:
+		return decodeTypedItem[AgentSpawnEdgeItem](kind, payload)
 	case itemTypeEventMsg:
 		var encoded protocol.EncodedEventMsg
 		if err := json.Unmarshal(payload, &encoded); err != nil {

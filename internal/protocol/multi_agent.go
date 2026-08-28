@@ -115,13 +115,41 @@ func (status AgentStatus) IsRunning() bool {
 	return status.Kind == AgentStatusPendingInit || status.Kind == AgentStatusRunning
 }
 
-func (status AgentStatus) IsTurnTerminal() bool {
+func (status AgentStatus) IsFinal() bool {
 	switch status.Kind {
-	case AgentStatusInterrupted, AgentStatusCompleted, AgentStatusErrored, AgentStatusShutdown, AgentStatusNotFound:
+	case AgentStatusCompleted, AgentStatusErrored, AgentStatusShutdown, AgentStatusNotFound:
 		return true
 	default:
 		return false
 	}
+}
+
+type AgentTurnResult struct {
+	TurnID           TurnID      `json:"turn_id"`
+	Outcome          TurnOutcome `json:"outcome"`
+	Reason           string      `json:"reason,omitempty"`
+	LastAgentMessage *string     `json:"last_agent_message,omitempty"`
+}
+
+func (result AgentTurnResult) Validate() error {
+	if strings.TrimSpace(string(result.TurnID)) == "" {
+		return errors.New("agent turn result turn ID is empty")
+	}
+	if !result.Outcome.Valid() {
+		return fmt.Errorf("agent turn result outcome %q is invalid", result.Outcome)
+	}
+	if result.LastAgentMessage != nil && strings.TrimSpace(*result.LastAgentMessage) == "" {
+		return errors.New("agent turn result last message is empty")
+	}
+	return nil
+}
+
+func (result AgentTurnResult) Clone() AgentTurnResult {
+	if result.LastAgentMessage != nil {
+		message := *result.LastAgentMessage
+		result.LastAgentMessage = &message
+	}
+	return result
 }
 
 type AgentMetadata struct {
@@ -130,6 +158,17 @@ type AgentMetadata struct {
 	Depth          int      `json:"depth"`
 	AgentNickname  string   `json:"agent_nickname"`
 	AgentRole      string   `json:"agent_role"`
+}
+
+type AgentSpawnEdgeState string
+
+const (
+	AgentSpawnEdgeOpen   AgentSpawnEdgeState = "open"
+	AgentSpawnEdgeClosed AgentSpawnEdgeState = "closed"
+)
+
+func (state AgentSpawnEdgeState) Valid() bool {
+	return state == AgentSpawnEdgeOpen || state == AgentSpawnEdgeClosed
 }
 
 func (metadata AgentMetadata) Validate() error {

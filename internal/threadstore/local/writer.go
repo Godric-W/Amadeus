@@ -2,6 +2,7 @@ package local
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Godric-W/Amadeus/internal/protocol"
@@ -105,7 +106,7 @@ func (store *Store) AppendItems(ctx context.Context, id protocol.ThreadID, turnI
 	if err := recorder.Flush(ctx); err != nil {
 		return threadstore.AppendResult{}, err
 	}
-	result.MetadataWarning = store.syncMetadata(ctx, id, recorder)
+	result.MetadataWarning = errors.Join(store.syncMetadata(ctx, id, recorder), store.syncAgentEdges(ctx, items))
 	return result, nil
 }
 
@@ -148,6 +149,18 @@ func (store *Store) syncMetadata(ctx context.Context, id protocol.ThreadID, reco
 		return err
 	}
 	return store.state.UpsertThread(ctx, projected)
+}
+
+func (store *Store) syncAgentEdges(ctx context.Context, items []rollout.RolloutItem) error {
+	var result error
+	for _, item := range items {
+		edge, ok := item.(rollout.AgentSpawnEdgeItem)
+		if !ok {
+			continue
+		}
+		result = errors.Join(result, store.state.UpdateAgentEdgeState(ctx, edge.AgentID, edge.State, edge.UpdatedAt))
+	}
+	return result
 }
 
 func (store *Store) Flush(ctx context.Context, id protocol.ThreadID) error {

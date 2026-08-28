@@ -25,6 +25,9 @@ func ScopeItem(item RolloutItem, threadID protocol.ThreadID, turnID protocol.Tur
 	case TurnContextItem:
 		value.ThreadID, value.TurnID = threadID, turnID
 		return value
+	case AgentSpawnEdgeItem:
+		value.ParentThreadID = threadID
+		return value
 	case EventMsgItem:
 		value.Msg = protocol.ScopeEventMsg(value.Msg, threadID, turnID)
 		return value
@@ -45,6 +48,8 @@ func ThreadIDOf(item RolloutItem) protocol.ThreadID {
 		return value.ThreadID
 	case TurnContextItem:
 		return value.ThreadID
+	case AgentSpawnEdgeItem:
+		return value.ParentThreadID
 	case EventMsgItem:
 		return protocol.ThreadIDOf(value.Msg)
 	default:
@@ -95,6 +100,8 @@ func CloneItem(item RolloutItem) RolloutItem {
 		return value
 	case TurnContextItem:
 		value.OutputSchema = append(json.RawMessage(nil), value.OutputSchema...)
+		return value
+	case AgentSpawnEdgeItem:
 		return value
 	case EventMsgItem:
 		encoded, err := protocol.EncodeEventMsg(value.Msg)

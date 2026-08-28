@@ -224,7 +224,7 @@ func TestProjectRolloutMessagesIncludesSubagentNotificationAsContextualUserInput
 	content := "<subagent_notification>\n{\"agent_id\":\"child-1\"}\n</subagent_notification>"
 	lines := []rollout.Line{{
 		Version: rollout.CurrentVersion, Sequence: 1, Timestamp: now,
-		Item: rollout.EventMsgItem{Msg: protocol.SubagentNotificationEvent{ThreadID: testutil.ThreadID(1), AgentID: testutil.ThreadID(2), Content: content}},
+		Item: rollout.EventMsgItem{Msg: protocol.SubagentNotificationEvent{ThreadID: testutil.ThreadID(1), AgentID: testutil.ThreadID(2), TurnID: "turn-child", Content: content}},
 	}}
 	projection, err := ProjectRolloutMessages(lines)
 	if err != nil {

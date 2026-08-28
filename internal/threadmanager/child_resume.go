@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/agent/multiagent"
@@ -13,11 +14,26 @@ import (
 )
 
 func (manager *ThreadManager) restorePersistedChildren(ctx context.Context, root *AmadeusThread, control *multiagent.Control) error {
-	children, err := manager.store.ListChildren(ctx, root.id)
+	lines, err := root.History(ctx)
 	if err != nil {
 		return err
 	}
-	for _, child := range children {
+	openChildren, err := openChildIDs(root.id, lines)
+	if err != nil {
+		return err
+	}
+	notifiedTurns := deliveredNotificationTurns(lines)
+	for _, childID := range openChildren {
+		child, err := manager.store.GetThread(ctx, childID)
+		if errors.Is(err, threadstore.ErrNotFound) {
+			if rebuildErr := manager.store.RebuildIndex(ctx); rebuildErr != nil {
+				return errors.Join(err, rebuildErr)
+			}
+			child, err = manager.store.GetThread(ctx, childID)
+		}
+		if err != nil {
+			return err
+		}
 		if !child.Source.IsSubAgent() || child.Source.SubAgent.ParentThreadID != root.id {
 			return fmt.Errorf("persisted child %q has invalid parent metadata", child.ID)
 		}
@@ -33,11 +49,49 @@ func (manager *ThreadManager) restorePersistedChildren(ctx context.Context, root
 			ThreadID: child.ID, ParentThreadID: root.id, Depth: meta.Source.SubAgent.Depth,
 			AgentNickname: meta.Source.SubAgent.AgentNickname, AgentRole: meta.Source.SubAgent.AgentRole,
 		}
-		if err := control.RegisterPersisted(metadata, persistedAgentStatus(history)); err != nil {
+		if err := control.RegisterPersisted(metadata, persistedAgentLifecycle(history), notifiedTurns[child.ID]); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func deliveredNotificationTurns(lines []rollout.Line) map[protocol.ThreadID]protocol.TurnID {
+	result := make(map[protocol.ThreadID]protocol.TurnID)
+	for _, line := range lines {
+		event, ok := line.Item.(rollout.EventMsgItem)
+		if !ok {
+			continue
+		}
+		notification, ok := event.Msg.(protocol.SubagentNotificationEvent)
+		if !ok || notification.AgentID.IsZero() || notification.TurnID == "" {
+			continue
+		}
+		result[notification.AgentID] = notification.TurnID
+	}
+	return result
+}
+
+func openChildIDs(rootID protocol.ThreadID, lines []rollout.Line) ([]protocol.ThreadID, error) {
+	edges := make(map[protocol.ThreadID]protocol.AgentSpawnEdgeState)
+	for _, line := range lines {
+		edge, ok := line.Item.(rollout.AgentSpawnEdgeItem)
+		if !ok {
+			continue
+		}
+		if edge.ParentThreadID != rootID {
+			return nil, fmt.Errorf("agent edge %q belongs to parent %q, expected %q", edge.AgentID, edge.ParentThreadID, rootID)
+		}
+		edges[edge.AgentID] = edge.State
+	}
+	result := make([]protocol.ThreadID, 0, len(edges))
+	for id, state := range edges {
+		if state == protocol.AgentSpawnEdgeOpen {
+			result = append(result, id)
+		}
+	}
+	sort.Slice(result, func(left, right int) bool { return result[left].String() < result[right].String() })
+	return result, nil
 }
 
 func (manager *ThreadManager) ResumeChild(ctx context.Context, control *multiagent.Control, id protocol.ThreadID) (multiagent.AgentRuntime, error) {
@@ -115,28 +169,34 @@ func canonicalChildMeta(history threadstore.InitialHistory, sessionID protocol.S
 	return meta, nil
 }
 
-func persistedAgentStatus(history threadstore.InitialHistory) protocol.AgentStatus {
-	status := protocol.AgentStatus{Kind: protocol.AgentStatusCompleted}
+func persistedAgentLifecycle(history threadstore.InitialHistory) multiagent.LifecycleState {
+	state := multiagent.InitialLifecycleState()
 	for _, line := range history.Lines {
 		event, ok := line.Item.(rollout.EventMsgItem)
 		if !ok {
 			continue
 		}
-		switch value := event.Msg.(type) {
-		case protocol.TurnCompleteEvent:
-			if value.Status == protocol.TurnStatusFailed || value.Error != "" {
-				status = protocol.AgentStatus{Kind: protocol.AgentStatusErrored, Message: value.Error}
-				if status.Message == "" {
-					status.Message = value.Reason
-				}
-			} else {
-				status = protocol.AgentStatus{Kind: protocol.AgentStatusCompleted, Message: value.Summary}
-			}
-		case protocol.TurnAbortedEvent:
-			status = protocol.AgentStatus{Kind: protocol.AgentStatusInterrupted}
-		case protocol.ErrorEvent:
-			status = protocol.AgentStatus{Kind: protocol.AgentStatusErrored, Message: value.Message}
+		if next, changed, _ := multiagent.ReduceLifecycleEvent(state, event.Msg); changed {
+			state = next
 		}
 	}
-	return status
+	if state.Status.Kind == protocol.AgentStatusRunning {
+		turnID := protocol.TurnID("")
+		for index := len(history.Lines) - 1; index >= 0; index-- {
+			event, ok := history.Lines[index].Item.(rollout.EventMsgItem)
+			if !ok {
+				continue
+			}
+			if started, ok := event.Msg.(protocol.TurnStartedEvent); ok {
+				turnID = started.TurnID
+				break
+			}
+		}
+		result := protocol.AgentTurnResult{
+			TurnID: turnID, Outcome: protocol.TurnOutcomeAborted,
+			Reason: "previous process ended before the turn completed",
+		}
+		state = multiagent.LifecycleState{Status: protocol.AgentStatus{Kind: protocol.AgentStatusInterrupted}, LastTurn: &result}
+	}
+	return state
 }

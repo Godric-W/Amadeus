@@ -88,8 +88,13 @@ func TestBasicMultiAgentArchitectureBoundaries(t *testing.T) {
 		"internal/agent/multiagent/domain.go",
 		"internal/agent/multiagent/control.go",
 		"internal/agent/multiagent/reservation.go",
+		"internal/agent/multiagent/lifecycle.go",
+		"internal/agent/multiagent/message_budget.go",
 		"internal/agent/multiagent/status.go",
 		"internal/agent/multiagent/shutdown.go",
+		"internal/threadmanager/agent_host.go",
+		"internal/contextmanager/subagent_notification.go",
+		"internal/rollout/agent_edge.go",
 		"internal/protocol/collaboration.go",
 		"internal/tool/builtin/multi_agent.go",
 		"internal/prompt/builtin/templates/agent/subagent.md",
@@ -106,9 +111,18 @@ func TestBasicMultiAgentArchitectureBoundaries(t *testing.T) {
 		}
 	}
 	managerSource := mustReadArchitectureFile(t, root, "internal/threadmanager/manager.go")
-	for _, required := range []string{"func (manager *ThreadManager) SpawnChild", "agentsession.Spawn", "NewDraftLiveThread", "SubAgentSessionSource"} {
-		if !strings.Contains(managerSource, required) {
+	if !strings.Contains(managerSource, "agentsession.Spawn") {
+		t.Error("ThreadManager no longer owns Session spawn")
+	}
+	agentHostSource := mustReadArchitectureFile(t, root, "internal/threadmanager/agent_host.go")
+	for _, required := range []string{"func (manager *ThreadManager) SpawnChild", "NewDraftLiveThread", "NewSubAgentSessionSource", "RecordSpawnEdge", "NotifyParent"} {
+		if !strings.Contains(agentHostSource, required) {
 			t.Errorf("ThreadManager child host is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"encoding/json", "<subagent_notification>"} {
+		if strings.Contains(agentHostSource, forbidden) {
+			t.Errorf("ThreadManager formats model-visible notification through %q", forbidden)
 		}
 	}
 	sessionSource := mustReadArchitectureFile(t, root, "internal/agent/session/step_context.go")
@@ -127,6 +141,44 @@ func TestBasicMultiAgentArchitectureBoundaries(t *testing.T) {
 	for _, required := range []string{"ID", "Tool", "Status", "SenderThreadID", "ReceiverAgents", "Prompt", "AgentsStates", "CreatedAt", "CompletedAt"} {
 		if _, exists := protocolFields[required]; !exists {
 			t.Errorf("CollabAgentToolCallItem is missing field %q", required)
+		}
+	}
+	turnCompleteFields := architectureStructFields(t, root, "internal/protocol/turn_events.go", "TurnCompleteEvent")
+	if _, exists := turnCompleteFields["LastAgentMessage"]; !exists {
+		t.Error("TurnCompleteEvent has no authoritative LastAgentMessage")
+	}
+	agentStateFields := architectureStructFields(t, root, "internal/protocol/collaboration.go", "CollabAgentState")
+	if _, exists := agentStateFields["LastTurn"]; !exists {
+		t.Error("CollabAgentState drops the terminal AgentTurnResult")
+	}
+	for _, relative := range []string{"internal/agent/multiagent", "internal/threadmanager", "internal/tool/builtin/multi_agent.go"} {
+		info, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths := []string{relative}
+		if info.IsDir() {
+			paths = nil
+			err = filepath.WalkDir(filepath.Join(root, filepath.FromSlash(relative)), func(path string, entry os.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+				if !entry.IsDir() && filepath.Ext(path) == ".go" && !strings.HasSuffix(path, "_test.go") {
+					paths = append(paths, filepath.ToSlash(path[len(root)+1:]))
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, path := range paths {
+			content := mustReadArchitectureFile(t, root, path)
+			for _, forbidden := range []string{"latestAssistant", "persistedAgentStatus", "statusFromEvent", "maxStatusMessageRunes", "AgentPath", "followup_task", "send_message", "resume_agent"} {
+				if strings.Contains(content, forbidden) {
+					t.Errorf("Basic Multi-Agent retains forbidden legacy/V2 concept %q in %s", forbidden, path)
+				}
+			}
 		}
 	}
 	for _, forbidden := range []string{"AgentTaskBus", "NestedSessionTask", "map[protocol.ThreadID]protocol.AgentStatus"} {

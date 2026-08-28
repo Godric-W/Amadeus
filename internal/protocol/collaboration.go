@@ -40,7 +40,9 @@ type CollabAgentRef struct {
 }
 
 type CollabAgentState struct {
-	Status AgentStatus `json:"status"`
+	Status            AgentStatus      `json:"status"`
+	LastTurn          *AgentTurnResult `json:"last_turn,omitempty"`
+	NotificationError string           `json:"notification_error,omitempty"`
 }
 
 type CollabAgentToolCallItem struct {
@@ -82,6 +84,11 @@ func (item CollabAgentToolCallItem) Validate() error {
 		}
 		if err := state.Status.Validate(); err != nil {
 			return err
+		}
+		if state.LastTurn != nil {
+			if err := state.LastTurn.Validate(); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

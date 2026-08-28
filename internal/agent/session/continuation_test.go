@@ -313,6 +313,85 @@ func TestContinueTurnWarnsThenReturnsBlockedAtSafetyBudget(t *testing.T) {
 	}
 }
 
+func TestSubagentBudgetUsesSingleNoToolsFinalizationSample(t *testing.T) {
+	toolResponse := continuationStream(llm.StreamChunk{
+		ToolCalls:    []llm.ToolCall{{ID: "call-1", Name: "read", Arguments: json.RawMessage(`{}`)}},
+		FinishReason: llm.FinishReasonToolCalls,
+	})
+	finalResponse := continuationStream(
+		llm.StreamChunk{ContentDelta: "Verified ownership in internal/agent/session."},
+		llm.StreamChunk{FinishReason: llm.FinishReasonStop},
+	)
+	client := &continuationTestClient{streams: []llm.Stream{toolResponse, finalResponse}}
+	budget := TurnBudget{MaxSamples: 2, MaxToolCalls: 100, MaxDuration: time.Hour, WarnRatio: 0.5}
+	session := newContinuationTestSession(t, client, []tool.ToolDefinition{&continuationNamedTool{name: "read", effect: tool.SideEffectRead}}, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), budget)
+	session.services.source = protocol.NewSubAgentSessionSource(testutil.ThreadID(9), 1, "atlas", "explorer")
+	appendContinuationUser(t, session, "turn-child-budget", "inspect ownership")
+
+	result, err := runContinuationTestTurn(session, "turn-child-budget", &continuationEventSink{session: session})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != protocol.TurnOutcomeCompleted || result.LastAgentMessage == nil || *result.LastAgentMessage != "Verified ownership in internal/agent/session." {
+		t.Fatalf("finalization result = %#v", result)
+	}
+	if len(client.requests) != 2 || len(client.requests[0].Prompt.Tools) == 0 || len(client.requests[1].Prompt.Tools) != 0 {
+		t.Fatalf("finalization tool snapshots = %#v", client.requests)
+	}
+	if !strings.Contains(continuationRequestText(client.requests[1]), "<subagent_budget_finalization>") {
+		t.Fatalf("finalization reminder missing: %q", continuationRequestText(client.requests[1]))
+	}
+}
+
+func TestSubagentBudgetBlocksWhenFinalizationReturnsToolCall(t *testing.T) {
+	toolResponse := func(id string) llm.Stream {
+		return continuationStream(llm.StreamChunk{
+			ToolCalls:    []llm.ToolCall{{ID: id, Name: "read", Arguments: json.RawMessage(`{}`)}},
+			FinishReason: llm.FinishReasonToolCalls,
+		})
+	}
+	client := &continuationTestClient{streams: []llm.Stream{toolResponse("call-1"), toolResponse("call-finalize")}}
+	budget := TurnBudget{MaxSamples: 2, MaxToolCalls: 100, MaxDuration: time.Hour, WarnRatio: 0.5}
+	session := newContinuationTestSession(t, client, []tool.ToolDefinition{&continuationNamedTool{name: "read", effect: tool.SideEffectRead}}, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), budget)
+	session.services.source = protocol.NewSubAgentSessionSource(testutil.ThreadID(9), 1, "atlas", "explorer")
+	appendContinuationUser(t, session, "turn-child-blocked", "inspect ownership")
+
+	result, err := runContinuationTestTurn(session, "turn-child-blocked", &continuationEventSink{session: session})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != protocol.TurnOutcomeBlocked || !strings.Contains(result.Reason, "finalization returned tool calls") || result.LastAgentMessage != nil {
+		t.Fatalf("blocked finalization result = %#v", result)
+	}
+	if len(client.requests) != 2 || len(client.requests[1].Prompt.Tools) != 0 {
+		t.Fatalf("finalization request exposed tools: %#v", client.requests)
+	}
+}
+
+func TestSubagentBudgetBlocksWhenFinalizationProviderFails(t *testing.T) {
+	toolResponse := continuationStream(llm.StreamChunk{
+		ToolCalls:    []llm.ToolCall{{ID: "call-1", Name: "read", Arguments: json.RawMessage(`{}`)}},
+		FinishReason: llm.FinishReasonToolCalls,
+	})
+	failedFinalization := &continuationTestStream{results: []continuationStreamResult{{err: errors.New("finalization provider failed")}}}
+	client := &continuationTestClient{streams: []llm.Stream{toolResponse, failedFinalization}}
+	budget := TurnBudget{MaxSamples: 2, MaxToolCalls: 100, MaxDuration: time.Hour, WarnRatio: 0.5}
+	session := newContinuationTestSession(t, client, []tool.ToolDefinition{&continuationNamedTool{name: "read", effect: tool.SideEffectRead}}, continuationModelInfo(llm.ModelMessages{}), continuationProvider(0), budget)
+	session.services.source = protocol.NewSubAgentSessionSource(testutil.ThreadID(9), 1, "atlas", "explorer")
+	appendContinuationUser(t, session, "turn-child-provider-failure", "inspect ownership")
+
+	result, err := runContinuationTestTurn(session, "turn-child-provider-failure", &continuationEventSink{session: session})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != protocol.TurnOutcomeBlocked || !strings.Contains(result.Reason, "finalization failed") || result.LastAgentMessage != nil {
+		t.Fatalf("provider-failed finalization result = %#v", result)
+	}
+	if len(client.requests) != 2 || len(client.requests[1].Prompt.Tools) != 0 {
+		t.Fatalf("provider-failed finalization request = %#v", client.requests)
+	}
+}
+
 func TestContinueTurnRetryPersistsOnlySuccessfulAttempt(t *testing.T) {
 	client := &continuationTestClient{streams: []llm.Stream{
 		&continuationTestStream{results: []continuationStreamResult{

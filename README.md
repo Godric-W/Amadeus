@@ -466,7 +466,11 @@ Current SubAgent behavior:
 - They can use `read`, `glob`, `grep`, and conditionally available read-only capabilities such as `read_skill` and `web_search`.
 - They cannot edit files, execute commands, request user input, call MCP tools, or create additional SubAgents.
 - The root agent manages them through `spawn_agent`, `send_input`, `wait_agent`, and `close_agent`.
-- Saved child work is restored with its root session when needed.
+- A successfully spawned SubAgent belongs to the root thread tree and keeps running when the root's current turn ends.
+- `wait_agent` returns when any target reaches a final status; blocked outcomes retain their actual reason instead of being reported as successful output.
+- Near its safety budget, a SubAgent gets one no-tools finalization request so it can return the best verified report.
+- Saved open child work is restored with its root session when needed. Explicitly closed children remain closed and do not consume slots after resume.
+- Codex Multi-Agent V2, mailbox/residency, history forks, write workers, child interaction, teams/worktrees/remote agents, and a full agent picker are intentionally out of scope.
 
 Delegation is most useful for bounded tasks such as locating an implementation, comparing independent modules, or gathering evidence while the root agent handles the critical path.
 

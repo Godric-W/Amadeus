@@ -14,21 +14,22 @@ import (
 var ErrNotFound = errors.New("thread metadata not found")
 
 type StoredThread struct {
-	ID            protocol.ThreadID      `json:"id"`
-	Source        protocol.SessionSource `json:"source"`
-	RolloutPath   string                 `json:"rollout_path"`
-	CWD           string                 `json:"cwd"`
-	Title         string                 `json:"title"`
-	Preview       string                 `json:"preview,omitempty"`
-	ModelProvider string                 `json:"model_provider,omitempty"`
-	Model         string                 `json:"model,omitempty"`
-	TokensUsed    int64                  `json:"tokens_used"`
-	CreatedAt     time.Time              `json:"created_at"`
-	UpdatedAt     time.Time              `json:"updated_at"`
-	Archived      bool                   `json:"archived"`
-	GitSHA        string                 `json:"git_sha,omitempty"`
-	GitBranch     string                 `json:"git_branch,omitempty"`
-	GitOriginURL  string                 `json:"git_origin_url,omitempty"`
+	ID             protocol.ThreadID            `json:"id"`
+	Source         protocol.SessionSource       `json:"source"`
+	RolloutPath    string                       `json:"rollout_path"`
+	CWD            string                       `json:"cwd"`
+	Title          string                       `json:"title"`
+	Preview        string                       `json:"preview,omitempty"`
+	ModelProvider  string                       `json:"model_provider,omitempty"`
+	Model          string                       `json:"model,omitempty"`
+	AgentEdgeState protocol.AgentSpawnEdgeState `json:"agent_edge_state,omitempty"`
+	TokensUsed     int64                        `json:"tokens_used"`
+	CreatedAt      time.Time                    `json:"created_at"`
+	UpdatedAt      time.Time                    `json:"updated_at"`
+	Archived       bool                         `json:"archived"`
+	GitSHA         string                       `json:"git_sha,omitempty"`
+	GitBranch      string                       `json:"git_branch,omitempty"`
+	GitOriginURL   string                       `json:"git_origin_url,omitempty"`
 }
 
 func (thread StoredThread) Validate() error {
@@ -43,6 +44,13 @@ func (thread StoredThread) Validate() error {
 	}
 	if err := thread.Source.Validate(); err != nil {
 		return fmt.Errorf("stored thread source: %w", err)
+	}
+	if thread.Source.IsSubAgent() {
+		if thread.AgentEdgeState != "" && !thread.AgentEdgeState.Valid() {
+			return errors.New("stored child thread edge state is invalid")
+		}
+	} else if thread.AgentEdgeState != "" {
+		return errors.New("stored root thread has agent edge state")
 	}
 	if thread.TokensUsed < 0 {
 		return errors.New("stored thread tokens_used is negative")
@@ -64,9 +72,10 @@ type MetadataDB interface {
 	UpsertThread(context.Context, StoredThread) error
 	GetThread(context.Context, protocol.ThreadID) (StoredThread, error)
 	ListThreads(context.Context, ListQuery) ([]StoredThread, error)
-	ListChildren(context.Context, protocol.ThreadID) ([]StoredThread, error)
+	ListOpenChildren(context.Context, protocol.ThreadID) ([]StoredThread, error)
 	RenameThread(context.Context, protocol.ThreadID, string, time.Time) error
 	ArchiveThread(context.Context, protocol.ThreadID, time.Time) error
+	UpdateAgentEdgeState(context.Context, protocol.ThreadID, protocol.AgentSpawnEdgeState, time.Time) error
 	ReplaceThreads(context.Context, []StoredThread) error
 	Close() error
 }

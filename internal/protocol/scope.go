@@ -102,6 +102,8 @@ func TurnIDOf(message EventMsg) TurnID {
 		return value.TurnID
 	case RequestUserInputEvent:
 		return value.TurnID
+	case SubagentNotificationEvent:
+		return value.TurnID
 	default:
 		return ItemEventTurnID(message)
 	}

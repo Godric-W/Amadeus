@@ -10,9 +10,8 @@ import (
 )
 
 const (
-	ExplorerRole          = "explorer"
-	defaultWaitTimeout    = 30 * time.Second
-	maxStatusMessageRunes = 16_000
+	ExplorerRole       = "explorer"
+	defaultWaitTimeout = 30 * time.Second
 )
 
 var agentNicknames = []string{
@@ -55,17 +54,20 @@ type AgentRuntime interface {
 type AgentHost interface {
 	SpawnChild(context.Context, *Control, SpawnChildRequest) (AgentRuntime, error)
 	ResumeChild(context.Context, *Control, protocol.ThreadID) (AgentRuntime, error)
+	RecordSpawnEdge(context.Context, protocol.ThreadID, protocol.ThreadID, protocol.AgentSpawnEdgeState) error
 	NotifyParent(context.Context, protocol.ThreadID, Notification) error
 }
 
 type Notification struct {
 	Metadata protocol.AgentMetadata
 	Status   protocol.AgentStatus
+	LastTurn *protocol.AgentTurnResult
 }
 
 type AgentRecord struct {
 	Metadata protocol.AgentMetadata
 	Status   protocol.AgentStatus
+	LastTurn *protocol.AgentTurnResult
 }
 
 type SpawnResult struct {
@@ -74,10 +76,12 @@ type SpawnResult struct {
 }
 
 type StatusSnapshot struct {
-	AgentID  protocol.ThreadID    `json:"agent_id"`
-	Nickname string               `json:"nickname,omitempty"`
-	Role     string               `json:"role,omitempty"`
-	Status   protocol.AgentStatus `json:"status"`
+	AgentID           protocol.ThreadID         `json:"agent_id"`
+	Nickname          string                    `json:"nickname,omitempty"`
+	Role              string                    `json:"role,omitempty"`
+	Status            protocol.AgentStatus      `json:"status"`
+	LastTurn          *protocol.AgentTurnResult `json:"last_turn,omitempty"`
+	NotificationError string                    `json:"notification_error,omitempty"`
 }
 
 type WaitResult struct {
@@ -86,13 +90,15 @@ type WaitResult struct {
 }
 
 type record struct {
-	metadata         protocol.AgentMetadata
-	status           protocol.AgentStatus
-	runtime          AgentRuntime
-	latestAssistant  string
-	notifiedTurn     bool
-	notifiedShutdown bool
-	closing          bool
+	metadata          protocol.AgentMetadata
+	status            protocol.AgentStatus
+	lastTurn          *protocol.AgentTurnResult
+	runtime           AgentRuntime
+	provisional       bool
+	notifyingTurnID   protocol.TurnID
+	notifiedTurnID    protocol.TurnID
+	notificationError string
+	closing           bool
 }
 
 type reservation struct {
