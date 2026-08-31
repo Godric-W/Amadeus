@@ -1,63 +1,171 @@
 # Amadeus 架构白皮书
 
-> 文档日期：2026-08-27
-> 适用版本：当前 `main` 分支基础能力、Basic Multi-Agent、Next-Turn Queue 与单一 TUI frontend 实现
-> 规范来源：`docs/design.md` 是主要 Contract 工作文档；本文负责解释架构、所有权、运行流程与核心数据模型。两份文档都可能过期，遇到不确定处必须回查 Codex/Claude Code 源码并同步修正。
+## 1. 阅读指南
 
-## 1. 文档目的
+Amadeus 是一个使用 Go 实现的本地终端 Coding Agent。学习它的关键，是沿着一次用户请求在系统中的流动路径，逐层理解各个模块如何协作。
 
-Amadeus 是一个使用 Go 实现的终端 Coding Agent。它不是简单的“模型请求 + Tool 回调”程序，而是一个具有以下性质的长期运行系统：
+本文按以下顺序展开：
 
-- Thread、Session、Turn 和 Tool Call 都有明确身份与生命周期。
-- 用户输入、模型流、Tool 执行、Approval、持久化和 TUI 通过 typed protocol 协作。
-- JSONL Rollout 保存完整 canonical history；SQLite 只保存可重建的 Thread metadata index。
-- Prompt、Context、ToolRouter 和 Provider Request 在每次模型采样时形成一致快照。
-- MCP、Skill、Web、图片和 Multi-Agent 都进入同一 Session/Tool/Event 主链，不建立第二套 Agent Runtime。
-- Root Agent 可以创建由 Amadeus 自己驱动的只读 explorer SubAgent；SubAgent 本身仍是完整 Thread/Session。
-- TUI 将 Enter same-turn steer 与 Tab next-turn queue 分开；未提交 queue state 不进入 Runtime 或 canonical persistence。
+1. 先说明代码目录和 package 依赖方向。
+2. 再展示整体分层、核心所有权和端到端运行主链。
+3. 随后按模块深入说明 Protocol、Thread/Persistence、Agent Loop、Prompt/Context、LLM、Tool、Approval、Process、MCP、Skill、Web/Image、Multi-Agent 和 TUI。
+4. 最后说明并发取消、错误、测试和关键事实。
 
-本文面向以下读者：
+本文以当前 Amadeus 源码和测试为实现事实，重点解释模块职责、数据流和生命周期；数据模型只展开其职责，字段细节仍可回到源码查看。`docs/design.md` 用来记录架构目标，阅读时可以把它与当前实现对照起来。
 
-- 希望理解 Amadeus 全局架构和运行流程的开发者。
-- 需要修改 Runtime、Tool、Context、Persistence 或 TUI 的维护者。
-- 需要新增 Provider、Tool、Capability 或 Agent 类型的扩展开发者。
+### 1.1 设计来源
 
-### 1.1 数据模型范围
+- Codex 是 Thread、Session、Turn、Task、`run_turn`、Prompt、Context、Event、Rollout、Slash Command、TUI 和 Basic Multi-Agent 的主要架构参考。
+- Claude Code 是 Tool 内层生命周期、文件工具、read-before-write、Diff Preview、Permission 和 Approval UX 的主要参考。
+- Amadeus 保留 Go、多 Provider、本地 JSONL/SQLite、Bubble Tea 和安全默认值等自身产品边界。
+- 这些项目提供了 Amadeus 在所有权、数据模型、依赖方向、生命周期、事件顺序和失败处理方面的设计来源。
 
-本文中的“数据模型”指生产主链上具有独立架构职责的模型，包括：
+## 2. 项目目录
 
-- 跨 package 传递的 DTO、协议 envelope 和 durable item。
-- 拥有并发状态、资源或生命周期的 runtime object。
-- 决定权限、可见性、持久化或 UI 投影的 read model。
+Amadeus 使用一个可执行入口和一组职责明确的 `internal` package。目录表达稳定的领域或适配器边界，文件表达 package 内的内聚行为。
 
-纯测试 fixture、只为 JSON 参数解码存在的私有小结构、普通 error wrapper 和无独立职责的 helper 不逐一列出；它们归属于文中对应 owner。
+```text
+amadeus/
+├── AGENTS.md                    # 仓库级工程约束
+├── README.md                    # 使用入口
+├── Makefile                     # build/check/test命令
+├── go.mod / go.sum              # Go module与依赖锁定
+├── cmd/amadeus/                 # 进程入口
+├── configs/                     # config/MCP示例与随仓库Skill
+├── docs/                        # 设计、进度、白皮书与视觉 Contract
+└── internal/
+    ├── cli/                     # Cobra 命令、flags、输出与退出语义
+    ├── bootstrap/               # concrete dependency composition
+    ├── app/                     # 交互应用与 ThreadWorkspace
+    ├── tui/                     # 唯一交互前端与 History projection
+    ├── protocol/                # Identity、Submission、EventMsg、TurnItem
+    │   └── identity/            # SessionID、ThreadID 等 typed identity
+    ├── threadmanager/           # live Thread registry 与 AgentHost
+    ├── threadstore/             # Thread persistence port 与 LiveThread
+    │   └── local/
+    │       └── sqlite/          # 可重建 metadata index
+    ├── rollout/                 # canonical Rollout item、codec、recorder
+    ├── agent/
+    │   ├── session/             # Session loop、Turn、Task、runTurn
+    │   ├── modelclient/         # sampling、stream consume、reconnect
+    │   ├── compact/             # 无状态 compaction generation
+    │   └── multiagent/          # root-scoped multiagent.Control
+    ├── contextmanager/          # Prompt history、WorldState、token accounting
+    ├── prompt/                  # Prompt assets、source manifest、mode rendering
+    │   └── builtin/             # embedded Prompt templates
+    ├── llm/                     # Provider-neutral model domain
+    │   └── openai/              # Responses / Chat Completions adapter
+    ├── tool/                    # Tool contract、Registry、Router、execution
+    │   ├── builtin/             # 内置 Tool definitions
+    │   └── textdiff/            # unified text diff
+    ├── policy/                  # Permission、Approval、Command guard
+    ├── process/                 # process.Manager、PTY、stdio lifecycle
+    ├── project/                 # Project root、PathResolver、FS policy
+    ├── workspace/               # bounded read、glob、ignore、文本检测
+    ├── filechange/              # 文件变更 preview/result
+    ├── agentsmd/                # AGENTS.md discovery 与 revision
+    ├── mcp/                     # MCP runtime、binding、catalog、tool adapter
+    ├── skill/                   # Skill catalog、injection、resource boundary
+    ├── websearch/               # 搜索 Provider 与 service
+    ├── webfetch/                # URL safety、fetch、Markdown projection
+    ├── imageprep/               # 图片校验、缩放、重编码
+    ├── audit/                   # Tool 审计 port 与 sink
+    ├── logging/                 # 结构化日志与脱敏
+    ├── config/                  # 配置加载、覆盖、校验、provenance
+    ├── buildinfo/               # version/build metadata
+    ├── architecture/            # AST/source architecture guards
+    ├── integration/             # test-only E2E harness
+    └── testutil/                # 跨 package 测试 helper
+```
 
-## 2. 核心架构原则
+### 2.1 目录职责地图
 
-1. **唯一 Runtime 主链**：Root Agent、Plan Mode、Compaction 和 SubAgent 都复用 Session、Task、`run_turn`、ToolExecutionService 与 Rollout。
-2. **唯一事实 owner**：ThreadManager 管 live Thread；Session 管 active Turn；`contextmanager.Manager` 管模型上下文；ToolRouter 管单次采样工具集合；MCPRuntime 管 MCP 连接；AgentControl 管 root agent tree control plane。
-3. **Protocol first**：跨 goroutine、跨层和需要恢复的事实使用 typed `Submission`、`EventMsg`、`TurnItem` 或 `RolloutItem` 表达。
-4. **Canonical persistence**：JSONL Rollout 是完整历史事实源；SQLite 不保存第二份对话历史。
-5. **Prompt 与能力一致**：模型看到的 ToolSpec、Prompt guidance 和实际 dispatch 必须来自同一个 StepContext/ToolRouter snapshot。
-6. **Approval 不等于权限文本**：Approval 是运行时决策协议；文件系统策略和 Session Grant 是独立的强制边界。
-7. **UI 只做 projection**：TUI 不成为 Thread、Agent、Approval 或 Tool 状态的事实 owner。
-8. **取消树明确**：Root shutdown、Session shutdown、Turn interrupt、Tool cancellation 和 Process cancellation都有明确父子关系。
+| 区域 | 核心职责 | 主要输出 |
+|---|---|---|---|
+| `cli` / `bootstrap` | 进程参数与 concrete composition | TUI 启动参数、Session adapters |
+| `app` / `tui` | 交互用例与显示状态 | Application events、HistoryCell |
+| `threadmanager` | live Thread registry | `AmadeusThread` |
+| `threadstore` / `rollout` | durable Thread history | JSONL、metadata projection |
+| `agent/session` | Session 与 ActiveTurn | EventMsg、canonical terminal |
+| `contextmanager` / `prompt` | 模型可见上下文 | PromptSnapshot |
+| `llm` / `modelclient` | 模型请求与流恢复 | Response、usage、stream events |
+| `tool` / `policy` | Tool 和权限生命周期 | ToolResult、ApprovalRequest |
+| `mcp` / `skill` / `web*` | Session capability | Tool definitions、catalog/binding |
 
-## 3. 总体分层架构
+### 2.2 Package 依赖方向
+
+```mermaid
+flowchart LR
+    Entry[cmd/amadeus] --> CLI[internal/cli]
+    CLI --> TUI[internal/tui]
+    TUI --> App[internal/app]
+    TUI --> Bootstrap[internal/bootstrap]
+    Bootstrap --> Manager[internal/threadmanager]
+    App --> Manager
+    Manager --> Session[internal/agent/session]
+    Manager --> Store[internal/threadstore]
+    Session --> Context[internal/contextmanager]
+    Session --> Model[internal/agent/modelclient]
+    Session --> Tool[internal/tool]
+    Session --> Capabilities[MCP / Skill / AgentsMd]
+    Model --> LLM[internal/llm]
+    Tool --> Policy[internal/policy]
+    Store --> Rollout[internal/rollout]
+    Store --> SQLite[local/sqlite]
+    Protocol[internal/protocol] --> Rollout
+    Protocol --> Session
+    Protocol --> App
+    Protocol --> TUI
+```
+
+依赖关系可以这样理解：
+
+- `protocol` 提供低层 Contract，供 Runtime、TUI 和 Adapter共同使用。
+- `threadmanager` 创建和恢复 Session，并把 live Thread 暴露给上层。
+- `threadstore` 保存 Thread 历史；`rollout` 定义可恢复的 canonical item。
+- `tool` 定义通用 Tool 生命周期，`tool/builtin` 提供具体产品能力。
+- `agent/session` 执行 Runtime 主链，Application 和 TUI通过它提交输入并接收事件。
+- TUI 位于最上层，把 Application 与 Protocol事件投影为终端界面。
+
+### 2.3 推荐阅读路径
+
+| 修改目标 | 建议入口 |
+|---|---|
+| Agent 主循环 | `agent/session/session_loop.go` → `turn_start.go` → `continuation.go` |
+| Prompt | `agent/session/step_capture.go` → `world_state.go` → `prompt_assembly.go` |
+| Tool | `tool/execution_service.go` → `execution_batch.go` → `tool/builtin/*` |
+| 文件修改 | `tool/builtin/read_file.go` → `edit_file.go` / `write_file.go` → `file_change.go` |
+| Resume | `threadmanager/manager.go` → `threadstore/local` → `contextmanager/rollout_projection.go` |
+| Multi-Agent | `agent/multiagent/control.go` → `lifecycle.go` → `threadmanager/agent_host.go` |
+| TUI | `tui/application_update.go` → `application_events.go` → `history_*` |
+
+## 3. 整体架构
+
+### 3.1 核心原则
+
+1. **唯一 Runtime 主链**：Default、Plan、Compaction 和 SubAgent 都复用 Session、Task、`runTurn`、ToolExecutionService 与 Rollout。
+2. **单一事实 owner**：ThreadManager 管 live Thread；Session 管 ActiveTurn；`contextmanager.Manager`管模型history；ToolRouter管单次请求ToolSet。
+3. **Typed Protocol**：跨 goroutine、跨层和需要恢复的事实使用 `Submission`、`EventMsg`、`TurnItem` 或 `RolloutItem`。
+4. **Canonical Persistence**：JSONL 保存完整历史，SQLite提供可重建的 metadata index。
+5. **Prompt 与能力一致**：模型 ToolSpec 与实际 dispatch 来自同一个 StepContext.ToolRouter。
+6. **UI 负责 Projection**：TUI 将 Agent、Turn、Approval 和 Tool 事件转换为终端视图。
+7. **取消路径明确**：goroutine、Process、Tool、Turn 和 child Thread 都沿着各自的 owner 传播取消，并在有限时间内完成清理。
+
+### 3.2 分层架构
 
 ```mermaid
 flowchart TB
-    subgraph Interface[Interface Layer]
-        CLI[CLI Dispatch]
-        TUI[Single Interactive TUI]
+    subgraph Interface[Interface]
+        CLI[CLI]
+        TUI[TUI]
     end
 
-    subgraph Application[Application Layer]
+    subgraph Application[Application]
         IA[InteractiveApplication]
         TW[ThreadWorkspace]
     end
 
-    subgraph ThreadLayer[Thread Layer]
+    subgraph Threads[Thread Boundary]
         TM[ThreadManager]
         AT[AmadeusThread]
         LT[LiveThread]
@@ -65,1326 +173,1414 @@ flowchart TB
 
     subgraph Runtime[Agent Runtime]
         S[Session]
-        ATr[ActiveTurn]
-        RT[RunningTask]
-        Run[run_turn Continuation Loop]
-        SC[StepContext]
+        Active[ActiveTurn]
+        Task[RunningTask / SessionTask]
+        Loop[runTurn]
+        Step[StepContext]
     end
 
-    subgraph Capabilities[Session-scoped Capabilities]
-        CM[ContextManager]
-        TR[ToolRegistry / ToolRouter]
-        TE[ToolExecutionService]
-        AP[Approval + Permission]
-        AG[AGENTS.md Manager]
-        SK[SkillCatalog]
+    subgraph Capability[Capabilities]
+        CM[contextmanager.Manager]
+        Tools[Tool Runtime]
         MCP[MCPRuntime]
-        MA[AgentControl]
-        PR[ProcessManager]
+        Skill[SkillCatalog]
+        Agents[multiagent.Control]
+        Process[process.Manager]
     end
 
-    subgraph Provider[Model / Provider]
-        MC[ModelClientSession]
+    subgraph Model[Model Boundary]
+        MCS[ModelClientSession]
         LLM[llm.Client]
-        OA[OpenAI Adapter]
+        Adapter[Provider Adapter]
     end
 
-    subgraph Persistence[Infrastructure]
-        TS[ThreadStore]
-        JSONL[Canonical JSONL Rollout]
-        DB[SQLite Metadata Index]
-        AUDIT[Audit Sink]
+    subgraph Infra[Infrastructure]
+        Store[ThreadStore]
+        JSONL[(JSONL Rollout)]
+        DB[(SQLite Index)]
+        Audit[Audit Sink]
     end
 
-    CLI --> TUI
-    TUI --> IA
-    IA --> TW
-    TW --> TM
-    TM --> AT
-    AT --> S
-    AT --> LT
-    S --> ATr
-    ATr --> RT
-    RT --> Run
-    Run --> SC
-    SC --> CM
-    SC --> TR
-    Run --> MC
-    MC --> LLM
-    LLM --> OA
-    Run --> TE
-    TE --> AP
-    TE --> PR
-    S --> AG
-    S --> SK
+    CLI --> TUI --> IA --> TW --> TM --> AT --> S
+    AT --> LT --> Store
+    S --> Active --> Task --> Loop --> Step
+    Step --> CM
+    Step --> Tools
+    Loop --> MCS --> LLM --> Adapter
     S --> MCP
-    S --> MA
-    LT --> TS
-    TS --> JSONL
-    TS --> DB
-    TE --> AUDIT
+    S --> Skill
+    S --> Agents
+    Tools --> Process
+    Store --> JSONL
+    Store --> DB
+    Tools -. execute_command only .-> Audit
 ```
 
-### 3.1 六层职责
-
-| 层 | 主要 package | 职责 | 不拥有的内容 |
-|---|---|---|---|
-| Interface | `internal/cli`、`internal/tui` | multitool 参数与分发、initial UserMessage、终端输入、TUI 渲染、Approval 交互 | Session 状态、Thread map、Tool truth |
-| Application | `internal/app` | 当前 Thread 选择、UI generation、事件泵、Slash Command 应用生命周期 | Provider、Rollout writer、Tool executor |
-| Thread | `internal/threadmanager`、`internal/threadstore/*` | live registry、writer、Resume、metadata 操作 | Active Turn、模型循环 |
-| Agent Runtime | `internal/agent/*` | Session loop、Turn、Task、Step、模型 continuation、Multi-Agent control | SQLite 实现、TUI cell |
-| Capabilities | `internal/contextmanager`、`tool`、`policy`、`mcp`、`skill` 等 | Prompt/context、工具、权限、外部能力 | 顶层 Thread 生命周期 |
-| Infrastructure | `internal/threadstore/local`、`audit`、Provider adapter | JSONL、SQLite、日志、网络与进程适配 | 产品级运行状态决策 |
-
-## 4. 所有权与生命周期
+### 3.3 所有权树
 
 ```mermaid
 flowchart TD
-    P[Process]
-    TM[ThreadManager]
-    Root[Root AmadeusThread]
-    AC[AgentControl]
-    Child[Child AmadeusThread]
-    S[Session]
-    SS[SessionServices]
-    AT[ActiveTurn]
-    RT[RunningTask]
-    TS[SessionTask]
-    Step[StepContext]
-    Tool[Prepared Tool Execution]
-    Proc[Managed Process]
-
-    P --> TM
-    TM --> Root
-    Root --> S
-    Root --> AC
-    AC -. requests spawn .-> TM
-    TM --> Child
-    Child --> S
-    S --> SS
-    S --> AT
-    AT --> RT
-    RT --> TS
-    TS --> Step
-    Step --> Tool
-    Tool --> Proc
+    Process[Amadeus process] --> Manager[ThreadManager]
+    Manager --> Root[Root AmadeusThread]
+    Root --> RootSession[Root Session]
+    Root --> Control[multiagent.Control]
+    Control -. spawn request .-> Manager
+    Manager --> Child[Child AmadeusThread]
+    Child --> ChildSession[Child Session]
+    RootSession --> Services[SessionServices]
+    Services --> ProcessManager[process.Manager]
+    RootSession --> Active[ActiveTurn]
+    Active --> Running[RunningTask]
+    Running --> SessionTask[SessionTask]
+    SessionTask --> Step[StepContext]
+    Step --> Calls[Model / Tool Calls]
+    ProcessManager --> ManagedProcess[Managed Process]
+    Calls -. start / later write .-> ManagedProcess
 ```
 
-### 4.1 生命周期规则
+重要生命周期：
 
-- `ThreadManager` 是进程内 live `AmadeusThread` 的唯一 registry。
-- 一个 `AmadeusThread` 包装一个 `Session`、一个 `SessionIo` 和一个 `LiveThread`。
-- 一个 `Session` 同时最多拥有一个 `ActiveTurn`，但可以保存 deferred submissions 和 same-turn pending input。
-- 一个 `ActiveTurn` 拥有一个 `RunningTask`、一个 `TurnState` 和当前 `TaskOutput`。
-- 一个 `RunningTask` 拥有 cancellation context，并执行一个 `SessionTask`。
-- 一个 `SessionServices` 在 Session 生命周期内复用 Provider client、Context、Tool、Approval、MCP、Skill、Process 和无状态 CompactionService；Session 自身拥有 compaction lifecycle 与 durable install。
-- 一个 `StepContext` 只对应一次模型采样及其紧随的 Tool dispatch；下一次采样必须重新捕获。
-- `AgentControl` 只由 Root Thread 拥有；child 共享引用但不能关闭它。
-- `NextTurnQueue` 由 Bubble Tea `appModel` 串行拥有，按 active Thread attachment 隔离；它不是 Session deferred submission 或 TurnInputQueue。
+- 一个 Session 同时最多拥有一个 ActiveTurn。
+- 一个 RunningTask 执行一个 SessionTask，并通过单值 Completion 返回 Session loop。
+- SessionServices 在 Session 生命周期内复用 Provider、Tool、MCP、Skill、Permission 和 Process 等能力。
+- StepContext对应一次模型采样及其紧随的 Tool dispatch。
+- Root `multiagent.Control` 生命周期覆盖父 Turn；成功 spawn 的 child 拥有独立于父 Turn 的运行生命周期。
 
-## 5. Canonical Turn 数据流
+## 4. 端到端运行主链
+
+### 4.1 从用户输入到 Turn 终态
 
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant UI as CLI/TUI
+    participant TUI as TUI
     participant APP as InteractiveApplication
     participant TH as AmadeusThread
-    participant S as Session
-    participant R as RunningTask/run_turn
-    participant C as ContextManager
+    participant S as Session Loop
+    participant R as RunningTask/runTurn
+    participant C as contextmanager.Manager
     participant M as ModelClientSession
     participant T as ToolExecutionService
-    participant L as LiveThread/ThreadStore
+    participant L as LiveThread
 
-    U->>UI: task / slash command / approval
-    UI->>APP: typed application request
+    U->>TUI: UserMessage / Slash / Approval
+    TUI->>APP: typed request
     APP->>TH: Submit or SubmitUserInput
     TH->>S: Submission{ID, Op}
-    S->>S: admit, steer, defer or start Turn
-    S->>L: append user + turn context facts
-    S->>R: start RunningTask
-    loop Model continuation
-        R->>R: Capture StepContext + ToolRouter
-        R->>C: append WorldState full/patch
-        R->>C: build PromptSnapshot
-        R->>M: Sample(request)
-        M-->>R: stream deltas / tool calls / final
-        R->>L: persist canonical response items
+    S->>S: validate and admit
+    S->>L: durable Turn start facts
+    S->>R: start SessionTask
+    loop continuation
+        R->>C: capture world state and PromptSnapshot
+        R->>M: Sample with frozen ToolSpecs
+        M-->>R: delta / tool calls / final
         alt tool calls
-            R->>T: Validate -> Prepare -> Permission -> Execute
-            T-->>R: ToolResult
-            R->>L: persist tool call/result/events
+            R->>T: ExecuteBatchScoped
+            T-->>R: ordered ToolResults
+            R->>L: append Response + Item facts
         else final answer
-            R-->>S: TaskOutput
+            R-->>S: TaskOutput with LastAgentMessage
         end
     end
-    S->>L: persist terminal EventMsgItem and usage
-    S-->>APP: typed Event stream
-    APP-->>UI: HistoryCell projection
+    S->>L: durable TurnComplete or TurnAborted
+    S-->>APP: Event stream
+    APP-->>TUI: generation-scoped projection
 ```
 
-### 5.1 核心数据流模型
-
-| 模型 | 所属 package | 职责 |
-|---|---|---|
-| `SessionID` | `agent/protocol/identity` | Root 与全部 child Thread 共享的 agent-tree/session-level UUID identity。 |
-| `ThreadID` | `agent/protocol/identity` | 一个具体 Thread、Rollout、Event scope 和 Resume target 的 UUID identity；Amadeus 新建值为 UUIDv7。 |
-| `TurnID` | `agent/protocol/identity` | Session 内一次 regular/compact Turn 的身份。 |
-| `SubmissionID` | `agent/protocol/identity` | 将输入操作与输出 Event 关联起来。 |
-| `RequestID` | `agent/protocol/identity` | Approval 或 `request_user_input` waiter 的身份。 |
-| `ItemID` | `agent/protocol/identity` | Assistant、Reasoning、Tool、Plan、Collaboration item 的稳定身份。 |
-| `Submission` | `agent/protocol` | 输入 envelope，由 `ID + Op` 组成，进入 Session loop。 |
-| `Event` | `agent/protocol` | 输出 envelope，由关联 `ID + EventMsg` 组成，离开 Session loop。 |
-| `RolloutItem` | `rollout` | JSONL canonical history 的 tagged domain item。 |
-| `TurnItem` | `agent/protocol` | live TUI 与 Resume 共用的稳定 UI replay unit。 |
-| `PromptSnapshot` | `contextmanager` | WorldState 已记录后，一次模型请求看到的 immutable messages、token estimate、history revision 和 world-state revision。 |
-| `StepContext` | `agent/session` | 一次模型采样的不可变能力快照，绑定 Model、ToolRouter、LoadedAgentsMd、Skill/Permission/SubAgent snapshots 和 capability revisions；不持有 assembled Prompt 或 BaseInstructions。 |
-| `NextTurnQueue` | `interface/tui` | 尚未提交的下一 Turn 输入 FIFO 与 InFlight gate；terminal 后才通过普通 UserInputOp 启动新 Turn。 |
-
-## 6. 配置与 Bootstrap
-
-```mermaid
-flowchart LR
-    D[Defaults]
-    F[config.yaml]
-    E[Environment]
-    C[CLI Overrides]
-    L[Config Loader]
-    V[Validation]
-    CFG[Effective Config]
-    CLI[internal/cli dispatch]
-    COMP[internal/bootstrap composition]
-    TUI[internal/tui]
-    SS[Session Configuration / ServiceAdapters]
-
-    D --> L
-    F --> L
-    E --> L
-    C --> L
-    L --> V
-    V --> CFG
-    CFG --> CLI
-    CLI --> TUI
-    TUI --> COMP
-    COMP --> SS
-```
-
-### 6.1 模块职责
-
-- `cmd/amadeus` 只建立 process context/标准流、调用 `internal/cli.Run` 并映射进程退出码。
-- `internal/cli` 定义 Cobra command tree，解析可选 PROMPT、项目目录、附加目录、Provider/Model override 和 Session target；无 Agent subcommand 时唯一分发到 TUI。
-- `internal/config` 负责默认值、文件加载、环境变量、CLI patch、provenance、脱敏和验证。
-- 用户配置采用唯一 versionless strict schema；Loader 通过 KnownFields 拒绝 `version:` 和其他删除字段，不运行 schema migration。仓库模板为 `configs/config.yaml.example`，自动发现文件仍只有 `$AMADEUS_HOME/config.yaml`。
-- `internal/bootstrap` 通过窄 constructor 创建 ThreadStore、Provider adapter factory、Audit factory、Web/MCP dependencies、`ThreadManager` 和 `ThreadWorkspace`；它不持有 CLI/TUI 状态，也不是通用 Service Locator。
-- TUI 拥有 invocation 的 start/event/close lifecycle，并在逆序资源清理后把 typed `AppExitInfo` 交回 CLI。PROMPT 在 configured/snapshot/replay barrier 后作为 pending UserMessage 通过正常 admission 提交。
-- 配置进入 Session 前被克隆和冻结；Turn 再从 Session Configuration 派生稳定 `TurnContext`。
-
-### 6.2 数据模型职责
-
-| 模型 | 职责 |
-|---|---|
-| `config.Config` | 当前进程有效配置总聚合；包含模型、Provider、Agent、Web 和 Logging。 |
-| `ModelProviderInfo` | 一个用户命名 Provider alias 的 transport 配置：Wire API、Dialect、Base URL、API Key、retry/timeout。 |
-| `WireAPI` | 区分 `responses` 与 `chat_completions` 线协议。 |
-| `ProviderDialect` | 表达 OpenAI、DeepSeek、Qwen、GLM 等请求字段差异。 |
-| `AgentConfig` | Tool batch 并发和 Multi-Agent 配置入口。 |
-| `MultiAgentConfig` | Root tree agent 数量、深度和 child Turn budget。 |
-| `WebFetchConfig` | Web Fetch 开关、超时、字节和重定向上限。 |
-| `WebSearchConfig` | Web Search Provider、凭据、地址、超时和结果上限。 |
-| `LoggingConfig` | 日志等级和是否记录 LLM trace。 |
-| `Overrides` | CLI/环境层提供的可选覆盖值。 |
-| `Source` / `Sources` | 记录每个字段来自 default、file、environment 还是 CLI。 |
-| `ValidationIssue` / `ValidationError` | 聚合可定位到字段路径的配置错误。 |
-| `session.Configuration` | Session 冻结配置；增加 CWD、workspace roots、日期、时区、Mode、Personality 和 OutputSchema。 |
-| `ServiceAdapters` | bootstrap 注入 Provider、MCP、Web、Audit 和 ModelMessages factory/adapter。 |
-
-## 7. Interface 与 Application 架构
-
-```mermaid
-flowchart TD
-    Input[Terminal Input]
-    Parser[CLI / Slash Parser]
-    App[InteractiveApplication]
-    Workspace[ThreadWorkspace]
-    Manager[ThreadManager]
-    Pump[Single Session Event Pump]
-    Events[InteractiveEvent]
-    TUI[TUI Model]
-    Cells[HistoryCell Projection]
-
-    Input --> Parser
-    Parser --> App
-    App --> Workspace
-    Workspace --> Manager
-    Manager --> Pump
-    Pump --> Events
-    Events --> TUI
-    TUI --> Cells
-```
-
-### 7.1 Application 所有权
-
-- `InteractiveApplication` 是交互式产品生命周期 owner，负责 attach Thread、提交输入、处理中断、Approval、Slash Command 和 shutdown。
-- `ThreadWorkspace` 负责当前 Thread 选择、new/resume/continue/rename/delete 等 Thread 级操作。
-- Application 通过 generation 隔离旧 Thread 的迟到 Event，避免 Resume 或 Clear 后污染新界面。
-- TUI 只消费 `InteractiveEvent` 和 `protocol.Event`，不直接读取 Session mutable state。
-
-### 7.2 数据模型职责
-
-| 模型 | 职责 |
-|---|---|
-| `InteractiveOptions` | 构造 InteractiveApplication 所需的 Workspace、Session Configuration 和 UI 限制。 |
-| `InteractiveApplication` | 交互生命周期、active Thread attachment、event pump、pending interaction 和 shutdown owner。 |
-| `ThreadWorkspace` | ThreadManager 上层的当前 Thread 选择与事务化切换边界。 |
-| `ThreadViewSnapshot` | attach 时提供给 UI 的完整可渲染快照：generation、Thread、完整 SessionConfiguration、Items、TokenUsageInfo 与 ActiveContextTokens。 |
-| `SessionOption` | `/resume` 列表中的稳定候选项。 |
-| `SkillOption` | `/skills` 展示和启停操作所需 read model。 |
-| `MCPServerStatus` | 单个 MCP Server 的启用、认证、Tool、Resource 和错误摘要。 |
-| `MCPInventory` | `/mcp` 的 Server 集合。 |
-| `StatusSnapshot` | `/status` 的 Thread、Provider、TokenUsageInfo/active context、Permission、Skill/MCP revision 聚合。 |
-| `InteractiveEvent` | Application 到 TUI 的封闭事件族。 |
-| `SessionEventObserved` | 带 generation 的 protocol Event。 |
-| `ApprovalRequested` | UI 需要展示 Approval 时的 typed request。 |
-| `UserInputRequested` | UI 需要展示结构化问题时的 typed request。 |
-| `ThreadAttached` / `ThreadAttachFailed` | Thread 切换事务结果。 |
-| `SessionsLoaded` | Resume picker 异步加载结果。 |
-| `SkillsLoaded` / `SkillEnabledSet` | Skill 浏览和启停结果。 |
-| `MCPInventoryLoaded` | MCP inventory 异步查询结果。 |
-| `exitState` | TUI 的 shutdown-first、bounded timeout、空 active-frame drain 与最终 quit 状态机；不进入 Application Event 或 History。 |
-| `AppExitInfo` | renderer 停止且终端恢复后返回 CLI 的 token usage、Thread identity、resume hint 与退出原因。 |
-| `HistoryCell` | TUI 中一个可重放、可渲染的历史单元接口。 |
-| `ActiveHistoryCell` | 尚未完成的流式或工具活动投影。 |
-| `SessionHeaderCell` | TranscriptSurface首个结构化cell；冻结Version/Model/CWD并渲染Logo/信息框，不由空history View分支临时拥有。 |
-| `TranscriptSurface` | canonical cell、stream attachment/final replacement与native-print watermark owner；immutable history进入terminal scrollback，mutable tail进入bounded frame。 |
-| `markdownStreamHost` | Assistant/Plan controller与deferred transcript projection FIFO owner；首个delta后保护surface range，completion/reset replacement后恢复Event顺序。 |
-| `AgentMessageCell` / `StreamingAgentTailCell` | transient stable Assistant/Plan stream run 与 mutable tail；`First`决定首cell spacing和continuation，只存在于live TranscriptSurface。 |
-| `AgentMarkdownCell` | completed Assistant Markdown 的 source-backed final cell，保存 exact source、冻结 CWD 和 derived render cache。 |
-| `ToolHistoryCell` 与具体 Tool Cell | `ToolHistoryCell` 聚合 live Tool activity；渲染时按类型投影为 `ExecCell`、`ExploreCell`、`FileChangeCell`、Web/Image Cell 或 `GenericToolCell`。 |
-| `ProposedPlanCell` / `CollabAgentHistoryCell` | 分别展示 Plan Mode 最终计划和 Multi-Agent 控制操作。 |
-
-### 7.3 Slash Command 子架构
-
-```mermaid
-flowchart LR
-    Input[Composer Input]
-    Parse[ParseInput]
-    Result[InputResult]
-    Popup[slashCommandPopup]
-    Invoke[SlashInvocation]
-    Dispatch[dispatchCommand]
-    Local[TUI-local Action]
-    App[InteractiveApplication]
-    Session[Session Submission]
-
-    Input --> Parse --> Result
-    Input --> Popup
-    Popup --> Invoke
-    Result --> Invoke
-    Invoke --> Dispatch
-    Dispatch --> Local
-    Dispatch --> App
-    App --> Session
-```
-
-Slash Command 属于 Interface control plane，而不是模型 Tool：解析和补全留在 TUI；Thread、Mode、Compaction、Skill、MCP 等实际操作通过 `InteractiveApplication` 进入既有 Application/Session 主链。`/status`、`/copy` 等纯 UI 查询可以本地完成，但不能绕过 Application 直接修改 Session 状态。
-
-| 模型 | 职责 |
-|---|---|
-| `SlashCommand` | 内置命令枚举，并提供名称、说明、inline 参数支持和 running-task 可用性规则。 |
-| `SlashInvocation` | 已解析的 command + arguments。 |
-| `InputResult` | 普通用户文本与 SlashInvocation 的互斥解析结果。 |
-| `UserMessage` | 尚未跨越 Runtime boundary 的 TUI 用户消息；CLI initial Prompt 和 queue 都复用该模型。 |
-| `UserMessageSubmission` | TUI 提交普通或 Plan Mode 用户消息时的 message、client ID、mode override 和 queue scope。 |
-| `slashCommandPopup` | TUI 私有的筛选结果、选择游标和 dismissal 状态。 |
-
-## 8. Thread 与持久化架构
-
-```mermaid
-flowchart LR
-    TM[ThreadManager]
-    AT[AmadeusThread]
-    LT[LiveThread]
-    Store[ThreadStore]
-    Local[local.Store]
-    Rec[Rollout Recorder]
-    JSONL[(JSONL)]
-    State[state.DB]
-    SQLite[(SQLite)]
-
-    TM --> AT
-    AT --> LT
-    LT --> Store
-    Store --> Local
-    Local --> Rec
-    Rec --> JSONL
-    Local --> State
-    State --> SQLite
-```
-
-### 8.1 两种持久化事实
-
-- JSONL 保存完整、顺序化、可恢复的 canonical Rollout。
-- SQLite 保存 Thread metadata index，用于 list、resume picker、rename、archive 和快速查询。
-- SessionID 只由各 Thread Rollout 的 SessionMeta 保存；SQLite 不复制 SessionID，也不以 SessionID 路由 Thread。
-- SQLite 可以从 Rollout 重建，因此它不能成为对话历史或 Turn 状态的第二事实源。
-- `LiveThread` 串行化 writer 操作，确保 materialize、append、flush 和 close 顺序。
-
-### 8.2 数据模型职责
-
-当前canonical Rollout格式为v6，SQLite metadata schema为v5；旧开发格式不迁移。
-
-| 模型 | 职责 |
-|---|---|
-| `ThreadManager` | 生成 UUIDv7 ThreadID，创建、恢复、查询和关闭 live Thread；也是 child spawn/internal resume 的 AgentHost 实现。 |
-| `AmadeusThread` | 对外 Thread handle，持有 SessionID、ThreadID、可选 ParentThreadID，并聚合 Session、SessionIo、LiveThread 和 AgentControl。 |
-| `LiveThread` | 一个 Thread writer 的并发安全 façade；控制是否 materialized、buffered append 和 shutdown。 |
-| `ThreadStore` | Thread persistence port；定义 materialize、append、load、list、parent traversal、rename、archive、delete、writer close。 |
-| `CreateInput` | 首次 materialize Thread 时的 SessionID、ThreadID、source 与 metadata 输入。 |
-| `InitialHistory` | New 或 Resumed Thread 的初始 Rollout lines。 |
-| `AppendResult` | 追加后的 sequence、metadata/index 同步结果。 |
-| `rollout.Line` | JSONL 单行 envelope：schema version、sequence、timestamp 和 item。 |
-| `RolloutItem` | canonical item interface。 |
-| `SessionMetaItem` | Thread 创建事实：SessionID、ID、可选 ParentThreadID、source、CWD、title、model、git metadata、created time。 |
-| `ResponseItem` | 用户、typed context、Assistant、ToolCall、ToolResult 的 provider-neutral canonical item；context message 以 `ContextKind` 区分 WorldState、explicit Skill 与 runtime reminder。 |
-| `CompactedItem` | Compaction summary、replacement history、覆盖 sequence 和 source hash。 |
-| `TurnContextItem` | TurnContext 的 durable DTO。 |
-| `AgentSpawnEdgeItem` | Root rollout中Basic Multi-Agent depth-one open/closed membership。 |
-| `EventMsgItem` | 需要持久化和 Resume replay 的 typed EventMsg。 |
-| `StoredThread` | SQLite中的Thread metadata read model；SubAgent额外投影可重建的agent_edge_state。 |
-| `ListQuery` | Thread list filter；默认排除 archived 和 SubAgent，可显式包含。 |
-| `state.DB` | metadata index port。 |
-| `local.Store` | JSONL recorder 与 SQLite DB 的本地 ThreadStore 实现和协调者。 |
-
-## 9. Protocol、Event 与 Rollout 模型
-
-```mermaid
-flowchart LR
-    Op[protocol.Op]
-    Sub[Submission]
-    Session[Session Loop]
-    Msg[EventMsg]
-    Event[Event]
-    UI[Application/TUI]
-    Durable[EventMsgItem]
-    Rollout[JSONL]
-
-    Op --> Sub
-    Sub --> Session
-    Session --> Msg
-    Msg --> Event
-    Event --> UI
-    Msg -. durable subset .-> Durable
-    Durable --> Rollout
-```
-
-### 9.1 输入操作模型
-
-| 模型 | 职责 |
-|---|---|
-| `Op` | Session 输入操作的封闭接口。 |
-| `UserInputOp` | 新 Turn 或 same-turn steer 的用户文本，并可携带 Thread settings override。 |
-| `CompactOp` | 请求显式 Compaction Turn。 |
-| `InterruptOp` | 取消当前 ActiveTurn，不关闭 Session。 |
-| `ShutdownOp` | 关闭 Session loop。 |
-| `ApprovalDecisionOp` | 回答一个 pending Approval waiter。 |
-| `UserInputAnswerOp` | 回答 `request_user_input` waiter。 |
-| `ThreadSettingsOp` | 在没有 active Turn 时更新 Mode。 |
-| `ThreadSettingsOverrides` | 用户消息附带的 request-scoped collaboration mode override。 |
-
-Tab queue 不增加新的 `Op`：输入在 TUI 中 enqueue 时尚未跨越 Submission boundary，只有 terminal 后 dequeue 才创建普通 `UserInputOp`。因此 Protocol 仍只有 Started/Steered admission，不存在 Queued admission。
-
-### 9.2 输出事件模型
-
-| 模型 | 职责 |
-|---|---|
-| `SessionConfiguredEvent` | Session 启动后公布冻结配置摘要。 |
-| `ThreadSettingsAppliedEvent` | Thread settings 已应用完成，并携带实际生效的完整 SessionConfiguration。 |
-| `TurnStartedEvent` | Turn 生命周期开始。 |
-| `TurnCompleteEvent` | completed/blocked/failed的terminal fact，并直接携带optional authoritative last_agent_message。 |
-| `TurnAbortedEvent` | 用户中断或取消导致的 terminal fact。 |
-| `ErrorEvent` | 可持久化的产品错误事实。 |
-| `StreamErrorEvent` | Provider reconnect/retry 状态；区分是否将重试。 |
-| `ItemStartedEvent` | Assistant、Reasoning、Tool、Plan 或 Collaboration item 开始。 |
-| `ItemCompletedEvent` | 一个稳定 TurnItem 完成。 |
-| `AgentMessageContentDeltaEvent` | Assistant 流式文本增量。 |
-| `ReasoningContentDeltaEvent` | Reasoning 流式增量。 |
-| `CommandOutputDeltaEvent` | 长运行 Process 输出增量。 |
-| `TokenCountEvent` | 完整 TokenUsageInfo + ActiveContextTokens + observed history watermark snapshot；consumer 只替换，不累加。 |
-| `ApprovalRequestEvent` | Tool 需要 TUI 交互决策。 |
-| `RequestUserInputEvent` | Agent 需要结构化用户输入。 |
-| `PlanUpdateEvent` / `PlanDeltaEvent` | `update_plan` 和 proposed plan 的 typed lifecycle。 |
-| `ContextCompactionItem` | live 使用 ItemStarted/ItemCompleted；Replay 的唯一完成事实来自 CompactedItem。 |
-| `SubagentNotificationEvent` | child terminal result注入parent context的durable fact；携带AgentID+child TurnID作为delivery watermark。 |
-| `ShutdownCompleteEvent` | Session 完全终止。 |
-
-### 9.3 TurnItem 模型
-
-| 模型 | 职责 |
-|---|---|
-| `TurnItem` | live TUI 与 Resume 的统一展示事实。 |
-| `ItemKind` | user、assistant、reasoning、tool、command、file、plan、compaction、collaboration 分类。 |
-| `ItemStatus` | in-progress、completed、failed、declined。 |
-| `ToolResult` | completed Tool 的 display-safe 结果。 |
-| `CollabAgentToolCallItem` | Multi-Agent 控制操作的 typed UI/Event payload。 |
-| `UpdatePlanArgs` / `PlanItemArg` / `StepStatus` | `update_plan` 的稳定任务计划参数和步骤状态模型。 |
-| `PlanDeltaEvent` | Plan Mode 最终建议计划的流式 typed payload；完成态落入 `TurnItem` 的 plan item。 |
-
-## 10. Session、Turn 与 Task 架构
+### 4.2 Session Loop
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Idle
+    [*] --> Configuring
+    Configuring --> Idle: SessionConfigured
     Idle --> Running: UserInput / Compact
-    Running --> Running: Same-turn steer
-    Running --> Waiting: Approval or UserInput request
-    Waiting --> Running: Decision / Answer
-    Running --> Completed: final or blocked
-    Running --> Failed: task/provider/tool fatal error
-    Running --> Aborted: Interrupt / cancellation
-    Completed --> Idle
-    Failed --> Idle
-    Aborted --> Idle
-    Idle --> [*]: Shutdown
+    Running --> Running: Steer / Approval / UserInputAnswer
+    Running --> Idle: durable TurnComplete
+    Running --> Idle: durable TurnAborted
+    Idle --> Running: deferred Submission
+    Idle --> Shutdown: ShutdownOp / owner close
+    Running --> Shutdown: cancel then terminal cleanup
+    Shutdown --> [*]
 ```
 
-### 10.1 Session Loop
+Session loop 串行拥有：
 
-Session loop 只处理以下协调工作：
+- 当前 Configuration、ActiveTurn 和 deferred submissions。
+- Approval 与 `request_user_input` waiter。
+- same-turn InputQueue admission。
+- terminal append、flush、ActiveTurn cleanup 和终态 Event 顺序。
 
-- 校验和路由 Submission。
-- 决定 user input 是创建新 Turn 还是 steer 当前 Turn。
-- deferred 不能立即执行的 Compact/Settings 操作。
-- 管理 Approval 和 UserInput waiter。
-- 接收 RunningTask completion，先持久化 terminal fact，再发布 Event。
-- shutdown 时取消 active Turn，并等待清理完成。
-
-模型循环、Tool 执行和 Compaction 算法不直接写在 Session select loop 中。
-
-Session 不保存 next-turn user queue。运行中 Enter 已提交输入仍由 Session 决定 Started/Steered；运行中 Tab 输入由 TUI 等待 terminal，随后作为新的普通 Submission 进入 Session。
-
-### 10.2 数据模型职责
+### 4.3 核心运行模型
 
 | 模型 | 职责 |
 |---|---|
-| `SessionState` | Session 的可恢复状态，目前由冻结 `Configuration` 和 `contextmanager.Manager` 组成。 |
-| `SessionIo` | Thread/Application 使用的输入输出端口：Submissions、Events、Terminated、admission/steer helper。 |
-| `SpawnArgs` | 创建 Session 所需 SessionID、ThreadID、可选 ParentThreadID、InitialHistory、State、Services 和 Adapters。 |
-| `Session` | 单线程 select loop 的 owner；管理 active Turn、deferred submissions、waiters 和 lifecycle channels。 |
-| `ActiveTurn` | 当前 Turn 的协调状态：SubmissionID、RunningTask、TurnState、TaskOutput。 |
-| `TurnState` | Turn-scoped pending interactive requests 和 pending same-turn input。 |
-| `TurnInput` | 可被追加到当前 Turn 的输入 sum type。 |
-| `UserTurnInput` | 文字 same-turn input，包含 content 和 client ID。 |
-| `TurnInputQueue` | Turn-scoped 并发安全队列，可 drain、seal，防止终态之后继续写入。 |
-| `SessionTask` | Regular/Compact Task 的统一执行接口。 |
-| `TaskKind` | `regular` 与 `compact`。 |
-| `regularTask` | 执行正常 continuation loop，持有 goal、TurnState、events 和 ModelClientSession。 |
-| `compactTask` | 执行显式 Compaction。 |
-| `RunningTask` | SessionTask 的 goroutine、context、cancel cause、panic capture 和 Completion channel owner。 |
-| `Completion` | RunningTask 返回 Session 的 terminal envelope。 |
-| `TaskOutput` | Task 的 summary、outcome、reason 和 ToolCallCount；不延迟返回 canonical items 或 usage。 |
-| `TurnContext` | 一个 Turn 的稳定 runtime settings：Thread/Turn、Provider、Model、Reasoning、CWD、Mode、OutputSchema。 |
-| `TurnContextItem` | TurnContext 的可持久化纯数据版本。 |
+| `Submission` | Interface/Application 到 Session 的输入 envelope。 |
+| `Event` / `EventMsg` | Session 到消费方的 typed 输出。 |
+| `TurnContext` | Turn 开始时冻结的模型、CWD、Mode、reasoning 与输出约束。 |
+| `StepContext` | 每次采样冻结的 ToolRouter、ModelInfo、AGENTS/Skill/Permission/SubAgent snapshots。 |
+| `TaskOutput` | SessionTask 返回的 outcome、reason、Tool count 和 optional LastAgentMessage。 |
+| `TurnCompleteEvent` | durable terminal authority；直接携带 optional LastAgentMessage。 |
+| `TurnItem` | live TUI 与 Resume 共用的业务展示单元。 |
 
-## 11. Model Step 与 Continuation Loop
+## 5. Protocol 与 Canonical Facts
+
+### 5.1 目录
+
+```text
+internal/protocol/
+├── identity/                 # typed IDs
+├── submission.go            # Op input family
+├── event.go                 # Event envelope
+├── session_events.go        # Session configuration/lifecycle
+├── turn_events.go           # Turn terminal and stream errors
+├── items.go                 # TurnItem and deltas
+├── approval.go              # Approval request/decision DTO
+├── request_user_input.go    # structured question/answer DTO
+├── collaboration*.go        # Plan and Multi-Agent protocol
+└── codec.go / scope.go      # durable encoding and scope helpers
+```
+
+### 5.2 协议层次
+
+```mermaid
+flowchart LR
+    Op[Op] --> Submission[Submission]
+    Submission --> Session[Session]
+    Session --> Msg[EventMsg]
+    Msg --> Event[Event]
+    Event --> UI[Application / TUI]
+    Msg -. durable subset .-> EventItem[EventMsgItem]
+    EventItem --> Rollout[JSONL Rollout]
+```
+
+协议分工：
+
+- `Op` 表达 UserInput、Compact、Interrupt、Shutdown、Settings 和交互回答。
+- `EventMsg` 表达 Session/Turn/Item 生命周期、Token、Warning、Error 和交互请求。
+- Delta 用于 live 展示；completed item 携带恢复所需的完整事实。
+- Approval/UserInput request、Working、Popup 和动画属于运行时交互状态，canonical history保存完成后的业务事实。
+
+### 5.3 Identity
+
+| Identity | 职责 |
+|---|---|
+| `SessionID` | Root 与 child tree-level correlation；Root 与 Root ThreadID 使用同一 UUID value。 |
+| `ThreadID` | 具体 Thread、Rollout、registry 和 Resume identity；新值使用 UUIDv7。 |
+| `TurnID` | 一个 Session Turn。 |
+| `SubmissionID` | 输入与输出 Event correlation。 |
+| `RequestID` | Approval 或 structured user input waiter。 |
+| `ItemID` | Assistant、Tool、Plan、Collaboration item。 |
+
+## 6. 配置与 Bootstrap
+
+### 6.1 目录
+
+```text
+cmd/amadeus/main.go
+internal/cli/
+internal/config/
+internal/bootstrap/
+```
+
+### 6.2 配置装配流程
+
+```mermaid
+flowchart LR
+    Defaults[Defaults]
+    File[config.yaml]
+    Env[Environment]
+    Flags[CLI overrides]
+    Loader[Strict Loader]
+    Validate[Validation]
+    Effective[Effective Config]
+    Bootstrap[Bootstrap Dependencies]
+    Workspace[ThreadWorkspace]
+
+    Defaults --> Loader
+    File --> Loader
+    Env --> Loader
+    Flags --> Loader
+    Loader --> Validate --> Effective --> Bootstrap --> Workspace
+```
+
+配置与装配行为：
+
+- 用户配置采用 versionless strict schema；未知字段会在加载阶段报告错误。
+- 优先级为 defaults → file → environment → CLI。
+- Bootstrap 创建具体 Provider factory、ThreadStore、Audit、Web/MCP dependencies 和 ThreadManager。
+- Bootstrap 以明确的 typed dependencies 组装 Runtime 所需服务。
+
+### 6.3 重要模型职责
+
+| 模型 | 职责 |
+|---|---|
+| `config.Config` | 当前有效配置聚合。 |
+| `ModelProviderInfo` | Provider transport、Dialect、凭据、timeout/retry。 |
+| `AgentConfig` / `MultiAgentConfig` | Tool 并发与 Basic Multi-Agent 限制。 |
+| `Sources` | 配置字段 provenance。 |
+| `session.Configuration` | 注入 Session 的冻结配置与 workspace facts。 |
+| `ServiceAdapters` | Bootstrap 到 Session 的 concrete adapter factories。 |
+
+## 7. Thread、Rollout 与持久化
+
+### 7.1 目录
+
+```text
+internal/threadmanager/
+├── manager.go               # registry and root lifecycle
+├── amadeus_thread.go        # external runtime handle
+├── agent_host.go            # child spawn/edge/notification host
+└── child_resume.go          # open child reconstruction
+
+internal/threadstore/
+├── live.go                  # concurrent writer handle
+├── store.go                 # persistence port
+└── local/
+    ├── writer.go            # append and flush
+    ├── metadata.go          # metadata projection
+    ├── index.go             # rebuild
+    └── sqlite/              # metadata adapter
+
+internal/rollout/
+├── codec.go
+├── recorder.go
+├── items.go
+└── agent_edge.go
+```
+
+### 7.2 两种持久化事实
 
 ```mermaid
 flowchart TD
-    Start[Turn Goal]
+    Session[Session canonical append]
+    Live[LiveThread]
+    Store[Local ThreadStore]
+    Recorder[Rollout Recorder]
+    JSONL[(JSONL v6)]
+    Project[Metadata Projection]
+    SQLite[(SQLite v5)]
+
+    Session --> Live --> Store --> Recorder --> JSONL
+    Recorder --> Project --> SQLite
+    JSONL -. rebuild .-> Project
+```
+
+- JSONL Rollout 是完整 durable truth。
+- SQLite 保存 Thread metadata、parent relation、token totals 和可重建 agent edge state。
+- SQLite 按 durable watermark 投影 JSONL，并作为可重建的 metadata read model。
+- 当前 Rollout v6、SQLite schema v5；存储层按当前格式读取和校验，旧开发格式由版本检查报告为不兼容。
+
+### 7.3 写入顺序
+
+```mermaid
+sequenceDiagram
+    participant S as Session
+    participant L as LiveThread
+    participant R as Recorder
+    participant D as SQLite
+
+    S->>L: append typed items
+    L->>R: encode full batch
+    R->>R: append
+    R->>R: flush/fsync at durable boundary
+    R-->>L: durable receipt
+    L->>D: project metadata at watermark
+    D-->>S: success or rebuildable warning
+```
+
+### 7.4 重要模型职责
+
+| 模型 | 职责 |
+|---|---|
+| `AmadeusThread` | 对外 Thread handle；提交 Op、消费 Event、查询 history。 |
+| `ThreadManager` | 唯一 live registry；创建/恢复 Root 与 child Session。 |
+| `LiveThread` | 单 Thread writer 的并发安全边界。 |
+| `ThreadStore` | materialize、append、load、list、archive、rebuild port。 |
+| `RolloutItem` | canonical typed item family。 |
+| `SessionMetaItem` | Thread 创建、SessionID、source、Base provenance。 |
+| `ResponseItem` | 模型可见 User/Assistant/Tool facts。 |
+| `WorldStateItem` / `TurnContextItem` | Prompt baseline 与 Turn reference。 |
+| `CompactedItem` | compaction replacement checkpoint。 |
+| `AgentSpawnEdgeItem` | Root rollout 中 Basic Multi-Agent open/closed membership。 |
+| `StoredThread` | SQLite metadata read model，提供Thread索引与展示信息。 |
+
+## 8. Agent Loop
+
+### 8.1 目录
+
+```text
+internal/agent/session/
+├── session.go / session_loop.go
+├── submission.go / turn_start.go / turn_completion.go
+├── task.go / regular_task.go / compact_task.go
+├── running_task.go / turn_state.go / input_queue.go
+├── run_turn.go / continuation.go / turn_budget.go
+├── step_context.go / step_capture.go
+├── model_completion.go / tool_events.go
+└── compaction.go / context_window.go
+```
+
+### 8.2 Turn 启动与终止
+
+```mermaid
+flowchart TD
+    Input[UserInputOp]
+    Admit{Active regular Turn?}
+    Steer[enqueue TurnInput]
+    Start[create TurnContext]
+    PersistStart[durable TurnStarted + context]
+    Task[RunningTask]
+    Output[TaskOutput]
+    PersistTerminal[durable terminal]
+    Clear[clear ActiveTurn]
+    Publish[publish terminal Event]
+
+    Input --> Admit
+    Admit -->|yes| Steer
+    Admit -->|no| Start --> PersistStart --> Task --> Output --> PersistTerminal --> Clear --> Publish
+```
+
+Terminal 顺序是：RunningTask 返回 → canonical append/flush → 清理 ActiveTurn → 发布 TurnComplete/TurnAborted。
+
+### 8.3 Continuation Loop
+
+```mermaid
+flowchart TD
+    Begin[Start continuation]
+    Budget{Budget decision}
     Capture[Capture StepContext]
-    World[Build and persist WorldState full/patch]
+    World[Record WorldState full/patch]
     Prompt[Build PromptSnapshot]
+    Window{Context limit?}
+    Compact[Session-owned compaction]
+    Drain[Drain same-turn input]
     Sample[ModelClientSession.Sample]
-    Final{Final response?}
-    Calls[Tool Calls]
-    Execute[ToolExecutionService]
-    Persist[Persist Tool Results]
-    Pending{Pending input?}
-    Compact{Auto compact?}
-    Done[TaskOutput]
+    Kind{Result kind}
+    Tools[Execute Tool batch]
+    Final[Persist final response]
+    Done[Return TaskOutput]
 
-    Start --> Capture
-    Capture --> World
-    World --> Prompt
-    Prompt --> Compact
-    Compact -- yes --> Capture
-    Compact -- no --> Sample
-    Sample --> Final
-    Final -- yes --> Pending
-    Final -- no --> Calls
-    Calls --> Execute
-    Execute --> Persist
-    Persist --> Pending
-    Pending -- yes --> Capture
-    Pending -- no --> Done
+    Begin --> Budget
+    Budget -->|hard blocked| Done
+    Budget -->|continue/finalize| Capture --> World --> Prompt --> Window
+    Window -->|yes| Compact --> Capture
+    Window -->|no| Drain --> Sample --> Kind
+    Kind -->|tool calls| Tools --> Budget
+    Kind -->|final| Final --> Done
 ```
 
-### 11.1 数据模型职责
+Basic SubAgent 在 soft budget boundary 进入一次 Tools 为空的 finalization sample；hard limit或 finalization failure形成带 reason 的 blocked outcome。
 
-| 模型 | 职责 |
-|---|---|
-| `StepContext` | 单次 sample 的 Model、ToolRouter、LoadedAgentsMd、Skill metadata、Permission profile/grants、active SubAgents 与 MCP/Skill/AGENTS.md revisions；不拥有 Prompt 或 Session Base。 |
-| `PromptSnapshot` | WorldState 持久化后，由 ContextManager history、Session Base、Step ToolRouter 和 Turn OutputSchema 组装的单次 request 快照。 |
-| `SampleRequest` | Engine 到 ModelClientSession 的 provider-neutral sampling 输入。 |
-| `SampleResult` | `final` 或 `tool_calls` 二选一的采样结果。 |
-| `SampleKind` | continuation loop 分支判定。 |
-| `CompleteRequest` | Compaction 等不允许 Tool 的完整模型请求。 |
-| `ModelClientSession` | Turn-scoped stream/reconnect owner；在同一 Turn 的 sampling 与 compaction 间复用 client。 |
-| `ModelClientSessionConfig` | stream retry 次数、idle timeout 和可测试 backoff/sleep。 |
-| `TurnBudget` | 最大 sample、Tool call、duration 和 warning ratio。 |
-| `compact.Request` | exact Prompt/Source、ModelSession、Reasoning 和 lifecycle metadata。 |
-| `CompactionService` | 只生成 typed Message/ReplacementHistory/TokenUsage，不访问 Session、Rollout 或 UI。 |
-
-Continuation loop 只维护 sample、Tool call 和 elapsed safety budget；每个成功 request 的 TokenUsage 立即由 Session 累加到 TokenUsageInfo，Turn terminal 不再生成第二份聚合 usage。
-
-## 12. Prompt、Context 与 AGENTS.md
+### 8.4 同 Turn 输入与下一 Turn Queue
 
 ```mermaid
 flowchart LR
-    Base[BaseInstructions]
-    Tools[StepContext ToolRouter]
-    Turn[Turn OutputSchema]
-    Mode[Collaboration Mode]
-    Agents[AGENTS.md]
-    Env[Environment / Permission]
-    Skills[Skill Index / Injection]
-    MCP[MCP Context]
-    History[Canonical Response Items]
-    WS[WorldState]
-    CM[ContextManager]
-    Snap[PromptSnapshot]
-    Shape[llm.Prompt shape]
-    Request[SampleRequest]
+    Enter[Enter while running] --> Admission[UserMessageAdmission]
+    Admission --> Steered[Steered into TurnInputQueue]
+    Steered --> Boundary[Model/Tool boundary]
+    Boundary --> History[Canonical same Turn history]
 
-    Base --> Shape
-    Tools --> Shape
-    Turn --> Shape
-    Mode --> WS
-    Agents --> WS
-    Env --> WS
-    Skills --> WS
-    MCP --> WS
-    WS --> CM
-    History --> CM
-    Shape --> CM
-    CM --> Snap
-    Snap --> Request
+    Tab[Tab while running] --> TUIQueue[NextTurnQueue]
+    TUIQueue --> Terminal[Current Turn terminal]
+    Terminal --> NewInput[normal UserInputOp for next Turn]
 ```
 
-### 12.1 Prompt 分层
+Enter steer 是 Runtime fact；Tab queue 在提交前属于 TUI attachment，提交后才转换为下一 Turn 的普通输入。
 
-1. `BaseInstructions`：Session/Thread 生命周期内解析一次并持久化 exact text 与 `custom|model{slug}` provenance 的稳定基础指令。
-2. Collaboration Mode：Default 或 Plan developer guidance。
-3. WorldState：AGENTS.md、环境、权限、Skills、MCP、active SubAgents。
-4. Canonical history：用户、Assistant、ToolCall、ToolResult、Compaction replacement。
-5. ToolSpec：每个工具自身的使用说明和 JSON Schema。
-
-### 12.2 数据模型职责
-
-| 模型 | 职责 |
-|---|---|
-| `ModelMessages` | 模型消息资产聚合：instructions template/variables、approval、permission、Default/Plan collaboration modes 与 multi-agent role；不拥有 compaction assets。 |
-| `ModelInstructionsVariables` | personality 文本变量。 |
-| `CollaborationModeMessages` | Default/Plan developer instructions。 |
-| `MultiAgentMessages` | multi-agent mode/role instruction assets，SubAgent role 从该层选择。 |
-| `CompactionAssets` | 独立的 exact summarization prompt 与 summary prefix，分别拥有 revision，不随 ModelMessages 聚合。 |
-| `BaseInstructions` | Session-owned exact instructions 与 provenance；Responses 映射到 wire `instructions`，Chat 只生成一个 system prefix。 |
-| `contextmanager.Manager` | canonical model-visible history、typed WorldState Absent/Unknown/Known baseline、TurnContext reference、TokenUsageInfo/active checkpoint 和 revision 的唯一 owner。 |
-| `WorldStateSection` | stable section ID、typed snapshot、role、marker 和 separate-message policy。 |
-| `WorldStateItem` | durable full/patch baseline；先追加模型可见 fragment，再推进 baseline。 |
-| `WorldState` | 有序 typed contextual sections、full/diff fragments 与 revision。 |
-| `ContextFragment` | WorldState section 生成的 role-aware 模型上下文片段；可按 separate policy 合并，但不伪装成真实用户意图。 |
-| `ContextKind` | durable context message 的来源类别：WorldState、explicit Skill 或 Turn budget；只有 WorldState fragment 能把 baseline 推进到 Unknown。 |
-| `SkillInjection` | 用户通过 `$skill-name` 显式选择后注入的 Skill 正文事实。 |
-| `TokenUsageInfo` | Thread 累计 TotalTokenUsage 与最近 request LastTokenUsage。 |
-| `PromptSnapshot` | 一次 sample 的模型消息、EstimatedInputTokens 及 history/world-state revision。 |
-| `RolloutMessageProjection` | 从 Rollout 投影得到的 provider-neutral消息及 source sequences。 |
-| `AgentsMdManager` | 扫描、合并、刷新用户级和目录层级 AGENTS.md。 |
-| `agentsmd.Document` | 单个 AGENTS.md 的来源、路径、scope、hash 和正文。 |
-| `LoadedAgentsMd` | 有序文档集合和整体 revision。 |
-
-## 13. LLM Domain 与 Provider Adapter
-
-```mermaid
-flowchart LR
-    Engine[ModelClientSession]
-    Port[llm.Client]
-    Request[llm.Request]
-    Adapter[OpenAI Adapter]
-    Responses[Responses API]
-    Chat[Chat Completions]
-    Stream[llm.Stream]
-    Response[llm.Response]
-
-    Engine --> Port
-    Port --> Request
-    Request --> Adapter
-    Adapter --> Responses
-    Adapter --> Chat
-    Responses --> Stream
-    Chat --> Stream
-    Stream --> Response
-```
-
-### 13.1 Domain/Adapter 边界
-
-- `internal/llm` 不依赖具体 HTTP SDK，定义稳定 Request、Response、Stream、TokenUsage、ModelInfo 和 ProviderError。
-- `internal/llm/openai` 负责 Responses/Chat wire 编解码、Dialect 字段归一化和 transport retry。
-- request retry 属于 Provider adapter；已建立连接后的 stream reconnect 属于 `ModelClientSession`。
-- Engine 只理解 tool calls、final response、usage 和 typed provider error，不理解具体 JSON wire shape。
-
-### 13.2 数据模型职责
-
-| 模型 | 职责 |
-|---|---|
-| `Client` | Provider-neutral `Complete`、`Stream`、`Model`、`Capabilities` port。 |
-| `ModelInfo` | 当前模型的 context window、auto compact、Tool output、parallel calls、image modalities 和 ModelMessages。 |
-| `Capabilities` | Provider transport 支持的 wire 能力。 |
-| `Request` | Provider-neutral模型请求。 |
-| `Prompt` | BaseInstructions、Input、Tools、parallel flag 和 OutputSchema。 |
-| `ToolSpec` | LLM domain 中的工具声明 DTO。 |
-| `ResponseItem` | system/developer/user/assistant/tool 的统一消息模型。 |
-| `ContentPart` | text 或 image 多模态内容。 |
-| `ToolCall` | 模型返回的 call ID、name 和 arguments。 |
-| `Response` | 最终 message、finish reason、usage 和 provider request identity。 |
-| `Stream` | 顺序读取 StreamChunk 的端口。 |
-| `StreamChunk` | content/reasoning delta、ToolCalls、usage 和 terminal finish reason。 |
-| `TokenUsage` | 单次 request 的 input、cached input、output、reasoning 和 total token。 |
-| `ReasoningConfig` | request-scoped thinking/reasoning effort。 |
-| `ProviderError` | kind、code、status、request ID、retryability 和 retry delay。 |
-
-## 14. Tool 架构
+### 8.5 Collaboration Mode 与 Runtime Coordination
 
 ```mermaid
 flowchart TD
-    Registry[Tool Registry]
-    Router[Immutable ToolRouter]
-    Call[ToolCall]
+    Input[User input]
+    Override{Mode override?}
+    Config[SessionConfiguration]
+    Turn[Freeze TurnContext.Mode]
+    Default[Default instructions + full tools]
+    Plan[Plan instructions + read-only mask]
+    Ask[request_user_input typed waiter]
+    Checklist[update_plan transient event]
+    Proposed[proposed_plan stream parser]
+    Implement[New Default Turn]
+
+    Input --> Override --> Config --> Turn
+    Turn -->|default| Default
+    Turn -->|plan| Plan
+    Default --> Ask
+    Default --> Checklist
+    Plan --> Ask
+    Plan --> Proposed --> Implement
+```
+
+- Default和Plan通过Prompt与ToolRouter policy表达差异，共享同一套Task和Agent Loop。
+- `update_plan`是Default中的transient checklist Tool，运行时以事件形式更新界面。
+- `request_user_input`在两种mode中使用同一typed Event/Answer/waiter链，与Approval分开处理。
+- Plan Mode的正式方案由`<proposed_plan>` parser产生PlanDelta和completed PlanItem；实施通过后续Default UserInputOp开始。
+
+### 8.6 重要模型职责
+
+| 模型 | 职责 |
+|---|---|
+| `Session` | Session loop、configuration、services、active/deferred state owner。 |
+| `SessionServices` | Session-scoped Provider、Tool、MCP、Skill、Permission 等 capability。 |
+| `ActiveTurn` | 当前 submission、RunningTask、TurnState 和累计 TaskOutput。 |
+| `RunningTask` | goroutine、cancel cause、completion channel。 |
+| `SessionTask` | Regular/Compact workflow contract。 |
+| `TurnState` | pending interactive requests 和 same-turn input。 |
+| `TurnBudget` | sample/tool/time soft/hard limits。 |
+| `TaskOutput` | outcome、reason、LastAgentMessage、Tool count。 |
+
+## 9. Prompt、Context 与 AGENTS.md
+
+### 9.1 目录
+
+```text
+internal/prompt/
+├── model_messages.go
+├── collaboration.go
+├── compaction.go
+├── source_manifest.go
+└── builtin/templates/
+
+internal/contextmanager/
+├── manager.go / history.go
+├── rollout_projection.go / output_projection.go
+├── world_state.go / prompt_snapshot.go
+├── token.go / tool_result.go
+└── subagent_notification.go
+
+internal/agentsmd/
+└── document.go / manager.go
+```
+
+### 9.2 Prompt 分层
+
+```mermaid
+flowchart TB
+    Base[Session BaseInstructions]
+    Mode[Default or Plan instructions]
+    World[WorldState fragments]
+    Agents[AGENTS.md contextual user fragment]
+    Skill[Explicit Skill injection]
+    History[Canonical conversation history]
+    Tools[Frozen ToolSpecs]
+    Schema[Output schema]
+    Prompt[PromptSnapshot]
+
+    Base --> Prompt
+    Mode --> World --> Prompt
+    Agents --> Prompt
+    Skill --> Prompt
+    History --> Prompt
+    Tools --> Prompt
+    Schema --> Prompt
+```
+
+BaseInstructions 在 Thread 创建时解析并持久化 exact text + provenance；Resume 使用这份稳定文本，即使内置模板随后升级。
+
+`PromptSnapshot.Items`保存由`contextmanager.Manager`规范化后的canonical history。BaseInstructions、ToolSpecs、parallel flag和output schema由`llm.Prompt`单独提供，同时参与input estimate与Prompt revision，并与Items一起进入Provider request。
+
+### 9.3 Step Prompt 构造
+
+```mermaid
+sequenceDiagram
+    participant R as runTurn
+    participant S as SessionServices
+    participant W as WorldState Builder
+    participant L as LiveThread
+    participant C as contextmanager.Manager
+
+    R->>S: CaptureStep(TurnContext)
+    S-->>R: immutable Model/Tool/AGENTS/Skill snapshots
+    R->>W: build full or diff fragments
+    W->>L: canonical context + WorldStateItem
+    L-->>C: record durable facts
+    R->>C: Snapshot(ModelInfo, Tools, Schema)
+    C-->>R: PromptSnapshot + estimates + revisions
+```
+
+记录 WorldState 后才构造 PromptSnapshot，保证模型请求、token estimate 和 Resume 使用同一 history watermark。
+
+### 9.4 WorldState
+
+WorldState 使用 stable section ID 和 Absent/Unknown/Known baseline：
+
+```mermaid
+stateDiagram-v2
+    [*] --> Absent
+    Absent --> Known: write full snapshot
+    Unknown --> Known: rebuild and write full
+    Known --> Known: write patch on change
+    Known --> Known: no event when unchanged
+```
+
+主要 section 包括 model、personality、collaboration mode、environment、permissions、AGENTS.md、Skill catalog 和 Multi-Agent role/status。
+
+### 9.5 AGENTS.md 与 Skill Prompt 边界
+
+- AGENTS.md 按目标路径解析层级和作用域，作为 contextual user fragment进入 canonical history。
+- Tool target进入新目录时，AGENTS.md manager会重新计算该路径生效的指令。
+- Skill catalog metadata属于 WorldState；显式 `$skill-name` 会把正文作为 `<skill>` user fragment注入。
+- Tool guidance由ToolSpec提供，并在同一份StepContext中与实际handler绑定。
+
+### 9.6 Token 与 Compaction
+
+```mermaid
+flowchart LR
+    Usage[Provider TokenUsage] --> Info[TokenUsageInfo Total + Last]
+    Local[Local canonical suffix] --> Active[ActiveContextTokens]
+    Estimate[Structured preflight estimate] --> Active
+    Active --> Policy{Context policy}
+    Policy -->|within| Sample[Next sample]
+    Policy -->|limit| Compact[Session runCompaction]
+    Compact --> Replacement[CompactedItem + TokenCountEvent]
+    Replacement --> Active
+```
+
+CompactionService生成typed output；Session负责trigger、source validation、usage、atomic install、Context mutation和Item terminal。
+
+### 9.7 重要模型职责
+
+| 模型 | 职责 |
+|---|---|
+| `BaseInstructions` | exact stable base text 与 provenance。 |
+| `ModelMessages` | model/mode/multi-agent instruction catalog。 |
+| `ContextFragment` | 带role、kind和separate语义的模型可见片段。 |
+| `WorldStateItem` | durable full/patch baseline。 |
+| `PromptSnapshot` | immutable request history、estimate与revision。 |
+| `TokenUsageInfo` | Thread cumulative usage和last request usage。 |
+| `ContextWindowTokenStatus` | active context policy decision。 |
+| `compact.Source` / `compact.Output` | 无状态摘要输入与typed结果。 |
+
+## 10. LLM Domain 与 Provider
+
+### 10.1 目录
+
+```text
+internal/llm/                  # domain port and model
+internal/llm/openai/           # Responses / Chat adapters
+internal/agent/modelclient/    # turn-scoped stream lifecycle
+```
+
+### 10.2 边界
+
+```mermaid
+flowchart LR
+    Prompt[PromptSnapshot]
+    Request[llm.Request]
+    Session[ModelClientSession]
+    Client[llm.Client]
+    Adapter[OpenAI Adapter]
+    API[Responses / Chat API]
+    Stream[llm.Stream]
+    Result[Response / ToolCalls / Usage]
+
+    Prompt --> Request --> Session --> Client --> Adapter --> API
+    API --> Stream --> Session --> Result
+```
+
+- `llm` 使用Provider-neutral model；OpenAI SDK wire model由`llm/openai` adapter承载。
+- Adapter 负责 request mapping、dialect差异、request retry和error normalization。
+- ModelClientSession负责response stream reconnect、idle timeout、attempt reset和typed transient StreamErrorEvent。
+- Responses把Base放在wire `instructions`；Chat Completions按Dialect生成唯一system前缀。
+
+### 10.3 Request Retry 与 Stream Reconnect
+
+```mermaid
+sequenceDiagram
+    participant R as runTurn
+    participant M as ModelClientSession
+    participant A as Adapter
+    participant E as EventSink
+
+    R->>M: Sample
+    M->>A: open stream
+    A--xM: transient disconnect
+    M->>E: StreamError will_retry=true
+    M->>A: reconnect new attempt
+    M->>E: reset prior attempt deltas
+    A-->>M: authoritative completion
+    M-->>R: SampleResult
+```
+
+### 10.4 重要模型职责
+
+| 模型 | 职责 |
+|---|---|
+| `ModelInfo` | context window、modalities、parallel tools、output limits。 |
+| `llm.Prompt` | Base、input items、ToolSpecs、output schema。 |
+| `llm.Request` | Provider-neutral sampling request。 |
+| `llm.Response` | message、finish reason、usage。 |
+| `ProviderError` | normalized provider failure classification。 |
+| `ModelClientSession` | Turn-scoped stream recovery owner。 |
+
+## 11. Tool 架构
+
+### 11.1 目录
+
+```text
+internal/tool/
+├── tool.go                    # ToolDefinition contract
+├── registry.go / router.go    # registration and request snapshot
+├── validation.go              # schema normalization
+├── execution_service.go       # single call lifecycle
+├── execution_batch.go         # bounded concurrency and order restore
+├── execution_outcome.go       # typed result mapping
+└── builtin/                   # concrete tools
+```
+
+### 11.2 外层与内层来源
+
+```mermaid
+flowchart TB
+    Codex[Codex StepContext / ToolRouter / Events]
+    Claude[Claude Code ToolUse / Permission / File behavior]
+    Router[Frozen ToolRouter]
+    Service[ToolExecutionService]
+    Definition[ToolDefinition]
+    Result[ToolResult + TurnItem]
+
+    Codex --> Router --> Service
+    Claude --> Definition --> Service
+    Service --> Result
+```
+
+Codex决定单次请求看到哪些Tool、如何dispatch和如何进入Event/Rollout；Claude Code决定Tool内部的validate/prepare/permission/execute以及文件工具安全语义。
+
+### 11.3 Tool 调用链
+
+```mermaid
+flowchart LR
+    Call[Model ToolCall]
+    Route[Resolve frozen route]
+    Normalize[Normalize schema input]
     Validate[ValidateInput]
-    Prepare[Prepare]
-    Permission[PermissionEvaluation]
-    Approval[ApprovalCoordinator]
-    Execute[Execute]
-    Result[ToolResult]
-    Observer[LifecycleObserver]
-    Rollout[Event + Rollout]
+    Prepare[Prepare side-effect-free state]
+    Observe[Observe target instructions]
+    Permission[Permission Evaluate]
+    Approval[Approval if Ask]
+    Execute[Execute prepared state]
+    Result[Typed ToolResult]
+    Persist[ResponseItem + TurnItem]
 
-    Registry --> Router
-    Router --> Call
-    Call --> Validate
-    Validate --> Prepare
-    Prepare --> Permission
-    Permission --> Approval
-    Approval --> Execute
-    Execute --> Result
-    Validate --> Observer
-    Prepare --> Observer
-    Execute --> Observer
-    Observer --> Rollout
+    Call --> Route --> Normalize --> Validate --> Prepare --> Observe --> Permission
+    Permission -->|Allow| Execute
+    Permission -->|Ask| Approval --> Execute
+    Permission -->|Deny| Result
+    Execute --> Result --> Persist
 ```
 
-### 14.1 Tool 调用阶段
+`PreparedToolUse` 是 Prepare、Approval 和 Execute 间的不可变handoff；Runtime沿用这份准备态完成后续执行。
 
-1. Registry 在 Session 初始化时注册 ToolDefinition。
-2. Step capture 根据 Mode、Model、配置、Skill/MCP revisions 和 SubAgent source 生成 immutable ToolRouter。
-3. Model 返回的 ToolCall 只能在该 Router 中解析。
-4. Tool 先校验 JSON，再 Prepare 路径/preview/metadata，再做 Permission/Approval，最后 Execute。
-5. ToolResult 同时包含模型文本、多模态 Parts、typed Data 和独立 Display projection。
-6. LifecycleObserver 负责 ItemStarted/Completed、canonical ToolResult 和 TUI activity。
+### 11.4 Batch 并发
 
-### 14.2 数据模型职责
+```mermaid
+flowchart TD
+    Batch[Tool call batch]
+    NormalizeAll[normalize and record all calls]
+    Groups[partition serial / parallel runs]
+    Workers[bounded workers]
+    Collect[indexed results]
+    Sort[restore model order]
+    Publish[ordered completed events]
+
+    Batch --> NormalizeAll --> Groups
+    Groups --> Workers --> Collect --> Sort --> Publish
+```
+
+Tool声明parallel-safe时进入有界并发；完成结果按模型调用顺序恢复。
+
+### 11.5 内置 Tool 分组
+
+| 分组 | Tool | 关键边界 |
+|---|---|---|
+| 文件读取 | `read` | canonical path、bounded lines、complete-read state |
+| 搜索 | `glob`、`grep` | stable order、result/token bounds |
+| 文件修改 | `edit`、`write` | Diff、Approval、stale revalidate、atomic apply |
+| 进程 | `execute_command`、`write_stdin` | exact command grant、`process.Manager` |
+| Runtime | `update_plan`、`request_user_input` | dedicated Event / typed waiter |
+| 外部 | Web、MCP、Skill、image | capability-specific validation |
+| 协作 | spawn/send/wait/close | root-only `multiagent.Control` |
+
+### 11.6 重要模型职责
 
 | 模型 | 职责 |
 |---|---|
-| `ToolSpec` | Tool 名称、说明、Schema、副作用和幂等性。 |
-| `SideEffect` | none/read/write/execute/network 分类。 |
-| `Exposure` | direct/conditional/deferred/hidden 注册可见性。 |
-| `Registration` | Exposure 与 condition key。 |
-| `ToolCall` | Engine/Tool domain 的模型调用 DTO。 |
-| `Invocation` | 同时携带 typed SessionID、ThreadID、TurnID 和来源的执行 envelope。 |
-| `RequestSnapshot` | MCP、Skill、AGENTS.md、ToolRouter revisions。 |
-| `ToolDefinition` | `Spec + ValidateInput + Prepare + Execute` contract。 |
-| `ToolUseContext` | Tool 执行时的 context、invocation 和 request snapshot。 |
-| `PreparedToolUse` | Prepare 产物、typed state、permission evaluation 和 preview。 |
-| `ToolResult` | 模型输出、UI display、metadata、artifacts、typed data。 |
-| `ToolDisplayResult` | UI 不解析模型 Text 即可展示的安全结果。 |
-| `ToolCallOutcome` | completed/failed/denied/interrupted、duration、error 和 metadata。 |
-| `ToolExecution` | Call、Output 和 Outcome 的完整执行结果；`PreparedToolUse.State` 只存在于执行链内部。 |
-| `Registry` | Session-scoped ToolDefinition mutable registration owner。 |
-| `Entry` | Registry 中 spec、definition、exposure、condition 和 binding ID。 |
-| `ToolRouter` | request-scoped immutable exact binding snapshot。 |
-| `ExecutionScope` | 一批 ToolCalls 的 Turn/Session identity、Router 和 observer。 |
-| `ToolExecutionService` | 有界并发、顺序约束、Approval、Permission、interaction 和 lifecycle 调度。 |
+| `ToolSpec` | 模型可见name、description、schema、side effect和visibility。 |
+| `ToolRouter` | 一次Step的spec+handler identity snapshot。 |
+| `ToolUseContext` | invocation identity、permission、file state、interaction ports。 |
+| `PreparedToolUse` | side-effect-free prepared input/state/permission request。 |
+| `ToolResult` | 模型可见text/parts/data/error/partial。 |
+| `ToolDisplayResult` | TUI和Event安全投影。 |
+| `ToolExecution` | call、outcome、duration和result。 |
 
-### 14.3 Workspace、FileChange 与 TextDiff
+## 12. Permission、Approval 与文件修改
+
+### 12.1 模块关系
 
 ```mermaid
-flowchart LR
-    Tools[read / glob / grep / edit / write]
-    Policy[FileSystemPolicy]
-    Reader[workspace.Reader]
-    Enum[workspace.FileEnumerator]
-    Ignore[workspace.IgnoreMatcher]
-    Text[TextDetector + OutputLimiter]
-    Preview[filechange.Preview]
-    Diff[textdiff]
-    Result[filechange.Result]
-
-    Tools --> Policy
-    Policy --> Reader
-    Policy --> Enum
-    Ignore --> Enum
-    Reader --> Text
-    Enum --> Text
-    Tools --> Preview
-    Preview --> Diff
-    Diff --> Result
-```
-
-| 模型 | 职责 |
-|---|---|
-| `workspace.Reader` | 通过 FileSystemPolicy 解析路径，并按行数、字节数和单行长度限制读取文本文件。 |
-| `ReadRangeOptions` / `ReadRangeResult` | 文件区间读取的限制参数，以及分页、截断和文件统计结果。 |
-| `workspace.FileEnumerator` | 在 policy 和 ignore rules 下枚举文件，处理 hidden、symlink、上限和 partial 结果。 |
-| `EnumerateOptions` / `FileEntry` / `EnumerateResult` | 文件枚举请求、条目和 bounded result。 |
-| `workspace.IgnoreMatcher` | 合并 `.gitignore` 与 `.ignore` 规则，并执行目录、锚定和 negation 匹配。 |
-| `TextDetector` / `OutputLimiter` | 拒绝非 UTF-8/NUL 内容，并保证 Tool 输出不超过字节预算。 |
-| `filechange.Preview` | 修改前的路径、operation、hash、diff stats、hunks 和 unified diff。 |
-| `filechange.Result` | apply 后的路径、operation、原始/更新内容、diff 和 user-modified 标记。 |
-| `textdiff.Stats` | 文本变化的 insertion/deletion 统计；`textdiff` 同时生成 bounded unified diff。 |
-
-## 15. Approval、Permission 与文件系统
-
-```mermaid
-flowchart LR
-    Prepared[PreparedToolUse]
-    Eval[PermissionEvaluation]
-    Grants[SessionPermissionContext]
-    Ask[ApprovalRequest]
-    Port[ApprovalPort]
-    Decision[ApprovalDecision]
-    Apply[Apply Grant]
+flowchart TB
+    Tool[Tool Prepare]
     FS[FileSystemPolicy]
-    Exec[Tool Execute]
+    Permission[PermissionService]
+    Grants[SessionPermissionContext]
+    Coordinator[ApprovalCoordinator]
+    Event[ApprovalRequestEvent]
+    TUI[Approval Dialog]
+    Decision[ApprovalDecisionOp]
+    Execute[Tool Execute]
 
-    Prepared --> Eval
-    Eval --> Grants
-    Grants -->|miss| Ask
-    Ask --> Port
-    Port --> Decision
-    Decision --> Apply
-    Apply --> Grants
-    Eval --> FS
-    FS --> Exec
+    Tool --> FS
+    Tool --> Permission
+    Permission --> Grants
+    Permission -->|Ask| Coordinator --> Event --> TUI --> Decision --> Coordinator
+    Permission --> Execute
+    Coordinator --> Execute
 ```
 
-### 15.1 强制边界
-
-- `FileSystemPolicy` 决定目标路径是否在 workspace、temporary、read-only 或 denied root 中。
-- `SessionPermissionContext` 只保存当前 Session 的可复用授权，不改变底层文件系统边界。
-- ApprovalPort 由 CLI/TUI 实现；Tool 和 Policy 不依赖具体终端。
-- SubAgent 使用 deny-only ApprovalPort，因此不会产生无人消费的 UI waiter。
-- `edit`/`write` 使用 complete read-before-write、preview、Approval 后 revalidation 和 atomic apply。大文件的分页 read只在同一content hash下累积无gap、非截断line coverage；`complete_snapshot=true`后才能修改，内容变化立即使旧coverage失效。
-
-### 15.2 数据模型职责
-
-| 模型 | 职责 |
-|---|---|
-| `PermissionEvaluation` | Allow、Deny 或 Ask 的 Tool Prepare 结果。 |
-| `PermissionGrant` | read directory、edit directory、exact command 或 external key 的可复用授权。 |
-| `SessionPermissionContext` | 一个 Session 的 in-memory grant store。 |
-| `FileReadState` | 当前文件指纹、分页line coverage和FullRead事实；Edit/Write Prepare与Execute都用它做stale/complete-read校验。 |
-| `ApprovalRequest` | Tool、风险、cause、permission key、presentation 和 raw arguments。 |
-| `ApprovalPresentation` | UI title、description、details、options 和 optional diff。 |
-| `ApprovalDecision` | allow/deny、once/session、source 和 reason。 |
-| `ApprovalCoordinator` | 查询 Session Grant、调用 ApprovalPort、验证 decision 并应用 grant。 |
-| `ApprovalPort` | 用户决策端口。 |
-| `CommandAssessment` | CommandGuard 对命令风险和 disposition 的结果。 |
-| `PermissionProfile` | read host、workspace、temporary、read-only、denied roots。 |
-| `FileSystemPolicy` | canonical path resolution 和强制访问判断。 |
-| `ResolvedPath` | requested、absolute、canonical、access 和 root source。 |
-| `filechange.Preview` | 文件修改前的 operation、hunks 和统计。 |
-| `filechange.Result` | apply 后的路径、operation、原始/更新内容、diff 和 user-modified 标记。 |
-
-## 16. Command 与 Process 架构
+### 12.2 文件修改流程
 
 ```mermaid
 flowchart LR
-    EC[execute_command]
-    Guard[CommandGuard]
-    Policy[FileSystemPolicy / Approval]
-    PM[ProcessManager]
-    Managed[managed process]
-    WS[write_stdin]
-    Snap[Process Snapshot]
+    Read[Complete read]
+    State[FileReadState]
+    Prepare[Prepare edit/write]
+    Diff[Structured Diff]
+    Ask[Approval]
+    Reopen[Re-read file]
+    Stale{Hash/mode/symlink match?}
+    Apply[Atomic apply]
+    Verify[Verify result]
 
-    EC --> Guard
-    Guard --> Policy
-    Policy --> PM
-    PM --> Managed
-    WS --> PM
-    Managed --> Snap
+    Read --> State --> Prepare --> Diff --> Ask --> Reopen --> Stale
+    Stale -->|yes| Apply --> Verify
+    Stale -->|no| Conflict[stale/conflict result]
 ```
 
-### 16.1 数据模型职责
+文件修改的处理顺序：
+
+- 已有文件先记录完整读取状态，再进入edit/write。
+- Preview和Apply共享prepared state；Approval等待后重新校验文件状态。
+- Session grant按read/edit/command/external能力隔离，并随Session生命周期保存于内存中。
+- 文件系统Denied/ReadOnly/symlink规则由FileSystemPolicy持续执行，grant在该策略内生效。
+
+### 12.3 重要模型职责
 
 | 模型 | 职责 |
 |---|---|
-| `process.Command` | 启动进程的 shell/executable、args、cwd、timeout、TTY 和输出上限。 |
-| `process.Attribution` | Skill script 等来源的 name、resource、revision。 |
-| `process.ID` | 长运行进程身份。 |
-| `process.State` | running/completed/cancelled/timed_out/failed。 |
-| `process.Snapshot` | owner-scoped 可观察进程状态、输出、退出码和时间。 |
-| `process.Manager` | Session-scoped process registry、stdin、wait、cancel 和 cleanup owner。 |
-| `ExecRequest` | `execute_command` 的 normalized command request。 |
-| `ProcessResult` | ToolResult 中返回 process ID、state、output、exit code、耗时和输出截断状态。 |
+| `tool.PermissionEvaluation` | Allow/Ask/Deny和最小grant建议。 |
+| `policy.SessionPermissionContext` | 当前Session内存grant。 |
+| `policy.ApprovalRequest` / `ApprovalPresentation` | Tool生成的typed交互内容与选项。 |
+| `policy.ApprovalDecision` | 用户选择、scope、source和reason。 |
+| `tool.FileReadState` | path、exists、hash、mode、symlink和read coverage。 |
+| `filechange.Preview` | operation、before/after hash、stats、hunks。 |
+| `filechange.Result` | apply后的typed事实。 |
 
-### 16.2 Host Execution 边界
+## 13. Command 与 Process
 
-当前基础产品不实现 OS sandbox。`execute_command` 的强制边界由 CommandGuard、Approval、canonical CWD/FileSystemPolicy、exact Session grant 和 ProcessManager 共同构成；未接入主链的 bubblewrap prototype 已删除，不作为未来能力占位。若后续新增 sandbox，必须作为明确的 Command execution adapter 与独立跨平台 Contract 设计，不能恢复未使用的旧 package。
+### 13.1 目录
 
-## 17. MCP 与 Skill 架构
-
-```mermaid
-flowchart TB
-    subgraph MCPFlow[MCP]
-        MCfg[mcp.yaml]
-        MR[MCPRuntime]
-        Bind[MCPBinding]
-        TC[ToolCatalog]
-        RC[ResourceCatalog]
-        Lazy[Lazy MCP Tools]
-        MCfg --> MR
-        MR --> Bind
-        MR --> TC
-        MR --> RC
-        TC --> Lazy
-        RC --> Lazy
-    end
-
-    subgraph SkillFlow[Skills]
-        Roots[User + Project Skill Roots]
-        SC[SkillCatalog]
-        Index[SkillMetadata Index]
-        Inject[Explicit SkillInjection]
-        Read[read_skill]
-        Script[execute_command attribution]
-        Roots --> SC
-        SC --> Index
-        SC --> Inject
-        SC --> Read
-        SC --> Script
-    end
-
-    Lazy --> Router[ToolRouter]
-    Index --> Context[ContextManager]
-    Inject --> Context
-    Read --> Router
+```text
+internal/tool/builtin/execute_command*.go
+internal/tool/builtin/write_stdin.go
+internal/process/
+internal/policy/command_guard.go
 ```
 
-### 17.1 MCP 模型职责
-
-| 模型 | 职责 |
-|---|---|
-| `mcp.Config` | 用户级与项目级 MCP Server 配置。 |
-| `ServerConfig` | stdio 或 streamable HTTP 连接参数。 |
-| `MCPRuntime` | Session-scoped client、connection generation、catalog cache 和 revision owner。 |
-| `MCPBinding` | 当前全部 Server 的一致 binding revision。 |
-| `MCPServerBinding` | 单个 Server 的连接/Tool/Resource generation 状态。 |
-| `MCPToolMetadata` | sanitized schema、read-only/idempotent/parallel hints 和 revision。 |
-| `MCPResourceMetadata` | URI、name、description、MIME type 和 revision。 |
-| `ToolCatalog` | 一个 Server 的 Tool metadata snapshot。 |
-| `ResourceCatalog` | 一个 Server 的 Resource metadata snapshot。 |
-| `RemoteResult` | MCP Tool 的不可信远端结果。 |
-| `RemoteResource` / `RemoteResourceContent` | MCP Resource discovery 与读取结果。 |
-
-### 17.2 Skill 模型职责
-
-| 模型 | 职责 |
-|---|---|
-| `SkillCatalog` | 用户级/项目级 Skill discovery、override、enabled state、revision 和 on-demand body owner。 |
-| `SkillMetadata` | name、description、source、scope、policy、resources、size 和 revision。 |
-| `SkillDocument` | SkillMetadata + root + 当前 `SKILL.md` 正文。 |
-| `Policy` | 当前主要表达 `AllowImplicitInvocation`。 |
-| `SkillResource` | references/scripts/assets 下文件的 path、kind、size 和 revision。 |
-| `SkillInjection` | 显式 `$skill-name` 注入 Context 的正文。 |
-| `ScriptInvocation` | execute_command 识别出的 Skill script attribution。 |
-| `SkillOption` | Application/TUI 的启停 read model。 |
-
-## 18. Web 与图片能力
+### 13.2 执行流程
 
 ```mermaid
 flowchart LR
-    WS[web_search]
-    SP[Search Provider]
-    SR[Search Results]
-    WF[web_fetch]
-    URL[URL Validation]
-    HTTP[Safe Transport]
-    MD[Readable Markdown]
-    VI[view_image]
-    FP[File Policy]
-    IP[Image Processor]
-    PI[PreparedImage]
+    Input[command/cwd/timeout/tty]
+    Validate[Validate]
+    Guard[Dangerous command guard]
+    Permission[Exact command permission]
+    Approval[Approval if needed]
+    Start[process.Manager.Start]
+    Stream[bounded stdout/stderr]
+    Continue[write_stdin / poll / close]
+    Result[ProcessResult]
 
-    WS --> SP --> SR
-    WF --> URL --> HTTP --> MD
-    VI --> FP --> IP --> PI
+    Input --> Validate --> Guard --> Permission
+    Permission --> Approval --> Start
+    Permission --> Start
+    Start --> Stream --> Result
+    Start --> Continue --> Result
 ```
 
-### 18.1 数据模型职责
+Amadeus在宿主系统执行命令；命令安全行为由默认Ask、灾难性命令拒绝、exact command grant、timeout、process cancellation和输出上限组成，Unix非PTY命令额外按process group终止。
+
+### 13.3 重要模型职责
 
 | 模型 | 职责 |
 |---|---|
-| `websearch.Result` | 单条标准化搜索结果：title、URL 和 snippet。 |
-| `websearch.Provider` | Search backend port。 |
-| `websearch.Service` | timeout、结果上限、归一化和 Tool-facing search owner。 |
-| `websearch.ServiceOptions` | timeout、最大结果数和 transient retry delay。 |
-| `websearch.Error` | provider、错误分类、HTTP status 和底层错误。 |
-| `webfetch.Document` | 最终 URL、content type、title、Markdown、partial 标记和读取字节数。 |
-| `webfetch.Options` | 最大字节、重定向、timeout、限速、DNS/dial/proxy/TLS 安全依赖。 |
-| `webfetch.Fetcher` | 安全网络读取 port。 |
-| `imageprep.Detail` | high 或 original。 |
-| `SourceLimits` | source bytes、dimensions 和 pixel 安全上限。 |
-| `PreparationLimits` | prepared max dimension 和 patch budget。 |
-| `imageprep.Options` | high/original 两套处理约束。 |
-| `Processor` | 图片格式检测、静态化、缩放和重编码 owner。 |
-| `PreparedImage` | source/prepared metadata、bytes 和 Base64 payload。 |
+| `process.Manager` | process registry、按进程串行化I/O、cancel和Session cleanup。 |
+| `process.Command` | executable/shell、CWD、timeout、TTY、output bound与调用归属。 |
+| `process.Snapshot` | Manager返回的运行状态、output、exit code与truncation。 |
+| `builtin.ProcessResult` | `execute_command` / `write_stdin`向ToolResult和TUI公开的稳定投影。 |
+| `policy.CommandApprovalKey` | canonical CWD + minimally normalized exact command grant key。 |
+| `process.Command.OriginCallID` | `write_stdin`校验并继承原`execute_command`调用归属。 |
 
-## 19. Basic Multi-Agent 架构
+## 14. MCP
+
+### 14.1 目录
+
+```text
+internal/mcp/
+├── config.go
+├── runtime*.go              # connection lifecycle and snapshots
+├── binding.go               # immutable request-facing binding
+├── catalogs.go              # Tool/Resource metadata
+├── lazy_tool.go             # list/call deferred tools
+├── resource_tool.go
+└── client*.go               # stdio / HTTP clients
+```
+
+### 14.2 架构
 
 ```mermaid
 flowchart TB
-    Root[Root AmadeusThread]
-    Tools[spawn/send/wait/close Tool]
-    Control[Root-scoped AgentControl]
-    Host[ThreadManager as AgentHost]
-    Child[Child AmadeusThread]
-    ChildSession[Child Session]
-    ReadOnly[Read-only ToolRouter]
-    Events[Child Event Consumer]
-    Status[AgentStatus + LastTurn Reducer]
-    Edge[Root AgentSpawnEdge open/closed]
-    Notify[subagent_notification]
-    ParentContext[Root Context]
+    Config[MCP Config]
+    Runtime[MCPRuntime]
+    Connections[Server Connections]
+    Tools[ToolCatalog]
+    Resources[ResourceCatalog]
+    Binding[MCPBinding revision]
+    Step[StepContext]
+    Router[ToolRouter]
+    Execute[ToolExecutionService]
 
-    Root --> Tools
-    Tools --> Control
+    Config --> Runtime --> Connections
+    Connections --> Tools
+    Connections --> Resources
+    Tools --> Binding
+    Resources --> Binding
+    Binding --> Step --> Router --> Execute
+```
+
+### 14.3 Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Configured
+    Configured --> Starting: first catalog/resource request
+    Starting --> Connected: initialize success
+    Starting --> Failed: startup failure
+    Connected --> Refreshing: explicit refresh
+    Refreshing --> Connected: new binding revision
+    Connected --> Disconnected: transport failure
+    Disconnected --> Starting: retry once / next demand
+    Connected --> Closed: Session close
+    Failed --> Closed: Session close
+```
+
+MCP运行行为：
+
+- MCPRuntime是Session-scoped connection owner。
+- 每个server由独立`serverState` mutex串行化catalog、call、refresh和reconnect；不同server使用各自的锁。
+- StepContext捕获MCPBinding revision；当前Step的spec和dispatch identity保持一致。
+- `mcp_list_tools`、`mcp_call`、`mcp_list_resources`和`mcp_read_resource`都进入普通Tool pipeline。
+- 非只读 MCP call默认需要Approval；只读远程工具与resource list/read按只读策略处理。
+- MCP结果带有server/tool来源并经过bounded处理，供模型作为外部数据阅读。
+
+### 14.4 重要模型职责
+
+| 模型 | 职责 |
+|---|---|
+| `MCPRuntime` | connection、catalog refresh、shutdown owner。 |
+| `MCPBinding` | server generation和catalog revision的immutable snapshot。 |
+| `ToolCatalog` / `ResourceCatalog` | sanitized remote capability metadata。 |
+| `LazyListTool` / `LazyCallTool` | 延迟发现与调用remote Tool的`ToolDefinition`适配。 |
+| `ListResourcesTool` / `ReadResourceTool` | remote Resource的发现与读取适配。 |
+| `mcp.Config` / `ServerConfig` | stdio或streamable HTTP server配置。 |
+
+## 15. Skill
+
+### 15.1 目录
+
+```text
+internal/skill/
+├── discovery.go / parser.go
+├── catalog.go / revision.go
+├── selection.go / settings.go
+├── injection.go / invocation.go
+└── resources.go
+```
+
+### 15.2 发现与注入流程
+
+```mermaid
+flowchart LR
+    Roots[User + project skill roots]
+    Discover[Discover SKILL.md]
+    Parse[Parse metadata]
+    Catalog[SkillCatalog + revision]
+    World[WorldState metadata index]
+    Prompt[User input contains $skill-name]
+    Select[ResolveExplicit]
+    Inject[Canonical SkillInjection]
+    Resource[read_skill references]
+
+    Roots --> Discover --> Parse --> Catalog --> World
+    Prompt --> Select --> Inject
+    Catalog --> Select
+    Inject --> Resource
+```
+
+Skill采用渐进式披露：默认把metadata/index提供给模型；用户输入显式包含`$skill-name`时注入完整SKILL.md；模型也可通过`read_skill`按需读取Skill正文或`references/`文件。Skill script由`execute_command`执行，并沿用命令工具的权限和进程生命周期。
+
+### 15.3 重要模型职责
+
+| 模型 | 职责 |
+|---|---|
+| `SkillMetadata` | name、description、location和可用性。 |
+| `SkillCatalog` | discovery、dedupe、settings和revision owner。 |
+| `SkillInjection` | canonical模型可见Skill正文。 |
+| `SkillDocument` | 已重新读取并校验的metadata、root与SKILL.md正文。 |
+| `SkillResource` | reference、script或asset的相对路径、大小与revision。 |
+| `ScriptInvocation` | `execute_command`识别出的Skill script及其attribution。 |
+| `ReadSkill` | 对Skill正文与`references/`执行revision校验和有界读取。 |
+
+## 16. Web 与图片
+
+### 16.1 Web
+
+```mermaid
+flowchart LR
+    SearchTool[web_search]
+    Provider[Search Provider]
+    Results[bounded evidence snippets]
+    FetchTool[web_fetch]
+    URL[URL validation]
+    DNS[Pinned DNS/dial]
+    Redirect[Redirect policy]
+    Body[bounded body]
+    Markdown[Readable Markdown]
+
+    SearchTool --> Provider --> Results
+    FetchTool --> URL --> DNS --> Redirect --> Body --> Markdown
+```
+
+Web Search与Fetch分离：Search返回证据线索，Fetch读取完整页面。URL scheme、credentials、DNS结果、redirect目标、content type、bytes和timeout都在Tool边界验证。
+
+### 16.2 图片
+
+```mermaid
+flowchart LR
+    View[view_image]
+    Path[Path + Permission]
+    Read[bounded file read]
+    Decode[decode and detect format]
+    Prepare[resize/re-encode/detail budget]
+    Part[ToolResult image part]
+    Provider[Provider modality mapping]
+
+    View --> Path --> Read --> Decode --> Prepare --> Part --> Provider
+```
+
+图片Base64在canonical ResponseToolResult中保存一次；completed Event/TUI保存display-safe metadata。`contextmanager.Manager`按prepared dimensions/detail估算成本，ToolRouter根据模型能力决定`view_image`是否可见。
+
+### 16.3 重要模型职责
+
+| 模型 | 职责 |
+|---|---|
+| `websearch.Result` | title、URL、snippet。 |
+| `websearch.Service` | provider、timeout、result bounds。 |
+| `webfetch.Document` | final URL、type、title、Markdown、partial。 |
+| `PreparedImage` | source/prepared dimensions、MIME、bytes、detail、payload。 |
+| `PreparationLimits` | dimension、pixel和patch budget。 |
+
+## 17. Basic Multi-Agent
+
+### 17.1 目录
+
+```text
+internal/agent/multiagent/
+├── control.go               # spawn/send/wait/close API
+├── reservation.go           # slot and nickname transaction
+├── lifecycle.go             # live/Resume pure reducer
+├── status.go                # event consumer and notification delivery
+├── shutdown.go              # explicit close vs unload
+└── message_budget.go        # parent notification token bounds
+
+internal/threadmanager/
+├── agent_host.go            # spawn/edge/notification host
+└── child_resume.go          # open child restore
+```
+
+### 17.2 架构
+
+```mermaid
+flowchart TB
+    Root[Root Thread]
+    Tools[spawn / send / wait / close]
+    Control[multiagent.Control]
+    Host[ThreadManager AgentHost]
+    Edge[Root AgentSpawnEdgeItem]
+    Child[Child Thread + Session]
+    Router[Read-only ToolRouter]
+    Events[Child Events]
+    Reducer[AgentStatus + LastTurn reducer]
+    Notify[Typed ContextFragment]
+    Parent[Root Context]
+
+    Root --> Tools --> Control
+    Control --> Host --> Child
     Control --> Edge
-    Control --> Host
-    Host --> Child
-    Child --> ChildSession
-    ChildSession --> ReadOnly
-    ChildSession --> Events
-    Events --> Status
-    Status --> Notify
-    Notify --> ParentContext
+    Child --> Router
+    Child --> Events --> Reducer --> Notify --> Parent
 ```
 
-### 19.1 关键边界
+### 17.3 Spawn 与生命周期
 
-- SubAgent 是完整 `AmadeusThread/Session`，不是 Tool handler 内嵌 provider runner。
-- `AgentControl` 只保存 tree metadata、status、reservation 和控制操作，不成为第二 Thread registry。
-- child 使用 fresh Context，不复制 parent reasoning、Tool history、Plan 或 compaction history。
-- child 固定 depth 1、role `explorer`，只允许 read/glob/grep 和条件 read_skill/web_search。
-- child Approval 被 policy deny；不会阻塞 Root TUI。
-- `run_turn → TaskOutput.LastAgentMessage → TurnCompleteEvent.last_agent_message`是final answer唯一权威；Tool前导语不进入AgentStatus Message。
-- AgentStatus保持Codex V1枚举，AgentTurnResult从同一terminal Event保留completed/blocked/failed/aborted outcome与reason；live和Resume共用同一个pure reducer。
-- 成功spawn的child绑定root tree而不是父Turn；父Turn完成、失败、blocked或Interrupt后child继续运行。
-- completion通过parent Session canonical append成为token-bounded `<subagent_notification>`；wait/notification/TUI共享Status+LastTurn snapshot。
-- Root rollout的`AgentSpawnEdgeItem(open|closed)`拥有flat child membership；explicit close关闭edge，Root shutdown只卸载runtime，Resume只恢复open child。
-- `wait_agent`在任一Codex final status到达时返回；Interrupted不是final，timeout不制造final状态。
+```mermaid
+sequenceDiagram
+    participant Tool as spawn_agent
+    participant C as multiagent.Control
+    participant H as ThreadManager
+    participant Child as Child Session
+    participant Root as Root Session/Rollout
 
-### 19.2 数据模型职责
+    Tool->>C: Spawn(message)
+    C->>C: reserve slot + nickname
+    C->>H: SpawnChild
+    H->>Child: create full Thread/Session
+    C->>Child: initial UserInput admission
+    C->>Root: durable edge open
+    C->>C: commit reservation
+    C-->>Tool: agent ID + nickname
+```
 
-| 模型 | 职责 |
-|---|---|
-| `SessionSource` | tagged source：Root 或 SubAgent。 |
-| `SubAgentSource` | parent ThreadID、depth、nickname 和 role。 |
-| `AgentMetadata` | AgentControl 的稳定身份 read model。 |
-| `AgentStatus` | pending/running/interrupted/completed/errored/shutdown/not_found。 |
-| `AgentTurnResult` | 最近canonical terminal Event派生的TurnID、outcome、reason和optional last_agent_message。 |
-| `AgentSpawnEdgeItem` | Root rollout中depth-one child的open/closed membership authority。 |
-| `multiagent.Options` | Control 的 max agents/depth。 |
-| `SpawnChildRequest` | AgentControl 到 ThreadManager 的 child 创建请求。 |
-| `AgentRuntime` | AgentControl 操作 child Thread 的窄 runtime port。 |
-| `AgentHost` | ThreadManager实现的spawn/resume、typed edge mutation和notification delivery port。 |
-| `Control` | root tree reservation、status、wait、send、close 和 event consumer owner。 |
-| `AgentRecord` | WorldState/Control所需metadata + status + optional LastTurn snapshot。 |
-| `SpawnResult` | `spawn_agent` 的 agent ID 和 nickname。 |
-| `StatusSnapshot` | wait/send/close所需AgentStatus、LastTurn和notification delivery diagnostic。 |
-| `WaitResult` | statuses + timed_out。 |
-| `Notification` | child terminal status 到 parent 的内部通知。 |
-| `CollabAgentTool` | spawn/send/wait/close 分类。 |
-| `CollabAgentToolCallStatus` | in-progress/completed/failed。 |
-| `CollabAgentRef` | TUI 需要的 ThreadID、nickname 和 role。 |
-| `CollabAgentState` | AgentStatus + LastTurn + notification diagnostic wrapper。 |
-| `CollabAgentToolCallItem` | live TUI 与 Resume 唯一 collaboration 展示协议。 |
+成功spawn后child绑定root tree，独立运行自己的Session和Turn。父Turn结束后child继续运行；Root/Application shutdown会卸载child runtime，explicit close先持久化closed edge。
 
-### 19.3 AgentStatus 状态机
+`blocked`是`AgentTurnResult.Outcome`，对应的control-plane status仍是`completed`。它表示该Turn触及hard safety budget，或child的无Tool finalization未能产出final report。
+
+### 17.4 Status、Wait 与 Notification
 
 ```mermaid
 stateDiagram-v2
     [*] --> pending_init
     pending_init --> running: TurnStarted
-    running --> completed: TurnComplete success
-    running --> errored: Error or failed TurnComplete
+    running --> completed: TurnComplete
+    running --> errored: failed terminal
     running --> interrupted: TurnAborted
     completed --> running: send_input
     errored --> running: send_input
     interrupted --> running: send_input
-    pending_init --> shutdown: ShutdownComplete
-    running --> shutdown: close/shutdown
-    completed --> shutdown: close/shutdown
-    errored --> shutdown: close/shutdown
+    pending_init --> shutdown: close/unload
+    running --> shutdown: close/unload
+    completed --> shutdown: close/unload
     shutdown --> not_found: record removed
 ```
 
-`blocked`不是新的AgentStatus：blocked是`AgentTurnResult.Outcome`，而completed status只表示child当前Turn已结束且Thread空闲。child进入soft budget boundary后执行至多一次Tools为空的finalization sample；hard blocked仍把exact reason交给parent。
+- `TurnCompleteEvent.LastAgentMessage`是final answer唯一权威。
+- `AgentStatus`保持Codex V1枚举；`AgentTurnResult`保存completed/blocked/failed/aborted outcome和reason。
+- `wait_agent`在任一final status到达时返回当时所有final targets；Interrupted表示可继续接收输入的中间状态。
+- notification携带AgentID+child TurnID watermark，durable成功后才标记delivered；失败可由wait重试。
+- notification中的status message约束为400 tokens，reason约束为100 tokens；结构化envelope另有固定开销。
 
-Basic Multi-Agent固定为depth-one read-only explorer。Codex V2、AgentPath/mailbox/residency、history fork、write worker、child交互、team/worktree/remote和完整agent picker既不实现也不预留。
+### 17.5 Budget Finalization
 
-## 20. TUI Projection 架构
+```mermaid
+flowchart LR
+    Explore[Read-only exploration]
+    Soft{Soft budget?}
+    Finalize[One no-tools finalization sample]
+    Report[LastAgentMessage]
+    Hard{Hard limit / failure?}
+    Blocked[Blocked LastTurn with reason]
+
+    Explore --> Soft
+    Soft -->|no| Explore
+    Soft -->|yes| Finalize
+    Finalize -->|valid final| Report
+    Finalize -->|tool call/provider error| Hard --> Blocked
+```
+
+### 17.6 Persistence
+
+Root rollout的`AgentSpawnEdgeItem(open|closed)`是membership authority；SQLite将它投影为`agent_edge_state`。Root Resume恢复open child为unloaded AgentRecord，closed/archived child留在持久化索引中。Live Event和Resume rollout使用同一个pure lifecycle reducer。
+
+### 17.7 重要模型职责
+
+| 模型 | 职责 |
+|---|---|
+| `multiagent.Control` | root-tree reservation、status、wait、send、close owner。 |
+| `AgentMetadata` | child ThreadID、parent、depth、nickname、role。 |
+| `AgentStatus` | control-plane current state。 |
+| `AgentTurnResult` | terminal Turn outcome、reason、LastAgentMessage。 |
+| `AgentSpawnEdgeItem` | canonical open/closed membership。 |
+| `multiagent.StatusSnapshot` | Tool/TUI所需status、LastTurn、delivery diagnostic。 |
+| `SubagentNotificationEvent` | AgentID+TurnID delivery watermark与context content。 |
+
+当前 Basic Multi-Agent 提供 depth-one read-only explorer：Root 通过 `spawn_agent` 创建 child，通过 `send_input`、`wait_agent` 和 `close_agent` 管理 child，并接收带 TurnID watermark 的完成通知。
+
+## 18. Interface、Application 与 TUI
+
+### 18.1 目录
+
+```text
+internal/cli/
+internal/app/
+internal/tui/
+├── application*.go
+├── slash_*.go
+├── history_*.go
+├── transcript_*.go
+├── markdown_*.go
+├── approval_dialog.go
+├── request_user_input_dialog.go
+└── input_queue.go / footer.go / status_line.go
+```
+
+### 18.2 Application 与 attachment
+
+```mermaid
+flowchart TD
+    CLI[CLI input]
+    TUI[TUI appModel]
+    App[InteractiveApplication]
+    Workspace[ThreadWorkspace]
+    Thread[AmadeusThread]
+    Pump[Single Event Pump]
+    Generation[Attachment generation]
+    Projection[History projection]
+
+    CLI --> TUI --> App --> Workspace --> Thread
+    Thread --> Pump --> Generation --> Projection --> TUI
+```
+
+Application通过generation隔离旧Thread迟到事件；TUI通过Application和typed event读取Session状态。
+
+### 18.3 Slash Command
+
+```mermaid
+flowchart LR
+    Composer[Composer]
+    Parse[Parse Input]
+    Invoke[SlashInvocation]
+    Dispatch[Command Dispatch]
+    Local[TUI-local]
+    App[Application action]
+    Core[Session Op]
+
+    Composer --> Parse --> Invoke --> Dispatch
+    Dispatch --> Local
+    Dispatch --> App --> Core
+```
+
+Slash Command属于Interface control plane；模型Tool负责模型驱动的操作，Thread、Mode、Compaction、Skill和MCP操作则通过Application/Session主链完成。
+
+### 18.4 Event 到 HistoryCell
 
 ```mermaid
 flowchart LR
     Event[protocol.Event]
-    Reducer[Application/TUI Reducer]
+    Reducer[protocolEventState]
     Active[ActiveHistoryCell]
-    Complete[Completed HistoryCell]
-    Render[Styled Lines]
-    Resume[Resume Replay]
+    Completed[Completed HistoryCell]
+    Surface[TranscriptSurface]
+    Native[Terminal native scrollback]
+    Frame[Bounded mutable frame]
 
     Event --> Reducer
     Reducer --> Active
-    Reducer --> Complete
-    Active --> Render
-    Complete --> Render
-    Complete --> Resume
+    Reducer --> Completed
+    Active --> Surface --> Frame
+    Completed --> Surface --> Native
 ```
 
-### 20.1 Projection 原则
-
-- 流式 Event 更新 active cell；terminal ItemCompletedEvent 将其关闭或替换。
-- Resume 只使用 canonical completed items，不恢复过去 spinner。
-- UI 使用 `ToolDisplayResult`、`TurnItem.CollabAgent` 等 typed fields，不解析 ToolResult 文本反推状态。
-- Approval、UserInput request 和 Diff 是 overlay/application state，不写入普通聊天气泡。
-- Composer 使用首行 prompt 与 continuation gutter；编辑状态由 Bubble Tea textarea 管理，展示层按全局视觉 cursor 行投影最多五行的可见窗口。
-- Composer input state 拥有 attachment-scoped `NextTurnQueue`：Tab enqueue 不产生 HistoryCell，terminal 后每次 FIFO 提交一条；aborted/blocked 或提交前失败恢复 composer。
-- queued preview 最多展示三条单行摘要和剩余数量，Slash Popup/交互 overlay 激活时隐藏，不进入 scrollback、statusline 或 Resume replay。
-- running Turn 中 Composer 存在 queueable ordinary draft 时，`footerProps.HasQueueableDraft` 纯派生为 true；Footer 用 `tab to queue message`/`tab to queue` 临时替换固定 statusline，Plan indicator 只在可容纳时保留。该 hint 不进入 footerState、StatusLineItem 或 Runtime Event。
-
-### 20.2 主要展示模型
-
-| 模型 | 职责 |
-|---|---|
-| `HistoryCell` | `DisplayLines`、`RawLines`、stream continuation contract。 |
-| `ActiveHistoryCell` | 当前流式 item 或工具 activity。 |
-| `TranscriptSurface` | 统一拥有canonical transcript、immutable native-history cursor、mutable viewport和attachment-based completion replacement。 |
-| `markdownStreamHost` | 统一拥有Assistant/Plan controller和stream期间的defer-or-apply projection ordering。 |
-| `AgentMessageCell` / `StreamingAgentTailCell` | Assistant/Plan live stream 的 stable run 与 mutable tail。 |
-| `AgentMarkdownCell` | Assistant Markdown final source/cache owner。 |
-| `ProposedPlanCell` | Plan Mode 最终计划。 |
-| `ToolHistoryCell` | 聚合一个或多个 live Tool activity，并消费 started/completed Event。 |
-| `ExecCell` / `ExploreCell` | 分别展示命令进程，以及 read/glob/grep 等探索活动。 |
-| `FileChangeCell` / `GenericToolCell` | 分别展示 edit/write 结果，以及没有专用投影的通用 Tool。 |
-| `WebSearchCell` / `WebFetchCell` / `ViewImageCell` | Web 与图片 Tool 的稳定完成态投影。 |
-| `MCPCommandHistoryCell` / `MCPInventoryCell` | `/mcp` 命令和 MCP inventory 的展示模型。 |
-| `CollabAgentHistoryCell` | spawn/send/wait/close 的 Codex 风格展示。 |
-| `WarningHistoryCell` / `ErrorHistoryCell` | 非普通对话的 warning/error。 |
-| `approvalDialog` | `ApprovalPresentation` 的 TUI 私有交互状态。 |
-| `NextTurnQueue` / `QueuedUserMessage` | TUI pending FIFO、InFlight/start-pending gate、ThreadID/generation/Mode isolation 和 bounded preview source。 |
-| `footerProps.HasQueueableDraft` | 从 running + Composer ParseInput + overlay state 纯派生的 transient queue guidance input；不持久化。 |
-
-## 21. Audit、Logging 与诊断
-
-```mermaid
-flowchart LR
-    Runtime[Runtime/Tool]
-    Audit[Audit Sink]
-    Log[Logging]
-    JSONL[Audit JSONL]
-    Status[/status]
-    MCP[/mcp]
-    Skills[/skills]
-
-    Runtime --> Audit --> JSONL
-    Runtime --> Log
-    Runtime --> Status
-    Runtime --> MCP
-    Runtime --> Skills
-```
-
-| 模型 | 职责 |
-|---|---|
-| `audit.Record` | Tool/Approval 审计事实，记录参数摘要、风险、结果、来源、原因和耗时。 |
-| `audit.Sink` | 审计写入端口。 |
-| `logging.Runtime` | 结构化 logger 与 `trace_llm` 开关；创建 handler 时统一脱敏敏感属性。 |
-| `buildinfo.Info` | 版本、commit 和 build metadata。 |
-| `app.StatusSnapshot` | 用户可见 runtime 诊断。 |
-| `MCPInventory` | MCP capability 诊断。 |
-| `SkillOption` | Skill capability 诊断。 |
-
-敏感信息必须在进入普通日志、`config show`、MCP inventory 或 Tool display 前脱敏。完整 Provider payload 只在显式 `trace_llm` 等受控路径中记录。
-
-`/status` 同时投影当前 Base provenance、WorldState Absent/Unknown/Known baseline/revision、Provider wire API，以及 instructions、modes、multi-agent role、summarization prompt 和 summary prefix 的独立短 revision。它只读取 Session/ContextManager/Prompt asset owner，不保存第二份 Prompt 状态。
-
-## 22. 并发与取消模型
+### 18.5 Markdown Streaming
 
 ```mermaid
 flowchart TD
-    ProcessCtx[Process Context]
-    ManagerCtx[ThreadManager Context]
-    SessionCtx[Session Context]
-    TurnCtx[RunningTask Context]
-    ToolCtx[Tool Call Context]
-    ProcCtx[Managed Process Context]
-    AgentCtx[Child Session Context]
+    Delta[Assistant delta]
+    Collector[MarkdownStreamCollector]
+    Boundary[Goldmark stable boundary]
+    Stable[Stable rendered runs]
+    Tail[Mutable tail]
+    Attachment[StreamAttachment range]
+    Completion[Authoritative completed source]
+    Final[AgentMarkdownCell]
 
-    ProcessCtx --> ManagerCtx
-    ManagerCtx --> SessionCtx
-    SessionCtx --> TurnCtx
-    TurnCtx --> ToolCtx
-    ToolCtx --> ProcCtx
-    ManagerCtx --> AgentCtx
+    Delta --> Collector --> Boundary
+    Boundary --> Stable
+    Boundary --> Tail
+    Stable --> Attachment
+    Tail --> Attachment
+    Completion --> Attachment --> Final
 ```
 
-### 22.1 并发规则
+完成态保存原始Markdown和冻结CWD；resize、Rich/Raw、NoColor、copy和Resume都从source重新投影。
 
-- Session loop 本身串行处理协调状态。
-- Bubble Tea reducer 串行拥有 NextTurnQueue；异步 SubmitUser `tea.Cmd` 创建前先同步把 FIFO head 移入 InFlight，避免 terminal/key/admission 竞态重复发送。
-- RunningTask 在独立 goroutine 中执行，并通过单值 Completion channel 返回。
-- ToolExecutionService 只并行执行声明 parallel-safe 且不会违反 batch 顺序的 Tool。
-- ProcessManager 为每个进程维护独立 lock、I/O lock、done channel 和 timeout context。
-- AgentControl 的 agents/reservations/nicknames/changed channel 受单一 mutex 保护。
-- Thread writer 通过 LiveThread mutex 和 Store writer 保证顺序。
+### 18.6 主要展示模型
 
-### 22.2 取消规则
-
-- `InterruptOp` 取消 ActiveTurn，不关闭 Session 或 child Agent。
-- `ShutdownOp` 关闭 Session；Root Thread 先关闭 AgentControl/children。
-- Tool context 取消必须传播到网络、文件、Provider 和 Process 操作。
-- cleanup 使用 `context.WithoutCancel` 加有限 timeout，保证 caller 已取消时仍能做必要持久化和资源释放。
-
-## 23. 架构不变量
-
-以下规则应由测试和 architecture guards 长期保护：
-
-1. ThreadManager 是唯一 live Thread registry。
-2. Session 是 ActiveTurn 和 pending interactive waiter 的唯一 owner。
-3. JSONL 是完整历史事实源，SQLite 只保存 metadata index。
-4. Event 必须由 typed EventMsg 表达，TUI 不解析日志字符串获取状态。
-5. 同一次模型采样先冻结 StepContext，再持久化其 WorldState full/patch，随后构造 PromptSnapshot；Prompt ToolSpec 与 Tool dispatch 使用该 StepContext 的同一个 ToolRouter。
-6. Tool 必须经过 Validate、Prepare、Permission/Approval、Execute 主链。
-7. Session Grant 不跨 Session，也不从 Root 泄漏给 SubAgent。
-8. Prompt 不宣称 ToolRouter 中不存在的能力。
-9. MCP/Skill/Web/Image 不建立第二套 Agent Loop、Approval UI 或 Process Runner。
-10. SubAgent 是完整 Thread/Session，AgentControl 不直接调用 Provider。
-11. terminal Event 在发布给 UI 前必须先持久化。
-12. Resume 从 canonical Rollout 重建 Context 和 UI，不重新执行历史 Tool。
-13. Root/child 共享 SessionID 但使用不同 ThreadID；registry、Event、Resume 和 Agent target 始终按 ThreadID 路由。
-14. Tool Invocation、Audit 和 Provider request metadata 同时携带 SessionID、ThreadID 与 TurnID。
-15. SessionMeta 是 SessionID 的 durable source；SQLite StoredThread 不保存 SessionID。
-16. Enter steer 与 Tab queue 是不同输入意图；NextTurnQueue 只存在于 TUI input layer，Core/Protocol/Rollout/Context 不保存 Queued Op、admission 或 durable item。
-17. matching TurnComplete 每次最多 drain 一条 queued input 且 admission 必须为 Started；aborted/blocked/rejection 和旧 attachment 结果不能把输入发送到错误 Turn。
-18. queue hint 只由 footerProps 的 queueable-draft 派生值驱动；running draft 时优先于 passive statusline 并按 full/short 降级，不能成为 footerState、StatusLineItem、HistoryCell 或 Runtime/canonical fact。
-19. Config/patch/default/validation/provenance/output 不保存 schema version；`version:` 被 strict decoder 拒绝，`configs/config.yaml.example` 是仓库唯一完整模板且不是自动发现位置。
-20. TokenCountEvent 是完整 snapshot：TotalTokenUsage、LastTokenUsage、ActiveContextTokens 和 preflight estimate 不混用，live/Resume/SQLite 不重复累加。
-21. CompactionService 只生成 typed output；Session 独占 trigger/reason/phase、真实 request usage、source validation、durable CompactedItem install、active recompute 和 Item terminal。
-
-`internal/architecture/guard_test.go` 通过源码结构检查保护这些边界，例如禁止已移除的旧 Runtime/Planner 抽象重新出现，并验证 Web、Tool、Multi-Agent 等关键 package 分层。
-
-## 24. 新增模块时的接入指南
-
-### 24.1 新增 Tool
-
-1. 在 `internal/tool/builtin` 建立独立 ToolDefinition。
-2. 定义稳定 ToolSpec、SideEffect、Exposure 和 Schema。
-3. 把路径解析、preview 和 remote metadata 放入 Prepare。
-4. 使用 PermissionEvaluation/ApprovalRequest，而不是 Tool 内直接读取终端。
-5. Execute 返回 bounded ToolResult、typed Data 和 Display。
-6. 如需专用 TUI，新增 typed TurnItem payload 或 ToolDisplay projection，不解析 Text。
-7. 添加 ToolRouter、Approval、Rollout、Resume 和 TUI 测试。
-
-### 24.2 新增 Provider
-
-1. 实现 `llm.Client`。
-2. 把 wire-specific 结构限制在 adapter package。
-3. 正确填充 ModelInfo、Capabilities、ProviderError、Usage 和 FinishReason。
-4. request retry 留在 adapter；stream reconnect 交给 ModelClientSession。
-5. 添加普通 sampling、Tool calls、reasoning、usage、retry 和 cancellation 测试。
-
-### 24.3 新增 Capability
-
-1. 明确 Session-scoped owner。
-2. 定义 revision/binding，必要时加入 RequestSnapshot。
-3. 通过 SessionServices 注入，不能由 TUI 或 Tool handler 创建 singleton。
-4. 对模型可见时同时更新 Context/Prompt 和 ToolRouter。
-5. 定义 shutdown 顺序、Approval 边界和持久化策略。
-
-### 24.4 新增 Agent 类型
-
-1. 保持 child 为完整 Thread/Session。
-2. 通过 SessionSource/AgentMetadata 表达身份。
-3. 在 StepContext 捕获时应用 Tool policy。
-4. Base/Default/Plan/Multi-Agent 资产由 ModelMessages 选择，compact prompt/prefix 由独立 CompactionAssets 选择；Tool guidance 只存在于对应 ToolSpec，不在 Tool handler 或 mode 文本中拼接。
-5. AgentControl 只扩展 control plane，不复制 ThreadManager registry。
-
-## 25. Package 导航
-
-| Package | 主要内容 |
+| 模型 | 职责 |
 |---|---|
-| `cmd/amadeus` | thin process entry：signal context、标准流、`cli.Run` 和 exit code。 |
-| `internal/cli` | Cobra command tree、flags、multitool dispatch、CLI output 和 exit semantics。 |
-| `internal/bootstrap` | 环境/路径、外部 Adapter、ThreadStore/ThreadManager/ThreadWorkspace concrete composition。 |
-| `internal/config` | 配置模型、分层加载、覆盖、来源追踪、校验和脱敏。 |
-| `internal/app` | 交互应用、ThreadWorkspace、Application events。 |
-| `internal/tui` | pending initial UserMessage、TUI startup/reducer、NextTurnQueue、HistoryCell、Slash Command 和 overlays。 |
-| `internal/threadmanager` | live Thread registry、AmadeusThread、Root/child Thread 生命周期。 |
-| `internal/threadstore` | LiveThread、ThreadStore port 与 Thread metadata domain。 |
-| `internal/threadstore/local` | JSONL writer、metadata projection 与 index rebuild。 |
-| `internal/threadstore/local/sqlite` | Thread metadata SQLite index adapter。 |
-| `internal/protocol` | Identity、Submission、Op、EventMsg、TurnItem、Multi-Agent protocol。 |
-| `internal/agent/session` | Session loop、Task、Turn completion、Step capture。 |
-| `internal/agent/modelclient` | ModelClientSession、stream consume 与 reconnect policy。 |
-| `internal/agent/compact` | Compaction Source/Request/Output 与无状态生成服务。 |
-| `internal/agent/multiagent` | AgentControl、reservation、status、wait、shutdown。 |
-| `internal/contextmanager` | `Manager`、WorldState、PromptSnapshot、Rollout projection。 |
-| `internal/prompt` | ModelMessages/CompactionAssets 的 pinned source manifest、加载与渲染 helper。 |
-| `internal/llm` | Provider-neutral model domain。 |
-| `internal/llm/openai` | Responses/Chat adapter。 |
-| `internal/tool` | Tool contract、Registry、Router、ExecutionService。 |
-| `internal/tool/builtin` | 内置 Tool implementations。 |
-| `internal/tool/textdiff` | 文件变化统计和 unified diff 生成。 |
-| `internal/policy` | Approval、Permission Grant、Command Guard。 |
-| `internal/project` | Project root、PathResolver、FileSystemPolicy。 |
-| `internal/workspace` | 文件读取、枚举、ignore/glob、文本检测和输出限制。 |
-| `internal/filechange` | edit/write preview 与 apply result DTO。 |
-| `internal/process` | ProcessManager 和 PTY/stdio lifecycle。 |
-| `internal/agentsmd` | AGENTS.md discovery 与 revision。 |
-| `internal/skill` | Skill Catalog、settings、resources、script attribution。 |
-| `internal/mcp` | MCP config、runtime、catalog、Tool/Resource adapters。 |
-| `internal/websearch` | Search providers/service。 |
-| `internal/webfetch` | URL safety、redirect、fetch、Markdown。 |
-| `internal/imageprep` | 图片安全限制、缩放和编码。 |
-| `internal/rollout` | Canonical Rollout item、codec 和 recorder。 |
-| `internal/audit` | 审计 port 与实现。 |
-| `internal/logging` | 结构化日志、等级和敏感字段脱敏。 |
-| `internal/buildinfo` | 构建版本、commit 和 build time。 |
-| `internal/architecture` | 架构守卫测试，不包含生产 Runtime。 |
+| `InteractiveApplication` | active Thread attachment、event pump、commands、shutdown。 |
+| `ThreadWorkspace` | current Thread选择与new/resume/delete事务。 |
+| `ThreadViewSnapshot` | attach时的完整可渲染快照。 |
+| `HistoryCell` / `ActiveHistoryCell` | completed/live统一展示Contract。 |
+| `TranscriptSurface` | canonical cells、stream range、native print watermark。 |
+| `AgentMarkdownCell` | final Markdown source/cache owner。 |
+| `ToolHistoryCell` | typed Tool activity projection。 |
+| `CollabAgentHistoryCell` | spawn/send/wait/close与blocked LastTurn展示。 |
+| `NextTurnQueue` | attachment-scoped未提交FIFO。 |
+| `approvalDialog` / `requestUserInputDialog` | 两类独立typed interaction UI。 |
 
-## 26. 总结
+## 19. Audit、Logging 与诊断
 
-Amadeus 的核心不是某一个模型、某一个 Tool 或某一个 TUI，而是以下闭环：
+```mermaid
+flowchart LR
+    Command[execute_command]
+    Audit[Audit Sink]
+    AuditFile[(Audit JSONL)]
+    Logging[logging.Runtime utility]
+    Log[JSON slog output when composed]
+    Config[logging config]
+    Status[/status]
+    Inventory[/mcp / skills]
 
-```text
-Typed Input
-→ Thread / Session ownership
-→ Turn-scoped Task
-→ Request-scoped StepContext
-→ Model + Tool continuation
-→ Typed Event and canonical Rollout
-→ Context rebuild and UI projection
+    Command --> Audit --> AuditFile
+    Config --> Logging --> Log
+    Runtime[Session / Application] --> Status
+    Runtime --> Inventory
 ```
 
-只要新增能力继续遵守唯一 owner、typed protocol、canonical persistence、request snapshot、统一 Tool/Approval 主链和明确 cancellation tree，Amadeus 就可以在不复制 Runtime 的前提下持续扩展。
+- 当前Audit主链记录`execute_command`的调用identity、参数SHA-256、风险、approval结果与outcome；默认sink是权限受限的JSONL文件。
+- `logging.Runtime`提供JSON `slog`、level过滤、敏感attribute脱敏与`trace_llm`配置承载；当前运行主链主要使用Audit sink记录命令审计。
+- `/status`读取Session、Context和Prompt owner，展示model、usage、Base provenance、WorldState、Permission与capability revisions。
+
+## 20. 并发与取消
+
+### 20.1 取消树
+
+```mermaid
+flowchart TD
+    Process[Process context]
+    Manager[ThreadManager lifetime]
+    Root[Root Session]
+    RootTurn[Root RunningTask]
+    RootTool[Root Tool call]
+    Child[Child Session]
+    ChildTurn[Child RunningTask]
+    ProcessManager[Session process.Manager]
+    ProcessTask[Managed process]
+
+    Process --> Manager
+    Manager --> Root
+    Root --> RootTurn --> RootTool
+    Root --> ProcessManager --> ProcessTask
+    RootTool -. start / cancel on call failure .-> ProcessTask
+    Manager --> Child --> ChildTurn
+```
+
+child Session从Manager/root-tree lifetime派生，Managed process使用自身timeout context并由Session的`process.Manager`持有，因此可在`execute_command`返回running后于同一Turn继续被`write_stdin`访问；Tool失败、显式cancel或Session关闭会终止它。
+
+### 20.2 并发规则
+
+- Session loop串行拥有协调状态。
+- RunningTask在一个受控goroutine中运行，通过单值Completion返回。
+- Tool batch对parallel-safe调用使用有界worker，并将结果恢复为deterministic order。
+- LiveThread和Recorder串行化单Thread写入。
+- `process.Manager`按process ID串行化I/O，不同process可并行。
+- `multiagent.Control`用单一mutex保护agents、reservations、nickname与status change channel。
+- Bubble Tea reducer串行拥有Composer、NextTurnQueue、History和overlay状态。
+
+### 20.3 Cleanup
+
+- caller取消后需要完成的持久化和资源释放使用`context.WithoutCancel`加有限timeout。
+- Tool、Process、child watcher和writer都由明确的owner管理，并带有结束和清理路径。
+- Root shutdown先停止spawn，再卸载open children，最后关闭Root Session和store。
+
+## 21. 错误与恢复
+
+### 21.1 错误传播
+
+```mermaid
+flowchart TD
+    Failure[Failure]
+    Classify[Classify owner and retryability]
+    Retry[Owner retries]
+    ToolResult[Model-visible ToolResult]
+    Event[Typed Error/StreamError]
+    Terminal[Turn terminal]
+    Durable[Canonical append]
+    UI[TUI projection]
+
+    Failure --> Classify
+    Classify -->|transient provider| Retry
+    Classify -->|tool domain| ToolResult
+    Classify -->|runtime terminal| Event --> Terminal --> Durable --> UI
+```
+
+### 21.2 恢复边界
+
+- Provider request retry属于Adapter；stream reconnect属于ModelClientSession。
+- Tool validation/permission/stale错误返回typed ToolResult，模型可调整后继续。
+- Persistence failure会沿Session错误路径返回。
+- Resume根据当前格式的canonical facts重建Session；运行中的goroutine、process、overlay、stream delta和pending future由新的运行时重新建立。
+- interrupted Turn恢复时补齐pending ToolResult和TurnAborted事实。
+
+## 22. 验证方式与关键事实
+
+### 22.1 测试层次
+
+```mermaid
+flowchart TB
+    Unit[Package unit tests]
+    Contract[Protocol / lifecycle contract tests]
+    Integration[Session + Tool + Provider mock E2E]
+    Race[Race tests]
+    Guard[Architecture guards]
+    Check[make check]
+
+    Unit --> Contract --> Integration --> Check
+    Race --> Check
+    Guard --> Check
+```
+
+### 22.2 关键事实
+
+1. ThreadManager维护live Thread registry，Session维护ActiveTurn、interactive waiter和terminal ordering。
+2. JSONL保存完整history，SQLite提供可重建的metadata index。
+3. StepContext.ToolRouter同时提供模型ToolSpecs和对应的dispatch identity。
+4. Tool调用依次经过Normalize、Validate、Prepare、Permission/Approval、Execute。
+5. Session grant属于当前Session；Root和child分别拥有自己的permission context。
+6. Prompt中的能力说明来自当前注册的Tool和capability snapshot。
+7. Turn terminal先完成durable append，再清理ActiveTurn并发布事件。
+8. Resume根据canonical facts重建Session，历史Tool作为已完成事实保留。
+9. Root和child共享SessionID并使用不同ThreadID，路由使用ThreadID。
+10. `TurnCompleteEvent.LastAgentMessage`提供final answer的权威文本。
+11. AgentStatus/LastTurn live与Resume使用同一个pure reducer。
+12. `AgentSpawnEdgeItem`记录Basic Multi-Agent membership，Enter steer和Tab next-turn queue分别表示两种输入意图。
+13. TokenUsageInfo、active context和preflight estimate分别表示累计用量、当前上下文和请求前估算。
+14. CompactionService生成摘要结果，Session将其安装到Context和Rollout。
+15. TUI根据typed event、TurnItem和canonical source生成展示状态。
+
+### 22.3 源码架构检查
+
+`internal/architecture`使用AST和源码检查验证：
+
+- package依赖方向与生产路径结构。
+- Runtime、generic Tool和TUI之间的边界。
+- final-message、wait-any、child membership和Prompt source manifest等核心契约。
+
+## 23. 总结
+
+Amadeus 的核心闭环是：
+
+```mermaid
+flowchart LR
+    Input[Typed Input]
+    Owner[Thread / Session ownership]
+    Turn[Turn-scoped Task]
+    Step[Request-scoped StepContext]
+    Work[Model + Tool continuation]
+    Facts[Typed Event + canonical Rollout]
+    Rebuild[Context rebuild + UI projection]
+
+    Input --> Owner --> Turn --> Step --> Work --> Facts --> Rebuild
+    Rebuild --> Input
+```
+
+目录边界、单一owner、typed protocol、canonical persistence、request snapshot、统一Tool/Approval链和明确取消树共同构成Amadeus的运行闭环。

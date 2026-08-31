@@ -4,20 +4,16 @@
 
 # Amadeus
 
-Amadeus is a Codex-like terminal coding agent written in Go. It can inspect and edit repositories, run commands, work with resumable sessions, load `AGENTS.md` instructions, use Skills and MCP servers, and delegate focused research to read-only SubAgents.
+Amadeus is a terminal coding agent written in Go. It supports Tool calling, MCP, Skills, `AGENTS.md`, resumable sessions, approvals, Plan mode, and basic Multi-Agent delegation.
 
 ## Features
 
-- Interactive terminal UI with optional initial prompts.
-- File reading, search, editing, command execution, and image inspection.
-- OpenAI Responses and Chat Completions APIs, including compatible providers.
-- Resumable local sessions.
-- Hierarchical `AGENTS.md` instructions.
+- Tool calling for file reading, search, editing, command execution, and image inspection.
+- MCP servers over stdio and Streamable HTTP.
 - User and project Skills with progressive resource loading.
-- Stdio and Streamable HTTP MCP servers.
-- Read-only explorer SubAgents for parallel investigation.
-- Optional web search and web fetch tools.
-- Default and Plan collaboration modes, approvals, session-scoped permission grants, and tool output limits.
+- Hierarchical `AGENTS.md` instructions.
+- Resumable sessions, approvals, Default and Plan modes.
+- Basic Multi-Agent delegation with read-only explorer SubAgents.
 
 ## Quick Start
 
@@ -509,5 +505,3 @@ Amadeus supports PNG, JPEG, WebP, and static GIF input with bounded image prepar
 make check
 go test -race ./... -count=1
 ```
-
-Architecture notes and implementation progress are maintained in [`docs/design.md`](docs/design.md) and [`docs/development-progress.md`](docs/development-progress.md).
