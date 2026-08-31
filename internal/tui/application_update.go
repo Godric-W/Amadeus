@@ -11,15 +11,28 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func (model appModel) transcriptReflowBlocked() bool {
+	return model.viewingDetails || model.selection != nil || model.approvalDialog != nil || model.userInputDialog != nil || model.slashPopup.active()
+}
+
 func (model appModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case tea.WindowSizeMsg:
-		model.width = maxInt(40, message.Width)
-		model.height = maxInt(10, message.Height)
+		model.width = maxInt(1, message.Width)
+		model.height = maxInt(1, message.Height)
 		model.updateInputLayout()
 		model.resizeTranscriptViewport()
 		model.refreshActiveMarkdownFrames()
-		return model, nil
+		return model, model.transcriptReflow.noteSize(model.width, model.height, model.TranscriptSurface.printedVisible)
+	case transcriptReflowMsg:
+		if !model.transcriptReflow.matches(message) {
+			return model, nil
+		}
+		if model.transcriptReflowBlocked() {
+			return model, tea.Tick(transcriptReflowDebounce, func(time.Time) tea.Msg { return message })
+		}
+		model.transcriptReflow.take(message)
+		return model, model.reflowNativeHistory()
 	case appEventMsg:
 		if model.exit.active() {
 			model.captureExitAppEvent(message.event)

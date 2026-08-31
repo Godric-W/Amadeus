@@ -119,6 +119,45 @@ func (surface *TranscriptSurface) reset() {
 	*surface = TranscriptSurface{}
 }
 
+// reflowCells returns the immutable history prefix for terminal scrollback.
+// A transient stream run remains in the active frame until its authoritative
+// completed item replaces the attachment.
+func (surface TranscriptSurface) reflowCells() []HistoryCell {
+	cells := make([]HistoryCell, 0, len(surface.historyCells)+1)
+	if surface.sessionHeader != nil {
+		cells = append(cells, surface.sessionHeader)
+	}
+	for _, cell := range surface.historyCells {
+		if transientStreamHistoryCell(cell) {
+			break
+		}
+		cells = append(cells, cell)
+	}
+	return cells
+}
+
+// markReflowed advances the native print watermark to the first transient
+// stream cell, or to the end when all retained cells are immutable.
+func (surface *TranscriptSurface) markReflowed() {
+	if surface == nil {
+		return
+	}
+	surface.sessionHeaderPrinted = surface.sessionHeader != nil
+	surface.historyPrintCursor = len(surface.historyCells)
+	for index, cell := range surface.historyCells {
+		if transientStreamHistoryCell(cell) {
+			surface.historyPrintCursor = index
+			break
+		}
+	}
+	surface.printedVisible = false
+	surface.lastPrintedCell = nil
+	for _, cell := range surface.reflowCells() {
+		surface.printedVisible = true
+		surface.lastPrintedCell = cell
+	}
+}
+
 func (surface *TranscriptSurface) setMarkdownTail(tail *StreamingAgentTailCell) {
 	if surface != nil {
 		surface.activeMarkdownTail = tail

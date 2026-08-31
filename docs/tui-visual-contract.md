@@ -57,6 +57,7 @@
 - `HistoryRenderRich` 输出语义样式与 Markdown；`HistoryRenderRaw` 输出适合 Plain、复制和无样式 Transcript 的内容，Raw 不能从 ANSI 字符串反向剥离得到。
 - Plan Update 使用 Codex 风格的 `• Updated Plan` 标题；说明与第一项共用唯一 `└` 入口，进行中/待处理项使用 `□`，完成项使用 `✔`，主界面不展示内部 revision 或 `plan-N` 标识。
 - Cell内容不携带伪造的首尾换行；`TranscriptSurface`在相邻非continuation cell之间生成spacing。immutable cells按print watermark用`tea.Println`只提交一次native scrollback，mutable cells才进入bounded `View()`；活动frame不得重复printed history或依赖stock Bubble Tea裁顶。
+- Terminal resize先更新当前宽高和active layout，再由`transcriptReflowState`以75ms trailing debounce合并尺寸变化；随后从immutable `HistoryCell` source重建native scrollback，清理旧scrollback并重置print watermark，确保宽窄终端显示同一份逻辑内容。
 - 流式 Assistant/Plan 使用 `StreamState.CommitQueue → AgentMessageCell` stable run 与 `StreamingAgentTailCell` mutable tail；surface在首个delta冻结`StreamAttachment{ItemID, Kind, RunStart}`，completion/reset按精确range替换或删除。Active stream期间会打断该range的Tool/Warning/Approval/UserInput projection先FIFO defer，replacement后再应用；不得扫描contiguous trailing cells猜owner。
 - 首个`AgentMessageCell`/`StreamingAgentTailCell`不是stream continuation；只有`First=false`的后续run是continuation。User问题与streaming回复、User问题与final回复的cell间距必须一致，completion不得引起空行闪动。
 - Model Step 不是视觉边界，不触发横线或批量 Tool 输出；视觉只跟随 Assistant/Tool Item 生命周期。

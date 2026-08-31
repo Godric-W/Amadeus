@@ -9,6 +9,8 @@ import (
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
+const clearScrollback = "\x1b[3J"
+
 func (model appModel) transcriptCells() []HistoryCell {
 	return model.TranscriptSurface.unprintedCells(model.transcript.ActiveCell)
 }
@@ -48,7 +50,7 @@ func (model *appModel) scrollTranscriptPage(direction int) bool {
 }
 
 func (model *appModel) flushHistory() tea.Cmd {
-	if model == nil {
+	if model == nil || model.transcriptReflow.pending {
 		return nil
 	}
 	prints := model.TranscriptSurface.takePrintableCells()
@@ -65,6 +67,24 @@ func (model *appModel) flushHistory() tea.Cmd {
 		}
 	}
 	return tea.Sequence(commands...)
+}
+
+// reflowNativeHistory replaces terminal-owned wrapped rows with a render from
+// the source-backed immutable prefix. Bubble Tea writes this payload through
+// its renderer, preserving the history insertion order while the clear
+// sequence removes stale scrollback rows.
+func (model *appModel) reflowNativeHistory() tea.Cmd {
+	if model == nil || !model.TranscriptSurface.printedVisible {
+		return nil
+	}
+	cells := model.TranscriptSurface.reflowCells()
+	rendered := renderHistoryCells(cells, model.historyMode, model.historyRenderContext())
+	rendered = boundHistoryPrintWidth(rendered, model.width)
+	model.TranscriptSurface.markReflowed()
+	return tea.Sequence(
+		func() tea.Msg { return tea.ClearScreen() },
+		tea.Println(clearScrollback+rendered),
+	)
 }
 
 func boundHistoryPrintWidth(rendered string, width int) string {

@@ -105,7 +105,7 @@ func (state *TranscriptState) reset()                  { *state = TranscriptStat
 type FinalMessageSeparator struct{ Elapsed time.Duration }
 
 func (cell FinalMessageSeparator) DisplayLines(ctx HistoryRenderContext) []styledLine {
-	width := maxInt(12, ctx.Width)
+	width := maxInt(1, ctx.Width)
 	label := ""
 	if cell.Elapsed > time.Minute {
 		label = "─ Worked for " + formatElapsedCompact(cell.Elapsed) + " ─"

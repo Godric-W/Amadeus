@@ -11,7 +11,7 @@ import (
 )
 
 func (model appModel) inputBox() string {
-	width := maxInt(40, model.width)
+	width := maxInt(1, model.width)
 	if model.approvalDialog != nil && model.approval != nil {
 		return model.renderApprovalDialog(width)
 	}
@@ -57,7 +57,7 @@ func (model appModel) slashPopupView() string {
 	for index, command := range visible {
 		items = append(items, listVisualItem{Name: "/" + command.Name(), Description: command.Description(), Selected: start+index == model.slashPopup.selected})
 	}
-	rendered := model.renderListVisual(listVisual{Items: items, HideSelectionMarker: true}, maxInt(40, model.width))
+	rendered := model.renderListVisual(listVisual{Items: items, HideSelectionMarker: true}, maxInt(1, model.width))
 	missingRows := model.slashPopup.rows - len(visible)
 	if missingRows <= 0 {
 		return rendered
@@ -78,9 +78,9 @@ func (model appModel) workingLine() string {
 	marker := spinnerGlyph(now, model.motionStartedAt, model.motion, model.palette)
 	word := shimmerText(statusHeader(model.status), now, model.motionStartedAt, model.motion, model.palette)
 	line := marker + word + model.palette.dim().Render(fmt.Sprintf(" (%s • esc to interrupt)", formatElapsedCompact(elapsed)))
-	line = xansi.Truncate(line, maxInt(12, model.width), "")
+	line = xansi.Truncate(line, maxInt(1, model.width), "")
 	if details := strings.TrimSpace(model.statusDetails); details != "" {
-		detailLine := model.palette.dim().Render("  └ " + xansi.Truncate(details, maxInt(8, model.width-4), ""))
+		detailLine := model.palette.dim().Render("  └ " + xansi.Truncate(details, maxInt(1, model.width-4), ""))
 		return line + "\n" + detailLine
 	}
 	return line
@@ -127,7 +127,7 @@ func minInt64(left, right int64) int64 {
 }
 
 func (model *appModel) updateInputLayout() {
-	width := maxInt(40, model.width)
+	width := maxInt(1, model.width)
 	model.input.SetWidth(width)
 	rows, _, _ := textareaVisualMetrics(model.input)
 	rows = minInt(maxInputRows, maxInt(1, rows))

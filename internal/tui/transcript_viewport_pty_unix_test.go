@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -78,6 +79,71 @@ func TestTranscriptViewportPTYKeepsOlderHistoryNavigable(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("TUI did not exit after viewport contract test")
+	}
+}
+
+func TestTranscriptResizePTYReflowsNativeHistory(t *testing.T) {
+	primary, terminal, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer primary.Close()
+	defer terminal.Close()
+	if err := pty.Setsize(primary, &pty.Winsize{Rows: 12, Cols: 80}); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, time.August, 28, 12, 0, 0, 0, time.UTC)
+	threadID := testThreadID(2)
+	message := "resize-reflow sentinel verifies source-backed history is rendered again after the terminal width changes."
+	fake := newFakeApplicationPort()
+	app, err := NewApplication(ApplicationOptions{
+		Input: terminal, Output: terminal, Application: fake,
+		Snapshot: application.ThreadViewSnapshot{
+			Generation: 1, SessionID: protocol.SessionIDFromThreadID(threadID), ThreadID: threadID,
+			Configuration: protocol.SessionConfiguration{CWD: "/workspace", Model: "test-model", Mode: protocol.ModeKindDefault},
+			Items: []protocol.TurnItem{{
+				ID: "assistant-resize", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemStatusCompleted,
+				CreatedAt: now, CompletedAt: now, Text: message,
+			}},
+		},
+		DisableAnimations: true, Width: 80, NoColor: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, runErr := app.Run(ctx)
+		result <- runErr
+	}()
+
+	readPTYUntil(t, primary, "resize-reflow sentinel", 3*time.Second)
+	if err := pty.Setsize(primary, &pty.Winsize{Rows: 12, Cols: 52}); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGWINCH); err != nil {
+		t.Fatal(err)
+	}
+	raw := readPTYUntilRaw(t, primary, func(value string) bool {
+		return strings.Contains(value, clearScrollback) && strings.Contains(xansi.Strip(value), "resize-reflow sentinel")
+	}, 3*time.Second)
+	if !strings.Contains(raw, clearScrollback) {
+		t.Fatalf("resize did not clear native scrollback: %q", raw)
+	}
+
+	if _, err := primary.Write([]byte{4}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("TUI exit: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("TUI did not exit after resize reflow test")
 	}
 }
 
@@ -174,6 +240,28 @@ func readPTYUntil(t *testing.T, terminal *os.File, needle string, timeout time.D
 		}
 		if err != nil {
 			t.Fatalf("read PTY waiting for %q: %v; output=%q", needle, err, xansi.Strip(output.String()))
+		}
+	}
+}
+
+func readPTYUntilRaw(t *testing.T, terminal *os.File, predicate func(string) bool, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	if err := terminal.SetReadDeadline(deadline); err != nil {
+		t.Fatal(err)
+	}
+	var output strings.Builder
+	buffer := make([]byte, 4096)
+	for {
+		count, err := terminal.Read(buffer)
+		if count > 0 {
+			output.Write(buffer[:count])
+			if predicate(output.String()) {
+				return output.String()
+			}
+		}
+		if err != nil {
+			t.Fatalf("read PTY waiting for resize output: %v; output=%q", err, output.String())
 		}
 	}
 }

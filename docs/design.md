@@ -3973,9 +3973,9 @@ type AgentMarkdownCell struct {
 - `ItemCompletedEvent` 中的 Assistant Text 是权威完成事实。即使 stream source 非空，只要与 completed Text 不同，final cell 必须使用 completed Text；stream 只负责 live preview，不能覆盖 canonical completion。无 Delta 但有 completed Text 时直接建立 final cell。`ItemPlan` Text 也采用相同覆盖规则；这是 Amadeus 的 canonical protocol 决定，不宣称为 Codex 当前 Plan 路径的既有行为。
 - Active Assistant/Plan stream 期间，所有会插入、完成或删除 HistoryCell 的 Warning、Tool、Approval、UserInput、diagnostic 和 attachment-boundary projection 必须由 `MarkdownStreamHost` defer-or-apply。deferred projection 保持原 Event 顺序；先 finalize/reset 精确 stream attachment，再 FIFO flush。不能允许非-stream cell 插入 stream run 后再依赖 trailing-run scan consolidation。
 - Retry reset、interrupt 和 terminal error 必须按冻结的 attachment range 释放 controller、stable run 与 tail。已完成 cell 只能由 completed item创建一次；live 与 Resume 使用同一个 `completed item → AgentMarkdownCell`（或 Plan final cell）projector。
-- Bubble Tea保持单一frontend。stock standard renderer会丢弃超高`View()`顶部rows，因此完整history不得留在frame；`flushHistory`用有序`tea.Println`把immutable cells提交native scrollback，mutable stream/tail使用bounded active viewport。Mouse capture保持关闭，终端原生滚轮/选择继续工作。
+- Bubble Tea保持单一frontend。stock standard renderer会丢弃超高`View()`顶部rows，因此完整history由`flushHistory`通过有序`tea.Println`提交native scrollback，mutable stream/tail使用bounded active viewport。Mouse capture保持关闭，终端原生滚轮/选择继续工作。
 - completion先清除active tail、finalize controller并比较streamed source与authoritative Text；有stream时按`ActiveStream.RunStart`原子替换为单个final cell。transient stable/tail从未进入native history，因此无需撤回；replacement完成后final cell一次性print，不能把provisional rows和final rows重复打印。
-- terminal resize 或 Rich/Raw mode change 必须以 complete source重建controller queue/tail和final cell derived layout，再 clamp viewport offset；不能保留旧width ANSI rows。用户处于 follow-bottom 时 resize 后仍跟随底部，用户正在查看旧历史时尽量保持同一逻辑 cell/line anchor。
+- terminal resize 或 Rich/Raw mode change 以 complete source重建controller queue/tail和final cell derived layout，再 clamp viewport offset。Terminal resize由TUI内部的`transcriptReflowState`观察`WindowSizeMsg`并以75ms trailing debounce合并；到期后先通过`tea.ClearScreen`清理活动画面，再以标准terminal `CSI 3 J`清理scrollback，最后从immutable `HistoryCell` prefix按新宽度生成一份`tea.Println` payload并重置native print watermark。旧generation的resize消息会被丢弃。用户处于 follow-bottom 时 resize 后仍跟随底部，用户正在查看旧历史时尽量保持同一逻辑 cell/line anchor。
 
 #### 19.3.4 Markdown Render Contract
 
@@ -4110,7 +4110,7 @@ type footerProps struct {
 - `HasQueueableDraft=true` 时 Footer 进入 transient queue-hint layout：左侧优先显示 dim `tab to queue message`，宽度不足时收缩为 `tab to queue`；固定 statusline 暂停渲染。Plan indicator 只有与 hint 同行可容纳时才保留，空间不足时先删除 Plan indicator，queue hint 是该状态的最后保留信息。Composer 清空或 Turn terminal 后恢复普通 statusline layout。
 - Slash/File/Skill 等 Composer popup 激活时占用 Codex 的 popup/footer 区域并替换普通 Footer；不得在 popup 下方继续渲染 statusline、queue hint 或 mode indicator。Popup 关闭后 Footer 才恢复。Slash Command Popup 的 selection 只通过 command name/description style 表达，不显示 Modal picker 使用的 `›` cursor glyph。
 - Selection overlay 对齐 Codex `SelectionViewParams`：footer hint 默认为空，不由公共 renderer 合成按键说明；确有必要时由调用方显式提供。非空 subtitle 与列表/搜索输入之间统一保留一行，不允许按命令增加视觉特例开关。`/skills` 顶层菜单与 `/resume` picker 不显示 footer hint。
-- Collaboration indicator 的“右对齐”只表示 Footer 当前布局行内的独立右列，不要求复制 Ratatui 类型或 cursor protocol。`View()`通过同一个Bubble Tea model渲染mutable TranscriptSurface、Composer、Popup与Footer；不能使用顶部补空行、额外output writer或手写cursor up/down协议。只有immutable finalized transcript cells经Bubble Tea自身`tea.Println`提交。
+- Collaboration indicator 的“右对齐”只表示 Footer 当前布局行内的独立右列，不要求复制 Ratatui 类型或 cursor protocol。`View()`通过同一个Bubble Tea model渲染mutable TranscriptSurface、Composer、Popup与Footer；native reflow使用Bubble Tea自身的`tea.ClearScreen`、`tea.Println`和标准terminal `CSI 3 J` scrollback erase，不引入额外output writer或手写cursor up/down reposition协议。只有immutable finalized transcript cells经Bubble Tea自身`tea.Println`提交。
 
 Session 配置部分使用单一应用路径：
 
@@ -4147,7 +4147,7 @@ Thread title、TokenUsageInfo/ActiveContextTokens 和 Git branch 分别通过 ty
 | Turn start/end 或 retry | 只更新 Working/status indicator 与 cycle hint | 不改变 statusline items |
 | running Turn 中 queueable Composer draft 出现/变化 | 只更新派生 `HasQueueableDraft` | queue hint 替换 passive statusline；完整/短文案按宽度选择 |
 | Tab enqueue 后 Composer 清空 | NextTurnQueue 增加 Pending，`HasQueueableDraft=false` | queue hint 消失，queued preview 保留，普通 statusline 恢复 |
-| terminal resize | 更新 width | 只 layout |
+| terminal resize | 更新 width/height，安排source-backed native history reflow | layout与scrollback reflow |
 | `View()` | 无业务状态变化 | 纯 render |
 
 Git branch 查询必须在 CurrentDir 改变时清空旧值并异步刷新；请求携带 attachment generation 与 CWD，迟到结果只有在两者仍匹配时才能写入 cache。Statusline 不通过 `Application.Status()` 轮询补全目录、模型、标题或上下文，也不在 `View()` 中同步执行 Git/文件系统 IO。

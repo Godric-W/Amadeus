@@ -141,6 +141,7 @@ func (model *appModel) resetHistory() {
 	model.markdownStreams.deferred = nil
 	model.transcript.reset()
 	model.TranscriptSurface.reset()
+	model.transcriptReflow.reset()
 }
 
 func (model appModel) latestAgentMarkdown() string {
@@ -158,7 +159,7 @@ func (model appModel) historyRenderContext() HistoryRenderContext {
 		now = model.clock.Now()
 	}
 	return HistoryRenderContext{
-		Width: maxInt(36, model.width-3), Palette: model.palette, Hyperlinks: model.hyperlinks && !model.palette.NoColor,
+		Width: maxInt(1, model.width-3), Palette: model.palette, Hyperlinks: model.hyperlinks && !model.palette.NoColor,
 		Now: now, MotionStart: model.motionStartedAt, Motion: model.motion,
 	}
 }

@@ -47,7 +47,7 @@ func (model appModel) View() (rendered string) {
 }
 
 func newTranscriptViewport(width, height int) viewport.Model {
-	viewer := viewport.New(maxInt(20, width-4), maxInt(3, height-4))
+	viewer := viewport.New(maxInt(1, width-4), maxInt(1, height-4))
 	viewer.MouseWheelEnabled = false
 	return viewer
 }
@@ -56,8 +56,8 @@ func (model *appModel) resizeTranscriptViewport() {
 	if model == nil {
 		return
 	}
-	model.detailViewport.Width = maxInt(20, model.width-4)
-	model.detailViewport.Height = maxInt(3, model.height-4)
+	model.detailViewport.Width = maxInt(1, model.width-4)
+	model.detailViewport.Height = maxInt(1, model.height-4)
 }
 
 func (model *appModel) refreshTranscriptViewport() {

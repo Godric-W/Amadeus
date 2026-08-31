@@ -68,15 +68,16 @@ type Application struct {
 }
 
 type appModel struct {
-	app            *Application
-	ctx            context.Context
-	startup        Startup
-	input          textarea.Model
-	lastMouseEvent time.Time
-	width          int
-	height         int
-	transcript     TranscriptState
-	protocolEvents *protocolEventState
+	app              *Application
+	ctx              context.Context
+	startup          Startup
+	input            textarea.Model
+	lastMouseEvent   time.Time
+	width            int
+	height           int
+	transcript       TranscriptState
+	transcriptReflow transcriptReflowState
+	protocolEvents   *protocolEventState
 	TranscriptSurface
 	historyMode             HistoryRenderMode
 	markdownStreams         markdownStreamHost

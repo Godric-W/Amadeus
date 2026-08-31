@@ -1412,6 +1412,25 @@ flowchart TD
 
 完成态保存原始Markdown和冻结CWD；resize、Rich/Raw、NoColor、copy和Resume都从source重新投影。
 
+#### 18.5.1 Terminal Resize Reflow
+
+终端尺寸变化同时影响 bounded frame 和已经写入 terminal scrollback 的 immutable history。`WindowSizeMsg` 先更新当前 width/height、Composer 与 active stream 的布局；TUI 内部的`transcriptReflowState` 将后续尺寸变化合并为 75ms trailing debounce。到期后，`TranscriptSurface` 从 immutable `HistoryCell` prefix 重新生成当前宽度的 history，执行 `tea.ClearScreen` 和标准 terminal `CSI 3 J` 清理旧画面与 scrollback，再通过 `tea.Println` 写入新布局并重置 native print watermark。旧 generation 的定时消息会被忽略，详情/选择/Approval 等 overlay 打开时 reflow 延后到 overlay 关闭后执行。
+
+```mermaid
+flowchart LR
+    Resize[WindowSizeMsg]
+    Layout[Update width/height and live layout]
+    Debounce[transcriptReflowState 75ms debounce]
+    Source[Immutable HistoryCell prefix]
+    Clear[tea.ClearScreen + CSI 3 J]
+    Print[tea.Println current-width history]
+    Watermark[Reset native print watermark]
+    Frame[Render bounded active frame]
+
+    Resize --> Layout --> Debounce
+    Debounce --> Source --> Clear --> Print --> Watermark --> Frame
+```
+
 ### 18.6 主要展示模型
 
 | 模型 | 职责 |

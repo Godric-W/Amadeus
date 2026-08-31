@@ -2115,7 +2115,7 @@ AA-01～AA-09 是同一次 Architecture Closure 的依赖顺序，不是可长�
 
 - [x] Codex reference pin：`markdown_stream.rs` `e488482e601ec6558fcd15702ee4fa2e729a82c6cebaea27c3d15e29b714e71f`；`streaming/controller.rs` `85b7e0b5ebeab1483df382051b831121625806c308f0fcd30080709ffdc1041e`；`streaming/render.rs` `7661640d0b6adfd0417acb93458d083ab3343c1aa65b4b0f9a9eeff0e5178621`；`history_cell/messages.rs` `9a100cb23f3749ba63980c321ce7ea5a10dde3a7248272a79dba14dfc20b5a1f`；`chatwidget/streaming.rs` `cfa52d2f78cd2e7c411de162e538aabe97ea3b29d299fb054a6d325b3cf8e7e6`。
 - [x] 通过Bubble Tea `standardRenderer`源码确认：超过terminal height的frame顶部行会被丢弃，不会自动进入native scrollback；原“surface返回完整超高history即可自然滚动”的结论和对应`View()`单测无效。
-- [x] 初次选择model-owned bounded transcript viewport；该结论在真实长final输出测试后由AB-10取代。仍不复制Codex custom terminal reflow、inline visualization、theme picker、remote image或raw reasoning transcript。
+- [x] 初次选择model-owned bounded transcript viewport；该结论在真实长final输出测试后由AB-10取代。保留 Go/Bubble Tea frontend，不复制 Codex 的 Ratatui terminal engine。
 - [x] 记录completion/reset尾部扫描、非stream event interleave、空行stable boundary、中宽table截断、fragment不flush、indent metadata缺失、local/web link contract和控制字符投影问题，并同步修订`docs/design.md`。
 
 ### AB-02：Bounded Transcript Surface + Real Renderer Contract — `SUPERSEDED` by AB-10
@@ -2197,6 +2197,26 @@ AA-01～AA-09 是同一次 Architecture Closure 的依赖顺序，不是可长�
 - [x] 增加previous/current `historySpacingCell` boundary contract；默认非continuation为2、stream continuation为0、`FinalMessageSeparator`与`ToolHistoryCell`为1。
 - [x] 同一spacing policy驱动`renderHistoryCells`、native print watermark和active surface boundary，并以精确行索引测试防止两条路径漂移。
 - [x] 对齐Codex `binary_size_ideal_response.snap`：Assistant↔Explored/Ran及相邻Tool trees统一为一条blank row；同一ToolHistoryCell内部和跨ToolHistoryCell边界不再出现1/2行差异。
+
+### AB-13：Source-backed Terminal Resize Reflow — `DONE`（2026-08-31）
+
+#### 根因
+
+Amadeus 原先在收到 Bubble Tea `WindowSizeMsg` 后只更新 `appModel` 的 width/height、textarea 和 bounded viewport。已经通过 `tea.Println` 写入终端 scrollback 的行仍按旧宽度存在；stock Bubble Tea renderer不会重排历史scrollback，因此宽度或高度变化后会出现旧行、Composer和新frame错位。
+
+#### 实现
+
+- [x] 增加 TUI 内部 `transcriptReflowState`，首次窗口尺寸只建立基线；后续 width/height 变化按 Codex trailing debounce（75ms）合并，并以 generation 丢弃过期 resize message。
+- [x] reflow从`TranscriptSurface`保存的immutable `HistoryCell` prefix重新生成当前宽度的完整 history；transient Assistant/Plan stream继续留在bounded active frame。
+- [x] 通过 Bubble Tea `tea.ClearScreen`清理活动画面，再发送标准 terminal `CSI 3 J`清理scrollback并用`tea.Println`写入新布局；同步重置 session-header/history print watermark，避免重复显示或遗漏历史。
+- [x] resize debounce期间暂停新的 native history flush，确保一次重建覆盖当时全部 immutable history；后续新增完成cell按新宽度继续追加。
+- [x] 保留现有 stream attachment/completion lifecycle；stream期间的resize由active frame实时重投影，completion后final cell按正常watermark进入native history。
+
+#### 验收
+
+- [x] 增加 `transcriptReflowState` generation/debounce、transient prefix watermark 和 `WindowSizeMsg` contract tests。
+- [x] 增加真实 PTY resize 测试：80列历史调整到52列后检测scrollback erase序列及source-backed sentinel仍可见。
+- [x] 通过 focused TUI/architecture tests、`make check` 和 `git diff --check`。
 
 ### AB 出口
 
