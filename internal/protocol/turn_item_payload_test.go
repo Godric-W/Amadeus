@@ -86,3 +86,15 @@ func TestTurnItemRejectsPayloadOnPayloadlessKind(t *testing.T) {
 		t.Fatalf("payloadless kind validation error = %v", err)
 	}
 }
+
+func TestTurnItemRejectsMissingTypedPayload(t *testing.T) {
+	item := TurnItem{ID: "tool-1", Kind: ItemToolCall, Status: ItemInProgress, CreatedAt: time.Now().UTC(), ToolName: "read", CallID: "call-1"}
+	if err := item.Validate(); err == nil || !strings.Contains(err.Error(), "item payload is missing") {
+		t.Fatalf("missing typed payload validation error = %v", err)
+	}
+	encoded := []byte(`{"id":"tool-1","kind":"tool_call","status":"in_progress","created_at":"2026-08-31T12:00:00Z","tool_name":"read","call_id":"call-1"}`)
+	var decoded TurnItem
+	if err := json.Unmarshal(encoded, &decoded); err == nil || !strings.Contains(err.Error(), "item payload is missing") {
+		t.Fatalf("missing wire payload decode error = %v", err)
+	}
+}

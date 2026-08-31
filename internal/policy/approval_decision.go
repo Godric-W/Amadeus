@@ -15,8 +15,8 @@ type ApprovalDecision struct {
 }
 
 // ResolveApprovalInput maps plain terminal input to the option supplied by
-// the tool. Numeric choices are useful for structured prompts; y/s/n remain
-// compatible aliases for the common allow/session/deny presentation.
+// the tool. Numeric choices are useful for structured prompts; y/s/n are
+// concise aliases for the common allow/session/deny presentation.
 func ResolveApprovalInput(request ApprovalRequest, input string) (ApprovalDecision, bool) {
 	value := strings.ToLower(strings.TrimSpace(input))
 	options := request.Presentation.Options

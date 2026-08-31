@@ -46,8 +46,9 @@ func (FileChangeItemPayload) isTurnItemPayload() {}
 
 func validateTurnItemPayload(kind ItemKind, payload TurnItemPayload) error {
 	if payload == nil {
-		if kind == ItemContextCompaction {
-			return errors.New("context compaction item payload is missing")
+		switch kind {
+		case ItemToolCall, ItemCommandExecution, ItemFileChange, ItemContextCompaction:
+			return fmt.Errorf("%s item payload is missing", kind)
 		}
 		return nil
 	}

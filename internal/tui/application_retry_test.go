@@ -142,7 +142,7 @@ func TestTUIStreamDefersCompleteToolLifecycleInFIFOOrder(t *testing.T) {
 	now := time.Date(2026, time.August, 19, 10, 0, 0, 0, time.UTC)
 	applySessionEvent(t, &model, protocol.ItemStartedEvent{Item: protocol.TurnItem{ID: "assistant-1", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemInProgress, CreatedAt: now}})
 	applySessionEvent(t, &model, protocol.AgentMessageContentDeltaEvent{ItemID: "assistant-1", Delta: "commentary before tool\n"})
-	toolItem := protocol.TurnItem{ID: "tool-1", Kind: protocol.ItemCommandExecution, Status: protocol.ItemInProgress, CreatedAt: now, ToolName: "execute_command", CallID: "call-1"}
+	toolItem := protocol.TurnItem{ID: "tool-1", Kind: protocol.ItemCommandExecution, Status: protocol.ItemInProgress, CreatedAt: now, ToolName: "execute_command", CallID: "call-1", Payload: protocol.CommandExecutionItemPayload{ActionSummary: "Run command", SideEffect: "execute"}}
 	applySessionEvent(t, &model, protocol.ItemStartedEvent{Item: toolItem})
 	applySessionEvent(t, &model, protocol.CommandOutputDeltaEvent{ItemID: toolItem.ID, Delta: "tool output\n"})
 	toolItem.Status = protocol.ItemStatusCompleted

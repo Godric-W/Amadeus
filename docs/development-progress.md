@@ -2408,7 +2408,7 @@ AC保留R/Z已经正确的完整child Thread/Session、root-scoped AgentControl�
 
 ### AD 完成记录
 
-- 2026-08-31：对照 Codex `core`/`thread-store`/`protocol`/`app-server` 与 Claude Code Tool/Approval 生命周期，完成 AD-01 至 AD-05 的设置事务、typed payload、初始化 discard、durable metadata 和 bounded shutdown 收敛；新增 Session Event critical-delivery、Thread/Process/Application owner wait、Local metadata flush 顺序测试。
+- 2026-08-31：对照 Codex `core`/`thread-store`/`protocol`/`app-server` 与 Claude Code Tool/Approval 生命周期，完成 AD-01 至 AD-05 的设置事务、typed payload、初始化 discard、durable metadata 和 bounded shutdown 收敛；新增 Session Event critical-delivery、Thread/Process/Application owner wait、Local metadata flush 顺序测试。随后删除无生产用途的 Catalog migration/planned 占位状态，并拒绝缺少 typed payload 的旧 TurnItem 记录；旧测试 fixture 已直接改为当前格式。
 - 2026-08-31：完成 AD-06 至 AD-09。Event 保持单一有界 channel；ContextManager 使用窄 derived cache；AgentsMdManager 使用 fingerprint cache 并在 mutation 前 fresh read；Rollout 使用流式 decoder；completed process 使用 256 条有界 retention；Workspace 保留现有 Session-scoped capability 决策，不新建 `internal/core` 或万能 aggregate。
 - 2026-08-31：增加 `internal/architecture` AD guard、跨包 contract tests 和 benchmark fixtures。验收命令全部通过：`go test ./... -count=1`、`go test -race ./... -count=1`、`make check`、`go build ./cmd/amadeus`、`git diff --check`。
 

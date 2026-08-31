@@ -32,7 +32,7 @@ func TestStateLiveItemLifecycle(t *testing.T) {
 func TestStateReplayAndRepeatedCompletionAreIdempotent(t *testing.T) {
 	state := newProtocolEventState(testutil.ThreadID(1))
 	when := time.Date(2026, time.August, 13, 0, 0, 0, 0, time.UTC)
-	item := protocol.TurnItem{ID: "tool-1", Kind: protocol.ItemToolCall, Status: protocol.ItemStatusCompleted, CreatedAt: when, CompletedAt: when.Add(time.Second), Text: "first"}
+	item := protocol.TurnItem{ID: "tool-1", Kind: protocol.ItemToolCall, Status: protocol.ItemStatusCompleted, CreatedAt: when, CompletedAt: when.Add(time.Second), Text: "first", ToolName: "read", CallID: "call-1", Payload: protocol.ToolCallItemPayload{ActionSummary: "Read file", SideEffect: "read"}}
 	apply(t, state, protocol.ItemCompletedEvent{Item: item})
 	item.Text = "second"
 	apply(t, state, protocol.ItemCompletedEvent{Item: item})

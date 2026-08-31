@@ -6,8 +6,6 @@ type CatalogStatus string
 
 const (
 	CatalogAvailable CatalogStatus = "available"
-	CatalogMigration CatalogStatus = "migration"
-	CatalogPlanned   CatalogStatus = "planned"
 )
 
 type CatalogEntry struct {

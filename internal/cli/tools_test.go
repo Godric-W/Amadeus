@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestToolsListShowsTargetExposureAndMigrationMetadata(t *testing.T) {
+func TestToolsListShowsTargetExposureAndMetadata(t *testing.T) {
 	var output bytes.Buffer
 	command := newRootCommand()
 	command.SetOut(&output)

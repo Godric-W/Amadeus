@@ -13,7 +13,7 @@ import (
 func TestProjectRolloutItemsPreservesCanonicalSequenceWithoutResponseFallback(t *testing.T) {
 	now := time.Date(2026, 8, 20, 2, 0, 0, 0, time.UTC)
 	assistant := protocol.TurnItem{ID: "assistant-1", Kind: protocol.ItemAssistantMessage, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now, Text: "done"}
-	toolItem := protocol.TurnItem{ID: "call-1", Kind: protocol.ItemToolCall, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now, Text: "match", ToolName: "grep", CallID: "call-1"}
+	toolItem := protocol.TurnItem{ID: "call-1", Kind: protocol.ItemToolCall, Status: protocol.ItemStatusCompleted, CreatedAt: now, CompletedAt: now, Text: "match", ToolName: "grep", CallID: "call-1", Payload: protocol.ToolCallItemPayload{ActionSummary: "Search source", SideEffect: "read"}}
 	lines := []rollout.Line{
 		projectorLine(1, rollout.ResponseItem{ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Type: rollout.ResponseUserMessage, Role: "user", Content: "inspect"}),
 		projectorLine(2, rollout.ResponseItem{ThreadID: testutil.ThreadID(1), TurnID: "turn-1", Type: rollout.ResponseAssistantMessage, Role: "assistant", Content: "done"}),

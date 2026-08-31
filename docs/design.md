@@ -1176,6 +1176,8 @@ ItemStartedEvent、ItemCompletedEvent、TurnCompleteEvent、TurnAbortedEvent 等
 
 JSON codec 可以为 tagged union 编码 discriminant，但生产代码不得把 `kind + json.RawMessage`、`map[string]any` 或本地 ad-hoc struct 作为领域主链。当前版本的每个 variant 必须有唯一 typed Go contract 和 round-trip test。未知 kind/version 或任何旧 Rollout 格式直接返回明确的 unsupported-format 错误；不提供旧 reader、fallback decoder 或 migration projector。
 
+对 `ItemToolCall`、`ItemCommandExecution`、`ItemFileChange` 和 `ItemContextCompaction`，当前格式要求 payload 存在且与 Item identity/status 一致；缺少 payload 的历史测试记录直接视为无效，不通过兼容性默认值或 generic map 补齐。
+
 ### 8.15 Model Step
 
 Model Step 是 `run_turn` 中的一次模型 continuation：
