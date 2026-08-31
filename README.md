@@ -15,6 +15,10 @@ Amadeus is a terminal coding agent written in Go. It supports Tool calling, MCP,
 - Resumable sessions, approvals, Default and Plan modes.
 - Basic Multi-Agent delegation with read-only explorer SubAgents.
 
+<p align="center">
+  <img src="docs/example.png" alt="Amadeus feature overview" width="900">
+</p>
+
 ## Quick Start
 
 Amadeus currently requires Go 1.26 or later.
@@ -99,29 +103,29 @@ model_supports_original_image_detail: false
 tool_output_token_limit: 10000
 
 model_providers:
-  openai:
-    wire_api: responses
-    dialect: openai
-    api_key: ""
-    base_url: https://api.openai.com/v1
-    timeout: 120s
-    request_max_retries: 4
-    stream_max_retries: 5
-    stream_idle_timeout: 5m
+    openai:
+        wire_api: responses
+        dialect: openai
+        api_key: ""
+        base_url: https://api.openai.com/v1
+        timeout: 120s
+        request_max_retries: 4
+        stream_max_retries: 5
+        stream_idle_timeout: 5m
 
 agent:
-  max_parallel_tools: 4
-  multi_agent:
-    enabled: true
-    max_agents: 4
-    max_depth: 1
-    child_max_samples: 20
-    child_max_tool_calls: 100
-    child_max_duration: 15m
+    max_parallel_tools: 4
+    multi_agent:
+        enabled: true
+        max_agents: 4
+        max_depth: 1
+        child_max_samples: 20
+        child_max_tool_calls: 100
+        child_max_duration: 15m
 
 logging:
-  level: info
-  trace_llm: false
+    level: info
+    trace_llm: false
 ```
 
 Keep API keys out of the file when possible:
@@ -200,37 +204,37 @@ Command form:
 amadeus [PROMPT] [flags]
 ```
 
-| Option | Description |
-|---|---|
-| `[PROMPT]` | Optional initial TUI prompt. At most one positional prompt is accepted. |
-| `-C, --cd <dir>` | Use the specified directory as the working root. Relative paths are resolved from the startup directory. |
-| `--add-dir <dir>` | Add another writable directory. May be repeated. |
-| `--continue` | Continue the most recently updated session for the current working root. |
-| `--resume[=<session-id>]` | Resume a session by ID, or open the session picker when no ID is supplied. |
-| `--config <path>` | Load the main configuration from an explicit path. |
-| `--model-provider <name>` | Override the selected provider alias. |
-| `--model <name>` | Override the model name. |
-| `--model-reasoning-effort <effort>` | Set `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
-| `--model-input-modalities <values>` | Override model inputs, for example `text` or `text,image`. |
-| `--model-supports-original-image-detail` | Expose original image detail for a model that supports it. |
-| `--wire-api <api>` | Override the wire API: `responses` or `chat_completions`. |
-| `--dialect <dialect>` | Override the provider dialect: `standard`, `openai`, `deepseek`, `qwen`, or `glm`. |
-| `--base-url <url>` | Override the selected provider base URL. |
-| `-h, --help` | Show command help. |
+| Option                                   | Description                                                                                              |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `[PROMPT]`                               | Optional initial TUI prompt. At most one positional prompt is accepted.                                  |
+| `-C, --cd <dir>`                         | Use the specified directory as the working root. Relative paths are resolved from the startup directory. |
+| `--add-dir <dir>`                        | Add another writable directory. May be repeated.                                                         |
+| `--continue`                             | Continue the most recently updated session for the current working root.                                 |
+| `--resume[=<session-id>]`                | Resume a session by ID, or open the session picker when no ID is supplied.                               |
+| `--config <path>`                        | Load the main configuration from an explicit path.                                                       |
+| `--model-provider <name>`                | Override the selected provider alias.                                                                    |
+| `--model <name>`                         | Override the model name.                                                                                 |
+| `--model-reasoning-effort <effort>`      | Set `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.                                       |
+| `--model-input-modalities <values>`      | Override model inputs, for example `text` or `text,image`.                                               |
+| `--model-supports-original-image-detail` | Expose original image detail for a model that supports it.                                               |
+| `--wire-api <api>`                       | Override the wire API: `responses` or `chat_completions`.                                                |
+| `--dialect <dialect>`                    | Override the provider dialect: `standard`, `openai`, `deepseek`, `qwen`, or `glm`.                       |
+| `--base-url <url>`                       | Override the selected provider base URL.                                                                 |
+| `-h, --help`                             | Show command help.                                                                                       |
 
 Useful environment overrides include:
 
-| Environment variable | Purpose |
-|---|---|
-| `AMADEUS_HOME` | Configuration and session data directory. |
-| `AMADEUS_API_KEY` | API key for the selected provider. |
-| `AMADEUS_MODEL_PROVIDER` | Provider alias from `model_providers`. |
-| `AMADEUS_MODEL` | Model name. |
-| `AMADEUS_BASE_URL` | Provider base URL. |
-| `AMADEUS_WIRE_API` | `responses` or `chat_completions`. |
-| `AMADEUS_DIALECT` | Provider dialect. |
-| `AMADEUS_MODEL_REASONING_EFFORT` | Model reasoning effort. |
-| `AMADEUS_MODEL_INPUT_MODALITIES` | Comma-separated model input modalities. |
+| Environment variable                           | Purpose                                          |
+| ---------------------------------------------- | ------------------------------------------------ |
+| `AMADEUS_HOME`                                 | Configuration and session data directory.        |
+| `AMADEUS_API_KEY`                              | API key for the selected provider.               |
+| `AMADEUS_MODEL_PROVIDER`                       | Provider alias from `model_providers`.           |
+| `AMADEUS_MODEL`                                | Model name.                                      |
+| `AMADEUS_BASE_URL`                             | Provider base URL.                               |
+| `AMADEUS_WIRE_API`                             | `responses` or `chat_completions`.               |
+| `AMADEUS_DIALECT`                              | Provider dialect.                                |
+| `AMADEUS_MODEL_REASONING_EFFORT`               | Model reasoning effort.                          |
+| `AMADEUS_MODEL_INPUT_MODALITIES`               | Comma-separated model input modalities.          |
 | `AMADEUS_MODEL_SUPPORTS_ORIGINAL_IMAGE_DETAIL` | Enable or disable original image detail support. |
 
 Run `amadeus --help` for the authoritative option list.
@@ -239,16 +243,16 @@ Run `amadeus --help` for the authoritative option list.
 
 Amadeus also provides non-interactive commands for inspecting the local setup:
 
-| Command | Description |
-|---|---|
-| `amadeus config check` | Load and validate the effective configuration. |
-| `amadeus config show` | Print the effective configuration with secrets redacted. |
-| `amadeus config explain` | Print the effective configuration and the source of each field. |
-| `amadeus sessions list` | List sessions associated with the current working root. |
-| `amadeus tools list` | List the target built-in Tool surface, exposure, conditions, and side effects. |
-| `amadeus web check` | Check enabled web configuration, authentication, connectivity, and response format. |
-| `amadeus version` | Print version and build metadata. |
-| `amadeus completion <shell>` | Generate completion scripts for `bash`, `zsh`, `fish`, or `powershell`. |
+| Command                      | Description                                                                         |
+| ---------------------------- | ----------------------------------------------------------------------------------- |
+| `amadeus config check`       | Load and validate the effective configuration.                                      |
+| `amadeus config show`        | Print the effective configuration with secrets redacted.                            |
+| `amadeus config explain`     | Print the effective configuration and the source of each field.                     |
+| `amadeus sessions list`      | List sessions associated with the current working root.                             |
+| `amadeus tools list`         | List the target built-in Tool surface, exposure, conditions, and side effects.      |
+| `amadeus web check`          | Check enabled web configuration, authentication, connectivity, and response format. |
+| `amadeus version`            | Print version and build metadata.                                                   |
+| `amadeus completion <shell>` | Generate completion scripts for `bash`, `zsh`, `fish`, or `powershell`.             |
 
 `amadeus web check` accepts `--query <text>` for the search probe and `--url <url>` to exercise web fetch. Global configuration and working-directory flags can also be used with these subcommands.
 
@@ -256,20 +260,20 @@ Amadeus also provides non-interactive commands for inspecting the local setup:
 
 Slash Commands are available in the interactive TUI. Type `/` to open the command list.
 
-| Command | Description |
-|---|---|
-| `/resume [session-id]` | Resume a saved session or open the session picker. |
-| `/skills` | List Skills or enable and disable them. |
-| `/rename [name]` | Rename the current session. Without a name, opens an input dialog. |
-| `/delete` | Permanently delete the current session and exit. |
-| `/compact` | Compact the current conversation context. |
-| `/plan [task]` | Enter Plan mode. With a task, submits it after changing mode. |
-| `/copy` | Copy the latest agent Markdown response. |
-| `/status` | Show session, model, reasoning, permission, token, and Prompt provenance/revision diagnostics. |
-| `/mcp` | Show configured MCP servers, tools, and resource counts. |
-| `/mcp verbose` | Show the detailed MCP inventory. |
-| `/clear` | Clear the UI and start a new session. |
-| `/exit` | Shut down the current session and exit. |
+| Command                | Description                                                                                    |
+| ---------------------- | ---------------------------------------------------------------------------------------------- |
+| `/resume [session-id]` | Resume a saved session or open the session picker.                                             |
+| `/skills`              | List Skills or enable and disable them.                                                        |
+| `/rename [name]`       | Rename the current session. Without a name, opens an input dialog.                             |
+| `/delete`              | Permanently delete the current session and exit.                                               |
+| `/compact`             | Compact the current conversation context.                                                      |
+| `/plan [task]`         | Enter Plan mode. With a task, submits it after changing mode.                                  |
+| `/copy`                | Copy the latest agent Markdown response.                                                       |
+| `/status`              | Show session, model, reasoning, permission, token, and Prompt provenance/revision diagnostics. |
+| `/mcp`                 | Show configured MCP servers, tools, and resource counts.                                       |
+| `/mcp verbose`         | Show the detailed MCP inventory.                                                               |
+| `/clear`               | Clear the UI and start a new session.                                                          |
+| `/exit`                | Shut down the current session and exit.                                                        |
 
 `/compact` creates a durable context checkpoint while preserving the original rollout. Automatic compaction uses the same checkpoint lifecycle when the active model context reaches its configured limit. A `~` before the statusline context percentage marks a local preflight estimate; provider-reported request usage replaces that estimate after a successful response.
 
@@ -374,8 +378,8 @@ Example:
 
 ```yaml
 disabled:
-  - review
-  - release-check
+    - review
+    - release-check
 ```
 
 See [`configs/skills/review/SKILL.md`](configs/skills/review/SKILL.md) for a repository example.
@@ -397,27 +401,27 @@ User and project servers are merged by name. A project server replaces the compl
 
 ```yaml
 servers:
-  local-tools:
-    transport: stdio
-    command: /absolute/path/to/mcp-server
-    args: ["--mode", "stdio"]
-    env:
-      SERVICE_TOKEN: ${SERVICE_TOKEN}
-    timeout: 30s
-    enabled: true
+    local-tools:
+        transport: stdio
+        command: /absolute/path/to/mcp-server
+        args: ["--mode", "stdio"]
+        env:
+            SERVICE_TOKEN: ${SERVICE_TOKEN}
+        timeout: 30s
+        enabled: true
 ```
 
 ### Streamable HTTP server
 
 ```yaml
 servers:
-  remote-tools:
-    transport: streamable_http
-    url: https://mcp.example.com/mcp
-    headers:
-      Authorization: Bearer ${MCP_AUTH_TOKEN}
-    timeout: 30s
-    enabled: true
+    remote-tools:
+        transport: streamable_http
+        url: https://mcp.example.com/mcp
+        headers:
+            Authorization: Bearer ${MCP_AUTH_TOKEN}
+        timeout: 30s
+        enabled: true
 ```
 
 MCP rules:
@@ -444,14 +448,14 @@ Configure delegation in `config.yaml`:
 
 ```yaml
 agent:
-  max_parallel_tools: 4
-  multi_agent:
-    enabled: true
-    max_agents: 4
-    max_depth: 1
-    child_max_samples: 20
-    child_max_tool_calls: 100
-    child_max_duration: 15m
+    max_parallel_tools: 4
+    multi_agent:
+        enabled: true
+        max_agents: 4
+        max_depth: 1
+        child_max_samples: 20
+        child_max_tool_calls: 100
+        child_max_duration: 15m
 ```
 
 Current SubAgent behavior:
@@ -476,16 +480,16 @@ Web tools are disabled by default. Enable them in `config.yaml`:
 
 ```yaml
 web:
-  search:
-    enabled: true
-    provider: duckduckgo
-    timeout: 15s
-    max_results: 5
-  fetch:
-    enabled: true
-    timeout: 30s
-    max_bytes: 1048576
-    max_redirects: 3
+    search:
+        enabled: true
+        provider: duckduckgo
+        timeout: 15s
+        max_results: 5
+    fetch:
+        enabled: true
+        timeout: 30s
+        max_bytes: 1048576
+        max_redirects: 3
 ```
 
 Supported search providers are DuckDuckGo, Tavily, SearXNG, and Brave. DuckDuckGo does not require an API key. Web fetch requests may require approval for new hostnames.
