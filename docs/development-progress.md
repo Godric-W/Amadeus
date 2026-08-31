@@ -1,9 +1,9 @@
 # Amadeus 开发进度
 
-> 最近更新：2026-08-28
+> 最近更新：2026-08-31
 > 主要架构与 Contract 工作文档：`docs/design.md`
-> 当前阶段：AC. Basic Multi-Agent Terminal + Persistence Lifecycle Realignment（DONE）
-> 下一任务：未排定
+> 当前阶段：AD. Codex Runtime Contract Optimization（PLANNED）
+> 下一任务：AD-01 Settings Admission Transaction
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
@@ -54,6 +54,7 @@ A Runtime + Persistence
 → AA Prompt Ownership + Lifecycle Realignment
 → AB Source-backed Markdown Streaming + TUI Render Lifecycle
 → AC Basic Multi-Agent Terminal + Persistence Lifecycle Realignment
+→ AD Codex Runtime Contract Optimization
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先分析对应参考源码，再同步更新 `docs/design.md` 与本文。
@@ -951,7 +952,7 @@ N 的 `update_plan`、`request_user_input`、settings、Proposed Plan Event/Turn
 - 统一 `ModeKindDefault/ModeKindPlan` 术语，删除 TUI `CollaborationExecute/CollaborationPlan` 第二套 enum、Session `ModeState` 和其他模式镜像；SessionConfiguration 是当前 Collaboration Mode 的唯一 owner。
 - 建立最小 `CollaborationMode{Mode ModeKind}` 与 `ThreadSettingsOverrides{CollaborationMode *CollaborationMode}`；暂不复制尚未使用的 per-mode model/reasoning settings 空壳。
 - 扩展 `UserInputOp` 携带 ThreadSettingsOverrides：`/plan <task>` 在单个 Submission 中先应用 Plan mode settings、再冻结 TurnContext、再启动 RegularTask；删除 `pendingModeTask` 和 settings ack 后二次提交路径。
-- `/plan` 与快捷切换继续使用独立 `ThreadSettingsOp`；ActiveTurn 运行期间 settings update 必须拒绝或进入 Session submission queue，不能改变已冻结 TurnContext。
+- `/plan` 与快捷切换继续使用独立 `ThreadSettingsOp`；ActiveTurn 运行期间 settings update 必须拒绝或进入 Session submission queue，不能改变已冻结 TurnContext。该条目的“UserInput 先应用设置再尝试 steer”历史时序结论由 AD-01 按当前 Codex `PreparedTurnInputSettings` 合同重新审计。
 - N 阶段的 `ThreadSettingsAppliedEvent` 返回完整生效模式 snapshot；S-02 将其 contract 进一步收敛为完整生效 `SessionConfiguration`。设置校验失败形成 correlated ErrorEvent，原模式保持不变且不得启动 Turn。
 
 ### N-11：Plan Prompt + ToolRouter Policy Alignment — `DONE`，Prompt text/owner 由 AA 取代
@@ -1026,7 +1027,7 @@ N 的 `update_plan`、`request_user_input`、settings、Proposed Plan Event/Turn
 
 ### O-03：Session Admission + Steer Routing — `DONE`
 
-- Session Loop 对 `UserInputOp` 先校验并原子应用 ThreadSettingsOverrides，再尝试 steer；成功返回 Steered，无 ActiveTurn 时启动 RegularTask 并返回 Started。
+- Session Loop 对 `UserInputOp` 的设置校验与 Started/Steered admission 已完成；其中历史上“先应用设置再尝试 steer”的顺序由 AD-01 按当前 Codex 源码重新审计，成功返回 Steered，无 ActiveTurn 时启动 RegularTask 并返回 Started。
 - 当前 TurnContext 在 steer 时保持冻结；更新后的 SessionConfiguration 只影响后续 Turn，不建立 TUI mode shadow state。
 - CompactTask 明确返回 ActiveTurnNotSteerable，Core 不静默改成下一 Turn；rejected-steer queue 如有需要只属于 Interface/Application。
 - admission completion、Turn start failure、interrupt 和 terminal cleanup 使用唯一 Session owner，所有 pending admission 在 shutdown 时释放。
@@ -1387,13 +1388,13 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 
 - 引入固定 `StatusLineItem` 集合：ModelWithReasoning、CurrentDir、GitBranch、ThreadTitle、ContextUsed、ContextWindowSize；不实现 `/statusline`、picker、持久化排序或用户自定义 items。
 - 建立 value resolver、typed segment、cached state 与统一 accent mapping；值不可用时省略对应 item，不显示 placeholder，也不回退到通用 status 文本。
-- 仅在 canonical session/title/token/branch state 改变时 refresh projection；terminal resize 不重新解析业务数据。
+- 在 canonical session/title/token/branch state 或 terminal size 改变时 refresh projection；resize 只重建内存 statusline 语义，不触发 Git/文件系统 IO。
 
 ### S-04：Footer State + Pure Layout — `DONE`
 
 - 建立 `footerState`/`footerProps`，分离左侧 statusline、右侧 Plan collaboration indicator 和 Footer 外部的 Working/status indicator。
 - 将 `View()` 收敛为纯组合与渲染：不查询 `Application.Status()`、不访问文件系统、不启动 Git 查询、不修改 TUI state。
-- 删除 `model.status` 作为 statusline fallback 的路径；实现确定性窄宽度裁剪，优先移除 title/context/model/current-dir，GitBranch 最后删除，并保证 Plan indicator 右对齐。
+- 删除 `model.status` 作为 statusline fallback 的路径；实现 Codex 风格的整行窄宽度右侧截断与`…`，并保证 Plan indicator 右对齐。
 
 ### S-05：CurrentDir-keyed Workspace Metadata — `DONE`
 
@@ -1427,7 +1428,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 ### S 验收
 
 - `SessionConfiguredEvent`、`ThreadSettingsAppliedEvent` 与 `ThreadViewSnapshot` 使用同一完整 `SessionConfiguration`；TUI 不保留 Mode/Model/CWD 的并列 snapshot owner。
-- `View()` 不调用 `Application.Status()`、不访问文件系统且不改变状态；resize 只触发布局计算。
+- `View()` 不调用 `Application.Status()`、不访问文件系统且不改变状态；resize 在 Update 阶段刷新 statusline projection，再触发布局计算。
 - CurrentDir 改变后旧 branch 立即消失，迟到 lookup 不覆盖新 CWD；optional item 缺失时其余 segment 正常布局。
 - 窄终端仍优先保留 GitBranch workspace identity；Plan mode 标签保持右对齐，Default mode 不显示 mode 标签，Working/retry 文本不进入 statusline。
 - 固定 item 顺序稳定，代码和文档中不存在 `/statusline` 命令、配置 schema、picker 或持久化 customization 主链。
@@ -1471,7 +1472,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 
 - Root 与 child New Thread 统一从 Protocol/Identity 生成 UUIDv7；从 ThreadManager 和外层装配删除 `NextID("thread")`、thread prefix factory 分支及对应注入点。
 - New Root 由 ThreadID 派生 SessionID；Resumed Root 从 Rollout SessionMeta 恢复 SessionID，并校验 requested ThreadID、StoredThread.ID、Rollout path identity、SessionMeta.ID 与 Root `SessionIDFromThreadID(ID)` 全部一致。
-- Session configured 成功后再注册 live Thread；生成失败、重复 ID、history mismatch 或 spawn 失败必须完整关闭 writer/runtime，不得留下半注册 Thread。
+- Session configured 成功后再注册 live Thread；生成失败、重复 ID、history mismatch 或 spawn 失败必须完整释放 writer/runtime，不得留下半注册 Thread。初始化失败的 writer 关闭语义由 AD-03 进一步区分为 discard 与正常 shutdown。
 
 ### T-03：Session + AgentControl Dual Identity — `DONE`
 
@@ -2096,7 +2097,7 @@ AA-01～AA-09 是同一次 Architecture Closure 的依赖顺序，不是可长�
 - AA当时将Rollout提升为v5并拒绝旧格式decoder，SQLite metadata index保持v4；AC因TurnComplete/AgentSpawnEdge contract替换将当前Rollout/SQLite分别提升为v6/v5。两者版本域不同，不要求同步递增，也不提供开发期兼容migration。
 - 验收通过：`make check`、全仓 `go test -race ./... -count=1`、Responses/Chat Coding Agent与Core Tools Provider mock E2E、architecture guards及`git diff --check`。
 
-## 33. AB. Source-backed Markdown Streaming + TUI Render Lifecycle — `DONE`（2026-08-28 reopened and completed）
+## 33. AB. Source-backed Markdown Streaming + TUI Render Lifecycle — `DONE`（2026-08-31，含 resize/statusline follow-up）
 
 ### 目标
 
@@ -2218,6 +2219,27 @@ Amadeus 原先在收到 Bubble Tea `WindowSizeMsg` 后只更新 `appModel` 的 w
 - [x] 增加真实 PTY resize 测试：80列历史调整到52列后检测scrollback erase序列及source-backed sentinel仍可见。
 - [x] 通过 focused TUI/architecture tests、`make check` 和 `git diff --check`。
 
+### AB-14：Codex-style Statusline Resize Projection + Footer Layout — `DONE`（2026-08-31）
+
+#### 目标
+
+将 statusline 的 resize 生命周期与 Codex 对齐：终端尺寸变化时立即重建 statusline 语义 projection 和当前宽度 Footer 布局；transcript scrollback 继续使用独立的 debounce reflow，不让历史重建延迟底部状态显示。
+
+#### 任务
+
+- [x] 在`tea.WindowSizeMsg`处理顺序中固定为：更新实际 width/height → 更新 Composer、active stream和viewport → 调用`refreshStatusLine()` → 返回当前 frame布局/reflow command。
+- [x] 保持`sessionViewState`为Model、CurrentDir、GitBranch、ThreadTitle和Context事实来源；resize refresh只重建`statusLineState`，不启动新的Git/文件系统查询，不创建第二份statusline state。
+- [x] 对照 Codex `refresh_status_surfaces()`，核对固定六个Amadeus StatusLineItem的可用值、缺失值省略、Context估算标记和Plan indicator状态在resize前后的稳定性。
+- [x] 调整`footerProps`的左右列布局，使左侧固定 statusline item 先形成完整 styled line，再按 Codex priority 从右侧截断并追加`…`；Plan indicator和queue hint使用独立右列；继续保留Amadeus固定item范围，不引入`/statusline`配置、picker或持久化排序。
+- [x] 保证statusline刷新与`transcriptReflowState`解耦：statusline在Resize Update中立即可见，native history reflow仍按75ms trailing debounce执行；overlay打开时只延后scrollback reflow。
+- [x] 增加stale `footerState`在resize后被重建、宽窄终端折叠顺序、Plan右对齐、queue hint让位、height-only resize和resize期间branch cache不重复查询的contract tests。
+
+#### 验收
+
+- [x] Codex与Amadeus的resize/statusline生命周期、数据owner和Footer宽度策略记录在`docs/design.md`与`docs/architecture-whitepaper.md`中。
+- [x] 真实PTY覆盖宽度收缩、宽度恢复、height-only resize和active Turn中的statusline显示；statusline不进入native transcript scrollback。
+- [x] 通过 focused TUI/architecture tests、`make check`、`go test -race ./internal/tui -count=1`和`git diff --check`。
+
 ### AB 出口
 
 - Assistant Markdown在live、retry、completion、resize、Raw/Rich、Resume和`/copy`中有唯一authoritative source owner与一个attachment-based completion protocol；不存在全局draft、trailing-run owner推断、fabricated item lifecycle或ANSI反向解析。
@@ -2312,3 +2334,83 @@ AC保留R/Z已经正确的完整child Thread/Session、root-scoped AgentControl�
 - notification渲染迁入contextmanager typed ContextFragment；SubagentNotificationEvent持有AgentID+TurnID delivery watermark，成功durable后才推进notified，失败保留diagnostic并可由wait重试。Status/LastTurn、ToolResult、CollabAgentState和TUI共享同一snapshot，文本按约1000-token envelope预算截断。
 - 新增Root Turn先完成/child后完成、preamble→blocked、wait-any、intermediate Error、notification retry、open/closed edge failure ordering、closed child跨Resume不占slot、open child exact LastTurn lazy resume、SQLite rebuild、no-tools finalization及Provider failure等tests；architecture guards禁止旧final reducer、wait-all、raw child membership和V2非目标占位回归。
 - 验收通过：focused functional/race tests、`make check`（含vet、全仓tests和build）、`go test -race ./... -count=1`、现有Responses/Chat Coding Agent/Core Tools integration E2E与`git diff --check`。
+
+## 35. AD. Codex Runtime Contract Optimization — `PLANNED`
+
+### 目标
+
+在不改变 Amadeus 当前产品范围的前提下，依据当前 `../codex-main/codex-rs/core`、`thread-store`、`protocol` 和 `app-server` 源码，收紧仍与 Codex 存在差异的设置事务、typed data、初始化回滚、MetadataSync 和 shutdown 合同，并以基准测试决定长会话性能优化。AD 不新建 `internal/core`，不引入宽泛 Runtime/Service aggregate，不实现 Codex Multi-Agent V2、App Server、Sandbox、Memory 或其他已声明非目标。
+
+### AD-01：Settings Admission Transaction — `TODO`
+
+- [ ] 对照 Codex `core/src/session/turn_input.rs` 的 `PreparedTurnInputSettings::prepare → steer → apply_steered` 和 `apply_started`，审计 Amadeus `Session.admitUserMessage` 与独立 `ThreadSettingsOp` 的实际顺序。
+- [ ] 将 `UserInputOp.ThreadSettings` 收敛为 immutable validation；Started 在冻结新 TurnContext 前应用，Steered 仅在 steer 成功后应用，rejected/cancelled input 不改变 SessionConfiguration。
+- [ ] 非法独立 settings update 发布 correlated `ErrorEvent`；设置失败保持原模式且不启动任务。
+- [ ] 增加 Compact/不可 steer、expected Turn mismatch、取消、并发提交和 `/plan <task>` 的顺序与状态不变量测试；同步 O/N/设计文档中旧的“先应用再 steer”表述。
+
+### AD-02：Typed TurnItem Payload Contract — `TODO`
+
+- [ ] 盘点 `TurnItem.Payload`、`ResponseItem.Metadata` 和 ToolResult 扩展在 Protocol、Rollout、Application、TUI 和 Replay 中的全部生产用法，按当前 `ItemKind` 建立唯一 payload variant mapping。
+- [ ] 将稳定 `TurnItem` 的领域 payload 改为由 `Kind` 决定的 typed Go contract；JSON `RawMessage` 仅保留在 codec envelope 或明确不透明外部扩展边界。
+- [ ] 为每个 variant 增加 identity/status/field validation、unknown variant failure、round-trip、live/Resume/TUI projection 等价测试。
+- [ ] 删除依赖 JSON decode 后 `map[string]any` 作为 canonical item 事实的路径；presentation-only metadata 不得反向成为 Protocol/Rollout owner。
+
+### AD-03：LiveThread Initialization Discard — `TODO`
+
+- [ ] 对照 Codex `LiveThreadInitGuard::discard` 与 `ThreadStore::discard_thread`，为 Amadeus ThreadStore/LiveThread 定义初始化失败的 discard 操作。
+- [ ] Session configured/ownership barrier 前的 spawn、resume、service construction 和 child rollback 使用 discard；正常 shutdown 继续执行 durable flush + writer close。
+- [ ] 增加“初始化失败不强制 durable pending facts”“正常关闭仍 flush”“重复 discard/shutdown”测试，并验证 writer、metadata 和 registry 不残留。
+
+### AD-04：Incremental MetadataSync — `TODO`
+
+- [ ] 增加长 Rollout、多个 durable boundary、Tool 高频追加和 SQLite 漂移场景的 baseline benchmark，记录全量 `rollout.Read → projectMetadata` 成本。
+- [ ] 若基准证明必要，将 MetadataSync 迁移为 LiveThread 观察已 durable typed facts 并产生增量 `MetadataPatch`；完整 Rollout 扫描只保留给 Resume、显式 Rebuild 和 reconciliation。
+- [ ] 保持 JSONL durable watermark 先于 SQLite patch；patch failure 只能让 SQLite 落后，不能丢失已 durable history 或制造超前 metadata。
+- [ ] 增加 incremental 与 Resume full rebuild 的 semantic-equivalence、crash/fault、metadata warning 和 backfill tests。
+
+### AD-05：Bounded Thread/Process Shutdown — `TODO`
+
+- [ ] 对照 Codex `ThreadManager::shutdown_all_threads_bounded`，设计 Amadeus 的 per-Thread shutdown result，区分 completed、submit-failed 和 timed-out，不用单一字符串 error 隐藏部分失败。
+- [ ] 对独立 child Thread 评估并发 bounded shutdown；Root AgentControl 关闭、Session Terminated、LiveThread writer close 和 registry removal 保持明确顺序。
+- [ ] 将 ProcessManager 的 cancel-only close 收敛为 cancel + wait `done` 或显式 timeout；SessionServices 不能在未观察 process completion 时报告正常关闭。
+- [ ] 跟踪 `InteractiveApplication` 的旧 attachment release goroutine，在 Application shutdown 时等待或报告其 bounded result；覆盖重复退出、Resume/Clear 后退出和 timeout。
+
+### AD-06：Event Backpressure Contract — `TODO`
+
+- [ ] 对照 Codex unbounded Core event receiver 与 Amadeus bounded Event channel，确定当前产品采用的 backpressure 语义，不改变单一 Event 顺序和 critical-event delivery。
+- [ ] 增加慢消费者、满 buffer、Session cancellation、Approval/UserInput pending 和 terminal event delivery tests，证明不得静默丢失 Turn/Item terminal、Approval request 或 User Input request。
+- [ ] 若保留 bounded channel，明确 producer cancellation/unblock 路径；不得用无界 Event Bus 或额外 status channel 绕过 Session owner。
+
+### AD-07：Prompt/Context Hot-path Benchmark — `TODO`
+
+- [ ] 增加长 history、多 Tool continuation、WorldState 变化、Compaction 前后和 Resume 的 Prompt snapshot/token estimate benchmark 与 allocation profile。
+- [ ] 对照 Codex ContextManager/SessionState，识别 `ActiveContextTokens` 与 `PromptSnapshot` 的重复 clone/normalize/hash 成本。
+- [ ] 只有 profiling 证明必要时，增加由 history/version、ModelInfo、Tool revision 和 WorldState revision 驱动的 derived cache；cache 不能成为第二份 history/configuration owner。
+- [ ] 通过 live incremental、Compaction install、Resume rebuild semantic-equivalence 和 cache invalidation tests 后才能采用缓存。
+
+### AD-08：AGENTS、Rollout 和 Process Retention Profiling — `TODO`
+
+- [ ] 基准 `AgentsMdManager.Refresh` 在多个已知目录和连续 Model Step 下的文件读取量；必要时按 path fingerprint 缓存 parsed document，但写入/执行前仍执行 stale check。
+- [ ] 基准 Rollout resume/metadata read 的峰值内存；必要时使用流式 decoder 保留 truncated-tail recovery、sequence validation 和 typed error 语义。
+- [ ] 基准长 Session 中已结束 process transcript 的内存增长；必要时对 completed process 使用有界 snapshot/TTL，保留当前 Turn `write_stdin` 所需事实和 canonical Rollout 结果。
+
+### AD-09：Workspace Shared Capability Decision — `TODO`
+
+- [ ] 对照 Codex `ThreadManagerState` 的 process-scoped models/environment/skills/plugins/MCP/store 与 Amadeus Workspace-scoped `SharedServices`，测量多个 child Session 的启动和重复资源成本。
+- [ ] 若真实 workload 证明需要共享，只增加职责明确的 Workspace service owner；SessionServices 仍拥有 Session-scoped resources，不建立 `Core`、Service Locator 或万能 dependency bag。
+- [ ] 若当前单 Workspace/少量 child 成本可接受，记录保留现状的决定和基准，不为命名对齐提前引入共享层。
+
+### AD-10：Guards、Docs 和 Acceptance — `TODO`
+
+- [ ] 增加 architecture guards，禁止 rejected settings mutation、generic canonical payload、init failure 误走 normal shutdown、未等待 process 的成功关闭和全量 metadata read 回到普通 append 路径。
+- [ ] 同步 `docs/design.md`、`docs/architecture-whitepaper.md`、`README.md`（仅在用户可见行为改变时）和本进度阶段的目标合同；不修改历史阶段的 DONE 事实。
+- [ ] 运行 focused contract tests、长会话 benchmarks、全量 `go test ./... -count=1`、全量 `go test -race ./... -count=1`、`make check`、`go build ./cmd/amadeus` 和 `git diff --check`。
+
+### AD 出口
+
+- Settings admission 与 Codex 的 Started/Steered 事务顺序一致；拒绝或取消不会改变 SessionConfiguration，非法 settings 有 correlated ErrorEvent。
+- 稳定 TurnItem 使用 typed payload variant；live、Rollout、Resume 和 TUI 不依赖 generic canonical payload 或 decode 后 map 事实。
+- Session 初始化失败与正常 shutdown 使用不同 writer 生命周期；所有 Thread、child、process、attachment 和 watcher 的关闭都有 owner、等待点和 bounded timeout 结果。
+- MetadataSync 在 durable watermark 后从 typed append facts 增量推进 SQLite；全量扫描仅用于 Resume/Rebuild/reconciliation，live 与 Resume 语义等价。
+- Prompt/Context、AGENTS、Rollout 和 process retention 的性能改动均有基准证据和失效边界；没有未经测量的第二事实源或跨层缓存。
+- AD 不改变 Amadeus 已声明的产品非目标，不新增 `internal/core`、万能 Runtime aggregate 或第二套生命周期协议。

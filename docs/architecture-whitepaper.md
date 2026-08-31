@@ -218,6 +218,57 @@ flowchart TB
 
 ### 3.3 所有权树
 
+学习 Runtime 时，先区分“谁拥有状态”和“谁只是使用快照”。下面的树只表达长期对象的主要所有权；缩进表示生命周期上的包含关系，不表示每个字段都是 Go struct 的直接字段。
+
+```text
+Amadeus process
+├── ThreadManager
+│   └── live Thread registry
+│       ├── Root AmadeusThread
+│       │   ├── Root Session
+│       │   │   ├── SessionState
+│       │   │   │   ├── Configuration
+│       │   │   │   ├── BaseInstructions
+│       │   │   │   └── ContextManager
+│       │   │   │       └── canonical model history projection
+│       │   │   ├── SessionServices
+│       │   │   │   ├── Model client / ModelInfo
+│       │   │   │   ├── Tool Registry / ToolExecutionService
+│       │   │   │   ├── Approval / Permission context
+│       │   │   │   ├── MCPRuntime / SkillCatalog / AgentsMdManager
+│       │   │   │   └── ProcessManager / Web / Compaction services
+│       │   │   ├── SessionIo
+│       │   │   │   ├── Submission input boundary
+│       │   │   │   ├── Event output boundary
+│       │   │   │   └── Configured / Terminated lifecycle signals
+│       │   │   └── ActiveTurn (最多一个)
+│       │   │       ├── TurnContext
+│       │   │       │   └── frozen model, mode, workspace and output policy
+│       │   │       ├── RunningTask (最多一个)
+│       │   │       │   └── SessionTask
+│       │   │       │       ├── RegularTask → runTurn continuation loop
+│       │   │       │       │   ├── StepContext (每次采样的不可变能力快照)
+│       │   │       │       │   │   ├── Prompt / WorldState snapshot
+│       │   │       │       │   │   └── ToolRouter snapshot
+│       │   │       │       │   └── ModelClientSession (Turn 级流生命周期)
+│       │   │       │       └── CompactTask → Session compaction lifecycle
+│       │   │       └── TurnState
+│       │   │           └── approval, user-input and same-turn waiters/queue
+│       │   ├── Root AgentControl
+│       │   │   └── shared with child Sessions in this Root tree
+│       │   └── LiveThread
+│       │       └── ThreadStore → JSONL Rollout + SQLite metadata index
+│       └── Child AmadeusThread(s)
+│           └── each has an independent Session / Turn / Rollout
+```
+
+这棵树可以用四个问题来阅读：
+
+- **ThreadManager 拥有什么？** 它拥有 live Thread registry，负责创建、恢复、注册和关闭 `AmadeusThread`；它不拥有某个 Thread 的 Turn 或 Prompt history。
+- **Session 拥有什么？** 它是一个模型 Agent 的长期执行 owner，串行管理 `SessionState`、`SessionServices`、`SessionIo`、`ActiveTurn` 和 terminal ordering。
+- **ActiveTurn 拥有什么？** 它只代表当前一次 Turn，最多有一个 `RunningTask`；`RunningTask` 执行一个 `SessionTask`，并把完成结果交回 Session loop。
+- **哪些对象不是长期 owner？** `TurnContext` 是 Turn 冻结值，`StepContext` 是一次模型采样的能力快照，`ToolRouter` 和 `ModelClientSession` 不能借此取得新的状态所有权。
+
 ```mermaid
 flowchart TD
     Process[Amadeus process] --> Manager[ThreadManager]
@@ -245,6 +296,70 @@ flowchart TD
 - SessionServices 在 Session 生命周期内复用 Provider、Tool、MCP、Skill、Permission 和 Process 等能力。
 - StepContext对应一次模型采样及其紧随的 Tool dispatch。
 - Root `multiagent.Control` 生命周期覆盖父 Turn；成功 spawn 的 child 拥有独立于父 Turn 的运行生命周期。
+
+### 3.4 Core Runtime（概念层）
+
+Codex 的 `codex-core` 是一个承载业务逻辑的 Rust crate；Amadeus 没有与之同名的总包，而是把同一组职责分散到多个 Go package。为了学习概念，可以把下面这棵树称为 **Core Runtime**。它是理解对象关系的视图，不表示需要新建 `internal/core` 目录。
+
+```text
+Core Runtime
+├── Thread lifecycle
+│   ├── ThreadManager          # 创建、恢复、注册和关闭 live Thread
+│   └── AmadeusThread          # 对外提交/事件/查询句柄
+├── Session execution
+│   ├── Session                 # Submission loop 和终态顺序的唯一 owner
+│   ├── SessionState            # 配置、BaseInstructions、ContextManager
+│   └── SessionServices         # 跨 Turn 复用的 Agent capabilities
+├── Turn execution
+│   ├── ActiveTurn              # 当前 Turn（最多一个）
+│   ├── RunningTask              # goroutine、取消和 Completion
+│   ├── SessionTask              # RegularTask 或 CompactTask
+│   ├── TurnContext              # Turn 级冻结配置
+│   └── StepContext              # 单次采样的不可变能力快照
+├── Capability boundaries
+│   ├── contextmanager           # history、WorldState、token accounting
+│   ├── agent/modelclient        # sampling、stream 和 reconnect
+│   ├── tool / policy             # ToolRouter、执行和 Approval
+│   └── MCP / Skill / AgentsMd   # Session-scoped 外部能力
+└── Durability boundary
+    ├── LiveThread / ThreadStore # canonical append 和恢复入口
+    └── Rollout                  # 可恢复的 typed history facts
+```
+
+可以用以下映射把 Codex 的 crate 级概念定位到 Amadeus 的实际代码：
+
+| Codex `codex-core` 概念 | Amadeus 实现 | 主要 owner |
+|---|---|---|
+| `ThreadManager` / `CodexThread` | `internal/threadmanager` | Thread 创建、恢复、registry 和对外句柄 |
+| `core::session` + private `state` | `internal/agent/session` | Session loop、状态、Turn 和 Task |
+| `context_manager` | `internal/contextmanager` | canonical model history、Prompt snapshot 和 token accounting |
+| `client` / `ModelClientSession` | `internal/agent/modelclient` + `internal/llm` | Provider-neutral request、stream 和 retry |
+| `tools` / approval | `internal/tool` + `internal/policy` + `internal/tool/builtin` | Tool snapshot、执行生命周期和权限决定 |
+| `rollout` / `thread-store` | `internal/rollout` + `internal/threadstore` | durable history、LiveThread 和 metadata index |
+
+这里有三个容易混淆的边界：
+
+- **Bootstrap 不是 Core Runtime。** Bootstrap 解析环境、打开 Store、创建 adapters 和 `ThreadManager`；它负责“把运行时组装起来”，不拥有 Turn、Prompt history 或模型循环。
+- **Application/TUI 不是 Core Runtime。** `ThreadWorkspace` 只选择当前 Thread，`InteractiveApplication` 和 TUI 只提交输入、消费 Event 并做 projection；它们不判断 Turn 完成，也不直接执行 Tool。
+- **`CoreRegistry` 不是 Codex Core。** `internal/tool/builtin.CoreRegistry` 只是内置 Tool 的注册表，属于 Capability boundary，不是 Session 或 Thread 的运行时总 owner。
+
+Core Runtime 中常用的基数关系如下：
+
+```text
+一个 Workspace runtime
+└── 一个 ThreadManager
+    └── 0..N 个 live AmadeusThread
+        └── 一个 Session
+            ├── 一个 SessionState
+            ├── 一个 SessionServices
+            └── 0..1 个 ActiveTurn
+                └── 0..1 个 RunningTask
+                    └── 一个 SessionTask
+                        └── RegularTask 的 runTurn 可执行多个 StepContext
+                            └── 每个 StepContext 可产生 0..N 个 Tool calls
+```
+
+树中的关系应这样解释：`owns` 表示生命周期和关闭责任，`uses` 表示调用另一个 owner 的能力，`snapshot` 表示只读的请求快照，`emits` 表示通过 `Event/EventMsg` 输出，`persists` 表示写入 canonical Rollout。一个对象即使持有另一个对象的指针，也不因此取得后者的事实所有权。
 
 ## 4. 端到端运行主链
 
@@ -1445,6 +1560,8 @@ flowchart LR
 | `CollabAgentHistoryCell` | spawn/send/wait/close与blocked LastTurn展示。 |
 | `NextTurnQueue` | attachment-scoped未提交FIFO。 |
 | `approvalDialog` / `requestUserInputDialog` | 两类独立typed interaction UI。 |
+
+Statusline 由 Session 状态事件重建 `statusLineState`；resize 时 `WindowSizeMsg` 先刷新这份语义 projection，`footerView()` 再使用当前 width 对完整左侧 statusline 做 Codex 风格的右侧省略，并将 Plan indicator 右对齐。ContextUsed/ContextWindowSize 是固定 statusline item，随整行一起参与右侧截断；transcript 的 native scrollback 由独立的`transcriptReflowState` debounce后重建。
 
 ## 19. Audit、Logging 与诊断
 

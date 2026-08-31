@@ -722,7 +722,7 @@ SessionID 的 canonical durable source 是各 Thread Rollout 头部的 SessionMe
 
 ### 8.3 ThreadManager
 
-`ThreadManager` 对齐 Codex ThreadManager，是进程级 Thread 创建、恢复和已加载实例管理入口：
+`ThreadManager` 对齐 Codex ThreadManager，是当前 Workspace runtime 的 Thread 创建、恢复和已加载实例管理入口；在未来存在长生命周期 App Server 时，才由上层将其提升为进程级共享 owner：
 
 ```go
 type ThreadManager struct {
@@ -740,8 +740,8 @@ type ThreadManager struct {
 - Root Resume后从Root canonical AgentSpawnEdge projection选择state=open的persisted descendants，再用可重建SQLite parent/source/edge index定位child Rollout，并校验`SessionID == AgentControl.SessionID`、ID和ParentThreadID；SQLite不以SessionID查询tree，也不把任意存在的child metadata视为open membership。
 - 对已持久化但尚未加载的 child 提供 ThreadManager 内部 child resume 路径；公开 `/resume`/`--resume` 仍只恢复 Root Thread，AgentControl 的 send/input lifecycle 按 child ThreadID 触发内部加载。
 - 创建 `SessionSpawnArgs` 并调用 internal Session 的 spawn 流程。
-- 在 Session configured 成功后将 `Session + SessionIo` 包装为 AmadeusThread 并注册进 live Thread registry；失败路径必须关闭 writer/runtime，不留下半注册实例。
-- 持有进程级共享依赖，不执行 `run_turn`，不持有 ActiveTurn。
+- 在 Session configured 成功后将 `Session + SessionIo` 包装为 AmadeusThread 并注册进 live Thread registry；barrier 之前的失败路径必须 discard writer/runtime，正常关闭才使用 flush + shutdown，不留下半注册实例。
+- 持有当前 Workspace 生命周期内的共享依赖，不执行 `run_turn`，不持有 ActiveTurn。只有真正跨多个 Workspace/Frontend 复用的 manager 才能提升到进程级；不得为了命名对齐建立宽泛 `Core` 或 `Runtime` aggregate。
 
 CLI/TUI 只通过 ThreadManager 和 AmadeusThread 使用 Runtime，不直接装配 Session 级依赖或 Rollout Writer。
 
@@ -749,7 +749,7 @@ Go 为避免 `threadmanager → agent/session → threadmanager` 包循环，将
 
 #### Application ThreadWorkspace
 
-`internal/app.ThreadWorkspace` 是界面无关的 Application Service，拥有“当前选中的 AmadeusThread”及其切换生命周期。ThreadManager 继续拥有进程内全部已加载 Thread；ThreadWorkspace 只负责 `EnsureCurrent`、`Resume`、`NewDraft`、`RenameCurrent`、`DeleteCurrent` 和当前 metadata 查询。
+`internal/app.ThreadWorkspace` 是界面无关的 Application Service，拥有“当前选中的 AmadeusThread”及其切换生命周期。ThreadManager 继续拥有当前 Workspace runtime 内全部已加载 Thread；ThreadWorkspace 只负责 `EnsureCurrent`、`Resume`、`NewDraft`、`RenameCurrent`、`DeleteCurrent` 和当前 metadata 查询。若未来一个进程承载多个 Workspace，进程级共享服务必须由明确的上层 owner 持有，不能让 ThreadManager 隐式变成全局 registry。
 
 每次 TUI invocation 只持有 bootstrap 构造的一个 ThreadWorkspace，不再分别保存 `ThreadManager`、`currentThread` 和对应 mutex；`cmd/amadeus` 与 CLI dispatcher 不持有 Workspace。切换或清空当前 Thread 必须通过 ThreadWorkspace，并由 ThreadManager 同步完成 shutdown 与已加载实例移除，避免 Resume 重新取得已经终止的 Runtime 对象。
 
@@ -826,7 +826,7 @@ type ThreadSettingsOp struct {
 }
 ```
 
-`UserInputOp.ThreadSettings` 在接纳用户消息前原子应用；因此 `/plan <task>` 不需要 TUI 保存 `pendingModeTask`、等待 settings acknowledgement 后再提交第二个业务请求。若消息启动新 Turn，更新后的 settings 用于冻结新 TurnContext；若消息 steer 当前 Turn，当前已冻结 TurnContext 保持不变，更新后的 SessionConfiguration 只影响后续 Turn。独立 `ThreadSettingsOp` 只用于不提交用户消息的 `/plan` 和快捷模式切换，不能在 ActiveTurn 运行期间原地改变已冻结的 TurnContext。
+`UserInputOp.ThreadSettings` 必须先转换为 immutable、validated settings update，但不能在 admission 结果确定前修改 Session。若消息 steer 当前 Regular Turn，只有 steer 成功后才应用 settings；若消息启动新 Turn，则在冻结新 TurnContext 前应用 settings。被拒绝或取消的消息不得改变 SessionConfiguration，也不得发布伪造的 `ThreadSettingsAppliedEvent`。因此 `/plan <task>` 仍只需要一个 `UserInputOp`，但其顺序是“校验 → 判断 Started/Steered → 在对应成功边界应用 → 冻结或继续”。独立 `ThreadSettingsOp` 只用于不提交用户消息的 `/plan` 和快捷模式切换；非法设置必须产生 correlated `ErrorEvent`，ActiveTurn 期间不能改变已冻结的 TurnContext。
 
 提交到 Runtime 的普通用户消息只有一个 `UserInputOp`；steer 是该消息被 Runtime 接纳到当前 Turn 的方式，不是第二种 Core Op，也不新增 `SteerOp`。TUI Tab queue 在提交前只是 Interface 持有的未来输入，不改变这一 Protocol Contract。Session 必须为已提交的用户消息返回 typed admission：
 
@@ -994,11 +994,12 @@ SessionServices.LiveThread
 → LocalThreadStore
 ```
 
-`ThreadStore` 是存储无关边界，第一版只定义创建、恢复、追加、flush、shutdown、读取历史、读取/列出/更新 Thread metadata 和删除 Thread 所需方法。
+`ThreadStore` 是存储无关边界，第一版定义创建、恢复、追加、flush、正常 shutdown、初始化失败 discard、读取历史、读取/列出/更新 Thread metadata 和删除 Thread 所需方法。`Shutdown` 与 `Discard` 是两个不同的生命周期操作：前者完成 durable flush 后关闭 writer，后者只释放初始化阶段的 writer/runtime，不强制把失败路径中的未决缓冲事实变成 durable history。
 
 `LocalThreadStore` 是第一版生产实现：
 
 - `LiveThread` 与 `ThreadStore` 负责 JSONL 创建、append、flush、resume 和 shutdown。
+- `LiveThread` 必须区分正常 `Shutdown` 与初始化失败 `Discard`；Session 尚未完成 configured/ownership barrier 前发生的失败只能走 discard。
 - `StateDB` 负责 StoredThread 的 SQLite 查询索引。
 - 每个 Thread 只有一个活动 Writer，并使用 Thread 级锁串行化 append/flush/shutdown。
 - Durable Append 必须先 write + flush JSONL，再由 MetadataSync 更新 SQLite。
@@ -1476,7 +1477,7 @@ Application Context
 - 优先使用带 cause 的取消，使用户中断、Session Shutdown、Provider Timeout、Tool Timeout 和 Approval Cancel 可区分。
 - Provider、Tool、HTTP 和 Process API 必须接受 `context.Context`，不能创建脱离 Turn 的无主后台任务。
 - `context.WithoutCancel` 只用于 Rollout terminal append、flush、MetadataSync 和必要审计等终态收尾，并必须再包一层有限超时。
-- 所有 goroutine 都必须有明确 Owner、退出条件和测试覆盖；不允许 fire-and-forget goroutine。
+- 所有 goroutine 都必须有明确 Owner、退出条件和测试覆盖；不允许 fire-and-forget goroutine。Thread attachment replacement、child release、process waiter 等后台清理必须由 owner 跟踪，并在 owner shutdown 时等待或报告超时。
 
 #### Channel 所有权
 
@@ -1494,7 +1495,7 @@ type SessionIo struct {
 - UserMessageAdmission 使用按 SubmissionID 注册的一次性 waiter；它是提交 request/response，不增加第二条长期公开 Event channel，也不进入 Rollout。
 - 创建并发送数据的一方负责关闭 Channel；消费者不得关闭接收端。
 - Session 退出时按固定顺序停止接纳 Submission、取消 RunningTask、完成持久化、关闭输出并通知 Terminated。
-- Event Channel 使用有界缓冲；高频 Delta 可以在投影层合并，Turn/Item 终态、Approval request 与 User Input request 不得静默丢失。
+- Event Channel 使用有界缓冲；高频 Delta 可以在投影层合并，但生产者遇到背压时必须等待或通过取消退出，不能静默丢失 Turn/Item 终态、Approval request 或 User Input request。任何未来 transport 都必须保留单一顺序和 critical-event delivery 语义。
 - 不建立支持任意 Subscriber、Topic、Priority 和 Critical Backpressure 的通用 Event Bus。
 
 #### Interactive Waiter
@@ -2185,6 +2186,7 @@ Prompt 装配只保留一条生产主链：`Session Base + typed WorldState/cano
 
 - `AgentsMdManager` 是 AGENTS.md discovery、作用域解析、缓存和 revision 的唯一 owner；输出使用 `LoadedAgentsMd`。
 - 每次 capture StepContext 时，Session 根据当前 CWD、已知目标路径和 AgentsMd revision 得到完整 `LoadedAgentsMd`；`AgentsMdState` 相对 WorldState baseline 生成 unchanged、replacement 或 removal fragment。
+- 热路径可以按 canonical path 的 file fingerprint（存在性、大小、mtime 和内容 hash）复用已解析 Document，但 fingerprint cache 只能是 derived cache；写入/执行前仍必须对目标重新执行 stale snapshot 校验。
 - Read/Search 发现新的目录作用域后，可以让下一 Model Step 重新 capture；Edit/Write 和带目标 CWD 的 Command 在 Prepare 阶段校验其目标仍受 StepContext 中已加载的 AgentsMd snapshot 约束。
 - snapshot 过期时返回 typed stale result，由下一 Model Step 重新 capture；不使用 `MarkSampled`、`context_refresh_required` 或旧 Resolver callback 驱动第二条 instruction 主链。
 - Tool 不直接修改 ContextManager；它只返回目标与 stale 事实，Session 决定是否记录新的 AGENTS.md contextual ResponseItem 和随后对应的 WorldState patch。
@@ -2215,7 +2217,7 @@ Initial Rollout Replay
 
 ContextManager 是活动 Session 的内存 history owner；canonical Rollout 是 durable source。Resume 时从 SessionMeta/ResponseItem/WorldStateItem/TurnContextItem/CompactedItem 重建一次，运行期间由 Session 在 durable append 成功后对同一 typed fact 执行增量 record。`run_turn`、TUI、CLI 和 CompactTask 不得各自实现第二套历史裁剪或消息投影，也不得在 Snapshot 阶段从 side map 合成一批未进入 canonical history 的当前前缀。
 
-只有 Session 可以提交 ContextManager mutation。Task/`run_turn` 通过 Session typed methods 请求 canonical append，并在 sampling request 构建时取得 immutable `PromptSnapshot`；不得持有 `*ContextManager` 或调用无 Rollout 对应事实的 Record/Replace fallback。正常 append 不得读取全部 `[]RolloutLine` 再 rebuild；Resume 从 Rollout 重建，Compaction 通过 Session-owned durable install 原位替换模型历史。增量 record、replacement preview/install 与 Resume projector 必须共享同一 typed normalization/estimation 规则并通过 semantic-equivalence 测试。
+只有 Session 可以提交 ContextManager mutation。Task/`run_turn` 通过 Session typed methods 请求 canonical append，并在 sampling request 构建时取得 immutable `PromptSnapshot`；不得持有 `*ContextManager` 或调用无 Rollout 对应事实的 Record/Replace fallback。正常 append 不得读取全部 `[]RolloutLine` 再 rebuild；Resume 从 Rollout 重建，Compaction 通过 Session-owned durable install 原位替换模型历史。热路径应优先复用同一 history/version、ModelInfo、Tool revision、WorldState revision 下的 derived normalization、token estimate 和 Prompt revision，避免 `ActiveContextTokens` 与 `Snapshot` 对同一历史重复全量复制；任何缓存都不能成为第二份 history owner。增量 record、replacement preview/install 与 Resume projector 必须共享同一 typed normalization/estimation 规则并通过 semantic-equivalence 测试。
 
 ### 12.4 Token Accounting
 
@@ -3358,13 +3360,15 @@ Composer
 SlashCommand::Plan(task)
 → UserInputOp{Content: task, ThreadSettings.CollaborationMode: Plan}
 → Session 串行接纳 Submission
-→ apply settings
-→ freeze TurnContext.CollaborationMode
-→ optional ThreadSettingsAppliedEvent
-→ start RegularTask/run_turn
+→ validate immutable settings update
+→ attempt Steer or Started admission
+→ if Steered: apply settings after steer succeeds; current TurnContext remains frozen
+→ if Started: apply settings before freezing TurnContext.CollaborationMode
+→ optional ThreadSettingsAppliedEvent with the applied snapshot
+→ start or continue RegularTask/run_turn
 ```
 
-快捷模式切换复用独立 `ThreadSettingsOp`/Event 生命周期；设置失败时保留原模式，不启动任务。ActiveTurn 运行期间的独立 settings update 必须拒绝或排队，不能改变当前 Turn。TUI 不保存 `pendingModeTask`，也不定义 `CollaborationExecute` 第二套 enum。旧 `FullscreenPermissionModeSetter` 和 `fullscreenPermissionModeDoneMsg` 不作为最终目标保留。
+快捷模式切换复用独立 `ThreadSettingsOp`/Event 生命周期；设置失败时保留原模式并发布 correlated `ErrorEvent`，不启动任务。ActiveTurn 运行期间的独立 settings update 必须拒绝或按 Session 明确的 deferred-operation 规则处理，不能改变当前 Turn。TUI 不保存 `pendingModeTask`，也不定义 `CollaborationExecute` 第二套 enum。旧 `FullscreenPermissionModeSetter` 和 `fullscreenPermissionModeDoneMsg` 不作为最终目标保留。
 
 Slash Command 不是 EventMsg。命令执行引发的状态变化才通过 EventMsg、Rollout 和 TUI Projection 传播；纯 TUI 操作不写入 canonical history。
 
@@ -3636,6 +3640,9 @@ SlashCommand::Exit
 - `ShutdownFirst` 是用户主动退出的默认模式；pending shutdown target 用于阻止正常 Thread termination/failover 逻辑把退出误判为异常切换。
 - shutdown 必须有 UI escape-hatch timeout，避免损坏的 Runtime 让退出永久卡住；超时可以记录 warning 后退出，但不能把 `Immediate` 当常规路径。
 - `Immediate` 只用于 fatal error、shutdown 已完成后的最终跳出或明确的紧急逃生路径，允许跳过 flush 的风险必须在类型命名中可见。
+- ThreadManager 关闭多个独立 Thread 时可以并发发起 bounded shutdown，但每个 Thread 必须有独立的 completion/timeout 结果；已完成实例从 registry 移除，超时实例不得被假装成已关闭或静默丢弃。
+- SessionServices 关闭 ProcessManager、MCP、Audit 和其他资源时，必须等待可观察的 `done`/close 结果；ProcessManager 的 cancel-only 操作不能作为正常 shutdown 已完成的替代。
+- ThreadStore 正常 shutdown 必须 flush durable Rollout 后关闭 writer；Session 初始化尚未越过 configured/ownership barrier 时只能 discard writer，不得复用正常 shutdown 的 flush 语义。
 - `Shutting down…` 是 BottomPane/Composer 区域的 transient presentation，不是 HistoryCell。退出过程不得向永久 transcript 插入 `Shutting down…`，也不得把 Composer、placeholder、Footer 或 Popup 留在最终 active frame。
 - 旧 `/exit → tea.Quit` 和 `ShutdownFinished → tea.Quit` 的单阶段路径必须删除；最终 `tea.Quit` 只能由 Application shutdown lifecycle 的终态及 renderer drain 完成后触发。
 
@@ -4080,7 +4087,8 @@ type statusLineSegment struct {
 }
 
 type statusLineState struct {
-    Segments []statusLineSegment
+    Segments           []statusLineSegment
+    ContextUsedPercent int64
 }
 
 type footerState struct {
@@ -4100,13 +4108,13 @@ type footerProps struct {
 ```
 
 - `statusLineValueForItem()` 只从 TUI 已持有的 `sessionViewState` 和派生 cache 读取值；item 当前不可用时返回 unavailable 并临时省略，不显示 `unknown`、`-` 或 Application status fallback。
-- `refreshStatusLine()` 只在 canonical session state、title、usage/context 或 CurrentDir 对应 branch cache 改变时重建 `statusLineState`。Window resize 只重新计算 `footerProps` 布局，不重复业务 projection。
+- `refreshStatusLine()` 在 canonical session state、title、usage/context、CurrentDir 对应 branch cache 或 terminal size 变化时重建 `statusLineState`。Resize 先刷新语义 statusline projection，再由当前 width 构造 `footerProps` 完成布局；该刷新不执行 Git/文件系统 IO。
 - `statusLineSegment` 不提前持有 Lip Gloss style。`statusLineAccentForItem()` 在 Footer render 边界集中映射 TerminalPalette accent，保证颜色策略与数据模型解耦，并在 `NO_COLOR` 下自然降级。
 - Statusline 颜色解析采用 Codex 的 theme-first/fallback 分层：TrueColor 与 ANSI256 根据终端明暗背景选择 Catppuccin Mocha/Latte Chroma style，以 type、string、function、number、keyword、heading token 对应 Codex 的 Model、Path、Branch、Usage、Mode、Thread scope family，之后执行同样的 85% saturation softening；ANSI16 保留 cyan/green/magenta fallback。该基础版不引入 `/theme` 或自定义 tmTheme owner。
 - `footerState` 分别缓存左侧 statusline 与右侧 collaboration mode indicator；Working/status indicator 不属于 Footer metadata，也不得作为 statusline 缺失值的替代文本。
 - `HasQueueableDraft` 不写入 `footerState`，而是在每次构造 `footerProps` 时从 TUI 已持有的 `running + composer text + ParseInput` 纯派生；它不创建第二份 Composer 或 queue truth。
 - `renderFooter(footerProps)` 是纯布局/渲染函数，不查询 Application、不访问文件系统、不启动 branch lookup、不修改 model state。`View()` 只组合已有 view state，不承担 SessionConfiguration 投影。
-- Footer 使用 Codex 风格左右独立列：先为右侧 collaboration indicator 和固定 padding 保留空间，再在剩余宽度内裁剪或省略左侧 statusline segment，禁止通过字符串追加让 context 与 mode 竞争同一列。完整 `Plan mode (shift+tab to cycle)` 无法与左侧内容共存时收缩为 `Plan mode`；左列按 ThreadTitle、ContextWindow、ContextUsed、ModelWithReasoning、CurrentDir、GitBranch 的顺序逐步省略，使 GitBranch 成为最后删除的 workspace identity，并继续保证 indicator 右对齐。Default mode 不渲染模式标签。
+- Footer 使用 Codex 风格的 statusline 左列与 indicator 右列：Amadeus 固定六个 item 由同一 typed projection提供并按 ModelWithReasoning、CurrentDir、GitBranch、ThreadTitle、ContextUsed、ContextWindowSize 顺序组成左侧 statusline；Plan indicator与queue hint在右侧布局按可用宽度收缩。完整 statusline 先生成 styled line，再以左列可用宽度从右侧截断并追加`…`，不按 item 删除或将 Context 固定移到右列。完整 `Plan mode (shift+tab to cycle)` 无法与左侧内容共存时收缩为 `Plan mode`，并继续保证 indicator 右对齐。Default mode 不渲染模式标签。
 - `HasQueueableDraft=true` 时 Footer 进入 transient queue-hint layout：左侧优先显示 dim `tab to queue message`，宽度不足时收缩为 `tab to queue`；固定 statusline 暂停渲染。Plan indicator 只有与 hint 同行可容纳时才保留，空间不足时先删除 Plan indicator，queue hint 是该状态的最后保留信息。Composer 清空或 Turn terminal 后恢复普通 statusline layout。
 - Slash/File/Skill 等 Composer popup 激活时占用 Codex 的 popup/footer 区域并替换普通 Footer；不得在 popup 下方继续渲染 statusline、queue hint 或 mode indicator。Popup 关闭后 Footer 才恢复。Slash Command Popup 的 selection 只通过 command name/description style 表达，不显示 Modal picker 使用的 `›` cursor glyph。
 - Selection overlay 对齐 Codex `SelectionViewParams`：footer hint 默认为空，不由公共 renderer 合成按键说明；确有必要时由调用方显式提供。非空 subtitle 与列表/搜索输入之间统一保留一行，不允许按命令增加视觉特例开关。`/skills` 顶层菜单与 `/resume` picker 不显示 footer hint。
@@ -4147,7 +4155,7 @@ Thread title、TokenUsageInfo/ActiveContextTokens 和 Git branch 分别通过 ty
 | Turn start/end 或 retry | 只更新 Working/status indicator 与 cycle hint | 不改变 statusline items |
 | running Turn 中 queueable Composer draft 出现/变化 | 只更新派生 `HasQueueableDraft` | queue hint 替换 passive statusline；完整/短文案按宽度选择 |
 | Tab enqueue 后 Composer 清空 | NextTurnQueue 增加 Pending，`HasQueueableDraft=false` | queue hint 消失，queued preview 保留，普通 statusline 恢复 |
-| terminal resize | 更新 width/height，安排source-backed native history reflow | layout与scrollback reflow |
+| terminal resize | 更新 width/height、refreshStatusLine、安排source-backed native history reflow | status surface、layout与scrollback reflow |
 | `View()` | 无业务状态变化 | 纯 render |
 
 Git branch 查询必须在 CurrentDir 改变时清空旧值并异步刷新；请求携带 attachment generation 与 CWD，迟到结果只有在两者仍匹配时才能写入 cache。Statusline 不通过 `Application.Status()` 轮询补全目录、模型、标题或上下文，也不在 `View()` 中同步执行 Git/文件系统 IO。
@@ -4955,12 +4963,15 @@ Amadeus 只定义并校验当前 `schema_info.version`，不提供 schema migrat
 ```text
 LiveThread.AppendItems
 → LocalThreadStore durable write + flush JSONL
-→ 从活动 Recorder 的 canonical path 重放 metadata projection
-→ StateDB.UpsertThread
+→ LiveThread.MetadataSync 观察本次已 durable 的 typed facts
+→ 生成 MetadataPatch
+→ StateDB.ApplyThreadMetadataPatch
 ```
 
 - SQLite 可以暂时落后 JSONL，但不能包含尚未 durable 的 Rollout 事实。
-- Recorder 必须维护 durable watermark；MetadataSync 只能读取不超过该 watermark 的 RolloutLine。Buffered Append 不触发 SQLite upsert，显式 Flush 或 Durable Append 成功后才能同步索引。
+- Recorder 必须维护 durable watermark；MetadataSync 只能消费不超过该 watermark 的已 durable typed facts。Buffered Append 不触发 SQLite upsert，显式 Flush 或 Durable Append 成功后才能同步索引。
+- 正常 append 不得重新读取完整 Rollout 再重建 metadata；MetadataSync 必须从刚追加的 typed facts 产生增量 patch。完整 Rollout 扫描只属于 Resume、显式 Rebuild 或 reconciliation。
+- MetadataSync 必须维护自己的 pending patch/generation，并在 patch 应用成功后推进 watermark；patch 应用失败不能丢弃已 durable 的 JSONL 事实。
 - `append → SQLite upsert → flush` 在任何路径都属于非法顺序；进程在 flush 前崩溃时，恢复结果允许缺少 buffered tail，但 SQLite 不能引用该 tail。
 - Metadata 更新失败必须记录警告并保留可重建状态，不能回滚已经 durable 的 canonical history。
 - 当前schema的SQLite index缺失或漂移时，从当前格式`SessionMetaItem`、ResponseItem、AgentSpawnEdgeItem和EventMsg重建StoredThread；重建过程校验SessionMeta.SessionID/ID/ParentThreadID与edge parent contract，但只把Thread metadata、parent relation与edge state投影进SQLite，不复制SessionID。活动Thread即使索引被清空，下一次canonical append也能直接重新upsert。
@@ -5351,6 +5362,8 @@ FileChangeItem
 PlanItem
 ContextCompactionItem
 ```
+
+`TurnItem` 的 payload 必须由 `Kind` 唯一决定，并在内存领域模型中使用对应的 typed Go struct；稳定领域 Contract 不使用 `Payload any`、按 Tool 名解释的通用 map，或让 JSON decode 后的 `map[string]any` 充当事实模型。JSON `RawMessage` 只允许存在于 codec envelope 或明确的不透明外部扩展边界，进入 `TurnItem` 前必须完成 variant decode 与 validation。每个 variant 都必须有独立的 identity、状态、字段校验和 round-trip fixture；TUI、Rollout projector 与 Tool renderer 只能消费已校验的 typed item。
 
 职责：
 
@@ -5769,3 +5782,10 @@ Amadeus 至少通过以下真实场景：
 38. ModelClientSession 的 sampling/stream/reconnect 由窄 `agent/modelclient` package 拥有；Tool Runtime construction、Tool Event、model completion persistence 和 Plan stream lifecycle 回归 Session/Tool owner，不存在泛化 Agent Engine facade。
 39. Tool package 同时对齐 Codex 外层 Router/Event 架构与 Claude Code 内层执行协议：generic `tool`、权限 `policy`、具体 `tool/builtin` 和 TUI projection 各有单一职责，基础版不复制 Claude Code 的一 Tool 一 package 目录结构。
 40. Assistant Markdown TUI对齐Codex的source-backed collector/writer/render/stream-core/controller/transcript-surface/final-cell职责：每个active Assistant/Plan Item绑定controller和surface attachment range，StreamState管理stable queue/tail，Goldmark/Chroma拥有解析与高亮，completed item拥有最终文本权威。Bubble Tea适配以bounded mutable frame显示live content，以native print watermark提交immutable final history；不打印provisional stream rows，不复制Ratatui或手写Markdown parser。
+41. `UserInputOp.ThreadSettings` 先完成 immutable validation，再根据 Started/Steered admission 在对应成功边界应用；rejected/cancelled input 不改变 SessionConfiguration，非法独立 settings update 产生 correlated ErrorEvent，当前 TurnContext 保持冻结。
+42. 稳定 `TurnItem` 使用由 `Kind` 决定的 typed payload variant；`Payload any` 和 JSON decode 后的 `map[string]any` 不得成为领域事实模型，RawMessage 只存在于 codec envelope 或明确的不透明外部扩展边界。
+43. Session 初始化失败使用 LiveThread/ThreadStore 的 discard 生命周期释放未提交 writer；正常 shutdown 才执行 durable flush + writer close。所有 attachment、child release、process waiter 和 shutdown goroutine 都必须由 owner 跟踪并在 bounded timeout 内等待或报告。
+44. MetadataSync 从已 durable 的 typed append facts 生成增量 MetadataPatch；完整 Rollout 扫描只属于 Resume、显式 Rebuild 和 reconciliation，SQLite 永远不超过 JSONL durable watermark。
+45. ThreadManager 关闭多个独立 Thread 时可并发发起 bounded shutdown，并分别保留 completed、submit-failed、timed-out 结果；ProcessManager、MCP、Audit 和 Store 的 cancel/close 不能在未观察完成的情况下伪装成 shutdown 已完成。
+46. ContextManager/Prompt 热路径允许使用由 history/version、ModelInfo、Tool/WorldState revision 驱动的 derived cache，减少重复 normalization、token estimate 和 Prompt hash；任何缓存都不能成为第二份历史或配置事实源。
+47. 当前 Amadeus 仍以 Workspace runtime 为 ThreadManager 生命周期；只有未来真实存在跨 Frontend/Workspace 的长生命周期服务时，才提升共享 capability manager，不为对齐 Codex 名称新增宽泛 `Core`、`Runtime` 或 Service Locator aggregate。

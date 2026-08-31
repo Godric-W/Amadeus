@@ -104,12 +104,12 @@ func TestANSI16StatusBarUsesCodexAccentFamilies(t *testing.T) {
 			t.Fatalf("status bar omitted %q: %q", expected, plain)
 		}
 	}
-	if !strings.HasSuffix(plain, "Plan mode (shift+tab to cycle)  ") || lipgloss.Width(plain) != model.width {
+	if (!strings.HasSuffix(plain, "Plan mode  ") && !strings.HasSuffix(plain, "Plan mode (shift+tab to cycle)  ")) || lipgloss.Width(plain) != model.width {
 		t.Fatalf("Plan mode is not right-aligned with Codex padding: %q", plain)
 	}
 }
 
-func TestNarrowStatusLineRetainsGitBranchWithPlanIndicator(t *testing.T) {
+func TestNarrowStatusLineTruncatesFromRightWithPlanIndicator(t *testing.T) {
 	_, model := newTestModel(t, nil)
 	model.width = 40
 	model.session.Configuration.Model = "gpt-top"
@@ -122,8 +122,8 @@ func TestNarrowStatusLineRetainsGitBranchWithPlanIndicator(t *testing.T) {
 	model.refreshStatusLine()
 
 	plain := xansi.Strip(model.footerView())
-	if !strings.Contains(plain, "feature/status-line") {
-		t.Fatalf("narrow status line lost git branch: %q", plain)
+	if !strings.Contains(plain, "…") {
+		t.Fatalf("narrow status line did not use right-side ellipsis: %q", plain)
 	}
 	if !strings.HasSuffix(plain, "Plan mode  ") || lipgloss.Width(plain) != model.width {
 		t.Fatalf("narrow status line did not retain right-aligned mode: %q", plain)

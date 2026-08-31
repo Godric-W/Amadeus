@@ -121,6 +121,9 @@ func TestTranscriptResizePTYReflowsNativeHistory(t *testing.T) {
 	}()
 
 	readPTYUntil(t, primary, "resize-reflow sentinel", 3*time.Second)
+	nowStarted := now.Add(time.Second)
+	fake.events <- application.SessionEventObserved{Generation: 1, Event: testProtocolEvent(threadID, "turn-active", protocol.TurnStartedEvent{StartedAt: nowStarted})}
+	readPTYUntil(t, primary, "Working", 3*time.Second)
 	if err := pty.Setsize(primary, &pty.Winsize{Rows: 12, Cols: 52}); err != nil {
 		t.Fatal(err)
 	}
@@ -133,6 +136,25 @@ func TestTranscriptResizePTYReflowsNativeHistory(t *testing.T) {
 	if !strings.Contains(raw, clearScrollback) {
 		t.Fatalf("resize did not clear native scrollback: %q", raw)
 	}
+	if err := pty.Setsize(primary, &pty.Winsize{Rows: 12, Cols: 80}); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGWINCH); err != nil {
+		t.Fatal(err)
+	}
+	readPTYUntilRaw(t, primary, func(value string) bool {
+		return strings.Contains(value, clearScrollback) && strings.Contains(xansi.Strip(value), "Working")
+	}, 3*time.Second)
+	if err := pty.Setsize(primary, &pty.Winsize{Rows: 18, Cols: 80}); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGWINCH); err != nil {
+		t.Fatal(err)
+	}
+	readPTYUntilRaw(t, primary, func(value string) bool {
+		return strings.Contains(value, clearScrollback) && strings.Contains(xansi.Strip(value), "Working")
+	}, 3*time.Second)
+	fake.events <- application.SessionEventObserved{Generation: 1, Event: testProtocolEvent(threadID, "turn-active", protocol.TurnCompleteEvent{Outcome: protocol.TurnOutcomeCompleted})}
 
 	if _, err := primary.Write([]byte{4}); err != nil {
 		t.Fatal(err)

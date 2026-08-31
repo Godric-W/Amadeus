@@ -7,8 +7,65 @@ import (
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/testutil"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 )
+
+func TestWindowResizeRefreshesStatusLineProjection(t *testing.T) {
+	_, model := newTestModel(t, nil)
+	model.footer = footerState{}
+	updated, command := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	if command != nil {
+		t.Fatalf("unchanged initial size scheduled unexpected command: %v", command != nil)
+	}
+	resized := updated.(appModel)
+	if len(resized.footer.StatusLine.Segments) == 0 || resized.footer.CollaborationIndicator != collaborationModeIndicator(0) {
+		t.Fatalf("resize did not rebuild statusline projection: %#v", resized.footer)
+	}
+}
+
+func TestFooterKeepsContextBeforePlanIndicator(t *testing.T) {
+	_, model := newTestModel(t, nil)
+	model.session.Configuration.Mode = protocol.ModeKindPlan
+	model.session.ContextWindow = 128_000
+	model.session.ContextUsed = 32_000
+	model.refreshStatusLine()
+	plain := xansi.Strip(model.footerView())
+	contextIndex := strings.Index(plain, "Context 25% used")
+	modeIndex := strings.Index(plain, "Plan mode")
+	if contextIndex < 0 || modeIndex < 0 || contextIndex > modeIndex {
+		t.Fatalf("footer context/mode order = %q", plain)
+	}
+	if !strings.HasSuffix(plain, "Plan mode  ") && !strings.HasSuffix(plain, "Plan mode (shift+tab to cycle)  ") {
+		t.Fatalf("Plan indicator is not right aligned: %q", plain)
+	}
+}
+
+func TestFooterTruncatesCompleteStatusLineFromRight(t *testing.T) {
+	props := footerProps{
+		Width: 52,
+		State: footerState{StatusLine: statusLineState{Segments: []statusLineSegment{
+			{Item: statusLineItemModelWithReasoning, Text: "GPT-TOP high"},
+			{Item: statusLineItemCurrentDir, Text: "/AI/hgls/amadeus"},
+			{Item: statusLineItemGitBranch, Text: "main"},
+			{Item: statusLineItemThreadTitle, Text: "Completed goal"},
+			{Item: statusLineItemContextUsed, Text: "Context 25% used"},
+			{Item: statusLineItemContextWindowSize, Text: "128K window"},
+		}}},
+		Palette: terminalPalette{Level: colorLevelNone, NoColor: true}, LeftPadding: footerLeftPadding, RightPadding: footerRightPadding,
+	}
+	plain := xansi.Strip(renderFooter(props))
+	if !strings.HasPrefix(plain, "  GPT-TOP high · /AI/hgls/amadeus") {
+		t.Fatalf("statusline did not preserve its left prefix: %q", plain)
+	}
+	if !strings.HasSuffix(plain, "…") {
+		t.Fatalf("statusline did not truncate its right edge with ellipsis: %q", plain)
+	}
+	if lipgloss.Width(plain) > props.Width {
+		t.Fatalf("truncated statusline width = %d, want <= %d: %q", lipgloss.Width(plain), props.Width, plain)
+	}
+}
 
 func TestSessionConfiguredReplacesCompleteStatusLineConfiguration(t *testing.T) {
 	_, model := newTestModel(t, nil)

@@ -23,6 +23,7 @@ func (model appModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.updateInputLayout()
 		model.resizeTranscriptViewport()
 		model.refreshActiveMarkdownFrames()
+		model.refreshStatusLine()
 		return model, model.transcriptReflow.noteSize(model.width, model.height, model.TranscriptSurface.printedVisible)
 	case transcriptReflowMsg:
 		if !model.transcriptReflow.matches(message) {

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"path/filepath"
 	"strings"
 
 	"github.com/Godric-W/Amadeus/internal/protocol"
@@ -75,14 +74,14 @@ func renderFooter(props footerProps) string {
 
 	indicator := footerIndicatorLabel(props.State.CollaborationIndicator, !props.Running)
 	if indicator == "" {
-		left := fitFooterLeft(statusLine, segments, contentWidth, props)
+		left := fitFooterLeft(statusLine, contentWidth)
 		if left == "" {
 			return ""
 		}
 		return strings.Repeat(" ", leftPadding) + left
 	}
 
-	indicator, left := fitFooterColumns(indicator, statusLine, segments, contentWidth, props)
+	indicator, left := fitFooterColumns(indicator, statusLine, contentWidth, props)
 	indicatorWidth := lipgloss.Width(indicator)
 	gap := maxInt(0, contentWidth-lipgloss.Width(left)-indicatorWidth)
 	return strings.Repeat(" ", leftPadding) + left + strings.Repeat(" ", gap) +
@@ -129,31 +128,22 @@ func renderQueueHintCandidate(props footerProps, hint, mode string, showMode boo
 	return left + strings.Repeat(" ", gap) + props.Palette.statusLineStyle(statusAccentMode).Render(mode) + strings.Repeat(" ", rightPadding)
 }
 
-func fitFooterColumns(indicator, statusLine string, segments []statusLineSegment, contentWidth int, props footerProps) (string, string) {
-	fit := func(label string) (string, string) {
-		if lipgloss.Width(label) > contentWidth {
-			label = xansi.Truncate(label, contentWidth, "")
+func fitFooterColumns(indicator, statusLine string, contentWidth int, props footerProps) (string, string) {
+	compact := footerIndicatorLabel(props.State.CollaborationIndicator, false)
+	fullWidth := lipgloss.Width(indicator)
+	compactWidth := lipgloss.Width(compact)
+	if statusLine == "" {
+		if fullWidth <= contentWidth {
+			return indicator, ""
 		}
-		leftWidth := maxInt(0, contentWidth-lipgloss.Width(label)-footerColumnGap)
-		return label, fitFooterLeft(statusLine, segments, leftWidth, props)
+		return compact, ""
 	}
-	label, left := fit(indicator)
-	if left != "" || statusLine == "" || indicator == footerIndicatorLabel(props.State.CollaborationIndicator, false) {
-		return label, left
+	fullLeftWidth := maxInt(0, contentWidth-fullWidth-footerColumnGap)
+	if fullWidth <= contentWidth && lipgloss.Width(statusLine) <= fullLeftWidth {
+		return indicator, statusLine
 	}
-	return fit(footerIndicatorLabel(props.State.CollaborationIndicator, false))
-}
-
-func fitFooterLeft(source string, segments []statusLineSegment, width int, props footerProps) string {
-	if width <= 0 || source == "" {
-		return ""
-	}
-	segments = fitStatusLineSegments(segments, width, props.Palette, props.State.StatusLine.ContextUsedPercent)
-	source = renderStatusLineSegments(segments, props.Palette, props.State.StatusLine.ContextUsedPercent)
-	if lipgloss.Width(source) > width {
-		return xansi.Truncate(source, width, "")
-	}
-	return source
+	compactLeftWidth := maxInt(0, contentWidth-compactWidth-footerColumnGap)
+	return compact, fitFooterLeft(statusLine, compactLeftWidth)
 }
 
 func footerIndicatorLabel(indicator collaborationModeIndicator, showCycleHint bool) string {
@@ -166,47 +156,14 @@ func footerIndicatorLabel(indicator collaborationModeIndicator, showCycleHint bo
 	return "Plan mode"
 }
 
-func fitStatusLineSegments(segments []statusLineSegment, width int, palette terminalPalette, contextUsedPercent int64) []statusLineSegment {
-	segments = append([]statusLineSegment(nil), segments...)
-	if lipgloss.Width(renderStatusLineSegments(segments, palette, contextUsedPercent)) <= width {
-		return segments
+func fitFooterLeft(source string, width int) string {
+	if width <= 0 || source == "" {
+		return ""
 	}
-	compactCurrentDirSegment(segments)
-	for _, item := range []statusLineItem{
-		statusLineItemThreadTitle,
-		statusLineItemContextWindowSize,
-		statusLineItemContextUsed,
-		statusLineItemModelWithReasoning,
-		statusLineItemCurrentDir,
-		statusLineItemGitBranch,
-	} {
-		if lipgloss.Width(renderStatusLineSegments(segments, palette, contextUsedPercent)) <= width {
-			break
-		}
-		segments = removeStatusLineSegment(segments, item)
+	if lipgloss.Width(source) > width {
+		return xansi.Truncate(source, width, "…")
 	}
-	return segments
-}
-
-func compactCurrentDirSegment(segments []statusLineSegment) {
-	for index := range segments {
-		if segments[index].Item != statusLineItemCurrentDir {
-			continue
-		}
-		if currentDir := filepath.Base(filepath.Clean(segments[index].Text)); currentDir != "." && currentDir != string(filepath.Separator) {
-			segments[index].Text = currentDir
-		}
-		return
-	}
-}
-
-func removeStatusLineSegment(segments []statusLineSegment, item statusLineItem) []statusLineSegment {
-	for index, segment := range segments {
-		if segment.Item == item {
-			return append(segments[:index], segments[index+1:]...)
-		}
-	}
-	return segments
+	return source
 }
 
 func renderStatusLineSegments(segments []statusLineSegment, palette terminalPalette, contextUsedPercent int64) string {

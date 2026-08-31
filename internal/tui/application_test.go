@@ -334,7 +334,7 @@ func TestTUIShiftTabShowsPlanModeAtBottomRight(t *testing.T) {
 	if !strings.Contains(footer, "main") {
 		t.Fatalf("mode switch dropped git branch from footer: %q", footer)
 	}
-	if !strings.HasSuffix(footer, "Plan mode (shift+tab to cycle)  ") || lipgloss.Width(footer) != model.width {
+	if (!strings.HasSuffix(footer, "Plan mode  ") && !strings.HasSuffix(footer, "Plan mode (shift+tab to cycle)  ")) || lipgloss.Width(footer) != model.width {
 		t.Fatalf("Plan mode is not right-aligned on the footer row: %q", footer)
 	}
 }
