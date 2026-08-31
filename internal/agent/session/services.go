@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"io"
 	"sync"
@@ -84,8 +85,15 @@ func (services *SessionServices) IsSubAgent() bool {
 }
 
 func (services *SessionServices) Close() error {
+	return services.CloseContext(context.Background())
+}
+
+func (services *SessionServices) CloseContext(ctx context.Context) error {
 	if services == nil {
 		return nil
+	}
+	if ctx == nil {
+		return errors.New("session services close context is nil")
 	}
 	state := services.closeState
 	if state == nil {
@@ -94,7 +102,7 @@ func (services *SessionServices) Close() error {
 	}
 	state.once.Do(func() {
 		if services.processes != nil {
-			services.processes.Close()
+			state.err = errors.Join(state.err, services.processes.CloseContext(ctx))
 		}
 		if services.mcp != nil {
 			state.err = errors.Join(state.err, services.mcp.Close())

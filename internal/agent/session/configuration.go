@@ -33,6 +33,13 @@ func (session *Session) setMode(mode ModeKind) {
 	session.configMu.Unlock()
 }
 
+func (session *Session) applyMode(submissionID protocol.SubmissionID, mode ModeKind) {
+	session.setMode(mode)
+	session.publish(protocol.Event{ID: submissionID, Msg: protocol.ThreadSettingsAppliedEvent{
+		ThreadID: session.threadID, Configuration: session.ProtocolConfiguration(),
+	}})
+}
+
 func cloneConfiguration(configuration Configuration) Configuration {
 	cloned := configuration
 	cloned.Runtime = config.Clone(configuration.Runtime)

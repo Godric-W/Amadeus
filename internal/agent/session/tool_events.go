@@ -32,13 +32,24 @@ type toolCallPresentation struct {
 	sideEffect    tool.SideEffect
 }
 
-func (presentation toolCallPresentation) payload(duration time.Duration, partial bool) map[string]any {
-	return map[string]any{
-		"action_summary": presentation.actionSummary,
-		"detail":         presentation.detail,
-		"side_effect":    string(presentation.sideEffect),
-		"duration":       duration.String(),
-		"partial":        partial,
+func (presentation toolCallPresentation) payload(kind protocol.ItemKind, duration time.Duration, partial bool) protocol.TurnItemPayload {
+	durationMS := duration.Milliseconds()
+	switch kind {
+	case protocol.ItemCommandExecution:
+		return protocol.CommandExecutionItemPayload{
+			ActionSummary: presentation.actionSummary, Detail: presentation.detail,
+			SideEffect: string(presentation.sideEffect), DurationMS: durationMS, Partial: partial,
+		}
+	case protocol.ItemFileChange:
+		return protocol.FileChangeItemPayload{
+			ActionSummary: presentation.actionSummary, Detail: presentation.detail,
+			SideEffect: string(presentation.sideEffect), DurationMS: durationMS, Partial: partial,
+		}
+	default:
+		return protocol.ToolCallItemPayload{
+			ActionSummary: presentation.actionSummary, Detail: presentation.detail,
+			SideEffect: string(presentation.sideEffect), DurationMS: durationMS, Partial: partial,
+		}
 	}
 }
 
@@ -69,7 +80,8 @@ func (observer *toolEventObserver) ToolCallStarted(ctx context.Context, spec too
 	observer.mu.Lock()
 	observer.presentations[call.ID] = snapshot
 	observer.mu.Unlock()
-	item := protocol.TurnItem{ID: protocol.ItemID(call.ID), Kind: toolItemKind(call.Name, spec.SideEffect), Status: protocol.ItemInProgress, CreatedAt: time.Now().UTC(), ToolName: call.Name, CallID: call.ID, Payload: snapshot.payload(0, false)}
+	itemKind := toolItemKind(call.Name, spec.SideEffect)
+	item := protocol.TurnItem{ID: protocol.ItemID(call.ID), Kind: itemKind, Status: protocol.ItemInProgress, CreatedAt: time.Now().UTC(), ToolName: call.Name, CallID: call.ID, Payload: snapshot.payload(itemKind, 0, false)}
 	if err := observer.events.Publish(ctx, protocol.Event{Msg: protocol.ItemStartedEvent{Item: item}}); err != nil {
 		observer.mu.Lock()
 		delete(observer.presentations, call.ID)
@@ -133,8 +145,9 @@ func (observer *toolEventObserver) ToolCallCompleted(ctx context.Context, execut
 		}
 		return observer.events.Publish(completionCtx, protocol.Event{Msg: protocol.ItemCompletedEvent{Item: turnItem}})
 	}
-	itemPayload := presentation.payload(execution.Outcome.Duration, execution.Output.Partial)
-	turnItem := protocol.TurnItem{ID: protocol.ItemID(execution.Call.ID), Kind: toolItemKind(execution.Call.Name, ""), Status: status, CreatedAt: now, CompletedAt: now, Text: toolExecutionSummary(execution), ToolName: execution.Call.Name, CallID: execution.Call.ID, ToolResult: &displayResult, Payload: itemPayload}
+	itemKind := toolItemKind(execution.Call.Name, presentation.sideEffect)
+	itemPayload := presentation.payload(itemKind, execution.Outcome.Duration, execution.Output.Partial)
+	turnItem := protocol.TurnItem{ID: protocol.ItemID(execution.Call.ID), Kind: itemKind, Status: status, CreatedAt: now, CompletedAt: now, Text: toolExecutionSummary(execution), ToolName: execution.Call.Name, CallID: execution.Call.ID, ToolResult: &displayResult, Payload: itemPayload}
 	completedItem, err := rollout.NewEventMsgItem(protocol.ItemCompletedEvent{Item: turnItem})
 	if err != nil {
 		return err

@@ -125,3 +125,21 @@ func (thread *LiveThread) Shutdown(ctx context.Context) error {
 	}
 	return thread.store.CloseWriter(ctx, thread.id)
 }
+
+// Discard releases a writer during failed initialization without flushing
+// uncommitted rollout bytes. It is distinct from normal thread shutdown.
+func (thread *LiveThread) Discard(ctx context.Context) error {
+	if thread == nil {
+		return nil
+	}
+	thread.mu.Lock()
+	defer thread.mu.Unlock()
+	if thread.closed {
+		return nil
+	}
+	thread.closed = true
+	if !thread.materialized {
+		return nil
+	}
+	return thread.store.DiscardWriter(ctx, thread.id)
+}

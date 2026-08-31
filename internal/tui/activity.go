@@ -30,17 +30,28 @@ type toolActivity struct {
 }
 
 func activityFromStarted(item protocol.TurnItem, sequence int) *toolActivity {
-	payload, _ := item.Payload.(map[string]any)
-	title, _ := payload["action_summary"].(string)
-	title = strings.TrimSpace(title)
+	actionSummary, detail, _, _ := toolItemPayloadValues(item.Payload)
+	title := strings.TrimSpace(actionSummary)
 	if title == "" {
 		title = strings.TrimSpace(item.ToolName)
 	}
-	detail, _ := payload["detail"].(string)
 	return &toolActivity{
 		CallID: item.CallID, ToolName: strings.TrimSpace(item.ToolName), Sequence: sequence,
 		Status: protocol.ItemInProgress,
 		Title:  title, Detail: strings.TrimSpace(detail),
+	}
+}
+
+func toolItemPayloadValues(payload protocol.TurnItemPayload) (actionSummary, detail string, durationMS int64, partial bool) {
+	switch value := payload.(type) {
+	case protocol.ToolCallItemPayload:
+		return value.ActionSummary, value.Detail, value.DurationMS, value.Partial
+	case protocol.CommandExecutionItemPayload:
+		return value.ActionSummary, value.Detail, value.DurationMS, value.Partial
+	case protocol.FileChangeItemPayload:
+		return value.ActionSummary, value.Detail, value.DurationMS, value.Partial
+	default:
+		return "", "", 0, false
 	}
 }
 

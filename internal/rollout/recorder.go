@@ -17,13 +17,14 @@ import (
 type Clock func() time.Time
 
 type Recorder struct {
-	mu       sync.Mutex
-	file     *os.File
-	path     string
-	threadID identity.ThreadID
-	next     uint64
-	clock    Clock
-	closed   bool
+	mu            sync.Mutex
+	file          *os.File
+	path          string
+	threadID      identity.ThreadID
+	next          uint64
+	durableOffset int64
+	clock         Clock
+	closed        bool
 }
 
 func Create(path string, threadID identity.ThreadID, clock Clock) (*Recorder, error) {
@@ -97,7 +98,7 @@ func Open(path string, threadID identity.ThreadID, clock Clock) (*Recorder, []Li
 		_ = file.Close()
 		return nil, nil, fmt.Errorf("seek rollout end: %w", err)
 	}
-	return &Recorder{file: file, path: path, threadID: threadID, next: uint64(len(lines)) + 1, clock: clock}, lines, nil
+	return &Recorder{file: file, path: path, threadID: threadID, next: uint64(len(lines)) + 1, durableOffset: validSize, clock: clock}, lines, nil
 }
 
 func Read(path string, threadID identity.ThreadID) ([]Line, error) {
@@ -177,6 +178,11 @@ func (recorder *Recorder) Flush(ctx context.Context) error {
 	if err := recorder.file.Sync(); err != nil {
 		return fmt.Errorf("flush rollout: %w", err)
 	}
+	info, err := recorder.file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat flushed rollout: %w", err)
+	}
+	recorder.durableOffset = info.Size()
 	return nil
 }
 
@@ -191,6 +197,13 @@ func (recorder *Recorder) Close(ctx context.Context) error {
 	}
 	contextErr := ctx.Err()
 	flushErr := recorder.file.Sync()
+	if flushErr == nil {
+		if info, statErr := recorder.file.Stat(); statErr != nil {
+			flushErr = statErr
+		} else {
+			recorder.durableOffset = info.Size()
+		}
+	}
 	closeErr := recorder.file.Close()
 	recorder.closed = true
 	if flushErr != nil {
@@ -200,6 +213,34 @@ func (recorder *Recorder) Close(ctx context.Context) error {
 		closeErr = fmt.Errorf("close rollout: %w", closeErr)
 	}
 	return errors.Join(contextErr, flushErr, closeErr)
+}
+
+// Discard closes a recorder without making uncommitted writes durable. The
+// recorder truncates back to the last successful Flush boundary so failed
+// initialization cannot be mistaken for a normal thread shutdown.
+func (recorder *Recorder) Discard(ctx context.Context) error {
+	if recorder == nil {
+		return nil
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if recorder.closed {
+		return nil
+	}
+	contextErr := ctx.Err()
+	truncateErr := recorder.file.Truncate(recorder.durableOffset)
+	if truncateErr == nil {
+		_, truncateErr = recorder.file.Seek(0, 2)
+	}
+	closeErr := recorder.file.Close()
+	recorder.closed = true
+	if truncateErr != nil {
+		truncateErr = fmt.Errorf("discard rollout tail: %w", truncateErr)
+	}
+	if closeErr != nil {
+		closeErr = fmt.Errorf("close discarded rollout: %w", closeErr)
+	}
+	return errors.Join(contextErr, truncateErr, closeErr)
 }
 
 func (recorder *Recorder) Path() string {

@@ -60,7 +60,7 @@ type TurnItem struct {
 	CallID              string                   `json:"call_id,omitempty"`
 	ToolResult          *tool.ToolResult         `json:"tool_result,omitempty"`
 	CollabAgent         *CollabAgentToolCallItem `json:"collab_agent,omitempty"`
-	Payload             any                      `json:"payload,omitempty"`
+	Payload             TurnItemPayload          `json:"-"`
 }
 
 func (item TurnItem) Validate() error {
@@ -112,11 +112,8 @@ func (item TurnItem) Validate() error {
 	} else if item.CollabAgent != nil {
 		return errors.New("non-collaboration turn item has collaboration payload")
 	}
-	if item.Kind == ItemContextCompaction {
-		payload, ok := item.Payload.(ContextCompactionItem)
-		if !ok || !payload.Validate() {
-			return errors.New("context compaction item payload is invalid")
-		}
+	if err := validateTurnItemPayload(item.Kind, item.Payload); err != nil {
+		return err
 	}
 	return nil
 }

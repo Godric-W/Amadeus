@@ -131,7 +131,7 @@ func (manager *ThreadManager) ResumeChild(ctx context.Context, control *multiage
 	cleanup := true
 	defer func() {
 		if cleanup {
-			_ = live.Shutdown(context.Background())
+			_ = live.Discard(context.Background())
 		}
 	}()
 	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)

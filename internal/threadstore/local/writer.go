@@ -38,8 +38,15 @@ func (store *Store) Materialize(ctx context.Context, input threadstore.CreateInp
 		_ = recorder.Close(context.Background())
 		return threadstore.AppendResult{}, fmt.Errorf("thread %q already has an active writer", input.ID)
 	}
-	store.recorders[input.ID] = recorder
+	state := &writerState{recorder: recorder}
+	store.recorders[input.ID] = state
 	store.mu.Unlock()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = store.DiscardWriter(context.Background(), input.ID)
+		}
+	}()
 	meta := rollout.SessionMetaItem{
 		SessionID: input.SessionID, ID: input.ID, Source: input.Source.Clone(), CWD: input.CWD, Title: input.Title, ModelProvider: input.ModelProvider, Model: input.Model, BaseInstructions: input.BaseInstructions.Clone(),
 		GitSHA: input.GitSHA, GitBranch: input.GitBranch, GitOriginURL: input.GitOriginURL, CreatedAt: input.CreatedAt.UTC(),
@@ -49,16 +56,13 @@ func (store *Store) Materialize(ctx context.Context, input threadstore.CreateInp
 		meta.ParentThreadID = &parent
 	}
 	if err := meta.Validate(); err != nil {
-		_ = store.CloseWriter(context.Background(), input.ID)
 		return threadstore.AppendResult{}, err
 	}
 	lines, err := recorder.Append(ctx, meta)
 	if err != nil {
-		_ = store.CloseWriter(context.Background(), input.ID)
 		return threadstore.AppendResult{}, err
 	}
 	if err := recorder.Flush(ctx); err != nil {
-		_ = store.CloseWriter(context.Background(), input.ID)
 		return threadstore.AppendResult{}, err
 	}
 	metadata, err := projectMetadata(path, lines)
@@ -66,6 +70,10 @@ func (store *Store) Materialize(ctx context.Context, input threadstore.CreateInp
 		return threadstore.AppendResult{}, err
 	}
 	warning := store.state.UpsertThread(ctx, metadata)
+	state.mu.Lock()
+	state.metadata = newMetadataSync(metadata)
+	state.mu.Unlock()
+	cleanup = false
 	return appendResult(lines, warning), nil
 }
 
@@ -93,42 +101,72 @@ func (store *Store) OpenWriter(ctx context.Context, id protocol.ThreadID) (threa
 		_ = recorder.Close(context.Background())
 		return threadstore.InitialHistory{}, fmt.Errorf("thread %q already has an active writer", id)
 	}
-	store.recorders[id] = recorder
+	metadata, projectErr := projectMetadata(metadata.RolloutPath, lines)
+	if projectErr != nil {
+		store.mu.Unlock()
+		_ = recorder.Close(context.Background())
+		return threadstore.InitialHistory{}, projectErr
+	}
+	store.recorders[id] = &writerState{recorder: recorder, metadata: newMetadataSync(metadata)}
 	store.mu.Unlock()
 	return threadstore.InitialHistory{Kind: threadstore.InitialHistoryResumed, Lines: lines}, nil
 }
 
 func (store *Store) AppendItems(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.RolloutItem) (threadstore.AppendResult, error) {
-	result, recorder, err := store.appendItems(ctx, id, turnID, items...)
+	result, state, lines, err := store.appendItems(ctx, id, turnID, items...)
 	if err != nil {
 		return threadstore.AppendResult{}, err
 	}
-	if err := recorder.Flush(ctx); err != nil {
+	state.mu.Lock()
+	metadataErr := state.metadata.observe(lines)
+	state.mu.Unlock()
+	if metadataErr != nil {
+		return threadstore.AppendResult{}, metadataErr
+	}
+	if err := state.recorder.Flush(ctx); err != nil {
 		return threadstore.AppendResult{}, err
 	}
-	result.MetadataWarning = errors.Join(store.syncMetadata(ctx, id, recorder), store.syncAgentEdges(ctx, items))
+	state.mu.Lock()
+	metadata := state.metadata.durableSnapshot()
+	state.mu.Unlock()
+	if metadata != nil {
+		upsertErr := store.state.UpsertThread(ctx, *metadata)
+		metadataErr = upsertErr
+		if upsertErr == nil {
+			state.mu.Lock()
+			state.metadata.markPersisted()
+			state.mu.Unlock()
+		}
+	}
+	result.MetadataWarning = errors.Join(metadataErr, store.syncAgentEdges(ctx, items))
 	return result, nil
 }
 
 func (store *Store) AppendItemsBuffered(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.RolloutItem) (threadstore.AppendResult, error) {
-	result, _, err := store.appendItems(ctx, id, turnID, items...)
+	result, state, lines, err := store.appendItems(ctx, id, turnID, items...)
+	if err != nil {
+		return result, err
+	}
+	state.mu.Lock()
+	err = state.metadata.observe(lines)
+	state.mu.Unlock()
 	return result, err
 }
 
-func (store *Store) appendItems(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.RolloutItem) (threadstore.AppendResult, durableRecorder, error) {
-	recorder, err := store.recorder(id)
+func (store *Store) appendItems(ctx context.Context, id protocol.ThreadID, turnID protocol.TurnID, items ...rollout.RolloutItem) (threadstore.AppendResult, *writerState, []rollout.Line, error) {
+	state, err := store.recorder(id)
 	if err != nil {
-		return threadstore.AppendResult{}, nil, err
+		return threadstore.AppendResult{}, nil, nil, err
 	}
 	scoped := make([]rollout.RolloutItem, len(items))
 	for index, item := range items {
 		scoped[index] = rollout.ScopeItem(item, id, turnID)
 	}
-	lines, err := recorder.Append(ctx, scoped...)
+	lines, err := state.recorder.Append(ctx, scoped...)
 	if err != nil {
-		return threadstore.AppendResult{}, nil, err
+		return threadstore.AppendResult{}, nil, nil, err
 	}
-	return appendResult(lines, nil), recorder, nil
+	return appendResult(lines, nil), state, lines, nil
 }
 
 func appendResult(lines []rollout.Line, warning error) threadstore.AppendResult {
@@ -137,18 +175,6 @@ func appendResult(lines []rollout.Line, warning error) threadstore.AppendResult 
 		result.FirstSequence = lines[0].Sequence
 	}
 	return result
-}
-
-func (store *Store) syncMetadata(ctx context.Context, id protocol.ThreadID, recorder durableRecorder) error {
-	history, err := rollout.Read(recorder.Path(), id)
-	if err != nil {
-		return err
-	}
-	projected, err := projectMetadata(recorder.Path(), history)
-	if err != nil {
-		return err
-	}
-	return store.state.UpsertThread(ctx, projected)
 }
 
 func (store *Store) syncAgentEdges(ctx context.Context, items []rollout.RolloutItem) error {
@@ -164,16 +190,16 @@ func (store *Store) syncAgentEdges(ctx context.Context, items []rollout.RolloutI
 }
 
 func (store *Store) Flush(ctx context.Context, id protocol.ThreadID) error {
-	recorder, err := store.recorder(id)
+	state, err := store.recorder(id)
 	if err != nil {
 		return err
 	}
-	return recorder.Flush(ctx)
+	return state.recorder.Flush(ctx)
 }
 
 func (store *Store) CloseWriter(ctx context.Context, id protocol.ThreadID) error {
 	store.mu.Lock()
-	recorder, exists := store.recorders[id]
+	state, exists := store.recorders[id]
 	if exists {
 		delete(store.recorders, id)
 	}
@@ -181,7 +207,24 @@ func (store *Store) CloseWriter(ctx context.Context, id protocol.ThreadID) error
 	if !exists {
 		return nil
 	}
-	return recorder.Close(ctx)
+	return state.recorder.Close(ctx)
+}
+
+func (store *Store) DiscardWriter(ctx context.Context, id protocol.ThreadID) error {
+	store.mu.Lock()
+	state, exists := store.recorders[id]
+	if exists {
+		delete(store.recorders, id)
+	}
+	store.mu.Unlock()
+	if !exists {
+		return nil
+	}
+	discarder, ok := state.recorder.(interface{ Discard(context.Context) error })
+	if !ok {
+		return state.recorder.Close(ctx)
+	}
+	return discarder.Discard(ctx)
 }
 
 func (store *Store) LoadHistory(ctx context.Context, id protocol.ThreadID) (threadstore.InitialHistory, error) {
@@ -199,7 +242,7 @@ func (store *Store) LoadHistory(ctx context.Context, id protocol.ThreadID) (thre
 	return threadstore.InitialHistory{Kind: threadstore.InitialHistoryResumed, Lines: lines}, nil
 }
 
-func (store *Store) recorder(id protocol.ThreadID) (durableRecorder, error) {
+func (store *Store) recorder(id protocol.ThreadID) (*writerState, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	recorder, exists := store.recorders[id]

@@ -108,6 +108,7 @@ type ThreadStore interface {
 	AppendItems(context.Context, identity.ThreadID, identity.TurnID, ...rollout.RolloutItem) (AppendResult, error)
 	Flush(context.Context, identity.ThreadID) error
 	CloseWriter(context.Context, identity.ThreadID) error
+	DiscardWriter(context.Context, identity.ThreadID) error
 	LoadHistory(context.Context, identity.ThreadID) (InitialHistory, error)
 	GetThread(context.Context, identity.ThreadID) (StoredThread, error)
 	ListThreads(context.Context, ListQuery) ([]StoredThread, error)

@@ -26,7 +26,7 @@ func ProjectRolloutItems(lines []rollout.Line) (RolloutProjection, error) {
 				projected := protocol.TurnItem{
 					ID: protocol.ItemID(fmt.Sprintf("response-%d", line.Sequence)), Kind: protocol.ItemUserMessage,
 					Status: protocol.ItemStatusCompleted, CreatedAt: line.Timestamp, CompletedAt: line.Timestamp,
-					Text: item.Content, Payload: item,
+					Text: item.Content,
 				}
 				if err := projected.Validate(); err != nil {
 					return RolloutProjection{}, fmt.Errorf("project user response at sequence %d: %w", line.Sequence, err)

@@ -14,13 +14,16 @@ import (
 	"github.com/Godric-W/Amadeus/internal/threadstore"
 )
 
-func (session *Session) startTurn(submissionID protocol.SubmissionID, input, clientUserMessageID string, kind TaskKind) (protocol.TurnID, error) {
+func (session *Session) startTurn(submissionID protocol.SubmissionID, input, clientUserMessageID string, kind TaskKind, modeOverride *ModeKind) (protocol.TurnID, error) {
 	if input == "" {
 		return "", errors.New("turn input is empty")
 	}
 	now := session.services.Clock().UTC()
 	turnID := protocol.TurnID(session.services.NextID("turn"))
 	configuration := session.Configuration()
+	if modeOverride != nil {
+		configuration.Mode = *modeOverride
+	}
 	baseContext := TurnContext{
 		SubmissionID: submissionID,
 		SessionID:    session.sessionID, ThreadID: session.threadID, ParentThreadID: cloneOptionalThreadID(session.parentThreadID),
@@ -78,6 +81,9 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input, cli
 		return turnID, err
 	}
 	session.active = &ActiveTurn{SubmissionID: submissionID, Task: running, State: turnState}
+	if modeOverride != nil {
+		session.applyMode(submissionID, *modeOverride)
+	}
 	session.publish(protocol.Event{ID: submissionID, Msg: startedEvent})
 	session.watchRunningTask(running)
 	return turnID, nil

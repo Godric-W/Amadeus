@@ -147,6 +147,39 @@ func TestRecorderCloseReleasesFileAfterCancellation(t *testing.T) {
 	}
 }
 
+func TestRecorderDiscardPreservesOnlyDurablePrefix(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	recorder, err := Create(path, testutil.ThreadID(1), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := EventMsgItem{Msg: protocol.ThreadNameUpdatedEvent{ThreadID: testutil.ThreadID(1), Name: "durable"}}
+	second := EventMsgItem{Msg: protocol.ThreadNameUpdatedEvent{ThreadID: testutil.ThreadID(1), Name: "pending"}}
+	if _, err := recorder.Append(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recorder.Append(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Discard(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := Read(path, testutil.ThreadID(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 {
+		t.Fatalf("discarded history lines = %d, want 1", len(lines))
+	}
+	name, ok := lines[0].Item.(EventMsgItem)
+	if !ok || name.Msg.(protocol.ThreadNameUpdatedEvent).Name != "durable" {
+		t.Fatalf("discarded history = %#v", lines[0].Item)
+	}
+}
+
 func TestRecorderHonorsCancelledContext(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
 	recorder, err := Create(path, testutil.ThreadID(1), nil)

@@ -100,20 +100,20 @@ func (manager *ThreadManager) ResumeThread(ctx context.Context, id protocol.Thre
 	history, err = threadstore.RecoverInterruptedTurn(recoveryCtx, live, history)
 	cancel()
 	if err != nil {
-		_ = live.Shutdown(context.Background())
+		_ = live.Discard(context.Background())
 		return nil, err
 	}
 	meta, ok := history.Lines[0].Item.(rollout.SessionMetaItem)
 	if !ok {
-		_ = live.Shutdown(context.Background())
+		_ = live.Discard(context.Background())
 		return nil, errors.New("resumed thread does not begin with session metadata")
 	}
 	if meta.Source.IsSubAgent() {
-		_ = live.Shutdown(context.Background())
+		_ = live.Discard(context.Background())
 		return nil, errors.New("sub-agent threads cannot be resumed directly")
 	}
 	if meta.ID != id || meta.SessionID != protocol.SessionIDFromThreadID(id) || meta.ParentThreadID != nil {
-		_ = live.Shutdown(context.Background())
+		_ = live.Discard(context.Background())
 		return nil, errors.New("root session metadata identity does not match resume target")
 	}
 	control, err := multiagent.NewControl(meta.SessionID, id, manager, multiagent.Options{
@@ -121,7 +121,7 @@ func (manager *ThreadManager) ResumeThread(ctx context.Context, id protocol.Thre
 		MaxDepth:  input.Configuration.Runtime.Agent.MultiAgent.MaxDepth,
 	})
 	if err != nil {
-		_ = live.Shutdown(context.Background())
+		_ = live.Discard(context.Background())
 		return nil, err
 	}
 	input.Configuration.Source = protocol.RootSessionSource()
@@ -141,7 +141,7 @@ func (manager *ThreadManager) spawn(ctx context.Context, sessionID protocol.Sess
 		return nil, err
 	}
 	if !manager.services.SessionAdapters.ModelMessages.HasInstructions() {
-		_ = live.Shutdown(context.Background())
+		_ = live.Discard(context.Background())
 		return nil, errors.New("thread session services are unavailable")
 	}
 	session, io, err := agentsession.Spawn(manager.ctx, agentsession.SpawnArgs{
@@ -151,7 +151,7 @@ func (manager *ThreadManager) spawn(ctx context.Context, sessionID protocol.Sess
 		Adapters: manager.services.SessionAdapters,
 	})
 	if err != nil {
-		_ = live.Shutdown(context.Background())
+		_ = live.Discard(context.Background())
 		return nil, err
 	}
 	value := &AmadeusThread{
@@ -161,22 +161,27 @@ func (manager *ThreadManager) spawn(ctx context.Context, sessionID protocol.Sess
 	select {
 	case configuredErr, ok := <-io.Configured:
 		if !ok || configuredErr != nil {
-			_ = value.Shutdown(context.Background())
+			manager.abortSession(session, control, ownsControl, configuredErr)
 			if configuredErr == nil {
 				configuredErr = errors.New("session terminated before configuration completed")
 			}
 			return nil, configuredErr
 		}
 	case <-io.Terminated:
+		if ownsControl && control != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = control.Close(cleanupCtx)
+			cancel()
+		}
 		return nil, errors.New("session terminated before configuration completed")
 	case <-ctx.Done():
-		_ = value.Shutdown(context.Background())
+		manager.abortSession(session, control, ownsControl, ctx.Err())
 		return nil, ctx.Err()
 	}
 	manager.mu.Lock()
 	if existing := manager.threads[id]; existing != nil {
 		manager.mu.Unlock()
-		_ = value.Shutdown(context.Background())
+		manager.abortSession(session, control, ownsControl, fmt.Errorf("thread %q is already registered", id))
 		return nil, fmt.Errorf("thread %q is already registered", id)
 	}
 	manager.threads[id] = value
@@ -191,6 +196,15 @@ func (manager *ThreadManager) spawn(ctx context.Context, sessionID protocol.Sess
 		manager.removeThread(id, value)
 	}()
 	return value, nil
+}
+
+func (manager *ThreadManager) abortSession(session *agentsession.Session, control *multiagent.Control, ownsControl bool, cause error) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = session.AbortInitialization(cleanupCtx, cause)
+	if ownsControl && control != nil {
+		_ = control.Close(cleanupCtx)
+	}
 }
 
 func (manager *ThreadManager) GetThread(id protocol.ThreadID) (*AmadeusThread, bool) {
@@ -264,9 +278,12 @@ func (manager *ThreadManager) removeThread(id protocol.ThreadID, expected *Amade
 }
 
 func (manager *ThreadManager) Close(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("thread manager close context is nil")
+	}
 	manager.lifecycle.Lock()
-	defer manager.lifecycle.Unlock()
 	if manager.closed {
+		manager.lifecycle.Unlock()
 		return nil
 	}
 	manager.closed = true
@@ -276,9 +293,20 @@ func (manager *ThreadManager) Close(ctx context.Context) error {
 		threads = append(threads, value)
 	}
 	manager.mu.Unlock()
+	manager.lifecycle.Unlock()
+	shutdownErrors := make([]error, len(threads))
+	var wait sync.WaitGroup
+	for index, value := range threads {
+		wait.Add(1)
+		go func(index int, value *AmadeusThread) {
+			defer wait.Done()
+			shutdownErrors[index] = value.Shutdown(ctx)
+		}(index, value)
+	}
+	wait.Wait()
 	var result error
-	for _, value := range threads {
-		result = errors.Join(result, value.Shutdown(ctx))
+	for _, shutdownErr := range shutdownErrors {
+		result = errors.Join(result, shutdownErr)
 	}
 	return errors.Join(result, manager.store.Close())
 }

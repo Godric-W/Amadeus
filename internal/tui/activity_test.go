@@ -47,7 +47,22 @@ func renderHistoryCellForTest(cell HistoryCell, ctx HistoryRenderContext) string
 
 func toolStartedMessage(callID, toolName, sideEffect, summary, detail string) protocol.ItemStartedEvent {
 	now := time.Now().UTC()
-	return protocol.ItemStartedEvent{Item: protocol.TurnItem{ID: protocol.ItemID(callID), CallID: callID, ToolName: toolName, Kind: protocol.ItemToolCall, Status: protocol.ItemInProgress, CreatedAt: now, Payload: map[string]any{"side_effect": sideEffect, "action_summary": summary, "detail": detail}}}
+	kind := protocol.ItemToolCall
+	if toolName == "execute_command" || toolName == "write_stdin" {
+		kind = protocol.ItemCommandExecution
+	} else if sideEffect == "write" || toolName == "edit" || toolName == "write" {
+		kind = protocol.ItemFileChange
+	}
+	var payload protocol.TurnItemPayload
+	switch kind {
+	case protocol.ItemCommandExecution:
+		payload = protocol.CommandExecutionItemPayload{SideEffect: sideEffect, ActionSummary: summary, Detail: detail}
+	case protocol.ItemFileChange:
+		payload = protocol.FileChangeItemPayload{SideEffect: sideEffect, ActionSummary: summary, Detail: detail}
+	default:
+		payload = protocol.ToolCallItemPayload{SideEffect: sideEffect, ActionSummary: summary, Detail: detail}
+	}
+	return protocol.ItemStartedEvent{Item: protocol.TurnItem{ID: protocol.ItemID(callID), CallID: callID, ToolName: toolName, Kind: kind, Status: protocol.ItemInProgress, CreatedAt: now, Payload: payload}}
 }
 
 func toolCompletedMessage(started protocol.ItemStartedEvent, status protocol.ItemStatus, text, duration string, partial bool) protocol.ItemCompletedEvent {
@@ -56,13 +71,24 @@ func toolCompletedMessage(started protocol.ItemStartedEvent, status protocol.Ite
 	item.Status = status
 	item.CompletedAt = now
 	item.Text = text
-	payload := map[string]any{"duration": duration, "partial": partial}
-	if startedPayload, ok := started.Item.Payload.(map[string]any); ok {
-		for key, value := range startedPayload {
-			payload[key] = value
-		}
+	durationValue, err := time.ParseDuration(duration)
+	if err != nil {
+		durationValue = 0
 	}
-	item.Payload = payload
+	switch payload := started.Item.Payload.(type) {
+	case protocol.CommandExecutionItemPayload:
+		payload.DurationMS = durationValue.Milliseconds()
+		payload.Partial = partial
+		item.Payload = payload
+	case protocol.FileChangeItemPayload:
+		payload.DurationMS = durationValue.Milliseconds()
+		payload.Partial = partial
+		item.Payload = payload
+	case protocol.ToolCallItemPayload:
+		payload.DurationMS = durationValue.Milliseconds()
+		payload.Partial = partial
+		item.Payload = payload
+	}
 	return protocol.ItemCompletedEvent{Item: item}
 }
 

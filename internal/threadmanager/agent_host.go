@@ -40,7 +40,7 @@ func (manager *ThreadManager) SpawnChild(ctx context.Context, control *multiagen
 	parentID := request.ParentThreadID
 	child, err := manager.spawn(ctx, control.SessionID(), id, &parentID, live, threadstore.InitialHistory{Kind: threadstore.InitialHistoryNew}, StartInput{Configuration: configuration}, control, false)
 	if err != nil {
-		_ = live.Shutdown(context.Background())
+		_ = live.Discard(context.Background())
 		return nil, err
 	}
 	return child, nil

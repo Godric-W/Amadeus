@@ -118,12 +118,9 @@ func (cell *ToolHistoryCell) Apply(message protocol.EventMsg) bool {
 		}
 		activity.Status = item.Item.Status
 		activity.Success = item.Item.Status == protocol.ItemStatusCompleted
-		if payload, ok := item.Item.Payload.(map[string]any); ok {
-			if duration, ok := payload["duration"].(string); ok {
-				activity.Duration, _ = time.ParseDuration(duration)
-			}
-			activity.Partial, _ = payload["partial"].(bool)
-		}
+		_, _, durationMS, partial := toolItemPayloadValues(item.Item.Payload)
+		activity.Duration = time.Duration(durationMS) * time.Millisecond
+		activity.Partial = partial
 		activity.Completed = true
 		return true
 	default:

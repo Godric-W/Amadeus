@@ -19,7 +19,13 @@ type Store struct {
 	home      string
 	state     threadstore.MetadataDB
 	clock     rollout.Clock
-	recorders map[protocol.ThreadID]durableRecorder
+	recorders map[protocol.ThreadID]*writerState
+}
+
+type writerState struct {
+	recorder durableRecorder
+	mu       sync.Mutex
+	metadata *metadataSync
 }
 
 func NewStore(home string, stateDB threadstore.MetadataDB, clock rollout.Clock) (*Store, error) {
@@ -32,14 +38,14 @@ func NewStore(home string, stateDB threadstore.MetadataDB, clock rollout.Clock) 
 	if clock == nil {
 		clock = time.Now
 	}
-	return &Store{home: home, state: stateDB, clock: clock, recorders: make(map[protocol.ThreadID]durableRecorder)}, nil
+	return &Store{home: home, state: stateDB, clock: clock, recorders: make(map[protocol.ThreadID]*writerState)}, nil
 }
 
 func (store *Store) Close() error {
 	store.mu.Lock()
 	recorders := make([]durableRecorder, 0, len(store.recorders))
 	for id, recorder := range store.recorders {
-		recorders = append(recorders, recorder)
+		recorders = append(recorders, recorder.recorder)
 		delete(store.recorders, id)
 	}
 	store.mu.Unlock()

@@ -89,10 +89,10 @@ func TestFileChangeCellShowsDeniedCompletion(t *testing.T) {
 func TestRestoreCompletedToolItemsPreservesToolSpecificProjection(t *testing.T) {
 	readStarted := toolStartedMessage("read-replay", "read", "read", "Read docs/design.md", "")
 	readCompleted := toolCompletedMessage(readStarted, protocol.ItemStatusCompleted, "content", "1ms", false).Item
-	readCompleted.Payload = map[string]any{"duration": "1ms", "partial": false, "action_summary": "Read docs/design.md", "side_effect": "read"}
+	readCompleted.Payload = protocol.ToolCallItemPayload{DurationMS: 1, Partial: false, ActionSummary: "Read docs/design.md", SideEffect: "read"}
 	writeStarted := toolStartedMessage("write-replay", "write", "write", "Create replay.txt", "")
 	writeCompleted := toolCompletedMessage(writeStarted, protocol.ItemStatusCompleted, "updated replay.txt", "2ms", false).Item
-	writeCompleted.Payload = map[string]any{"duration": "2ms", "partial": false, "action_summary": "Create replay.txt", "side_effect": "write"}
+	writeCompleted.Payload = protocol.FileChangeItemPayload{DurationMS: 2, Partial: false, ActionSummary: "Create replay.txt", SideEffect: "write"}
 	writeCompleted.ToolResult = &tool.ToolResult{
 		ToolName: "write",
 		Display: tool.ToolDisplayResult{Kind: tool.ToolDisplayFileChange, Data: filechange.Preview{

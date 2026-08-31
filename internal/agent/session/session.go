@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/config"
@@ -77,6 +78,7 @@ type Session struct {
 
 	ctx           context.Context
 	cancel        context.CancelCauseFunc
+	discardOnExit atomic.Bool
 	submissions   chan protocol.Submission
 	events        chan protocol.Event
 	terminated    chan struct{}
@@ -113,7 +115,7 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 	args.State.Configuration = cloneConfiguration(args.State.Configuration)
 	closeSpawnServices := func() {
 		_ = args.Services.Close()
-		_ = args.Services.LiveThread.Shutdown(context.Background())
+		_ = args.Services.LiveThread.Discard(context.Background())
 	}
 	value := &Session{
 		sessionID: args.SessionID, threadID: args.ThreadID, parentThreadID: cloneOptionalThreadID(args.ParentThreadID),
@@ -150,4 +152,27 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 	}
 	go value.loop()
 	return value, io, nil
+}
+
+// AbortInitialization stops a session that has not crossed its configured
+// ownership barrier. Session cleanup then discards uncommitted writer bytes
+// instead of applying normal shutdown flush semantics.
+func (session *Session) AbortInitialization(ctx context.Context, cause error) error {
+	if session == nil {
+		return nil
+	}
+	if ctx == nil {
+		return errors.New("session initialization abort context is nil")
+	}
+	if cause == nil {
+		cause = errors.New("session initialization aborted")
+	}
+	session.discardOnExit.Store(true)
+	session.cancel(cause)
+	select {
+	case <-session.terminated:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

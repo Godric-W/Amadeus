@@ -40,6 +40,8 @@ type ContextCompactionItem struct {
 	Phase   CompactionPhase   `json:"phase"`
 }
 
+func (ContextCompactionItem) isTurnItemPayload() {}
+
 func (item ContextCompactionItem) Validate() bool {
 	return item.Trigger.Valid() && item.Reason.Valid() && item.Phase.Valid()
 }

@@ -20,12 +20,20 @@ func (session *Session) handleSubmission(submission protocol.Submission) {
 	case protocol.UserInputOp:
 		admission, err := session.admitUserMessage(submission.ID, op)
 		session.admissions.complete(submission.ID, userMessageAdmissionResult{admission: admission, err: err})
+		if err != nil {
+			var settingsErr *settingsValidationError
+			if errors.As(err, &settingsErr) {
+				session.publish(protocol.Event{ID: submission.ID, Msg: protocol.ErrorEvent{
+					ThreadID: session.threadID, Code: "invalid_thread_settings", Message: err.Error(), At: session.services.Clock().UTC(),
+				}})
+			}
+		}
 	case protocol.CompactOp:
 		if session.active != nil {
 			session.deferred = append(session.deferred, submission)
 			return
 		}
-		_, _ = session.startTurn(submission.ID, "compact context", "", TaskKindCompact)
+		_, _ = session.startTurn(submission.ID, "compact context", "", TaskKindCompact, nil)
 	case protocol.InterruptOp:
 		session.cancelActive(ErrInterrupted)
 	case protocol.ThreadSettingsOp:
@@ -33,12 +41,13 @@ func (session *Session) handleSubmission(submission protocol.Submission) {
 			session.deferred = append(session.deferred, submission)
 			return
 		}
-		if op.Mode.Valid() {
-			session.setMode(ModeKind(op.Mode))
-			session.publish(protocol.Event{ID: submission.ID, Msg: protocol.ThreadSettingsAppliedEvent{
-				ThreadID: session.threadID, Configuration: session.ProtocolConfiguration(),
+		if !op.Mode.Valid() {
+			session.publish(protocol.Event{ID: submission.ID, Msg: protocol.ErrorEvent{
+				ThreadID: session.threadID, Code: "invalid_thread_settings", Message: fmt.Sprintf("collaboration mode %q is invalid", op.Mode), At: session.services.Clock().UTC(),
 			}})
+			return
 		}
+		session.applyMode(submission.ID, ModeKind(op.Mode))
 	case protocol.ApprovalDecisionOp:
 		session.resolveRequest(op.RequestID, op)
 	case protocol.UserInputAnswerOp:
@@ -51,26 +60,51 @@ func (session *Session) admitUserMessage(submissionID protocol.SubmissionID, op 
 	if content == "" {
 		return protocol.UserMessageAdmission{}, errors.New("user input is empty")
 	}
-	if op.ThreadSettings.CollaborationMode != nil {
-		mode := op.ThreadSettings.CollaborationMode.Mode
-		if !mode.Valid() {
-			return protocol.UserMessageAdmission{}, fmt.Errorf("collaboration mode %q is invalid", mode)
-		}
-		session.setMode(ModeKind(mode))
-		session.publish(protocol.Event{ID: submissionID, Msg: protocol.ThreadSettingsAppliedEvent{
-			ThreadID: session.threadID, Configuration: session.ProtocolConfiguration(),
-		}})
+	mode, err := prepareModeOverride(op.ThreadSettings)
+	if err != nil {
+		return protocol.UserMessageAdmission{}, err
 	}
 	turnID, err := session.steerInput(UserTurnInput{Content: content, ClientID: strings.TrimSpace(op.ClientUserMessageID)}, "")
 	if err == nil {
+		if mode != nil {
+			session.applyMode(submissionID, *mode)
+		}
 		return protocol.UserMessageAdmission{Kind: protocol.UserMessageAdmissionSteered, TurnID: turnID}, nil
 	}
 	if !isSteerInputError(err, SteerInputNoActiveTurn) {
 		return protocol.UserMessageAdmission{}, err
 	}
-	turnID, err = session.startTurn(submissionID, content, strings.TrimSpace(op.ClientUserMessageID), TaskKindRegular)
+	turnID, err = session.startTurn(submissionID, content, strings.TrimSpace(op.ClientUserMessageID), TaskKindRegular, mode)
 	if err != nil {
 		return protocol.UserMessageAdmission{}, err
 	}
 	return protocol.UserMessageAdmission{Kind: protocol.UserMessageAdmissionStarted, TurnID: turnID}, nil
+}
+
+type settingsValidationError struct{ err error }
+
+func (err *settingsValidationError) Error() string {
+	if err == nil || err.err == nil {
+		return "thread settings are invalid"
+	}
+	return err.err.Error()
+}
+
+func (err *settingsValidationError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.err
+}
+
+func prepareModeOverride(overrides protocol.ThreadSettingsOverrides) (*ModeKind, error) {
+	if overrides.CollaborationMode == nil {
+		return nil, nil
+	}
+	mode := overrides.CollaborationMode.Mode
+	if !mode.Valid() {
+		return nil, &settingsValidationError{err: fmt.Errorf("collaboration mode %q is invalid", mode)}
+	}
+	value := ModeKind(mode)
+	return &value, nil
 }

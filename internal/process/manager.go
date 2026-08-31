@@ -199,8 +199,15 @@ func (manager *Manager) Cancel(id ID, owner string) error {
 }
 
 func (manager *Manager) CloseOwner(owner string) {
+	_ = manager.CloseOwnerContext(context.Background(), owner)
+}
+
+func (manager *Manager) CloseOwnerContext(ctx context.Context, owner string) error {
 	if manager == nil {
-		return
+		return nil
+	}
+	if ctx == nil {
+		return errors.New("process owner close context is nil")
 	}
 	manager.mutex.RLock()
 	values := make([]*managed, 0)
@@ -213,11 +220,22 @@ func (manager *Manager) CloseOwner(owner string) {
 	for _, value := range values {
 		value.cancel()
 	}
+	return manager.waitForProcesses(ctx, values, false)
 }
 
 func (manager *Manager) Close() {
+	_ = manager.CloseContext(context.Background())
+}
+
+// CloseContext cancels all managed processes and waits for their waiter
+// goroutines. Completed processes are removed; processes that miss the
+// deadline remain tracked so callers can inspect or retry cleanup.
+func (manager *Manager) CloseContext(ctx context.Context) error {
 	if manager == nil {
-		return
+		return nil
+	}
+	if ctx == nil {
+		return errors.New("process manager close context is nil")
 	}
 	manager.mutex.RLock()
 	values := make([]*managed, 0, len(manager.processes))
@@ -228,6 +246,24 @@ func (manager *Manager) Close() {
 	for _, value := range values {
 		value.cancel()
 	}
+	return manager.waitForProcesses(ctx, values, true)
+}
+
+func (manager *Manager) waitForProcesses(ctx context.Context, values []*managed, removeCompleted bool) error {
+	var result error
+	for _, value := range values {
+		select {
+		case <-value.done:
+			if removeCompleted {
+				manager.mutex.Lock()
+				delete(manager.processes, value.id)
+				manager.mutex.Unlock()
+			}
+		case <-ctx.Done():
+			result = errors.Join(result, fmt.Errorf("wait for process %q: %w", value.id, ctx.Err()))
+		}
+	}
+	return result
 }
 
 func (manager *Manager) lookup(id ID, owner string) (*managed, error) {

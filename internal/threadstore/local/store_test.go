@@ -358,7 +358,7 @@ func TestDurableAppendOrdersAppendFlushAndMetadataSync(t *testing.T) {
 	original := store.recorders[testutil.ThreadID(3)]
 
 	calls := []string{}
-	store.recorders[testutil.ThreadID(3)] = orderedRecorder{durableRecorder: original, calls: &calls, appendError: errors.New("append failed")}
+	store.recorders[testutil.ThreadID(3)] = &writerState{recorder: orderedRecorder{durableRecorder: original.recorder, calls: &calls, appendError: errors.New("append failed")}, metadata: original.metadata}
 	store.state = orderedStateDB{MetadataDB: stateStore, calls: &calls}
 	if _, err := store.AppendItems(ctx, testutil.ThreadID(3), "turn-1", response); err == nil {
 		t.Fatal("append failure was ignored")
@@ -368,7 +368,7 @@ func TestDurableAppendOrdersAppendFlushAndMetadataSync(t *testing.T) {
 	}
 
 	calls = nil
-	store.recorders[testutil.ThreadID(3)] = orderedRecorder{durableRecorder: original, calls: &calls, flushError: errors.New("flush failed")}
+	store.recorders[testutil.ThreadID(3)] = &writerState{recorder: orderedRecorder{durableRecorder: original.recorder, calls: &calls, flushError: errors.New("flush failed")}, metadata: original.metadata}
 	store.state = orderedStateDB{MetadataDB: stateStore, calls: &calls}
 	if _, err := store.AppendItems(ctx, testutil.ThreadID(3), "turn-1", response); err == nil {
 		t.Fatal("flush failure was ignored")
@@ -385,7 +385,7 @@ func TestDurableAppendOrdersAppendFlushAndMetadataSync(t *testing.T) {
 	}
 
 	calls = nil
-	store.recorders[testutil.ThreadID(3)] = orderedRecorder{durableRecorder: original, calls: &calls}
+	store.recorders[testutil.ThreadID(3)] = &writerState{recorder: orderedRecorder{durableRecorder: original.recorder, calls: &calls}, metadata: original.metadata}
 	store.state = orderedStateDB{MetadataDB: stateStore, calls: &calls, upsertError: errors.New("upsert failed")}
 	terminal := rollout.EventMsgItem{Msg: protocol.TurnCompleteEvent{Status: protocol.TurnStatusCompleted, Outcome: protocol.TurnOutcomeCompleted, FinishedAt: time.Now().UTC()}}
 	result, err := store.AppendItems(ctx, testutil.ThreadID(3), "turn-1", terminal)

@@ -18,9 +18,17 @@ func (session *Session) loop() {
 	defer func() {
 		cleanupCtx, cancel := session.cleanupContext()
 		defer cancel()
+		if session.discardOnExit.Load() {
+			_ = session.services.LiveThread.Discard(cleanupCtx)
+			return
+		}
 		_ = session.services.LiveThread.Shutdown(cleanupCtx)
 	}()
-	defer func() { _ = session.services.Close() }()
+	defer func() {
+		cleanupCtx, cancel := session.cleanupContext()
+		defer cancel()
+		_ = session.services.CloseContext(cleanupCtx)
+	}()
 	configuredErr := session.Publish(session.ctx, protocol.Event{Msg: protocol.SessionConfiguredEvent{
 		SessionID: session.sessionID, ThreadID: session.threadID, ParentThreadID: cloneOptionalThreadID(session.parentThreadID),
 		Configuration: session.ProtocolConfiguration(),

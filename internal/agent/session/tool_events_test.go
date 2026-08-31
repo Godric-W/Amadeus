@@ -58,11 +58,11 @@ func TestToolEventObserverPersistsPresentationOnCompletedItem(t *testing.T) {
 	if !ok {
 		t.Fatalf("completed event = %T", events[1].Msg)
 	}
-	payload, ok := completed.Item.Payload.(map[string]any)
+	payload, ok := completed.Item.Payload.(protocol.ToolCallItemPayload)
 	if !ok {
 		t.Fatalf("completed payload = %T", completed.Item.Payload)
 	}
-	if payload["action_summary"] != "Search Approval in internal" || payload["side_effect"] != "read" || payload["duration"] != "15ms" {
+	if payload.ActionSummary != "Search Approval in internal" || payload.SideEffect != "read" || payload.DurationMS != 15 {
 		t.Fatalf("completed presentation payload = %#v", payload)
 	}
 }
