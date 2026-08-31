@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sort"
 	"sync"
 	"time"
 )
@@ -63,9 +64,12 @@ type Snapshot struct {
 }
 
 type Manager struct {
-	mutex     sync.RWMutex
-	processes map[ID]*managed
+	mutex              sync.RWMutex
+	processes          map[ID]*managed
+	completedRetention int
 }
+
+const defaultCompletedRetention = 256
 
 type managed struct {
 	mutex        sync.Mutex
@@ -87,7 +91,7 @@ type managed struct {
 }
 
 func NewManager() *Manager {
-	return &Manager{processes: make(map[ID]*managed)}
+	return &Manager{processes: make(map[ID]*managed), completedRetention: defaultCompletedRetention}
 }
 
 func (manager *Manager) Start(owner string, command Command, configure func(*exec.Cmd)) (ID, error) {
@@ -126,6 +130,7 @@ func (manager *Manager) Start(owner string, command Command, configure func(*exe
 	}
 	manager.mutex.Lock()
 	manager.processes[id] = value
+	manager.pruneCompletedLocked()
 	manager.mutex.Unlock()
 	go value.wait(processCtx)
 	return id, nil
@@ -220,7 +225,11 @@ func (manager *Manager) CloseOwnerContext(ctx context.Context, owner string) err
 	for _, value := range values {
 		value.cancel()
 	}
-	return manager.waitForProcesses(ctx, values, false)
+	err := manager.waitForProcesses(ctx, values, false)
+	manager.mutex.Lock()
+	manager.pruneCompletedLocked()
+	manager.mutex.Unlock()
+	return err
 }
 
 func (manager *Manager) Close() {
@@ -264,6 +273,38 @@ func (manager *Manager) waitForProcesses(ctx context.Context, values []*managed,
 		}
 	}
 	return result
+}
+
+func (manager *Manager) pruneCompletedLocked() {
+	if manager == nil || manager.completedRetention <= 0 || len(manager.processes) <= manager.completedRetention {
+		return
+	}
+	completed := make([]*managed, 0, len(manager.processes))
+	for _, value := range manager.processes {
+		value.mutex.Lock()
+		state := value.state
+		finishedAt := value.finishedAt
+		value.mutex.Unlock()
+		if state != StateRunning {
+			completed = append(completed, &managed{id: value.id, finishedAt: finishedAt})
+		}
+	}
+	if len(manager.processes)-len(completed) >= manager.completedRetention {
+		return
+	}
+	sort.Slice(completed, func(left, right int) bool {
+		if completed[left].finishedAt.Equal(completed[right].finishedAt) {
+			return completed[left].id < completed[right].id
+		}
+		return completed[left].finishedAt.Before(completed[right].finishedAt)
+	})
+	remove := len(manager.processes) - manager.completedRetention
+	if remove > len(completed) {
+		remove = len(completed)
+	}
+	for index := 0; index < remove; index++ {
+		delete(manager.processes, completed[index].id)
+	}
 }
 
 func (manager *Manager) lookup(id ID, owner string) (*managed, error) {

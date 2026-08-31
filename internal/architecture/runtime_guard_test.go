@@ -527,3 +527,93 @@ func TestReasoningEffortHasTurnScopedProviderBoundaries(t *testing.T) {
 		t.Fatal("Qwen dialect does not declare Responses support")
 	}
 }
+
+func TestADRuntimeContractGuards(t *testing.T) {
+	root := repositoryRoot(t)
+	read := func(relative string) string {
+		content, err := os.ReadFile(filepath.Join(root, relative))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(content)
+	}
+
+	interaction := read("internal/agent/session/interaction.go")
+	for _, required := range []string{"criticalEventDeliveryTimeout", "ErrCriticalEventDelivery", "func criticalEvent", "noteEventDeliveryFailure"} {
+		if !strings.Contains(interaction, required) {
+			t.Fatalf("AD event delivery boundary is missing %q", required)
+		}
+	}
+	if strings.Contains(interaction, "make(chan protocol.Event") {
+		t.Fatal("Session event delivery introduced a second ad-hoc event channel")
+	}
+
+	items := read("internal/protocol/items.go")
+	if strings.Contains(items, "Payload             any") || strings.Contains(items, "Payload any") {
+		t.Fatal("canonical TurnItem payload reverted to generic any")
+	}
+	payload := read("internal/protocol/turn_item_payload.go")
+	for _, required := range []string{"type TurnItemPayload interface", "decodeTurnItemPayload", "validateTurnItemPayload"} {
+		if !strings.Contains(payload, required) {
+			t.Fatalf("typed TurnItem payload contract is missing %q", required)
+		}
+	}
+
+	writer := read("internal/threadstore/local/writer.go")
+	appendStart := strings.Index(writer, "func (store *Store) AppendItems(")
+	loadStart := strings.Index(writer[appendStart:], "func (store *Store) LoadHistory(")
+	appendPath := writer
+	if appendStart >= 0 && loadStart > 0 {
+		appendPath = writer[appendStart : appendStart+loadStart]
+	}
+	if strings.Contains(appendPath, "rollout.Read(") {
+		t.Fatal("ordinary LocalThreadStore append path reintroduced full rollout read")
+	}
+	for _, required := range []string{"func (store *Store) DiscardWriter", "func (store *Store) syncMetadataState", "state.recorder.Flush(ctx)"} {
+		if !strings.Contains(writer, required) {
+			t.Fatalf("LocalThreadStore lifecycle contract is missing %q", required)
+		}
+	}
+	live := read("internal/threadstore/live.go")
+	if !strings.Contains(live, "func (thread *LiveThread) Discard") || !strings.Contains(live, "func (thread *LiveThread) Shutdown") {
+		t.Fatal("LiveThread does not keep discard and normal shutdown distinct")
+	}
+
+	process := read("internal/process/manager.go")
+	for _, required := range []string{"func (manager *Manager) CloseContext", "waitForProcesses", "completedRetention", "pruneCompletedLocked"} {
+		if !strings.Contains(process, required) {
+			t.Fatalf("ProcessManager bounded lifecycle is missing %q", required)
+		}
+	}
+	threadManager := read("internal/threadmanager/manager.go")
+	for _, required := range []string{"type ThreadShutdownReport", "ShutdownAllThreadsBounded", "ThreadShutdownTimedOut", "closeRemaining"} {
+		if !strings.Contains(threadManager, required) {
+			t.Fatalf("ThreadManager shutdown report is missing %q", required)
+		}
+	}
+	application := read("internal/app/interactive_application.go")
+	shutdown := read("internal/app/interactive_shutdown.go")
+	for _, required := range []string{"attachmentWG", "releaseWG"} {
+		if !strings.Contains(application, required) {
+			t.Fatalf("Application does not track %q", required)
+		}
+	}
+	for _, required := range []string{"waitForAttachmentPumps", "waitForReleases"} {
+		if !strings.Contains(shutdown, required) {
+			t.Fatalf("Application shutdown does not wait for %q", required)
+		}
+	}
+
+	contextManager := read("internal/contextmanager/manager.go") + read("internal/contextmanager/derived_cache.go")
+	for _, required := range []string{"snapshotCache", "activeTokenCache", "derivedPromptKey", "derivedModelKey"} {
+		if !strings.Contains(contextManager, required) {
+			t.Fatalf("Context derived cache is missing %q", required)
+		}
+	}
+	agentsMD := read("internal/agentsmd/manager.go")
+	for _, required := range []string{"cachedDocument", "forceFresh", "fingerprintFor"} {
+		if !strings.Contains(agentsMD, required) {
+			t.Fatalf("AGENTS.md fingerprint boundary is missing %q", required)
+		}
+	}
+}

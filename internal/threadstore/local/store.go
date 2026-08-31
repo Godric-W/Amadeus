@@ -43,15 +43,19 @@ func NewStore(home string, stateDB threadstore.MetadataDB, clock rollout.Clock) 
 
 func (store *Store) Close() error {
 	store.mu.Lock()
-	recorders := make([]durableRecorder, 0, len(store.recorders))
+	recorders := make([]*writerState, 0, len(store.recorders))
 	for id, recorder := range store.recorders {
-		recorders = append(recorders, recorder.recorder)
+		recorders = append(recorders, recorder)
 		delete(store.recorders, id)
 	}
 	store.mu.Unlock()
 	var result error
-	for _, recorder := range recorders {
-		result = errors.Join(result, recorder.Close(context.Background()))
+	for _, state := range recorders {
+		if closeErr := state.recorder.Close(context.Background()); closeErr != nil {
+			result = errors.Join(result, closeErr)
+			continue
+		}
+		result = errors.Join(result, store.syncMetadataState(context.Background(), state))
 	}
 	return errors.Join(result, store.state.Close())
 }

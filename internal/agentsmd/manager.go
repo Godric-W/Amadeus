@@ -31,6 +31,19 @@ type AgentsMdManager struct {
 	knownDirs map[string]struct{}
 	maxBytes  int64
 	loaded    LoadedAgentsMd
+	cache     map[string]cachedDocument
+}
+
+type documentFingerprint struct {
+	exists  bool
+	size    int64
+	modTime int64
+	mode    uint32
+}
+
+type cachedDocument struct {
+	fingerprint documentFingerprint
+	document    *Document
 }
 
 func NewManager(amadeusHome string, roots []project.Root, options Options) (*AgentsMdManager, error) {
@@ -57,7 +70,7 @@ func NewManager(amadeusHome string, roots []project.Root, options Options) (*Age
 	}
 	manager := &AgentsMdManager{
 		userPath:  filepath.Join(filepath.Clean(home), FileName),
-		knownDirs: make(map[string]struct{}), maxBytes: maxBytes,
+		knownDirs: make(map[string]struct{}), cache: make(map[string]cachedDocument), maxBytes: maxBytes,
 		loaded: newLoaded(nil),
 	}
 	seen := make(map[string]struct{}, len(roots))
@@ -86,7 +99,7 @@ func (manager *AgentsMdManager) Refresh(ctx context.Context, cwd string) (Loaded
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	manager.rememberDirectory(directory)
-	loaded, err := manager.load(ctx)
+	loaded, err := manager.load(ctx, false)
 	if err != nil {
 		return LoadedAgentsMd{}, false, err
 	}
@@ -114,8 +127,9 @@ func (manager *AgentsMdManager) ObserveTarget(ctx context.Context, target tool.C
 	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	if !manager.rememberDirectory(directory) {
-		loaded, loadErr := manager.load(ctx)
+	newDirectory := !manager.rememberDirectory(directory)
+	if newDirectory || target.SideEffect == tool.SideEffectWrite || target.SideEffect == tool.SideEffectExecute {
+		loaded, loadErr := manager.load(ctx, target.SideEffect == tool.SideEffectWrite || target.SideEffect == tool.SideEffectExecute)
 		if loadErr != nil {
 			return loadErr
 		}
@@ -139,7 +153,7 @@ func (manager *AgentsMdManager) rememberDirectory(directory string) bool {
 	return false
 }
 
-func (manager *AgentsMdManager) load(ctx context.Context) (LoadedAgentsMd, error) {
+func (manager *AgentsMdManager) load(ctx context.Context, forceFresh bool) (LoadedAgentsMd, error) {
 	if ctx == nil {
 		return LoadedAgentsMd{}, errors.New("AGENTS.md load context is nil")
 	}
@@ -148,7 +162,7 @@ func (manager *AgentsMdManager) load(ctx context.Context) (LoadedAgentsMd, error
 	}
 	documents := make(map[string]Document)
 	remaining := manager.maxBytes
-	if document, used, err := loadDocument(ctx, manager.userPath, SourceUser, "", "", remaining); err != nil {
+	if document, used, err := manager.loadDocument(ctx, manager.userPath, SourceUser, "", "", remaining, forceFresh); err != nil {
 		return LoadedAgentsMd{}, err
 	} else if document != nil {
 		documents[document.Path] = *document
@@ -179,7 +193,7 @@ func (manager *AgentsMdManager) load(ctx context.Context) (LoadedAgentsMd, error
 			if relative == "" {
 				relative = "."
 			}
-			document, used, err := loadDocument(ctx, path, SourceProject, root.Path(), relative, remaining)
+			document, used, err := manager.loadDocument(ctx, path, SourceProject, root.Path(), relative, remaining, forceFresh)
 			if err != nil {
 				return LoadedAgentsMd{}, err
 			}
@@ -194,6 +208,44 @@ func (manager *AgentsMdManager) load(ctx context.Context) (LoadedAgentsMd, error
 		ordered = append(ordered, document)
 	}
 	return newLoaded(ordered), nil
+}
+
+func (manager *AgentsMdManager) loadDocument(ctx context.Context, path string, source Source, root, directory string, remaining int64, forceFresh bool) (*Document, int64, error) {
+	fingerprint, err := fingerprintFor(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !forceFresh {
+		if cached, ok := manager.cache[path]; ok && cached.fingerprint == fingerprint {
+			if cached.document == nil || remaining < int64(len(cached.document.Content)) {
+				return nil, 0, nil
+			}
+			copy := *cached.document
+			return &copy, int64(len(copy.Content)), nil
+		}
+	}
+	document, used, err := loadDocument(ctx, path, source, root, directory, remaining)
+	if err != nil {
+		return nil, 0, err
+	}
+	var cached *Document
+	if document != nil {
+		copy := *document
+		cached = &copy
+	}
+	manager.cache[path] = cachedDocument{fingerprint: fingerprint, document: cached}
+	return document, used, nil
+}
+
+func fingerprintFor(path string) (documentFingerprint, error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return documentFingerprint{}, nil
+	}
+	if err != nil {
+		return documentFingerprint{}, fmt.Errorf("stat AGENTS.md %q: %w", path, err)
+	}
+	return documentFingerprint{exists: true, size: info.Size(), modTime: info.ModTime().UnixNano(), mode: uint32(info.Mode())}, nil
 }
 
 func (manager *AgentsMdManager) matchRoot(target string) (project.Root, bool) {

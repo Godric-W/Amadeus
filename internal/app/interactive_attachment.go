@@ -73,8 +73,12 @@ func (application *InteractiveApplication) installAttachment(active *threadmanag
 		Info: cloneTokenInfo(snapshot.TokenInfo), ActiveContextTokens: snapshot.ActiveContextTokens,
 		ActiveContextEstimated: snapshot.ActiveContextEstimated,
 	}
+	application.attachmentWG.Add(1)
 	application.mu.Unlock()
-	go application.pumpAttachment(ctx, active, snapshot.Generation)
+	go func() {
+		defer application.attachmentWG.Done()
+		application.pumpAttachment(ctx, active, snapshot.Generation)
+	}()
 }
 
 func (application *InteractiveApplication) currentSnapshot(active *threadmanager.AmadeusThread, generation uint64) ThreadViewSnapshot {
@@ -178,13 +182,58 @@ func (application *InteractiveApplication) releasePrevious(previous, current *th
 	if previous == nil || previous == current {
 		return
 	}
+	application.releaseWG.Add(1)
 	go func() {
+		defer application.releaseWG.Done()
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(application.ctx), 5*time.Second)
 		defer cancel()
 		if err := application.workspace.Release(ctx, previous); err != nil {
 			application.emit(ApplicationError{Operation: "release previous thread", Error: err})
 		}
 	}()
+}
+
+// waitForReleases gives attachment replacement workers an explicit owner and
+// bounded shutdown point. The worker itself has the same bounded cleanup
+// context, so a cancelled wait never creates an unbounded goroutine.
+func (application *InteractiveApplication) waitForReleases(ctx context.Context) error {
+	if application == nil {
+		return nil
+	}
+	if ctx == nil {
+		return errors.New("attachment release wait context is nil")
+	}
+	done := make(chan struct{})
+	go func() {
+		application.releaseWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (application *InteractiveApplication) waitForAttachmentPumps(ctx context.Context) error {
+	if application == nil {
+		return nil
+	}
+	if ctx == nil {
+		return errors.New("attachment pump wait context is nil")
+	}
+	done := make(chan struct{})
+	go func() {
+		application.attachmentWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (application *InteractiveApplication) emit(event InteractiveEvent) {

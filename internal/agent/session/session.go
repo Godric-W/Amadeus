@@ -64,17 +64,19 @@ type ActiveTurn struct {
 }
 
 type Session struct {
-	sessionID      protocol.SessionID
-	threadID       protocol.ThreadID
-	parentThreadID *protocol.ThreadID
-	state          SessionState
-	configMu       sync.RWMutex
-	services       SessionServices
-	active         *ActiveTurn
-	deferred       []protocol.Submission
-	inputQueue     InputQueue
-	appendMu       sync.Mutex
-	admissions     *pendingUserMessageAdmissions
+	sessionID        protocol.SessionID
+	threadID         protocol.ThreadID
+	parentThreadID   *protocol.ThreadID
+	state            SessionState
+	configMu         sync.RWMutex
+	services         SessionServices
+	active           *ActiveTurn
+	deferred         []protocol.Submission
+	inputQueue       InputQueue
+	appendMu         sync.Mutex
+	eventDeliveryMu  sync.Mutex
+	eventDeliveryErr error
+	admissions       *pendingUserMessageAdmissions
 
 	ctx           context.Context
 	cancel        context.CancelCauseFunc

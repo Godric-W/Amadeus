@@ -26,6 +26,8 @@ type AmadeusThread struct {
 	ownsAgentControl bool
 }
 
+var ErrThreadShutdownSubmit = errors.New("thread shutdown submission failed")
+
 func (threadRuntime *AmadeusThread) ID() protocol.ThreadID {
 	if threadRuntime == nil {
 		return protocol.ThreadID{}
@@ -169,7 +171,7 @@ func (threadRuntime *AmadeusThread) Shutdown(ctx context.Context) error {
 		case <-threadRuntime.io.Terminated:
 			return result
 		default:
-			return errors.Join(result, err)
+			return errors.Join(result, fmt.Errorf("%w: %v", ErrThreadShutdownSubmit, err))
 		}
 	}
 	select {

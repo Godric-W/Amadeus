@@ -38,6 +38,8 @@ type Manager struct {
 	activeEstimated  bool
 	tokenSequence    uint64
 	estimator        Estimator
+	snapshotCache    *promptSnapshotCache
+	activeTokenCache *activeTokenCache
 }
 
 func NewManager(estimator Estimator) *Manager {
@@ -164,6 +166,14 @@ func (manager *Manager) ActiveContextTokens(model llm.ModelInfo) (int64, bool) {
 		return 0, true
 	}
 	manager.mu.RLock()
+	model = model.Normalized()
+	cacheKey := derivedModelKey(model)
+	historyVersion := manager.lastSequence
+	if cached := manager.activeTokenCache; cached != nil && cached.historyVersion == historyVersion && cached.tokenSequence == manager.tokenSequence && cached.modelKey == cacheKey {
+		active, estimated := cached.active, cached.estimated
+		manager.mu.RUnlock()
+		return active, estimated
+	}
 	items := cloneResponseItems(manager.items)
 	sequences := append([]int64(nil), manager.sourceSequences...)
 	tokenInfo := cloneTokenUsageInfo(manager.tokenInfo)
@@ -197,6 +207,11 @@ func (manager *Manager) ActiveContextTokens(model llm.ModelInfo) (int64, bool) {
 	}
 	active += max(int64(0), suffixTokens)
 	estimated := estimatedCheckpoint || len(suffix) > 0
+	manager.mu.Lock()
+	if manager.lastSequence == historyVersion && manager.tokenSequence == tokenSequence {
+		manager.activeTokenCache = &activeTokenCache{historyVersion: historyVersion, tokenSequence: tokenSequence, modelKey: cacheKey, active: active, estimated: estimated}
+	}
+	manager.mu.Unlock()
 	return active, estimated
 }
 

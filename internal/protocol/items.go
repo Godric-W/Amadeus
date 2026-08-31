@@ -112,8 +112,24 @@ func (item TurnItem) Validate() error {
 	} else if item.CollabAgent != nil {
 		return errors.New("non-collaboration turn item has collaboration payload")
 	}
+	if item.ToolResult != nil {
+		if item.CallID != "" && item.ToolResult.CallID != "" && item.CallID != item.ToolResult.CallID {
+			return errors.New("turn item tool result call ID is inconsistent")
+		}
+		if item.ToolName != "" && item.ToolResult.ToolName != "" && item.ToolName != item.ToolResult.ToolName {
+			return errors.New("turn item tool result name is inconsistent")
+		}
+	}
 	if err := validateTurnItemPayload(item.Kind, item.Payload); err != nil {
 		return err
+	}
+	if item.Payload != nil {
+		switch item.Kind {
+		case ItemToolCall, ItemCommandExecution, ItemFileChange:
+			if strings.TrimSpace(item.ToolName) == "" || strings.TrimSpace(item.CallID) == "" {
+				return errors.New("tool turn item payload identity is incomplete")
+			}
+		}
 	}
 	return nil
 }

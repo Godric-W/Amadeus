@@ -2,8 +2,8 @@
 
 > 最近更新：2026-08-31
 > 主要架构与 Contract 工作文档：`docs/design.md`
-> 当前阶段：AD. Codex Runtime Contract Optimization（PLANNED）
-> 下一任务：AD-01 Settings Admission Transaction
+> 当前阶段：AD. Codex Runtime Contract Optimization（DONE）
+> 下一任务：无（AD 已完成）
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
@@ -2335,76 +2335,82 @@ AC保留R/Z已经正确的完整child Thread/Session、root-scoped AgentControl�
 - 新增Root Turn先完成/child后完成、preamble→blocked、wait-any、intermediate Error、notification retry、open/closed edge failure ordering、closed child跨Resume不占slot、open child exact LastTurn lazy resume、SQLite rebuild、no-tools finalization及Provider failure等tests；architecture guards禁止旧final reducer、wait-all、raw child membership和V2非目标占位回归。
 - 验收通过：focused functional/race tests、`make check`（含vet、全仓tests和build）、`go test -race ./... -count=1`、现有Responses/Chat Coding Agent/Core Tools integration E2E与`git diff --check`。
 
-## 35. AD. Codex Runtime Contract Optimization — `PLANNED`
+## 35. AD. Codex Runtime Contract Optimization — `DONE`
 
 ### 目标
 
 在不改变 Amadeus 当前产品范围的前提下，依据当前 `../codex-main/codex-rs/core`、`thread-store`、`protocol` 和 `app-server` 源码，收紧仍与 Codex 存在差异的设置事务、typed data、初始化回滚、MetadataSync 和 shutdown 合同，并以基准测试决定长会话性能优化。AD 不新建 `internal/core`，不引入宽泛 Runtime/Service aggregate，不实现 Codex Multi-Agent V2、App Server、Sandbox、Memory 或其他已声明非目标。
 
-### AD-01：Settings Admission Transaction — `TODO`
+### AD-01：Settings Admission Transaction — `DONE`
 
-- [ ] 对照 Codex `core/src/session/turn_input.rs` 的 `PreparedTurnInputSettings::prepare → steer → apply_steered` 和 `apply_started`，审计 Amadeus `Session.admitUserMessage` 与独立 `ThreadSettingsOp` 的实际顺序。
-- [ ] 将 `UserInputOp.ThreadSettings` 收敛为 immutable validation；Started 在冻结新 TurnContext 前应用，Steered 仅在 steer 成功后应用，rejected/cancelled input 不改变 SessionConfiguration。
-- [ ] 非法独立 settings update 发布 correlated `ErrorEvent`；设置失败保持原模式且不启动任务。
-- [ ] 增加 Compact/不可 steer、expected Turn mismatch、取消、并发提交和 `/plan <task>` 的顺序与状态不变量测试；同步 O/N/设计文档中旧的“先应用再 steer”表述。
+- [x] 对照 Codex `core/src/session/turn_input.rs` 的 `PreparedTurnInputSettings::prepare → steer → apply_steered` 和 `apply_started`，确认 Amadeus 采用“先 immutable validation，再按 Started/Steered 成功边界 apply”的顺序。
+- [x] `UserInputOp.ThreadSettings` 只在 Steer 成功后或新 TurnContext 冻结前应用；rejected/cancelled input 不改变 SessionConfiguration。
+- [x] 非法独立 settings update 发布 correlated `ErrorEvent`；设置失败保持原模式且不启动任务。
+- [x] `same_turn_input_test.go` 覆盖 Compact 不可 steer、expected Turn mismatch、Steered apply、非法独立设置和 rejection；O/N/设计文档的旧时序结论已标为 superseded。
 
-### AD-02：Typed TurnItem Payload Contract — `TODO`
+### AD-02：Typed TurnItem Payload Contract — `DONE`
 
-- [ ] 盘点 `TurnItem.Payload`、`ResponseItem.Metadata` 和 ToolResult 扩展在 Protocol、Rollout、Application、TUI 和 Replay 中的全部生产用法，按当前 `ItemKind` 建立唯一 payload variant mapping。
-- [ ] 将稳定 `TurnItem` 的领域 payload 改为由 `Kind` 决定的 typed Go contract；JSON `RawMessage` 仅保留在 codec envelope 或明确不透明外部扩展边界。
-- [ ] 为每个 variant 增加 identity/status/field validation、unknown variant failure、round-trip、live/Resume/TUI projection 等价测试。
-- [ ] 删除依赖 JSON decode 后 `map[string]any` 作为 canonical item 事实的路径；presentation-only metadata 不得反向成为 Protocol/Rollout owner。
+- [x] 完成 Protocol、Rollout、Application、TUI 和 Replay 的 payload 用法盘点；`ToolResult.Data`/metadata 明确保留为不透明外部扩展，不反向拥有 Item 事实。
+- [x] `TurnItem.Payload` 改为由 `ItemKind` 选择的 `TurnItemPayload` typed contract，codec envelope 内的 `RawMessage` 只用于 variant 编解码；Tool/Command/File payload 增加 identity 与 duration/side-effect 校验。
+- [x] `turn_item_payload_test.go` 覆盖每个 variant round-trip、错误 kind、payloadless kind、identity/status 校验；Rollout、live、Resume、TUI projection 使用同一 typed value。
+- [x] 删除 canonical TurnItem decode 后 generic map 的路径；presentation-only metadata 仍只在 Context/TUI projection 消费。
 
-### AD-03：LiveThread Initialization Discard — `TODO`
+### AD-03：LiveThread Initialization Discard — `DONE`
 
-- [ ] 对照 Codex `LiveThreadInitGuard::discard` 与 `ThreadStore::discard_thread`，为 Amadeus ThreadStore/LiveThread 定义初始化失败的 discard 操作。
-- [ ] Session configured/ownership barrier 前的 spawn、resume、service construction 和 child rollback 使用 discard；正常 shutdown 继续执行 durable flush + writer close。
-- [ ] 增加“初始化失败不强制 durable pending facts”“正常关闭仍 flush”“重复 discard/shutdown”测试，并验证 writer、metadata 和 registry 不残留。
+- [x] 对照 Codex `LiveThreadInitGuard::discard` 与 `ThreadStore::discard_thread`，新增 `LiveThread.Discard`/`ThreadStore.DiscardWriter`，Recorder 截断至 durable watermark。
+- [x] configured/ownership barrier 前的 spawn、resume、service construction 和 child rollback 统一走 discard；正常 shutdown 仍 flush + writer close。
+- [x] Recorder/Local Store/ThreadManager 测试覆盖 durable prefix、truncated tail、重复 discard/shutdown 和初始化失败清理；已提交 metadata 不被未 flush tail 超前污染。
 
-### AD-04：Incremental MetadataSync — `TODO`
+### AD-04：Incremental MetadataSync — `DONE`
 
-- [ ] 增加长 Rollout、多个 durable boundary、Tool 高频追加和 SQLite 漂移场景的 baseline benchmark，记录全量 `rollout.Read → projectMetadata` 成本。
-- [ ] 若基准证明必要，将 MetadataSync 迁移为 LiveThread 观察已 durable typed facts 并产生增量 `MetadataPatch`；完整 Rollout 扫描只保留给 Resume、显式 Rebuild 和 reconciliation。
-- [ ] 保持 JSONL durable watermark 先于 SQLite patch；patch failure 只能让 SQLite 落后，不能丢失已 durable history 或制造超前 metadata。
-- [ ] 增加 incremental 与 Resume full rebuild 的 semantic-equivalence、crash/fault、metadata warning 和 backfill tests。
+- [x] 增加长 Rollout/full projection 与增量观察 benchmark；真实小批量追加路径只观察新 typed lines，普通 append 不再 `rollout.Read` 全文件。
+- [x] 基准显示当前 Local Store 内部 observer 已足够；不为形式对齐引入跨包 `MetadataPatch` port，ThreadStore 仍保持存储无关。完整扫描只用于 Resume/Rebuild/reconciliation。
+- [x] JSONL flush/durable watermark 先于 SQLite metadata apply；SQLite 失败保留 pending 状态并返回 warning，不回滚已 durable history。
+- [x] 覆盖 buffered append、显式 Flush、normal CloseWriter flush、SQLite drift/rebuild、patch failure 和 backfill 等价测试。
 
-### AD-05：Bounded Thread/Process Shutdown — `TODO`
+### AD-05：Bounded Thread/Process Shutdown — `DONE`
 
-- [ ] 对照 Codex `ThreadManager::shutdown_all_threads_bounded`，设计 Amadeus 的 per-Thread shutdown result，区分 completed、submit-failed 和 timed-out，不用单一字符串 error 隐藏部分失败。
-- [ ] 对独立 child Thread 评估并发 bounded shutdown；Root AgentControl 关闭、Session Terminated、LiveThread writer close 和 registry removal 保持明确顺序。
-- [ ] 将 ProcessManager 的 cancel-only close 收敛为 cancel + wait `done` 或显式 timeout；SessionServices 不能在未观察 process completion 时报告正常关闭。
-- [ ] 跟踪 `InteractiveApplication` 的旧 attachment release goroutine，在 Application shutdown 时等待或报告其 bounded result；覆盖重复退出、Resume/Clear 后退出和 timeout。
+- [x] 对照 Codex `ThreadManager::shutdown_all_threads_bounded`，新增按 ThreadID 稳定排序的 `ThreadShutdownReport`，区分 completed、submit-failed、timed-out；未完成实例保留 registry 并可重试。
+- [x] 独立 Thread 并发 bounded shutdown，Root AgentControl → Session Terminated → LiveThread close → registry removal 的顺序保持在 Thread owner 内。
+- [x] ProcessManager 改为 cancel + wait `done` 或显式 timeout；SessionServices 不在未观察 process completion 时报告正常关闭，completed snapshot 受有界 retention 限制。
+- [x] Application 跟踪 attachment pump 与旧 Thread release worker，在 Shutdown/Close 中执行 bounded wait；覆盖重复退出、Resume/Clear、成功和 timeout。
 
-### AD-06：Event Backpressure Contract — `TODO`
+### AD-06：Event Backpressure Contract — `DONE`
 
-- [ ] 对照 Codex unbounded Core event receiver 与 Amadeus bounded Event channel，确定当前产品采用的 backpressure 语义，不改变单一 Event 顺序和 critical-event delivery。
-- [ ] 增加慢消费者、满 buffer、Session cancellation、Approval/UserInput pending 和 terminal event delivery tests，证明不得静默丢失 Turn/Item terminal、Approval request 或 User Input request。
-- [ ] 若保留 bounded channel，明确 producer cancellation/unblock 路径；不得用无界 Event Bus 或额外 status channel 绕过 Session owner。
+- [x] 对照 Codex unbounded Core receiver，保留 Amadeus 单一有界 Session Event channel；普通事件按 producer cancellation，critical 事件使用有限 delivery deadline。
+- [x] `event_delivery_test.go` 覆盖满 buffer、慢消费者、取消解除、Approval/UserInput/terminal critical delivery 和 bounded failure diagnostic；关键事件超时返回 `ErrCriticalEventDelivery`，不静默丢失。
+- [x] 未引入无界 Event Bus、status channel 或绕过 Session owner 的旁路；Event 顺序仍由 Session channel 保证。
 
-### AD-07：Prompt/Context Hot-path Benchmark — `TODO`
+### AD-07：Prompt/Context Hot-path Benchmark — `DONE`
 
-- [ ] 增加长 history、多 Tool continuation、WorldState 变化、Compaction 前后和 Resume 的 Prompt snapshot/token estimate benchmark 与 allocation profile。
-- [ ] 对照 Codex ContextManager/SessionState，识别 `ActiveContextTokens` 与 `PromptSnapshot` 的重复 clone/normalize/hash 成本。
-- [ ] 只有 profiling 证明必要时，增加由 history/version、ModelInfo、Tool revision 和 WorldState revision 驱动的 derived cache；cache 不能成为第二份 history/configuration owner。
-- [ ] 通过 live incremental、Compaction install、Resume rebuild semantic-equivalence 和 cache invalidation tests 后才能采用缓存。
+- [x] 增加长 history、Token accounting、continuation preview 的 benchmark/allocation profile；长 history Snapshot 基准约 1.3ms/580KB，Active token estimate 约 75µs。
+- [x] 确认主要成本来自重复 history normalize/clone/hash，ActiveContextTokens 成本较低。
+- [x] 增加由 history/version、WorldState revision、ModelInfo 和 Prompt 内容驱动的窄 derived cache；不拥有第二份 history/configuration。
+- [x] `derived_cache_test.go` 覆盖返回值 clone、Record/Token watermark invalidation 和 live/resume projection 等价。
 
-### AD-08：AGENTS、Rollout 和 Process Retention Profiling — `TODO`
+### AD-08：AGENTS、Rollout 和 Process Retention Profiling — `DONE`
 
-- [ ] 基准 `AgentsMdManager.Refresh` 在多个已知目录和连续 Model Step 下的文件读取量；必要时按 path fingerprint 缓存 parsed document，但写入/执行前仍执行 stale check。
-- [ ] 基准 Rollout resume/metadata read 的峰值内存；必要时使用流式 decoder 保留 truncated-tail recovery、sequence validation 和 typed error 语义。
-- [ ] 基准长 Session 中已结束 process transcript 的内存增长；必要时对 completed process 使用有界 snapshot/TTL，保留当前 Turn `write_stdin` 所需事实和 canonical Rollout 结果。
+- [x] AgentsMd benchmark 显示 cached Refresh 约 16µs、force-fresh mutation 约 9.6ms；按 path fingerprint 缓存 parsed document，写入/执行前强制 fresh read/stale check。
+- [x] Rollout 5000 行 Read/Open 基准约 58–68ms、分配约 11–12MB；改为 bufio 流式 decoder，保留 truncated-tail recovery、sequence validation 和 typed errors。
+- [x] completed process transcript 已设置 256 条 retention 上限；running process 与当前 `write_stdin` 事实不受淘汰影响，并有 prune benchmark/test。
 
-### AD-09：Workspace Shared Capability Decision — `TODO`
+### AD-09：Workspace Shared Capability Decision — `DONE`
 
-- [ ] 对照 Codex `ThreadManagerState` 的 process-scoped models/environment/skills/plugins/MCP/store 与 Amadeus Workspace-scoped `SharedServices`，测量多个 child Session 的启动和重复资源成本。
-- [ ] 若真实 workload 证明需要共享，只增加职责明确的 Workspace service owner；SessionServices 仍拥有 Session-scoped resources，不建立 `Core`、Service Locator 或万能 dependency bag。
-- [ ] 若当前单 Workspace/少量 child 成本可接受，记录保留现状的决定和基准，不为命名对齐提前引入共享层。
+- [x] 对照 Codex `ThreadManagerState` 与 Amadeus `SharedServices`：当前 SharedServices 只承载 adapters、Clock、ID，Provider/Tool/MCP/Skill/Permission/Process 仍按 Session 隔离。
+- [x] 现有 Workspace 是单 Frontend、少量 depth-one child；Session service construction 没有可证明的共享瓶颈，保留现状，不增加 Workspace capability aggregate。
+- [x] 该决定与“未来只有真实跨 Frontend/Workspace 长生命周期需求才提升 owner”的 design 结论一致，不新增 `Core`、Service Locator 或万能 dependency bag。
 
-### AD-10：Guards、Docs 和 Acceptance — `TODO`
+### AD-10：Guards、Docs 和 Acceptance — `DONE`
 
-- [ ] 增加 architecture guards，禁止 rejected settings mutation、generic canonical payload、init failure 误走 normal shutdown、未等待 process 的成功关闭和全量 metadata read 回到普通 append 路径。
-- [ ] 同步 `docs/design.md`、`docs/architecture-whitepaper.md`、`README.md`（仅在用户可见行为改变时）和本进度阶段的目标合同；不修改历史阶段的 DONE 事实。
-- [ ] 运行 focused contract tests、长会话 benchmarks、全量 `go test ./... -count=1`、全量 `go test -race ./... -count=1`、`make check`、`go build ./cmd/amadeus` 和 `git diff --check`。
+- [x] 增加 `TestADRuntimeContractGuards`，锁定 settings/payload/discard/metadata/process/application/cache/AGENTS ownership 与 failure-order 关键符号。
+- [x] 已同步 `docs/design.md` 与 `docs/architecture-whitepaper.md`，README 无用户可见行为变化因此不改；历史阶段 DONE 事实未修改。
+- [x] 完成 focused contract tests、长会话 benchmarks、全量 `go test ./... -count=1`、全量 `go test -race ./... -count=1`、`make check`、`go build ./cmd/amadeus` 和 `git diff --check`，AD 与 AD-10 标记 DONE。
+
+### AD 完成记录
+
+- 2026-08-31：对照 Codex `core`/`thread-store`/`protocol`/`app-server` 与 Claude Code Tool/Approval 生命周期，完成 AD-01 至 AD-05 的设置事务、typed payload、初始化 discard、durable metadata 和 bounded shutdown 收敛；新增 Session Event critical-delivery、Thread/Process/Application owner wait、Local metadata flush 顺序测试。
+- 2026-08-31：完成 AD-06 至 AD-09。Event 保持单一有界 channel；ContextManager 使用窄 derived cache；AgentsMdManager 使用 fingerprint cache 并在 mutation 前 fresh read；Rollout 使用流式 decoder；completed process 使用 256 条有界 retention；Workspace 保留现有 Session-scoped capability 决策，不新建 `internal/core` 或万能 aggregate。
+- 2026-08-31：增加 `internal/architecture` AD guard、跨包 contract tests 和 benchmark fixtures。验收命令全部通过：`go test ./... -count=1`、`go test -race ./... -count=1`、`make check`、`go build ./cmd/amadeus`、`git diff --check`。
 
 ### AD 出口
 

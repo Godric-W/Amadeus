@@ -107,6 +107,50 @@ func TestManagerSerializesWritesPerProcess(t *testing.T) {
 	}
 }
 
+func TestManagerBoundsCompletedProcessRetention(t *testing.T) {
+	manager := NewManager()
+	manager.completedRetention = 2
+	for index := 0; index < 5; index++ {
+		value := testManagedProcess(ID("completed-"+string(rune('a'+index))), retentionWriteCloser{})
+		value.state = StateCompleted
+		value.finishedAt = time.Unix(int64(index+1), 0)
+		manager.processes[value.id] = value
+	}
+	manager.mutex.Lock()
+	manager.pruneCompletedLocked()
+	manager.mutex.Unlock()
+	if len(manager.processes) != 2 {
+		t.Fatalf("completed process retention = %d, want 2", len(manager.processes))
+	}
+	if _, ok := manager.processes["completed-d"]; !ok {
+		t.Fatal("newest completed process was pruned")
+	}
+	if _, ok := manager.processes["completed-e"]; !ok {
+		t.Fatal("newest completed process was pruned")
+	}
+}
+
+func TestManagerCloseContextReportsWaitTimeoutAndRetainsProcess(t *testing.T) {
+	manager := NewManager()
+	stuck := testManagedProcess("stuck", retentionWriteCloser{})
+	stuck.cancel = func() {}
+	manager.processes[stuck.id] = stuck
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	err := manager.CloseContext(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("close timeout error = %v", err)
+	}
+	if _, ok := manager.processes[stuck.id]; !ok {
+		t.Fatal("timed-out process was removed before waiter completion")
+	}
+}
+
+type retentionWriteCloser struct{}
+
+func (retentionWriteCloser) Write(content []byte) (int, error) { return len(content), nil }
+func (retentionWriteCloser) Close() error                      { return nil }
+
 func TestManagerAllowsWritesToDifferentProcessesInParallel(t *testing.T) {
 	first := &blockingWriteCloser{entered: make(chan struct{}, 1), release: make(chan struct{}, 1)}
 	second := &blockingWriteCloser{entered: make(chan struct{}, 1), release: make(chan struct{}, 1)}

@@ -1,11 +1,13 @@
 package rollout
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -254,35 +256,41 @@ func readLines(file *os.File, threadID identity.ThreadID) ([]Line, int64, error)
 	if _, err := file.Seek(0, 0); err != nil {
 		return nil, 0, fmt.Errorf("seek rollout start: %w", err)
 	}
-	content, err := os.ReadFile(file.Name())
-	if err != nil {
-		return nil, 0, fmt.Errorf("read rollout: %w", err)
-	}
-	parts := bytes.Split(content, []byte{'\n'})
-	endsWithNewline := len(content) == 0 || content[len(content)-1] == '\n'
-	lines := make([]Line, 0, len(parts))
+	reader := bufio.NewReader(file)
+	lines := make([]Line, 0)
 	var validSize int64
-	for index, part := range parts {
+	for lineNumber := 1; ; lineNumber++ {
+		part, readErr := reader.ReadBytes('\n')
+		if len(part) == 0 && errors.Is(readErr, io.EOF) {
+			break
+		}
+		terminated := len(part) > 0 && part[len(part)-1] == '\n'
+		if terminated {
+			part = part[:len(part)-1]
+		}
 		if len(part) == 0 {
-			if index == len(parts)-1 {
-				continue
-			}
-			return nil, 0, fmt.Errorf("rollout line %d is empty", index+1)
+			return nil, 0, fmt.Errorf("rollout line %d is empty", lineNumber)
 		}
 		var line Line
 		if err := json.Unmarshal(part, &line); err != nil {
-			if index == len(parts)-1 && !endsWithNewline {
+			if errors.Is(readErr, io.EOF) && !terminated {
 				return lines, validSize, nil
 			}
-			return nil, 0, fmt.Errorf("decode rollout line %d: %w", index+1, err)
+			return nil, 0, fmt.Errorf("decode rollout line %d: %w", lineNumber, err)
 		}
-		if err := line.Validate(threadID, uint64(len(lines))+1); err != nil {
-			return nil, 0, fmt.Errorf("validate rollout line %d: %w", index+1, err)
+		if err := line.Validate(threadID, uint64(len(lines)+1)); err != nil {
+			return nil, 0, fmt.Errorf("validate rollout line %d: %w", lineNumber, err)
 		}
 		lines = append(lines, line)
 		validSize += int64(len(part))
-		if index < len(parts)-1 || endsWithNewline {
+		if terminated {
 			validSize++
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return nil, 0, fmt.Errorf("read rollout line %d: %w", lineNumber, readErr)
 		}
 	}
 	return lines, validSize, nil

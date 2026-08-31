@@ -295,6 +295,84 @@ func TestBufferedAppendDoesNotAdvanceSQLiteBeforeDurableAppend(t *testing.T) {
 	}
 }
 
+func TestExplicitFlushAdvancesPendingMetadataAfterBufferedAppend(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	database, err := statesqlite.Open(ctx, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateStore, err := statesqlite.NewStore(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(home, stateStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	id := testutil.ThreadID(30)
+	if _, err := store.Materialize(ctx, threadstore.CreateInput{SessionID: testutil.SessionID(30), ID: id, CWD: "/workspace", Title: "Thread", BaseInstructions: testutil.BaseInstructions("test-model"), CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "flush me"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendItemsBuffered(ctx, id, "turn-1", response); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Flush(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := store.GetThread(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Preview != "flush me" {
+		t.Fatalf("explicit flush did not sync metadata: %#v", metadata)
+	}
+}
+
+func TestCloseWriterFlushesAndSyncsBufferedMetadata(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	database, err := statesqlite.Open(ctx, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateStore, err := statesqlite.NewStore(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(home, stateStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	id := testutil.ThreadID(31)
+	if _, err := store.Materialize(ctx, threadstore.CreateInput{SessionID: testutil.SessionID(31), ID: id, CWD: "/workspace", Title: "Thread", BaseInstructions: testutil.BaseInstructions("test-model"), CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := rollout.NewResponseItem(rollout.ResponseItem{Type: rollout.ResponseUserMessage, Role: "user", Content: "shutdown flush"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendItemsBuffered(ctx, id, "turn-1", response); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CloseWriter(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := store.GetThread(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Preview != "shutdown flush" {
+		t.Fatalf("normal writer close lost buffered metadata: %#v", metadata)
+	}
+}
+
 type orderedRecorder struct {
 	durableRecorder
 	calls       *[]string

@@ -26,6 +26,8 @@ type InteractiveApplication struct {
 	active           *threadmanager.AmadeusThread
 	generation       uint64
 	attachmentCancel context.CancelFunc
+	attachmentWG     sync.WaitGroup
+	releaseWG        sync.WaitGroup
 	phase            string
 	title            string
 	usage            protocol.TokenCountEvent
@@ -48,6 +50,8 @@ func NewInteractiveApplication(parent context.Context, options InteractiveOption
 }
 
 func (application *InteractiveApplication) Start(ctx context.Context) (ThreadViewSnapshot, error) {
+	application.operationMu.Lock()
+	defer application.operationMu.Unlock()
 	active, err := application.workspace.EnsureCurrent(ctx, application.configuration)
 	if err != nil {
 		return ThreadViewSnapshot{}, err

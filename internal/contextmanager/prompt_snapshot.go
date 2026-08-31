@@ -17,6 +17,12 @@ func (manager *Manager) Snapshot(model llm.ModelInfo, prompt llm.Prompt) PromptS
 	worldStateRevision := manager.worldState.Revision()
 	version := manager.lastSequence
 	estimator := manager.estimator
+	cacheKey := derivedPromptKey(model, prompt, worldStateRevision)
+	if cached := manager.snapshotCache; cached != nil && cached.historyVersion == version && cached.worldStateRevision == worldStateRevision && cached.inputKey == cacheKey {
+		snapshot := clonePromptSnapshot(cached.snapshot)
+		manager.mu.RUnlock()
+		return snapshot
+	}
 	manager.mu.RUnlock()
 	model = model.Normalized()
 	result := normalizeHistory(items, model, estimator)
@@ -28,10 +34,16 @@ func (manager *Manager) Snapshot(model llm.ModelInfo, prompt llm.Prompt) PromptS
 	}{Items: result, Prompt: prompt, WorldStateRevision: worldStateRevision}
 	encoded, _ := json.Marshal(revisionInput)
 	promptHash := sha256.Sum256(encoded)
-	return PromptSnapshot{
+	snapshot := PromptSnapshot{
 		Items: result, EstimatedInputTokens: estimatedInputTokens, HistoryVersion: version,
 		WorldStateRevision: worldStateRevision, Revision: hex.EncodeToString(promptHash[:]),
 	}
+	manager.mu.Lock()
+	if manager.lastSequence == version && manager.worldState.Revision() == worldStateRevision {
+		manager.snapshotCache = &promptSnapshotCache{historyVersion: version, worldStateRevision: worldStateRevision, inputKey: cacheKey, snapshot: clonePromptSnapshot(snapshot)}
+	}
+	manager.mu.Unlock()
+	return snapshot
 }
 
 func estimatePromptOverhead(prompt llm.Prompt, estimator Estimator) int64 {

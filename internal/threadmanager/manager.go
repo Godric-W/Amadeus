@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -25,13 +26,67 @@ type StartInput struct {
 }
 
 type ThreadManager struct {
-	lifecycle sync.RWMutex
-	mu        sync.Mutex
-	ctx       context.Context
-	store     threadstore.ThreadStore
-	services  SharedServices
-	threads   map[protocol.ThreadID]*AmadeusThread
-	closed    bool
+	lifecycle   sync.RWMutex
+	mu          sync.Mutex
+	ctx         context.Context
+	store       threadstore.ThreadStore
+	services    SharedServices
+	threads     map[protocol.ThreadID]*AmadeusThread
+	closed      bool
+	storeClosed bool
+}
+
+// ThreadShutdownResult records the outcome of one independent Thread shutdown.
+// A timed-out or failed Thread remains in the manager registry so its owner can
+// inspect it or retry cleanup; it is never reported as completed by omission.
+type ThreadShutdownResult struct {
+	ThreadID protocol.ThreadID
+	Outcome  ThreadShutdownOutcome
+	Err      error
+}
+
+type ThreadShutdownOutcome string
+
+const (
+	ThreadShutdownCompleted  ThreadShutdownOutcome = "completed"
+	ThreadShutdownSubmitFail ThreadShutdownOutcome = "submit_failed"
+	ThreadShutdownTimedOut   ThreadShutdownOutcome = "timed_out"
+)
+
+type ThreadShutdownReport struct {
+	Results []ThreadShutdownResult
+}
+
+func (report ThreadShutdownReport) Completed() []protocol.ThreadID {
+	return report.ids(ThreadShutdownCompleted)
+}
+
+func (report ThreadShutdownReport) SubmitFailed() []protocol.ThreadID {
+	return report.ids(ThreadShutdownSubmitFail)
+}
+
+func (report ThreadShutdownReport) TimedOut() []protocol.ThreadID {
+	return report.ids(ThreadShutdownTimedOut)
+}
+
+func (report ThreadShutdownReport) ids(outcome ThreadShutdownOutcome) []protocol.ThreadID {
+	ids := make([]protocol.ThreadID, 0)
+	for _, result := range report.Results {
+		if result.Outcome == outcome {
+			ids = append(ids, result.ThreadID)
+		}
+	}
+	return ids
+}
+
+func (report ThreadShutdownReport) Err() error {
+	var result error
+	for _, shutdown := range report.Results {
+		if shutdown.Err != nil {
+			result = errors.Join(result, fmt.Errorf("thread %s shutdown: %w", shutdown.ThreadID.String(), shutdown.Err))
+		}
+	}
+	return result
 }
 
 func New(ctx context.Context, store threadstore.ThreadStore, services SharedServices) (*ThreadManager, error) {
@@ -284,29 +339,105 @@ func (manager *ThreadManager) Close(ctx context.Context) error {
 	manager.lifecycle.Lock()
 	if manager.closed {
 		manager.lifecycle.Unlock()
-		return nil
+		// A previous bounded close may have left timed-out Threads tracked. The
+		// caller can retry with a fresh context instead of receiving a false
+		// success, while a fully closed Store remains idempotent.
+		return manager.closeRemaining(ctx)
 	}
 	manager.closed = true
+	manager.lifecycle.Unlock()
+	return manager.closeRemaining(ctx)
+}
+
+func (manager *ThreadManager) closeRemaining(ctx context.Context) error {
+	report := manager.ShutdownAllThreadsBounded(ctx, shutdownTimeoutFromContext(ctx))
+	result := report.Err()
+	if len(report.SubmitFailed()) != 0 || len(report.TimedOut()) != 0 {
+		// Keep the Store open while any Thread may still own a writer. Closing
+		// it here would turn a timeout into an irreversible, silent teardown.
+		return result
+	}
+	manager.lifecycle.Lock()
+	if manager.storeClosed {
+		manager.lifecycle.Unlock()
+		return result
+	}
+	storeErr := manager.store.Close()
+	if storeErr == nil {
+		manager.storeClosed = true
+	}
+	manager.lifecycle.Unlock()
+	return errors.Join(result, storeErr)
+}
+
+const defaultThreadShutdownTimeout = 5 * time.Second
+
+func shutdownTimeoutFromContext(ctx context.Context) time.Duration {
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > 0 {
+			return remaining
+		}
+		return time.Nanosecond
+	}
+	return defaultThreadShutdownTimeout
+}
+
+// ShutdownAllThreadsBounded concurrently asks every tracked Thread to stop and
+// waits at most timeout for each one. The result is stable by ThreadID and only
+// completed Threads are removed from the registry.
+func (manager *ThreadManager) ShutdownAllThreadsBounded(ctx context.Context, timeout time.Duration) ThreadShutdownReport {
+	if manager == nil {
+		return ThreadShutdownReport{}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = defaultThreadShutdownTimeout
+	}
 	manager.mu.Lock()
-	threads := make([]*AmadeusThread, 0, len(manager.threads))
-	for _, value := range manager.threads {
-		threads = append(threads, value)
+	threads := make(map[protocol.ThreadID]*AmadeusThread, len(manager.threads))
+	for id, value := range manager.threads {
+		threads[id] = value
 	}
 	manager.mu.Unlock()
-	manager.lifecycle.Unlock()
-	shutdownErrors := make([]error, len(threads))
+
+	results := make(chan ThreadShutdownResult, len(threads))
 	var wait sync.WaitGroup
-	for index, value := range threads {
+	for id, value := range threads {
 		wait.Add(1)
-		go func(index int, value *AmadeusThread) {
+		go func(id protocol.ThreadID, value *AmadeusThread) {
 			defer wait.Done()
-			shutdownErrors[index] = value.Shutdown(ctx)
-		}(index, value)
+			threadCtx, cancel := context.WithTimeout(ctx, timeout)
+			err := value.Shutdown(threadCtx)
+			outcome := classifyThreadShutdown(threadCtx, err)
+			cancel()
+			results <- ThreadShutdownResult{ThreadID: id, Outcome: outcome, Err: err}
+		}(id, value)
 	}
 	wait.Wait()
-	var result error
-	for _, shutdownErr := range shutdownErrors {
-		result = errors.Join(result, shutdownErr)
+	close(results)
+	report := ThreadShutdownReport{Results: make([]ThreadShutdownResult, 0, len(threads))}
+	manager.mu.Lock()
+	for result := range results {
+		report.Results = append(report.Results, result)
+		if result.Outcome == ThreadShutdownCompleted {
+			delete(manager.threads, result.ThreadID)
+		}
 	}
-	return errors.Join(result, manager.store.Close())
+	manager.mu.Unlock()
+	sort.Slice(report.Results, func(i, j int) bool {
+		return report.Results[i].ThreadID.String() < report.Results[j].ThreadID.String()
+	})
+	return report
+}
+
+func classifyThreadShutdown(ctx context.Context, err error) ThreadShutdownOutcome {
+	if ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return ThreadShutdownTimedOut
+	}
+	if err == nil {
+		return ThreadShutdownCompleted
+	}
+	return ThreadShutdownSubmitFail
 }

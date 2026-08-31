@@ -93,6 +93,8 @@ func (manager *Manager) applyRecordState(state recordState) {
 	manager.activeTokens = state.activeTokens
 	manager.activeEstimated = state.activeEstimated
 	manager.tokenSequence = state.tokenSequence
+	manager.snapshotCache = nil
+	manager.activeTokenCache = nil
 }
 
 func cloneTurnContextItem(item *rollout.TurnContextItem) *rollout.TurnContextItem {

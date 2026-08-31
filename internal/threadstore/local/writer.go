@@ -126,18 +126,7 @@ func (store *Store) AppendItems(ctx context.Context, id protocol.ThreadID, turnI
 	if err := state.recorder.Flush(ctx); err != nil {
 		return threadstore.AppendResult{}, err
 	}
-	state.mu.Lock()
-	metadata := state.metadata.durableSnapshot()
-	state.mu.Unlock()
-	if metadata != nil {
-		upsertErr := store.state.UpsertThread(ctx, *metadata)
-		metadataErr = upsertErr
-		if upsertErr == nil {
-			state.mu.Lock()
-			state.metadata.markPersisted()
-			state.mu.Unlock()
-		}
-	}
+	metadataErr = store.syncMetadataState(ctx, state)
 	result.MetadataWarning = errors.Join(metadataErr, store.syncAgentEdges(ctx, items))
 	return result, nil
 }
@@ -194,7 +183,43 @@ func (store *Store) Flush(ctx context.Context, id protocol.ThreadID) error {
 	if err != nil {
 		return err
 	}
-	return state.recorder.Flush(ctx)
+	return store.flushState(ctx, state)
+}
+
+// flushState establishes the durability watermark first, then applies the
+// metadata snapshot derived from all typed lines observed by this writer. A
+// failed SQLite update leaves state.metadata.pending intact for a later retry.
+func (store *Store) flushState(ctx context.Context, state *writerState) error {
+	if state == nil || state.recorder == nil {
+		return errors.New("writer state is nil")
+	}
+	if err := state.recorder.Flush(ctx); err != nil {
+		return err
+	}
+	return store.syncMetadataState(ctx, state)
+}
+
+func (store *Store) syncMetadataState(ctx context.Context, state *writerState) error {
+	if state == nil || state.recorder == nil {
+		return errors.New("writer state is nil")
+	}
+	state.mu.Lock()
+	metadata := state.metadata
+	var snapshot *threadstore.StoredThread
+	if metadata != nil {
+		snapshot = metadata.durableSnapshot()
+	}
+	state.mu.Unlock()
+	if snapshot == nil {
+		return nil
+	}
+	if err := store.state.UpsertThread(ctx, *snapshot); err != nil {
+		return err
+	}
+	state.mu.Lock()
+	metadata.markPersisted()
+	state.mu.Unlock()
+	return nil
 }
 
 func (store *Store) CloseWriter(ctx context.Context, id protocol.ThreadID) error {
@@ -207,7 +232,12 @@ func (store *Store) CloseWriter(ctx context.Context, id protocol.ThreadID) error
 	if !exists {
 		return nil
 	}
-	return state.recorder.Close(ctx)
+	if err := state.recorder.Close(ctx); err != nil {
+		return err
+	}
+	// Close flushes the canonical JSONL first. Only after that durable
+	// boundary may buffered facts advance the SQLite read model.
+	return store.syncMetadataState(ctx, state)
 }
 
 func (store *Store) DiscardWriter(ctx context.Context, id protocol.ThreadID) error {

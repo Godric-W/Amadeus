@@ -1628,6 +1628,16 @@ child Session从Manager/root-tree lifetime派生，Managed process使用自身ti
 - Tool、Process、child watcher和writer都由明确的owner管理，并带有结束和清理路径。
 - Root shutdown先停止spawn，再卸载open children，最后关闭Root Session和store。
 
+### 20.4 AD Runtime 优化边界
+
+AD 阶段没有新增一个笼统的 `Core` 或 `Runtime` 聚合包，而是把每项优化放回原有 owner：Session 负责 Event backpressure 和 terminal delivery，LiveThread/Local Store 负责 durable watermark 与 metadata，ThreadManager/ProcessManager/Application 负责有界关闭，ContextManager/AgentsMdManager 只保存 derived cache。
+
+Session 的 Event channel 仍是唯一输出流且容量有界。普通 delta 在 producer context 取消时解除阻塞；Turn/Item terminal、Error、Approval 和 `request_user_input` 事件有独立的有限 delivery deadline。deadline 到期会返回并记录 `ErrCriticalEventDelivery`，不会通过第二个状态 channel 或无界 bus 掩盖丢失。
+
+长历史基准显示 Prompt Snapshot 的重复 normalize/clone/hash 是主要热路径，因此 ContextManager 只缓存由 history version、WorldState revision、ModelInfo 和 Prompt 内容派生的结果；AGENTS.md 普通刷新按 path fingerprint 复用解析文档，但写入/执行前强制 fresh read。Rollout 恢复按行解析，损坏尾部仍按 durable prefix 截断。
+
+关闭流程要区分“已完成”和“未完成”：ThreadManager 返回每个 Thread 的 completed、submit-failed 或 timed-out 结果；超时实例仍留在 registry，Store 不会被提前关闭。Process waiter、attachment pump 和旧 Thread release worker 都有明确 owner、取消路径和 bounded wait。正常 writer close 在 JSONL flush 后同步 pending metadata，初始化失败则只走 discard。
+
 ## 21. 错误与恢复
 
 ### 21.1 错误传播
@@ -1692,6 +1702,8 @@ flowchart TB
 13. TokenUsageInfo、active context和preflight estimate分别表示累计用量、当前上下文和请求前估算。
 14. CompactionService生成摘要结果，Session将其安装到Context和Rollout。
 15. TUI根据typed event、TurnItem和canonical source生成展示状态。
+16. Event 流背压不会改变 canonical 顺序；关键事件 delivery 超时会形成可诊断错误。
+17. Prompt/Context、AGENTS.md、Rollout 和 completed process retention 的优化均由 benchmark/失效边界驱动，不引入第二事实源。
 
 ### 22.3 源码架构检查
 

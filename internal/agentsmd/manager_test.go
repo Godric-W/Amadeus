@@ -141,6 +141,35 @@ func TestAgentsMdManagerRefreshDetectsDocumentChanges(t *testing.T) {
 	}
 }
 
+func TestAgentsMdManagerMutationObservationRefreshesKnownDirectory(t *testing.T) {
+	home := t.TempDir()
+	rootPath := t.TempDir()
+	path := filepath.Join(rootPath, FileName)
+	writeAgentsMd(t, path, "initial rules")
+	root, err := project.NewRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager(home, []project.Root{root}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, _, err := manager.Refresh(context.Background(), rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAgentsMd(t, path, "changed rules")
+	target := tool.ContextTarget{Path: filepath.Join(rootPath, "file.go"), Kind: tool.ContextTargetFile, SideEffect: tool.SideEffectWrite}
+	err = manager.ObserveTarget(context.Background(), target, tool.RequestSnapshot{AgentsMdRevision: initial.Revision})
+	var stale *StaleError
+	if !errors.As(err, &stale) {
+		t.Fatalf("known-directory mutation was not rejected as stale: %v", err)
+	}
+	if !strings.Contains(manager.Current().Render(), "changed rules") {
+		t.Fatal("fresh mutation observation did not install changed document")
+	}
+}
+
 func writeAgentsMd(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {

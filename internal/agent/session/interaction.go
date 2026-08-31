@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/tool"
@@ -38,7 +40,9 @@ func (session *Session) clearPendingRequests() {
 }
 
 func (session *Session) publish(event protocol.Event) {
-	_ = session.Publish(context.WithoutCancel(session.ctx), event)
+	if err := session.Publish(context.WithoutCancel(session.ctx), event); err != nil {
+		session.noteEventDeliveryFailure(err)
+	}
 }
 
 // Publish is the Session-owned event boundary used by a running task. Events
@@ -59,13 +63,72 @@ func (session *Session) Publish(ctx context.Context, event protocol.Event) error
 	if err := event.Validate(); err != nil {
 		return err
 	}
+	deliveryCtx := ctx
+	var cancel context.CancelFunc
+	if criticalEvent(event.Msg) {
+		// Terminal facts and interactive requests must not disappear merely
+		// because the task context was cancelled. The bounded wait still gives
+		// a stalled consumer an explicit failure instead of hanging shutdown.
+		deliveryCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), criticalEventDeliveryTimeout)
+		defer cancel()
+	}
 	select {
 	case session.events <- event:
 		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-deliveryCtx.Done():
+		if criticalEvent(event.Msg) {
+			return fmt.Errorf("%w: %v", ErrCriticalEventDelivery, deliveryCtx.Err())
+		}
+		return deliveryCtx.Err()
 	case <-session.terminated:
 		return errors.New("session event channel is closed")
+	}
+}
+
+// ErrCriticalEventDelivery means a critical event could not enter the bounded
+// Session event stream before its explicit delivery deadline. The canonical
+// rollout may already contain the fact; callers must surface this error rather
+// than pretending that the client observed it.
+var ErrCriticalEventDelivery = errors.New("critical session event delivery failed")
+
+var criticalEventDeliveryTimeout = 5 * time.Second
+
+func (session *Session) noteEventDeliveryFailure(err error) {
+	if session == nil || err == nil {
+		return
+	}
+	session.eventDeliveryMu.Lock()
+	defer session.eventDeliveryMu.Unlock()
+	session.eventDeliveryErr = errors.Join(session.eventDeliveryErr, err)
+}
+
+// EventDeliveryError exposes the first-class delivery diagnostic without
+// adding another runtime output channel. It is intended for shutdown and test
+// diagnostics after Publish returned a delivery failure.
+func (session *Session) EventDeliveryError() error {
+	if session == nil {
+		return nil
+	}
+	session.eventDeliveryMu.Lock()
+	defer session.eventDeliveryMu.Unlock()
+	return session.eventDeliveryErr
+}
+
+func criticalEvent(message protocol.EventMsg) bool {
+	switch message.(type) {
+	case protocol.SessionConfiguredEvent,
+		protocol.TurnCompleteEvent,
+		protocol.TurnAbortedEvent,
+		protocol.ItemCompletedEvent,
+		protocol.ApprovalRequestEvent,
+		protocol.RequestUserInputEvent,
+		protocol.ErrorEvent,
+		protocol.StreamErrorEvent,
+		protocol.ThreadSettingsAppliedEvent,
+		protocol.ShutdownCompleteEvent:
+		return true
+	default:
+		return false
 	}
 }
 

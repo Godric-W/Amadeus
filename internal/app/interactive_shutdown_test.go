@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestInteractiveApplicationShutdownClosesWorkspaceAndDetaches(t *testing.T) {
@@ -28,5 +29,28 @@ func TestInteractiveApplicationShutdownClosesWorkspaceAndDetaches(t *testing.T) 
 	}
 	if err := application.Shutdown(ctx); err != nil {
 		t.Fatalf("second shutdown = %v", err)
+	}
+}
+
+func TestInteractiveApplicationWaitsForTrackedAttachmentRelease(t *testing.T) {
+	application := &InteractiveApplication{}
+	application.releaseWG.Add(1)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		application.releaseWG.Done()
+	}()
+	if err := application.waitForReleases(context.Background()); err != nil {
+		t.Fatalf("wait for attachment release = %v", err)
+	}
+}
+
+func TestInteractiveApplicationAttachmentReleaseWaitIsBounded(t *testing.T) {
+	application := &InteractiveApplication{}
+	application.releaseWG.Add(1)
+	defer application.releaseWG.Done()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := application.waitForReleases(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("bounded release wait = %v", err)
 	}
 }
