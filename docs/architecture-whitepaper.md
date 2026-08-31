@@ -475,6 +475,8 @@ flowchart LR
 - Delta 用于 live 展示；completed item 携带恢复所需的完整事实。
 - Approval/UserInput request、Working、Popup 和动画属于运行时交互状态，canonical history保存完成后的业务事实。
 
+`TurnItem` 的稳定 payload 由 `Kind` 决定，而不是一个可以任意扩展的 JSON 对象：`tool_call`、`command_execution`、`file_change` 和 `context_compaction` 必须分别携带对应的 typed payload，并校验 Item 的 identity、status 和时间字段。缺少 payload 或 payload 类型不匹配的记录属于当前格式错误；解码器不会用旧格式默认值或 `map[string]any` 补齐。只有 codec envelope 使用 `RawMessage`，ToolResult 的 `Data/Metadata` 才作为明确的不透明外部扩展在 projection 边界消费。
+
 ### 5.3 Identity
 
 | Identity | 职责 |
@@ -584,6 +586,7 @@ flowchart TD
 - SQLite 保存 Thread metadata、parent relation、token totals 和可重建 agent edge state。
 - SQLite 按 durable watermark 投影 JSONL，并作为可重建的 metadata read model。
 - 当前 Rollout v6、SQLite schema v5；存储层按当前格式读取和校验，旧开发格式由版本检查报告为不兼容。
+- 当前开发阶段不提供针对旧 Rollout、旧 SQLite 或旧 payload 的兼容 reader、migration、alias 或 fallback decoder；测试数据应按当前 schema 直接重建。`CatalogMigration`/`CatalogPlanned` 等未实现能力状态也不属于当前 Tool Catalog。
 
 ### 7.3 写入顺序
 
@@ -618,6 +621,8 @@ sequenceDiagram
 | `CompactedItem` | compaction replacement checkpoint。 |
 | `AgentSpawnEdgeItem` | Root rollout 中 Basic Multi-Agent open/closed membership。 |
 | `StoredThread` | SQLite metadata read model，提供Thread索引与展示信息。 |
+
+学习时可以把 `TurnItem` 理解为“可重放的 typed 展示事实”：先由 `Kind` 选择 payload variant，再由 live Event 和 Resume projection 共同消费；TUI 不从展示文本猜测 Tool 身份，也不从旧 JSON 形状推断缺失字段。
 
 ## 8. Agent Loop
 
@@ -1704,6 +1709,7 @@ flowchart TB
 15. TUI根据typed event、TurnItem和canonical source生成展示状态。
 16. Event 流背压不会改变 canonical 顺序；关键事件 delivery 超时会形成可诊断错误。
 17. Prompt/Context、AGENTS.md、Rollout 和 completed process retention 的优化均由 benchmark/失效边界驱动，不引入第二事实源。
+18. 当前格式的 typed payload 缺失或变体不匹配会直接失败；旧测试数据不会通过兼容 fallback 进入 live、Resume 或 TUI。
 
 ### 22.3 源码架构检查
 
