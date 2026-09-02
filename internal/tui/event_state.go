@@ -16,6 +16,7 @@ type protocolEventState struct {
 	Active              map[protocol.ItemID]protocol.TurnItem
 	Plan                *protocol.PlanUpdateEvent
 	TokenInfo           *protocol.TokenUsageInfo
+	Goal                *protocol.ThreadGoal
 	ActiveContextTokens int64
 	Pending             *protocol.ApprovalRequestEvent
 	Warning             string
@@ -79,6 +80,10 @@ func (state *protocolEventState) Apply(event protocol.Event) error {
 	case protocol.TokenCountEvent:
 		state.TokenInfo = cloneTokenUsageInfo(message.Info)
 		state.ActiveContextTokens = message.ActiveContextTokens
+	case protocol.ThreadGoalUpdatedEvent:
+		state.Goal = cloneTUIGoal(&message.Goal)
+	case protocol.ThreadGoalClearedEvent:
+		state.Goal = nil
 	case protocol.WarningEvent:
 		state.Warning = message.Message
 	case protocol.StreamErrorEvent:

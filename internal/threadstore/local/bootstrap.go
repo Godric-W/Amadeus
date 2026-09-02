@@ -2,25 +2,19 @@ package local
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Godric-W/Amadeus/internal/rollout"
-	statesqlite "github.com/Godric-W/Amadeus/internal/threadstore/local/sqlite"
+	"github.com/Godric-W/Amadeus/internal/threadstore"
 )
 
-func Open(ctx context.Context, home string, clock rollout.Clock) (*Store, error) {
-	database, err := statesqlite.Open(ctx, home)
-	if err != nil {
-		return nil, err
+func Open(ctx context.Context, home string, metadata threadstore.MetadataDB, clock rollout.Clock) (*Store, error) {
+	if metadata == nil {
+		return nil, errors.New("thread metadata store is nil")
 	}
-	stateStore, err := statesqlite.NewStore(database)
+	store, err := NewStore(home, metadata, clock)
 	if err != nil {
-		_ = database.Close()
-		return nil, err
-	}
-	store, err := NewStore(home, stateStore, clock)
-	if err != nil {
-		_ = stateStore.Close()
 		return nil, err
 	}
 	if err := store.RebuildIndex(ctx); err != nil {

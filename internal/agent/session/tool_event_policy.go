@@ -5,5 +5,14 @@ type toolEventPolicy struct {
 }
 
 func eventPolicyForTool(name string) toolEventPolicy {
-	return toolEventPolicy{emitActivity: name != "update_plan"}
+	return toolEventPolicy{emitActivity: !isControlTool(name)}
+}
+
+func isControlTool(name string) bool {
+	switch name {
+	case "update_plan", "get_goal", "create_goal", "update_goal":
+		return true
+	default:
+		return false
+	}
 }

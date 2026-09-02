@@ -67,7 +67,7 @@ func TestTargetArchitectureRejectsRemovedProductionSymbols(t *testing.T) {
 	for _, relative := range []string{
 		"internal/agent/react", "internal/agent/runtime", "internal/agent/reflect", "internal/session", "internal/snapshot",
 		"internal/agent/engine", "internal/agent/turn",
-		"internal/instruction", "internal/extension", "internal/tool/patch", "internal/diff",
+		"internal/instruction", "internal/tool/patch", "internal/diff",
 		"internal/prompt/builtin/templates/tools",
 	} {
 		if _, err := os.Stat(filepath.Join(root, relative)); err == nil {

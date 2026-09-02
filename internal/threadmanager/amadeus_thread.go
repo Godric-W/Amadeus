@@ -8,6 +8,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/multiagent"
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
+	"github.com/Godric-W/Amadeus/internal/extension"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/threadstore"
@@ -103,6 +104,10 @@ func (threadRuntime *AmadeusThread) ContextWindow() int64 {
 	return threadRuntime.session.Configuration().Runtime.ModelContextWindow
 }
 
+func (threadRuntime *AmadeusThread) GoalsEnabled() bool {
+	return threadRuntime != nil && threadRuntime.session != nil && threadRuntime.session.Configuration().Runtime.Features.Goals
+}
+
 func (threadRuntime *AmadeusThread) Submit(ctx context.Context, op protocol.Op) error {
 	if threadRuntime == nil || op == nil || threadRuntime.nextID == nil {
 		return errors.New("thread submission is empty")
@@ -156,6 +161,20 @@ func (threadRuntime *AmadeusThread) SteerInput(ctx context.Context, expectedTurn
 		clientUserMessageID = threadRuntime.nextID("user-message")
 	}
 	return threadRuntime.io.SteerInput(ctx, expectedTurnID, agentsession.UserTurnInput{Content: content, ClientID: clientUserMessageID})
+}
+
+func (threadRuntime *AmadeusThread) StartTurnIfIdle(ctx context.Context, input agentsession.TurnInput) (agentsession.StartIfIdleSubmission, error) {
+	if threadRuntime == nil {
+		return agentsession.StartIfIdleSubmission{}, errors.New("thread start-if-idle is unavailable")
+	}
+	return threadRuntime.io.StartTurnIfIdle(ctx, input)
+}
+
+func (threadRuntime *AmadeusThread) EmitThreadIdle(ctx context.Context, cause extension.ThreadIdleCause) error {
+	if threadRuntime == nil || threadRuntime.session == nil {
+		return errors.New("thread idle lifecycle is unavailable")
+	}
+	return threadRuntime.session.EmitThreadIdle(ctx, cause)
 }
 
 func (threadRuntime *AmadeusThread) Shutdown(ctx context.Context) error {

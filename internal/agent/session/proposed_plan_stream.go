@@ -174,7 +174,7 @@ func (sink *ProposedPlanEventSink) Flush(ctx context.Context) error {
 func (sink *ProposedPlanEventSink) AssistantText() string { return sink.parser.AssistantText() }
 func (sink *ProposedPlanEventSink) PlanText() string      { return sink.parser.PlanText() }
 
-func (sink *ProposedPlanEventSink) publishChunks(ctx context.Context, eventID protocol.SubmissionID, source protocol.AgentMessageContentDeltaEvent, chunks []ProposedPlanChunk) error {
+func (sink *ProposedPlanEventSink) publishChunks(ctx context.Context, eventID protocol.EventID, source protocol.AgentMessageContentDeltaEvent, chunks []ProposedPlanChunk) error {
 	for _, chunk := range chunks {
 		if chunk.Assistant != "" {
 			source.Delta = chunk.Assistant

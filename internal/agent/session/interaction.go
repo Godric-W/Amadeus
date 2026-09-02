@@ -57,7 +57,7 @@ func (session *Session) Publish(ctx context.Context, event protocol.Event) error
 		return errors.New("session event context is nil")
 	}
 	if event.ID == "" {
-		event.ID = protocol.SubmissionID(session.services.NextID("event"))
+		event.ID = protocol.EventID(session.services.NextID("event"))
 	}
 	event.Msg = protocol.ScopeEventMsg(event.Msg, session.threadID, protocol.TurnIDOf(event.Msg))
 	if err := event.Validate(); err != nil {
@@ -125,6 +125,8 @@ func criticalEvent(message protocol.EventMsg) bool {
 		protocol.ErrorEvent,
 		protocol.StreamErrorEvent,
 		protocol.ThreadSettingsAppliedEvent,
+		protocol.ThreadGoalUpdatedEvent,
+		protocol.ThreadGoalClearedEvent,
 		protocol.ShutdownCompleteEvent:
 		return true
 	default:

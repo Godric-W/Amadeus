@@ -83,10 +83,11 @@ const (
 	ContextKindWorldState    ContextKind = "world_state"
 	ContextKindExplicitSkill ContextKind = "explicit_skill"
 	ContextKindTurnBudget    ContextKind = "turn_budget"
+	ContextKindGoal          ContextKind = "goal"
 )
 
 func (kind ContextKind) Valid() bool {
-	return kind == ContextKindWorldState || kind == ContextKindExplicitSkill || kind == ContextKindTurnBudget
+	return kind == ContextKindWorldState || kind == ContextKindExplicitSkill || kind == ContextKindTurnBudget || kind == ContextKindGoal
 }
 
 type ResponseError struct {
@@ -125,6 +126,8 @@ func NewResponseItem(item ResponseItem) (ResponseItem, error) {
 }
 
 func (item ResponseItem) Validate() error { return validateResponseItem(item, true) }
+
+func (item ResponseItem) ValidateUnscoped() error { return validateResponseItem(item, false) }
 
 func validateResponseItem(item ResponseItem, requireScope bool) error {
 	if requireScope {

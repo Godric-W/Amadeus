@@ -34,9 +34,19 @@ type Config struct {
 	ModelAutoCompactTokenLimit       int64                        `yaml:"model_auto_compact_token_limit"`
 	ToolOutputTokenLimit             int64                        `yaml:"tool_output_token_limit"`
 	ModelProviders                   map[string]ModelProviderInfo `yaml:"model_providers"`
+	Features                         FeatureConfig                `yaml:"features"`
+	Goals                            GoalsConfig                  `yaml:"goals"`
 	Agent                            AgentConfig                  `yaml:"agent"`
 	Web                              WebConfig                    `yaml:"web"`
 	Logging                          LoggingConfig                `yaml:"logging"`
+}
+
+type FeatureConfig struct {
+	Goals bool `yaml:"goals"`
+}
+
+type GoalsConfig struct {
+	MaxGoalTokenBudget *int64 `yaml:"max_goal_token_budget"`
 }
 
 type WebConfig struct {

@@ -17,10 +17,10 @@ import (
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	statesqlite "github.com/Godric-W/Amadeus/internal/state/sqlite"
 	"github.com/Godric-W/Amadeus/internal/testutil"
 	"github.com/Godric-W/Amadeus/internal/threadstore"
 	"github.com/Godric-W/Amadeus/internal/threadstore/local"
-	statesqlite "github.com/Godric-W/Amadeus/internal/threadstore/local/sqlite"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
 
@@ -513,10 +513,10 @@ func TestPrepareInitialUserInputCompactsOldHistoryBeforeRecordingNewUser(t *test
 		t.Fatal(err)
 	}
 	task := &regularTask{
-		runtime: &session.services, goal: "new user objective", clientUserID: "client-new",
+		runtime: &session.services, initialInput: UserTurnInput{Content: "new user objective", ClientID: "client-new"},
 		startedAt: session.services.Clock(), events: &continuationEventSink{session: session}, modelSession: modelSession,
 	}
-	if err := session.prepareInitialUserInput(context.Background(), task, turnContext); err != nil {
+	if err := session.prepareInitialTurnInput(context.Background(), task, turnContext); err != nil {
 		t.Fatal(err)
 	}
 	if len(client.requests) != 1 || !strings.Contains(continuationRequestText(client.requests[0]), "CONTEXT CHECKPOINT COMPACTION") || strings.Contains(continuationRequestText(client.requests[0]), "new user objective") {
@@ -583,15 +583,12 @@ func newContinuationTestSessionWithStore(t *testing.T, client llm.Client, defini
 	ctx := context.Background()
 	home := t.TempDir()
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	database, err := statesqlite.Open(ctx, home)
+	stateRuntime, err := statesqlite.Open(ctx, home, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
-	stateStore, err := statesqlite.NewStore(database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	threadStore, err := local.NewStore(home, stateStore, func() time.Time { return now })
+	t.Cleanup(func() { _ = stateRuntime.Close() })
+	threadStore, err := local.NewStore(home, stateRuntime.Threads(), func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +651,6 @@ func newContinuationTestSessionWithStore(t *testing.T, client llm.Client, defini
 		cancel(errors.New("test cleanup"))
 		_ = live.Shutdown(context.Background())
 		_ = threadStore.Close()
-		_ = database.Close()
 	})
 	return session
 }

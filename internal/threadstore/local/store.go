@@ -57,7 +57,7 @@ func (store *Store) Close() error {
 		}
 		result = errors.Join(result, store.syncMetadataState(context.Background(), state))
 	}
-	return errors.Join(result, store.state.Close())
+	return result
 }
 
 func (store *Store) rolloutPath(id protocol.ThreadID, at time.Time) string {

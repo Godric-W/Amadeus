@@ -3,28 +3,49 @@ package local
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	statesqlite "github.com/Godric-W/Amadeus/internal/state/sqlite"
 	"github.com/Godric-W/Amadeus/internal/testutil"
 	"github.com/Godric-W/Amadeus/internal/threadstore"
-	statesqlite "github.com/Godric-W/Amadeus/internal/threadstore/local/sqlite"
 )
+
+type failOnceDeleteMetadataDB struct {
+	threadstore.MetadataDB
+	fail bool
+}
+
+func (db *failOnceDeleteMetadataDB) DeleteThread(ctx context.Context, id protocol.ThreadID) error {
+	if db.fail {
+		db.fail = false
+		return errors.New("injected metadata delete failure")
+	}
+	return db.MetadataDB.DeleteThread(ctx, id)
+}
+
+func openMetadataStore(t *testing.T, ctx context.Context, home string) threadstore.MetadataDB {
+	t.Helper()
+	runtime, err := statesqlite.Open(ctx, home, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := runtime.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return runtime.Threads()
+}
 
 func TestStoreDurableHistoryAndRebuild(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	database, err := statesqlite.Open(ctx, home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stateStore, err := statesqlite.NewStore(database)
-	if err != nil {
-		t.Fatal(err)
-	}
+	stateStore := openMetadataStore(t, ctx, home)
 	now := time.Date(2026, 8, 11, 1, 2, 3, 0, time.UTC)
 	store, err := NewStore(home, stateStore, func() time.Time { return now })
 	if err != nil {
@@ -119,14 +140,7 @@ func TestStoreDurableHistoryAndRebuild(t *testing.T) {
 func TestStoreRejectsSecondActiveWriter(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	database, err := statesqlite.Open(ctx, home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stateStore, err := statesqlite.NewStore(database)
-	if err != nil {
-		t.Fatal(err)
-	}
+	stateStore := openMetadataStore(t, ctx, home)
 	store, err := NewStore(home, stateStore, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -140,17 +154,54 @@ func TestStoreRejectsSecondActiveWriter(t *testing.T) {
 	}
 }
 
+func TestDeleteThreadKeepsMetadataUntilRolloutDeleteCanBeRetried(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	stateStore := openMetadataStore(t, ctx, home)
+	failing := &failOnceDeleteMetadataDB{MetadataDB: stateStore, fail: true}
+	store, err := NewStore(home, failing, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	id := testutil.ThreadID(91)
+	if _, err := store.Materialize(ctx, threadstore.CreateInput{
+		SessionID: protocol.SessionIDFromThreadID(id), ID: id, CWD: "/workspace", Title: "Delete me",
+		BaseInstructions: testutil.BaseInstructions("test-model"), CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CloseWriter(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := stateStore.GetThread(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteThread(ctx, id); err == nil || err.Error() != "delete thread metadata: injected metadata delete failure" {
+		t.Fatalf("first delete error = %v", err)
+	}
+	if _, err := os.Stat(metadata.RolloutPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rollout still exists after first delete: %v", err)
+	}
+	if _, err := stateStore.GetThread(ctx, id); err != nil {
+		t.Fatalf("metadata was removed before the retry boundary: %v", err)
+	}
+	if err := store.DeleteThread(ctx, id); err != nil {
+		t.Fatalf("retry delete: %v", err)
+	}
+	if _, err := stateStore.GetThread(ctx, id); !errors.Is(err, threadstore.ErrNotFound) {
+		t.Fatalf("metadata after retry = %v", err)
+	}
+	if err := store.DeleteThread(ctx, id); err != nil {
+		t.Fatalf("idempotent delete: %v", err)
+	}
+}
+
 func TestRebuildIndexRestoresChildParentRelationWithoutSessionColumn(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	database, err := statesqlite.Open(ctx, home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stateStore, err := statesqlite.NewStore(database)
-	if err != nil {
-		t.Fatal(err)
-	}
+	stateStore := openMetadataStore(t, ctx, home)
 	store, err := NewStore(home, stateStore, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -197,14 +248,7 @@ func TestRebuildIndexRestoresChildParentRelationWithoutSessionColumn(t *testing.
 func TestRebuildIndexKeepsExplicitlyClosedChildOutOfOpenChildren(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	database, err := statesqlite.Open(ctx, home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stateStore, err := statesqlite.NewStore(database)
-	if err != nil {
-		t.Fatal(err)
-	}
+	stateStore := openMetadataStore(t, ctx, home)
 	store, err := NewStore(home, stateStore, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -251,14 +295,7 @@ func TestRebuildIndexKeepsExplicitlyClosedChildOutOfOpenChildren(t *testing.T) {
 func TestBufferedAppendDoesNotAdvanceSQLiteBeforeDurableAppend(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	database, err := statesqlite.Open(ctx, home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stateStore, err := statesqlite.NewStore(database)
-	if err != nil {
-		t.Fatal(err)
-	}
+	stateStore := openMetadataStore(t, ctx, home)
 	store, err := NewStore(home, stateStore, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -298,14 +335,7 @@ func TestBufferedAppendDoesNotAdvanceSQLiteBeforeDurableAppend(t *testing.T) {
 func TestExplicitFlushAdvancesPendingMetadataAfterBufferedAppend(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	database, err := statesqlite.Open(ctx, home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stateStore, err := statesqlite.NewStore(database)
-	if err != nil {
-		t.Fatal(err)
-	}
+	stateStore := openMetadataStore(t, ctx, home)
 	store, err := NewStore(home, stateStore, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -337,14 +367,7 @@ func TestExplicitFlushAdvancesPendingMetadataAfterBufferedAppend(t *testing.T) {
 func TestCloseWriterFlushesAndSyncsBufferedMetadata(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	database, err := statesqlite.Open(ctx, home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stateStore, err := statesqlite.NewStore(database)
-	if err != nil {
-		t.Fatal(err)
-	}
+	stateStore := openMetadataStore(t, ctx, home)
 	store, err := NewStore(home, stateStore, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -413,14 +436,7 @@ func (database orderedStateDB) UpsertThread(ctx context.Context, metadata thread
 func TestDurableAppendOrdersAppendFlushAndMetadataSync(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	database, err := statesqlite.Open(ctx, home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stateStore, err := statesqlite.NewStore(database)
-	if err != nil {
-		t.Fatal(err)
-	}
+	stateStore := openMetadataStore(t, ctx, home)
 	store, err := NewStore(home, stateStore, nil)
 	if err != nil {
 		t.Fatal(err)

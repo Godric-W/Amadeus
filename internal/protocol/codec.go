@@ -22,6 +22,16 @@ func EncodeEventMsg(message EventMsg) (EncodedEventMsg, error) {
 			return EncodedEventMsg{}, err
 		}
 	}
+	if update, ok := message.(ThreadGoalUpdatedEvent); ok {
+		if err := update.Validate(); err != nil {
+			return EncodedEventMsg{}, err
+		}
+	}
+	if cleared, ok := message.(ThreadGoalClearedEvent); ok {
+		if err := cleared.Validate(); err != nil {
+			return EncodedEventMsg{}, err
+		}
+	}
 	kind, err := eventMsgType(message)
 	if err != nil {
 		return EncodedEventMsg{}, err
@@ -44,6 +54,10 @@ func DecodeEventMsg(encoded EncodedEventMsg) (EventMsg, error) {
 		message = &ThreadNameUpdatedEvent{}
 	case "thread_archived":
 		message = &ThreadArchivedEvent{}
+	case "thread_goal_updated":
+		message = &ThreadGoalUpdatedEvent{}
+	case "thread_goal_cleared":
+		message = &ThreadGoalClearedEvent{}
 	case "shutdown_complete":
 		message = &ShutdownCompleteEvent{}
 	case "turn_started":
@@ -100,6 +114,16 @@ func DecodeEventMsg(encoded EncodedEventMsg) (EventMsg, error) {
 			return nil, fmt.Errorf("decode event message %q: %w", encoded.Type, err)
 		}
 	}
+	if update, ok := message.(ThreadGoalUpdatedEvent); ok {
+		if err := update.Validate(); err != nil {
+			return nil, fmt.Errorf("decode event message %q: %w", encoded.Type, err)
+		}
+	}
+	if cleared, ok := message.(ThreadGoalClearedEvent); ok {
+		if err := cleared.Validate(); err != nil {
+			return nil, fmt.Errorf("decode event message %q: %w", encoded.Type, err)
+		}
+	}
 	return message, nil
 }
 
@@ -113,6 +137,10 @@ func eventMsgType(message EventMsg) (string, error) {
 		return "thread_name_updated", nil
 	case ThreadArchivedEvent:
 		return "thread_archived", nil
+	case ThreadGoalUpdatedEvent:
+		return "thread_goal_updated", nil
+	case ThreadGoalClearedEvent:
+		return "thread_goal_cleared", nil
 	case ShutdownCompleteEvent:
 		return "shutdown_complete", nil
 	case TurnStartedEvent:
@@ -163,6 +191,10 @@ func eventMsgValue(message EventMsg) EventMsg {
 	case *ThreadNameUpdatedEvent:
 		return *value
 	case *ThreadArchivedEvent:
+		return *value
+	case *ThreadGoalUpdatedEvent:
+		return *value
+	case *ThreadGoalClearedEvent:
 		return *value
 	case *ShutdownCompleteEvent:
 		return *value

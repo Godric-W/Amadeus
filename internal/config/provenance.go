@@ -63,6 +63,8 @@ func SourcesFor(configured Config) Sources {
 		"agent.multi_agent.child_max_samples",
 		"agent.multi_agent.child_max_tool_calls",
 		"agent.multi_agent.child_max_duration",
+		"features.goals",
+		"goals.max_goal_token_budget",
 		"web.fetch.enabled",
 		"web.fetch.timeout",
 		"web.fetch.max_bytes",

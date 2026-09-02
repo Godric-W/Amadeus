@@ -40,6 +40,18 @@ func (model appModel) dispatchCommand(invocation SlashInvocation) (tea.Model, te
 		}
 		submission := model.prepareUserMessageSubmission(UserMessage{Text: task}, protocol.ModeKindPlan, true)
 		return model, tea.Sequence(model.flushHistory(), model.submitUserMessage(submission))
+	case SlashGoal:
+		if !model.session.GoalsEnabled {
+			model.insertHistoryCell(NewErrorHistoryCell("Goals are disabled for this session."))
+			return model, model.flushHistory()
+		}
+		if strings.TrimSpace(arguments) != "" {
+			// Slash goal commands are local UI actions, but Codex keeps the
+			// submitted command visible in the transcript before the async action.
+			model.insertHistoryCell(NewUserMessageCell(invocation.String()))
+		}
+		model.status = "updating goal"
+		return model, model.goalCommand(arguments)
 	case SlashExit:
 		return model, model.requestExit(ExitModeShutdownFirst, ExitReasonUserRequested, nil)
 	case SlashCopy:

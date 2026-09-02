@@ -23,6 +23,10 @@ func (application *InteractiveApplication) snapshot(ctx context.Context, active 
 		return ThreadViewSnapshot{}, err
 	}
 	tokenSnapshot := active.TokenCountSnapshot()
+	goalSnapshot, goalErr := application.workspace.GetGoal(ctx, active.ID())
+	if goalErr != nil && !errors.Is(goalErr, threadstore.ErrNotFound) {
+		return ThreadViewSnapshot{}, goalErr
+	}
 	title := "draft"
 	configuration := active.Configuration()
 	metadata, metadataErr := application.metadata(ctx, active.ID(), configuration.CWD)
@@ -33,7 +37,7 @@ func (application *InteractiveApplication) snapshot(ctx context.Context, active 
 	}
 	return ThreadViewSnapshot{
 		Generation: generation, SessionID: active.SessionID(), ThreadID: active.ID(), Title: title, Configuration: configuration,
-		Items: projection.Items, TokenInfo: cloneTokenInfo(tokenSnapshot.Info),
+		Items: projection.Items, TokenInfo: cloneTokenInfo(tokenSnapshot.Info), Goal: cloneThreadGoal(goalSnapshot), GoalsEnabled: active.GoalsEnabled(),
 		ActiveContextTokens: tokenSnapshot.ActiveContextTokens, ActiveContextEstimated: tokenSnapshot.ActiveContextEstimated,
 	}, nil
 }
@@ -73,6 +77,7 @@ func (application *InteractiveApplication) installAttachment(active *threadmanag
 		Info: cloneTokenInfo(snapshot.TokenInfo), ActiveContextTokens: snapshot.ActiveContextTokens,
 		ActiveContextEstimated: snapshot.ActiveContextEstimated,
 	}
+	application.goal = cloneThreadGoal(snapshot.Goal)
 	application.attachmentWG.Add(1)
 	application.mu.Unlock()
 	go func() {
@@ -87,6 +92,8 @@ func (application *InteractiveApplication) currentSnapshot(active *threadmanager
 	return ThreadViewSnapshot{
 		Generation: generation, SessionID: active.SessionID(), ThreadID: active.ID(), Title: application.title, Configuration: active.Configuration(),
 		TokenInfo: cloneTokenInfo(application.usage.Info), ActiveContextTokens: application.usage.ActiveContextTokens,
+		Goal:                   cloneThreadGoal(application.goal),
+		GoalsEnabled:           active.GoalsEnabled(),
 		ActiveContextEstimated: application.usage.ActiveContextEstimated,
 	}
 }
@@ -163,7 +170,23 @@ func (application *InteractiveApplication) observeSessionEvent(generation uint64
 		application.phase = "idle"
 	case protocol.TokenCountEvent:
 		application.usage = message
+	case protocol.ThreadGoalUpdatedEvent:
+		application.goal = cloneThreadGoal(&message.Goal)
+	case protocol.ThreadGoalClearedEvent:
+		application.goal = nil
 	}
+}
+
+func cloneThreadGoal(goal *protocol.ThreadGoal) *protocol.ThreadGoal {
+	if goal == nil {
+		return nil
+	}
+	cloned := *goal
+	if goal.TokenBudget != nil {
+		budget := *goal.TokenBudget
+		cloned.TokenBudget = &budget
+	}
+	return &cloned
 }
 
 func (application *InteractiveApplication) current() (*threadmanager.AmadeusThread, uint64, error) {

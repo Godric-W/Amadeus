@@ -6,6 +6,7 @@ type SessionID = identity.SessionID
 type ThreadID = identity.ThreadID
 type TurnID = identity.TurnID
 type SubmissionID = identity.SubmissionID
+type EventID = identity.EventID
 type RequestID = identity.RequestID
 type ItemID = identity.ItemID
 
@@ -16,3 +17,5 @@ func ParseThreadID(value string) (ThreadID, error) { return identity.ParseThread
 func ParseSessionID(value string) (SessionID, error) { return identity.ParseSessionID(value) }
 
 func SessionIDFromThreadID(id ThreadID) SessionID { return identity.SessionIDFromThreadID(id) }
+
+func EventIDFromSubmission(id SubmissionID) EventID { return EventID(id) }

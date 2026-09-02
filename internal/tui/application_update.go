@@ -47,6 +47,9 @@ func (model appModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case operationFailedMsg:
 		model.handleOperationFailure(message)
 		return model, model.flushHistory()
+	case goalCommandResultMsg:
+		command := model.handleGoalCommandResult(message)
+		return model, tea.Sequence(model.flushHistory(), command)
 	case userMessageAdmittedMsg:
 		model.handleUserMessageAdmission(message)
 		return model, nil
@@ -59,10 +62,14 @@ func (model appModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.applyStatusLineBranchUpdate(message)
 		return model, nil
 	case workingTickMsg:
+		model.refreshGoalIndicatorAt(time.Time(message))
 		if (!model.running && !model.retryStatus.active) || model.approval != nil || model.userInputDialog != nil {
 			return model, nil
 		}
 		return model, model.workingTick()
+	case goalTickMsg:
+		model.refreshGoalIndicatorAt(time.Time(message))
+		return model, goalTick()
 	case shutdownFinishedMsg:
 		return model, model.completeShutdown(message.err)
 	case shutdownTimeoutMsg:
@@ -120,7 +127,7 @@ func (model *appModel) handleOperationFailure(message operationFailedMsg) {
 }
 
 func (model appModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	model.slashPopup.sync(model.input.Value(), model.running)
+	model.slashPopup.sync(model.input.Value(), model.running, model.session.GoalsEnabled)
 	switch key.String() {
 	case "shift+tab":
 		if model.running {
@@ -260,7 +267,7 @@ func (model appModel) handleInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	model.input, command = model.input.Update(key)
 	model.sanitizeInput()
 	model.slashPopup.resetDismissal(model.input.Value())
-	model.slashPopup.sync(model.input.Value(), model.running)
+	model.slashPopup.sync(model.input.Value(), model.running, model.session.GoalsEnabled)
 	model.updateInputLayout()
 	return model, command
 }
@@ -289,6 +296,10 @@ func (model *appModel) handleUserMessageAdmission(message userMessageAdmittedMsg
 		return
 	}
 	if message.admission.Kind == protocol.UserMessageAdmissionSteered {
+		if model.session.Goal != nil && model.session.Goal.Status == protocol.ThreadGoalActive {
+			model.nextTurnQueue.AcceptGoalSteer(message.submission)
+			return
+		}
 		model.nextTurnQueue.AcceptUnexpectedSteer(message.submission)
 		model.insertHistoryCell(NewDiagnosticHistoryCell("queued input was admitted into an active turn; automatic queue drain stopped"))
 	}
@@ -313,7 +324,7 @@ func (model *appModel) handleUserMessageRejection(message userMessageRejectedMsg
 
 func (model appModel) interrupt() tea.Cmd {
 	return func() tea.Msg {
-		if err := model.app.options.Application.Interrupt(model.ctx); err != nil {
+		if err := model.app.options.Application.PauseGoalAndInterrupt(model.ctx); err != nil {
 			return operationFailedMsg{operation: "interrupt task", err: err}
 		}
 		return nil

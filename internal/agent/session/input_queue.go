@@ -3,6 +3,8 @@ package session
 import (
 	"errors"
 	"sync"
+
+	"github.com/Godric-W/Amadeus/internal/rollout"
 )
 
 type TurnInput interface {
@@ -23,6 +25,19 @@ func (input UserTurnInput) validate() error {
 	return nil
 }
 
+type ResponseItemTurnInput struct {
+	Item rollout.ResponseItem
+}
+
+func (ResponseItemTurnInput) isTurnInput() {}
+
+func (input ResponseItemTurnInput) validate() error {
+	if input.Item.Type != rollout.ResponseContextMessage {
+		return errors.New("automatic turn input must be a context response item")
+	}
+	return input.Item.ValidateUnscoped()
+}
+
 var errTurnInputQueueSealed = errors.New("turn input queue is sealed")
 
 type TurnInputQueue struct {
@@ -37,6 +52,11 @@ func (queue *TurnInputQueue) enqueue(input TurnInput) error {
 	}
 	if userInput, ok := input.(UserTurnInput); ok {
 		if err := userInput.validate(); err != nil {
+			return err
+		}
+	}
+	if responseInput, ok := input.(ResponseItemTurnInput); ok {
+		if err := responseInput.validate(); err != nil {
 			return err
 		}
 	}

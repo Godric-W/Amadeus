@@ -16,7 +16,7 @@ func (session *Session) handleRequest(envelope requestDelivery) {
 		return
 	}
 	session.active.State.pendingRequests[envelope.requestID] = interactiveWaiter{kind: envelope.kind, result: envelope.result}
-	if err := session.Publish(session.ctx, protocol.Event{ID: session.active.SubmissionID, Msg: protocol.ScopeEventMsg(envelope.event, session.threadID, session.active.Task.Context().TurnID)}); err != nil {
+	if err := session.Publish(session.ctx, protocol.Event{ID: protocol.EventIDFromSubmission(session.active.SubmissionID), Msg: protocol.ScopeEventMsg(envelope.event, session.threadID, session.active.Task.Context().TurnID)}); err != nil {
 		delete(session.active.State.pendingRequests, envelope.requestID)
 		envelope.result <- nil
 	}

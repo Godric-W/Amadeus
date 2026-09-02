@@ -1,10 +1,12 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/Godric-W/Amadeus/internal/extension"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 )
@@ -13,14 +15,16 @@ func (session *Session) rejectTurn(submissionID protocol.SubmissionID, turnID pr
 	if err == nil {
 		err = errors.New("turn was rejected")
 	}
-	event := protocol.ErrorEvent{
-		ThreadID: session.threadID,
-		TurnID:   turnID,
-		Code:     "turn_start_failed",
-		Message:  err.Error(),
-		At:       session.services.Clock().UTC(),
+	if session.admissions == nil || !session.admissions.contains(submissionID) {
+		event := protocol.ErrorEvent{
+			ThreadID: session.threadID,
+			TurnID:   turnID,
+			Code:     "turn_start_failed",
+			Message:  err.Error(),
+			At:       session.services.Clock().UTC(),
+		}
+		session.publish(protocol.Event{ID: protocol.EventIDFromSubmission(submissionID), Msg: event})
 	}
-	session.publish(protocol.Event{ID: submissionID, Msg: event})
 	if fatal {
 		session.cancel(fmt.Errorf("start turn persistence: %w", err))
 	}
@@ -86,12 +90,17 @@ func (session *Session) recordPendingInputBeforeTerminal(turnID protocol.TurnID)
 	cleanupCtx, cancel := session.cleanupContext()
 	defer cancel()
 	for _, input := range pending {
-		userInput, ok := input.(UserTurnInput)
-		if !ok {
+		switch value := input.(type) {
+		case UserTurnInput:
+			if err := session.recordUserTurnInput(cleanupCtx, turnID, events, value); err != nil {
+				return err
+			}
+		case ResponseItemTurnInput:
+			if err := session.appendItemsDurable(cleanupCtx, turnID, value.Item); err != nil {
+				return err
+			}
+		default:
 			return fmt.Errorf("unsupported terminal turn input %T", input)
-		}
-		if err := session.recordUserTurnInput(cleanupCtx, turnID, events, userInput); err != nil {
-			return err
 		}
 	}
 	return nil
@@ -127,17 +136,34 @@ func (session *Session) finishAbortedTurn(submissionID protocol.SubmissionID, co
 		Reason:     completion.Cause.Error(),
 		FinishedAt: session.services.Clock().UTC(),
 	}
+	if session.active != nil && session.active.Task != nil {
+		if err := session.emitTurnAbortLifecycle(context.WithoutCancel(session.ctx), *session.active.Task.Context(), event.Reason); err != nil {
+			session.publish(protocol.Event{ID: protocol.EventIDFromSubmission(submissionID), Msg: protocol.WarningEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: "turn abort extension failed: " + err.Error()}})
+		}
+	}
 	persistErr := session.persistTerminal(completion.TurnID, event)
 	session.clearActiveTurn()
 	if persistErr != nil {
 		session.failTerminalPersistence(submissionID, completion.TurnID, "aborted", persistErr)
 		return
 	}
-	session.publish(protocol.Event{ID: submissionID, Msg: event})
+	session.publish(protocol.Event{ID: protocol.EventIDFromSubmission(submissionID), Msg: event})
+	session.scheduleThreadIdle(extension.ThreadIdleInterrupted)
 }
 
 func (session *Session) finishCompletedTurn(submissionID protocol.SubmissionID, completion Completion) {
 	status, outcome, reason, summary, taskErr := normalizeTaskCompletion(completion.Output, completion.Error)
+	if session.active != nil && session.active.Task != nil {
+		turnContext := *session.active.Task.Context()
+		if taskErr != nil {
+			if err := session.emitTurnErrorLifecycle(context.WithoutCancel(session.ctx), turnContext, taskErr); err != nil {
+				session.publish(protocol.Event{ID: protocol.EventIDFromSubmission(submissionID), Msg: protocol.WarningEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: "turn error extension failed: " + err.Error()}})
+			}
+		}
+		if err := session.emitTurnStopLifecycle(context.WithoutCancel(session.ctx), turnContext); err != nil {
+			session.publish(protocol.Event{ID: protocol.EventIDFromSubmission(submissionID), Msg: protocol.WarningEvent{ThreadID: session.threadID, TurnID: completion.TurnID, Message: "turn stop extension failed: " + err.Error()}})
+		}
+	}
 	finishedAt := session.services.Clock().UTC()
 	events := make([]protocol.EventMsg, 0, 2)
 	if taskErr != nil {
@@ -167,7 +193,12 @@ func (session *Session) finishCompletedTurn(submissionID protocol.SubmissionID, 
 		return
 	}
 	for _, event := range events {
-		session.publish(protocol.Event{ID: submissionID, Msg: event})
+		session.publish(protocol.Event{ID: protocol.EventIDFromSubmission(submissionID), Msg: event})
+	}
+	if taskErr != nil {
+		session.scheduleThreadIdle(extension.ThreadIdleFailed)
+	} else {
+		session.scheduleThreadIdle(extension.ThreadIdleCompleted)
 	}
 }
 
@@ -224,8 +255,14 @@ func (session *Session) completeWithoutTask(submissionID protocol.SubmissionID, 
 		session.failTerminalPersistence(submissionID, turnID, "failed", err)
 		return
 	}
-	session.publish(protocol.Event{ID: submissionID, Msg: errorEvent})
-	session.publish(protocol.Event{ID: submissionID, Msg: completedEvent})
+	if !session.hasAdmissionWaiter(submissionID) {
+		session.publish(protocol.Event{ID: protocol.EventIDFromSubmission(submissionID), Msg: errorEvent})
+	}
+	session.publish(protocol.Event{ID: protocol.EventIDFromSubmission(submissionID), Msg: completedEvent})
+}
+
+func (session *Session) hasAdmissionWaiter(submissionID protocol.SubmissionID) bool {
+	return session != nil && session.admissions != nil && session.admissions.contains(submissionID)
 }
 
 func (session *Session) persistTerminal(turnID protocol.TurnID, events ...protocol.EventMsg) error {
@@ -248,7 +285,7 @@ func (session *Session) clearActiveTurn() {
 }
 
 func (session *Session) failTerminalPersistence(submissionID protocol.SubmissionID, turnID protocol.TurnID, terminal string, err error) {
-	session.publish(protocol.Event{ID: submissionID, Msg: protocol.StreamErrorEvent{
+	session.publish(protocol.Event{ID: protocol.EventIDFromSubmission(submissionID), Msg: protocol.StreamErrorEvent{
 		ThreadID: session.threadID,
 		TurnID:   turnID,
 		Message:  err.Error(),

@@ -23,8 +23,7 @@ type SessionTask interface {
 
 type regularTask struct {
 	runtime      *SessionServices
-	goal         string
-	clientUserID string
+	initialInput TurnInput
 	startedAt    time.Time
 	events       protocol.EventSink
 	turnState    *TurnState

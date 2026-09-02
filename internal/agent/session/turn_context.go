@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/Godric-W/Amadeus/internal/extension"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 )
@@ -37,6 +38,7 @@ type TurnContext struct {
 	Personality        Personality     `json:"personality,omitempty"`
 	OutputSchema       json.RawMessage `json:"output_schema,omitempty"`
 	OutputSchemaStrict bool            `json:"output_schema_strict,omitempty"`
+	ExtensionData      *extension.Data `json:"-"`
 }
 
 func (value TurnContext) Validate() error {

@@ -39,6 +39,9 @@ func (model *appModel) projectProtocolEvent(message protocol.EventMsg) tea.Cmd {
 			model.runStartedAt = time.Now()
 		}
 		model.motionStartedAt = model.runStartedAt
+		if model.session.Goal != nil && model.session.Goal.Status == protocol.ThreadGoalActive {
+			model.goalActiveTurnStartedAt = model.runStartedAt
+		}
 		model.transcript.HadWorkActivity = false
 		model.transcript.NeedsFinalMessageSeparator = false
 		if model.status != "compacting context" {
@@ -86,6 +89,10 @@ func (model *appModel) projectProtocolEvent(message protocol.EventMsg) tea.Cmd {
 	case protocol.TokenCountEvent:
 		model.session.applyTokenCount(item)
 		model.refreshStatusLine()
+	case protocol.ThreadGoalUpdatedEvent:
+		model.setGoalSnapshot(&item.Goal, model.uiNow())
+	case protocol.ThreadGoalClearedEvent:
+		model.setGoalSnapshot(nil, model.uiNow())
 	case protocol.PlanUpdateEvent:
 		model.insertHistoryCell(NewPlanUpdateCell(item))
 		model.status = "planning"
@@ -263,6 +270,7 @@ func (model *appModel) projectProtocolEvent(message protocol.EventMsg) tea.Cmd {
 		}
 		return deferred
 	case protocol.TurnCompleteEvent:
+		model.goalActiveTurnStartedAt = time.Time{}
 		model.clearRetryStatus()
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
 			model.flushActiveHistoryCell()
@@ -288,6 +296,7 @@ func (model *appModel) projectProtocolEvent(message protocol.EventMsg) tea.Cmd {
 		}
 		return deferred
 	case protocol.TurnAbortedEvent:
+		model.goalActiveTurnStartedAt = time.Time{}
 		model.clearRetryStatus()
 		if model.transcript.ActiveCell != nil && model.transcript.ActiveCell.IsComplete() {
 			model.flushActiveHistoryCell()

@@ -10,9 +10,11 @@ import (
 	"time"
 
 	application "github.com/Godric-W/Amadeus/internal/app"
+	goalextension "github.com/Godric-W/Amadeus/internal/extension/goal"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/protocol"
+	"github.com/Godric-W/Amadeus/internal/state"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
@@ -40,6 +42,7 @@ type fakeApplicationPort struct {
 	compactErr      error
 	setModeErr      error
 	interruptErr    error
+	goal            *protocol.ThreadGoal
 	approvalErr     error
 	shutdownErr     error
 	submittedSignal chan string
@@ -80,6 +83,40 @@ func (fake *fakeApplicationPort) Interrupt(context.Context) error {
 	fake.interrupts++
 	return fake.interruptErr
 }
+func (fake *fakeApplicationPort) PauseGoalAndInterrupt(ctx context.Context) error {
+	return fake.Interrupt(ctx)
+}
+func (fake *fakeApplicationPort) Goal(context.Context) (*protocol.ThreadGoal, error) {
+	return cloneFakeGoal(fake.goal), nil
+}
+func (fake *fakeApplicationPort) SetGoal(_ context.Context, objective goalextension.ObjectiveUpdate, status *protocol.ThreadGoalStatus, budget state.TokenBudgetUpdate) (protocol.ThreadGoal, error) {
+	if fake.goal == nil {
+		fake.goal = &protocol.ThreadGoal{ThreadID: testThreadID(1), Objective: objective.Value, Status: protocol.ThreadGoalActive, CreatedAt: 1, UpdatedAt: 1}
+	}
+	if objective.Set {
+		fake.goal.Objective = objective.Value
+	}
+	if status != nil {
+		fake.goal.Status = *status
+	}
+	if budget.Set {
+		fake.goal.TokenBudget = budget.Value
+	}
+	return *cloneFakeGoal(fake.goal), nil
+}
+func (fake *fakeApplicationPort) ClearGoal(context.Context) (bool, error) {
+	cleared := fake.goal != nil
+	fake.goal = nil
+	return cleared, nil
+}
+
+func cloneFakeGoal(goal *protocol.ThreadGoal) *protocol.ThreadGoal {
+	if goal == nil {
+		return nil
+	}
+	cloned := *goal
+	return &cloned
+}
 func (fake *fakeApplicationPort) ResolveApproval(_ context.Context, requestID string, _ policy.ApprovalDecision) error {
 	fake.approvals = append(fake.approvals, requestID)
 	return fake.approvalErr
@@ -116,6 +153,7 @@ func newTestModel(t *testing.T, configure func(*ApplicationOptions)) (*Applicati
 		Application: fake,
 		Snapshot: application.ThreadViewSnapshot{
 			Generation: 1, SessionID: protocol.SessionIDFromThreadID(testThreadID(1)), ThreadID: testThreadID(1),
+			GoalsEnabled:  true,
 			TokenInfo:     &protocol.TokenUsageInfo{ModelContextWindow: 128000},
 			Configuration: protocol.SessionConfiguration{CWD: "/workspace/amadeus", Model: "test-model", Mode: protocol.ModeKindDefault},
 		},

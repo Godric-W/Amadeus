@@ -63,3 +63,27 @@ func TestSubmitUserInputAdmissionFailsWhenSessionTerminates(t *testing.T) {
 		t.Fatalf("termination error = %v", err)
 	}
 }
+
+func TestRejectedUserTurnUsesAdmissionErrorWithoutDuplicateErrorEvent(t *testing.T) {
+	admissions := newPendingUserMessageAdmissions()
+	result, remove := admissions.register("submission-1")
+	defer remove()
+	session := &Session{
+		admissions: admissions,
+		events:     make(chan protocol.Event, 1),
+		services: SessionServices{
+			Clock:  func() time.Time { return time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC) },
+			NextID: func(string) string { return "event-1" },
+		},
+	}
+	session.rejectTurn("submission-1", "turn-1", errors.New("invalid configuration"), false)
+	select {
+	case event := <-session.events:
+		t.Fatalf("rejected user turn emitted duplicate event: %#v", event)
+	default:
+	}
+	admissions.complete("submission-1", userMessageAdmissionResult{err: errors.New("invalid configuration")})
+	if got := (<-result).err; got == nil || got.Error() != "invalid configuration" {
+		t.Fatalf("admission error = %v", got)
+	}
+}

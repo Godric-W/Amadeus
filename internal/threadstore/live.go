@@ -42,6 +42,15 @@ func (thread *LiveThread) ID() identity.ThreadID {
 	return thread.id
 }
 
+func (thread *LiveThread) IsMaterialized() bool {
+	if thread == nil {
+		return false
+	}
+	thread.mu.Lock()
+	defer thread.mu.Unlock()
+	return thread.materialized && !thread.closed
+}
+
 func (thread *LiveThread) Materialize(ctx context.Context, input CreateInput) (AppendResult, error) {
 	thread.mu.Lock()
 	defer thread.mu.Unlock()

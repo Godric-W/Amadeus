@@ -88,6 +88,20 @@ func TestConfigCloneCopiesInputModalities(t *testing.T) {
 	}
 }
 
+func TestGoalDefaultsAndClone(t *testing.T) {
+	configured := Default()
+	if !configured.Features.Goals || configured.Goals.MaxGoalTokenBudget != nil {
+		t.Fatalf("goal defaults = %#v", configured)
+	}
+	budget := int64(25_000)
+	configured.Goals.MaxGoalTokenBudget = &budget
+	cloned := clone(configured)
+	*cloned.Goals.MaxGoalTokenBudget = 10_000
+	if *configured.Goals.MaxGoalTokenBudget != 25_000 {
+		t.Fatal("goal budget clone aliased the original")
+	}
+}
+
 func TestDefaultModelProviderInfo(t *testing.T) {
 	provider := defaultModelProviderInfo()
 	want := ModelProviderInfo{

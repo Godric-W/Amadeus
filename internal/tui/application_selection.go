@@ -57,6 +57,12 @@ func (model appModel) handleSelectionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if value == "" {
 				return model, nil
 			}
+			if model.selectionKind == "goal-edit" {
+				model.selection = nil
+				model.selectionKind = ""
+				model.status = "updating goal"
+				return model, model.editGoal(value)
+			}
 			model.status = "renaming session"
 			return model, model.rename(value)
 		default:
@@ -162,6 +168,24 @@ func (model appModel) handleSelectionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			submission := model.prepareUserMessageSubmission(UserMessage{Text: "Implement the plan."}, protocol.ModeKindDefault, true)
 			return model, tea.Sequence(model.flushHistory(), model.submitUserMessage(submission))
+		case "goal-replace":
+			objective := model.pendingGoalObjective
+			model.pendingGoalObjective = ""
+			model.selection = nil
+			model.selectionKind = ""
+			if selected != 0 {
+				return model, model.input.Focus()
+			}
+			model.status = "replacing goal"
+			return model, model.replaceGoal(objective)
+		case "goal-resume":
+			model.selection = nil
+			model.selectionKind = ""
+			if selected != 0 {
+				return model, model.input.Focus()
+			}
+			model.status = "resuming goal"
+			return model, model.goalCommand("resume")
 		}
 	}
 	return model, nil

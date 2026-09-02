@@ -46,6 +46,16 @@ func (admissions *pendingUserMessageAdmissions) remove(submissionID protocol.Sub
 	admissions.mu.Unlock()
 }
 
+func (admissions *pendingUserMessageAdmissions) contains(submissionID protocol.SubmissionID) bool {
+	if admissions == nil {
+		return false
+	}
+	admissions.mu.Lock()
+	_, ok := admissions.pending[submissionID]
+	admissions.mu.Unlock()
+	return ok
+}
+
 func (admissions *pendingUserMessageAdmissions) failAll(err error) {
 	if err == nil {
 		err = errors.New("session terminated before user message admission")

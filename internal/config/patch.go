@@ -16,9 +16,19 @@ type configPatch struct {
 	ModelAutoCompactTokenLimit       *int64                        `yaml:"model_auto_compact_token_limit"`
 	ToolOutputTokenLimit             *int64                        `yaml:"tool_output_token_limit"`
 	ModelProviders                   map[string]modelProviderPatch `yaml:"model_providers"`
+	Features                         *featurePatch                 `yaml:"features"`
+	Goals                            *goalsPatch                   `yaml:"goals"`
 	Agent                            *agentPatch                   `yaml:"agent"`
 	Web                              *webPatch                     `yaml:"web"`
 	Logging                          *loggingPatch                 `yaml:"logging"`
+}
+
+type featurePatch struct {
+	Goals *bool `yaml:"goals"`
+}
+
+type goalsPatch struct {
+	MaxGoalTokenBudget *int64 `yaml:"max_goal_token_budget"`
 }
 
 type webPatch struct {
@@ -96,6 +106,13 @@ func (patch configPatch) apply(base Config) Config {
 		providerPatch.apply(&provider)
 		configured.ModelProviders[name] = provider
 	}
+	if patch.Features != nil {
+		assign(&configured.Features.Goals, patch.Features.Goals)
+	}
+	if patch.Goals != nil && patch.Goals.MaxGoalTokenBudget != nil {
+		value := *patch.Goals.MaxGoalTokenBudget
+		configured.Goals.MaxGoalTokenBudget = &value
+	}
 
 	if patch.Agent != nil {
 		patch.Agent.apply(&configured.Agent)
@@ -163,6 +180,10 @@ func Clone(configured Config) Config {
 	cloned := configured
 	cloned.ModelReasoningEffort = llm.CloneReasoningEffort(configured.ModelReasoningEffort)
 	cloned.ModelInputModalities = append([]llm.InputModality(nil), configured.ModelInputModalities...)
+	if configured.Goals.MaxGoalTokenBudget != nil {
+		value := *configured.Goals.MaxGoalTokenBudget
+		cloned.Goals.MaxGoalTokenBudget = &value
+	}
 	cloned.ModelProviders = make(map[string]ModelProviderInfo, len(configured.ModelProviders))
 	for name, provider := range configured.ModelProviders {
 		cloned.ModelProviders[name] = provider

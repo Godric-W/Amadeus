@@ -86,15 +86,20 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 			pendingInput := session.inputQueue.Drain(state)
 			if len(pendingInput) > 0 {
 				for _, input := range pendingInput {
-					userInput, ok := input.(UserTurnInput)
-					if !ok {
+					switch value := input.(type) {
+					case UserTurnInput:
+						if err := session.recordUserTurnInput(ctx, turnContext.TurnID, events, value); err != nil {
+							return taskProgress(toolCallCount), err
+						}
+						if err := session.recordExplicitSkills(ctx, runtime, turnContext.TurnID, value.Content); err != nil {
+							return taskProgress(toolCallCount), err
+						}
+					case ResponseItemTurnInput:
+						if err := session.appendItemsDurable(ctx, turnContext.TurnID, value.Item); err != nil {
+							return taskProgress(toolCallCount), err
+						}
+					default:
 						return taskProgress(toolCallCount), fmt.Errorf("unsupported turn input %T", input)
-					}
-					if err := session.recordUserTurnInput(ctx, turnContext.TurnID, events, userInput); err != nil {
-						return taskProgress(toolCallCount), err
-					}
-					if err := session.recordExplicitSkills(ctx, runtime, turnContext.TurnID, userInput.Content); err != nil {
-						return taskProgress(toolCallCount), err
 					}
 				}
 				step, err = session.captureStep(ctx, runtime, turnContext)
@@ -224,10 +229,11 @@ func (session *Session) continueTurn(ctx context.Context, runtime *SessionServic
 			}
 			return session.recordTokenUsage(recordCtx, turnContext.TurnID, sample.Response.TokenUsage, sample.Response.TokenUsage.TotalTokens, step.Model.ContextWindow, prompt.HistoryVersion, events)
 		}
-		_, err = runtime.ExecuteBatchScoped(stepCtx, sample.ToolCalls, recorder, tool.ExecutionScope{Observer: observer, Router: &step.ToolRouter})
+		executions, err := runtime.ExecuteBatchScoped(stepCtx, sample.ToolCalls, recorder, tool.ExecutionScope{Observer: observer, Router: &step.ToolRouter})
 		if err != nil {
 			return taskProgress(toolCallCount), err
 		}
+		session.emitToolFinishLifecycle(context.WithoutCancel(stepCtx), turnContext, executions)
 		if !recorded {
 			return taskProgress(toolCallCount), errors.New("tool execution did not record model response")
 		}

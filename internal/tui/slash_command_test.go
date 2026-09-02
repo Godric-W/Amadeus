@@ -11,7 +11,7 @@ import (
 )
 
 func TestBuiltinSlashCommandsMatchesCodexContract(t *testing.T) {
-	want := []string{"/resume", "/skills", "/rename", "/delete", "/compact", "/plan", "/copy", "/status", "/mcp", "/clear", "/exit"}
+	want := []string{"/resume", "/skills", "/rename", "/delete", "/compact", "/plan", "/goal", "/copy", "/status", "/mcp", "/clear", "/exit"}
 	if got := SlashCommands(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Slash commands = %v, want %v", got, want)
 	}

@@ -55,7 +55,7 @@ func TestCodingAgentProviderMockE2E(t *testing.T) {
 			writeCommandConfig(t, filepath.Join(amadeusHome, "config.yaml"), fmt.Sprintf(`
 model: mock-model
 model_provider: mock
-model_context_window: 8192
+model_context_window: 32768
 model_providers:
   mock:
     wire_api: %s

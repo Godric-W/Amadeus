@@ -7,7 +7,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
-func (session *Session) prepareRegular(_ context.Context, snapshot TurnContext, goal string, state *TurnState) (SessionTask, TurnContext, error) {
+func (session *Session) prepareRegular(_ context.Context, snapshot TurnContext, initialInput TurnInput, state *TurnState) (SessionTask, TurnContext, error) {
 	if session == nil || session.services.modelClient == nil {
 		return nil, TurnContext{}, errors.New("session services are unavailable")
 	}
@@ -21,7 +21,10 @@ func (session *Session) prepareRegular(_ context.Context, snapshot TurnContext, 
 	if state == nil {
 		return nil, TurnContext{}, errors.New("regular task turn state is nil")
 	}
-	return &regularTask{runtime: &session.services, goal: goal, events: events, turnState: state}, snapshot, nil
+	if initialInput == nil {
+		return nil, TurnContext{}, errors.New("regular task initial input is nil")
+	}
+	return &regularTask{runtime: &session.services, initialInput: initialInput, events: events, turnState: state}, snapshot, nil
 }
 
 func (sessionTask *regularTask) run(ctx context.Context, session *Session, turnContext *TurnContext) (TaskOutput, error) {
@@ -42,7 +45,7 @@ func (sessionTask *regularTask) run(ctx context.Context, session *Session, turnC
 			return TaskOutput{}, err
 		}
 		sessionTask.modelSession = modelSession
-		if err := session.prepareInitialUserInput(ctx, sessionTask, *turnContext); err != nil {
+		if err := session.prepareInitialTurnInput(ctx, sessionTask, *turnContext); err != nil {
 			return TaskOutput{}, err
 		}
 		sessionTask.initialized = true

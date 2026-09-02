@@ -39,11 +39,33 @@ func OpenWorkspace(ctx context.Context, options WorkspaceOptions) (WorkspaceResu
 	if err := config.Validate(options.Configuration); err != nil {
 		return WorkspaceResult{}, err
 	}
+	clock := options.Dependencies.Clock
+	if clock == nil {
+		clock = time.Now
+	}
+	stateFactory := options.Dependencies.StateRuntime
+	if stateFactory == nil {
+		stateFactory = DefaultStateRuntimeFactory
+	}
+	stateRuntime, err := stateFactory(ctx, options.AmadeusRoot, clock)
+	if err != nil {
+		return WorkspaceResult{}, err
+	}
+	cleanupState := true
+	defer func() {
+		if cleanupState {
+			_ = stateRuntime.Close()
+		}
+	}()
+	extensions, goalService, err := buildExtensions(stateRuntime, clock)
+	if err != nil {
+		return WorkspaceResult{}, err
+	}
 	storeFactory := options.Dependencies.ThreadStore
 	if storeFactory == nil {
 		storeFactory = DefaultThreadStoreFactory
 	}
-	store, err := storeFactory(ctx, options.AmadeusRoot)
+	store, err := storeFactory(ctx, options.AmadeusRoot, stateRuntime.Threads(), clock)
 	if err != nil {
 		return WorkspaceResult{}, err
 	}
@@ -66,22 +88,19 @@ func OpenWorkspace(ctx context.Context, options WorkspaceOptions) (WorkspaceResu
 	if auditFactory == nil {
 		return WorkspaceResult{}, errors.New("bootstrap audit factory is nil")
 	}
-	clock := options.Dependencies.Clock
-	if clock == nil {
-		clock = time.Now
-	}
 	nextID := options.Dependencies.NextID
 	if nextID == nil {
 		nextID = NextPersistentID
 	}
 	manager, err := threadmanager.New(context.WithoutCancel(ctx), store, threadmanager.SharedServices{
-		Clock: clock, NextID: nextID,
+		Clock: clock, NextID: nextID, State: stateRuntime, Extensions: extensions, GoalService: goalService,
 		SessionAdapters: options.Dependencies.sessionAdapters(modelMessages, compactionAssets),
 	})
 	if err != nil {
 		return WorkspaceResult{}, err
 	}
 	cleanupStore = false
+	cleanupState = false
 	workspace, err := app.NewThreadWorkspace(manager)
 	if err != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)

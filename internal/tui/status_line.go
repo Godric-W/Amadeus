@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Godric-W/Amadeus/internal/llm"
+	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
 type statusLineItem uint8
@@ -54,6 +56,74 @@ func (model *appModel) refreshStatusLine() {
 	}
 	model.footer.StatusLine = statusLineState{Segments: segments, ContextUsedPercent: model.statusLineContextUsedPercent()}
 	model.footer.CollaborationIndicator = collaborationModeIndicatorFor(model.session.mode())
+	model.refreshGoalIndicatorAt(model.uiNow())
+}
+
+func (model *appModel) refreshGoalIndicatorAt(now time.Time) {
+	model.footer.GoalIndicator = goalIndicatorLabel(model.session.Goal, model.goalObservedAt, model.goalActiveTurnStartedAt, now)
+}
+
+func goalIndicatorLabel(goal *protocol.ThreadGoal, observedAt, activeTurnStartedAt, now time.Time) string {
+	if goal == nil {
+		return ""
+	}
+	timeUsed := maxInt64(goal.TimeUsedSeconds, 0)
+	if goal.Status == protocol.ThreadGoalActive && !activeTurnStartedAt.IsZero() {
+		baseline := observedAt
+		if activeTurnStartedAt.After(baseline) {
+			baseline = activeTurnStartedAt
+		}
+		if !baseline.IsZero() && now.After(baseline) {
+			timeUsed += int64(now.Sub(baseline) / time.Second)
+		}
+	}
+	switch goal.Status {
+	case protocol.ThreadGoalActive:
+		if goal.TokenBudget != nil {
+			return fmt.Sprintf("Pursuing goal (%s / %s)", compactTokenCount(goal.TokensUsed), compactTokenCount(*goal.TokenBudget))
+		}
+		return "Pursuing goal (" + formatGoalElapsedSeconds(timeUsed) + ")"
+	case protocol.ThreadGoalPaused:
+		return "Goal paused (/goal resume)"
+	case protocol.ThreadGoalBlocked:
+		return "Goal stalled (/goal resume)"
+	case protocol.ThreadGoalUsageLimited:
+		return "Goal hit usage limits (/goal resume)"
+	case protocol.ThreadGoalBudgetLimited:
+		if goal.TokenBudget != nil {
+			return fmt.Sprintf("Goal unmet (%s / %s tokens)", compactTokenCount(goal.TokensUsed), compactTokenCount(*goal.TokenBudget))
+		}
+		return "Goal abandoned"
+	case protocol.ThreadGoalComplete:
+		if goal.TokenBudget != nil {
+			return fmt.Sprintf("Goal achieved (%s tokens)", compactTokenCount(goal.TokensUsed))
+		}
+		return "Goal achieved (" + formatGoalElapsedSeconds(timeUsed) + ")"
+	default:
+		return ""
+	}
+}
+
+func formatGoalElapsedSeconds(seconds int64) string {
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	minutes := seconds / 60
+	if minutes < 60 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	hours := minutes / 60
+	if hours < 24 {
+		return fmt.Sprintf("%dh %dm", hours, minutes%60)
+	}
+	return fmt.Sprintf("%dd %dh %dm", hours/24, hours%24, minutes%60)
+}
+
+func maxInt64(left, right int64) int64 {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func (model appModel) statusLineValueForItem(item statusLineItem) (string, bool) {

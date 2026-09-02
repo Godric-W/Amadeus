@@ -7,7 +7,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/protocol"
 )
 
-func (session *Session) createTask(ctx context.Context, input string, snapshot TurnContext, kind TaskKind, state *TurnState) (SessionTask, TurnContext, error) {
+func (session *Session) createTask(ctx context.Context, input TurnInput, snapshot TurnContext, kind TaskKind, state *TurnState) (SessionTask, TurnContext, error) {
 	now := session.services.Clock()
 	if snapshot.CurrentDate == "" {
 		snapshot.CurrentDate = now.Format("2006-01-02")
@@ -29,9 +29,8 @@ func (session *Session) createTask(ctx context.Context, input string, snapshot T
 	default:
 		return nil, TurnContext{}, errors.New("session task kind is invalid")
 	}
-	goal := input
-	if goal == "" {
-		return nil, TurnContext{}, errors.New("regular task goal is empty")
+	if input == nil {
+		return nil, TurnContext{}, errors.New("regular task initial input is nil")
 	}
-	return session.prepareRegular(ctx, snapshot, goal, state)
+	return session.prepareRegular(ctx, snapshot, input, state)
 }

@@ -18,7 +18,12 @@ func TestSessionsListShowsOnlyCurrentProject(t *testing.T) {
 	home := t.TempDir()
 	projectOne := t.TempDir()
 	projectTwo := t.TempDir()
-	store, err := bootstrap.DefaultThreadStoreFactory(context.Background(), home)
+	stateRuntime, err := bootstrap.DefaultStateRuntimeFactory(context.Background(), home, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stateRuntime.Close()
+	store, err := bootstrap.DefaultThreadStoreFactory(context.Background(), home, stateRuntime.Threads(), time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}

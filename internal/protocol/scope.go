@@ -14,6 +14,16 @@ func ScopeEventMsg(message EventMsg, threadID ThreadID, turnID TurnID) EventMsg 
 	case ThreadArchivedEvent:
 		value.ThreadID = threadID
 		return value
+	case ThreadGoalUpdatedEvent:
+		value.ThreadID = threadID
+		if value.TurnID == "" {
+			value.TurnID = turnID
+		}
+		value.Goal.ThreadID = threadID
+		return value
+	case ThreadGoalClearedEvent:
+		value.ThreadID = threadID
+		return value
 	case ShutdownCompleteEvent:
 		value.ThreadID = threadID
 		return value
@@ -59,6 +69,10 @@ func ThreadIDOf(message EventMsg) ThreadID {
 		return value.ThreadID
 	case ThreadArchivedEvent:
 		return value.ThreadID
+	case ThreadGoalUpdatedEvent:
+		return value.ThreadID
+	case ThreadGoalClearedEvent:
+		return value.ThreadID
 	case ShutdownCompleteEvent:
 		return value.ThreadID
 	case TurnStartedEvent:
@@ -103,6 +117,8 @@ func TurnIDOf(message EventMsg) TurnID {
 	case RequestUserInputEvent:
 		return value.TurnID
 	case SubagentNotificationEvent:
+		return value.TurnID
+	case ThreadGoalUpdatedEvent:
 		return value.TurnID
 	default:
 		return ItemEventTurnID(message)

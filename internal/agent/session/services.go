@@ -12,6 +12,7 @@ import (
 	"github.com/Godric-W/Amadeus/internal/agentsmd"
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
+	"github.com/Godric-W/Amadeus/internal/extension"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/mcp"
 	"github.com/Godric-W/Amadeus/internal/policy"
@@ -45,32 +46,36 @@ func (adapters ServiceAdapters) configured() bool {
 }
 
 type SessionServices struct {
-	LiveThread   *threadstore.LiveThread
-	Clock        func() time.Time
-	NextID       func(string) string
-	AgentControl *multiagent.Control
+	LiveThread                     *threadstore.LiveThread
+	Clock                          func() time.Time
+	NextID                         func(string) string
+	AgentControl                   *multiagent.Control
+	Extensions                     *extension.Registry
+	PersistentThreadStateAvailable bool
 
-	modelClient   llm.Client
-	provider      config.ModelProviderInfo
-	modelInfo     llm.ModelInfo
-	modelMessages llm.ModelMessages
-	tools         *tool.Registry
-	toolExecutor  *tool.ToolExecutionService
-	processes     *processdomain.Manager
-	agentsMd      *agentsmd.AgentsMdManager
-	skills        *skill.SkillCatalog
-	mcp           *mcp.MCPRuntime
-	webFetcher    webfetch.Fetcher
-	webSearch     websearch.Provider
-	approvals     policy.ApprovalPort
-	permissions   *policy.SessionPermissionContext
-	compaction    *agentcompact.Service
-	fileSystem    *project.FileSystemPolicy
-	visibility    map[string]bool
-	source        protocol.SessionSource
-	skillWarnings []error
-	auditCloser   io.Closer
-	budget        TurnBudget
+	modelClient       llm.Client
+	provider          config.ModelProviderInfo
+	modelInfo         llm.ModelInfo
+	modelMessages     llm.ModelMessages
+	tools             *tool.Registry
+	toolExecutor      *tool.ToolExecutionService
+	processes         *processdomain.Manager
+	agentsMd          *agentsmd.AgentsMdManager
+	skills            *skill.SkillCatalog
+	mcp               *mcp.MCPRuntime
+	webFetcher        webfetch.Fetcher
+	webSearch         websearch.Provider
+	approvals         policy.ApprovalPort
+	permissions       *policy.SessionPermissionContext
+	compaction        *agentcompact.Service
+	fileSystem        *project.FileSystemPolicy
+	visibility        map[string]bool
+	source            protocol.SessionSource
+	skillWarnings     []error
+	auditCloser       io.Closer
+	budget            TurnBudget
+	sessionExtensions *extension.Data
+	threadExtensions  *extension.Data
 
 	closeState *sessionServicesCloseState
 }

@@ -10,8 +10,11 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/multiagent"
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
+	"github.com/Godric-W/Amadeus/internal/extension"
+	goalextension "github.com/Godric-W/Amadeus/internal/extension/goal"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	"github.com/Godric-W/Amadeus/internal/state"
 	"github.com/Godric-W/Amadeus/internal/threadstore"
 )
 
@@ -19,6 +22,48 @@ type SharedServices struct {
 	SessionAdapters agentsession.ServiceAdapters
 	Clock           func() time.Time
 	NextID          func(string) string
+	State           state.Runtime
+	Extensions      *extension.Registry
+	GoalService     *goalextension.Service
+}
+
+func (manager *ThreadManager) GoalService() *goalextension.Service {
+	if manager == nil {
+		return nil
+	}
+	return manager.services.GoalService
+}
+
+func (manager *ThreadManager) GetThreadGoal(ctx context.Context, threadID protocol.ThreadID) (*protocol.ThreadGoal, error) {
+	if manager == nil || manager.services.GoalService == nil {
+		return nil, errors.New("goal service is unavailable")
+	}
+	return manager.services.GoalService.Get(ctx, threadID)
+}
+
+func (manager *ThreadManager) SetThreadGoal(ctx context.Context, request goalextension.SetRequest) (protocol.ThreadGoal, error) {
+	if manager == nil || manager.services.GoalService == nil {
+		return protocol.ThreadGoal{}, errors.New("goal service is unavailable")
+	}
+	outcome, err := manager.services.GoalService.Set(ctx, request)
+	if err != nil {
+		return protocol.ThreadGoal{}, err
+	}
+	if err := outcome.PublishAndApply(ctx); err != nil {
+		return protocol.ThreadGoal{}, err
+	}
+	return outcome.Goal, nil
+}
+
+func (manager *ThreadManager) ClearThreadGoal(ctx context.Context, threadID protocol.ThreadID) (bool, error) {
+	if manager == nil || manager.services.GoalService == nil {
+		return false, errors.New("goal service is unavailable")
+	}
+	cleared, err := manager.services.GoalService.Clear(ctx, threadID)
+	if err != nil || !cleared {
+		return cleared, err
+	}
+	return true, manager.services.GoalService.PublishCleared(ctx, threadID)
 }
 
 type StartInput struct {
@@ -34,6 +79,7 @@ type ThreadManager struct {
 	threads     map[protocol.ThreadID]*AmadeusThread
 	closed      bool
 	storeClosed bool
+	stateClosed bool
 }
 
 // ThreadShutdownResult records the outcome of one independent Thread shutdown.
@@ -201,8 +247,11 @@ func (manager *ThreadManager) spawn(ctx context.Context, sessionID protocol.Sess
 	}
 	session, io, err := agentsession.Spawn(manager.ctx, agentsession.SpawnArgs{
 		SessionID: sessionID, ThreadID: id, ParentThreadID: cloneThreadID(parentThreadID), History: history,
-		State:    agentsession.SessionState{Configuration: input.Configuration},
-		Services: agentsession.SessionServices{LiveThread: live, Clock: manager.services.Clock, NextID: manager.services.NextID, AgentControl: control},
+		State: agentsession.SessionState{Configuration: input.Configuration},
+		Services: agentsession.SessionServices{
+			LiveThread: live, Clock: manager.services.Clock, NextID: manager.services.NextID, AgentControl: control,
+			Extensions: manager.services.Extensions, PersistentThreadStateAvailable: manager.services.State != nil,
+		},
 		Adapters: manager.services.SessionAdapters,
 	})
 	if err != nil {
@@ -241,6 +290,18 @@ func (manager *ThreadManager) spawn(ctx context.Context, sessionID protocol.Sess
 	}
 	manager.threads[id] = value
 	manager.mu.Unlock()
+	if err := session.EmitThreadReady(ctx); err != nil {
+		manager.removeThread(id, value)
+		manager.abortSession(session, control, ownsControl, err)
+		return nil, fmt.Errorf("thread ready lifecycle: %w", err)
+	}
+	if history.Kind == threadstore.InitialHistoryResumed {
+		if err := session.EmitThreadResume(ctx); err != nil {
+			manager.removeThread(id, value)
+			manager.abortSession(session, control, ownsControl, err)
+			return nil, fmt.Errorf("thread resume lifecycle: %w", err)
+		}
+	}
 	go func() {
 		<-io.Terminated
 		if value.ownsAgentControl && value.agentControl != nil {
@@ -303,8 +364,16 @@ func (manager *ThreadManager) DeleteThread(ctx context.Context, id protocol.Thre
 		if err := value.Shutdown(ctx); err != nil {
 			return err
 		}
+		manager.removeThread(id, value)
 	}
-	return manager.store.DeleteThread(ctx, id, manager.services.Clock().UTC())
+	if manager.services.GoalService != nil {
+		if _, err := manager.services.GoalService.Clear(ctx, id); err != nil {
+			if !errors.Is(err, threadstore.ErrNotFound) {
+				return fmt.Errorf("clear thread goal: %w", err)
+			}
+		}
+	}
+	return manager.store.DeleteThread(ctx, id)
 }
 
 func (manager *ThreadManager) ShutdownThread(ctx context.Context, id protocol.ThreadID) error {
@@ -366,8 +435,15 @@ func (manager *ThreadManager) closeRemaining(ctx context.Context) error {
 	if storeErr == nil {
 		manager.storeClosed = true
 	}
+	var stateErr error
+	if storeErr == nil && !manager.stateClosed && manager.services.State != nil {
+		stateErr = manager.services.State.Close()
+		if stateErr == nil {
+			manager.stateClosed = true
+		}
+	}
 	manager.lifecycle.Unlock()
-	return errors.Join(result, storeErr)
+	return errors.Join(result, storeErr, stateErr)
 }
 
 const defaultThreadShutdownTimeout = 5 * time.Second

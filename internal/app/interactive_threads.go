@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/Godric-W/Amadeus/internal/extension"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/threadstore"
 )
@@ -43,6 +44,11 @@ func (application *InteractiveApplication) Resume(ctx context.Context, id protoc
 	previous := prepared.Previous()
 	application.installAttachment(target, snapshot)
 	application.emit(ThreadAttached{Snapshot: snapshot})
+	if snapshot.Goal != nil && snapshot.Goal.Status == protocol.ThreadGoalActive {
+		if err := target.EmitThreadIdle(ctx, extension.ThreadIdleCompleted); err != nil {
+			application.emit(ApplicationError{Operation: "resume thread idle lifecycle", Error: err})
+		}
+	}
 	application.releasePrevious(previous, target)
 }
 
@@ -113,12 +119,16 @@ func (application *InteractiveApplication) Delete(ctx context.Context, generatio
 		application.emit(ThreadDeleteFailed{Error: ErrThreadSelectionChanged})
 		return
 	}
+	goal, _ := application.workspace.GetGoal(ctx, active.ID())
 	application.stopAttachment()
 	deleted, err := application.workspace.DeleteCurrent(ctx)
 	if err != nil {
 		application.installAttachment(active, application.currentSnapshot(active, generation))
 		application.emit(ThreadDeleteFailed{Error: err})
 		return
+	}
+	if goal != nil {
+		cleanupGoalObjectiveFile(application.configuration.AmadeusRoot, goal.Objective)
 	}
 	application.emit(ThreadDeleted{ThreadID: deleted})
 }

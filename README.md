@@ -13,6 +13,7 @@ Amadeus is a terminal coding agent written in Go. It supports Tool calling, MCP,
 - User and project Skills with progressive resource loading.
 - Hierarchical `AGENTS.md` instructions.
 - Resumable sessions, approvals, Default and Plan modes.
+- Persisted Thread Goals with automatic continuation across physical turns.
 - Basic Multi-Agent delegation with read-only explorer SubAgents.
 
 <p align="center">
@@ -73,7 +74,8 @@ $AMADEUS_HOME/
 ├── sessions/
 │   └── YYYY/MM/DD/*.jsonl
 └── data/
-    └── amadeus.db
+    ├── state_1.sqlite
+    └── goals_1.sqlite
 ```
 
 Files and directories are created as needed. Audit logs use the platform state directory instead of `AMADEUS_HOME`:
@@ -268,6 +270,7 @@ Slash Commands are available in the interactive TUI. Type `/` to open the comman
 | `/delete`              | Permanently delete the current session and exit.                                               |
 | `/compact`             | Compact the current conversation context.                                                      |
 | `/plan [task]`         | Enter Plan mode. With a task, submits it after changing mode.                                  |
+| `/goal [objective]`    | Create or view a long-running Goal; also supports `clear`, `edit`, `pause`, and `resume`.     |
 | `/copy`                | Copy the latest agent Markdown response.                                                       |
 | `/status`              | Show session, model, reasoning, permission, token, and Prompt provenance/revision diagnostics. |
 | `/mcp`                 | Show configured MCP servers, tools, and resource counts.                                       |
@@ -276,6 +279,22 @@ Slash Commands are available in the interactive TUI. Type `/` to open the comman
 | `/exit`                | Shut down the current session and exit.                                                        |
 
 `/compact` creates a durable context checkpoint while preserving the original rollout. Automatic compaction uses the same checkpoint lifecycle when the active model context reaches its configured limit. A `~` before the statusline context percentage marks a local preflight estimate; provider-reported request usage replaces that estimate after a successful response.
+
+### Goals
+
+Goals belong to a saved Thread and let Amadeus continue a long-running objective across multiple ordinary turns. Use `/goal <objective>` to create a Goal; the command is echoed once in the TUI, then Amadeus starts an automatic continuation when the Thread becomes idle. Each continuation is a normal model turn with its own progress and terminal state.
+
+Use `/goal` to view the current objective, elapsed time, token usage, and budget. `/goal edit` changes the objective while preserving accumulated usage, `/goal pause` stops automatic continuation, `/goal resume` resumes a paused, blocked, or usage-limited Goal, and `/goal clear` removes it. The footer reports states such as `Pursuing goal (3h 21m)` and `Goal achieved (3h 21m)`. Goal controls require a persistent Thread; Plan mode and read-only explorer SubAgents do not run automatic Goal work.
+
+Goals are enabled by default. You can disable them or set a maximum and default token budget in `config.yaml`:
+
+```yaml
+features:
+    goals: true
+
+goals:
+    max_goal_token_budget: 100000
+```
 
 `/resume`, `/skills`, `/copy`, `/status`, `/mcp`, and `/exit` remain available while a task is running. Skill enable/disable changes are unavailable until the task becomes idle. Use `Shift+Tab` to switch between Default and Plan modes while idle.
 

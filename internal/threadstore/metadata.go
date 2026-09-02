@@ -75,7 +75,8 @@ type MetadataDB interface {
 	ListOpenChildren(context.Context, protocol.ThreadID) ([]StoredThread, error)
 	RenameThread(context.Context, protocol.ThreadID, string, time.Time) error
 	ArchiveThread(context.Context, protocol.ThreadID, time.Time) error
+	DeleteThread(context.Context, protocol.ThreadID) error
+	SetPreviewIfEmpty(context.Context, protocol.ThreadID, string, time.Time) error
 	UpdateAgentEdgeState(context.Context, protocol.ThreadID, protocol.AgentSpawnEdgeState, time.Time) error
 	ReplaceThreads(context.Context, []StoredThread) error
-	Close() error
 }

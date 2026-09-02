@@ -15,6 +15,8 @@ type ThreadViewSnapshot struct {
 	Configuration          protocol.SessionConfiguration
 	Items                  []protocol.TurnItem
 	TokenInfo              *protocol.TokenUsageInfo
+	Goal                   *protocol.ThreadGoal
+	GoalsEnabled           bool
 	ActiveContextTokens    int64
 	ActiveContextEstimated bool
 }
@@ -72,6 +74,7 @@ type StatusSnapshot struct {
 	Mode                   protocol.ModeKind
 	Phase                  string
 	TokenInfo              *protocol.TokenUsageInfo
+	Goal                   *protocol.ThreadGoal
 	ActiveContextTokens    int64
 	ActiveContextEstimated bool
 	RolloutItems           int

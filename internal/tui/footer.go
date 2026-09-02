@@ -23,6 +23,7 @@ const collaborationModeIndicatorPlan collaborationModeIndicator = 1
 type footerState struct {
 	StatusLine             statusLineState
 	CollaborationIndicator collaborationModeIndicator
+	GoalIndicator          string
 }
 
 type footerProps struct {
@@ -72,7 +73,7 @@ func renderFooter(props footerProps) string {
 	segments := append([]statusLineSegment(nil), props.State.StatusLine.Segments...)
 	statusLine := renderStatusLineSegments(segments, props.Palette, props.State.StatusLine.ContextUsedPercent)
 
-	indicator := footerIndicatorLabel(props.State.CollaborationIndicator, !props.Running)
+	indicator := footerIndicatorsLabel(props.State, !props.Running)
 	if indicator == "" {
 		left := fitFooterLeft(statusLine, contentWidth)
 		if left == "" {
@@ -89,7 +90,7 @@ func renderFooter(props footerProps) string {
 }
 
 func renderQueueHintFooter(props footerProps, leftPadding, rightPadding, contentWidth int) string {
-	mode := footerIndicatorLabel(props.State.CollaborationIndicator, false)
+	mode := footerIndicatorsLabel(props.State, false)
 	type candidate struct {
 		hint     string
 		showMode bool
@@ -129,7 +130,7 @@ func renderQueueHintCandidate(props footerProps, hint, mode string, showMode boo
 }
 
 func fitFooterColumns(indicator, statusLine string, contentWidth int, props footerProps) (string, string) {
-	compact := footerIndicatorLabel(props.State.CollaborationIndicator, false)
+	compact := footerIndicatorsLabel(props.State, false)
 	fullWidth := lipgloss.Width(indicator)
 	compactWidth := lipgloss.Width(compact)
 	if statusLine == "" {
@@ -154,6 +155,17 @@ func footerIndicatorLabel(indicator collaborationModeIndicator, showCycleHint bo
 		return "Plan mode (shift+tab to cycle)"
 	}
 	return "Plan mode"
+}
+
+func footerIndicatorsLabel(state footerState, showCycleHint bool) string {
+	parts := make([]string, 0, 2)
+	if goal := strings.TrimSpace(state.GoalIndicator); goal != "" {
+		parts = append(parts, goal)
+	}
+	if mode := footerIndicatorLabel(state.CollaborationIndicator, showCycleHint); mode != "" {
+		parts = append(parts, mode)
+	}
+	return strings.Join(parts, " · ")
 }
 
 func fitFooterLeft(source string, width int) string {

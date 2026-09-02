@@ -9,28 +9,26 @@ import (
 
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
 	"github.com/Godric-W/Amadeus/internal/protocol"
+	statesqlite "github.com/Godric-W/Amadeus/internal/state/sqlite"
 	threadmanager "github.com/Godric-W/Amadeus/internal/threadmanager"
 	"github.com/Godric-W/Amadeus/internal/threadstore/local"
-	statesqlite "github.com/Godric-W/Amadeus/internal/threadstore/local/sqlite"
 )
 
 func TestThreadWorkspaceOwnsCurrentThreadLifecycle(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	database, err := statesqlite.Open(ctx, home)
+	stateRuntime, err := statesqlite.Open(ctx, home, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stateStore, err := statesqlite.NewStore(database)
+	threadStore, err := local.NewStore(home, stateRuntime.Threads(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	threadStore, err := local.NewStore(home, stateStore, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	extensions, goalService := appTestGoalRuntime(t, stateRuntime)
 	var sequence atomic.Uint64
 	manager, err := threadmanager.New(ctx, threadStore, threadmanager.SharedServices{
+		State: stateRuntime, Extensions: extensions, GoalService: goalService,
 		SessionAdapters: appSessionAdapters(t, &appTestClient{}),
 		NextID: func(prefix string) string {
 			return prefix + "-" + time.Unix(0, int64(sequence.Add(1))).UTC().Format("150405.000000000")

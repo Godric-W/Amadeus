@@ -2,12 +2,20 @@ package tui
 
 import (
 	"strings"
+	"time"
 
 	application "github.com/Godric-W/Amadeus/internal/app"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+func (model appModel) uiNow() time.Time {
+	if model.clock != nil {
+		return model.clock.Now()
+	}
+	return time.Now()
+}
 
 type sessionViewState struct {
 	Generation       uint64
@@ -16,6 +24,8 @@ type sessionViewState struct {
 	Title            string
 	Configuration    protocol.SessionConfiguration
 	TokenInfo        *protocol.TokenUsageInfo
+	Goal             *protocol.ThreadGoal
+	GoalsEnabled     bool
 	ContextUsed      int64
 	ContextWindow    int64
 	ContextEstimated bool
@@ -30,11 +40,38 @@ func (state *sessionViewState) applyConfiguration(configuration protocol.Session
 func (model *appModel) applyThreadViewSnapshot(snapshot application.ThreadViewSnapshot) tea.Cmd {
 	model.session = sessionViewState{
 		Generation: snapshot.Generation, SessionID: snapshot.SessionID, ThreadID: snapshot.ThreadID, Title: snapshot.Title,
-		TokenInfo: cloneTUITokenInfo(snapshot.TokenInfo), ContextUsed: snapshot.ActiveContextTokens,
+		TokenInfo: cloneTUITokenInfo(snapshot.TokenInfo), Goal: cloneTUIGoal(snapshot.Goal), GoalsEnabled: snapshot.GoalsEnabled, ContextUsed: snapshot.ActiveContextTokens,
 		ContextWindow: tokenInfoContextWindow(snapshot.TokenInfo), ContextEstimated: snapshot.ActiveContextEstimated,
 	}
 	model.workspace = statusLineWorkspaceState{}
+	model.goalObservedAt = model.uiNow()
+	model.goalActiveTurnStartedAt = time.Time{}
 	return model.applySessionConfiguration(snapshot.Configuration)
+}
+
+func (state *sessionViewState) applyGoal(goal *protocol.ThreadGoal) {
+	state.Goal = cloneTUIGoal(goal)
+}
+
+func (model *appModel) setGoalSnapshot(goal *protocol.ThreadGoal, observedAt time.Time) {
+	model.session.applyGoal(goal)
+	model.goalObservedAt = observedAt
+	if goal == nil || goal.Status != protocol.ThreadGoalActive {
+		model.goalActiveTurnStartedAt = time.Time{}
+	}
+	model.refreshGoalIndicatorAt(observedAt)
+}
+
+func cloneTUIGoal(goal *protocol.ThreadGoal) *protocol.ThreadGoal {
+	if goal == nil {
+		return nil
+	}
+	cloned := *goal
+	if goal.TokenBudget != nil {
+		budget := *goal.TokenBudget
+		cloned.TokenBudget = &budget
+	}
+	return &cloned
 }
 
 func (model *appModel) applySessionConfigured(event protocol.SessionConfiguredEvent) tea.Cmd {

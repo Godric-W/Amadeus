@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
+	"github.com/Godric-W/Amadeus/internal/extension"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	threadmanager "github.com/Godric-W/Amadeus/internal/threadmanager"
 )
@@ -31,6 +32,7 @@ type InteractiveApplication struct {
 	phase            string
 	title            string
 	usage            protocol.TokenCountEvent
+	goal             *protocol.ThreadGoal
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -61,6 +63,11 @@ func (application *InteractiveApplication) Start(ctx context.Context) (ThreadVie
 		return ThreadViewSnapshot{}, err
 	}
 	application.installAttachment(active, snapshot)
+	if snapshot.Goal != nil && snapshot.Goal.Status == protocol.ThreadGoalActive {
+		if err := active.EmitThreadIdle(ctx, extension.ThreadIdleCompleted); err != nil {
+			return ThreadViewSnapshot{}, err
+		}
+	}
 	return snapshot, nil
 }
 

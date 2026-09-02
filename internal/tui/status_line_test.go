@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/protocol"
@@ -11,6 +12,42 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 )
+
+func TestGoalIndicatorMatchesCodexLabelsAndElapsedProjection(t *testing.T) {
+	observed := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	active := protocol.ThreadGoal{Status: protocol.ThreadGoalActive, TimeUsedSeconds: 1}
+	if got := goalIndicatorLabel(&active, observed, observed, observed.Add(3*time.Hour+21*time.Minute)); got != "Pursuing goal (3h 21m)" {
+		t.Fatalf("active indicator = %q", got)
+	}
+	complete := protocol.ThreadGoal{Status: protocol.ThreadGoalComplete, TimeUsedSeconds: 3*60*60 + 21*60}
+	if got := goalIndicatorLabel(&complete, observed, time.Time{}, observed); got != "Goal achieved (3h 21m)" {
+		t.Fatalf("complete indicator = %q", got)
+	}
+	for status, expected := range map[protocol.ThreadGoalStatus]string{
+		protocol.ThreadGoalPaused:        "Goal paused (/goal resume)",
+		protocol.ThreadGoalBlocked:       "Goal stalled (/goal resume)",
+		protocol.ThreadGoalUsageLimited:  "Goal hit usage limits (/goal resume)",
+		protocol.ThreadGoalBudgetLimited: "Goal abandoned",
+	} {
+		goal := protocol.ThreadGoal{Status: status}
+		if got := goalIndicatorLabel(&goal, time.Time{}, time.Time{}, observed); got != expected {
+			t.Fatalf("%s indicator = %q, want %q", status, got, expected)
+		}
+	}
+}
+
+func TestGoalIndicatorRefreshesOnIndependentTick(t *testing.T) {
+	_, model := newTestModel(t, nil)
+	observed := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	model.clock = fixedMotionClock{now: observed}
+	goal := &protocol.ThreadGoal{ThreadID: model.session.ThreadID, Status: protocol.ThreadGoalActive, TimeUsedSeconds: 0}
+	model.setGoalSnapshot(goal, observed)
+	model.goalActiveTurnStartedAt = observed
+	model.refreshGoalIndicatorAt(observed.Add(2 * time.Second))
+	if model.footer.GoalIndicator != "Pursuing goal (2s)" {
+		t.Fatalf("tick did not update elapsed Goal indicator: %q", model.footer.GoalIndicator)
+	}
+}
 
 func TestWindowResizeRefreshesStatusLineProjection(t *testing.T) {
 	_, model := newTestModel(t, nil)

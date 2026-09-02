@@ -5,12 +5,20 @@ import (
 	"errors"
 
 	"github.com/Godric-W/Amadeus/internal/agent/modelclient"
+	"github.com/Godric-W/Amadeus/internal/extension"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/mcp"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/skill"
 	"github.com/Godric-W/Amadeus/internal/tool"
 )
+
+func (services *SessionServices) extensionRegistry() *extension.Registry {
+	if services == nil || services.Extensions == nil {
+		return extension.EmptyRegistry()
+	}
+	return services.Extensions
+}
 
 func (services *SessionServices) resolveCollabAgentRef(id protocol.ThreadID) protocol.CollabAgentRef {
 	if services == nil || services.AgentControl == nil {

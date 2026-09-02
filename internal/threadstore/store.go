@@ -114,7 +114,7 @@ type ThreadStore interface {
 	ListThreads(context.Context, ListQuery) ([]StoredThread, error)
 	ListOpenChildren(context.Context, identity.ThreadID) ([]StoredThread, error)
 	RenameThread(context.Context, identity.ThreadID, string, time.Time) error
-	DeleteThread(context.Context, identity.ThreadID, time.Time) error
+	DeleteThread(context.Context, identity.ThreadID) error
 	RebuildIndex(context.Context) error
 	Close() error
 }

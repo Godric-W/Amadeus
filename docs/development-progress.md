@@ -1,13 +1,13 @@
 # Amadeus 开发进度
 
-> 最近更新：2026-08-31
+> 最近更新：2026-09-01
 > 主要架构与 Contract 工作文档：`docs/design.md`
-> 当前阶段：AD. Codex Runtime Contract Optimization（DONE）
-> 下一任务：无（AD 已完成）
+> 当前阶段：AE. Typed Extension Host + Persisted Thread Goal Mode（DONE）
+> 下一任务：无；后续变更需重新进行 Codex 源码审计
 
 本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
 
-A-AC 的条目保留为历史与当前阶段记录；其中与当前 `docs/design.md` 冲突的 token/compaction 结论由 W 取代，第一轮外层 package 归属由 X/Y 收敛，internal package、目录和责任文件布局由 Z 取代，Prompt ownership/text/WorldState/wire/Resume 结论由 AA 最终收敛，R/T 中的Multi-Agent final-message、wait、notification和persisted child membership结论由AC取代。Codex Multi-Agent V2、AgentPath/mailbox/residency、history fork、write worker、child交互、team/worktree/remote和完整agent picker是明确产品非目标，不安排后续阶段。AB 在 2026-08-28 的真实 renderer/contract 审计后重新开启；此前 AB `DONE` 只记录第一轮迁移事实，不证明 transcript viewport、completion ordering、parser boundary 或 layout contract 已闭环。历史 DONE 不构成恢复旧 owner、旧路径、旧 Prompt prefix map、Assistant Item final-message推断或已删除中间 frontend 的依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
+A-AD 的条目保留为历史与当前阶段记录；其中与当前 `docs/design.md` 冲突的 token/compaction 结论由 W 取代，第一轮外层 package 归属由 X/Y 收敛，internal package、目录和责任文件布局由 Z 取代，Prompt ownership/text/WorldState/wire/Resume 结论由 AA 最终收敛，R/T 中的Multi-Agent final-message、wait、notification和persisted child membership结论由AC取代。AE基于2026-09-01当前Codex重新打开两项已过时结论：M-07“删除所有Extension host”由typed ExtensionRegistry取代，A/M/AD中“全部SQLite仅是Rollout metadata projection”缩窄为Thread metadata规则，并新增StateRuntime/GoalStore权威状态边界。Codex Multi-Agent V2、AgentPath/mailbox/residency、write worker、child交互、team/worktree/remote和完整agent picker仍是明确产品非目标；通用history fork不在AE实现，但GoalStore不得阻断未来Codex `deferGoalContinuation`语义。历史DONE不构成恢复旧ExtensionAssembly、旧owner、旧路径、旧Prompt prefix map、Assistant Item final-message推断或已删除中间frontend的依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
 
 ## 1. 状态与完成标准
 
@@ -55,6 +55,7 @@ A Runtime + Persistence
 → AB Source-backed Markdown Streaming + TUI Render Lifecycle
 → AC Basic Multi-Agent Terminal + Persistence Lifecycle Realignment
 → AD Codex Runtime Contract Optimization
+→ AE Typed Extension Host + Persisted Thread Goal Mode
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先分析对应参考源码，再同步更新 `docs/design.md` 与本文。
@@ -76,7 +77,7 @@ ThreadManager
 → SQLite Metadata Index
 ```
 
-JSONL 是完整历史的唯一事实源，SQLite 只保存可重建的 Thread metadata 和索引。
+JSONL 是完整conversation history的唯一事实源；该阶段“所有SQLite只保存可重建metadata”的扩大结论由AE取代。AE引入当前Workspace唯一持有的StateRuntime，Thread metadata仍可重建，GoalStore则是独立业务事实源。
 
 ### 基线已完成
 
@@ -109,7 +110,7 @@ JSONL 是完整历史的唯一事实源，SQLite 只保存可重建的 Thread me
 
 - 重构 LocalThreadStore，使 Durable Append 严格执行 write → flush → MetadataSync；Buffered Append 不更新 SQLite。
 - 为 Recorder 建立 durable watermark，Metadata projection 只能读取不超过 watermark 的 RolloutLine。
-- 增加 append、flush、SQLite upsert 各阶段 fault injection/crash test，验证 SQLite 只能落后 JSONL、不能领先，并验证 backfill/reconciliation。
+- 增加append、flush、SQLite metadata upsert各阶段fault injection/crash test，验证Thread metadata只能落后JSONL、不能领先，并验证backfill/reconciliation。该历史结论不约束AE的权威GoalStore。
 
 ### A-CL-05：Typed Canonical Rollout — `DONE`
 
@@ -129,7 +130,7 @@ JSONL 是完整历史的唯一事实源，SQLite 只保存可重建的 Thread me
 - [x] Session Event 是 Interface 唯一 Turn 终态来源，不存在 invocation/result completion side channel。
 - [x] Session 是 capability 生命周期边界，TurnContext 是真实冻结 snapshot，不含无消费占位状态；F 完成可复用 capability aggregate，G 将其正式归位到 SessionServices 并删除过渡 Factory/Runtime。
 - [x] Rollout 可独立重建 Session 状态和 Context，所有 canonical payload 使用统一 typed contract。
-- [x] SQLite 不保存不可重建事实，也不包含超过 JSONL durable watermark 的 metadata。
+- [x] 当时的Thread metadata SQLite不保存不可重建事实，也不包含超过JSONL durable watermark的metadata；AE新增的GoalStore是独立权威状态，不受该历史出口约束。
 - [x] Resume、取消、panic、submit failure 和异常终态均可恢复且只完成一次。
 
 ## 4. B. Context + Prompt — `DONE`
@@ -478,9 +479,9 @@ G 完成了 `TurnContext` 与 `ModeKind` 的第一轮术语迁移；M-05 随后�
 - [x] Default/Plan、ApprovalPolicy、PermissionProfile 与 SessionPermissionContext 不再混用同一个 PermissionMode。
 - [x] regular、compact、plan、interrupt、approval、resume 与连续 Turn 通过同一 Session 主链端到端运行。
 
-## 10. H. Extensions + Release — `DONE`
+## 10. H. Extensions + Release — `DONE`，generic assembly结论由AE取代
 
-H 的 MCP、Skill 和 Web 行为能力仍保留；其中 `ExtensionAssembly` 作为装配层的架构结论被 M-07 取代，M 将让 SessionServices 直接拥有 MCPRuntime 与 SkillCatalog，并删除 generic Extension 聚合。
+H 的 MCP、Skill 和 Web 行为能力仍保留；其中旧`ExtensionAssembly`作为万能装配层已被M-07正确删除。AE不恢复该对象，但当前Codex已建立immutable typed ExtensionRegistry、scoped ExtensionData和明确contributor lifecycle，因此M-07把“删除旧Assembly”扩大成“永不允许typed extension host”的结论由AE取代。
 
 - `H-01 TUI Tool Projection Convergence`：`DONE`。按 Codex HistoryCell/树状 activity 和 Claude Code Tool-specific UI projection 收敛工具展示。以真实 `TurnItem.ToolName` 为身份来源：`read`/`grep`/`glob` 进入 Codex 风格 `Exploring`/`Explored` 树，`execute_command` 进入 Codex 风格 `Running`/`Ran` 树，`update_plan` 直接沿用 Codex Plan/PlanUpdated 展示，`write`/`edit` 使用 Claude Code 风格独立展示。已覆盖 Tool 状态生命周期、结构化 ToolDisplayResult/文件变更摘要、Approval waiting/denied 展示以及 Rich/Raw、Live/Replay 一致性测试；当时 `apply_patch` 仅排除在主链外，M-08 已物理删除其生产实现与兼容测试。受影响包测试、race、vet、build、architecture guard 和 `git diff --check` 通过；全量测试中仍有既有 `internal/thread/manager` 环境时序超时，相关代码未修改。
 - `H-02 MCP Runtime Convergence`：`DONE`。已删除旧 `Manager`/动态 Adapter 生产主链，完成 `MCPRuntime`、`MCPBinding`、typed Tool/Resource Catalog、lazy discovery、schema validation、read-only permission、typed stale/remote error、refresh/reconnect、shutdown、Resume ToolResult persistence 和 TUI typed projection；全量测试与 race 验收通过。
@@ -808,7 +809,7 @@ M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/
 - 原样持久化 store policy 选中的 EventMsg；删除 `KindTurnItemCompleted`、`TurnItemCompleted`、`NewCompletedItem`、completed-item queue 和 response/completed fallback projector。
 - 将 Thread/Turn identity 从 persistence package 移出，生产 writer、reader、Context 和 TUI 共享唯一 typed contract，不使用 `kind + RawMessage` 领域主链。
 - 删除旧 Rollout reader/writer、legacy decoder、migration projector、旧 SQLite canonical tables 和兼容 fixture；未知旧格式直接返回 unsupported-format 诊断。
-- SQLite 只接受当前 schema version；metadata index 可以从当前格式 Rollout 重建，旧 JSONL/SQLite 开发数据直接清理。
+- Thread metadata SQLite只接受当前schema version且可从当前Rollout重建；旧JSONL/SQLite开发数据直接清理。AE新增独立Goal schema并明确不从Rollout重建。
 
 ### M-03：SessionState + Context Ownership — `DONE`
 
@@ -842,9 +843,9 @@ M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/
 - 保留 Claude-style `Validate → Prepare → Permission → Approval → Execute` 内层协议、Read-before-write、Diff Preview、revalidate 和 atomic apply。
 - 增加 registry/MCP/Skill 变化、同名 handler replacement、Plan tool mask 和 parallel capability snapshot tests。
 
-### M-07：AgentsMd + Skills + MCP Ownership — `DONE`
+### M-07：AgentsMd + Skills + MCP Ownership — `DONE`，typed Extension Host结论由AE取代
 
-- 删除 `ExtensionAssembly`、generic Extension aggregate 和相关 conversion wrapper；SessionServices 直接拥有 MCPRuntime 与 SkillCatalog。
+- 删除旧`ExtensionAssembly`、generic capability aggregate和相关conversion wrapper；SessionServices直接拥有MCPRuntime与SkillCatalog。该领域owner结论继续有效，但“不存在typed ExtensionRegistry”的扩大结论由AE取代。
 - 建立 `AgentsMdManager + LoadedAgentsMd` 唯一模型，删除 generic `WorkspaceResolver`、`InstructionScope`、target instruction service、`MarkSampled` 和 `context_refresh_required` 主链。
 - capture StepContext 时统一解析 AgentsMd、Skill snapshot、MCP binding 和 ToolRouter；Tool 只报告 target/stale facts，不直接修改 ContextManager。
 - 保留 MCP lazy discovery、typed Catalog/Binding、Skill progressive disclosure、script attribution 和普通 Permission/Approval 行为。
@@ -855,7 +856,7 @@ M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/
 - 将 TranscriptState、EventReducer、History projection 和 Rollout replay 从 `internal/agent/protocol` 迁出；Protocol package 只保留 identity、DTO 和 contracts。
 - 删除重复 TaskKind、旧 Event aliases、request/status side channel、completed-item projector、Config v1 migration、旧 schema tests 和所有只服务兼容的 production code。
 - 更新 README、design、examples、fixtures 和 `$AMADEUS_HOME` 开发模板，只描述当前 Config/Protocol/Rollout schema；旧数据由开发者删除重建。
-- 增加 architecture guards，禁止 `engine.Services`、factory closure network、`ExtensionAssembly`、`InteractiveRequest`、`KindTurnItemCompleted`、legacy reader/writer/decoder/migration 和 protocol-owned UI reducer 回归。
+- 增加architecture guards，禁止`engine.Services`、factory closure network、旧`ExtensionAssembly`、`InteractiveRequest`、`KindTurnItemCompleted`、legacy reader/writer/decoder/migration和protocol-owned UI reducer回归。AE将重写只按`Extension`字样一刀切的guard，使其允许typed Registry/contributor/scoped data并继续禁止旧Assembly。
 - 完成针对性测试、全量测试、race、vet、build、`make check`、architecture grep、`git diff --check` 和 live/Resume E2E 后，M 才能标记 DONE。
 
 ### M 出口
@@ -866,7 +867,7 @@ M 基于 2026-08-19 对当前源码与 Codex 架构的重新审计，纠正 G/H/
 - Rollout 使用 typed RolloutItem 并持久化选定 EventMsg；不存在 KindTurnItemCompleted、custom completed projection 或 fallback replay。
 - ContextManager 在 Resume 时重建一次、运行时增量 record；SessionState 不保存第二份 Rollout lines。
 - StepContext 的 ToolRouter 同时决定模型 specs 与 exact dispatch；registry/MCP/Skill 变化不会改变已冻结 step 的 handler identity。
-- AgentsMdManager/LoadedAgentsMd、SkillCatalog 和 MCPRuntime 分别直接归 SessionServices 所有，不存在 generic Extension/Instruction assembly。
+- AgentsMdManager/LoadedAgentsMd、SkillCatalog和MCPRuntime分别直接归SessionServices所有，不存在generic Extension/Instruction assembly；AE增加的typed ExtensionRegistry只负责接线，不改变这些owner。
 - Protocol package 只保留 identity/DTO/contracts，TUI reducer、TranscriptState 和 replay projector 位于各自职责 package。
 
 ## 16. N. Runtime Coordination Tools + Plan Mode Codex Lifecycle Alignment — `DONE`，Plan Prompt owner/text 由 AA 取代
@@ -1546,7 +1547,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 - 新增 identity architecture guard，禁止通用 thread ID factory、直接 ThreadID conversion、旧 SessionMeta field 和 SQLite SessionID 回归；本地开发数据库已直接清理。
 - `make check`、`go test -race ./... -count=1` 与 `git diff --check` 于 2026-08-22 全量通过；Provider root/child identity、persisted child lazy resume、Audit identity 和 SQLite child rebuild targeted tests 通过。
 
-## 23. U. Next-Turn User Input Queue Alignment — `DONE`
+## 23. U. Next-Turn User Input Queue Alignment — `DONE`，Goal continuation竞态由AE取代
 
 ### 目标
 
@@ -1570,7 +1571,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 
 - [x] 只有 matching `TurnCompleteEvent` 才自动 drain；当前 Turn UI 先完成，再将 FIFO head 同步移入 InFlight、关闭本地 drain gate，然后创建异步 SubmitUser command。
 - [x] 一个 terminal 至多启动一条 queued input；InFlight/start-pending 在 matching `TurnStartedEvent` 前阻止重复 terminal、resize、status refresh、admission callback 或按键触发第二次发送。
-- [x] dequeue admission 必须为 Started；Steered 作为 Thread/attachment/ordering invariant violation 显示诊断，不能静默接受为 queue success。下一条 Pending 等待新 Turn 自己的 terminal。
+- [x] 当时无自动idle Turn时dequeue admission必须为Started；Steered作为Thread/attachment/ordering invariant violation显示诊断。AE引入Goal后，matching active Goal continuation的Steered成为唯一合法例外且不得重复恢复输入。
 - [x] Plan Turn 存在 queued follow-up 时跳过 `Implement this plan?` overlay，并优先启动 queued Plan input；无 queue 时保持现有 Proposed Plan transition。
 
 ### U-04：Abort、Failure + Attachment Isolation — `DONE`
@@ -1613,7 +1614,7 @@ R 不扩展 Codex Multi-Agent V2、AgentPath/mailbox/residency、Claude Code tea
 
 - Enter 与 Tab 对运行中普通文字具有稳定且可见的不同语义：Enter 属于当前 Turn，Tab 属于后续独立 Turn。
 - NextTurnQueue 只有 Fullscreen input layer 一个 owner；Session、Protocol、Rollout、Context 和 Persistence 不保存未提交 queue state。
-- terminal 后按 FIFO 每次只启动一个新 Turn，admission 为 Started；aborted/blocked/rejection 不会丢失输入或发送到错误 attachment。
+- terminal后按FIFO每次只提交一个queued input；无自动Goal时admission为Started，AE允许matching Goal Turn的Steered。aborted/blocked/rejection不会丢失输入或发送到错误attachment。
 - queued preview、Plan transition、Resume/Clear/Exit 和现有 same-turn steer 在宽/窄终端下形成一致生命周期。
 - running Turn 中 queueable ordinary draft 将 Footer 切换为 Codex 风格 Tab queue hint；固定 statusline 暂时让位，窄屏优先保留完整或短 hint，Plan indicator 只在可容纳时显示。
 
@@ -1940,12 +1941,12 @@ Z-01～Z-09 是同一次 Architecture Closure 的顺序分解，不是兼容阶�
 - [x] 将 Tool runtime construction 移入 Session service builder，将 Tool Event/Plan completion/persistence 移入对应 Session/Tool owner后删除整个 `internal/agent/engine`。
 - [x] 删除无调用的 `PlanModeTools`、ToolExecutionService convenience method 等 dead API；没有为旧 engine tests 建 wrapper。
 
-### Z-04：ThreadStore + ThreadManager Boundary
+### Z-04：ThreadStore + ThreadManager Boundary — `DONE`，SQLite owner由AE扩展
 
 - [x] 将 `internal/thread`、`internal/thread/local`、`internal/state` 和 `internal/state/sqlite` 收敛为 `internal/threadstore`、`threadstore/local` 与 `threadstore/local/sqlite`；StoredThread、ListQuery 和 metadata DB port 归 ThreadStore domain。
 - [x] 将 `internal/thread/manager` 提升为 `internal/threadmanager`，对齐 Codex core ThreadManager/CodexThread 与独立 thread-store crate；ThreadManager 是唯一 Session spawn/live registry owner。
 - [x] 将原 `manager.go` 拆为 manager registry 与 `amadeus_thread.go`，将 LocalThreadStore 拆为 store/writer/metadata/index；保持 JSONL durability、SQLite watermark/rebuild、child restore 和 shutdown failure order。
-- [x] 删除含义过宽的 `internal/state` 和旧 nested manager/local 路径，不保留第二套 metadata port。
+- [x] 删除当时含义过宽且只包装metadata的`internal/state`和旧nested manager/local路径，不保留第二套metadata port。AE因当前Codex StateRuntime与Goal权威DB重新引入职责明确的`internal/state`，不恢复该旧package实现。
 
 ### Z-05：TUI Package + Projection Ownership
 
@@ -1994,7 +1995,7 @@ Z-01～Z-09 是同一次 Architecture Closure 的顺序分解，不是兼容阶�
 
 - 2026-08-26 将公共协议提升为 `internal/protocol` 并按 submission/event/session/turn/approval/scope 拆分；ContextManager、ModelClientSession、ThreadStore/ThreadManager 和 TUI 分别迁入目标顶层 owner，旧 `agent/engine`、`agent/turn`、`state`、`interface`、dead sandbox 与空 package 物理删除。
 - Session 吸收 Codex 风格 TurnContext/StepContext/Tool Event/Plan completion owner，模型 stream/reconnect 收敛到窄 `agent/modelclient`；OpenAI concrete factory 回到 bootstrap，Runtime 不依赖 adapter。
-- Thread persistence 收敛为 `threadstore` + `threadstore/local/sqlite`，Thread runtime registry 收敛为 `threadmanager`；Manager/AmadeusThread、Store/writer/metadata/index 各按职责拆分并保持 durability/shutdown/child restore ordering。
+- Thread conversation persistence当时收敛为`threadstore`+`threadstore/local/sqlite`，Thread runtime registry收敛为`threadmanager`；AE将SQLite adapter生命周期迁到StateRuntime并保留ThreadStore/ThreadManager职责分离，不恢复旧nested owner。
 - TUI 迁为单一顶层 package，删除 Fullscreen 分支命名和 Application-owned transcript；event reducer、history state、composer/transcript view、History render 与 Explore/Exec/Web cells 分文件共享同一 Bubble Tea model。
 - Tool 保持 Codex Router/Event 外层和 Claude Code Validate/Prepare/Permission/Approval/Execute 内层；generic presentation 的具体工具名枚举迁回 Session Tool Event，ExecutionService 拆为 single-call/batch/outcome，文件 Tool/Approval 行为与 E2E 保持不变。
 - MCP、Skill、WebSearch、Application、ContextManager、Rollout 和 FileSystemPolicy 聚合文件按真实职责拆分；architecture guards 分域并新增 AST import dependency checks。最终 `make check`、全仓 functional/race tests、Responses/Chat Provider/Core Tools E2E 与 `git diff --check` 全部通过。
@@ -2394,10 +2395,10 @@ AC保留R/Z已经正确的完整child Thread/Session、root-scoped AgentControl�
 - [x] Rollout 5000 行 Read/Open 基准约 58–68ms、分配约 11–12MB；改为 bufio 流式 decoder，保留 truncated-tail recovery、sequence validation 和 typed errors。
 - [x] completed process transcript 已设置 256 条 retention 上限；running process 与当前 `write_stdin` 事实不受淘汰影响，并有 prune benchmark/test。
 
-### AD-09：Workspace Shared Capability Decision — `DONE`
+### AD-09：Workspace Shared Capability Decision — `DONE`，StateRuntime/Extension共享边界由AE扩展
 
 - [x] 对照 Codex `ThreadManagerState` 与 Amadeus `SharedServices`：当前 SharedServices 只承载 adapters、Clock、ID，Provider/Tool/MCP/Skill/Permission/Process 仍按 Session 隔离。
-- [x] 现有 Workspace 是单 Frontend、少量 depth-one child；Session service construction 没有可证明的共享瓶颈，保留现状，不增加 Workspace capability aggregate。
+- [x] 现有Workspace是单Frontend、少量depth-one child；Provider/Tool/MCP/Skill/Permission/Process继续Session隔离。AE因Goal cold/live API和独立SQLite事实源增加职责明确的Workspace-scoped StateRuntime、GoalService、ExtensionRegistry；这不恢复万能capability aggregate。
 - [x] 该决定与“未来只有真实跨 Frontend/Workspace 长生命周期需求才提升 owner”的 design 结论一致，不新增 `Core`、Service Locator 或万能 dependency bag。
 
 ### AD-10：Guards、Docs 和 Acceptance — `DONE`
@@ -2419,4 +2420,111 @@ AC保留R/Z已经正确的完整child Thread/Session、root-scoped AgentControl�
 - Session 初始化失败与正常 shutdown 使用不同 writer 生命周期；所有 Thread、child、process、attachment 和 watcher 的关闭都有 owner、等待点和 bounded timeout 结果。
 - MetadataSync 在 durable watermark 后从 typed append facts 增量推进 SQLite；全量扫描仅用于 Resume/Rebuild/reconciliation，live 与 Resume 语义等价。
 - Prompt/Context、AGENTS、Rollout 和 process retention 的性能改动均有基准证据和失效边界；没有未经测量的第二事实源或跨层缓存。
-- AD 不改变 Amadeus 已声明的产品非目标，不新增 `internal/core`、万能 Runtime aggregate 或第二套生命周期协议。
+- AD不改变当时产品范围，也未新增`internal/core`、万能Runtime aggregate或第二套生命周期协议。AE新增typed Extension lifecycle和Goal产品能力，明确取代AD对“无下一阶段/无shared state capability”的历史判断，但继续禁止万能aggregate和第二公开协议。
+
+## 36. AE. Typed Extension Host + Persisted Thread Goal Mode — `DONE`
+
+### 目标
+
+按当前`../codex-main/codex-rs/ext/extension-api`、`ext/goal`、`state`、`core`、`app-server`、`tui`和Python SDK的真实实现，建立typed Extension Host、Workspace-owned StateRuntime和persisted Thread Goal完整链路。Goal必须以独立SQLite为事实源，通过GoalService协调cold/live Thread，通过GoalExtension接入Thread/Turn/Token/Tool/ToolCatalog生命周期，并以StartIfIdle contextual ResponseItem复用唯一RegularTask/`run_turn`。AE同时修正M-07、Persistence、EventID、TurnInput、Resume与NextTurnQueue中已被当前Codex推翻的结论；不提供旧DB、旧Protocol或旧API兼容。
+
+### AE-01：Reference Contract + Architecture Reset — `DONE`
+
+- [x] 审计Codex `ext/extension-api/{registry,state,contributors}`、`ext/goal/{extension,runtime,accounting,api,tool,spec,steering}`、`state/{goals_migrations,runtime/goals}`、Core lifecycle/StartIfIdle、App Server Goal processor/resume/fork ordering、TUI `/goal`/footer/interrupt以及Python logical Goal stream。
+- [x] 确认GoalStore而非Rollout是status/objective/budget/usage/time权威；external Goal API是out-of-band Thread service，不是Session Op；每个automatic continuation是普通physical Turn。
+- [x] 在`docs/design.md`记录typed Extension Host、StateRuntime、Goal data/store/service/runtime、两个锁、Contributor gate、Tool/Prompt、external API、Resume/Fork/Delete、TUI和测试Contract。
+- [x] 标记被AE取代的M-07、AD-09和全局SQLite projection结论；保留旧ExtensionAssembly删除、Session-scoped MCP/Skill owner和单一公开Event流等仍有效成果。
+
+### AE-02：StateRuntime + Dedicated SQLite Stores — `DONE`
+
+- [x] 新建职责明确的`internal/state`，由Bootstrap/Workspace生命周期唯一拥有；打开并暴露`ThreadMetadataStore`与`GoalStore`，部分初始化失败逆序关闭，Thread/Session/TUI不持有SQL handle。
+- [x] 将当前`data/amadeus.db`重置为`data/state_1.sqlite`metadata DB，并增加独立`data/goals_1.sqlite`及current-only migration set；删除旧schema version、loader、dual-read、migration fixture和兼容错误分支。
+- [x] LocalThreadStore改为消费`StateRuntime.Threads`而不拥有整个DB lifecycle；MetadataSync watermark规则只约束Thread metadata，不影响Goal transaction。
+- [x] Thread删除实现附属State先行、metadata/edge最后的可重试顺序；覆盖partial failure、重复delete、StateRuntime close和Goal cascade。
+
+### AE-03：Typed Extension Registry + Scoped Data — `DONE`
+
+- [x] 新建`internal/extension`，实现immutable Registry/Builder、Session/Thread/Turn/Step scoped ExtensionData、typed Thread/Turn/Config/Token/ToolLifecycle/Tool contributor和host EventSink。
+- [x] SessionServices持有共享Registry及Session/Thread ExtensionData；TurnContext/StepContext持有对应scope。ThreadManager在register后发ready，Resume发resume，shutdown前发stop。
+- [x] Step capture按注册顺序收集extension ToolDefinition，与Core/MCP Tool统一collision、visibility、mode/source policy并冻结唯一ToolRouter；执行时不再查询mutable contributor。
+- [x] 建立per-Thread ordered extension event delivery并合入唯一AmadeusThread Event流；禁止第二channel、`OnEvent(any)`、字符串hook map、ExtensionAssembly和从ExtensionData反取完整Session。
+
+### AE-04：TurnInputRequest + StartIfIdle + Idle Lifecycle — `DONE`
+
+- [x] 用typed`TurnInput{UserInput|ResponseItem}`、`TurnInputRequest`和`StartOrSteer|StartIfIdle`替换`startTurn(string)`与`regularTask.goal`；Goal ResponseItem不产生UserMessage Item/admission/title。
+- [x] 实现`StartIfIdleSubmission{Started|NotSubmitted}`及`NotIdle/PlanMode/PendingTriggerTurn/EmptyInput/OutputSchemaMismatch`等typed reason；ActiveTurn reservation、pending trigger复检和失败释放均原子化。
+- [x] 在Turn terminal已持久化、ActiveTurn已清除且immediate pending work已检查后，按registration order调用thread-idle contributors；已安装的queued/explicit work gate优先于Goal。
+- [x] 增加physical Turn chain、Plan rejection、重复idle、concurrent user start、pending trigger和terminal/Event ordering测试。
+
+### AE-05：Goal Domain + GoalStore + GoalService — `DONE`
+
+- [x] 实现internal/public ThreadGoal模型、六状态enum、4,000字符objective校验、positive/max/default token budget和internal UUIDv4 GoalID。
+- [x] GoalStore实现Get、Replace、InsertIfComplete、Update(expectedGoalID)、AccountUsage(mode/expectedGoalID)、Delete、ReplaceSnapshot和continuation deferral；status/budget/accounting使用atomic SQL returning。
+- [x] GoalService实现cold/live get/set/clear与`ThreadID → GoalRuntimeHandle`registry；live unregister按handle identity，cold操作不加载Session。
+- [x] external set支持objective/status/token budget Keep/Set/SetNull，edit保留GoalID/usage/createdAt，replace通过clear+set重置；direct-input/subagent ownership与ephemeral rejection一致。
+
+### AE-06：GoalRuntime + Accounting + Lifecycle Contributors — `DONE`
+
+- [x] 实现GoalRuntimeHandle、GoalAccountingState、monotonic wall-clock、per-Turn cumulative usage baseline、`goalStateLock`和`progressAccountingLock`；所有等待可取消且Thread stop无残留。
+- [x] 接通thread start/resume/idle/stop、turn start/stop/abort/error、config、token usage和tool finish hooks；Plan Turn不绑定/计费Goal。
+- [x] token delta严格为`input-cached_input+output`，create/resume mid-Turn重置baseline；parallel Tool finish去重，expectedGoalID防迟到account污染替代Goal。
+- [x] usage limit写`usage_limited`，其他terminal error写`blocked`且先于Error/TurnComplete；abort只结算。Budget crossing只注入一次wrap-up并允许request/batch自然超额。
+
+### AE-07：Goal Tools + Steering Assets — `DONE`
+
+- [x] GoalExtension按Step贡献`get_goal/create_goal/update_goal`，只在feature enabled、GoalStore可用、Thread持久化且非review-style source时可见；三个Tool固定串行且不请求Approval。
+- [x] 对齐Codex ToolSpec和structured response：create只替换complete，update只接受complete/blocked，complete返回final usage report指引；update_goal排除普通tool-finish accounting以免重复结算。
+- [x] 增加`ContextKind=goal`以及continuation/objective_updated/budget_limit assets，保留role、untrusted objective、XML escaping、budget字段、evidence/fidelity/completion/blocked audit完整语义。
+- [x] Tool/Prompt snapshot、schema validation、unfinished create rejection、completion/budget report和model-visible failure测试覆盖Runtime实际行为。
+
+### AE-08：External Goal API + Ordered Event/Materialization — `DONE`
+
+- [x] 在Application/ThreadManager边界实现与`thread/goal/set|get|clear`同构的typed方法及`ThreadGoalUpdated/ClearedEvent`，不新增Goal Session Op；未来App Server可直接投影同一DTO。
+- [x] Goal set顺序固定为GoalStore mutation→best-effort live Rollout/materialization→response→ordered notification→runtime effects，保证GoalUpdated先于自动TurnStarted。
+- [x] Goal-first draft物化SessionMeta/current settings/Goal辅助item并填充空preview；edit不覆盖已有preview。Cold Thread mutation修复/校验metadata但不伪造loaded runtime。
+- [x] 将Event envelope从`SubmissionID` alias迁移为独立EventID；Core/Goal使用Submission/Turn/Call/derived/generated correlation且不破坏UserMessageAdmission request/response。
+
+### AE-09：Resume、Fork Deferral、Queue 与 Delete Lifecycle — `DONE`
+
+- [x] Resume按Thread register→on_thread_resume→history attach/replay→Token snapshot→Goal snapshot/cleared→pending request replay→idle顺序执行；active恰好续跑一次，stopped状态不续跑。
+- [x] TUI-local NextTurnQueue在无Goal时仍要求Started；active Goal先启动时允许matching Steered并只消费一次。已存在的deferred/explicit pending work与Goal优先级通过idle gate/registration测试固定。
+- [x] 为未来/实际Thread Fork实现source progress flush、完整Goal snapshot继承和durable continuation deferral；若AE不暴露通用Fork API，仍完成Store/Runtime contract和focused test，不预留空外层入口。
+- [x] Thread delete、archive/resume、feature disable/re-enable、State DB restart和cold/live切换不遗留GoalRuntime或错误自动Turn。
+
+### AE-10：TUI `/goal` + Goal Status/Interrupt UX — `DONE`
+
+- [x] 增加运行期间可用的`/goal [objective|clear|edit|pause|resume]`、typed AppEvent/Application action、unfinished replace confirmation、Goal summary和resume paused/blocked/usage-limited prompt。
+- [x] ThreadViewSnapshot/sessionViewState/footerState接入GoalStore snapshot和Goal Event replace/clear reducer；显示active elapsed或tokens/budget及所有stopped状态，other-Thread/old-generation update必须忽略。
+- [x] Ctrl+C、Esc、request_user_input cancel和exit对active Goal执行pause result→interrupt；pause失败可见且不伪装停止。active Goal物理Turn completion抑制错误needs-attention通知。
+- [x] 支持当前TUI能力范围内的multiline/paste/image Goal draft；超过4,000字符时materialize安全attachment引用，失败清理输出目录且edit可恢复原文。
+
+### AE-11：Config、Diagnostics、Cleanup + Architecture Guards — `DONE`
+
+- [x] 增加stable default-on `features.goals`与`goals.max_goal_token_budget` strict local config/default/redaction/example；disabled时隐藏Tool/API并停止runtime effects但保留persisted Goal。Amadeus当前无managed-config层，不伪造managed override。
+- [x] Codex Goal metrics/analytics明确标记为`SKIPPED`：当前产品没有Telemetry平台，不建立空metrics subsystem。现有Warning/Error不得记录objective或token budget明文，未来接入Telemetry时再以GoalID/ThreadID/optional TurnID和cumulative usage设计独立任务。
+- [x] 删除被替代的`amadeus.db`owner、string-only Turn start、Event.ID=SubmissionID假设、静态Goal Tool注册和一刀切禁止Extension的guards/tests/docs；不保留alias/wrapper兼容层。
+- [x] 全文同步`docs/design.md`、`docs/development-progress.md`、architecture whitepaper、README和config example，保证“Rollout历史源/State业务源”“direct capability/typed extension接线”没有矛盾叙述。
+
+### AE-12：Contract Tests、Race + End-to-End Acceptance — `DONE`
+
+- [x] focused tests覆盖GoalStore状态矩阵、CAS、两个锁、parallel finish、mid-Turn baseline、budget overshoot、error order、external mutation、resume barrier、queue priority、Goal-first和delete/fork deferral。
+- [x] live mock Provider E2E证明active Goal跨多个physical Turn持续、final不自动complete、update_goal停止、pause/resume/usage/budget/clear正确，Goal Event先于后续Turn lifecycle。
+- [x] TUI snapshot/interaction测试覆盖所有Goal status、菜单/editor/confirmation/footer、interrupt和active attention suppression；live/Resume/cold mutation使用同一snapshot。
+- [x] 运行focused functional/race、全仓`go test ./... -count=1`、`go test -race ./... -count=1`、`make check`、build、architecture guards和`git diff --check`；所有legacy path物理删除后AE才可DONE。
+
+### AE 完成记录
+
+- 2026-09-01：完成 StateRuntime 与 `state_1.sqlite`/`goals_1.sqlite` 双库边界、typed ExtensionRegistry/ExtensionData、GoalStore/GoalService/GoalRuntime、StartIfIdle 与 idle continuation、Goal Tool/steering、ordered EventRouter、cold/live API、Goal-first materialization、Resume/deferral、TUI `/goal` 和跨库可重试删除。新增 subagent direct-mutation rejection、Goal objective file cleanup、metadata-delete retry 和 ordered event binding 测试。
+- 2026-09-01：按当前 Codex 修正文档中的 StateRuntime scope、Goal budget 默认值、`budget_limited` edit 语义、删除完成协议、managed-config/Telemetry 非目标及 `internal/state` 架构 guard。`go test ./... -count=1`、`go test -race ./... -count=1`、`make check` 和 `git diff --check` 全部通过。
+- UserInputOp 的 pre-admission Turn start failure 只通过 admission waiter 返回；只有无 admission waiter 的 Compact/自动 Turn 启动失败才发布 ErrorEvent，避免 TUI 与 admission error 各呈现一次相同错误。
+- 2026-09-01：按 Codex composer TextElement 语义增加已知 `/goal` 命令前缀局部强调色；Goal set/edit/pause/resume 只更新 typed snapshot/footer，不输出 Objective/Time/Tokens 详情，裸 `/goal` 仍保留 summary 查询；新增对应 TUI 回归测试。
+- 2026-09-01：Goal footer 对齐 Codex `GoalStatusIndicator` 文案，active/complete elapsed 使用 observed-at + active Turn 基准，并由独立 UI tick 持续刷新；新增 `Goal achieved (3h 21m)`、状态矩阵和 tick 投影测试。
+- 2026-09-01：基于当前 Amadeus 与 Codex 源码复核 `docs/design.md` 和 `docs/architecture-whitepaper.md`；同步 StateRuntime 双库、typed Extension Host、Goal lifecycle、control Tool 展示策略、`/goal` command echo、Codex footer 与 independent elapsed tick，并将白皮书改为面向学习者的架构导读。
+
+### AE 出口
+
+- Goal status/objective/budget/usage/time只有GoalStore一个权威；Rollout只保存conversation history及可选Goal辅助item，Resume从GoalStore发snapshot。
+- ExtensionRegistry是immutable typed host，Session/Thread/Turn/Step ExtensionData和Contributor顺序有明确owner；旧ExtensionAssembly、callback bus和第二Event流不存在。
+- 自动Goal work只通过StartIfIdle contextual ResponseItem创建普通Regular Turn；Queue/Plan/interrupt/error/terminal/Resume ordering与Codex一致，没有伪UserMessage、mega-turn或第二`run_turn`。
+- External Goal API支持cold/live Thread且notification先于runtime effects；TUI `/goal`、footer和interrupt只消费typed snapshot/Event，不维护第二Goal状态。
+- StateRuntime、ThreadStore、ThreadManager、SessionServices、GoalService和Application关闭顺序明确，旧数据直接清理，focused/full/race/build/check全部通过。

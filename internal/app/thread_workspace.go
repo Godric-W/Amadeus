@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	agentsession "github.com/Godric-W/Amadeus/internal/agent/session"
+	goalextension "github.com/Godric-W/Amadeus/internal/extension/goal"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	threadmanager "github.com/Godric-W/Amadeus/internal/threadmanager"
 	"github.com/Godric-W/Amadeus/internal/threadstore"
@@ -246,6 +247,30 @@ func (workspace *ThreadWorkspace) CurrentMetadata(ctx context.Context) (threadst
 		}
 	}
 	return threadstore.StoredThread{}, threadstore.ErrNotFound
+}
+
+func (workspace *ThreadWorkspace) GetGoal(ctx context.Context, threadID protocol.ThreadID) (*protocol.ThreadGoal, error) {
+	manager := workspace.managerSnapshot()
+	if manager == nil {
+		return nil, errors.New("thread workspace is closed")
+	}
+	return manager.GetThreadGoal(ctx, threadID)
+}
+
+func (workspace *ThreadWorkspace) SetGoal(ctx context.Context, request goalextension.SetRequest) (protocol.ThreadGoal, error) {
+	manager := workspace.managerSnapshot()
+	if manager == nil {
+		return protocol.ThreadGoal{}, errors.New("thread workspace is closed")
+	}
+	return manager.SetThreadGoal(ctx, request)
+}
+
+func (workspace *ThreadWorkspace) ClearGoal(ctx context.Context, threadID protocol.ThreadID) (bool, error) {
+	manager := workspace.managerSnapshot()
+	if manager == nil {
+		return false, errors.New("thread workspace is closed")
+	}
+	return manager.ClearThreadGoal(ctx, threadID)
 }
 
 func (workspace *ThreadWorkspace) Close(ctx context.Context) error {

@@ -29,6 +29,17 @@ func (session *Session) loop() {
 		defer cancel()
 		_ = session.services.CloseContext(cleanupCtx)
 	}()
+	defer func() {
+		if session.extensionBinding != nil {
+			session.extensionBinding.Close()
+		}
+	}()
+	defer func() {
+		cleanupCtx, cancel := session.cleanupContext()
+		defer cancel()
+		_ = session.emitThreadStopLifecycle(cleanupCtx)
+	}()
+	defer session.waitIdleLifecycle()
 	configuredErr := session.Publish(session.ctx, protocol.Event{Msg: protocol.SessionConfiguredEvent{
 		SessionID: session.sessionID, ThreadID: session.threadID, ParentThreadID: cloneOptionalThreadID(session.parentThreadID),
 		Configuration: session.ProtocolConfiguration(),
@@ -72,6 +83,19 @@ func (session *Session) loop() {
 		case request := <-session.steerRequests:
 			turnID, err := session.steerInput(request.input, request.expectedTurnID)
 			request.result <- steerInputResult{turnID: turnID, err: err}
+		case request := <-session.startIfIdleRequests:
+			submission, err := session.startTurnIfIdle(request.input)
+			request.result <- startIfIdleResult{submission: submission, err: err}
+		case request := <-session.injectTurnInput:
+			request.result <- session.injectResponseInput(request.input)
+		case delivery := <-session.extensionEventInbox:
+			err := session.publishExtensionEvent(delivery.Event)
+			if delivery.Delivered != nil {
+				delivery.Delivered <- err
+			}
+			if err != nil {
+				session.publish(protocol.Event{Msg: protocol.WarningEvent{ThreadID: session.threadID, Message: "extension event delivery failed: " + err.Error()}})
+			}
 		case completion := <-session.completed:
 			session.finishTurn(completion)
 			if session.ctx.Err() != nil && session.active == nil {

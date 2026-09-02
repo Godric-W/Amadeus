@@ -20,10 +20,10 @@ import (
 	internalprompt "github.com/Godric-W/Amadeus/internal/prompt"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
+	statesqlite "github.com/Godric-W/Amadeus/internal/state/sqlite"
 	"github.com/Godric-W/Amadeus/internal/testutil"
 	"github.com/Godric-W/Amadeus/internal/threadstore"
 	"github.com/Godric-W/Amadeus/internal/threadstore/local"
-	statesqlite "github.com/Godric-W/Amadeus/internal/threadstore/local/sqlite"
 )
 
 type terminalFailStore struct {
@@ -1224,15 +1224,11 @@ func newTestManager(t *testing.T, ctx context.Context, mode string, calls *atomi
 func newTestManagerWithClient(t *testing.T, ctx context.Context, client llm.Client) (*ThreadManager, threadstore.ThreadStore) {
 	t.Helper()
 	home := t.TempDir()
-	database, err := statesqlite.Open(ctx, home)
+	stateRuntime, err := statesqlite.Open(ctx, home, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stateStore, err := statesqlite.NewStore(database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	localStore, err := local.NewStore(home, stateStore, nil)
+	localStore, err := local.NewStore(home, stateRuntime.Threads(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1246,6 +1242,7 @@ func newTestManagerWithClient(t *testing.T, ctx context.Context, client llm.Clie
 		t.Fatal(err)
 	}
 	manager, err := New(ctx, localStore, SharedServices{
+		State: stateRuntime,
 		SessionAdapters: session.ServiceAdapters{
 			ModelMessages: modelMessages, CompactionAssets: compactionAssets,
 			ClientFactory: func(string, string, config.ModelProviderInfo) (llm.Client, error) { return client, nil },

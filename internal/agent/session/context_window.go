@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/Godric-W/Amadeus/internal/contextmanager"
+	"github.com/Godric-W/Amadeus/internal/extension"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
@@ -76,6 +77,12 @@ func (session *Session) recordTokenUsage(ctx context.Context, turnID protocol.Tu
 	}
 	if err := session.AppendItems(ctx, turnID, item); err != nil {
 		return err
+	}
+	for _, contributor := range session.services.extensionRegistry().TokenUsage() {
+		input := extension.TokenUsageInput{SessionData: session.services.sessionExtensions, ThreadData: session.services.threadExtensions, Usage: info}
+		if err := contributor.OnTokenUsage(ctx, input); err != nil {
+			session.publish(protocol.Event{Msg: protocol.WarningEvent{ThreadID: session.threadID, TurnID: turnID, Message: "token usage extension failed: " + err.Error()}})
+		}
 	}
 	if events != nil {
 		return events.Publish(ctx, protocol.Event{Msg: event})

@@ -25,6 +25,14 @@ model_supports_original_image_detail: false
 # Limits only Tool/Function Output projected into model context.
 tool_output_token_limit: 10000
 
+features:
+  # Persisted Thread Goals and automatic idle continuation are enabled by default.
+  goals: true
+
+goals: {}
+  # Optional maximum and default budget for newly created Goals.
+  # max_goal_token_budget: 100000
+
 model_providers:
   openai:
     wire_api: responses

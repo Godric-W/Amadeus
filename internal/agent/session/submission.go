@@ -12,7 +12,7 @@ func (session *Session) handleSubmission(submission protocol.Submission) {
 	if err := submission.Validate(); err != nil {
 		session.admissions.complete(submission.ID, userMessageAdmissionResult{err: err})
 		if _, userInput := submission.Op.(protocol.UserInputOp); !userInput {
-			session.publish(protocol.Event{ID: submission.ID, Msg: protocol.ErrorEvent{ThreadID: session.threadID, Code: "invalid_submission", Message: err.Error(), At: session.services.Clock().UTC()}})
+			session.publish(protocol.Event{ID: protocol.EventIDFromSubmission(submission.ID), Msg: protocol.ErrorEvent{ThreadID: session.threadID, Code: "invalid_submission", Message: err.Error(), At: session.services.Clock().UTC()}})
 		}
 		return
 	}
@@ -23,7 +23,7 @@ func (session *Session) handleSubmission(submission protocol.Submission) {
 		if err != nil {
 			var settingsErr *settingsValidationError
 			if errors.As(err, &settingsErr) {
-				session.publish(protocol.Event{ID: submission.ID, Msg: protocol.ErrorEvent{
+				session.publish(protocol.Event{ID: protocol.EventIDFromSubmission(submission.ID), Msg: protocol.ErrorEvent{
 					ThreadID: session.threadID, Code: "invalid_thread_settings", Message: err.Error(), At: session.services.Clock().UTC(),
 				}})
 			}
@@ -33,7 +33,7 @@ func (session *Session) handleSubmission(submission protocol.Submission) {
 			session.deferred = append(session.deferred, submission)
 			return
 		}
-		_, _ = session.startTurn(submission.ID, "compact context", "", TaskKindCompact, nil)
+		_, _ = session.startTurn(submission.ID, "compact context", nil, TaskKindCompact, nil)
 	case protocol.InterruptOp:
 		session.cancelActive(ErrInterrupted)
 	case protocol.ThreadSettingsOp:
@@ -42,7 +42,7 @@ func (session *Session) handleSubmission(submission protocol.Submission) {
 			return
 		}
 		if !op.Mode.Valid() {
-			session.publish(protocol.Event{ID: submission.ID, Msg: protocol.ErrorEvent{
+			session.publish(protocol.Event{ID: protocol.EventIDFromSubmission(submission.ID), Msg: protocol.ErrorEvent{
 				ThreadID: session.threadID, Code: "invalid_thread_settings", Message: fmt.Sprintf("collaboration mode %q is invalid", op.Mode), At: session.services.Clock().UTC(),
 			}})
 			return
@@ -74,7 +74,7 @@ func (session *Session) admitUserMessage(submissionID protocol.SubmissionID, op 
 	if !isSteerInputError(err, SteerInputNoActiveTurn) {
 		return protocol.UserMessageAdmission{}, err
 	}
-	turnID, err = session.startTurn(submissionID, content, strings.TrimSpace(op.ClientUserMessageID), TaskKindRegular, mode)
+	turnID, err = session.startTurn(submissionID, content, UserTurnInput{Content: content, ClientID: strings.TrimSpace(op.ClientUserMessageID)}, TaskKindRegular, mode)
 	if err != nil {
 		return protocol.UserMessageAdmission{}, err
 	}

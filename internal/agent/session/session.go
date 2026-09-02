@@ -11,6 +11,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/config"
 	"github.com/Godric-W/Amadeus/internal/contextmanager"
+	"github.com/Godric-W/Amadeus/internal/extension"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/threadstore"
@@ -38,12 +39,13 @@ type SessionState struct {
 }
 
 type SessionIo struct {
-	Submissions   chan<- protocol.Submission
-	Events        <-chan protocol.Event
-	Terminated    <-chan struct{}
-	Configured    <-chan error
-	admissions    *pendingUserMessageAdmissions
-	steerRequests chan<- steerInputRequest
+	Submissions         chan<- protocol.Submission
+	Events              <-chan protocol.Event
+	Terminated          <-chan struct{}
+	Configured          <-chan error
+	admissions          *pendingUserMessageAdmissions
+	steerRequests       chan<- steerInputRequest
+	startIfIdleRequests chan<- startIfIdleRequest
 }
 
 type SpawnArgs struct {
@@ -78,16 +80,22 @@ type Session struct {
 	eventDeliveryErr error
 	admissions       *pendingUserMessageAdmissions
 
-	ctx           context.Context
-	cancel        context.CancelCauseFunc
-	discardOnExit atomic.Bool
-	submissions   chan protocol.Submission
-	events        chan protocol.Event
-	terminated    chan struct{}
-	configured    chan error
-	completed     chan Completion
-	requestsIn    chan requestDelivery
-	steerRequests chan steerInputRequest
+	ctx                 context.Context
+	cancel              context.CancelCauseFunc
+	discardOnExit       atomic.Bool
+	submissions         chan protocol.Submission
+	events              chan protocol.Event
+	terminated          chan struct{}
+	configured          chan error
+	completed           chan Completion
+	requestsIn          chan requestDelivery
+	steerRequests       chan steerInputRequest
+	startIfIdleRequests chan startIfIdleRequest
+	injectTurnInput     chan injectTurnInputRequest
+	extensionEventInbox chan extension.EventDelivery
+	extensionBinding    extension.EventBinding
+	idleLifecycle       chan extension.ThreadIdleCause
+	idleDone            chan struct{}
 }
 
 const compactionWarningMessage = "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted."
@@ -115,6 +123,21 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 	}
 	ctx, cancel := context.WithCancelCause(parent)
 	args.State.Configuration = cloneConfiguration(args.State.Configuration)
+	if args.Services.Extensions == nil {
+		args.Services.Extensions = extension.EmptyRegistry()
+	}
+	sessionExtensions, err := extension.NewData(args.SessionID.String())
+	if err != nil {
+		cancel(err)
+		return nil, SessionIo{}, err
+	}
+	threadExtensions, err := extension.NewData(args.ThreadID.String())
+	if err != nil {
+		cancel(err)
+		return nil, SessionIo{}, err
+	}
+	args.Services.sessionExtensions = sessionExtensions
+	args.Services.threadExtensions = threadExtensions
 	closeSpawnServices := func() {
 		_ = args.Services.Close()
 		_ = args.Services.LiveThread.Discard(context.Background())
@@ -125,6 +148,9 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 		submissions: make(chan protocol.Submission, 32), events: make(chan protocol.Event, 128),
 		terminated: make(chan struct{}), configured: make(chan error, 1), completed: make(chan Completion, 1),
 		requestsIn: make(chan requestDelivery, 8), steerRequests: make(chan steerInputRequest, 8),
+		startIfIdleRequests: make(chan startIfIdleRequest, 8),
+		injectTurnInput:     make(chan injectTurnInputRequest, 8), extensionEventInbox: make(chan extension.EventDelivery, 128),
+		idleLifecycle: make(chan extension.ThreadIdleCause, 1), idleDone: make(chan struct{}),
 		admissions: newPendingUserMessageAdmissions(),
 	}
 	contextManager, err := contextmanager.NewManagerFromRollout(args.History.Lines, nil)
@@ -141,6 +167,16 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 		return nil, SessionIo{}, fmt.Errorf("build session services: %w", buildErr)
 	}
 	value.services = capabilities
+	extension.Set[ThreadAutomation](value.services.threadExtensions, ThreadAutomation(&threadAutomation{session: value}))
+	if binder, ok := value.services.extensionRegistry().EventSink().(extension.EventBinder); ok {
+		binding, bindErr := binder.Bind(value.threadID, value.extensionEventInbox, value.terminated)
+		if bindErr != nil {
+			cancel(bindErr)
+			closeSpawnServices()
+			return nil, SessionIo{}, fmt.Errorf("bind extension event sink: %w", bindErr)
+		}
+		value.extensionBinding = binding
+	}
 	base, err := resolveSessionBase(args.History, value.state.Base, &value.services, value.state.Configuration.Personality)
 	if err != nil {
 		cancel(err)
@@ -148,10 +184,21 @@ func Spawn(parent context.Context, args SpawnArgs) (*Session, SessionIo, error) 
 		return nil, SessionIo{}, fmt.Errorf("resolve session base instructions: %w", err)
 	}
 	value.state.Base = base
+	if err := value.emitThreadStartLifecycle(ctx); err != nil {
+		cancel(err)
+		_ = value.emitThreadStopLifecycle(context.WithoutCancel(ctx))
+		if value.extensionBinding != nil {
+			value.extensionBinding.Close()
+		}
+		closeSpawnServices()
+		return nil, SessionIo{}, fmt.Errorf("start thread extensions: %w", err)
+	}
 	io := SessionIo{
 		Submissions: value.submissions, Events: value.events, Terminated: value.terminated, Configured: value.configured,
 		admissions: value.admissions, steerRequests: value.steerRequests,
+		startIfIdleRequests: value.startIfIdleRequests,
 	}
+	go value.runIdleLifecycle()
 	go value.loop()
 	return value, io, nil
 }

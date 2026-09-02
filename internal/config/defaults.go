@@ -15,6 +15,7 @@ func Default() Config {
 		ModelInputModalities: []llm.InputModality{llm.InputModalityText},
 		ToolOutputTokenLimit: DefaultToolOutputTokenLimit,
 		ModelProviders:       make(map[string]ModelProviderInfo),
+		Features:             FeatureConfig{Goals: true},
 		Agent: AgentConfig{
 			MaxParallelTools: 4,
 			MultiAgent: MultiAgentConfig{

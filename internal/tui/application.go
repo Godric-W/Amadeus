@@ -8,8 +8,10 @@ import (
 	"time"
 
 	application "github.com/Godric-W/Amadeus/internal/app"
+	goalextension "github.com/Godric-W/Amadeus/internal/extension/goal"
 	"github.com/Godric-W/Amadeus/internal/policy"
 	"github.com/Godric-W/Amadeus/internal/protocol"
+	"github.com/Godric-W/Amadeus/internal/state"
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -30,6 +32,10 @@ type ApplicationPort interface {
 	SubmitCompact(context.Context) error
 	SetMode(context.Context, protocol.ModeKind) error
 	Interrupt(context.Context) error
+	PauseGoalAndInterrupt(context.Context) error
+	Goal(context.Context) (*protocol.ThreadGoal, error)
+	SetGoal(context.Context, goalextension.ObjectiveUpdate, *protocol.ThreadGoalStatus, state.TokenBudgetUpdate) (protocol.ThreadGoal, error)
+	ClearGoal(context.Context) (bool, error)
 	ResolveApproval(context.Context, string, policy.ApprovalDecision) error
 	ResolveUserInput(context.Context, protocol.RequestID, protocol.RequestUserInputResponse) error
 	LoadSessions(context.Context)
@@ -111,6 +117,7 @@ type appModel struct {
 	selectionKind           string
 	skills                  []application.SkillOption
 	pendingSkillsView       string
+	pendingGoalObjective    string
 	mcpRequestID            uint64
 	clearing                bool
 	exit                    exitState
@@ -120,6 +127,8 @@ type appModel struct {
 	initialUserMessage      *UserMessage
 	initialHistoryFlush     tea.Cmd
 	nextTurnQueue           NextTurnQueue
+	goalObservedAt          time.Time
+	goalActiveTurnStartedAt time.Time
 }
 
 type savedStatus struct {
@@ -179,7 +188,16 @@ type userMessageRejectedMsg struct {
 	err        error
 }
 type workingTickMsg time.Time
+type goalTickMsg time.Time
 type startupReadyMsg struct{}
+
+type goalCommandResultMsg struct {
+	kind      string
+	goal      *protocol.ThreadGoal
+	objective string
+	cleared   bool
+	err       error
+}
 
 const (
 	inputPrompt      = "› "
@@ -345,6 +363,7 @@ func newModel(ctx context.Context, app *Application) appModel {
 		initialUserMessage: cloneUserMessage(app.options.InitialUserMessage),
 	}
 	_ = model.applyThreadViewSnapshot(snapshot)
+	model.promptResumableGoal()
 	if app.options.DisableAnimations {
 		model.motion = motionReduced
 	}
@@ -362,8 +381,14 @@ func (model appModel) Init() tea.Cmd {
 	if model.app.options.OpenSessions {
 		commands = append(commands, model.loadSessions())
 	}
-	commands = append(commands, func() tea.Msg { return startupReadyMsg{} })
+	commands = append(commands, func() tea.Msg { return startupReadyMsg{} }, goalTick())
 	return tea.Sequence(commands...)
+}
+
+const goalTickInterval = 250 * time.Millisecond
+
+func goalTick() tea.Cmd {
+	return tea.Tick(goalTickInterval, func(now time.Time) tea.Msg { return goalTickMsg(now) })
 }
 
 func workingTick() tea.Cmd {

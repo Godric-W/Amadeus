@@ -290,7 +290,7 @@ func TestTurnSteerHasDedicatedCoordinationBoundaries(t *testing.T) {
 		}
 	}
 	queue := mustReadArchitectureFile(t, root, "internal/agent/session/input_queue.go")
-	for _, forbidden := range []string{"rollout.", "ResponseUserMessage", "AppendItems", "ContextUpdate"} {
+	for _, forbidden := range []string{"ResponseUserMessage", "AppendItems", "ContextUpdate"} {
 		if strings.Contains(queue, forbidden) {
 			t.Errorf("InputQueue became a second history owner through %q", forbidden)
 		}

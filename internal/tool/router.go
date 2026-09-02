@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"math"
 	"sort"
 	"strings"
 )
@@ -15,6 +17,48 @@ type ToolRouter struct {
 	ordered  []string
 	revision string
 	snapshot RequestSnapshot
+}
+
+func (registry *Registry) SnapshotRouterWithDefinitions(conditions map[string]bool, snapshot RequestSnapshot, include ToolRouteFilter, definitions []ToolDefinition) (ToolRouter, error) {
+	if registry == nil {
+		return ToolRouter{}, fmt.Errorf("tool registry is nil")
+	}
+	registry.mutex.RLock()
+	entries := make(map[string]Entry, len(registry.tools)+len(definitions))
+	for name, entry := range registry.tools {
+		entries[name] = entry
+	}
+	registry.mutex.RUnlock()
+	for index, definition := range definitions {
+		if definition == nil || isNilDefinition(definition) {
+			return ToolRouter{}, ErrNilTool
+		}
+		spec := definition.Spec().Clone()
+		if err := validateSpec(spec); err != nil {
+			return ToolRouter{}, err
+		}
+		if _, exists := entries[spec.Name]; exists {
+			return ToolRouter{}, fmt.Errorf("%w: %s", ErrDuplicateTool, spec.Name)
+		}
+		entries[spec.Name] = Entry{Spec: spec, Tool: definition, Exposure: ExposureDirect, bindingID: math.MaxUint64 - uint64(index)}
+	}
+	routes := make(map[string]toolRoute, len(entries))
+	ordered := make([]string, 0, len(entries))
+	for name, entry := range entries {
+		if !entryVisible(entry, conditions) {
+			continue
+		}
+		spec := entry.Spec.Clone()
+		if include != nil && !include(spec) {
+			continue
+		}
+		routes[name] = toolRoute{spec: spec, definition: entry.Tool, parallel: entry.Tool.SupportsParallelToolCalls(), exposure: entry.Exposure, condition: entry.Condition, bindingID: entry.bindingID}
+		ordered = append(ordered, name)
+	}
+	sort.Strings(ordered)
+	revision := toolRouterRevision(routes, ordered, snapshot)
+	snapshot.ToolRouterRevision = revision
+	return ToolRouter{routes: routes, ordered: ordered, revision: revision, snapshot: snapshot}, nil
 }
 
 type toolRoute struct {

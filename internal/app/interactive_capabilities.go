@@ -22,7 +22,7 @@ func (application *InteractiveApplication) Status() StatusSnapshot {
 		}
 	}
 	application.mu.RLock()
-	title, phase, usage := application.title, application.phase, application.usage
+	title, phase, usage, goal := application.title, application.phase, application.usage, cloneThreadGoal(application.goal)
 	application.mu.RUnlock()
 	configuration := active.Configuration()
 	result := StatusSnapshot{
@@ -30,7 +30,7 @@ func (application *InteractiveApplication) Status() StatusSnapshot {
 		Provider: configuration.Provider, Model: configuration.Model,
 		ReasoningEffort: llm.CloneReasoningEffort(configuration.ReasoningEffort),
 		Mode:            configuration.Mode, Phase: phase,
-		TokenInfo: cloneTokenInfo(usage.Info), ActiveContextTokens: usage.ActiveContextTokens,
+		TokenInfo: cloneTokenInfo(usage.Info), Goal: goal, ActiveContextTokens: usage.ActiveContextTokens,
 		ActiveContextEstimated: usage.ActiveContextEstimated, RolloutItems: active.RolloutItemCount(),
 	}
 	result.PermissionGrantCount = active.PermissionGrantCount()

@@ -35,7 +35,7 @@ func (sink *MemorySink) Publish(ctx context.Context, event Event) error {
 	defer sink.mu.Unlock()
 	if event.ID == "" {
 		sink.nextID++
-		event.ID = SubmissionID(fmt.Sprintf("memory-event-%d", sink.nextID))
+		event.ID = EventID(fmt.Sprintf("memory-event-%d", sink.nextID))
 	}
 	if err := event.Validate(); err != nil {
 		return err
@@ -56,7 +56,7 @@ func (sink *MemorySink) Snapshot() []Event {
 // ScopedSink binds one submission and turn to all events produced by a task.
 type ScopedSink struct {
 	parent   EventSink
-	eventID  SubmissionID
+	eventID  EventID
 	threadID ThreadID
 	turnID   TurnID
 }
@@ -68,7 +68,7 @@ func NewScopedSink(parent EventSink, eventID SubmissionID, threadID ThreadID, tu
 	if eventID == "" || threadID.IsZero() {
 		return nil, errors.New("scoped event sink identity is incomplete")
 	}
-	return &ScopedSink{parent: parent, eventID: eventID, threadID: threadID, turnID: turnID}, nil
+	return &ScopedSink{parent: parent, eventID: EventIDFromSubmission(eventID), threadID: threadID, turnID: turnID}, nil
 }
 
 func (sink *ScopedSink) Publish(ctx context.Context, event Event) error {

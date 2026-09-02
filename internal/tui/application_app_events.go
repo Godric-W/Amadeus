@@ -144,12 +144,16 @@ func (model *appModel) handleAppEventNow(event application.InteractiveEvent) tea
 func (model *appModel) attachSnapshot(snapshot application.ThreadViewSnapshot) tea.Cmd {
 	model.clearInteractiveState()
 	branchLookup := model.applyThreadViewSnapshot(snapshot)
+	model.promptResumableGoal()
 	model.protocolEvents = newProtocolEventState(snapshot.ThreadID)
 	model.restoreCompletedItems(snapshot.Items)
 	historyFlush := model.flushHistory()
 	model.clearing = false
 	model.status = "idle"
-	focus := model.input.Focus()
+	focus := tea.Cmd(nil)
+	if model.selection == nil {
+		focus = model.input.Focus()
+	}
 	return tea.Sequence(
 		func() tea.Msg { return tea.ClearScreen() },
 		historyFlush,
@@ -177,6 +181,9 @@ func (model *appModel) clearInteractiveState() {
 	model.sessions = nil
 	model.skills = nil
 	model.pendingSkillsView = ""
+	model.pendingGoalObjective = ""
+	model.goalObservedAt = time.Time{}
+	model.goalActiveTurnStartedAt = time.Time{}
 	model.viewingDetails = false
 }
 

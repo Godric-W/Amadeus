@@ -37,6 +37,9 @@ func TestExampleConfigLoadsAndValidatesWithoutEnvironment(t *testing.T) {
 	if configured.Agent.MaxParallelTools != 4 {
 		t.Fatalf("unexpected example Agent config: %#v", configured.Agent)
 	}
+	if !configured.Features.Goals || configured.Goals.MaxGoalTokenBudget != nil {
+		t.Fatalf("unexpected example Goal config: features=%#v goals=%#v", configured.Features, configured.Goals)
+	}
 	if len(configured.ModelInputModalities) != 1 || configured.ModelInputModalities[0] != "text" || configured.ModelSupportsOriginalImageDetail {
 		t.Fatalf("unexpected example model capabilities: %#v", configured)
 	}

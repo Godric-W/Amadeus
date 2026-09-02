@@ -21,7 +21,43 @@ func (model appModel) inputBox() string {
 	if model.selection != nil {
 		return model.renderSelectionOverlay(width)
 	}
-	return inputFillStyle.Width(width).Render(renderTextareaWindow(model.input))
+	rendered := renderTextareaWindow(model.input)
+	rendered = renderSlashCommandHighlight(rendered, model.input, model.palette)
+	return inputFillStyle.Width(width).Render(rendered)
+}
+
+// renderSlashCommandHighlight mirrors Codex's command TextElement: only a
+// recognized command at the beginning of the first line is accented after the
+// separating space has been entered. The textarea remains the source of truth.
+func renderSlashCommandHighlight(rendered string, input textarea.Model, palette terminalPalette) string {
+	value := input.Value()
+	firstLine := value
+	if newline := strings.IndexByte(firstLine, '\n'); newline >= 0 {
+		firstLine = firstLine[:newline]
+	}
+	if !strings.HasPrefix(firstLine, "/") {
+		return rendered
+	}
+	nameEnd := strings.IndexAny(firstLine, " \t\r")
+	if nameEnd <= 1 || nameEnd >= len(firstLine) {
+		return rendered
+	}
+	if _, ok := FindSlashCommand(firstLine[:nameEnd]); !ok {
+		return rendered
+	}
+	// Keep the command editable while the cursor is still inside its name.
+	if input.Line() == 0 {
+		cursor := input.LineInfo().CharOffset
+		if cursor > 0 && cursor < nameEnd {
+			return rendered
+		}
+	}
+	command := firstLine[:nameEnd]
+	index := strings.Index(rendered, command)
+	if index < 0 {
+		return rendered
+	}
+	return rendered[:index] + palette.command().Render(command) + rendered[index+len(command):]
 }
 
 func (model appModel) composerView() string {

@@ -308,12 +308,17 @@ func TestInteractiveApplicationProviderWorkflowUsesCanonicalToolLifecycle(t *tes
 	if first.Prompt.Input[len(first.Prompt.Input)-1].Content != "Inspect README and finish" {
 		t.Fatalf("unexpected first Agent user message: %q", first.Prompt.Input[len(first.Prompt.Input)-1].Content)
 	}
-	if len(first.Prompt.Tools) != 13 {
+	if len(first.Prompt.Tools) != 16 {
 		t.Fatalf("unexpected first Agent tool count: %d", len(first.Prompt.Tools))
 	}
 	for _, name := range []string{"spawn_agent", "send_input", "wait_agent", "close_agent"} {
 		if !promptHasTool(first.Prompt.Tools, name) {
 			t.Fatalf("first Agent request omitted multi-agent tool %q", name)
+		}
+	}
+	for _, name := range []string{"get_goal", "create_goal", "update_goal"} {
+		if !promptHasTool(first.Prompt.Tools, name) {
+			t.Fatalf("first Agent request omitted Goal tool %q", name)
 		}
 	}
 	firstPrompt := messageContents(first.Prompt.Input)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -34,13 +35,45 @@ func (store *Store) RenameThread(ctx context.Context, id protocol.ThreadID, titl
 	return err
 }
 
-func (store *Store) DeleteThread(ctx context.Context, id protocol.ThreadID, at time.Time) error {
-	if at.IsZero() {
-		return errors.New("thread archive time is zero")
+func (store *Store) DeleteThread(ctx context.Context, id protocol.ThreadID) error {
+	if id.IsZero() {
+		return errors.New("thread delete ID is empty")
 	}
-	item := rollout.EventMsgItem{Msg: protocol.ThreadArchivedEvent{Archived: true}}
-	_, err := store.appendWithTemporaryWriter(ctx, id, "", item)
-	return err
+	store.mu.Lock()
+	_, active := store.recorders[id]
+	store.mu.Unlock()
+	if active {
+		return errors.New("cannot delete thread while its writer is active")
+	}
+	metadata, err := store.state.GetThread(ctx, id)
+	if errors.Is(err, threadstore.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := store.validateDeletePath(metadata.RolloutPath, id); err != nil {
+		return err
+	}
+	if err := os.Remove(metadata.RolloutPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("delete thread rollout: %w", err)
+	}
+	if err := store.state.DeleteThread(ctx, id); err != nil && !errors.Is(err, threadstore.ErrNotFound) {
+		return fmt.Errorf("delete thread metadata: %w", err)
+	}
+	return nil
+}
+
+func (store *Store) validateDeletePath(path string, id protocol.ThreadID) error {
+	if err := validateRolloutPathIdentity(path, id); err != nil {
+		return err
+	}
+	sessionsRoot := filepath.Join(store.home, "sessions")
+	relative, err := filepath.Rel(sessionsRoot, path)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return errors.New("thread rollout path is outside the sessions root")
+	}
+	return nil
 }
 
 func projectMetadata(path string, lines []rollout.Line) (threadstore.StoredThread, error) {

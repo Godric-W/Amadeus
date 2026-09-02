@@ -6,7 +6,7 @@ import (
 )
 
 type Event struct {
-	ID  SubmissionID
+	ID  EventID
 	Msg EventMsg
 }
 

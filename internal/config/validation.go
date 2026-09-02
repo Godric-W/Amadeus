@@ -23,6 +23,7 @@ const (
 	maxWebTimeout       = 2 * time.Minute
 	maxWebBytes         = int64(16 << 20)
 	maxWebResults       = 10
+	maxGoalTokenBudget  = int64(1_000_000_000)
 )
 
 type ValidationIssue struct {
@@ -109,6 +110,9 @@ func Validate(configured Config) error {
 	}
 
 	validateAgent(configured.Agent, addIssue)
+	if configured.Goals.MaxGoalTokenBudget != nil && (*configured.Goals.MaxGoalTokenBudget <= 0 || *configured.Goals.MaxGoalTokenBudget > maxGoalTokenBudget) {
+		addIssue("goals.max_goal_token_budget", fmt.Sprintf("must be greater than 0 and at most %d", maxGoalTokenBudget))
+	}
 	validateWeb(configured.Web, addIssue)
 	validateLogging(configured.Logging, addIssue)
 

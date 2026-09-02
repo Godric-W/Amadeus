@@ -99,6 +99,14 @@ func (queue *NextTurnQueue) AcceptUnexpectedSteer(submission UserMessageSubmissi
 	return true
 }
 
+func (queue *NextTurnQueue) AcceptGoalSteer(submission UserMessageSubmission) bool {
+	if queue == nil || queue.InFlight == nil || !queuedSubmissionMatches(*queue.InFlight, submission) {
+		return false
+	}
+	queue.InFlight = nil
+	return true
+}
+
 func queuedSubmissionMatches(input QueuedUserMessage, submission UserMessageSubmission) bool {
 	return submission.FromNextTurnQueue && input.Message == submission.Message && input.Mode == submission.Mode &&
 		input.ThreadID == submission.OriginThreadID && input.AttachmentGeneration == submission.OriginGeneration

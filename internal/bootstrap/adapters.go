@@ -23,6 +23,7 @@ type Dependencies struct {
 	WebFetcher       webfetch.Fetcher
 	WebSearch        websearch.Provider
 	AuditFactory     AuditFactory
+	StateRuntime     StateRuntimeFactory
 	ThreadStore      ThreadStoreFactory
 	Clock            func() time.Time
 	NextID           func(string) string
@@ -34,6 +35,7 @@ func DefaultDependencies(environment Environment) Dependencies {
 			return openaiadapter.NewAdapter(providerName, model, provider)
 		},
 		AuditFactory: defaultAuditFactory(environment.LookupEnv),
+		StateRuntime: DefaultStateRuntimeFactory,
 		ThreadStore:  DefaultThreadStoreFactory,
 		Clock:        time.Now,
 		NextID:       NextPersistentID,

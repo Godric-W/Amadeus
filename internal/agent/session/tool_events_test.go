@@ -237,3 +237,13 @@ func TestCompleteWaitAgentItemPreservesLastTurnAndDeliveryDiagnostic(t *testing.
 		t.Fatalf("wait state = %#v", completed.AgentsStates)
 	}
 }
+
+func TestGoalControlToolsDoNotCreateVisibleToolActivity(t *testing.T) {
+	for _, name := range []string{"get_goal", "create_goal", "update_goal"} {
+		t.Run(name, func(t *testing.T) {
+			if eventPolicyForTool(name).emitActivity {
+				t.Fatalf("%s should be treated as a control tool", name)
+			}
+		})
+	}
+}

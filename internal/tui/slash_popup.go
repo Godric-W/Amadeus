@@ -10,7 +10,7 @@ type slashCommandPopup struct {
 	rows      int
 }
 
-func (popup *slashCommandPopup) sync(input string, running bool) {
+func (popup *slashCommandPopup) sync(input string, running bool, goalFeature ...bool) {
 	if popup.dismissed == input {
 		popup.items = nil
 		popup.selected = 0
@@ -23,6 +23,15 @@ func (popup *slashCommandPopup) sync(input string, running bool) {
 		popup.filter = filter
 	}
 	popup.items = FilterSlashCommands(input, running)
+	if len(goalFeature) > 0 && !goalFeature[0] {
+		filtered := popup.items[:0]
+		for _, item := range popup.items {
+			if item != SlashGoal {
+				filtered = append(filtered, item)
+			}
+		}
+		popup.items = filtered
+	}
 	if len(popup.items) == 0 {
 		popup.rows = 0
 	} else if visible := minInt(len(popup.items), slashPopupMaxVisible); visible > popup.rows {

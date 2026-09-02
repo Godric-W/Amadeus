@@ -61,6 +61,30 @@ func TestComposerPromptAndStatusUseSemanticHierarchy(t *testing.T) {
 	}
 }
 
+func TestComposerAccentsRecognizedGoalCommandOnly(t *testing.T) {
+	original := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(original) })
+
+	_, model := newTestModel(t, nil)
+	model.input.SetValue("/goal 请熟悉本项目")
+	model.updateInputLayout()
+	rendered := model.inputBox()
+	command := model.palette.command().Render("/goal")
+	if !strings.Contains(rendered, command) {
+		t.Fatalf("goal command is not accented: %q", rendered)
+	}
+	if !strings.Contains(xansi.Strip(rendered), "/goal 请熟悉本项目") {
+		t.Fatalf("composer text changed while highlighting: %q", xansi.Strip(rendered))
+	}
+	model.input.SetValue("/unknown 请熟悉本项目")
+	model.updateInputLayout()
+	unknown := model.inputBox()
+	if strings.Contains(unknown, "\x1b[36m/unknown") {
+		t.Fatalf("unknown command was accented: %q", unknown)
+	}
+}
+
 func TestInheritedNoColorDoesNotDisableRichTUIAccent(t *testing.T) {
 	t.Setenv("TERM", "xterm")
 	t.Setenv("COLORTERM", "")

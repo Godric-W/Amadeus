@@ -8,18 +8,34 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Godric-W/Amadeus/internal/extension"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/protocol"
 	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/threadstore"
 )
 
-func (session *Session) startTurn(submissionID protocol.SubmissionID, input, clientUserMessageID string, kind TaskKind, modeOverride *ModeKind) (protocol.TurnID, error) {
-	if input == "" {
-		return "", errors.New("turn input is empty")
+func (session *Session) startTurn(submissionID protocol.SubmissionID, title string, input TurnInput, kind TaskKind, modeOverride *ModeKind) (protocol.TurnID, error) {
+	if kind == TaskKindRegular && input == nil {
+		return "", errors.New("regular turn input is nil")
+	}
+	if response, ok := input.(ResponseItemTurnInput); ok {
+		if err := response.validate(); err != nil {
+			return "", err
+		}
+		if !session.services.LiveThread.IsMaterialized() {
+			return "", errors.New("automatic turn requires a persisted thread")
+		}
+	}
+	if strings.TrimSpace(title) == "" {
+		title = "automatic continuation"
 	}
 	now := session.services.Clock().UTC()
 	turnID := protocol.TurnID(session.services.NextID("turn"))
+	turnExtensions, err := extension.NewData(string(turnID))
+	if err != nil {
+		return turnID, err
+	}
 	configuration := session.Configuration()
 	if modeOverride != nil {
 		configuration.Mode = *modeOverride
@@ -34,10 +50,10 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input, cli
 		CurrentDate: configuration.CurrentDate, Timezone: configuration.Timezone,
 		Mode: configuration.Mode, Personality: configuration.Personality,
 		OutputSchema:       append(json.RawMessage(nil), configuration.OutputSchema...),
-		OutputSchemaStrict: configuration.OutputSchemaStrict,
+		OutputSchemaStrict: configuration.OutputSchemaStrict, ExtensionData: turnExtensions,
 	}
 	createInput := threadstore.CreateInput{
-		SessionID: session.sessionID, ID: session.threadID, Source: configuration.Source.Clone(), CWD: configuration.CWD, Title: titleFromInput(input),
+		SessionID: session.sessionID, ID: session.threadID, Source: configuration.Source.Clone(), CWD: configuration.CWD, Title: titleFromInput(title),
 		ModelProvider: configuration.Runtime.ModelProvider, Model: configuration.Runtime.Model, CreatedAt: now,
 		BaseInstructions: session.BaseInstructions(),
 	}
@@ -47,7 +63,7 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input, cli
 		return turnID, err
 	}
 	if materialized.MetadataWarning != nil {
-		session.publish(protocol.Event{ID: submissionID, Msg: protocol.WarningEvent{ThreadID: session.threadID, TurnID: turnID, Message: materialized.MetadataWarning.Error()}})
+		session.publish(protocol.Event{ID: protocol.EventIDFromSubmission(submissionID), Msg: protocol.WarningEvent{ThreadID: session.threadID, TurnID: turnID, Message: materialized.MetadataWarning.Error()}})
 	}
 	turnState := newTurnState()
 	taskValue, turnValue, err := session.createTask(session.ctx, input, baseContext, kind, turnState)
@@ -72,7 +88,6 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input, cli
 		return turnID, err
 	}
 	if regular, ok := taskValue.(*regularTask); ok {
-		regular.clientUserID = clientUserMessageID
 		regular.startedAt = now
 	}
 	running, err := NewRunningTask(session.ctx, session, taskValue, turnContext)
@@ -80,11 +95,17 @@ func (session *Session) startTurn(submissionID protocol.SubmissionID, input, cli
 		session.completeWithoutTask(submissionID, turnID, err)
 		return turnID, err
 	}
+	if err := session.emitTurnStartLifecycle(session.ctx, *turnContext); err != nil {
+		_ = session.emitTurnErrorLifecycle(context.WithoutCancel(session.ctx), *turnContext, err)
+		_ = session.emitTurnStopLifecycle(context.WithoutCancel(session.ctx), *turnContext)
+		session.completeWithoutTask(submissionID, turnID, fmt.Errorf("turn start extension: %w", err))
+		return turnID, err
+	}
 	session.active = &ActiveTurn{SubmissionID: submissionID, Task: running, State: turnState}
 	if modeOverride != nil {
 		session.applyMode(submissionID, *modeOverride)
 	}
-	session.publish(protocol.Event{ID: submissionID, Msg: startedEvent})
+	session.publish(protocol.Event{ID: protocol.EventIDFromSubmission(submissionID), Msg: startedEvent})
 	session.watchRunningTask(running)
 	return turnID, nil
 }

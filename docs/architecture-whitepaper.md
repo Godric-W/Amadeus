@@ -1,5 +1,8 @@
 # Amadeus 架构白皮书
 
+> 实现基线：2026-09-01 当前 Amadeus 源码与 `../codex-main`
+> 阅读定位：面向学习者的架构导读；稳定 Contract 以 `docs/design.md` 为准
+
 ## 1. 阅读指南
 
 Amadeus 是一个使用 Go 实现的本地终端 Coding Agent。学习它的关键，是沿着一次用户请求在系统中的流动路径，逐层理解各个模块如何协作。
@@ -11,7 +14,7 @@ Amadeus 是一个使用 Go 实现的本地终端 Coding Agent。学习它的关�
 3. 随后按模块深入说明 Protocol、Thread/Persistence、Agent Loop、Prompt/Context、LLM、Tool、Approval、Process、MCP、Skill、Web/Image、Multi-Agent 和 TUI。
 4. 最后说明并发取消、错误、测试和关键事实。
 
-本文以当前 Amadeus 源码和测试为实现事实，重点解释模块职责、数据流和生命周期；数据模型只展开其职责，字段细节仍可回到源码查看。`docs/design.md` 用来记录架构目标，阅读时可以把它与当前实现对照起来。
+本文以当前 Amadeus 源码和测试为实现事实，重点解释模块职责、数据流和生命周期；数据模型只展开其职责，字段细节仍可回到源码查看。`docs/design.md` 用来记录完整架构 Contract，本文把这些 Contract 翻译成便于学习的运行故事。
 
 ### 1.1 设计来源
 
@@ -42,11 +45,14 @@ amadeus/
     │   └── identity/            # SessionID、ThreadID 等 typed identity
     ├── threadmanager/           # live Thread registry 与 AgentHost
     ├── threadstore/             # Thread persistence port 与 LiveThread
-    │   └── local/
-    │       └── sqlite/          # 可重建 metadata index
+    │   └── local/               # JSONL writer 与 metadata observer
+    ├── state/                   # Workspace-owned StateRuntime contract
+    │   └── sqlite/              # state_1/goals_1 SQLite adapters
+    ├── extension/               # immutable typed extension host
+    │   └── goal/                # GoalService、GoalRuntime 与 Goal tools
     ├── rollout/                 # canonical Rollout item、codec、recorder
     ├── agent/
-    │   ├── session/             # Session loop、Turn、Task、runTurn
+    │   ├── session/             # Session loop、Turn、Task、run_turn
     │   ├── modelclient/         # sampling、stream consume、reconnect
     │   ├── compact/             # 无状态 compaction generation
     │   └── multiagent/          # root-scoped multiagent.Control
@@ -86,6 +92,8 @@ amadeus/
 | `app` / `tui` | 交互用例与显示状态 | Application events、HistoryCell |
 | `threadmanager` | live Thread registry | `AmadeusThread` |
 | `threadstore` / `rollout` | durable Thread history | JSONL、metadata projection |
+| `state` | 独立 SQLite state owner | Thread metadata index、Goal authoritative state |
+| `extension` / `extension/goal` | typed lifecycle contributions | Tool、Goal accounting、idle continuation |
 | `agent/session` | Session 与 ActiveTurn | EventMsg、canonical terminal |
 | `contextmanager` / `prompt` | 模型可见上下文 | PromptSnapshot |
 | `llm` / `modelclient` | 模型请求与流恢复 | Response、usage、stream events |
@@ -111,7 +119,10 @@ flowchart LR
     Model --> LLM[internal/llm]
     Tool --> Policy[internal/policy]
     Store --> Rollout[internal/rollout]
-    Store --> SQLite[local/sqlite]
+    Store --> State[internal/state]
+    State --> SQLite[state/sqlite]
+    Session --> Extensions[internal/extension]
+    Extensions --> Goal[extension/goal]
     Protocol[internal/protocol] --> Rollout
     Protocol --> Session
     Protocol --> App
@@ -122,7 +133,8 @@ flowchart LR
 
 - `protocol` 提供低层 Contract，供 Runtime、TUI 和 Adapter共同使用。
 - `threadmanager` 创建和恢复 Session，并把 live Thread 暴露给上层。
-- `threadstore` 保存 Thread 历史；`rollout` 定义可恢复的 canonical item。
+- `threadstore` 保存 Thread 历史；`rollout` 定义可恢复的 canonical item；`state` 管理独立于会话历史的 SQLite state。
+- `extension` 提供按类型组织的生命周期接入点；`extension/goal` 将 Goal 状态、计费、Tool 和 idle continuation 接入 Session。
 - `tool` 定义通用 Tool 生命周期，`tool/builtin` 提供具体产品能力。
 - `agent/session` 执行 Runtime 主链，Application 和 TUI通过它提交输入并接收事件。
 - TUI 位于最上层，把 Application 与 Protocol事件投影为终端界面。
@@ -143,13 +155,15 @@ flowchart LR
 
 ### 3.1 核心原则
 
-1. **唯一 Runtime 主链**：Default、Plan、Compaction 和 SubAgent 都复用 Session、Task、`runTurn`、ToolExecutionService 与 Rollout。
+1. **唯一 Runtime 主链**：Default、Plan、Compaction 和 SubAgent 都复用 Session、Task、`run_turn`、ToolExecutionService 与 Rollout。
 2. **单一事实 owner**：ThreadManager 管 live Thread；Session 管 ActiveTurn；`contextmanager.Manager`管模型history；ToolRouter管单次请求ToolSet。
 3. **Typed Protocol**：跨 goroutine、跨层和需要恢复的事实使用 `Submission`、`EventMsg`、`TurnItem` 或 `RolloutItem`。
-4. **Canonical Persistence**：JSONL 保存完整历史，SQLite提供可重建的 metadata index。
+4. **Canonical Persistence**：JSONL 保存完整会话历史；`state_1.sqlite` 提供可重建 Thread metadata index；`goals_1.sqlite` 保存 Goal 的权威业务状态。
 5. **Prompt 与能力一致**：模型 ToolSpec 与实际 dispatch 来自同一个 StepContext.ToolRouter。
 6. **UI 负责 Projection**：TUI 将 Agent、Turn、Approval 和 Tool 事件转换为终端视图。
 7. **取消路径明确**：goroutine、Process、Tool、Turn 和 child Thread 都沿着各自的 owner 传播取消，并在有限时间内完成清理。
+8. **Goal 跨 Turn 持续**：GoalStore 保存长期目标状态，GoalExtension 在 Thread idle 时通过 `StartIfIdle` 触发下一次普通 Turn。
+9. **扩展保持类型化**：ExtensionRegistry 以有序 contributor 接入生命周期，scope data 保存 extension-private state。
 
 ### 3.2 分层架构
 
@@ -175,7 +189,7 @@ flowchart TB
         S[Session]
         Active[ActiveTurn]
         Task[RunningTask / SessionTask]
-        Loop[runTurn]
+        Loop[run_turn]
         Step[StepContext]
     end
 
@@ -186,6 +200,7 @@ flowchart TB
         Skill[SkillCatalog]
         Agents[multiagent.Control]
         Process[process.Manager]
+        Ext[ExtensionRegistry / GoalExtension]
     end
 
     subgraph Model[Model Boundary]
@@ -197,7 +212,9 @@ flowchart TB
     subgraph Infra[Infrastructure]
         Store[ThreadStore]
         JSONL[(JSONL Rollout)]
-        DB[(SQLite Index)]
+        State[StateRuntime]
+        MetaDB[(state_1.sqlite)]
+        GoalDB[(goals_1.sqlite)]
         Audit[Audit Sink]
     end
 
@@ -210,9 +227,12 @@ flowchart TB
     S --> MCP
     S --> Skill
     S --> Agents
+    S --> Ext
     Tools --> Process
     Store --> JSONL
-    Store --> DB
+    Store --> State
+    State --> MetaDB
+    State --> GoalDB
     Tools -. execute_command only .-> Audit
 ```
 
@@ -222,6 +242,12 @@ flowchart TB
 
 ```text
 Amadeus process
+├── Workspace shared owners
+│   ├── StateRuntime
+│   │   ├── ThreadMetadataStore → state_1.sqlite
+│   │   └── GoalStore → goals_1.sqlite
+│   ├── ExtensionRegistry (immutable, ordered contributors)
+│   └── GoalService (cold/live Goal coordination)
 ├── ThreadManager
 │   └── live Thread registry
 │       ├── Root AmadeusThread
@@ -237,6 +263,8 @@ Amadeus process
 │       │   │   │   ├── Approval / Permission context
 │       │   │   │   ├── MCPRuntime / SkillCatalog / AgentsMdManager
 │       │   │   │   └── ProcessManager / Web / Compaction services
+│       │   │   ├── Session/Thread ExtensionData
+│       │   │   │   └── GoalRuntimeHandle + GoalAccountingState
 │       │   │   ├── SessionIo
 │       │   │   │   ├── Submission input boundary
 │       │   │   │   ├── Event output boundary
@@ -246,7 +274,7 @@ Amadeus process
 │       │   │       │   └── frozen model, mode, workspace and output policy
 │       │   │       ├── RunningTask (最多一个)
 │       │   │       │   └── SessionTask
-│       │   │       │       ├── RegularTask → runTurn continuation loop
+│       │   │       │       ├── RegularTask → run_turn continuation loop
 │       │   │       │       │   ├── StepContext (每次采样的不可变能力快照)
 │       │   │       │       │   │   ├── Prompt / WorldState snapshot
 │       │   │       │       │   │   └── ToolRouter snapshot
@@ -257,17 +285,17 @@ Amadeus process
 │       │   ├── Root AgentControl
 │       │   │   └── shared with child Sessions in this Root tree
 │       │   └── LiveThread
-│       │       └── ThreadStore → JSONL Rollout + SQLite metadata index
+│       │       └── ThreadStore → JSONL Rollout + StateRuntime.Threads metadata index
 │       └── Child AmadeusThread(s)
 │           └── each has an independent Session / Turn / Rollout
 ```
 
 这棵树可以用四个问题来阅读：
 
-- **ThreadManager 拥有什么？** 它拥有 live Thread registry，负责创建、恢复、注册和关闭 `AmadeusThread`；它不拥有某个 Thread 的 Turn 或 Prompt history。
+- **ThreadManager 拥有什么？** 它拥有 live Thread registry，负责创建、恢复、注册和关闭 `AmadeusThread`；每个 Thread 的 Turn 与 Prompt history分别由 Session 和 ContextManager管理。
 - **Session 拥有什么？** 它是一个模型 Agent 的长期执行 owner，串行管理 `SessionState`、`SessionServices`、`SessionIo`、`ActiveTurn` 和 terminal ordering。
-- **ActiveTurn 拥有什么？** 它只代表当前一次 Turn，最多有一个 `RunningTask`；`RunningTask` 执行一个 `SessionTask`，并把完成结果交回 Session loop。
-- **哪些对象不是长期 owner？** `TurnContext` 是 Turn 冻结值，`StepContext` 是一次模型采样的能力快照，`ToolRouter` 和 `ModelClientSession` 不能借此取得新的状态所有权。
+- **ActiveTurn 拥有什么？** 它代表当前一次 Turn，最多有一个 `RunningTask`；`RunningTask` 执行一个 `SessionTask`，并把完成结果交回 Session loop。
+- **哪些对象提供快照？** `TurnContext` 是 Turn 冻结值，`StepContext` 是一次模型采样的能力快照，`ToolRouter` 和 `ModelClientSession` 依据这些快照完成单次请求。
 
 ```mermaid
 flowchart TD
@@ -321,9 +349,13 @@ Core Runtime
 │   ├── agent/modelclient        # sampling、stream 和 reconnect
 │   ├── tool / policy             # ToolRouter、执行和 Approval
 │   └── MCP / Skill / AgentsMd   # Session-scoped 外部能力
+├── Extension host
+│   ├── ExtensionRegistry / ExtensionData # typed lifecycle contributions
+│   └── GoalExtension                    # Goal tools、accounting、idle continuation
 └── Durability boundary
     ├── LiveThread / ThreadStore # canonical append 和恢复入口
-    └── Rollout                  # 可恢复的 typed history facts
+    ├── Rollout                  # 可恢复的 typed history facts
+    └── StateRuntime             # Thread metadata 与 Goal state SQLite owner
 ```
 
 可以用以下映射把 Codex 的 crate 级概念定位到 Amadeus 的实际代码：
@@ -336,12 +368,15 @@ Core Runtime
 | `client` / `ModelClientSession` | `internal/agent/modelclient` + `internal/llm` | Provider-neutral request、stream 和 retry |
 | `tools` / approval | `internal/tool` + `internal/policy` + `internal/tool/builtin` | Tool snapshot、执行生命周期和权限决定 |
 | `rollout` / `thread-store` | `internal/rollout` + `internal/threadstore` | durable history、LiveThread 和 metadata index |
+| `state` runtime stores | `internal/state` + `internal/state/sqlite` | Workspace-owned SQLite runtime、Thread metadata 与 Goal authority |
+| `ext/extension-api` | `internal/extension` | immutable registry、scoped data、typed contributors、ordered Event sink |
+| `ext/goal` | `internal/extension/goal` | GoalService、GoalRuntime、Goal tools、accounting 与 steering |
 
 这里有三个容易混淆的边界：
 
-- **Bootstrap 不是 Core Runtime。** Bootstrap 解析环境、打开 Store、创建 adapters 和 `ThreadManager`；它负责“把运行时组装起来”，不拥有 Turn、Prompt history 或模型循环。
-- **Application/TUI 不是 Core Runtime。** `ThreadWorkspace` 只选择当前 Thread，`InteractiveApplication` 和 TUI 只提交输入、消费 Event 并做 projection；它们不判断 Turn 完成，也不直接执行 Tool。
-- **`CoreRegistry` 不是 Codex Core。** `internal/tool/builtin.CoreRegistry` 只是内置 Tool 的注册表，属于 Capability boundary，不是 Session 或 Thread 的运行时总 owner。
+- **Bootstrap 的位置。** Bootstrap 解析环境、打开 Store、创建 adapters 和 `ThreadManager`，负责把长期运行对象组装起来；Turn、Prompt history 和模型循环分别由 Runtime owner承载。
+- **Application/TUI 的位置。** `ThreadWorkspace` 选择当前 Thread，`InteractiveApplication` 和 TUI 提交输入、消费 Event 并完成 projection；Turn 完成与 Tool 执行仍由 Session/Tool owner处理。
+- **`CoreRegistry` 的位置。** `internal/tool/builtin.CoreRegistry` 是内置 Tool 注册表，属于 Capability boundary；Session 和 Thread 的运行时生命周期仍由各自 owner管理。
 
 Core Runtime 中常用的基数关系如下：
 
@@ -355,7 +390,7 @@ Core Runtime 中常用的基数关系如下：
             └── 0..1 个 ActiveTurn
                 └── 0..1 个 RunningTask
                     └── 一个 SessionTask
-                        └── RegularTask 的 runTurn 可执行多个 StepContext
+                        └── RegularTask 的 `run_turn` 可执行多个 StepContext
                             └── 每个 StepContext 可产生 0..N 个 Tool calls
 ```
 
@@ -372,7 +407,7 @@ sequenceDiagram
     participant APP as InteractiveApplication
     participant TH as AmadeusThread
     participant S as Session Loop
-    participant R as RunningTask/runTurn
+    participant R as RunningTask/run_turn
     participant C as contextmanager.Manager
     participant M as ModelClientSession
     participant T as ToolExecutionService
@@ -475,7 +510,7 @@ flowchart LR
 - Delta 用于 live 展示；completed item 携带恢复所需的完整事实。
 - Approval/UserInput request、Working、Popup 和动画属于运行时交互状态，canonical history保存完成后的业务事实。
 
-`TurnItem` 的稳定 payload 由 `Kind` 决定，而不是一个可以任意扩展的 JSON 对象：`tool_call`、`command_execution`、`file_change` 和 `context_compaction` 必须分别携带对应的 typed payload，并校验 Item 的 identity、status 和时间字段。缺少 payload 或 payload 类型不匹配的记录属于当前格式错误；解码器不会用旧格式默认值或 `map[string]any` 补齐。只有 codec envelope 使用 `RawMessage`，ToolResult 的 `Data/Metadata` 才作为明确的不透明外部扩展在 projection 边界消费。
+`TurnItem` 的稳定 payload 由 `Kind` 决定：`tool_call`、`command_execution`、`file_change` 和 `context_compaction` 分别携带对应的 typed payload，并校验 Item 的 identity、status 和时间字段。解码器据此直接构造领域变体；codec envelope 使用 `RawMessage`，ToolResult 的 `Data/Metadata` 作为明确的不透明外部扩展在 projection 边界消费。
 
 ### 5.3 Identity
 
@@ -484,7 +519,8 @@ flowchart LR
 | `SessionID` | Root 与 child tree-level correlation；Root 与 Root ThreadID 使用同一 UUID value。 |
 | `ThreadID` | 具体 Thread、Rollout、registry 和 Resume identity；新值使用 UUIDv7。 |
 | `TurnID` | 一个 Session Turn。 |
-| `SubmissionID` | 输入与输出 Event correlation。 |
+| `SubmissionID` | 一次输入提交的 identity；主要用于把 admission、Turn 和相关事件联系起来。 |
+| `EventID` | Event envelope 的独立 correlation；它可以来自 submission、turn、tool call 或 extension 事件。 |
 | `RequestID` | Approval 或 structured user input waiter。 |
 | `ItemID` | Assistant、Tool、Plan、Collaboration item。 |
 
@@ -534,6 +570,7 @@ flowchart LR
 | `config.Config` | 当前有效配置聚合。 |
 | `ModelProviderInfo` | Provider transport、Dialect、凭据、timeout/retry。 |
 | `AgentConfig` / `MultiAgentConfig` | Tool 并发与 Basic Multi-Agent 限制。 |
+| `FeatureConfig` / `GoalsConfig` | Goal feature 开关与 token budget 最大值/默认值。 |
 | `Sources` | 配置字段 provenance。 |
 | `session.Configuration` | 注入 Session 的冻结配置与 workspace facts。 |
 | `ServiceAdapters` | Bootstrap 到 Session 的 concrete adapter factories。 |
@@ -556,7 +593,15 @@ internal/threadstore/
     ├── writer.go            # append and flush
     ├── metadata.go          # metadata projection
     ├── index.go             # rebuild
-    └── sqlite/              # metadata adapter
+    └── store.go              # LocalThreadStore composition
+
+internal/state/
+├── state.go                 # StateRuntime and store contracts
+└── sqlite/
+    ├── runtime.go           # two-database lifecycle owner
+    ├── thread_store.go      # state_1.sqlite metadata adapter
+    ├── goal_store.go        # goals_1.sqlite authoritative Goal adapter
+    └── schema.go             # current-only schemas
 
 internal/rollout/
 ├── codec.go
@@ -575,18 +620,20 @@ flowchart TD
     Recorder[Rollout Recorder]
     JSONL[(JSONL v6)]
     Project[Metadata Projection]
-    SQLite[(SQLite v5)]
+    Metadata[(state_1.sqlite metadata)]
+    Goals[(goals_1.sqlite Goal state)]
 
     Session --> Live --> Store --> Recorder --> JSONL
-    Recorder --> Project --> SQLite
+    Recorder --> Project --> Metadata
+    GoalService[GoalService] --> Goals
     JSONL -. rebuild .-> Project
 ```
 
 - JSONL Rollout 是完整 durable truth。
-- SQLite 保存 Thread metadata、parent relation、token totals 和可重建 agent edge state。
-- SQLite 按 durable watermark 投影 JSONL，并作为可重建的 metadata read model。
-- 当前 Rollout v6、SQLite schema v5；存储层按当前格式读取和校验，旧开发格式由版本检查报告为不兼容。
-- 当前开发阶段不提供针对旧 Rollout、旧 SQLite 或旧 payload 的兼容 reader、migration、alias 或 fallback decoder；测试数据应按当前 schema 直接重建。`CatalogMigration`/`CatalogPlanned` 等未实现能力状态也不属于当前 Tool Catalog。
+- `state_1.sqlite` 保存 Thread metadata、parent relation、token totals 和可重建 agent edge state；它按 durable watermark 投影 JSONL。
+- `goals_1.sqlite` 保存 Goal 的 status、objective、budget、usage、timestamps 和 continuation deferral，是 Goal 的 authoritative state；它有独立事务和恢复边界，不依赖 JSONL watermark。
+- 当前 Rollout v6、Thread metadata schema v1、Goal schema v1；存储层按各自的 schema version 读取和校验，开发数据由当前格式直接生成。
+- `StateRuntime` 在 Workspace 生命周期内打开两份数据库，完成部分初始化失败时的逆序关闭；`ThreadStore` 与 `GoalService` 通过 typed store contract 使用它们。
 
 ### 7.3 写入顺序
 
@@ -613,16 +660,133 @@ sequenceDiagram
 | `AmadeusThread` | 对外 Thread handle；提交 Op、消费 Event、查询 history。 |
 | `ThreadManager` | 唯一 live registry；创建/恢复 Root 与 child Session。 |
 | `LiveThread` | 单 Thread writer 的并发安全边界。 |
-| `ThreadStore` | materialize、append、load、list、archive、rebuild port。 |
+| `ThreadStore` | materialize、append、load、list、archive、delete、rebuild port。 |
 | `RolloutItem` | canonical typed item family。 |
 | `SessionMetaItem` | Thread 创建、SessionID、source、Base provenance。 |
 | `ResponseItem` | 模型可见 User/Assistant/Tool facts。 |
 | `WorldStateItem` / `TurnContextItem` | Prompt baseline 与 Turn reference。 |
 | `CompactedItem` | compaction replacement checkpoint。 |
 | `AgentSpawnEdgeItem` | Root rollout 中 Basic Multi-Agent open/closed membership。 |
-| `StoredThread` | SQLite metadata read model，提供Thread索引与展示信息。 |
+| `StoredThread` | `state_1.sqlite` metadata read model，提供Thread索引与展示信息。 |
 
 学习时可以把 `TurnItem` 理解为“可重放的 typed 展示事实”：先由 `Kind` 选择 payload variant，再由 live Event 和 Resume projection 共同消费；TUI 不从展示文本猜测 Tool 身份，也不从旧 JSON 形状推断缺失字段。
+
+### 7.5 Persisted Thread Goal
+
+Goal 是挂在持久化 Thread 上的长期工作目标。它把多个普通 physical Turn 组织成一个连续的工作过程：每个 Turn 仍有独立的 `TurnID`、Prompt、Tool snapshot 和 terminal event，Goal 只负责在这些 Turn 之间决定是否继续。
+
+#### 7.5.1 数据模型
+
+Goal 的内部状态位于 `internal/state.GoalStore`，公共快照位于 `internal/protocol.ThreadGoal`：
+
+```go
+type ThreadGoal struct {
+    ThreadID        protocol.ThreadID
+    Objective       string
+    Status          ThreadGoalStatus
+    TokenBudget     *int64
+    TokensUsed      int64
+    TimeUsedSeconds int64
+    CreatedAt       int64
+    UpdatedAt       int64
+}
+```
+
+状态有六种：`active`、`paused`、`blocked`、`usage_limited`、`budget_limited` 和 `complete`。`active` 允许 idle continuation；其余状态保留快照并等待用户或系统动作。GoalID 是 State 层的内部 UUIDv4，公共 TUI/API 快照只携带 ThreadID。
+
+`goals_1.sqlite` 的 `thread_goals` 保存 objective、status、budget、累计 tokens、累计 seconds 和时间戳；`thread_goal_continuation_deferrals` 保存 Fork 后的一次 continuation 延迟。GoalStore 通过 CAS 和单条 SQL transition 保证旧 Turn 的迟到 account 不会改写替代 Goal。
+
+#### 7.5.2 生命周期
+
+```mermaid
+sequenceDiagram
+    participant UI as TUI / Application
+    participant GS as GoalService
+    participant DB as GoalStore
+    participant E as GoalExtension
+    participant S as Session
+
+    UI->>GS: Set(ThreadID, objective/status/budget)
+    GS->>DB: atomic Goal mutation
+    GS-->>UI: Goal snapshot / ordered GoalUpdated
+    E->>S: StartIfIdle(Goal ResponseItem)
+    S->>S: create one Regular physical Turn
+    S-->>E: Turn terminal + token snapshot
+    E->>DB: account time and non-cached input + output
+    E->>S: next idle continuation when status=active
+```
+
+`GoalService` 同时支持 cold Thread 和 live Thread。cold 操作直接读取 GoalStore；live 操作通过 `GoalRuntimeHandle` 接入 Session。external set 的观察顺序是“GoalStore mutation → materialization/response → ordered GoalUpdated → runtime effect”，因此客户端先看到新快照，再看到自动 Turn。
+
+#### 7.5.3 GoalExtension 与计费
+
+`internal/extension/goal.Extension` 实现 Thread、Turn、Config、TokenUsage、ToolLifecycle 和 Tool contributor。它把 `GoalRuntimeHandle` 放在 Thread-scoped `ExtensionData` 中，并通过 `GoalService` 注册 live runtime。
+
+运行时使用两个独立的串行化协议：`goalStateLock` 保护 Goal mutation 与 idle start 的窗口；`progressAccountingLock` 保护并行 Tool 完成时的 usage snapshot、数据库结算和 baseline 推进。Token 增量公式为：
+
+```text
+max(0, input_tokens - cached_input_tokens) + max(0, output_tokens)
+```
+
+Goal 在普通 Turn 中途创建时，以当前 Thread usage 建立 baseline；Plan Turn 不计入 Goal。预算达到后进入 `budget_limited`，当前 request/batch 完成后停止新的自动 Turn。Provider usage limit 进入 `usage_limited`，其他终态错误进入 `blocked`。
+
+#### 7.5.4 Goal Tools 与 TUI
+
+GoalExtension 按 Step 提供三个模型 Tool：
+
+| Tool | 作用 |
+|---|---|
+| `get_goal` | 读取当前 Goal、usage、budget 和 remaining tokens |
+| `create_goal` | 在没有未完成 Goal 时创建 objective |
+| `update_goal` | 将 Goal 标记为 `complete` 或 `blocked` |
+
+这些 control Tool 会进入模型请求、ToolResult 和必要的 Rollout facts，但不生成普通 Tool Activity；TUI 通过 GoalUpdated Event 和 footer 展示状态。`/goal <objective>` 是 TUI/Application action：命令本身在 transcript 中回显一次，随后执行 GoalStore mutation；它不创建 UserInputOp。裸 `/goal` 打开完整 summary，`/goal edit`、`pause`、`resume` 和 `clear` 分别更新或清除同一 Goal snapshot。
+
+Footer 使用 Codex 风格的状态文本，例如 `Pursuing goal (3h 21m)`、`Goal achieved (3h 21m)`、`Goal paused (/goal resume)`。active elapsed 由 TUI 的 observed-at 与当前 active Turn 起点计算，并由独立 UI tick 更新；持久化的 `TimeUsedSeconds` 负责跨进程恢复。
+
+#### 7.5.5 Resume 与 Fork
+
+Resume 先加载 canonical history、Token snapshot、Goal snapshot 和 Event pump，再触发 Thread idle。只有 `active` Goal 启动自动 continuation；paused、blocked、usage_limited、budget_limited 和 complete 直接恢复为静止状态。GoalStore 的 `ReplaceSnapshot` 与 continuation deferral 保存 Fork 所需的 source progress、完整 snapshot 和 target 延迟状态；target 的第一个显式 Turn 完成后恢复正常 idle 流程。
+
+### 7.6 Typed Extension Host
+
+`internal/extension` 是 Workspace 与 Session 之间的可选能力接线层。它的核心不是通用事件总线，而是一组稳定、具名的生命周期接口：
+
+```text
+Builder (composition time)
+→ immutable Registry
+   ├── ThreadLifecycleContributor
+   ├── TurnLifecycleContributor
+   ├── ConfigContributor
+   ├── TokenUsageContributor
+   ├── ToolLifecycleContributor
+   └── ToolContributor
+```
+
+Builder 只在 Bootstrap 装配阶段注册 contributor；Registry build 后由 Workspace 内的 Sessions 共享并保持注册顺序。Session 创建 Session/Thread scoped `ExtensionData`，Turn 与 Step 创建各自 scope。`ExtensionData` 以 Go type 作为 key，因此 GoalRuntime、GoalAccountingState 等 extension-private value 可以按类型读取，同时保留 scope identity。
+
+```mermaid
+flowchart LR
+    Bootstrap[Bootstrap Builder]
+    Registry[Immutable ExtensionRegistry]
+    SessionData[Session ExtensionData]
+    ThreadData[Thread ExtensionData]
+    TurnData[Turn ExtensionData]
+    StepData[Step ExtensionData]
+    Contributor[Typed Contributor]
+    Router[Step ToolRouter]
+
+    Bootstrap --> Registry --> Contributor
+    Contributor --> SessionData
+    Contributor --> ThreadData
+    Contributor --> TurnData
+    Contributor --> StepData
+    Contributor --> Router
+```
+
+ToolContributor 在 Step capture 时返回绑定当前 scope 的 `ToolDefinition`，随后与 Core/MCP tools 一起冻结进同一个 ToolRouter。Tool execution 使用这份冻结 route，因此模型看到的 spec 与实际 handler identity 来自同一 snapshot。
+
+Extension Event 使用 `EventRouter` 汇入 Session 的公开 Event 流。Router 按 ThreadID 绑定 Session inbox；普通 lifecycle observation 使用 fire-and-enqueue，external Goal mutation 使用同一 router 的 ordered enqueue+ack，在自动 continuation 前完成 GoalUpdated 投递。Session 仍是公开 Event ordering 与 delivery 的 owner。
 
 ## 8. Agent Loop
 
@@ -803,7 +967,7 @@ BaseInstructions 在 Thread 创建时解析并持久化 exact text + provenance�
 
 ```mermaid
 sequenceDiagram
-    participant R as runTurn
+    participant R as run_turn
     participant S as SessionServices
     participant W as WorldState Builder
     participant L as LiveThread
@@ -907,7 +1071,7 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-    participant R as runTurn
+    participant R as run_turn
     participant M as ModelClientSession
     participant A as Adapter
     participant E as EventSink
@@ -1018,6 +1182,7 @@ Tool声明parallel-safe时进入有界并发；完成结果按模型调用顺序
 | 文件修改 | `edit`、`write` | Diff、Approval、stale revalidate、atomic apply |
 | 进程 | `execute_command`、`write_stdin` | exact command grant、`process.Manager` |
 | Runtime | `update_plan`、`request_user_input` | dedicated Event / typed waiter |
+| Goal control | `get_goal`、`create_goal`、`update_goal` | Extension Tool、GoalStore transition、GoalUpdated Event |
 | 外部 | Web、MCP、Skill、image | capability-specific validation |
 | 协作 | spawn/send/wait/close | root-only `multiagent.Control` |
 
@@ -1032,6 +1197,8 @@ Tool声明parallel-safe时进入有界并发；完成结果按模型调用顺序
 | `ToolResult` | 模型可见text/parts/data/error/partial。 |
 | `ToolDisplayResult` | TUI和Event安全投影。 |
 | `ToolExecution` | call、outcome、duration和result。 |
+
+Tool activity 与 control Tool 有不同的 UI 投影。文件、搜索、命令、网络等工作型 Tool 会生成 `ToolHistoryCell`；`update_plan` 与三个 Goal Tool 主要改变 Runtime 协作状态，因此它们保留 ToolResult 和 durable model history，同时分别通过 PlanUpdateEvent 或 GoalUpdated Event 展示。这个区分解释了为什么 Goal 完成时 footer 会变化，而 transcript 不出现 `Ran update_goal`。
 
 ## 12. Permission、Approval 与文件修改
 
@@ -1490,6 +1657,41 @@ flowchart LR
 
 Slash Command属于Interface control plane；模型Tool负责模型驱动的操作，Thread、Mode、Compaction、Skill和MCP操作则通过Application/Session主链完成。
 
+#### `/goal` 交互链
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant C as Composer
+    participant T as TUI reducer
+    participant A as InteractiveApplication
+    participant G as GoalService
+    participant S as Session
+
+    U->>C: /goal <objective>
+    C->>C: cyan command element for /goal
+    C->>T: SlashInvocation{Goal, Args}
+    T->>T: one local command echo
+    T->>A: SetGoal
+    A->>G: Goal mutation
+    G-->>T: GoalUpdated snapshot
+    G->>S: StartIfIdle contextual ResponseItem
+    S-->>T: ordinary Turn lifecycle
+```
+
+`/goal` 的几个形态共用同一个 GoalStore snapshot：
+
+| 输入 | TUI 行为 |
+|---|---|
+| `/goal <objective>` | 回显命令一次，创建或确认替换 Goal，并在 idle 时开始工作 |
+| `/goal` | 展示 status、objective、elapsed、tokens 和 budget summary |
+| `/goal edit` | 打开 objective editor，保留已有 usage/created-at |
+| `/goal pause` | 将 active Goal 置为 paused |
+| `/goal resume` | 恢复 paused、blocked 或 usage-limited Goal |
+| `/goal clear` | 删除 Goal snapshot 与 continuation deferral |
+
+Composer 的 `/goal` 命令元素使用青色，参数保持普通文本。设置、编辑、暂停和恢复完成后，TUI 通过 footer 表达新状态；完整详情由裸 `/goal` 提供。模型在 Goal physical Turn 内调用 `update_goal` 时，GoalUpdated Event更新同一 footer，而 control Tool 本身不生成普通 Tool activity cell。
+
 ### 18.4 Event 到 HistoryCell
 
 ```mermaid
@@ -1564,9 +1766,12 @@ flowchart LR
 | `ToolHistoryCell` | typed Tool activity projection。 |
 | `CollabAgentHistoryCell` | spawn/send/wait/close与blocked LastTurn展示。 |
 | `NextTurnQueue` | attachment-scoped未提交FIFO。 |
+| `GoalStatusState`（TUI派生） | Goal snapshot observed-at、active Turn 起点与 footer indicator。 |
 | `approvalDialog` / `requestUserInputDialog` | 两类独立typed interaction UI。 |
 
 Statusline 由 Session 状态事件重建 `statusLineState`；resize 时 `WindowSizeMsg` 先刷新这份语义 projection，`footerView()` 再使用当前 width 对完整左侧 statusline 做 Codex 风格的右侧省略，并将 Plan indicator 右对齐。ContextUsed/ContextWindowSize 是固定 statusline item，随整行一起参与右侧截断；transcript 的 native scrollback 由独立的`transcriptReflowState` debounce后重建。
+
+Goal footer 是独立于固定 statusline 的 typed projection。`GoalStatusState` 保存最近 Goal snapshot 的 observed-at；TurnStarted记录 active physical Turn 起点；250ms Goal tick刷新 elapsed。无预算 active Goal显示`Pursuing goal (elapsed)`，有预算时显示tokens/budget；complete显示`Goal achieved (...)`，paused、blocked、usage-limited和budget-limited各有对应状态文案。
 
 ## 19. Audit、Logging 与诊断
 
@@ -1669,6 +1874,7 @@ flowchart TD
 - Provider request retry属于Adapter；stream reconnect属于ModelClientSession。
 - Tool validation/permission/stale错误返回typed ToolResult，模型可调整后继续。
 - Persistence failure会沿Session错误路径返回。
+- UserInput 的 pre-admission 启动失败通过对应 `UserMessageAdmission` 返回一次；Compact 或自动 Turn 等没有 admission waiter 的启动失败通过 `ErrorEvent` 进入统一 Event 流。
 - Resume根据当前格式的canonical facts重建Session；运行中的goroutine、process、overlay、stream delta和pending future由新的运行时重新建立。
 - interrupted Turn恢复时补齐pending ToolResult和TurnAborted事实。
 
@@ -1693,7 +1899,7 @@ flowchart TB
 ### 22.2 关键事实
 
 1. ThreadManager维护live Thread registry，Session维护ActiveTurn、interactive waiter和terminal ordering。
-2. JSONL保存完整history，SQLite提供可重建的metadata index。
+2. JSONL保存完整history；`state_1.sqlite`提供可重建的Thread metadata index，`goals_1.sqlite`保存Goal authoritative state。
 3. StepContext.ToolRouter同时提供模型ToolSpecs和对应的dispatch identity。
 4. Tool调用依次经过Normalize、Validate、Prepare、Permission/Approval、Execute。
 5. Session grant属于当前Session；Root和child分别拥有自己的permission context。
@@ -1710,6 +1916,10 @@ flowchart TB
 16. Event 流背压不会改变 canonical 顺序；关键事件 delivery 超时会形成可诊断错误。
 17. Prompt/Context、AGENTS.md、Rollout 和 completed process retention 的优化均由 benchmark/失效边界驱动，不引入第二事实源。
 18. 当前格式的 typed payload 缺失或变体不匹配会直接失败；旧测试数据不会通过兼容 fallback 进入 live、Resume 或 TUI。
+19. ExtensionRegistry按注册顺序提供typed lifecycle；Session/Thread/Turn/Step ExtensionData保存各scope的extension state。
+20. GoalStore是Goal status/objective/budget/usage/time的事实源；Rollout中的Goal item服务于history/materialization，Resume从GoalStore取得snapshot。
+21. Goal continuation使用`StartIfIdle(ResponseItem)`创建普通physical Turn；Goal control Tool不生成普通Tool Activity，状态通过GoalUpdated Event与footer呈现。
+22. `/goal <objective>`在TUI transcript回显一次，footer通过独立tick持续投影active elapsed与terminal状态。
 
 ### 22.3 源码架构检查
 

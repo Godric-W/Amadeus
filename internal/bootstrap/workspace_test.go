@@ -10,6 +10,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/audit"
 	"github.com/Godric-W/Amadeus/internal/config"
+	"github.com/Godric-W/Amadeus/internal/rollout"
 	"github.com/Godric-W/Amadeus/internal/threadstore"
 )
 
@@ -26,7 +27,12 @@ func (store *closeTrackingThreadStore) Close() error {
 func TestOpenWorkspaceClosesStoreWhenCompositionFails(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	base, err := DefaultThreadStoreFactory(ctx, home)
+	stateRuntime, err := DefaultStateRuntimeFactory(ctx, home, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stateRuntime.Close()
+	base, err := DefaultThreadStoreFactory(ctx, home, stateRuntime.Threads(), time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,8 +40,10 @@ func TestOpenWorkspaceClosesStoreWhenCompositionFails(t *testing.T) {
 	_, err = OpenWorkspace(ctx, WorkspaceOptions{
 		AmadeusRoot: home, CWD: t.TempDir(), Configuration: testConfiguration(),
 		Dependencies: Dependencies{
-			ThreadStore: func(context.Context, string) (threadstore.ThreadStore, error) { return tracking, nil },
-			NextID:      NextPersistentID,
+			ThreadStore: func(context.Context, string, threadstore.MetadataDB, rollout.Clock) (threadstore.ThreadStore, error) {
+				return tracking, nil
+			},
+			NextID: NextPersistentID,
 		},
 	})
 	if err == nil || err.Error() != "bootstrap audit factory is nil" {
@@ -49,7 +57,12 @@ func TestOpenWorkspaceClosesStoreWhenCompositionFails(t *testing.T) {
 func TestCloseWorkspaceIsIdempotentAtApplicationBoundary(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	base, err := DefaultThreadStoreFactory(ctx, home)
+	stateRuntime, err := DefaultStateRuntimeFactory(ctx, home, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stateRuntime.Close()
+	base, err := DefaultThreadStoreFactory(ctx, home, stateRuntime.Threads(), time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +70,9 @@ func TestCloseWorkspaceIsIdempotentAtApplicationBoundary(t *testing.T) {
 	result, err := OpenWorkspace(ctx, WorkspaceOptions{
 		AmadeusRoot: home, CWD: t.TempDir(), Configuration: testConfiguration(),
 		Dependencies: Dependencies{
-			ThreadStore: func(context.Context, string) (threadstore.ThreadStore, error) { return tracking, nil },
+			ThreadStore: func(context.Context, string, threadstore.MetadataDB, rollout.Clock) (threadstore.ThreadStore, error) {
+				return tracking, nil
+			},
 			AuditFactory: func() (audit.Sink, io.Closer, error) {
 				return nil, nil, errors.New("not reached without a started session")
 			},

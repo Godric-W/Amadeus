@@ -14,6 +14,7 @@ const (
 	SlashDelete  SlashCommand = "delete"
 	SlashCompact SlashCommand = "compact"
 	SlashPlan    SlashCommand = "plan"
+	SlashGoal    SlashCommand = "goal"
 	SlashCopy    SlashCommand = "copy"
 	SlashStatus  SlashCommand = "status"
 	SlashMCP     SlashCommand = "mcp"
@@ -24,7 +25,7 @@ const (
 func BuiltinSlashCommands() []SlashCommand {
 	return []SlashCommand{
 		SlashResume, SlashSkills, SlashRename, SlashDelete, SlashCompact,
-		SlashPlan, SlashCopy, SlashStatus, SlashMCP, SlashClear, SlashExit,
+		SlashPlan, SlashGoal, SlashCopy, SlashStatus, SlashMCP, SlashClear, SlashExit,
 	}
 }
 
@@ -44,6 +45,8 @@ func (command SlashCommand) Description() string {
 		return "summarize conversation to prevent hitting the context limit"
 	case SlashPlan:
 		return "switch to Plan mode"
+	case SlashGoal:
+		return "set or view the goal for a long-running task"
 	case SlashCopy:
 		return "copy last response as markdown"
 	case SlashStatus:
@@ -60,11 +63,11 @@ func (command SlashCommand) Description() string {
 }
 
 func (command SlashCommand) SupportsInlineArgs() bool {
-	return command == SlashResume || command == SlashRename || command == SlashMCP || command == SlashPlan
+	return command == SlashResume || command == SlashRename || command == SlashMCP || command == SlashPlan || command == SlashGoal
 }
 
 func (command SlashCommand) AvailableDuringTask() bool {
-	return command == SlashResume || command == SlashSkills || command == SlashCopy || command == SlashStatus || command == SlashMCP || command == SlashExit
+	return command == SlashResume || command == SlashSkills || command == SlashGoal || command == SlashCopy || command == SlashStatus || command == SlashMCP || command == SlashExit
 }
 
 func SlashCommands() []string {

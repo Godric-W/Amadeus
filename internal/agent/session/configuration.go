@@ -34,8 +34,15 @@ func (session *Session) setMode(mode ModeKind) {
 }
 
 func (session *Session) applyMode(submissionID protocol.SubmissionID, mode ModeKind) {
+	previous := session.Configuration()
 	session.setMode(mode)
-	session.publish(protocol.Event{ID: submissionID, Msg: protocol.ThreadSettingsAppliedEvent{
+	current := session.Configuration()
+	for _, contributor := range session.services.extensionRegistry().ConfigContributors() {
+		if err := contributor.OnConfigChanged(session.ctx, session.services.sessionExtensions, session.services.threadExtensions, previous.Runtime, current.Runtime); err != nil {
+			session.publish(protocol.Event{ID: protocol.EventIDFromSubmission(submissionID), Msg: protocol.WarningEvent{ThreadID: session.threadID, Message: "config extension failed: " + err.Error()}})
+		}
+	}
+	session.publish(protocol.Event{ID: protocol.EventIDFromSubmission(submissionID), Msg: protocol.ThreadSettingsAppliedEvent{
 		ThreadID: session.threadID, Configuration: session.ProtocolConfiguration(),
 	}})
 }

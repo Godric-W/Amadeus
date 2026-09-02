@@ -7,6 +7,7 @@ import (
 
 	"github.com/Godric-W/Amadeus/internal/agent/multiagent"
 	"github.com/Godric-W/Amadeus/internal/agentsmd"
+	"github.com/Godric-W/Amadeus/internal/extension"
 	"github.com/Godric-W/Amadeus/internal/llm"
 	"github.com/Godric-W/Amadeus/internal/project"
 	"github.com/Godric-W/Amadeus/internal/protocol"
@@ -16,6 +17,7 @@ import (
 
 type StepContext struct {
 	Turn               TurnContext
+	ExtensionData      *extension.Data
 	Model              llm.ModelInfo
 	ToolRouter         tool.ToolRouter
 	LoadedAgentsMd     agentsmd.LoadedAgentsMd
@@ -57,7 +59,23 @@ func (services *SessionServices) CaptureStep(ctx context.Context, turnContext Tu
 		include = planModeToolAllowed
 	}
 	include = composeToolFilters(include, services.source)
-	router := services.tools.SnapshotRouter(services.visibility, requestSnapshot, include)
+	stepID := string(turnContext.TurnID) + ":step"
+	if services.NextID != nil {
+		stepID = services.NextID("step-extension")
+	}
+	stepData, err := extension.NewData(stepID)
+	if err != nil {
+		return StepContext{}, err
+	}
+	var extensionTools []tool.ToolDefinition
+	registry := services.extensionRegistry()
+	for _, contributor := range registry.Tools() {
+		extensionTools = append(extensionTools, contributor.Tools(services.sessionExtensions, services.threadExtensions, stepData)...)
+	}
+	router, err := services.tools.SnapshotRouterWithDefinitions(services.visibility, requestSnapshot, include, extensionTools)
+	if err != nil {
+		return StepContext{}, err
+	}
 	model := services.ModelInfo()
 	permissionProfile := project.PermissionProfile{}
 	if services.fileSystem != nil {
@@ -72,7 +90,7 @@ func (services *SessionServices) CaptureStep(ctx context.Context, turnContext Tu
 		subagents = services.AgentControl.SnapshotAll()
 	}
 	return StepContext{
-		Turn: turnContext, Model: model, ToolRouter: router, LoadedAgentsMd: loadedAgentsMd,
+		Turn: turnContext, ExtensionData: stepData, Model: model, ToolRouter: router, LoadedAgentsMd: loadedAgentsMd,
 		Skills: loadedSkills, PermissionProfile: permissionProfile, PermissionGrants: permissionGrants, Subagents: subagents,
 		MCPBindingRevision: requestSnapshot.MCPBindingRevision, SkillRevision: requestSnapshot.SkillRevision,
 	}, nil
