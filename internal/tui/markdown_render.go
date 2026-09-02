@@ -34,10 +34,10 @@ type MarkdownLine struct {
 	Hyperlinks       []HyperlinkRange
 	BlockKind        MarkdownBlockKind
 	NoWrap           bool
-	TableCells       []MarkdownLine
-	TableHeader      []string
-	TableRule        bool
-	TablePrefix      string
+	// Table is set only on the source projection placeholder emitted by the
+	// MarkdownWriter. Layout replaces the placeholder with physical rows.
+	Table     *MarkdownTable
+	TableRule bool
 }
 
 type MarkdownBlockKind uint8
@@ -211,8 +211,8 @@ func (writer *MarkdownWriter) renderBlock(node ast.Node) []MarkdownLine {
 		return lines
 	case markdownTableNode:
 		lines := applyMarkdownIndent(writer.tableLines(value, ""), indent, markdownBlockTable, false)
-		for index := range lines {
-			lines[index].TablePrefix = indent.first
+		if len(lines) > 0 && lines[0].Table != nil {
+			lines[0].Table.Prefix = indent.first
 		}
 		return lines
 	case *ast.FencedCodeBlock:

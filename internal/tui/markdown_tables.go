@@ -2,213 +2,711 @@ package tui
 
 import (
 	"strings"
+	"unicode"
 
 	"github.com/rivo/uniseg"
+	"github.com/yuin/goldmark/ast"
 	extast "github.com/yuin/goldmark/extension/ast"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/text"
 )
 
-// markdownTableNode keeps table handling isolated from generic block walking.
-// The first AB version uses a bounded row projection; richer column layout is
-// intentionally a later presentation feature.
-type markdownTableNode = *extast.Table
+// TableAlignment is the presentation alignment declared by a GFM delimiter
+// row. Default is left alignment, matching the Markdown terminal convention.
+type TableAlignment uint8
 
 const (
-	minMarkdownTableColumnWidth = 6
+	TableAlignmentDefault TableAlignment = iota
+	TableAlignmentLeft
+	TableAlignmentCenter
+	TableAlignmentRight
+)
+
+type TableColumnKind uint8
+
+const (
+	TableColumnNarrative TableColumnKind = iota
+	TableColumnTokenHeavy
+	TableColumnCompact
+)
+
+// MarkdownTableCell retains the structured projection of one AST table cell.
+// Lines preserve rich spans, hard breaks and hyperlink destinations until the
+// layout pass chooses a width.
+type MarkdownTableCell struct {
+	Lines        []MarkdownLine
+	PlainText    string
+	HardBreaks   []int
+	Hyperlinks   []HyperlinkRange
+	DisplayWidth int
+}
+
+// MarkdownTable is the source-backed table model owned by MarkdownWriter.
+// Layout and streaming code consume this model but never parse Markdown.
+type MarkdownTable struct {
+	Header      []MarkdownTableCell
+	Rows        [][]MarkdownTableCell
+	Spillover   []MarkdownTableCell
+	Alignments  []TableAlignment
+	Prefix      string
+	SourceRange MarkdownSourceRange
+}
+
+type MarkdownSourceRange struct {
+	Start int
+	End   int
+}
+
+type TableColumnMetrics struct {
+	Kind                TableColumnKind
+	HeaderWidth         int
+	MaxBodyWidth        int
+	PreferredWidth      int
+	MinimumWidth        int
+	PreferredFloor      int
+	HeaderTokenWidth    int
+	BodyTokenWidth      int
+	BodyTokenCount      int
+	LongBodyTokenCount  int
+	AverageWordsPerCell float64
+	AverageCellWidth    float64
+}
+
+type TablePresentation uint8
+
+const (
+	TablePresentationGrid TablePresentation = iota
+	TablePresentationAlignedRecords
+	TablePresentationStackedRecords
+	TablePresentationPipeFallback
+)
+
+// MarkdownTableLayout is a derived, width-specific presentation. It is kept
+// separate from MarkdownTable so resize/replay can rebuild layout without
+// mutating source-backed cells.
+type MarkdownTableLayout struct {
+	ColumnWidths []int
+	HeaderRows   [][]MarkdownLine
+	BodyRows     [][][]MarkdownLine
+	Presentation TablePresentation
+}
+
+const (
+	minMarkdownTableColumnWidth = 3
+	markdownTableCellPadding    = 1
+	markdownTableColumnGap      = 2
 	maxMarkdownTableColumns     = 12
 	maxMarkdownTableRows        = 200
 	maxMarkdownTableCellBytes   = 16 * 1024
+	markdownTableSoftFloor      = 16
 )
 
+type markdownTableNode = *extast.Table
+
 func (writer *MarkdownWriter) tableLines(table markdownTableNode, prefix string) []MarkdownLine {
-	var rows [][]MarkdownLine
-	headerRows := 0
+	if table == nil {
+		return nil
+	}
+	model := &MarkdownTable{Prefix: prefix, Alignments: make([]TableAlignment, len(table.Alignments))}
+	if table.Lines().Len() > 0 {
+		model.SourceRange = MarkdownSourceRange{Start: table.Lines().At(0).Start, End: table.Lines().At(table.Lines().Len() - 1).Stop}
+	}
+	for index, alignment := range table.Alignments {
+		model.Alignments[index] = tableAlignment(alignment)
+	}
 	for row := table.FirstChild(); row != nil; row = row.NextSibling() {
-		var cells []MarkdownLine
-		for cell := row.FirstChild(); cell != nil; cell = cell.NextSibling() {
+		header := false
+		if _, ok := row.(*extast.TableHeader); ok {
+			header = true
+		}
+		cells := make([]MarkdownTableCell, 0)
+		for node := row.FirstChild(); node != nil; node = node.NextSibling() {
 			style := stylePlain
-			if _, header := row.(*extast.TableHeader); header {
+			if header {
 				style = styleBold
-				headerRows = len(rows) + 1
 			}
-			cells = append(cells, writer.inlineLine(cell, style))
+			cellLines := rebuildMarkdownHyperlinks(writer.inlineLines(node, style))
+			cell := makeMarkdownTableCell(cellLines)
+			cells = append(cells, cell)
 		}
-		rows = append(rows, cells)
-	}
-	widths := make([]int, 0)
-	for _, row := range rows {
-		for column, cell := range row {
-			for len(widths) <= column {
-				widths = append(widths, 0)
-			}
-			widths[column] = maxInt(widths[column], uniseg.StringWidth(markdownLineText(cell)))
+		if !header && len(cells) == 1 && !tableRowHasPipeSyntax(row, writer.source) {
+			model.Spillover = append(model.Spillover, cells[0])
+			continue
 		}
-	}
-	var headers []string
-	if headerRows > 0 {
-		for _, cell := range rows[headerRows-1] {
-			headers = append(headers, markdownLineText(cell))
+		if header {
+			model.Header = cells
+		} else {
+			model.Rows = append(model.Rows, cells)
 		}
 	}
-	var lines []MarkdownLine
-	for rowIndex, row := range rows {
-		line := prependMarkdownLine(prefix, renderTableRow(row, widths))
-		line.TableCells = cloneMarkdownLines(row)
-		line.TableHeader = append([]string(nil), headers...)
-		line.TablePrefix = prefix
-		lines = append(lines, line)
-		if rowIndex+1 == headerRows {
-			lines = append(lines, MarkdownLine{Spans: []MarkdownSpan{{Text: prefix + tableRule(widths), Style: styleDim}}, TableRule: true})
-		}
+	if len(model.Header) == 0 && len(model.Rows) == 0 {
+		return nil
+	}
+	metrics := collectTableColumnMetrics(model, maxInt(len(model.Header), tableModelColumnCount(model)))
+	widths := make([]int, len(metrics))
+	for index, metric := range metrics {
+		widths[index] = maxInt(metric.MinimumWidth, metric.PreferredWidth)
+	}
+	lines := renderTableGrid(model, normalizeTableRows(model), widths, 0)
+	for index := range lines {
+		lines[index].Table = model
 	}
 	return lines
 }
 
-func renderTableRow(cells []MarkdownLine, widths []int) MarkdownLine {
-	line := MarkdownLine{}
-	for index, cell := range cells {
+func tableAlignment(value extast.Alignment) TableAlignment {
+	switch value {
+	case extast.AlignLeft:
+		return TableAlignmentLeft
+	case extast.AlignCenter:
+		return TableAlignmentCenter
+	case extast.AlignRight:
+		return TableAlignmentRight
+	default:
+		return TableAlignmentDefault
+	}
+}
+
+func makeMarkdownTableCell(lines []MarkdownLine) MarkdownTableCell {
+	cell := MarkdownTableCell{Lines: cloneMarkdownLines(lines)}
+	var plain strings.Builder
+	for index, line := range lines {
 		if index > 0 {
-			line.Spans = append(line.Spans, MarkdownSpan{Text: " │ ", Style: styleDim})
+			plain.WriteByte(' ')
+			cell.HardBreaks = append(cell.HardBreaks, plain.Len()-1)
 		}
-		line.Spans = append(line.Spans, cell.Spans...)
-		padding := widths[index] - uniseg.StringWidth(markdownLineText(cell))
-		if padding > 0 {
-			line.Spans = append(line.Spans, MarkdownSpan{Text: strings.Repeat(" ", padding), Style: stylePlain})
-		}
+		text := markdownLineText(line)
+		plain.WriteString(text)
+		cell.DisplayWidth = maxInt(cell.DisplayWidth, uniseg.StringWidth(text))
+		cell.Hyperlinks = append(cell.Hyperlinks, line.Hyperlinks...)
+	}
+	cell.PlainText = plain.String()
+	return cell
+}
+
+func tablePreviewCell(cell MarkdownTableCell) MarkdownLine {
+	if len(cell.Lines) == 0 {
+		return MarkdownLine{}
+	}
+	line := cloneMarkdownLines(cell.Lines[:1])[0]
+	for _, extra := range cell.Lines[1:] {
+		line.Spans = append(line.Spans, MarkdownSpan{Text: " "})
+		line.Spans = append(line.Spans, extra.Spans...)
 	}
 	return line
 }
 
-func tableRule(widths []int) string {
-	parts := make([]string, len(widths))
-	for index, width := range widths {
-		parts[index] = strings.Repeat("─", maxInt(3, width))
+func tableModelColumnCount(table *MarkdownTable) int {
+	columns := len(table.Header)
+	for _, row := range table.Rows {
+		columns = maxInt(columns, len(row))
 	}
-	return strings.Join(parts, "─┼─")
+	return columns
 }
 
 func layoutMarkdownTables(lines []MarkdownLine, width int) []MarkdownLine {
 	result := make([]MarkdownLine, 0, len(lines))
 	for index := 0; index < len(lines); {
-		if len(lines[index].TableCells) == 0 {
+		table := lines[index].Table
+		if table == nil {
 			if !lines[index].TableRule {
 				result = append(result, lines[index])
 			}
 			index++
 			continue
 		}
-		prefix := lines[index].TablePrefix
-		headers := append([]string(nil), lines[index].TableHeader...)
-		var rows [][]MarkdownLine
-		for index < len(lines) && (len(lines[index].TableCells) > 0 || lines[index].TableRule) {
-			if len(lines[index].TableCells) > 0 {
-				rows = append(rows, lines[index].TableCells)
-			}
+		for index < len(lines) && lines[index].Table == table {
 			index++
 		}
-		result = append(result, layoutTableRows(rows, headers, prefix, width)...)
+		result = append(result, layoutMarkdownTable(table, width)...)
 	}
 	return result
 }
 
-func layoutTableRows(rows [][]MarkdownLine, headers []string, prefix string, width int) []MarkdownLine {
-	if len(rows) == 0 {
+func layoutMarkdownTable(table *MarkdownTable, width int) []MarkdownLine {
+	if table == nil {
 		return nil
 	}
-	columns := 0
+	rows := normalizeTableRows(table)
+	columns := len(table.Header)
 	for _, row := range rows {
 		columns = maxInt(columns, len(row))
 	}
 	if columns == 0 {
 		return nil
 	}
-	if len(rows) > maxMarkdownTableRows || columns > maxMarkdownTableColumns || markdownTableCellsTooLarge(rows) {
-		return tableKeyValueRows(rows, headers, prefix, width)
+	if len(rows) > maxMarkdownTableRows || columns > maxMarkdownTableColumns || markdownTableCellsTooLargeTyped(table) {
+		return renderTableRecords(table, width)
 	}
-	widths := make([]int, columns)
-	for _, row := range rows {
-		for column, cell := range row {
-			widths[column] = maxInt(widths[column], uniseg.StringWidth(markdownLineText(cell)))
-		}
+	metrics := collectTableColumnMetrics(table, columns)
+	available := maxInt(0, width-uniseg.StringWidth(table.Prefix))
+	columnWidths, ok := computeTableColumnWidths(metrics, available)
+	if !ok || tableShouldUseRecords(table, metrics, columnWidths) {
+		return renderTableRecords(table, width)
 	}
-	gaps := maxInt(0, columns-1) * 3
-	available := maxInt(1, width-uniseg.StringWidth(prefix)-gaps)
-	if available < columns*minMarkdownTableColumnWidth {
-		return tableKeyValueRows(rows, headers, prefix, width)
+	return renderTableGrid(table, rows, columnWidths, width)
+}
+
+func normalizeTableRows(table *MarkdownTable) [][]MarkdownTableCell {
+	columns := len(table.Header)
+	for _, row := range table.Rows {
+		columns = maxInt(columns, len(row))
 	}
-	for sumTableWidths(widths) > available {
-		largest := -1
-		for column, columnWidth := range widths {
-			if columnWidth > minMarkdownTableColumnWidth && (largest < 0 || columnWidth > widths[largest]) {
-				largest = column
+	rows := make([][]MarkdownTableCell, len(table.Rows))
+	for index, row := range table.Rows {
+		rows[index] = make([]MarkdownTableCell, columns)
+		copy(rows[index], row)
+	}
+	return rows
+}
+
+func tableRowHasPipeSyntax(row ast.Node, source []byte) bool {
+	if row == nil || row.Lines().Len() == 0 {
+		return true
+	}
+	start := row.Lines().At(0).Start
+	end := row.Lines().At(row.Lines().Len() - 1).Stop
+	if start < 0 || end < start || end > len(source) {
+		return true
+	}
+	return countUnescapedPipes(string(source[start:end])) >= 2
+}
+
+func collectTableColumnMetrics(table *MarkdownTable, columns int) []TableColumnMetrics {
+	metrics := make([]TableColumnMetrics, columns)
+	for column := range metrics {
+		metrics[column].MinimumWidth = minMarkdownTableColumnWidth
+		metrics[column].HeaderWidth = tableCellWidthAt(table.Header, column)
+		headerText := strings.TrimSpace(tableCellTextAt(table.Header, column))
+		metrics[column].HeaderTokenWidth = longestTableTokenWidth(headerText)
+		var totalWords, totalCells, totalCellWidth int
+		for _, row := range table.Rows {
+			cellWidth := tableCellWidthAt(row, column)
+			metrics[column].MaxBodyWidth = maxInt(metrics[column].MaxBodyWidth, cellWidth)
+			if column >= len(row) {
+				continue
+			}
+			text := strings.TrimSpace(row[column].PlainText)
+			wordCount := 0
+			for _, token := range strings.Fields(text) {
+				tokenWidth := uniseg.StringWidth(token)
+				metrics[column].BodyTokenWidth = maxInt(metrics[column].BodyTokenWidth, tokenWidth)
+				metrics[column].BodyTokenCount++
+				metrics[column].LongBodyTokenCount += boolInt(tokenWidth >= 20)
+				wordCount++
+			}
+			if wordCount > 0 {
+				totalWords += wordCount
+				totalCells++
+				totalCellWidth += cellWidth
 			}
 		}
-		if largest < 0 {
-			return tableKeyValueRows(rows, headers, prefix, width)
+		if totalCells == 0 {
+			metrics[column].AverageWordsPerCell = float64(len(strings.Fields(headerText)))
+			metrics[column].AverageCellWidth = float64(metrics[column].HeaderWidth)
+		} else {
+			metrics[column].AverageWordsPerCell = float64(totalWords) / float64(totalCells)
+			metrics[column].AverageCellWidth = float64(totalCellWidth) / float64(totalCells)
 		}
-		widths[largest]--
+		metrics[column].PreferredWidth = maxInt(metrics[column].HeaderWidth, metrics[column].MaxBodyWidth)
+		metrics[column].Kind = classifyTableColumn(metrics[column])
+		if metrics[column].PreferredWidth < minMarkdownTableColumnWidth {
+			metrics[column].PreferredWidth = minMarkdownTableColumnWidth
+		}
+		floor := markdownTableSoftFloor
+		if metrics[column].Kind == TableColumnCompact {
+			floor = maxInt(metrics[column].HeaderTokenWidth, minInt(metrics[column].BodyTokenWidth, markdownTableSoftFloor))
+		}
+		metrics[column].PreferredFloor = maxInt(metrics[column].MinimumWidth, minInt(metrics[column].PreferredWidth, floor))
 	}
-	result := make([]MarkdownLine, 0, len(rows)+1)
+	return metrics
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func tableCellWidthAt(row []MarkdownTableCell, column int) int {
+	if column < 0 || column >= len(row) {
+		return 0
+	}
+	return row[column].DisplayWidth
+}
+
+func classifyTableColumn(metrics TableColumnMetrics) TableColumnKind {
+	if metrics.LongBodyTokenCount > 0 && metrics.LongBodyTokenCount >= metrics.BodyTokenCount-metrics.LongBodyTokenCount {
+		return TableColumnTokenHeavy
+	}
+	if metrics.AverageWordsPerCell >= 4 || metrics.AverageCellWidth >= 28 {
+		return TableColumnNarrative
+	}
+	return TableColumnCompact
+}
+
+func tableCellTextAt(row []MarkdownTableCell, column int) string {
+	if column < 0 || column >= len(row) {
+		return ""
+	}
+	return row[column].PlainText
+}
+
+func markdownTableTokenHeavy(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || strings.IndexFunc(text, unicode.IsSpace) >= 0 {
+		return false
+	}
+	return strings.Contains(text, "://") || strings.ContainsAny(text, `/\\?#=&%_`) || strings.Count(text, "-") > 1 || len(text) >= 16
+}
+
+func longestTableTokenWidth(text string) int {
+	longest := 0
+	for _, token := range strings.Fields(text) {
+		longest = maxInt(longest, uniseg.StringWidth(token))
+	}
+	return longest
+}
+
+func computeTableColumnWidths(metrics []TableColumnMetrics, available int) ([]int, bool) {
+	if len(metrics) == 0 {
+		return nil, false
+	}
+	overhead := len(metrics)*2*markdownTableCellPadding + (len(metrics)-1)*markdownTableColumnGap
+	contentBudget := available - overhead
+	minimum := 0
+	for _, metric := range metrics {
+		minimum += metric.MinimumWidth
+	}
+	if contentBudget < minimum {
+		return nil, false
+	}
+	widths := make([]int, len(metrics))
+	for index, metric := range metrics {
+		widths[index] = maxInt(metric.MinimumWidth, metric.PreferredWidth)
+	}
+	if sumTableWidths(widths) <= contentBudget {
+		return widths, true
+	}
+	for _, kind := range []TableColumnKind{TableColumnTokenHeavy, TableColumnNarrative, TableColumnCompact} {
+		for sumTableWidths(widths) > contentBudget {
+			candidate := -1
+			for index, metric := range metrics {
+				if metric.Kind != kind {
+					continue
+				}
+				floor := metric.PreferredFloor
+				if widths[index] > floor && (candidate < 0 || widths[index] > widths[candidate]) {
+					candidate = index
+				}
+			}
+			if candidate < 0 {
+				break
+			}
+			widths[candidate]--
+		}
+	}
+	// Soft floors are preferred readability targets, not a reason to abandon a
+	// grid when the viewport can still fit the hard minimum. A second pass may
+	// compress every class down to the minimum before records fallback.
+	for sumTableWidths(widths) > contentBudget {
+		candidate := -1
+		for index, metric := range metrics {
+			if widths[index] > metric.MinimumWidth && (candidate < 0 || widths[index] > widths[candidate]) {
+				candidate = index
+			}
+		}
+		if candidate < 0 {
+			break
+		}
+		widths[candidate]--
+	}
+	if sumTableWidths(widths) > contentBudget {
+		return nil, false
+	}
+	return widths, true
+}
+
+func tableShouldUseRecords(table *MarkdownTable, metrics []TableColumnMetrics, widths []int) bool {
+	if len(table.Rows) == 0 {
+		return false
+	}
+	affectedRows := 0
+	for _, row := range table.Rows {
+		affected := false
+		tallExpansive := 0
+		for column, cell := range row {
+			if column >= len(widths) {
+				continue
+			}
+			fragmented := longestTableTokenWidth(cell.PlainText) > widths[column]
+			switch metrics[column].Kind {
+			case TableColumnCompact:
+				affected = affected || fragmented
+			case TableColumnTokenHeavy:
+				affected = affected || (widths[column] < 12 && fragmented)
+			}
+			if metrics[column].Kind != TableColumnCompact {
+				height := len(wrapTableCell(cell, widths[column]))
+				if height >= 4 {
+					tallExpansive++
+				}
+				if metrics[column].Kind == TableColumnNarrative && widths[column] < 12 && height >= 7 {
+					affected = true
+				}
+				if metrics[column].Kind == TableColumnNarrative && widths[column] < 6 && height >= 4 {
+					affected = true
+				}
+			}
+		}
+		if tallExpansive >= 2 {
+			affected = true
+		}
+		if affected {
+			affectedRows++
+		}
+	}
+	return affectedRows > 0 && affectedRows*2 >= len(table.Rows)
+}
+
+func renderTableGrid(table *MarkdownTable, rows [][]MarkdownTableCell, widths []int, width int) []MarkdownLine {
+	result := make([]MarkdownLine, 0)
+	if len(table.Header) > 0 {
+		result = append(result, renderTablePhysicalRow(table.Header, widths, table.Alignments, table.Prefix, true)...)
+		result = append(result, tableSeparatorLine(table.Prefix, widths, '━', width))
+	}
 	for rowIndex, row := range rows {
-		physical, fits := renderPhysicalTableRow(row, widths)
-		if !fits {
-			return tableKeyValueRows(rows, headers, prefix, width)
+		result = append(result, renderTablePhysicalRow(row, widths, table.Alignments, table.Prefix, false)...)
+		if rowIndex+1 < len(rows) {
+			result = append(result, tableSeparatorLine(table.Prefix, widths, '─', width))
 		}
-		for _, line := range physical {
-			result = append(result, prependMarkdownLine(prefix, line))
-		}
-		if rowIndex == 0 && len(headers) > 0 {
-			result = append(result, prependMarkdownLine(prefix, MarkdownLine{Spans: []MarkdownSpan{{Text: tableRule(widths), Style: styleDim}}, TableRule: true, BlockKind: markdownBlockTable}))
+	}
+	result = append(result, renderTableSpillover(table)...)
+	return result
+}
+
+func renderTableSpillover(table *MarkdownTable) []MarkdownLine {
+	result := make([]MarkdownLine, 0, len(table.Spillover))
+	for _, cell := range table.Spillover {
+		for _, line := range cell.Lines {
+			line.InitialIndent = append(markdownIndentSpans(table.Prefix), line.InitialIndent...)
+			line.SubsequentIndent = append(markdownIndentSpans(table.Prefix), line.SubsequentIndent...)
+			line.BlockKind = markdownBlockProse
+			result = append(result, line)
 		}
 	}
 	return result
 }
 
-func renderPhysicalTableRow(row []MarkdownLine, widths []int) ([]MarkdownLine, bool) {
-	wrappedCells := make([][]MarkdownLine, len(widths))
+func renderTablePhysicalRow(row []MarkdownTableCell, widths []int, alignments []TableAlignment, prefix string, header bool) []MarkdownLine {
+	wrapped := make([][]MarkdownLine, len(widths))
 	height := 1
-	for column, columnWidth := range widths {
-		cell := MarkdownLine{}
+	for column, contentWidth := range widths {
 		if column < len(row) {
-			cell = row[column]
+			wrapped[column] = wrapTableCell(row[column], contentWidth)
 		}
-		wrappedCells[column] = wrapMarkdownLine(cell, columnWidth)
-		if len(wrappedCells[column]) == 0 {
-			wrappedCells[column] = []MarkdownLine{{}}
+		if len(wrapped[column]) == 0 {
+			wrapped[column] = []MarkdownLine{{}}
 		}
-		for _, line := range wrappedCells[column] {
-			if uniseg.StringWidth(markdownLineText(line)) > columnWidth {
-				return nil, false
-			}
-		}
-		height = maxInt(height, len(wrappedCells[column]))
+		height = maxInt(height, len(wrapped[column]))
 	}
-
-	physical := make([]MarkdownLine, 0, height)
-	for rowLine := 0; rowLine < height; rowLine++ {
-		line := MarkdownLine{BlockKind: markdownBlockTable}
-		for column, columnWidth := range widths {
-			if column > 0 {
-				line.Spans = append(line.Spans, MarkdownSpan{Text: " │ ", Style: styleDim})
+	lastColumn := -1
+	for column, lines := range wrapped {
+		for _, line := range lines {
+			if uniseg.StringWidth(markdownLineText(line)) > 0 {
+				lastColumn = column
+				break
 			}
+		}
+	}
+	result := make([]MarkdownLine, 0, height)
+	for rowLine := 0; rowLine < height; rowLine++ {
+		if lastColumn < 0 {
+			result = append(result, MarkdownLine{InitialIndent: markdownIndentSpans(prefix), SubsequentIndent: markdownIndentSpans(prefix), BlockKind: markdownBlockTable})
+			continue
+		}
+		line := MarkdownLine{InitialIndent: markdownIndentSpans(prefix), SubsequentIndent: markdownIndentSpans(prefix), BlockKind: markdownBlockTable}
+		for column, contentWidth := range widths[:lastColumn+1] {
+			if column > 0 {
+				line.Spans = append(line.Spans, MarkdownSpan{Text: strings.Repeat(" ", markdownTableColumnGap)})
+			}
+			line.Spans = append(line.Spans, MarkdownSpan{Text: " "})
 			cellLine := MarkdownLine{}
-			if rowLine < len(wrappedCells[column]) {
-				cellLine = wrappedCells[column][rowLine]
+			if rowLine < len(wrapped[column]) {
+				cellLine = wrapped[column][rowLine]
+			}
+			cellWidth := uniseg.StringWidth(markdownLineText(cellLine))
+			left, right := tableAlignmentPadding(alignmentAt(alignments, column), contentWidth-cellWidth)
+			if left > 0 {
+				line.Spans = append(line.Spans, MarkdownSpan{Text: strings.Repeat(" ", left)})
 			}
 			line.Spans = append(line.Spans, cellLine.Spans...)
-			padding := columnWidth - uniseg.StringWidth(markdownLineText(cellLine))
-			if padding > 0 {
-				line.Spans = append(line.Spans, MarkdownSpan{Text: strings.Repeat(" ", padding), Style: stylePlain})
+			if column < lastColumn && right > 0 {
+				line.Spans = append(line.Spans, MarkdownSpan{Text: strings.Repeat(" ", right)})
+			}
+			if column < lastColumn {
+				line.Spans = append(line.Spans, MarkdownSpan{Text: " "})
 			}
 		}
-		physical = append(physical, line)
+		if header {
+			for index := range line.Spans {
+				line.Spans[index].Markdown.Bold = true
+				if strings.TrimSpace(line.Spans[index].Text) != "" {
+					line.Spans[index].Style = styleAccent
+				}
+			}
+		}
+		result = append(result, line)
 	}
-	return physical, true
+	return result
 }
 
-func markdownTableCellsTooLarge(rows [][]MarkdownLine) bool {
-	for _, row := range rows {
+func wrapTableCell(cell MarkdownTableCell, width int) []MarkdownLine {
+	result := make([]MarkdownLine, 0)
+	for _, line := range cell.Lines {
+		result = append(result, wrapMarkdownLine(line, maxInt(1, width))...)
+	}
+	if len(result) == 0 {
+		result = append(result, MarkdownLine{})
+	}
+	return result
+}
+
+func alignmentAt(alignments []TableAlignment, column int) TableAlignment {
+	if column < 0 || column >= len(alignments) {
+		return TableAlignmentDefault
+	}
+	return alignments[column]
+}
+
+func tableAlignmentPadding(alignment TableAlignment, extra int) (int, int) {
+	if extra <= 0 {
+		return 0, 0
+	}
+	switch alignment {
+	case TableAlignmentRight:
+		return extra, 0
+	case TableAlignmentCenter:
+		left := extra / 2
+		return left, extra - left
+	default:
+		return 0, extra
+	}
+}
+
+func tableSeparatorLine(prefix string, widths []int, glyph rune, _ int) MarkdownLine {
+	line := MarkdownLine{InitialIndent: markdownIndentSpans(prefix), SubsequentIndent: markdownIndentSpans(prefix), TableRule: true, BlockKind: markdownBlockTable}
+	for column, columnWidth := range widths {
+		if column > 0 {
+			line.Spans = append(line.Spans, MarkdownSpan{Text: strings.Repeat(" ", markdownTableColumnGap)})
+		}
+		line.Spans = append(line.Spans, MarkdownSpan{Text: strings.Repeat(" ", markdownTableCellPadding)})
+		line.Spans = append(line.Spans, MarkdownSpan{Text: strings.Repeat(string(glyph), columnWidth)})
+		line.Spans = append(line.Spans, MarkdownSpan{Text: strings.Repeat(" ", markdownTableCellPadding)})
+	}
+	return line
+}
+
+func renderTableRecords(table *MarkdownTable, width int) []MarkdownLine {
+	if len(table.Rows) == 0 {
+		if len(table.Header) == 0 {
+			return nil
+		}
+		return []MarkdownLine{renderPipeHeader(table, width)}
+	}
+	prefixWidth := uniseg.StringWidth(table.Prefix)
+	available := maxInt(1, width-prefixWidth)
+	labels := make([]string, len(table.Header))
+	labelWidth := 0
+	for column := range labels {
+		labels[column] = strings.TrimSpace(table.Header[column].PlainText)
+		if labels[column] == "" {
+			labels[column] = "Column " + itoa(column+1)
+		}
+		labelWidth = maxInt(labelWidth, uniseg.StringWidth(labels[column]))
+	}
+	if labelWidth+3 < available {
+		return append(renderAlignedRecords(table, labels, labelWidth, available), renderTableSpillover(table)...)
+	}
+	return append(renderStackedRecords(table, labels, available), renderTableSpillover(table)...)
+}
+
+func renderAlignedRecords(table *MarkdownTable, labels []string, labelWidth, available int) []MarkdownLine {
+	result := make([]MarkdownLine, 0)
+	valueWidth := maxInt(1, available-labelWidth-2)
+	for rowIndex, row := range table.Rows {
+		for column, cell := range row {
+			label := "Column " + itoa(column+1)
+			if column < len(labels) {
+				label = labels[column]
+			}
+			labelPadding := labelWidth - uniseg.StringWidth(label)
+			valueLines := wrapTableCell(cell, valueWidth)
+			for lineIndex, value := range valueLines {
+				line := MarkdownLine{InitialIndent: markdownIndentSpans(table.Prefix), SubsequentIndent: markdownIndentSpans(table.Prefix), BlockKind: markdownBlockTable}
+				if lineIndex == 0 {
+					line.Spans = append(line.Spans, MarkdownSpan{Text: label + ":", Style: styleBold, Markdown: MarkdownStyle{Bold: true}})
+					line.Spans = append(line.Spans, MarkdownSpan{Text: strings.Repeat(" ", labelPadding+2)})
+				} else {
+					line.Spans = append(line.Spans, MarkdownSpan{Text: strings.Repeat(" ", labelWidth+2)})
+				}
+				line.Spans = append(line.Spans, value.Spans...)
+				result = append(result, line)
+			}
+		}
+		if rowIndex < len(table.Rows)-1 {
+			result = append(result, tableSeparatorLine(table.Prefix, []int{maxInt(1, available-2*markdownTableCellPadding)}, '─', available))
+		}
+	}
+	return result
+}
+
+func renderStackedRecords(table *MarkdownTable, labels []string, available int) []MarkdownLine {
+	result := make([]MarkdownLine, 0)
+	for rowIndex, row := range table.Rows {
+		for column, cell := range row {
+			label := "Column " + itoa(column+1)
+			if column < len(labels) {
+				label = labels[column]
+			}
+			result = append(result, MarkdownLine{InitialIndent: markdownIndentSpans(table.Prefix), SubsequentIndent: markdownIndentSpans(table.Prefix), Spans: []MarkdownSpan{{Text: label + ":", Style: styleBold, Markdown: MarkdownStyle{Bold: true}}}, BlockKind: markdownBlockTable})
+			for _, value := range wrapTableCell(cell, maxInt(1, available-2)) {
+				result = append(result, MarkdownLine{InitialIndent: markdownIndentSpans(table.Prefix + "  "), SubsequentIndent: markdownIndentSpans(table.Prefix + "  "), Spans: value.Spans, BlockKind: markdownBlockTable})
+			}
+		}
+		if rowIndex < len(table.Rows)-1 {
+			result = append(result, tableSeparatorLine(table.Prefix, []int{maxInt(1, available-2*markdownTableCellPadding)}, '─', available))
+		}
+	}
+	return result
+}
+
+func renderPipeHeader(table *MarkdownTable, width int) MarkdownLine {
+	line := MarkdownLine{InitialIndent: markdownIndentSpans(table.Prefix), SubsequentIndent: markdownIndentSpans(table.Prefix), BlockKind: markdownBlockTable}
+	line.Spans = append(line.Spans, MarkdownSpan{Text: "| ", Style: styleDim})
+	for column, cell := range table.Header {
+		if column > 0 {
+			line.Spans = append(line.Spans, MarkdownSpan{Text: " | ", Style: styleDim})
+		}
+		line.Spans = append(line.Spans, tablePreviewCell(cell).Spans...)
+	}
+	line.Spans = append(line.Spans, MarkdownSpan{Text: " |", Style: styleDim})
+	if uniseg.StringWidth(markdownLineText(line)) > width {
+		line = MarkdownLine{InitialIndent: markdownIndentSpans(table.Prefix), Spans: []MarkdownSpan{{Text: "| table |", Style: styleDim}}, BlockKind: markdownBlockTable}
+	}
+	return line
+}
+
+func markdownTableCellsTooLargeTyped(table *MarkdownTable) bool {
+	for _, cell := range table.Header {
+		if len(cell.PlainText) > maxMarkdownTableCellBytes {
+			return true
+		}
+	}
+	for _, row := range table.Rows {
 		for _, cell := range row {
-			if len(markdownSpansText(cell.Spans)) > maxMarkdownTableCellBytes {
+			if len(cell.PlainText) > maxMarkdownTableCellBytes {
 				return true
 			}
 		}
@@ -224,56 +722,18 @@ func sumTableWidths(widths []int) int {
 	return total
 }
 
-func tableKeyValueRows(rows [][]MarkdownLine, headers []string, prefix string, width int) []MarkdownLine {
-	if len(rows) <= 1 {
-		if len(rows) == 0 {
-			return nil
-		}
-		return []MarkdownLine{prependMarkdownLine(prefix, renderTableRow(rows[0], makeTableIntrinsicWidths(rows)))}
-	}
-	result := make([]MarkdownLine, 0)
-	for _, row := range rows[1:] {
-		for column, cell := range row {
-			label := "Column " + itoa(column+1)
-			if column < len(headers) && headers[column] != "" {
-				label = headers[column]
-			}
-			line := prependMarkdownLine(prefix, MarkdownLine{Spans: append([]MarkdownSpan{{Text: label + ": ", Style: styleBold, Markdown: MarkdownStyle{Bold: true}}}, cell.Spans...)})
-			result = append(result, wrapMarkdownLines([]MarkdownLine{line}, width)...)
-		}
-		result = append(result, MarkdownLine{})
-	}
-	if len(result) > 0 {
-		return result[:len(result)-1]
-	}
-	return result
-}
-
-func makeTableIntrinsicWidths(rows [][]MarkdownLine) []int {
-	columns := 0
-	for _, row := range rows {
-		columns = maxInt(columns, len(row))
-	}
-	widths := make([]int, columns)
-	for _, row := range rows {
-		for column, cell := range row {
-			widths[column] = maxInt(widths[column], uniseg.StringWidth(markdownLineText(cell)))
-		}
-	}
-	return widths
-}
-
-// tableHoldbackStart identifies the portion of an append-only stream that may
-// still reflow as a GFM pipe table. It is deliberately conservative: a final
-// header-looking row remains mutable until the next non-table line or stream
-// completion, matching Codex's PendingHeader behavior.
+// The fence helpers are parser-input utilities. They are intentionally
+// conservative and never mutate MarkdownSource.
 func tableHoldbackStart(source string) int {
+	if start, ok := parserTableHoldbackStart(source); ok {
+		return start
+	}
 	lineStart := 0
 	pendingHeader := -1
 	previousHeader := -1
 	inFence := false
 	for _, line := range strings.SplitAfter(source, "\n") {
-		trimmed := strings.TrimSpace(strings.TrimSuffix(line, "\n"))
+		trimmed := tableLineContent(line)
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			inFence = !inFence
 			lineStart += len(line)
@@ -293,8 +753,70 @@ func tableHoldbackStart(source string) int {
 	return pendingHeader
 }
 
+func tableLineContent(line string) string {
+	trimmed := strings.TrimSpace(strings.TrimSuffix(line, "\n"))
+	for strings.HasPrefix(trimmed, ">") {
+		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, ">"))
+	}
+	return trimmed
+}
+
+// parserTableHoldbackStart uses the same Goldmark parser as the final writer.
+// A table remains mutable while it is the final top-level block; once another
+// block follows, its layout can enter the stable streaming queue.
+func parserTableHoldbackStart(source string) (int, bool) {
+	parseSource := markdownParseSource(source)
+	if parseSource == "" {
+		return 0, false
+	}
+	// Unwrapping a fenced Markdown table changes byte offsets. Keep the whole
+	// source mutable until completion rather than applying an invalid offset.
+	if unwrapMarkdownTableFences(parseSource) != parseSource {
+		return 0, true
+	}
+	document := newMarkdownRenderer().parser.Parse(text.NewReader([]byte(parseSource)), parser.WithContext(parser.NewContext()))
+	last := document.LastChild()
+	if last == nil {
+		return 0, false
+	}
+	start := -1
+	_ = ast.Walk(last, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		if _, ok := node.(*extast.Table); !ok {
+			return ast.WalkContinue, nil
+		}
+		table := node.(*extast.Table)
+		if table.Lines().Len() > 0 {
+			start = markdownSourceLineStart([]byte(parseSource), table.Lines().At(0).Start)
+		}
+		return ast.WalkContinue, nil
+	})
+	return start, start >= 0
+}
+
 func isMarkdownTableHeader(line string) bool {
-	return strings.Count(line, "|") >= 2 && !isMarkdownTableDelimiter(line)
+	return countUnescapedPipes(line) >= 2 && !isMarkdownTableDelimiter(line)
+}
+
+func countUnescapedPipes(line string) int {
+	count := 0
+	escaped := false
+	for _, r := range line {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		if r == '|' {
+			count++
+		}
+	}
+	return count
 }
 
 func isMarkdownTableDelimiter(line string) bool {
@@ -302,8 +824,8 @@ func isMarkdownTableDelimiter(line string) bool {
 	if line == "" {
 		return false
 	}
-	for _, field := range strings.Split(line, "|") {
-		field = strings.Trim(field, " ")
+	for _, field := range splitUnescapedPipes(line) {
+		field = strings.TrimSpace(field)
 		if len(field) < 3 {
 			return false
 		}
@@ -316,8 +838,28 @@ func isMarkdownTableDelimiter(line string) bool {
 	return true
 }
 
-// unwrapMarkdownTableFences is deliberately conservative. It changes only the
-// parser input, never MarkdownSource: copy/resume keep the exact model text.
+func splitUnescapedPipes(line string) []string {
+	fields := make([]string, 0, 4)
+	start := 0
+	escaped := false
+	for index, r := range line {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		if r == '|' {
+			fields = append(fields, line[start:index])
+			start = index + 1
+		}
+	}
+	fields = append(fields, line[start:])
+	return fields
+}
+
 func unwrapMarkdownTableFences(source string) string {
 	lines := strings.SplitAfter(source, "\n")
 	var output strings.Builder
@@ -392,7 +934,7 @@ func isMarkdownFenceClosing(line string, fence markdownFenceDelimiter) bool {
 
 func fencedBodyHasTable(lines []string) bool {
 	for index := 0; index+1 < len(lines); index++ {
-		if isMarkdownTableHeader(strings.TrimSpace(strings.TrimSuffix(lines[index], "\n"))) && isMarkdownTableDelimiter(strings.TrimSpace(strings.TrimSuffix(lines[index+1], "\n"))) {
+		if isMarkdownTableHeader(tableLineContent(lines[index])) && isMarkdownTableDelimiter(tableLineContent(lines[index+1])) {
 			return true
 		}
 	}

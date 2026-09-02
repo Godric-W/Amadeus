@@ -66,6 +66,17 @@ func TestMarkdownArchitectureUsesSourceBackedFinalCells(t *testing.T) {
 	if strings.Count(streamCellSource, "return !cell.First") != 2 {
 		t.Error("stream cells do not derive continuation spacing from First")
 	}
+	tableSource := mustReadArchitectureFile(t, root, "internal/tui/markdown_tables.go")
+	for _, required := range []string{"type MarkdownTable struct", "type MarkdownTableCell struct", "type TableColumnMetrics struct", "type MarkdownTableLayout struct", "computeTableColumnWidths", "renderTableGrid", "renderTableRecords", "parserTableHoldbackStart"} {
+		if !strings.Contains(tableSource, required) {
+			t.Errorf("Codex table layout boundary is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{" │ ", "─┼─", "TableCells       []MarkdownLine", "TableHeader      []string", "TablePrefix      string"} {
+		if strings.Contains(tableSource, forbidden) {
+			t.Errorf("legacy table layout concern %q remains", forbidden)
+		}
+	}
 	surfaceSource := mustReadArchitectureFile(t, root, "internal/tui/transcript_surface.go")
 	for _, required := range []string{"sessionHeader", "historyPrintCursor", "takePrintableCells", "transientStreamHistoryCell", "unprintedCells"} {
 		if !strings.Contains(surfaceSource, required) {

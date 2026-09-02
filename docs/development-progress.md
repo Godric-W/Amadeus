@@ -1,13 +1,13 @@
 # Amadeus 开发进度
 
-> 最近更新：2026-09-01
+> 最近更新：2026-09-02
 > 主要架构与 Contract 工作文档：`docs/design.md`
-> 当前阶段：AE. Typed Extension Host + Persisted Thread Goal Mode（DONE）
-> 下一任务：无；后续变更需重新进行 Codex 源码审计
+> 当前阶段：AF. Codex Markdown Table Layout Alignment（DONE）
+> 下一任务：无；后续变更需重新进行 Codex Markdown renderer 源码审计
 
-本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。
+本文只记录开发阶段、任务状态、依赖和验收出口。架构决策、数据模型和实现细节统一记录在 `docs/design.md`，不在这里重复展开。AF 是对当前 Codex Markdown 表格实现的新增对齐阶段，不改变 AE 已完成的 Goal/Extension/StateRuntime 结论。
 
-A-AD 的条目保留为历史与当前阶段记录；其中与当前 `docs/design.md` 冲突的 token/compaction 结论由 W 取代，第一轮外层 package 归属由 X/Y 收敛，internal package、目录和责任文件布局由 Z 取代，Prompt ownership/text/WorldState/wire/Resume 结论由 AA 最终收敛，R/T 中的Multi-Agent final-message、wait、notification和persisted child membership结论由AC取代。AE基于2026-09-01当前Codex重新打开两项已过时结论：M-07“删除所有Extension host”由typed ExtensionRegistry取代，A/M/AD中“全部SQLite仅是Rollout metadata projection”缩窄为Thread metadata规则，并新增StateRuntime/GoalStore权威状态边界。Codex Multi-Agent V2、AgentPath/mailbox/residency、write worker、child交互、team/worktree/remote和完整agent picker仍是明确产品非目标；通用history fork不在AE实现，但GoalStore不得阻断未来Codex `deferGoalContinuation`语义。历史DONE不构成恢复旧ExtensionAssembly、旧owner、旧路径、旧Prompt prefix map、Assistant Item final-message推断或已删除中间frontend的依据。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
+A-AE 的条目保留为历史与当前阶段记录；其中与当前 `docs/design.md` 冲突的 token/compaction 结论由 W 取代，第一轮外层 package 归属由 X/Y 收敛，internal package、目录和责任文件布局由 Z 取代，Prompt ownership/text/WorldState/wire/Resume 结论由 AA 最终收敛，R/T 中的Multi-Agent final-message、wait、notification和persisted child membership结论由AC取代。AE基于2026-09-01当前Codex重新打开两项已过时结论：M-07“删除所有Extension host”由typed ExtensionRegistry取代，A/M/AD中“全部SQLite仅是Rollout metadata projection”缩窄为Thread metadata规则，并新增StateRuntime/GoalStore权威状态边界。Codex Multi-Agent V2、AgentPath/mailbox/residency、write worker、child交互、team/worktree/remote和完整agent picker仍是明确产品非目标；通用history fork不在AE实现，但GoalStore不得阻断未来Codex `deferGoalContinuation`语义。历史DONE不构成恢复旧ExtensionAssembly、旧owner、旧路径、旧Prompt prefix map、Assistant Item final-message推断或已删除中间frontend的依据。AF 是基于当前 Codex Markdown renderer 的独立表格布局对齐阶段。两份文档都可能过期或不完整；不确定处必须回查对应参考源码并同步修正。
 
 ## 1. 状态与完成标准
 
@@ -56,6 +56,7 @@ A Runtime + Persistence
 → AC Basic Multi-Agent Terminal + Persistence Lifecycle Realignment
 → AD Codex Runtime Contract Optimization
 → AE Typed Extension Host + Persisted Thread Goal Mode
+→ AF Codex Markdown Table Layout Alignment
 ```
 
 Codex 作为 Thread、Session、SessionServices、Turn、Context、SessionTask、`run_turn`、Slash Command、TUI 和 Model/Provider 配置所有权的主要架构参考；Tool 调用链组合 Codex 的 StepContext/ToolRouter snapshot 与 Claude Code 的 Validate/Prepare/Permission/Approval/Execute 内层协议。A-L 建立了可工作的基础能力，但 2026-08-19 的源码审计确认 G/H/J 中仍保留 `engine.Services` 聚合、factory closure 网络、自定义 completed-item Rollout projection、`ExtensionAssembly`、通用 instruction scope 和独立 InteractiveRequest/Status 输出主链。M 阶段取代这些过渡架构结论，按 `docs/design.md` 直接删除旧实现，不提供旧配置、旧 Protocol、旧 Rollout、旧 SQLite schema 或旧 API 的兼容 reader、writer、decoder、migration、alias、wrapper 或测试。实施发现 Contract 问题时先分析对应参考源码，再同步更新 `docs/design.md` 与本文。
@@ -2104,7 +2105,9 @@ AA-01～AA-09 是同一次 Architecture Closure 的依赖顺序，不是可长�
 
 按`docs/design.md`第19.3节和当前`../codex-main/codex-rs/tui/src/{insert_history.rs,tui.rs,markdown_render.rs,markdown_stream.rs,streaming/*,history_cell/messages.rs,chatwidget/streaming.rs}`，完成适合Amadeus基础Agent的source-backed Markdown/TUI主链。Codex决定source/stream/final-cell与native history lifecycle；Goldmark决定grammar/AST/source offset；Chroma决定code highlighting；Bubble Tea以immutable native scrollback + bounded mutable frame适配，不复制Ratatui terminal engine。
 
-第一轮AB已经移除Glamour opaque ANSI和全局draft主链，但2026-08-28审计确认其把stock Bubble Tea超高`View()`误当成native scrollback、用空行扫描代替Goldmark top-level boundary、用trailing cell scan代替stream attachment，并缺失文档声明的indent/table/link/wrap行为。因此此前`DONE`撤销；保留已完成的迁移基础，按以下依赖顺序重新闭环。
+第一轮 AB 移除 Glamour opaque ANSI 和全局 draft 主链后，2026-08-28 审计发现 stock Bubble Tea scrollback、Goldmark top-level boundary、stream attachment 以及 indent/table/link/wrap 仍需补齐；这些 source-backed lifecycle 问题已由 AB-02～AB-14 闭环。当前 AB 的完成范围是 Markdown source/stream/final-cell、TranscriptSurface、native history、resize 和基础 table projection；Codex-specific table layout 单独由 AF 完成。
+
+AB 的 source-backed Markdown streaming、attachment、completion、resize、native history 和 cache 结论继续有效。表格部分在 AB 中只完成 Goldmark projection、source holdback 和基础 typed layout 接线；Codex 的完整表格视觉与窄宽度策略由 AF 重新对照当前源码审计和实现。AB 不再把表格 specific acceptance 作为 AF 完成出口的替代品。
 
 ### 已完成的迁移基础
 
@@ -2149,10 +2152,11 @@ AA-01～AA-09 是同一次 Architecture Closure 的依赖顺序，不是可长�
 - [x] Fenced/indented code默认no-wrap并保留exact source；unknown explicit language plain fallback、highlight bytes/lines/line-length和NoColor降级不改变source。
 - [x] Renderer panic/超限使用UTF-8 safe bounded plain projection；live下一delta从exact pending source重试，final source、`/copy`和Resume不受fallback影响。
 
-### AB-06：Width Layout、Tables + Links — `DONE`
+### AB-06：Width Layout、基础 Tables + Links — `SUPERSEDED` by AF（基础投影保留）
 
 - [x] Wrap先跨完整logical line计算word/grapheme ranges，再remap原span/style/syntax/destination；普通词不拆，只有URL/path/hash token-heavy fallback可拆，每个fragment达到宽度后实际flush。
-- [x] Table group按共享intrinsic widths布局；收缩列宽时真实wrap cell并生成等高physical rows，低于最小可读宽度或超过row/column/cell bounds时整表降级key/value records，禁止输出超宽row交给Bubble Tea截断。
+- [x] Table group完成 Goldmark typed projection、source holdback、共享 intrinsic width 接线和基础 bounds/fallback；收缩路径保留真实 wrap cell 与等高 physical rows 的基础能力。
+- [x] Codex 风格的 separator/gap/padding、alignment、Narrative/TokenHeavy/Compact metrics、spillover filtering 和 aligned/stacked records heuristics 已转入 AF-02～AF-06；这些内容不计入 AB 阶段完成范围。
 - [x] Local link覆盖`file://`、Unix、`~/`、Windows drive/UNC及line/column/hash suffix；Web link提供label和可读destination fallback，OSC-8只接受安全`http/https`。
 - [x] Wrap、table reconstruction、cache clone和stream clone完整保留indent、table prefix、syntax和destination；local-link display transform递归处理typed table cells。
 - [x] Rich parse source和terminal span projection双层移除CSI/OSC与非法控制字符，但不改写`MarkdownSource`、`/copy`或Resume source。
@@ -2245,7 +2249,7 @@ Amadeus 原先在收到 Bubble Tea `WindowSizeMsg` 后只更新 `appModel` 的 w
 
 - Assistant Markdown在live、retry、completion、resize、Raw/Rich、Resume和`/copy`中有唯一authoritative source owner与一个attachment-based completion protocol；不存在全局draft、trailing-run owner推断、fabricated item lifecycle或ANSI反向解析。
 - `TranscriptSurface`保留canonical history并以print watermark提交immutable native scrollback；主frame只显示bounded mutable cells。SessionHeader、早期输出和长final可由终端原生滚轮访问，provisional stream replacement不依赖撤回已打印rows。
-- Goldmark source offset决定stable/mutable boundary；incomplete Markdown不污染stable run，completed item能修复stream缺失/不一致，writer/wrap/table/link/code在宽窄终端与NoColor下有界、可读地降级。
+- Goldmark source offset决定stable/mutable boundary；incomplete Markdown不污染stable run，completed item能修复stream缺失/不一致，writer/wrap/link/code在宽窄终端与NoColor下有界、可读地降级。表格的 Codex-specific grid、alignment、metrics、spillover 与 records fallback 由 AF 完成后才纳入完整表格出口。
 - Protocol、Session、Application、Rollout不依赖TUI Markdown实现；单一TUI及现有Tool/Approval/Plan/Queue生命周期不回退。
 
 ## 34. AC. Basic Multi-Agent Terminal + Persistence Lifecycle Realignment — `DONE`
@@ -2528,3 +2532,87 @@ AC保留R/Z已经正确的完整child Thread/Session、root-scoped AgentControl�
 - 自动Goal work只通过StartIfIdle contextual ResponseItem创建普通Regular Turn；Queue/Plan/interrupt/error/terminal/Resume ordering与Codex一致，没有伪UserMessage、mega-turn或第二`run_turn`。
 - External Goal API支持cold/live Thread且notification先于runtime effects；TUI `/goal`、footer和interrupt只消费typed snapshot/Event，不维护第二Goal状态。
 - StateRuntime、ThreadStore、ThreadManager、SessionServices、GoalService和Application关闭顺序明确，旧数据直接清理，focused/full/race/build/check全部通过。
+
+## 37. AF. Codex Markdown Table Layout Alignment — `TODO`
+
+### 目标
+
+根据当前 `../codex-main/codex-rs/tui/src/markdown_render.rs`、`markdown_render/table_key_value.rs`、`markdown_render/streaming.rs` 和 `table_detect.rs`，把 Amadeus 的 GFM 表格从“能输出表格文本”提升为 source-backed typed layout。AF 只接管表格的 AST projection、列宽分配、grid/records presentation 和 table streaming boundary；AB 已完成的 Markdown source、StreamController、TranscriptSurface、native history、resize 和 completion ownership 继续有效。
+
+Codex 的参考链路固定为：
+
+```text
+parser events
+→ TableState/TableCell（cell spans、hard breaks、links）
+→ row column normalization
+→ collect column metrics
+→ compute column widths
+→ grid 或 key/value records
+→ width-aware cell wrap
+→ hyperlink coordinate remap
+→ streaming stable/mutable projection
+```
+
+当前 Amadeus 继续使用 Goldmark 作为 parser authority；不替换 parser，不从 ANSI 反解析，也不在 TUI、HistoryCell、Protocol 或 Rollout 之外维护第二套表格事实源。
+
+### AF-01：Reference Contract + Current Gap Audit — `DONE`
+
+- 固定上述 Codex 源码版本和 fixture，记录 `TABLE_COLUMN_GAP=2`、`TABLE_CELL_PADDING=1`、header `━`、body `─`、无 `│`/`┼`、alignment、minimum width 和 records fallback Contract。
+- 对照 `internal/tui/markdown_tables.go`、`markdown_render.go`、`markdown_wrap.go`、`streaming_render.go` 建立输出差异 fixture，明确 AB 基础能力与 AF 待实现能力的边界。
+- 记录 escaped pipe、blockquote、Markdown/non-Markdown fence、unclosed fence、spillover、CJK/emoji/halfwidth 和超窄终端的预期结果。
+
+### AF-02：Typed Table Model + Parser Projection — `DONE`
+
+- 建立职责明确的 `MarkdownTable`、`MarkdownTableCell`、`TableAlignment`、`TableColumnMetrics` 和 `MarkdownTableLayout` 类型。
+- Goldmark table events 投影 cell spans、PlainText、hard breaks、hyperlinks 和 display width；normalize header/body row column count，缺列补空 cell，额外 cell 按 parser 语义处理。
+- MarkdownWriter 拥有 AST→model，layout 不重新解析 source；Rollout/Protocol 只保存原始 Assistant source，不保存 table rows 或 terminal layout。
+
+### AF-03：Codex Grid Layout + Alignment — `DONE`
+
+- 实现 Codex grid 的 padding、column gap、header/body separator 和每个 logical row 的等高 physical rows。
+- 实现 left/center/right alignment；header 使用 bold + header accent；每条输出行按 display width 校验不超过 viewport。
+- 删除 ` │ `、`─┼─` 和“先输出完整 cell 再由 terminal 截断”的主路径。
+
+### AF-04：Column Metrics + Width Allocation — `DONE`
+
+- 为列分类 `Narrative`、`TokenHeavy`、`Compact`，计算 header/body/preferred/minimum metrics；最低列宽为 3，Narrative/TokenHeavy 目标软下限为 16。
+- 使用 TokenHeavy→Narrative→Compact 的确定性 shrink priority；压缩后真实重排 cell，不以“反复缩减当前最长列”代替策略。
+- 统一 terminal display-width 计算，覆盖 CJK、emoji、combining/halfwidth 字符以及长 URL/path/hash。
+
+### AF-05：Key/Value Fallback — `DONE`
+
+- 根据受影响 row 数、token 是否被切碎、expansive cell 是否形成窄高条带选择 Grid、AlignedRecords 或 StackedRecords。
+- 宽度足够使用 aligned key/value；更窄使用 stacked key/value；label/value 保留富文本、inline code、hard break 和 hyperlink。
+- 记录之间使用全宽 `─` 分隔；仅 header-only 且无法布局时保留 pipe fallback；整个 body 一致降级，不混用 presentation。
+
+### AF-06：Spillover + Streaming Table Boundary — `DONE`
+
+- 以 parser-backed table boundary 过滤缺少边界 pipe 的 spillover row，不能使用 `strings.Count("|")` 等字符串启发式复制 detector。
+- 统一 escaped pipe、blockquote table、Markdown fence 与非 Markdown fence 的识别；unclosed fence 在 completion 前保持 mutable。
+- table header/delimiter 未确认或 table 仍在增长时保持候选起点之后 mutable；出现新的 top-level block 后才提交 stable layout。新增 row、reference definition 和 resize 复用完整 source/layout 重投影。
+
+### AF-07：HistoryCell / Resize / Replay Integration — `DONE`
+
+- 接入 `AgentMarkdownCell`、`StreamingAgentTailCell` 和 `TranscriptSurface`；final、live、Resume、Raw/Rich、resize 和 `/copy` 复用同一 source/model/layout contract。
+- 取消最终 ANSI 截断对表格布局的补救依赖，保持 hyperlink range、initial/subsequent indent 和 attachment replacement 不回退。
+- 验证 native finalized history 与 bounded mutable frame 中不重复打印 provisional table rows；cache 只保存 width/mode 下的 derived layout。
+
+### AF-08：Contract Tests + Benchmarks — `DONE`
+
+- 覆盖 basic grid、alignment、separator/gap/padding、wrapped rows、Narrative/TokenHeavy/Compact、aligned/stacked fallback、CJK/emoji/halfwidth、escaped pipe、rich inline、hyperlinks、blockquote、fenced/non-Markdown fence、spillover 和 unclosed fence。
+- 覆盖逐行 streaming holdback、retry reset、completion、resize/replay equivalence、Raw/Rich/NoColor、line-width invariant 和 cache invalidation。
+- 增加列宽分配、display-width、fallback 和稳定前缀的 benchmark；验证普通 append 不重复解析 stable table source，超限只降级 presentation 不丢 source。
+
+### AF 当前完成记录
+
+- 2026-09-02：完成 AF-01～AF-06。MarkdownWriter 现在将 Goldmark table AST 投影为共享的 `MarkdownTable`/`MarkdownTableCell`，保留富文本、hard break、hyperlink、display width、alignment 和 source range；layout 依据 Codex 的 padding/gap、separator、列分类和 shrink priority 生成等高 physical rows，并在窄布局选择 aligned/stacked records。table holdback 优先使用 Goldmark AST，escaped pipe 与 blockquote detector 共用 parser 语义。新增 alignment、separator、CJK、fallback、escaped-pipe 和 blockquote Contract tests。
+- 2026-09-02：完成 AF-07。`AgentMarkdownCell`、`StreamingAgentTailCell`、`TranscriptSurface`、cache clone、link projection 和 native finalized history 继续复用同一 source-backed table model；删除 `TableCells`/`TableHeader`/`TablePrefix` 旧字段路径并增加 architecture guard。
+- 2026-09-02：`go test ./internal/tui -count=1`、`go test -race ./internal/tui -count=1` 和全仓测试通过；一次并行诊断运行曾受沙箱 IPv6 listen 限制，但标准 `make check` 在当前环境完成了所有测试。
+- 2026-09-02：完成 AF-08。新增 stacked/fenced/blockquote/rich-link/replay-clone fixture、architecture guard 和 `BenchmarkMarkdownTableLayout`（单次约 1.0 ms）；`go test -race ./internal/tui ./internal/architecture -count=1`、全仓 `make check`、build 和 `git diff --check` 全部通过，AF 阶段关闭。
+
+### AF 出口
+
+- Codex grid 的 separator、padding、gap、alignment 和 display-width 行为在 fixture 中一致；输出无 `│`/`┼` 且每行不溢出 viewport。
+- Content-aware metrics 和确定性 shrink priority 生效，窄表格按 aligned/stacked records Contract 降级，富文本、hard break、hyperlink 和 CJK 宽度不丢失。
+- Spillover 与 fence/blockquote/escaped-pipe 识别由 parser-backed boundary 统一负责；streaming、final、Resume、resize 和 `/copy` 共享同一 typed table model/layout 语义。
+- AB 的 source-backed Markdown 生命周期、single TUI、native history、Goal/Tool/Approval ownership 不回退；focused tests、race tests、全量 tests、`make check`、build、architecture guards 和 `git diff --check` 通过后才标记 AF DONE。

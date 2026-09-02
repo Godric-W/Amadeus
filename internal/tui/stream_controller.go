@@ -157,6 +157,10 @@ func (controller *StreamController) Finalize(authoritative string) MarkdownSourc
 }
 
 func cloneMarkdownLines(lines []MarkdownLine) []MarkdownLine {
+	return cloneMarkdownLinesWithTables(lines, make(map[*MarkdownTable]*MarkdownTable))
+}
+
+func cloneMarkdownLinesWithTables(lines []MarkdownLine, tables map[*MarkdownTable]*MarkdownTable) []MarkdownLine {
 	cloned := make([]MarkdownLine, len(lines))
 	for index, line := range lines {
 		cloned[index].Spans = append([]MarkdownSpan(nil), line.Spans...)
@@ -165,12 +169,56 @@ func cloneMarkdownLines(lines []MarkdownLine) []MarkdownLine {
 		cloned[index].Hyperlinks = append([]HyperlinkRange(nil), line.Hyperlinks...)
 		cloned[index].BlockKind = line.BlockKind
 		cloned[index].NoWrap = line.NoWrap
-		cloned[index].TableCells = cloneMarkdownLines(line.TableCells)
-		cloned[index].TableHeader = append([]string(nil), line.TableHeader...)
+		if line.Table != nil {
+			if clone, ok := tables[line.Table]; ok {
+				cloned[index].Table = clone
+			} else {
+				cloned[index].Table = cloneMarkdownTableWithTables(line.Table, tables)
+			}
+		}
 		cloned[index].TableRule = line.TableRule
-		cloned[index].TablePrefix = line.TablePrefix
 	}
 	return cloned
+}
+
+func cloneMarkdownTable(table *MarkdownTable) *MarkdownTable {
+	return cloneMarkdownTableWithTables(table, make(map[*MarkdownTable]*MarkdownTable))
+}
+
+func cloneMarkdownTableWithTables(table *MarkdownTable, tables map[*MarkdownTable]*MarkdownTable) *MarkdownTable {
+	if table == nil {
+		return nil
+	}
+	if clone, ok := tables[table]; ok {
+		return clone
+	}
+	clone := &MarkdownTable{Alignments: append([]TableAlignment(nil), table.Alignments...), Prefix: table.Prefix, SourceRange: table.SourceRange}
+	tables[table] = clone
+	clone.Header = cloneMarkdownTableCells(table.Header)
+	clone.Spillover = cloneMarkdownTableCellsWithTables(table.Spillover, tables)
+	clone.Rows = make([][]MarkdownTableCell, len(table.Rows))
+	for index, row := range table.Rows {
+		clone.Rows[index] = cloneMarkdownTableCellsWithTables(row, tables)
+	}
+	return clone
+}
+
+func cloneMarkdownTableCells(cells []MarkdownTableCell) []MarkdownTableCell {
+	return cloneMarkdownTableCellsWithTables(cells, make(map[*MarkdownTable]*MarkdownTable))
+}
+
+func cloneMarkdownTableCellsWithTables(cells []MarkdownTableCell, tables map[*MarkdownTable]*MarkdownTable) []MarkdownTableCell {
+	clone := make([]MarkdownTableCell, len(cells))
+	for index, cell := range cells {
+		clone[index] = MarkdownTableCell{
+			Lines:        cloneMarkdownLinesWithTables(cell.Lines, tables),
+			PlainText:    cell.PlainText,
+			HardBreaks:   append([]int(nil), cell.HardBreaks...),
+			Hyperlinks:   append([]HyperlinkRange(nil), cell.Hyperlinks...),
+			DisplayWidth: cell.DisplayWidth,
+		}
+	}
+	return clone
 }
 
 func (model *appModel) refreshActiveMarkdownFrames() {

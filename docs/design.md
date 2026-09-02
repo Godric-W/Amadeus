@@ -1,7 +1,7 @@
 # Amadeus 架构设计
 
 > 状态：Target Architecture v2
-> 最近修订：2026-09-01
+> 最近修订：2026-09-02
 > 目标语言：Go
 > 产品形态：面向真实软件工程任务的本地 Coding Agent CLI
 > 架构骨架：`../codex-main`
@@ -81,6 +81,7 @@ Amadeus 当前处于未发布开发阶段，不承诺自身旧实现的任何兼
 | AC. Basic Multi-Agent Terminal + Persistence Lifecycle Realignment | Codex V1 `last_agent_message`、AgentStatus/Wait、root-tree lifetime、durable spawn edge、budget finalization 与 live/Resume 等价 |
 | AD. Codex Runtime Contract Optimization | Settings admission、typed TurnItem、initialization discard、MetadataSync、bounded shutdown、Event backpressure 与 hot-path profiling |
 | AE. Typed Extension Host + Persisted Thread Goal Mode | Codex `ext/extension-api`、`ext/goal`、独立 Goal SQLite、GoalService/GoalRuntime、自动 idle continuation、Goal Tool、App/TUI/SDK lifecycle |
+| AF. Codex Markdown Table Layout Alignment | Codex `markdown_render.rs`、`table_key_value.rs`、`streaming.rs`、`table_detect.rs` 的 typed table model、列宽分配、grid/records fallback、spillover 与 streaming boundary |
 
 ## 2. 产品目标
 
@@ -4318,7 +4319,7 @@ exact MarkdownSource
 - wrapping 必须先基于整条 logical line 计算 display-width aware word/grapheme ranges，再把输出 range remap 回原 `MarkdownSpan`/style/link destination；不能逐 span 分词或按 rune 重拼。默认 `break_words=false`，普通单词不得被拆为两行；只有明确的 token-heavy URL/path/hash fallback 才可在可解释边界拆分，且每个 fragment 达到宽度后必须实际 flush output line。fenced/indented code block设置`NoWrap`，Bubble Tea只投影当前viewport可见列，完整code仍保留在`MarkdownSource`并可通过`/copy`取得；基础版不增加水平滚动frontend。
 - Heading、emphasis、strong、strikethrough、inline code、list、blockquote和horizontal rule语义与Codex对应；具体颜色通过TerminalPalette semantic token选择，不在Markdown AST writer硬编码truecolor值。
 - Fenced code继续使用Chroma，不复制Codex Syntect/Two Face实现。语言alias、unknown-language plain fallback、输入大小/行数/单行长度上限和light/dark/ANSI/no-color行为必须有明确contract；不要求与Codex支持完全相同的语法集合。
-- GFM table由 Goldmark table events 驱动的 typed table group/cell rows。基础 renderer 先计算共享 intrinsic widths；需要收缩时必须真实 wrap 每个 cell 并生成等高 physical rows，不能只减小 width 数字后继续输出完整 cell。任何列低于最小可读宽度、列数/行数/总cell bytes超限或 grid仍无法放入viewport时，整个body确定性降级为key/value records。Codex 的 spillover filtering 与 Narrative/TokenHeavy/Compact 启发式不属于基础范围。完整 `md`/`markdown` fence table若做source transform，必须保守识别并遵守前述offset-map/full-recompute规则。
+- GFM table由 Goldmark table events 驱动的 typed table group/cell rows。AB 基线只负责 parser projection、source-backed holdback 和共享 intrinsic width 的接线；Codex 对齐所需的列指标、对齐、separator/gap/padding、grid/records fallback、spillover filtering 与 Narrative/TokenHeavy/Compact 宽度启发式由 19.3.6 的 `MarkdownTableLayout` Contract 统一负责。需要收缩时必须真实 wrap 每个 cell 并生成等高 physical rows，不能只减小 width 数字后继续输出完整 cell。任何列低于最小可读宽度、列数/行数/总cell bytes超限或 grid仍无法放入viewport时，整个 body 按该 Contract 确定性降级为 key/value records。完整 `md`/`markdown` fence table若做source transform，必须保守识别并遵守前述offset-map/full-recompute规则。
 - 本地和Web link的typed span必须保留destination。local destination覆盖`file://`、Unix absolute/relative、`~/`、Windows drive/UNC，并规范化`:line[:column]`/`#Lline[Ccolumn]`后按cell冻结CWD缩短；web link默认显示label，并在label不等于destination时提供可读` (destination)` fallback，同时保留完整OSC-8 target。wrap/table/clone后visible range必须继续指向完整destination，不能漏拷贝table prefix或只转换table外层row。
 - Terminal projection在不改写`MarkdownSource`的前提下移除span text中的CSI/OSC和非换行/Tab控制字符；只有经过scheme、host和control-byte校验的`http/https`destination可以生成OSC-8。
 - Inline visualization、Codex theme picker/custom `.tmTheme`、远程图片Markdown和raw reasoning body不属于AB基础范围。Reasoning delta只用于Codex风格status header；只有未来产品明确展示reasoning summary时才复用Markdown renderer建立独立cell。
@@ -4330,6 +4331,71 @@ exact MarkdownSource
 - Streaming render必须有CPU/内存边界：TUI在进入Goldmark前独立限制structured-render source bytes，syntax highlighting单独限制bytes/lines/line length，table layout限制rows/columns/cell width；超限只把相关presentation降级为bounded plain projection，`MarkdownSource`、Rollout、Resume和`/copy`不丢Assistant文本。
 - Debug/trace可以记录source bytes、committed watermark、stable/mutable line counts、full recompute reason、render duration和cache hit；不得记录完整敏感Assistant正文到普通日志。
 - Markdown source、stream controller和render cache只属于TUI。Protocol继续只发布typedDelta/completed item，Session、ModelClient、Rollout和Application不得了解Goldmark node、terminal width、Chroma theme或HistoryCell。
+
+#### 19.3.6 GFM Table Layout Contract（AF）
+
+本节依据 Codex `codex-rs/tui/src/markdown_render.rs`、`markdown_render/table_key_value.rs`、`markdown_render/streaming.rs` 与 `table_detect.rs` 的实现，定义 Amadeus 表格布局的目标 Contract。Goldmark 仍是 Markdown grammar/AST 的唯一 parser authority；本节不要求替换 parser，也不把 Codex 的 Rust 类型直接搬到 Go。
+
+目标数据模型把 Markdown source、语义 cell 和终端布局分开：
+
+```go
+type TableAlignment uint8 // Default, Left, Center, Right
+
+type MarkdownTableCell struct {
+    Spans       []MarkdownSpan
+    PlainText   string
+    HardBreaks  []int
+    Hyperlinks  []HyperlinkRange
+    DisplayWidth int
+}
+
+type MarkdownTable struct {
+    Header      []MarkdownTableCell
+    Rows        [][]MarkdownTableCell
+    Alignments  []TableAlignment
+    SourceRange Range
+}
+
+type TableColumnMetrics struct {
+    Kind             TableColumnKind // Narrative, TokenHeavy, Compact
+    HeaderWidth      int
+    MaxBodyWidth     int
+    PreferredWidth   int
+    MinimumWidth     int
+}
+
+type MarkdownTableLayout struct {
+    ColumnWidths []int
+    HeaderRows   [][]MarkdownLine
+    BodyRows     [][][]MarkdownLine
+    Presentation TablePresentation // Grid, AlignedRecords, StackedRecords, PipeFallback
+}
+```
+
+AF-01～AF-08 已将上述主要布局差距收敛：`Table.Alignments`、Codex separator/gap、typed cell model、content-aware width allocation、aligned/stacked records、parser-first holdback、escaped-pipe/blockquote 识别、HistoryCell/resize/replay 接入、hyperlink clone 和 benchmark/architecture guard 均已进入当前实现；不能通过在现有 ANSI 输出外再包一层适配器解决。
+
+职责和数据流固定如下：
+
+```text
+Goldmark table events
+→ MarkdownWriter 建立 MarkdownTable/Cell（富文本、hard break、link、display width）
+→ normalize 每个 header/body row 的 column count
+→ collect_table_column_metrics
+→ compute_column_widths(viewport, gap, padding, alignments)
+→ MarkdownTableLayout 选择 Grid 或 records fallback
+→ cell renderer 按列宽 wrap，生成等高 physical rows 并重映射 hyperlink range
+→ TranscriptSurface 投影 typed MarkdownLine
+```
+
+- `MarkdownWriter` 是 AST 到 typed table model 的唯一 owner；它保存 inline style/link state 和 cell 内多行信息，但不决定终端列宽。`MarkdownTableLayout` 只消费完整 model，不重新解析 Markdown、不读取 TUI history，也不把 ANSI 字符串作为输入。
+- Codex 的视觉常量必须保持一致：cell padding 每侧 1 个显示列，列间 gap 为 2 个空格；header separator 使用 `━`，body separator 使用 `─`；列之间不输出 `│`，不输出 `┼`。表头使用 bold + header accent，alignment 支持 left/center/right，默认 alignment 按 left 处理。
+- 所有宽度以 terminal display width 计算，最低列宽为 3。`Narrative` 与 `TokenHeavy` 有较高 preferred floor（目标 16），`Compact` 尽量保留 header 与短 token。压缩优先级为 `TokenHeavy → Narrative → Compact`，不能简单反复缩减当前最长列；每次缩减后都必须重新 wrap 并验证整行不超过 viewport。
+- 一个 logical row 中任一 cell 产生多行时，所有 cell 补齐到同一 physical height；相邻 body logical rows 之间输出 body separator。宽度不足、token 被切碎、受影响 row 数过多或 expansive cell 形成窄高条带时，整个 body 一致降级为 records，而不是让部分行混用两种表现。
+- Records 有两种确定性布局：宽度足够时使用 aligned key/value records；更窄时使用 stacked key/value records。label/value 均保留富文本、inline code、hard break 和 hyperlink；记录之间使用全宽 `─` 分隔。只有 header 没有 body 且无法布局时，才保留带 pipe 的 header fallback。
+- Spillover row 过滤必须依据 parser 识别的 table boundary；缺少边界 pipe 的 continuation 不得被误当成新的 table row。escaped pipe、blockquote table、Markdown fenced table、非 Markdown fence 和未闭合 fence 由同一 detector/parser 语义处理，不得再以 `strings.Count("|")` 等启发式复制第二套判断。
+- Streaming 时，table header/delimiter 尚未确认，或 table 仍在增长时，候选 table 起点之后全部保持 mutable；只有 parser 确认 table block 后出现新的 top-level block，前面的 table layout 才能进入 stable queue。新增 row、后置 reference definition 或 resize 触发同一完整 source/layout 重投影。
+- `Grid`、`AlignedRecords`、`StackedRecords` 和 `PipeFallback` 都是同一个 `MarkdownTableLayout` 的 presentation，不是独立 renderer。Live、final、Resume、Raw/Rich、resize 和 `/copy` 共享同一 source model；cache 只保存给定 width/mode 的 derived layout。
+- Control Tool（`update_plan`、`get_goal`、`create_goal`、`update_goal`）的展示和生命周期不属于本 Contract；它们继续由各自 typed Event/HistoryCell owner 负责，不得把控制输出塞入 Markdown table renderer。
 
 ### 19.4 Visual Runtime
 
@@ -6007,7 +6073,7 @@ Compaction error 至少区分：
 - Assistant Markdown stream按ItemID隔离；retry `Reset=true`清除旧attempt source/stable run/tail，迟到或错误ItemID delta不污染当前stream，也不伪造ItemStarted。
 - `MarkdownStreamCollector`在newline前不commit；半个inline code/link/list marker、未闭合fence和table row不会提前形成永久HistoryCell，completion会提交最后一个无newline尾行。
 - Goldmark顶层节点source offset只保留completed stable prefix，mutable final block随setext heading、list tightness、reference link和后续delta正确重渲染；fence/list/quote内空行不成为边界，普通append不反复解析或扫描全部stable source。
-- Table、fence和reference link从完整source重投影；table holdback保护未完成table不进入stable run；收缩列宽必须真实wrap cell，否则整个table降级key/value records。
+- Table、fence和reference link从完整source重投影；table holdback保护未完成table不进入stable run。表格布局必须满足 19.3.6：separator/gap/padding、alignment、display-width、content-aware width allocation、等高 physical rows、spillover filtering 和 aligned/stacked records fallback 均有独立 contract；收缩列宽必须真实 wrap cell，否则整个 table 降级 key/value records。
 - `ItemCompletedEvent`的Assistant Text为权威：无delta、delta完整、delta缺失、delta与final不一致、retry后final和interrupt各只有一个completed `AgentMarkdownCell`，live与Resume输出一致。
 - `AgentMarkdownCell`保存exact source与冻结CWD，不TrimSpace；resize、Raw/Rich切换、attachment replay和`/copy`均从source派生，不从ANSI或当前process cwd反推。
 - Active stream 的 stable run 与 mutable tail 都在 `TranscriptSurface` 中显示；surface以冻结的attachment range完成completion/reset replacement，stream期间的其他transcript projection延迟到replacement之后FIFO应用。
@@ -6017,6 +6083,7 @@ Compaction error 至少区分：
 - Assistant每条视觉行保持`• `/`  ` gutter；soft wrap、Goldmark soft/hard break、nested list continuation与代码/表格边界不会丢indent或重复prefix，code block按独立no-wrap policy投影。
 - Local file link按cell CWD显示并保留line/column suffix；web/local typed destination在wrap/resize后仍对应正确visible range，终端使用可读underlined/plain fallback。
 - Markdown render cache按width、render mode、palette/syntax revision和color level失效；cache hit不改变source，parse/highlight/table降级不使Turn失败。
+- GFM table fixture覆盖 left/center/right alignment、`━` header separator、`─` body separator、2-space column gap、1-column cell padding、CJK/emoji/halfwidth display width、Narrative/TokenHeavy/Compact shrink priority、等高 wrapped rows、spillover、aligned/stacked records 和 header-only pipe fallback；输出不得包含 `│` 或 `┼`。
 - Slash Popup 键盘交互。
 - Approval 上下键与 Enter。
 - 中文输入和 Backspace。
@@ -6149,6 +6216,11 @@ Amadeus 至少通过以下真实场景：
 62. terminal同时存在queued user input和active Goal时，高优先级runtime queue先启动；TUI-local dequeue若Steer到刚启动Goal Turn只消费一次，消息不会恢复/重复提交。
 63. 删除Goal-first或普通Thread时，goals_1.sqlite记录、continuation deferral、metadata和Rollout按可重试顺序清理；中途失败仍能用Thread metadata定位剩余状态。
 64. ExtensionRegistry按已安装higher-priority idle contributor→Goal的registration order运行；Session/Thread/Turn/Step scoped data在shutdown后释放，GoalService registry无stale runtime，单一Event pump按ThreadID过滤迟到Goal Event。
+65. Markdown 表格由 Goldmark table events 投影为 typed `MarkdownTable`；header/body 行列数被规范化，cell 内富文本、hard break、inline code、hyperlink 和 display width 在 layout 前完整保留。
+66. 表格 grid 使用 1 列 cell padding、2 空格 column gap、`━` header separator 和 `─` body separator；列之间不出现 `│`/`┼`，left/center/right alignment 在宽窄终端均保持稳定。
+67. 表格列宽按 Narrative/TokenHeavy/Compact 指标和 TokenHeavy→Narrative→Compact 压缩优先级分配，最低列宽为 3；每次收缩真实 wrap cell，logical row 的 physical rows 等高且不溢出 viewport。
+68. 窄表格依据 affected-row、token fragmentation 和 expansive-cell heuristics 在 Grid、AlignedRecords、StackedRecords 间确定性选择；records 保留 label/value 富文本和 hyperlink，header-only 无法布局时才使用 pipe fallback。
+69. escaped pipe、blockquote table、Markdown/non-Markdown fence、unclosed fence 和 spillover row 使用 parser-backed boundary；streaming 中 table growth 保持 mutable，后续 top-level block 出现后才提交 stable layout，final/Resume/resize 与 live 使用同一 layout。
 
 ## 30. 最终架构结论
 
@@ -6209,3 +6281,4 @@ Amadeus 至少通过以下真实场景：
 55. active Goal在非Plan idle时通过StartIfIdle(contextual Goal ResponseItem)创建新的普通physical Turn；每个Turn保留独立TurnID/terminal，模型调用update_goal或用户/系统停止状态后不再续跑。
 56. Resume必须在history、Token、Goal snapshot和event pump就绪后触发idle；Fork继承Goal时先flush source progress并持久化deferral，第一个显式Turn完成后才恢复自动continuation。
 57. `/goal`、Goal footer、pause-before-interrupt、attention suppression和Goal Tool都是同一GoalStore snapshot的Interface投影；TUI不从Rollout、Assistant文本或命令字符串维护第二份Goal真相。
+58. Markdown table 是 source-backed typed layout：Goldmark/MarkdownWriter 拥有语义 cell，`MarkdownTableLayout` 拥有 display-width、alignment、grid/records presentation 和 streaming holdback；live、final、Resume、resize 与 Raw/Rich 复用同一 source/layout Contract，Rollout 不保存 terminal rows 或 layout cache。

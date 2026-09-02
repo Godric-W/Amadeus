@@ -15,8 +15,23 @@ func markdownLinkDestination(destination []byte) string {
 
 func markdownDisplayLocalLinks(lines []MarkdownLine, cwd string) []MarkdownLine {
 	cwd = strings.TrimRight(strings.TrimSpace(cwd), "/")
+	processedTables := make(map[*MarkdownTable]bool)
 	for lineIndex := range lines {
-		lines[lineIndex].TableCells = markdownDisplayLocalLinks(lines[lineIndex].TableCells, cwd)
+		if table := lines[lineIndex].Table; table != nil {
+			if !processedTables[table] {
+				for index := range table.Header {
+					table.Header[index].Lines = markdownDisplayLocalLinks(table.Header[index].Lines, cwd)
+					table.Header[index] = makeMarkdownTableCell(table.Header[index].Lines)
+				}
+				for rowIndex := range table.Rows {
+					for column := range table.Rows[rowIndex] {
+						table.Rows[rowIndex][column].Lines = markdownDisplayLocalLinks(table.Rows[rowIndex][column].Lines, cwd)
+						table.Rows[rowIndex][column] = makeMarkdownTableCell(table.Rows[rowIndex][column].Lines)
+					}
+				}
+				processedTables[table] = true
+			}
+		}
 		seen := make(map[string]bool)
 		for spanIndex := range lines[lineIndex].Spans {
 			span := &lines[lineIndex].Spans[spanIndex]

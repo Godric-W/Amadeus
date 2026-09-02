@@ -160,14 +160,19 @@ func TestMarkdownTableFenceUnwrapIsConservative(t *testing.T) {
 
 func TestMarkdownTableUsesHeaderRuleAndColumns(t *testing.T) {
 	lines := newMarkdownRenderer().Render(newMarkdownSource("| Name | Value |\n| --- | --- |\n| A | B |\n", ""), HistoryRenderRich)
-	if len(lines) != 3 {
+	if len(lines) < 3 {
 		t.Fatalf("table lines = %#v", lines)
 	}
-	if header := markdownLineText(lines[0]); !strings.Contains(header, "Name │ Value") {
+	if header := markdownLineText(lines[0]); !strings.Contains(header, "Name") || strings.Contains(header, "│") {
 		t.Fatalf("table header = %q", header)
 	}
-	if rule := markdownLineText(lines[1]); !strings.Contains(rule, "┼") {
+	if rule := markdownLineText(lines[1]); !strings.Contains(rule, "━") || strings.Contains(rule, "┼") {
 		t.Fatalf("table rule = %q", rule)
+	}
+	for _, line := range lines {
+		if strings.Contains(markdownLineText(line), "│") || strings.Contains(markdownLineText(line), "┼") {
+			t.Fatalf("table emitted legacy separator: %q", markdownLineText(line))
+		}
 	}
 }
 
@@ -196,6 +201,121 @@ func TestMarkdownTableActuallyWrapsCellsAtShrunkWidths(t *testing.T) {
 	}
 	if !foundContinuation || len(wrapped) < 4 {
 		t.Fatalf("table did not produce wrapped physical rows: %#v", wrapped)
+	}
+}
+
+func TestMarkdownTableUsesCodexSeparatorsAndAlignment(t *testing.T) {
+	markdown := "| Left | Center | Right |\n| :--- | :---: | ---: |\n| a | b | 12 |\n| c | d | 34 |\n"
+	lines := wrapMarkdownLines(newMarkdownRenderer().Render(newMarkdownSource(markdown, ""), HistoryRenderRich), 40)
+	if len(lines) < 4 {
+		t.Fatalf("table layout = %#v", lines)
+	}
+	for _, line := range lines {
+		text := markdownLineText(line)
+		if strings.ContainsAny(text, "│┼") {
+			t.Fatalf("legacy table separator in %q", text)
+		}
+		if uniseg.StringWidth(text) > 40 {
+			t.Fatalf("table line width = %d: %q", uniseg.StringWidth(text), text)
+		}
+	}
+	bodySeparator := false
+	for _, line := range lines {
+		bodySeparator = bodySeparator || strings.Contains(markdownLineText(line), "─")
+	}
+	if !strings.Contains(markdownLineText(lines[1]), "━") || !bodySeparator {
+		t.Fatalf("missing Codex separators: %#v", lines)
+	}
+	header := markdownLineText(lines[0])
+	if !strings.Contains(header, "Left") || !strings.Contains(header, "Center") || !strings.Contains(header, "Right") {
+		t.Fatalf("header alignment projection = %q", header)
+	}
+}
+
+func TestMarkdownTablePreservesWideGlyphDisplayWidth(t *testing.T) {
+	markdown := "| 名称 | 状态 |\n| --- | --- |\n| 中文 | 好 |\n"
+	for _, line := range wrapMarkdownLines(newMarkdownRenderer().Render(newMarkdownSource(markdown, ""), HistoryRenderRich), 20) {
+		if width := uniseg.StringWidth(markdownLineText(line)); width > 20 {
+			t.Fatalf("wide glyph table line width = %d: %q", width, markdownLineText(line))
+		}
+	}
+}
+
+func TestMarkdownTableDetectorHandlesEscapedPipesAndBlockquotes(t *testing.T) {
+	if !isMarkdownTableHeader(`| Name \| Alias | Value |`) {
+		t.Fatal("escaped pipe header was not recognized")
+	}
+	if !isMarkdownTableDelimiter(`| :--- | ---: |`) {
+		t.Fatal("aligned delimiter was not recognized")
+	}
+	blockquote := "> | Name | Value |\n> | --- | --- |\n> | A | B |\n"
+	if got := tableHoldbackStart(blockquote); got != 0 {
+		t.Fatalf("blockquote table holdback start = %d", got)
+	}
+}
+
+func TestMarkdownTableHoldbackKeepsTransformedFenceMutable(t *testing.T) {
+	source := "```markdown\n| Name | Value |\n| --- | --- |\n| A | B |\n```\n"
+	if got := tableHoldbackStart(source); got != 0 {
+		t.Fatalf("fenced table holdback start = %d", got)
+	}
+}
+
+func TestMarkdownTableUsesStackedRecordsWhenLabelsDoNotFit(t *testing.T) {
+	markdown := "| Very Long Header | Another Long Header |\n| --- | --- |\n| value one | value two |\n"
+	lines := wrapMarkdownLines(newMarkdownRenderer().Render(newMarkdownSource(markdown, ""), HistoryRenderRich), 10)
+	plain := strings.Join(rawMarkdownLinesFromLines(lines), "\n")
+	if !strings.Contains(plain, "Very Long") || !strings.Contains(plain, "Another") || !strings.Contains(plain, "Header:") || !strings.Contains(plain, "  value") {
+		t.Fatalf("stacked records = %q", plain)
+	}
+}
+
+func TestMarkdownTableRichCellAndReplayCloneKeepLinkMetadata(t *testing.T) {
+	markdown := "| File | Details |\n| --- | --- |\n| [**main.go**](/workspace/main.go#L4) | `entry` point |\n"
+	renderer := newMarkdownRenderer()
+	lines := renderer.Render(newMarkdownSource(markdown, "/workspace"), HistoryRenderRich)
+	laidOut := wrapMarkdownLines(lines, 48)
+	foundLink := false
+	for _, line := range laidOut {
+		for _, span := range line.Spans {
+			if span.Destination == "/workspace/main.go#L4" && span.Markdown.Bold {
+				foundLink = true
+			}
+		}
+	}
+	if !foundLink {
+		t.Fatalf("rich table link metadata = %#v", laidOut)
+	}
+	clone := cloneMarkdownLines(lines)
+	if len(clone) == 0 || clone[0].Table == nil || clone[0].Table == lines[0].Table {
+		t.Fatal("table clone retained source model pointer")
+	}
+	clone[0].Table.Header[0].PlainText = "changed"
+	if lines[0].Table.Header[0].PlainText == "changed" {
+		t.Fatal("table clone mutated source model")
+	}
+}
+
+func TestMarkdownTableOutputFromFenceAndBlockquoteIsWidthBounded(t *testing.T) {
+	sources := []string{
+		"```markdown\n| A | B |\n| --- | --- |\n| value | text |\n```\n",
+		"> | A | B |\n> | --- | --- |\n> | value | text |\n",
+	}
+	for _, source := range sources {
+		for _, line := range wrapMarkdownLines(newMarkdownRenderer().Render(newMarkdownSource(source, ""), HistoryRenderRich), 24) {
+			if width := uniseg.StringWidth(markdownLineText(line)); width > 24 {
+				t.Fatalf("table source line width = %d: %q", width, markdownLineText(line))
+			}
+		}
+	}
+}
+
+func BenchmarkMarkdownTableLayout(b *testing.B) {
+	markdown := "| Path | Status | Details |\n| --- | :---: | --- |\n| /workspace/pkg/long/file.go | ok | a narrative description that wraps across the available table width |\n| /workspace/pkg/other/file.go | warn | another narrative description with enough words to exercise metrics |\n"
+	source := newMarkdownSource(markdown, "/workspace")
+	renderer := newMarkdownRenderer()
+	for index := 0; index < b.N; index++ {
+		_ = wrapMarkdownLines(renderer.Render(source, HistoryRenderRich), 64)
 	}
 }
 

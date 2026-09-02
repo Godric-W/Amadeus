@@ -85,7 +85,7 @@ func TestTranscriptSurfaceMarkdownVisualSnapshot(t *testing.T) {
 	model.width, model.height = 80, 60
 	model.insertHistoryCell(NewAgentMarkdownCell(newMarkdownSource("# Interface\n\n**Interface** provides a stable contract.\n\n- first item\n- second item\n\n| Name | Value |\n| --- | --- |\n| A | B |\n\n[docs](https://example.com/docs)\n", "/workspace")))
 	view := xansi.Strip(model.View())
-	for _, expected := range []string{"• # Interface", "Interface provides a stable contract.", "• first item", "• second item", "Name │ Value", "─────┼─────", "docs"} {
+	for _, expected := range []string{"• # Interface", "Interface provides a stable contract.", "• first item", "• second item", "Name    Value", "━━━━", "docs"} {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("markdown snapshot omitted %q:\n%s", expected, view)
 		}
